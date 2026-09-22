@@ -54,7 +54,7 @@ def _path_classification(value: str, source_path: str) -> tuple[str, str]:
         return "LEAK", "user-profile-path"
     if normalized.startswith("c:/windows") or any(marker in normalized for marker in ("/program", "/windows/", ":/tmp/", "/tmp/", "/home/fred/", "/users/julius/", "/root/runner/", ":/repo/")):
         return "EXPLAINED", "system-or-synthetic-path"
-    is_test_source = source.endswith("/tests.rs") or any(x in source for x in ("/test/", "/tests/", "/fixture/", "/fixtures/", ".test."))
+    is_test_source = source.endswith(("/tests.rs", "_tests.rs")) or any(x in source for x in ("/test/", "/tests/", "/fixture/", "/fixtures/", ".test."))
     if is_test_source:
         return "EXPLAINED", "synthetic-test-path"
     try:

@@ -29,6 +29,11 @@ class PublicSourceScannerTests(unittest.TestCase):
         results = findings("path: " + value, "third_party/t3code/apps/server/src/example.test.ts")
         self.assertIn((1, "machine-path", "LEAK", "user-profile-path"), results)
 
+    def test_rust_underscore_tests_path_example_is_explained(self):
+        value = "C:" + chr(92) + "fixture" + chr(92) + "fake.exe"
+        results = findings("path: " + value, "apps/desktop/native-host/src/store/authority/action_authority_tests.rs")
+        self.assertIn((1, "machine-path", "EXPLAINED", "synthetic-test-path"), results)
+
     def test_detects_machine_paths_tokens_and_private_keys(self):
         import base64
 
