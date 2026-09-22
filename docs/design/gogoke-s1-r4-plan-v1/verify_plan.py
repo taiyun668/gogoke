@@ -59,7 +59,7 @@ def validate(root: Path, manifest: bool=True):
    test(hashlib.sha256((root/f['path']).read_bytes()).hexdigest()==f['sha256'],'INPUT_SHA256',f['path'])
   # Parse actual frozen V3 requirement rows, not the prior summary.
   master={}; deadlines={}
-  for line in (root/'inputs/MASTER_PLAN.md').read_text().splitlines():
+  for line in (root/'inputs/MASTER_PLAN.md').read_text(encoding='utf-8').splitlines():
    parts=[x.strip() for x in line.strip().split('|')[1:-1]]
    if len(parts)!=4:continue
    m=re.match(r'^(T\d\d)\s+(.+)$',parts[0])
@@ -95,7 +95,7 @@ def validate(root: Path, manifest: bool=True):
    parents(t['id'],set())
    test(bool(t['acceptance']) and bool(t['write_scopes']) and bool(t['sections']),'TASK_INCOMPLETE',t['id'])
    for s in t['sections']:
-    doc=SECTIONS.get(s[:1]);text=(root/doc).read_text() if doc else ''
+    doc=SECTIONS.get(s[:1]);text=(root/doc).read_text(encoding='utf-8') if doc else ''
     test(bool(re.search(r'^## '+re.escape(s)+r'\b',text,re.M)),'SECTION_JOIN',t['id']+':'+s)
    for p in t['write_scopes']:
     test(bool(p) and not p.startswith('/') and '..' not in Path(p).parts and '*' not in p and p not in ['.','apps/','third_party/','third_party/t3code/','tools/'],'OVERBROAD_PATH',t['id']+':'+p)
@@ -112,7 +112,7 @@ def validate(root: Path, manifest: bool=True):
    test(r['deadline']==tm['checks'][k],'DUE_DEADLINE',k)
    test(r['requirement']==master[k.split('.')[0]]['requirement'],'DUE_REQUIREMENT',k)
   allowed_groups={'qualification','sealing','codec','boundary','store','root','host','process','adapters','capabilities','delivery','continuation','events','policy','context','decision','evaluation','dream','vertical','upgrade'}
-  runbook=(root/'RUNBOOK.md').read_text()
+  runbook=(root/'RUNBOOK.md').read_text(encoding='utf-8')
   for group in allowed_groups:test(group in runbook,'MISSING_COMMAND_GROUP',group)
   for k,r in new.items():
    n=int(k.split('-')[1]);due_gate='G2' if n<=5 else 'G3' if n<=15 or n in (23,25) else 'G5' if n==26 else 'G4'
@@ -167,7 +167,7 @@ def validate(root: Path, manifest: bool=True):
 def self_test(root: Path):
  def mutation(file,fn):
   def apply(p):
-   path=p/file; d=load(path);fn(d);path.write_text(json.dumps(d,ensure_ascii=False)+'\n')
+   path=p/file; d=load(path);fn(d);path.write_text(json.dumps(d,ensure_ascii=False)+'\n',encoding='utf-8')
   return apply
  variants=[
  ('missing_legacy_task',mutation('EXECUTION_PLAN.json',lambda d:d['tasks'].pop(0))),
@@ -208,6 +208,6 @@ def main():
   result['negative_controls']=self_test(args.root.resolve())
   if result['negative_controls']['rejected']!=result['negative_controls']['total']:result['status']='FAIL_PLAN_NEGATIVES'
  text=json.dumps(result,ensure_ascii=False,indent=2)+'\n'
- if args.out:args.out.parent.mkdir(parents=True,exist_ok=True);args.out.write_text(text)
+ if args.out:args.out.parent.mkdir(parents=True,exist_ok=True);args.out.write_text(text,encoding='utf-8')
  print(text,end='');return 0 if result['status']=='PASS_PLAN_STRUCTURE_ONLY' else 2
 if __name__=='__main__':raise SystemExit(main())
