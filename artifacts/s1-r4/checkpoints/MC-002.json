@@ -1,0 +1,53 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-002",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "06abd42017f08629b021791badb849218d40f80d",
+  "recorded_utc": "2026-09-22T21:18:13.8593905Z",
+  "reason": "Bind in-flight branch mapping and current local-only evidence to the public carryover",
+  "wip_branch_mapping": [
+    {
+      "private": "codex/r4-native-close-completion-r1@64a3a6f0dd37156d752f78d3b0d11496caa53abb",
+      "public": "codex/gogoke-s1-r4-native-close-r1@43b2e1a3c02a25e2afc2179585e216b430950893",
+      "changed_file_blobs_equal": "5/5",
+      "state": "no tests, no review, not a candidate",
+      "source_scan": "0 LEAK; 24131 committed files",
+      "native_platform_gate_evidence": "BLOCKED_UNTIL_AUTHORIZED_CLOUD_RUN"
+    },
+    {
+      "private": "codex/r4-ts-lineage-mutation-r1@d987d8651210fc959a6098d135fd5a98875175a6",
+      "public": "codex/gogoke-s1-r4-lineage-r1@7a2f8d5890cdddcffa60f981e9ceb143199a9331",
+      "changed_file_blobs_equal": "2/2",
+      "state": "no tests, no review, not a candidate",
+      "source_scan": "0 LEAK; 24131 committed files",
+      "focused_signed_node_construction_test": "1 passed, 0 failed, 0 skipped; not a due-check or acceptance"
+    }
+  ],
+  "main_content": {
+    "import_commit": "f3136b0a84086d7b5f77abb1f87e854648cd54e3",
+    "scanner_identity_fix_commit": "7ff8af18e7ce7939f5ae25080d6b7b469df772d3",
+    "byte_bound_checkout_commit": "2389fc82d7c34fe45f7c86be2262a3668a1c15cb",
+    "scanner_rust_fixture_fix_commit": "514dba1625022a53ad34ff8a11a8d94f1b98ddb5",
+    "carryover_commit": "06abd42017f08629b021791badb849218d40f80d",
+    "committed_source_scan": "0 LEAK on 24130 files before carryover; carryover record individually scanned with 0 LEAK",
+    "plan": "PASS_PLAN_STRUCTURE_ONLY; 1965 checks; 21/21 negative controls"
+  },
+  "unresolved": [
+    "No public push or cloud native-host execution; b07_two_process and host_typed_ops remain 0 executed",
+    "No Windows 11 desktop evidence for the public native-host",
+    "Route-B and other evolved candidates require fresh review where reviewed file blobs differ",
+    "59 due checks remain unpromoted",
+    "Native-host Smart App Control release availability requires Owner-directed signing qualification"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Finish local report and fresh pre-push independent review. Stop public-repository actions before push; resume only when Owner explicitly says 推送."
+}
