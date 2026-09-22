@@ -13,6 +13,7 @@ import {
   encodeEvaluationFrame,
   encodeDreamRunFrame,
   encodeDreamProposalFrame,
+  encodeSessionLineageCommandFrame,
   NativeHostClient,
   NativeHostClientError,
   type NativeDelegationGrantSnapshot,
@@ -83,6 +84,109 @@ test("Dream frames use typed object, evaluation, and change records", () => {
   assert.equal(run.budgetOperationId, "decision");
   assert.match(proposal.allowedChangeSet, /^gogoke\.dream-changes\.v1\|1\|/);
   assert.equal(proposal.testOnly, "true");
+});
+
+test("SessionLineage mutation frames are closed, typed, and never carry replay instructions", () => {
+  const native = {
+    nativeSessionId: "native-one",
+    bindingId: "binding-one",
+    generation: "7" as const,
+    sourceEpoch: "9" as const,
+    domainId: "domain-one",
+  };
+  const clean = JSON.parse(
+    encodeSessionLineageCommandFrame({
+      operationId: "lineage-clean-op",
+      domainId: "domain-one",
+      eventId: "lineage-clean-event",
+      receiptId: "lineage-clean-receipt",
+      recordedAt: "2026-09-22T00:00:00Z",
+      lineageOperation: { operation: "NEW_CLEAN", sessionId: "session-one", native },
+    }),
+  );
+  assert.deepEqual(Object.keys(clean).sort(), [
+    "domainId",
+    "eventId",
+    "lineageOperation",
+    "native",
+    "operation",
+    "operationId",
+    "receiptId",
+    "recordedAt",
+    "sessionId",
+  ]);
+  assert.equal(clean.operation, "ApplySessionLineageCommand");
+  assert.equal(clean.lineageOperation, "NEW_CLEAN");
+  assert.match(clean.native, /^gogoke\.session-lineage-native\.v1\|1\|/u);
+  assert.equal("replay" in clean, false);
+  assert.equal("pendingActionReplay" in clean, false);
+
+  const pending = JSON.parse(
+    encodeSessionLineageCommandFrame({
+      operationId: "lineage-pending-op",
+      domainId: "domain-one",
+      eventId: "lineage-pending-event",
+      receiptId: "lineage-pending-receipt",
+      recordedAt: "2026-09-22T00:00:00Z",
+      lineageOperation: {
+        operation: "RETAIN_PENDING_ACTION",
+        sessionId: "session-one",
+        expectedRevision: "2",
+        action: {
+          actionId: "action-one",
+          operationId: "action-operation-one",
+          bindingId: "binding-one",
+          generation: "7",
+          state: "PENDING",
+        },
+      },
+    }),
+  );
+  assert.match(pending.action, /^gogoke\.session-lineage-pending-actions\.v1\|1\|/u);
+  assert.equal(pending.expectedRevision, "2");
+  assert.equal("dispatch" in pending, false);
+
+  assert.throws(
+    () =>
+      encodeSessionLineageCommandFrame({
+        operationId: "lineage-bad-domain-op",
+        domainId: "domain-one",
+        eventId: "lineage-bad-domain-event",
+        receiptId: "lineage-bad-domain-receipt",
+        recordedAt: "2026-09-22T00:00:00Z",
+        lineageOperation: {
+          operation: "NEW_CLEAN",
+          sessionId: "session-one",
+          native: { ...native, domainId: "domain-other" },
+        },
+      }),
+    (error: unknown) =>
+      error instanceof NativeHostClientError && error.code === "SESSION_LINEAGE_FRAME",
+  );
+  assert.throws(
+    () =>
+      encodeSessionLineageCommandFrame({
+        operationId: "lineage-bad-pending-op",
+        domainId: "domain-one",
+        eventId: "lineage-bad-pending-event",
+        receiptId: "lineage-bad-pending-receipt",
+        recordedAt: "2026-09-22T00:00:00Z",
+        lineageOperation: {
+          operation: "RETAIN_PENDING_ACTION",
+          sessionId: "session-one",
+          expectedRevision: "2",
+          action: {
+            actionId: "action-one",
+            operationId: "action-operation-one",
+            bindingId: "binding-one",
+            generation: "7",
+            state: "COMPLETED" as never,
+          },
+        },
+      }),
+    (error: unknown) =>
+      error instanceof NativeHostClientError && error.code === "SESSION_LINEAGE_FRAME",
+  );
 });
 
 test("ExecutionRecipe uses flat string request fields and exact typed reply", () => {

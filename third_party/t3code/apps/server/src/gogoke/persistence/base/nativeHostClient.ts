@@ -1,6 +1,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeReadline from "node:readline";
+import * as NodeUtilTypes from "node:util/types";
 
 import type {
   CommitContextVersionRequest,
@@ -12,6 +13,17 @@ import type {
   DurableDispatchOutcome,
   ReserveActionResult,
 } from "../../actions/typedAction.ts";
+import type {
+  ExposureAssessment,
+  ExposureReceipt,
+  InheritedExposureSummary,
+  MaterialHandoff,
+  NativeProcessState,
+  NativeSessionIdentity as LineageNativeSessionIdentity,
+  PendingActionRef,
+  SessionLifecycle,
+  SessionLineage,
+} from "../../context/lineage/lineage.ts";
 import { parseStrictJsonBytes } from "../../contracts/strictJson.ts";
 
 export class NativeHostClientError extends Error {
@@ -391,12 +403,643 @@ export interface NativeAuthorityRecordReceipt { readonly disposition:"COMMITTED"
 export interface NativeAuthorityObjectSnapshot { readonly contentHash:string; readonly domainId:string; readonly objectId:string; readonly revision:string; }
 export interface NativeSessionLineageSnapshot { readonly contentHash:string; readonly domainId:string; readonly lifecycle:string; readonly revision:string; readonly sessionId:string; }
 export interface NativeExposureReceiptSnapshot { readonly domainId:string; readonly receiptId:string; readonly sessionRevision:string; readonly sessionId:string; }
+
+/**
+ * The native protocol admits this operation name before its host handler is
+ * wired. Keep the product operation closed here so callers cannot smuggle a
+ * second lineage mutation or a replay instruction through the transport.
+ */
+export const SESSION_LINEAGE_COMMAND_OPERATIONS = [
+  "NEW_CLEAN",
+  "RESUME",
+  "NATIVE_FORK",
+  "REBUILD",
+  "HANDOFF",
+  "ARCHIVE",
+  "RETAIN_PENDING_ACTION",
+  "APPEND_EXPOSURE_RECEIPT",
+] as const;
+export type SessionLineageCommandOperation = (typeof SESSION_LINEAGE_COMMAND_OPERATIONS)[number];
+
+export type NativeSessionLineageOperation =
+  | Readonly<{
+      readonly operation: "NEW_CLEAN";
+      readonly sessionId: string;
+      readonly native: LineageNativeSessionIdentity;
+    }>
+  | Readonly<{
+      readonly operation: "RESUME";
+      readonly sessionId: string;
+      readonly expectedRevision: string;
+      readonly native: LineageNativeSessionIdentity;
+    }>
+  | Readonly<{
+      readonly operation: "NATIVE_FORK" | "REBUILD";
+      readonly sessionId: string;
+      readonly parentSessionId: string;
+      readonly expectedParentRevision: string;
+      readonly native: LineageNativeSessionIdentity;
+    }>
+  | Readonly<{
+      readonly operation: "HANDOFF";
+      readonly sessionId: string;
+      readonly parentSessionId: string;
+      readonly expectedParentRevision: string;
+      readonly native: LineageNativeSessionIdentity;
+      readonly materialIds: ReadonlyArray<string>;
+    }>
+  | Readonly<{
+      readonly operation: "ARCHIVE";
+      readonly sessionId: string;
+      readonly expectedRevision: string;
+    }>
+  | Readonly<{
+      readonly operation: "RETAIN_PENDING_ACTION";
+      readonly sessionId: string;
+      readonly expectedRevision: string;
+      readonly action: PendingActionRef;
+    }>
+  | Readonly<{
+      readonly operation: "APPEND_EXPOSURE_RECEIPT";
+      readonly sessionId: string;
+      readonly expectedRevision: string;
+      readonly exposure: ExposureReceipt;
+    }>;
+
+export interface NativeSessionLineageCommandRequest {
+  readonly operationId: string;
+  readonly domainId: string;
+  readonly eventId: string;
+  readonly receiptId: string;
+  readonly recordedAt: string;
+  readonly lineageOperation: NativeSessionLineageOperation;
+}
+
+export interface NativeSessionLineageSnapshotRecord {
+  readonly contentHash: string;
+  readonly domainId: string;
+  readonly revision: string;
+  readonly sessionId: string;
+  readonly lineage: SessionLineage;
+  readonly native: LineageNativeSessionIdentity;
+  readonly lifecycle: SessionLifecycle;
+  readonly processState: NativeProcessState;
+  readonly exposure: ExposureReceipt | null;
+  readonly exposureAssessment: ExposureAssessment;
+  readonly pendingActions: ReadonlyArray<PendingActionRef>;
+  readonly materialHandoff: MaterialHandoff | null;
+  readonly pendingActionDisposition:
+    | "NONE"
+    | "RETAINED_ON_PARENT"
+    | "RETAINED_NOT_REPLAYED";
+}
+
+export interface NativeSessionLineageStorageReceipt {
+  readonly disposition: "COMMITTED" | "REPLAYED";
+  readonly domainId: string;
+  readonly receiptId: string;
+  readonly operationId: string;
+  readonly eventId: string;
+  readonly objectHash: string;
+  readonly eventHash: string;
+  readonly receiptHash: string;
+  readonly operationFingerprint: string;
+}
+
+export interface NativeSessionLineageMutationReceipt {
+  readonly disposition: "COMMITTED" | "REPLAYED";
+  readonly authorityStatus: "PREPARATORY_TRUSTED_INGRESS_REQUIRED";
+  readonly operationId: string;
+  readonly snapshot: NativeSessionLineageSnapshotRecord;
+  readonly storage: NativeSessionLineageStorageReceipt;
+}
+
 const encodeAuthorityRecords=(tag:string,records:ReadonlyArray<NativeContextRecord>,width=4):string=>encodeStringRecords(tag,records.map(r=>[r.objectType,r.objectId,r.revision,r.contentHash].slice(0,width)),width,false);
 const encodeEvaluationOutcomes=(records:ReadonlyArray<NativeContextRecord>):string=>encodeStringRecords("gogoke.evaluation-outcomes.v1",records.map(r=>[r.objectId,r.revision,r.contentHash]),3,false);
 const decodeAuthorityReceipt=(body:string,operation:string):NativeAuthorityRecordReceipt=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["contentHash","disposition","objectId","operationId","receiptId","revision"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string")||v.operation!==undefined||!["COMMITTED","REPLAYED"].includes(String(v.disposition)))throw new NativeHostClientError("AUTHORITY_REPLY",`${operation} reply invalid`);return Object.freeze({contentHash:v.contentHash as string,disposition:v.disposition as "COMMITTED"|"REPLAYED",objectId:v.objectId as string,operationId:v.operationId as string,receiptId:v.receiptId as string,revision:v.revision as string});};
 const decodeAuthoritySnapshot=(body:string):NativeAuthorityObjectSnapshot=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["contentHash","domainId","objectId","revision"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string"||(v[k] as string).length===0))throw new NativeHostClientError("AUTHORITY_REPLY","snapshot reply invalid");return Object.freeze({contentHash:v.contentHash as string,domainId:v.domainId as string,objectId:v.objectId as string,revision:v.revision as string});};
 const decodeSessionLineageSnapshot=(body:string):NativeSessionLineageSnapshot=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["contentHash","domainId","lifecycle","revision","sessionId"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string"||(v[k] as string).length===0))throw new NativeHostClientError("SESSION_LINEAGE_REPLY","lineage reply invalid");return Object.freeze(v as unknown as NativeSessionLineageSnapshot);};
 const decodeExposureReceiptSnapshot=(body:string):NativeExposureReceiptSnapshot=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["domainId","receiptId","sessionRevision","sessionId"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string"||(v[k] as string).length===0))throw new NativeHostClientError("EXPOSURE_REPLY","exposure reply invalid");return Object.freeze(v as unknown as NativeExposureReceiptSnapshot);};
+
+const LINEAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
+const LINEAGE_U64 = /^(?:0|[1-9]\d*)$/u;
+const LINEAGE_EVIDENCE_LEVELS = [
+  "HOST_PREPARED",
+  "HOST_DELIVERED",
+  "NATIVE_ACKED",
+  "INHERITED",
+  "POSSIBLE",
+  "UNKNOWN",
+] as const;
+const LINEAGE_SESSION_OPERATIONS = [
+  "NEW_CLEAN",
+  "RESUME",
+  "NATIVE_FORK",
+  "REBUILD",
+  "HANDOFF",
+  "ARCHIVE",
+] as const;
+
+type LineageRecord = Record<string, unknown>;
+
+const lineageError = (detail: string): never => {
+  throw new NativeHostClientError("SESSION_LINEAGE_FRAME", detail);
+};
+
+const lineageRecord = (
+  value: unknown,
+  path: string,
+  required: ReadonlyArray<string>,
+  optional: ReadonlyArray<string> = [],
+): LineageRecord => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    NodeUtilTypes.isProxy(value)
+  ) {
+    return lineageError(`${path} must be a non-Proxy record`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return lineageError(`${path} must not have a custom prototype`);
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string")) {
+    return lineageError(`${path} must not contain symbol keys`);
+  }
+  const names = keys as ReadonlyArray<string>;
+  const allowed = new Set([...required, ...optional]);
+  if (names.some((name) => !allowed.has(name))) {
+    return lineageError(`${path} contains an extra property`);
+  }
+  if (required.some((name) => !names.includes(name))) {
+    return lineageError(`${path} is missing a required property`);
+  }
+  const snapshot: LineageRecord = {};
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
+      return lineageError(`${path}.${name} must be an own data property`);
+    }
+    snapshot[name] = descriptor.value;
+  }
+  return snapshot;
+};
+
+const lineageArray = (value: unknown, path: string): ReadonlyArray<unknown> => {
+  if (!Array.isArray(value) || NodeUtilTypes.isProxy(value)) {
+    return lineageError(`${path} must be a non-Proxy array`);
+  }
+  if (Object.getPrototypeOf(value) !== Array.prototype) {
+    return lineageError(`${path} must not have a custom prototype`);
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || !keys.includes("length")) {
+    return lineageError(`${path} must be dense`);
+  }
+  const values = new Array<unknown>(value.length);
+  for (let index = 0; index < value.length; index += 1) {
+    const key = String(index);
+    if (!keys.includes(key)) return lineageError(`${path} must be dense`);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
+      return lineageError(`${path}[${index}] must be an own data property`);
+    }
+    values[index] = descriptor.value;
+  }
+  return values;
+};
+
+const lineageId = (value: unknown, path: string): string => {
+  if (typeof value !== "string" || !LINEAGE_ID.test(value)) {
+    return lineageError(`${path} is not canonical`);
+  }
+  return value;
+};
+
+const lineageU64 = (value: unknown, path: string): string => {
+  if (typeof value !== "string" || !LINEAGE_U64.test(value)) {
+    return lineageError(`${path} is not a canonical u64`);
+  }
+  return value;
+};
+
+const lineageStringList = (
+  value: unknown,
+  path: string,
+  allowEmpty = true,
+): ReadonlyArray<string> => {
+  const values = lineageArray(value, path).map((item, index) => lineageId(item, `${path}[${index}]`));
+  if (!allowEmpty && values.length === 0) return lineageError(`${path} must not be empty`);
+  if (new Set(values).size !== values.length) return lineageError(`${path} contains duplicates`);
+  return Object.freeze(values);
+};
+
+const lineageNativeIdentity = (
+  value: unknown,
+  path: string,
+  expectedDomain?: string,
+): LineageNativeSessionIdentity => {
+  const fields = lineageRecord(value, path, [
+    "nativeSessionId",
+    "bindingId",
+    "generation",
+    "sourceEpoch",
+    "domainId",
+  ]);
+  const native = Object.freeze({
+    nativeSessionId: lineageId(fields.nativeSessionId, `${path}.nativeSessionId`),
+    bindingId: lineageId(fields.bindingId, `${path}.bindingId`),
+    generation: lineageU64(fields.generation, `${path}.generation`),
+    sourceEpoch: lineageU64(fields.sourceEpoch, `${path}.sourceEpoch`),
+    domainId: lineageId(fields.domainId, `${path}.domainId`),
+  });
+  if (expectedDomain !== undefined && native.domainId !== expectedDomain) {
+    return lineageError(`${path}.domainId does not match command domain`);
+  }
+  return native;
+};
+
+const lineagePendingAction = (value: unknown, path: string): PendingActionRef => {
+  const fields = lineageRecord(value, path, [
+    "actionId",
+    "operationId",
+    "bindingId",
+    "generation",
+    "state",
+  ]);
+  if (fields.state !== "PENDING") return lineageError(`${path}.state must be PENDING`);
+  return Object.freeze({
+    actionId: lineageId(fields.actionId, `${path}.actionId`),
+    operationId: lineageId(fields.operationId, `${path}.operationId`),
+    bindingId: lineageId(fields.bindingId, `${path}.bindingId`),
+    generation: lineageU64(fields.generation, `${path}.generation`),
+    state: "PENDING" as const,
+  });
+};
+
+const lineageExposure = (value: unknown, path: string): ExposureReceipt => {
+  const fields = lineageRecord(value, path, [
+    "receiptId",
+    "manifestId",
+    "bindingId",
+    "generation",
+    "evidenceLevel",
+    "nativeSourceCoverage",
+    "taintLabels",
+    "evidenceRefs",
+  ]);
+  if (
+    typeof fields.evidenceLevel !== "string" ||
+    !(LINEAGE_EVIDENCE_LEVELS as ReadonlyArray<string>).includes(fields.evidenceLevel)
+  ) {
+    return lineageError(`${path}.evidenceLevel is invalid`);
+  }
+  const coverage = lineageRecord(
+    fields.nativeSourceCoverage,
+    `${path}.nativeSourceCoverage`,
+    ["complete", "observations", "unknownSources"],
+    ["inheritedFromReceiptId"],
+  );
+  const observations = Object.freeze(
+    lineageArray(coverage.observations, `${path}.nativeSourceCoverage.observations`).map(
+      (item, index) => {
+        const observation = lineageRecord(item, `${path}.observations[${index}]`, [
+          "sourceRef",
+          "status",
+        ]);
+        if (
+          observation.status !== "COMPLETE" &&
+          observation.status !== "PARTIAL" &&
+          observation.status !== "NOT_OBSERVED" &&
+          observation.status !== "UNKNOWN"
+        ) {
+          return lineageError(`${path}.observations[${index}].status is invalid`);
+        }
+        return Object.freeze({
+          sourceRef: lineageId(observation.sourceRef, `${path}.observations[${index}].sourceRef`),
+          status: observation.status,
+        });
+      },
+    ),
+  );
+  const unknownSources = lineageStringList(
+    coverage.unknownSources,
+    `${path}.nativeSourceCoverage.unknownSources`,
+  );
+  const inherited = Object.hasOwn(coverage, "inheritedFromReceiptId");
+  const inheritedFromReceiptId = inherited
+    ? lineageId(
+        coverage.inheritedFromReceiptId,
+        `${path}.nativeSourceCoverage.inheritedFromReceiptId`,
+      )
+    : undefined;
+  const complete =
+    !inherited &&
+    observations.length > 0 &&
+    observations.every((item) => item.status === "COMPLETE") &&
+    unknownSources.length === 0;
+  if (coverage.complete !== complete) {
+    return lineageError(`${path}.nativeSourceCoverage.complete is inconsistent`);
+  }
+  return Object.freeze({
+    receiptId: lineageId(fields.receiptId, `${path}.receiptId`),
+    manifestId: lineageId(fields.manifestId, `${path}.manifestId`),
+    bindingId: lineageId(fields.bindingId, `${path}.bindingId`),
+    generation: lineageU64(fields.generation, `${path}.generation`),
+    evidenceLevel: fields.evidenceLevel as ExposureReceipt["evidenceLevel"],
+    nativeSourceCoverage: Object.freeze({
+      complete,
+      observations,
+      unknownSources,
+      ...(inherited ? { inheritedFromReceiptId } : {}),
+    }),
+    taintLabels: lineageStringList(fields.taintLabels, `${path}.taintLabels`),
+    evidenceRefs: lineageStringList(fields.evidenceRefs, `${path}.evidenceRefs`),
+  });
+};
+
+const lineageOperation = (
+  value: unknown,
+  path: string,
+  domainId: string,
+): NativeSessionLineageOperation => {
+  const operationRecord = lineageRecord(value, path, ["operation"], [
+    "sessionId",
+    "native",
+    "expectedRevision",
+    "parentSessionId",
+    "expectedParentRevision",
+    "materialIds",
+    "action",
+    "exposure",
+  ]);
+  if (typeof operationRecord.operation !== "string") {
+    return lineageError(`${path}.operation must be a string`);
+  }
+  switch (operationRecord.operation) {
+    case "NEW_CLEAN": {
+      const fields = lineageRecord(value, path, ["operation", "sessionId", "native"]);
+      return Object.freeze({
+        operation: "NEW_CLEAN",
+        sessionId: lineageId(fields.sessionId, `${path}.sessionId`),
+        native: lineageNativeIdentity(fields.native, `${path}.native`, domainId),
+      });
+    }
+    case "RESUME": {
+      const fields = lineageRecord(value, path, [
+        "operation",
+        "sessionId",
+        "expectedRevision",
+        "native",
+      ]);
+      return Object.freeze({
+        operation: "RESUME",
+        sessionId: lineageId(fields.sessionId, `${path}.sessionId`),
+        expectedRevision: lineageU64(fields.expectedRevision, `${path}.expectedRevision`),
+        native: lineageNativeIdentity(fields.native, `${path}.native`, domainId),
+      });
+    }
+    case "NATIVE_FORK":
+    case "REBUILD": {
+      const fields = lineageRecord(value, path, [
+        "operation",
+        "sessionId",
+        "parentSessionId",
+        "expectedParentRevision",
+        "native",
+      ]);
+      return Object.freeze({
+        operation: operationRecord.operation,
+        sessionId: lineageId(fields.sessionId, `${path}.sessionId`),
+        parentSessionId: lineageId(fields.parentSessionId, `${path}.parentSessionId`),
+        expectedParentRevision: lineageU64(
+          fields.expectedParentRevision,
+          `${path}.expectedParentRevision`,
+        ),
+        native: lineageNativeIdentity(fields.native, `${path}.native`, domainId),
+      });
+    }
+    case "HANDOFF": {
+      const fields = lineageRecord(value, path, [
+        "operation",
+        "sessionId",
+        "parentSessionId",
+        "expectedParentRevision",
+        "native",
+        "materialIds",
+      ]);
+      return Object.freeze({
+        operation: "HANDOFF",
+        sessionId: lineageId(fields.sessionId, `${path}.sessionId`),
+        parentSessionId: lineageId(fields.parentSessionId, `${path}.parentSessionId`),
+        expectedParentRevision: lineageU64(
+          fields.expectedParentRevision,
+          `${path}.expectedParentRevision`,
+        ),
+        native: lineageNativeIdentity(fields.native, `${path}.native`, domainId),
+        materialIds: lineageStringList(fields.materialIds, `${path}.materialIds`, false),
+      });
+    }
+    case "ARCHIVE": {
+      const fields = lineageRecord(value, path, ["operation", "sessionId", "expectedRevision"]);
+      return Object.freeze({
+        operation: "ARCHIVE",
+        sessionId: lineageId(fields.sessionId, `${path}.sessionId`),
+        expectedRevision: lineageU64(fields.expectedRevision, `${path}.expectedRevision`),
+      });
+    }
+    case "RETAIN_PENDING_ACTION": {
+      const fields = lineageRecord(value, path, [
+        "operation",
+        "sessionId",
+        "expectedRevision",
+        "action",
+      ]);
+      return Object.freeze({
+        operation: "RETAIN_PENDING_ACTION",
+        sessionId: lineageId(fields.sessionId, `${path}.sessionId`),
+        expectedRevision: lineageU64(fields.expectedRevision, `${path}.expectedRevision`),
+        action: lineagePendingAction(fields.action, `${path}.action`),
+      });
+    }
+    case "APPEND_EXPOSURE_RECEIPT": {
+      const fields = lineageRecord(value, path, [
+        "operation",
+        "sessionId",
+        "expectedRevision",
+        "exposure",
+      ]);
+      return Object.freeze({
+        operation: "APPEND_EXPOSURE_RECEIPT",
+        sessionId: lineageId(fields.sessionId, `${path}.sessionId`),
+        expectedRevision: lineageU64(fields.expectedRevision, `${path}.expectedRevision`),
+        exposure: lineageExposure(fields.exposure, `${path}.exposure`),
+      });
+    }
+    default:
+      return lineageError(`${path}.operation is not admitted`);
+  }
+};
+
+const snapshotLineageCommand = (
+  input: NativeSessionLineageCommandRequest,
+): NativeSessionLineageCommandRequest => {
+  const fields = lineageRecord(input, "command", [
+    "operationId",
+    "domainId",
+    "eventId",
+    "receiptId",
+    "recordedAt",
+    "lineageOperation",
+  ]);
+  const domainId = lineageId(fields.domainId, "command.domainId");
+  const recordedAt = lineageId(fields.recordedAt, "command.recordedAt");
+  if (recordedAt.length > 128) return lineageError("command.recordedAt is too long");
+  return Object.freeze({
+    operationId: lineageId(fields.operationId, "command.operationId"),
+    domainId,
+    eventId: lineageId(fields.eventId, "command.eventId"),
+    receiptId: lineageId(fields.receiptId, "command.receiptId"),
+    recordedAt,
+    lineageOperation: lineageOperation(fields.lineageOperation, "command.lineageOperation", domainId),
+  });
+};
+
+const encodeLineageNative = (native: LineageNativeSessionIdentity): string =>
+  encodeStringRecords(
+    "gogoke.session-lineage-native.v1",
+    [[native.nativeSessionId, native.bindingId, native.generation, native.sourceEpoch, native.domainId]],
+    5,
+    false,
+  );
+
+const encodeLineageMaterials = (materialIds: ReadonlyArray<string>): string =>
+  encodeStringRecords(
+    "gogoke.session-lineage-materials.v1",
+    materialIds.map((value) => [value]),
+    1,
+    false,
+  );
+
+const encodeLineagePendingAction = (action: PendingActionRef): string =>
+  encodeStringRecords(
+    "gogoke.session-lineage-pending-actions.v1",
+    [[action.actionId, action.operationId, action.bindingId, action.generation, action.state]],
+    5,
+    false,
+  );
+
+const encodeLineageExposure = (exposure: ExposureReceipt): string =>
+  encodeStringRecords(
+    "gogoke.session-lineage-exposure.v1",
+    [[
+      exposure.receiptId,
+      exposure.manifestId,
+      exposure.bindingId,
+      exposure.generation,
+      exposure.evidenceLevel,
+      exposure.nativeSourceCoverage.complete ? "true" : "false",
+      encodeStringRecords(
+        "gogoke.session-lineage-observations.v1",
+        exposure.nativeSourceCoverage.observations.map((item) => [item.sourceRef, item.status]),
+        2,
+        true,
+      ),
+      encodeStringRecords(
+        "gogoke.session-lineage-unknown-sources.v1",
+        exposure.nativeSourceCoverage.unknownSources.map((item) => [item]),
+        1,
+        true,
+      ),
+      exposure.nativeSourceCoverage.inheritedFromReceiptId ?? "",
+      encodeStringRecords(
+        "gogoke.session-lineage-taint-labels.v1",
+        exposure.taintLabels.map((item) => [item]),
+        1,
+        true,
+      ),
+      encodeStringRecords(
+        "gogoke.session-lineage-evidence-refs.v1",
+        exposure.evidenceRefs.map((item) => [item]),
+        1,
+        true,
+      ),
+    ]],
+    11,
+    false,
+  );
+
+export function encodeSessionLineageCommandFrame(
+  input: NativeSessionLineageCommandRequest,
+): string {
+  const command = snapshotLineageCommand(input);
+  const operation = command.lineageOperation;
+  const frame: Record<string, string> = {
+    domainId: command.domainId,
+    eventId: command.eventId,
+    lineageOperation: operation.operation,
+    operation: "ApplySessionLineageCommand",
+    operationId: command.operationId,
+    recordedAt: command.recordedAt,
+    receiptId: command.receiptId,
+  };
+  switch (operation.operation) {
+    case "NEW_CLEAN":
+      Object.assign(frame, {
+        native: encodeLineageNative(operation.native),
+        sessionId: operation.sessionId,
+      });
+      break;
+    case "RESUME":
+      Object.assign(frame, {
+        expectedRevision: operation.expectedRevision,
+        native: encodeLineageNative(operation.native),
+        sessionId: operation.sessionId,
+      });
+      break;
+    case "NATIVE_FORK":
+    case "REBUILD":
+      Object.assign(frame, {
+        expectedParentRevision: operation.expectedParentRevision,
+        native: encodeLineageNative(operation.native),
+        parentSessionId: operation.parentSessionId,
+        sessionId: operation.sessionId,
+      });
+      break;
+    case "HANDOFF":
+      Object.assign(frame, {
+        expectedParentRevision: operation.expectedParentRevision,
+        materialIds: encodeLineageMaterials(operation.materialIds),
+        native: encodeLineageNative(operation.native),
+        parentSessionId: operation.parentSessionId,
+        sessionId: operation.sessionId,
+      });
+      break;
+    case "ARCHIVE":
+      Object.assign(frame, {
+        expectedRevision: operation.expectedRevision,
+        sessionId: operation.sessionId,
+      });
+      break;
+    case "RETAIN_PENDING_ACTION":
+      Object.assign(frame, {
+        action: encodeLineagePendingAction(operation.action),
+        expectedRevision: operation.expectedRevision,
+        sessionId: operation.sessionId,
+      });
+      break;
+    case "APPEND_EXPOSURE_RECEIPT":
+      Object.assign(frame, {
+        expectedRevision: operation.expectedRevision,
+        exposure: encodeLineageExposure(operation.exposure),
+        sessionId: operation.sessionId,
+      });
+      break;
+  }
+  return JSON.stringify(frame);
+}
 export const encodeObjectiveOutcomeFrame=(i:NativeObjectiveOutcomeRequest):string=>JSON.stringify({actionCompletionRef:i.actionCompletionRef,actionOperationId:i.actionOperationId,decisionHash:i.decisionHash,decisionId:i.decisionId,decisionVersion:i.decisionVersion,domainId:i.domainId,evidenceRefs:encodeAuthorityRecords("gogoke.objective-evidence.v1",i.evidenceRefs),eventId:i.eventId,expectedPreviousContentHash:i.expectedPreviousContentHash??"",expectedPreviousRevision:i.expectedPreviousRevision??"",manifestHash:i.manifestHash,manifestId:i.manifestId,manifestVersion:i.manifestVersion,observationEndsAt:i.observationEndsAt,observationStartsAt:i.observationStartsAt,observationStatus:i.observationStatus,operation:"AppendObjectiveOutcome",operationId:i.operationId,outcomeId:i.outcomeId,receiptId:i.receiptId,recordedAt:i.recordedAt,resultRefs:encodeAuthorityRecords("gogoke.objective-evidence.v1",i.resultRefs),revision:i.revision});
 export const encodeEvaluationFrame=(i:NativeEvaluationRequest):string=>JSON.stringify({calibrationKey:i.calibrationKey,calibrationVersion:i.calibrationVersion,datasetNamespace:i.datasetNamespace,datasetSplit:i.datasetSplit,decisionFamily:i.decisionFamily,domainId:i.domainId,evidenceRefs:encodeAuthorityRecords("gogoke.evaluation-evidence.v1",i.evidenceRefs),eventId:i.eventId,expectedPreviousContentHash:i.expectedPreviousContentHash??"",expectedPreviousRevision:i.expectedPreviousRevision??"",metricsHash:i.metricsHash,operation:"AppendEvaluation",operationId:i.operationId,outcomeRefs:encodeEvaluationOutcomes(i.outcomeRefs),privacyStatus:i.privacyStatus,receiptId:i.receiptId,recordedAt:i.recordedAt,revision:i.revision,rubricVersion:i.rubricVersion,safetyStatus:i.safetyStatus,scorerVersion:i.scorerVersion,sourceIdentity:i.sourceIdentity,evaluationId:i.evaluationId});
 export interface NativeDreamRunRequest { readonly domainId:string; readonly runId:string; readonly revision:string; readonly expectedPreviousRevision:string|null; readonly expectedPreviousContentHash:string|null; readonly operationId:string; readonly eventId:string; readonly receiptId:string; readonly recordedAt:string; readonly sourceIdentity:string; readonly inputSnapshot:NativeContextRecord; readonly datasetNamespace:string; readonly datasetSplit:string; readonly datasetSplitHash:string; readonly recipeRef:NativeContextRecord; readonly budgetLease:Readonly<{leaseRef:string;operationId:string;resourceRef:string;resourceRevision:string;units:string}>; readonly evaluationRefs:ReadonlyArray<NativeContextRecord>; }
