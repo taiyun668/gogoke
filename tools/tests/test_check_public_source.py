@@ -1,5 +1,8 @@
 import unittest
 import importlib.util
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 SCANNER_PATH = Path(__file__).resolve().parents[1] / "check-public-source.py"
@@ -96,6 +99,20 @@ class PublicSourceScannerTests(unittest.TestCase):
     def test_allows_documented_environment_placeholders(self):
         sample = "Use %USERPROFILE% and %LOCALAPPDATA% for user-specific locations."
         self.assertEqual(findings(sample), [])
+
+    def test_committed_scan_reads_blob_not_changed_worktree(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("GOGOKE_TEST_TEMP_ROOT")) as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Scanner Fixture"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "scanner-fixture@example.invalid"], check=True)
+            source = root / "record.txt"
+            source.write_text("committed-only-value", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "--", "record.txt"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "fixture"], check=True)
+            source.write_text("changed-worktree-value", encoding="utf-8")
+            observed = list(SCANNER.committed_blobs(root))
+            self.assertEqual(observed, [(source, b"committed-only-value")])
 
 
 if __name__ == "__main__":

@@ -108,14 +108,47 @@ def findings(text: str, source_path: str = "") -> list[tuple[int, str, str, str]
     return sorted(found)
 
 
-def committed_files(root: Path) -> list[Path]:
+def committed_blobs(root: Path):
+    """Yield bytes from HEAD's blobs, independent of the checkout contents."""
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", "-z", "HEAD"],
+        ["git", "-C", str(root), "ls-tree", "-r", "-z", "HEAD"],
         check=True,
         stdout=subprocess.PIPE,
     )
-    names = result.stdout.decode("utf-8", errors="surrogateescape").split("\0")
-    return [root / name for name in names if name]
+    entries = []
+    for item in result.stdout.split(b"\0"):
+        if not item:
+            continue
+        metadata, name = item.split(b"\t", 1)
+        _, kind, oid = metadata.split()
+        if kind != b"blob":
+            raise ValueError("committed tree contains a non-blob entry")
+        entries.append((root / name.decode("utf-8", errors="surrogateescape"), oid))
+    process = subprocess.Popen(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    try:
+        for path, oid in entries:
+            process.stdin.write(oid + b"\n")
+            process.stdin.flush()
+            header = process.stdout.readline().split()
+            if len(header) != 3 or header[0] != oid or header[1] != b"blob":
+                raise ValueError("committed blob identity mismatch")
+            size = int(header[2])
+            data = process.stdout.read(size)
+            if len(data) != size or process.stdout.read(1) != b"\n":
+                raise ValueError("committed blob frame is incomplete")
+            yield path, data
+    finally:
+        process.stdin.close()
+        status = process.wait()
+        process.stdout.close()
+        if status != 0:
+            raise ValueError("git cat-file failed")
 
 
 def worktree_files(root: Path) -> list[Path]:
@@ -138,6 +171,24 @@ def worktree_files(root: Path) -> list[Path]:
     return [root / name for name in sorted(names) if (root / name).is_file()]
 
 
+def scan_bytes(path: Path, data: bytes, root: Path, worktree_mode: bool = False) -> list[tuple[Path, int, str, str, str]]:
+    results: list[tuple[Path, int, str, str, str]] = []
+    control_bytes = sum(byte < 32 and byte not in (9, 10, 13) for byte in data)
+    is_binary = b"\0" in data or (data and control_bytes / len(data) > 0.01)
+    if is_binary:
+        # Inspect printable runs so embedded ASCII credentials are visible,
+        # without interpreting arbitrary image/compressed bytes as paths.
+        text = "\n".join(run.decode("ascii") for run in re.findall(rb"[ -~]{5,}", data))
+    else:
+        text = data.decode("utf-8", errors="replace")
+    source_path = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
+    for line_number, rule_name, classification, reason in findings(text, source_path):
+        if worktree_mode and path.suffix == ".pyc" and "__pycache__" in path.parts:
+            classification, reason = "EXPLAINED", "ignored-generated-bytecode"
+        results.append((path, line_number, rule_name, classification, reason))
+    return results
+
+
 def scan_files(paths: list[Path], root: Path, worktree_mode: bool = False) -> list[tuple[Path, int, str, str, str]]:
     results: list[tuple[Path, int, str, str, str]] = []
     for path in paths:
@@ -147,22 +198,7 @@ def scan_files(paths: list[Path], root: Path, worktree_mode: bool = False) -> li
             print(f"SCAN_ERROR file={path.name} error={type(exc).__name__}", file=sys.stderr)
             results.append((path, 0, "unreadable-file", "LEAK", "unreadable-file"))
             continue
-        control_bytes = sum(byte < 32 and byte not in (9, 10, 13) for byte in data)
-        is_binary = b"\0" in data or (data and control_bytes / len(data) > 0.01)
-        if is_binary:
-            # Inspect printable runs so embedded ASCII credentials are visible,
-            # without interpreting arbitrary image/compressed bytes as paths.
-            text = "\n".join(
-                run.decode("ascii")
-                for run in re.findall(rb"[ -~]{5,}", data)
-            )
-        else:
-            text = data.decode("utf-8", errors="replace")
-        source_path = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
-        for line_number, rule_name, classification, reason in findings(text, source_path):
-            if worktree_mode and path.suffix == ".pyc" and "__pycache__" in path.parts:
-                classification, reason = "EXPLAINED", "ignored-generated-bytecode"
-            results.append((path, line_number, rule_name, classification, reason))
+        results.extend(scan_bytes(path, data, root, worktree_mode))
     return results
 
 
@@ -239,11 +275,23 @@ def main(argv: list[str] | None = None) -> int:
         elif args.worktree:
             paths = worktree_files(root)
         else:
-            paths = committed_files(root)
-    except (OSError, subprocess.CalledProcessError) as exc:
+            paths = []
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         print(f"SCAN_ERROR file_list_read={type(exc).__name__}", file=sys.stderr)
         return 2
-    results = scan_files(paths, root, args.worktree)
+    try:
+        if args.file or args.worktree:
+            results = scan_files(paths, root, args.worktree)
+            file_count = len(paths)
+        else:
+            results = []
+            file_count = 0
+            for path, data in committed_blobs(root):
+                results.extend(scan_bytes(path, data, root))
+                file_count += 1
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        print(f"SCAN_ERROR committed_blob_read={type(exc).__name__}", file=sys.stderr)
+        return 2
     report_lines: list[str] = []
     for path, line_number, category, classification, reason in results:
         relative = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
@@ -253,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
             print(report_line)
     leaks = sum(1 for _, _, _, classification, _ in results if classification == "LEAK")
     explained = len(results) - leaks
-    summary = f"PUBLIC_SOURCE_SCAN files={len(paths)} leaks={leaks} explained={explained} candidates={len(results)}"
+    summary = f"PUBLIC_SOURCE_SCAN files={file_count} leaks={leaks} explained={explained} candidates={len(results)}"
     print(summary)
     if args.report:
         args.report.write_text("\n".join(report_lines + [summary]) + "\n", encoding="utf-8")
