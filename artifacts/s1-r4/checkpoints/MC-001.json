@@ -1,0 +1,229 @@
+{
+  "schema": "gogoke.s1-r4.public-carryover-checkpoint.v1",
+  "checkpoint": "MC-001",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "514dba1625022a53ad34ff8a11a8d94f1b98ddb5",
+  "source_archive": {
+    "repository": "taiyun668/gogo-party",
+    "branch": "codex/r4-p011-integration-r1",
+    "head": "b976e8f29f8d41adffa9ee60d3fe464a2fc3505e",
+    "fixed_plan_commit": "cbdc6ad592947370941024a87dbb9168a5b59055",
+    "old_checkpoints": "PRIVATE_ARCHIVE_ONLY"
+  },
+  "content_import_commit": "f3136b0a84086d7b5f77abb1f87e854648cd54e3",
+  "review_migration": {
+    "meaning": "CONTENT_EQUAL_ONLY_WITHIN_REVIEWED_PREPARATORY_SCOPE; no stage or gate acceptance",
+    "equal_scopes": [
+      {
+        "scope": "claude-native-adapters",
+        "source_commit": "37def2606682ec64155cea4f839d8238fdd42a59",
+        "file_count": 7,
+        "content_sha256": "244f4ad2a3195df4d0a1d80a88084f559ac0a3b686627761dc3fd8f2fb33e53f",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "claude-capabilities",
+        "source_commit": "fccffc8dad68419efd66bf8d23831eeef503fa30",
+        "file_count": 6,
+        "content_sha256": "83f665b0d0356ddc3e96c435eb56643e1f30f1b028cd4ca75a3c5f6ee6dd1c9d",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "spi-runtime-catalog",
+        "source_commit": "286aa9cc2b80555732f8fbeafa6c837e86ab1af5",
+        "file_count": 10,
+        "content_sha256": "7020878b028bfda99ce37f478095b1be370fb5c73cfc1a1f20628a6680c9e635",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "g2-host",
+        "source_commit": "0986e6046802fe8599924867b97b764cdc6a9bf2",
+        "file_count": 5,
+        "content_sha256": "f86871a0a8ad80383a568a2646a46a4db750f00098d5447dbfdfef58eaab38bc",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "pi-adapter",
+        "source_commit": "9c2721f963ca4e792c35d3ea94c9a836bc81cf19",
+        "file_count": 6,
+        "content_sha256": "bc378aa471acb8db92ffc4958d458b66132a52e85acde236b5d4e46eb5921ef5",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "early-lineage",
+        "source_commit": "ac7041dfc004afb8237a8bf14bf5533988a465ce",
+        "file_count": 5,
+        "content_sha256": "353998627ba824f1c3fe8b3aa60608fd02cfdc117665b440fc6ab88e7c9ce79f",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "disabled-recipes",
+        "source_commit": "ae97708f0450264f5ee835ac608da54c241293e0",
+        "file_count": 3,
+        "content_sha256": "3174c42ea6fa3c2000895087244b97165d439d619d5566a9c46d5d543dc9ba7d",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "decision-backends",
+        "source_commit": "e270ccf4595f61e756c83f1b21223d862f650313",
+        "file_count": 4,
+        "content_sha256": "20095228057e1615c03744d8ac6192dd30b60fb628002624bca26e5637ff27a8",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "process-local-dream",
+        "source_commit": "15d28a925dd059834f49c3dee0ccd3c613de6d45",
+        "file_count": 3,
+        "content_sha256": "24a27afbb617f5506849bbac2a269f774d802b6f013eaa3a4568924483a125b6",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "task-context-assembly-ts",
+        "source_commit": "7aa4711b503e39ddaf967721c86d9264f5740639",
+        "file_count": 9,
+        "content_sha256": "c14608a2a7af934984fe0f881cfce42b6b53c2844ffc3bc59396d9d607bf7675",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "task-context-native",
+        "source_commit": "e21289872200a883c705bc31eca2fd4458983c0b",
+        "file_count": 2,
+        "content_sha256": "58e1377a491d01d7d80a0e871b8e91abb3d4b03ce1b29c5814a1cb87414959e9",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      },
+      {
+        "scope": "atp-material-refs",
+        "source_commit": "7ef2ca9135c1632fdad8c70d8f35fbe76c7f5bf7",
+        "file_count": 2,
+        "content_sha256": "5d34aaa3f9d0ee94e0100f16ae0c00962a1e83d089942bbc80be1c2d620351a0",
+        "state": "CONTENT_EQUAL_PREPARATORY_SCOPE_ONLY"
+      }
+    ],
+    "pending_fresh_review": [
+      {
+        "source_commit": "6fc8c634",
+        "reason": "Route-B native-host reviewed core evolved; b07_two_process and host_typed_ops remain unexecuted"
+      },
+      {
+        "source_commit": "7ff6f3fb",
+        "reason": "WP01 closure differs in three fixture/test paths and five omitted tool files"
+      },
+      {
+        "source_commit": "eca956db",
+        "reason": "S1-01-V runner tool files not exported"
+      },
+      {
+        "source_commit": "4be803e6",
+        "reason": "G1 foundation content differs"
+      },
+      {
+        "source_commit": "33c4251d",
+        "reason": "physical root content differs"
+      },
+      {
+        "source_commit": "b7389d3c",
+        "reason": "FilePin source content differs"
+      },
+      {
+        "source_commit": "f298187e",
+        "reason": "atomic SQLite content differs"
+      },
+      {
+        "source_commit": "d286e6fc",
+        "reason": "Route-B supply scaffold content differs"
+      },
+      {
+        "source_commit": "32ece0cc",
+        "reason": "process candidate wiring differs despite its six-file sub-scope matching"
+      },
+      {
+        "source_commit": "57f65da9",
+        "reason": "Context Assembly selected files differ"
+      },
+      {
+        "source_commit": "5014096f",
+        "reason": "sealing selected files differ"
+      },
+      {
+        "source_commit": "d51d4e88",
+        "reason": "TS delegation selected file differs"
+      },
+      {
+        "source_commit": "7b157164",
+        "reason": "native delegation selected files differ"
+      },
+      {
+        "source_commit": "8483bf6c",
+        "reason": "resolver selected files differ"
+      },
+      {
+        "source_commit": "b1a3da29",
+        "reason": "ATP selected files differ"
+      },
+      {
+        "source_commit": "dd2807e9",
+        "reason": "durable lineage selected files differ"
+      },
+      {
+        "source_commit": "8a534197",
+        "reason": "ExecutionRecipe selected file differs"
+      },
+      {
+        "source_commit": "69b85100",
+        "reason": "Action focused review does not bind this full current source"
+      }
+    ]
+  },
+  "in_flight_private_wip": [
+    {
+      "branch": "codex/r4-native-close-completion-r1",
+      "commit": "64a3a6f0dd37156d752f78d3b0d11496caa53abb",
+      "state": "no tests, no review, not a candidate"
+    },
+    {
+      "branch": "codex/r4-ts-lineage-mutation-r1",
+      "commit": "d987d8651210fc959a6098d135fd5a98875175a6",
+      "state": "no tests, no review, not a candidate"
+    }
+  ],
+  "not_migrated": {
+    "qualification_remap": "codex/r4-qualification-instrument-r1@10e1f5a1 rejected WIP",
+    "context_maintenance": "6210bc15 old-base WIP requires current API port",
+    "legacy_pull_requests": "PR #1 through #7 closed by Owner; do not reopen"
+  },
+  "plan_validation": {
+    "status": "PASS_PLAN_STRUCTURE_ONLY",
+    "checks": 1965,
+    "negative_controls": "21/21",
+    "runtime_verified": false,
+    "independent_architecture_review": false
+  },
+  "public_scan": {
+    "content_commit": "2389fc82d7c34fe45f7c86be2262a3668a1c15cb",
+    "files": 24130,
+    "leaks": 0,
+    "positive_control": "PRIVATE_MC-026_5_LEAKS_EXIT_1",
+    "no_public_ci_run_yet": true
+  },
+  "current_gates": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED",
+    "due_checks": "59_NOT_PROMOTED"
+  },
+  "boundaries": {
+    "live_jev_enabled": false,
+    "live_generative_enabled": false,
+    "live_egress_allowed": false,
+    "live_budget": 0,
+    "no_merge": true,
+    "no_force_push": true,
+    "crates_read_only": true
+  },
+  "next_action": "Finish local WIP branch mapping and final committed-source scan; request independent pre-push review. Do not push until Owner explicitly says 推送."
+}
