@@ -1,10 +1,14 @@
 use super::*;
+use crate::process::{
+    NativeBinding, NativeStopProof, ProcessIdentity, ProcessTicket, TrustedNativeStopReceipt,
+};
 use crate::root::RootLock;
 use crate::store::action::apply_action_schema;
 use crate::store::atomic::{apply_core_schema, commit_domain_record, DomainRecordInput, Statement};
 use crate::store::context::{apply_context_schema, commit_context_version, ContextCommand};
 use crate::store::same_open::{create_new, route_b_test_guard, VerifiedDatabaseConnection};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn fixture(
@@ -44,53 +48,187 @@ fn count(db: &VerifiedDatabaseConnection<'_>, sql: &str) -> String {
     value
 }
 
-pub(crate) fn persist_manifest(db: &mut VerifiedDatabaseConnection<'_>, owner: &super::super::OwnerIssuer, action: &PrepareActionAuthority, semantic_digest: &str) -> String {
-    use super::super::context_manifest::{commit_context_manifest, publish_context_assembly_snapshot, ContextAssemblySnapshot, ContextManifestCommitInput, ContextPartitionGrantBinding, ManifestExpectedVersion};
+pub(crate) fn persist_manifest(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &super::super::OwnerIssuer,
+    action: &PrepareActionAuthority,
+    semantic_digest: &str,
+) -> String {
+    use super::super::context_manifest::{
+        commit_context_manifest, publish_context_assembly_snapshot, ContextAssemblySnapshot,
+        ContextManifestCommitInput, ContextPartitionGrantBinding, ManifestExpectedVersion,
+    };
     use super::super::context_read::{ContextReadRequest, GranteeContextReadRequest};
     use super::super::model::{GrantRef, GrantSpec};
     let hash_a = format!("sha256:{}", "a".repeat(64));
-    let parent = super::super::issue_owner_grant(db, owner, "1", "0", GrantSpec {
-        principal_id: owner.principal_id().into(), seat_id: owner.seat_id().into(), permission: "context.read".into(),
-        promotion_kind: "PROJECT_ONLY".into(), source_domain_id: "domain-source".into(), destination_domain_id: "domain-one".into(),
-        destination_scope: "PROJECT".into(), delegable_depth: 2,
-    }).unwrap();
-    let grant = super::super::delegate_owner_grant(db, owner, "1", &parent, GrantSpec {
-        principal_id: "principal-worker".into(), seat_id: "seat-worker".into(), permission: "context.read".into(),
-        promotion_kind: "PROJECT_ONLY".into(), source_domain_id: "domain-source".into(), destination_domain_id: "domain-one".into(),
-        destination_scope: "PROJECT".into(), delegable_depth: 1,
-    }).unwrap();
-    commit_context_version(db, ContextCommand {
-        operation_id: "action-manifest-source-op".into(), context_id: "action-context".into(), version: "1".into(), scope: "PROJECT".into(),
-        domain_id: "domain-source".into(), kind: "fact".into(), content_hash: hash_a.clone(), source_ref: "source://fixture".into(),
-        source_hash: format!("sha256:{}", "b".repeat(64)), source_authority_kind: "repository".into(), source_authority_ref: "authority://fixture".into(),
-        derived_from: vec![], supersedes: vec![], access_policy_revision: "1".into(), visibility: "DOMAIN_GRANTED".into(),
-        read_grant_refs: vec![grant.grant_id.clone()], promotion: None,
-    }).unwrap();
+    let parent = super::super::issue_owner_grant(
+        db,
+        owner,
+        "1",
+        "0",
+        GrantSpec {
+            principal_id: owner.principal_id().into(),
+            seat_id: owner.seat_id().into(),
+            permission: "context.read".into(),
+            promotion_kind: "PROJECT_ONLY".into(),
+            source_domain_id: "domain-source".into(),
+            destination_domain_id: "domain-one".into(),
+            destination_scope: "PROJECT".into(),
+            delegable_depth: 2,
+        },
+    )
+    .unwrap();
+    let grant = super::super::delegate_owner_grant(
+        db,
+        owner,
+        "1",
+        &parent,
+        GrantSpec {
+            principal_id: "principal-worker".into(),
+            seat_id: "seat-worker".into(),
+            permission: "context.read".into(),
+            promotion_kind: "PROJECT_ONLY".into(),
+            source_domain_id: "domain-source".into(),
+            destination_domain_id: "domain-one".into(),
+            destination_scope: "PROJECT".into(),
+            delegable_depth: 1,
+        },
+    )
+    .unwrap();
+    commit_context_version(
+        db,
+        ContextCommand {
+            operation_id: "action-manifest-source-op".into(),
+            context_id: "action-context".into(),
+            version: "1".into(),
+            scope: "PROJECT".into(),
+            domain_id: "domain-source".into(),
+            kind: "fact".into(),
+            content_hash: hash_a.clone(),
+            source_ref: "source://fixture".into(),
+            source_hash: format!("sha256:{}", "b".repeat(64)),
+            source_authority_kind: "repository".into(),
+            source_authority_ref: "authority://fixture".into(),
+            derived_from: vec![],
+            supersedes: vec![],
+            access_policy_revision: "1".into(),
+            visibility: "DOMAIN_GRANTED".into(),
+            read_grant_refs: vec![grant.grant_id.clone()],
+            promotion: None,
+        },
+    )
+    .unwrap();
     let decision_id = "action-context-decision";
     let decision = format!("{{\"actionId\":\"{}\",\"backend\":\"FAKE\",\"calibrationRef\":\"NONE\",\"candidateHash\":\"{}\",\"decisionId\":\"{}\",\"family\":\"CONTEXT_SELECTION\",\"mode\":\"fixture_bounded_auto\",\"modelRequested\":\"NONE\",\"modelResolved\":\"fake-v1\",\"nativeConfidence\":null,\"probabilities\":{{}},\"questionVersion\":\"1\",\"sourceRevisions\":{{\"bindingGeneration\":\"7\",\"capabilityRevision\":\"1\",\"policyRevision\":\"1\",\"taskRevision\":\"1\"}},\"state\":\"COMMITTED\",\"stateViewHash\":\"{}\"}}", action.action_operation_id, format!("sha256:{}", "c".repeat(64)), decision_id, format!("sha256:{}", "d".repeat(64)));
-    commit_domain_record(db, DomainRecordInput { domain_id: "domain-one".into(), object_type: "DecisionRecord".into(), object_id: decision_id.into(), object_version: "1".into(),
-        object_bytes: decision.into_bytes(), native_identity: None, event_id: "action-context-decision-event".into(), stream_id: "action-context-decision-stream".into(),
-        expected_previous_counter: None, counter: "0".into(), event_type: "DecisionApplied".into(), occurred_at: "2026-09-22T00:00:00Z".into(), event_bytes: b"{}".to_vec(),
-        receipt_id: "action-context-decision-receipt".into(), operation_id: "action-context-decision-op".into(), receipt_type: "DecisionApplied".into(), recorded_at: "2026-09-22T00:00:00Z".into(), receipt_bytes: b"{}".to_vec() }).unwrap();
-    let grant_ref = GrantRef { grant_id: grant.grant_id.clone(), revision: grant.revision.clone(), revocation_head: grant.revocation_head.clone() };
-    publish_context_assembly_snapshot(db, &ContextAssemblySnapshot {
-        operation_id: "action-context-assembly".into(), principal_id: "principal-worker".into(), seat_id: "seat-worker".into(), task_id: "task-one".into(),
-        session_id: action.session_id.clone(), domain_id: "domain-one".into(), binding_id: "binding-worker".into(), binding_generation: "7".into(), source_epoch: "9".into(),
-        runtime_instance_id: "runtime-one".into(), task_revision: "1".into(), policy_revision: "1".into(), auth_revision: "1".into(), revocation_head: "0".into(),
-        selection_decision_id: decision_id.into(), manifest_id: action.context_manifest_id.clone(), admission_action_operation_id: action.action_operation_id.clone(),
-        admission_digest: semantic_digest.into(), max_content_bytes: 4096, max_candidates: 8,
-        partition_grant_bindings: vec![ContextPartitionGrantBinding { source_domain_id: "domain-source".into(), destination_scope: "PROJECT".into(), promotion_kind: "PROJECT_ONLY".into(), grant: grant_ref.clone() }],
-    }).unwrap();
-    let read = GranteeContextReadRequest { principal_id: "principal-worker".into(), seat_id: "seat-worker".into(), source: ContextReadRequest {
-        source_domain_id: "domain-source".into(), context_id: "action-context".into(), version: "1".into(), expected_scope: "PROJECT".into(), expected_content_hash: hash_a.clone(),
-        expected_access_policy_revision: "1".into(), destination_domain_id: "domain-one".into(), destination_scope: "PROJECT".into(), promotion_kind: "PROJECT_ONLY".into(), policy_revision: "1".into(), grant: grant_ref,
-    }};
+    commit_domain_record(
+        db,
+        DomainRecordInput {
+            domain_id: "domain-one".into(),
+            object_type: "DecisionRecord".into(),
+            object_id: decision_id.into(),
+            object_version: "1".into(),
+            object_bytes: decision.into_bytes(),
+            native_identity: None,
+            event_id: "action-context-decision-event".into(),
+            stream_id: "action-context-decision-stream".into(),
+            expected_previous_counter: None,
+            counter: "0".into(),
+            event_type: "DecisionApplied".into(),
+            occurred_at: "2026-09-22T00:00:00Z".into(),
+            event_bytes: b"{}".to_vec(),
+            receipt_id: "action-context-decision-receipt".into(),
+            operation_id: "action-context-decision-op".into(),
+            receipt_type: "DecisionApplied".into(),
+            recorded_at: "2026-09-22T00:00:00Z".into(),
+            receipt_bytes: b"{}".to_vec(),
+        },
+    )
+    .unwrap();
+    let grant_ref = GrantRef {
+        grant_id: grant.grant_id.clone(),
+        revision: grant.revision.clone(),
+        revocation_head: grant.revocation_head.clone(),
+    };
+    publish_context_assembly_snapshot(
+        db,
+        &ContextAssemblySnapshot {
+            operation_id: "action-context-assembly".into(),
+            principal_id: "principal-worker".into(),
+            seat_id: "seat-worker".into(),
+            task_id: "task-one".into(),
+            session_id: action.session_id.clone(),
+            domain_id: "domain-one".into(),
+            binding_id: "binding-worker".into(),
+            binding_generation: "7".into(),
+            source_epoch: "9".into(),
+            runtime_instance_id: "runtime-one".into(),
+            task_revision: "1".into(),
+            policy_revision: "1".into(),
+            auth_revision: "1".into(),
+            revocation_head: "0".into(),
+            selection_decision_id: decision_id.into(),
+            manifest_id: action.context_manifest_id.clone(),
+            admission_action_operation_id: action.action_operation_id.clone(),
+            admission_digest: semantic_digest.into(),
+            max_content_bytes: 4096,
+            max_candidates: 8,
+            partition_grant_bindings: vec![ContextPartitionGrantBinding {
+                source_domain_id: "domain-source".into(),
+                destination_scope: "PROJECT".into(),
+                promotion_kind: "PROJECT_ONLY".into(),
+                grant: grant_ref.clone(),
+            }],
+        },
+    )
+    .unwrap();
+    let read = GranteeContextReadRequest {
+        principal_id: "principal-worker".into(),
+        seat_id: "seat-worker".into(),
+        source: ContextReadRequest {
+            source_domain_id: "domain-source".into(),
+            context_id: "action-context".into(),
+            version: "1".into(),
+            expected_scope: "PROJECT".into(),
+            expected_content_hash: hash_a.clone(),
+            expected_access_policy_revision: "1".into(),
+            destination_domain_id: "domain-one".into(),
+            destination_scope: "PROJECT".into(),
+            promotion_kind: "PROJECT_ONLY".into(),
+            policy_revision: "1".into(),
+            grant: grant_ref,
+        },
+    };
     let body = format!("{{\"bindingGeneration\":\"7\",\"domainId\":\"domain-one\",\"includedVersions\":[{{\"accessPolicyRevision\":\"1\",\"contentHash\":\"{}\",\"contextId\":\"action-context\",\"reason\":\"AUTHORIZED_RETRIEVAL\",\"sourceDomainId\":\"domain-source\",\"stateRevision\":\"1\",\"version\":\"1\"}}],\"manifestId\":\"{}\",\"policyRevision\":\"1\",\"redactions\":[],\"requiredConstraints\":[],\"seatId\":\"seat-worker\",\"selectionDecisionId\":\"{}\",\"sourceSnapshot\":{{\"assemblySchema\":\"gogoke.context-assembly.v1\",\"authRevision\":\"1\",\"bindingId\":\"binding-worker\",\"excluded\":[],\"mode\":\"FIXED_SOURCE_RULES\",\"operationId\":\"action-context-assembly\",\"partitions\":[{{\"sourceDomainId\":\"domain-source\"}}],\"principalId\":\"principal-worker\",\"requestDigest\":\"{}\",\"revocationHead\":\"0\",\"runtimeInstanceId\":\"runtime-one\",\"sessionId\":\"{}\",\"sourceEpoch\":\"9\",\"taskRevision\":\"1\"}},\"taskId\":\"task-one\"}}", format!("sha256:{}", "a".repeat(64)), action.context_manifest_id, decision_id, format!("sha256:{}", "e".repeat(64)), action.session_id);
     let manifest_hash = crate::store::digest::content_hash(body.as_bytes());
-    let canonical = body.replacen("\"manifestId\"", &format!("\"manifestHash\":\"{manifest_hash}\",\"manifestId\""), 1).into_bytes();
-    commit_context_manifest(db, &ContextManifestCommitInput { operation_id: "action-context-assembly".into(), request_digest: format!("sha256:{}", "e".repeat(64)),
-        event_id: "action-context-manifest-event".into(), receipt_id: "action-context-manifest-receipt".into(), recorded_at: "2026-09-22T00:00:00Z".into(), read_requests: vec![read],
-        expected_versions: vec![ManifestExpectedVersion { source_domain_id: "domain-source".into(), context_id: "action-context".into(), version: "1".into(), content_hash: hash_a, state_revision: "1".into(), access_policy_revision: "1".into() }], canonical_manifest: canonical }).unwrap().manifest_hash
+    let canonical = body
+        .replacen(
+            "\"manifestId\"",
+            &format!("\"manifestHash\":\"{manifest_hash}\",\"manifestId\""),
+            1,
+        )
+        .into_bytes();
+    commit_context_manifest(
+        db,
+        &ContextManifestCommitInput {
+            operation_id: "action-context-assembly".into(),
+            request_digest: format!("sha256:{}", "e".repeat(64)),
+            event_id: "action-context-manifest-event".into(),
+            receipt_id: "action-context-manifest-receipt".into(),
+            recorded_at: "2026-09-22T00:00:00Z".into(),
+            read_requests: vec![read],
+            expected_versions: vec![ManifestExpectedVersion {
+                source_domain_id: "domain-source".into(),
+                context_id: "action-context".into(),
+                version: "1".into(),
+                content_hash: hash_a,
+                state_revision: "1".into(),
+                access_policy_revision: "1".into(),
+            }],
+            canonical_manifest: canonical,
+        },
+    )
+    .unwrap()
+    .manifest_hash
 }
 
 #[test]
@@ -279,7 +417,7 @@ fn current_atp_task_lineage_and_recipe_prepare_one_native_derived_reservation() 
             context_manifest_id: "manifest-one".into(),
             action_operation_id: "opr_11111111111111111111111111111111".into(),
             reservation_id: "action-reservation".into(),
-            action_kind: "queue".into(),
+            action_kind: "close".into(),
             lane: "work".into(),
             payload: b"bounded instruction".to_vec(),
         };
@@ -426,28 +564,47 @@ fn current_atp_task_lineage_and_recipe_prepare_one_native_derived_reservation() 
                 state: "ACCEPTANCE_UNKNOWN".into()
             }
         );
-        record_trusted_native_action_receipt(
-            db,
-            &TrustedActionCompletionEvidence {
+        let profile_id = count(db, "SELECT profile_id FROM main.gogoke_action_reservations WHERE operation_id='opr_11111111111111111111111111111111'");
+        let stop_proof = |errors: Vec<String>, generation: &str| NativeStopProof {
+            ticket: ProcessTicket::from_opaque_for_test(format!("pct1_{}", "a".repeat(64))),
+            custodian_nonce: format!("pcn1_{}", "b".repeat(64)),
+            binding: NativeBinding {
+                binary_digest_sha256: format!("sha256:{}", "c".repeat(64)),
+                profile_id: profile_id.clone(),
                 domain_id: "domain-one".into(),
-                operation_id: begin.operation_id.clone(),
-                reservation_id: begin.reservation_id.clone(),
-                semantic_digest: prepared.semantic_digest.clone(),
-                attempt_id,
-                send_authority,
                 binding_id: "binding-worker".into(),
-                generation: "7".into(),
+                generation: generation.into(),
                 source_epoch: "9".into(),
                 runtime_instance_id: "runtime-one".into(),
-                native_request_id: "native-request-one".into(),
                 native_session_id: "native-worker".into(),
-                trusted_receipt_ref: "native-receipt-one".into(),
-                evidence_hash: format!("sha256:{}", "d".repeat(64)),
-                disposition: ActionCompletionDisposition::Completed,
             },
-        )
-        .unwrap();
-        let completed = complete_action_from_native_receipt(db, &begin).unwrap();
+            identity: ProcessIdentity {
+                pid: 42,
+                creation_time_100ns: 99,
+                image_path: PathBuf::from(r"C:\fixture\fake.exe"),
+            },
+            parent_exited: true,
+            active_job_processes: Some(0),
+            identity_status: "exact".into(),
+            process_handle_present: true,
+            job_handle_present: true,
+            kill_attempted: false,
+            kill_succeeded: false,
+            writer_fence_verified: true,
+            exit_code: Some(0),
+            deadline_exceeded: false,
+            errors,
+        };
+        let wrong_generation =
+            TrustedNativeStopReceipt::from_proof_for_test(stop_proof(Vec::new(), "8"));
+        assert!(complete_close_action_from_native_stop(db, &begin, &wrong_generation).is_err());
+        let failed_stop = TrustedNativeStopReceipt::from_proof_for_test(stop_proof(
+            vec!["JOB_DESCENDANTS_REMAIN".into()],
+            "7",
+        ));
+        assert!(complete_close_action_from_native_stop(db, &begin, &failed_stop).is_err());
+        let stopped = TrustedNativeStopReceipt::from_proof_for_test(stop_proof(Vec::new(), "7"));
+        let completed = complete_close_action_from_native_stop(db, &begin, &stopped).unwrap();
         assert_eq!(completed.disposition, "completed");
         assert!(!completed.receipt_id.is_empty());
         assert_eq!(

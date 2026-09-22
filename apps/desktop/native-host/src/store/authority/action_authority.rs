@@ -13,6 +13,7 @@ use super::bootstrap::Profile;
 use super::catalog::current_profile;
 use super::model::{denied, identifier, next_revision, revision};
 use super::transaction::{self, Result, Transaction};
+use crate::process::TrustedNativeStopReceipt;
 
 pub(crate) const ACTION_AUTHORITY_STATUS: &str = "PREPARATORY_CURRENT_FACTS_REQUIRED";
 pub(crate) const COMPLETION_AUTHORITY_STATUS: &str = "PREPARATORY_TRUSTED_NATIVE_RECEIPT_REQUIRED";
@@ -260,11 +261,8 @@ pub(crate) fn prepare_action_authority(
         if leases.len() != 1 {
             return denied();
         }
-        let decision = super::decision_replay::read_in_transaction(
-            tx,
-            &request.domain_id,
-            &leases[0][0],
-        )?;
+        let decision =
+            super::decision_replay::read_in_transaction(tx, &request.domain_id, &leases[0][0])?;
         let decision_snapshot = tx.query(
             "SELECT action_digest,binding_id,binding_generation,policy_revision,task_revision FROM main.gogoke_decision_authority_snapshots WHERE operation_id=? AND candidate_id=?",
             &[&leases[0][0], &leases[0][1]],
@@ -414,11 +412,8 @@ pub(super) fn record_trusted_native_action_facts(
             payload,
         };
         let (package, task, lineage, recipe, profile) = current_selection(tx, &selection)?;
-        let manifest_hash = current_manifest_hash_in_transaction(
-            tx,
-            &facts.domain_id,
-            &facts.context_manifest_id,
-        )?;
+        let manifest_hash =
+            current_manifest_hash_in_transaction(tx, &facts.domain_id, &facts.context_manifest_id)?;
         let admission =
             current_admission_in_transaction(tx, &profile, &recipe.recipe.admission_ref)?;
         if package.target_binding.session_id != facts.session_id
@@ -578,7 +573,9 @@ fn reconcile_existing_action_domain_record(
         &[&record.domain_id, &record.operation_id],
         8,
     )?;
-    if object.len() != 1 || event.len() != 1 || receipt.len() != 1
+    if object.len() != 1
+        || event.len() != 1
+        || receipt.len() != 1
         || object[0][0].as_bytes() != record.object_bytes.as_slice()
         || content_hash(object[0][0].as_bytes()) != object[0][1]
         || event[0][0].as_bytes() != record.event_bytes.as_slice()
@@ -603,18 +600,36 @@ fn load_validated_native_receipt(
     operation_id: &str,
 ) -> Result<Option<Vec<String>>> {
     let rows=tx.query("SELECT receipt_ref,reservation_id,semantic_digest,attempt_id,send_authority,binding_id,generation,source_epoch,runtime_instance_id,native_request_id,native_session_id,evidence_hash,disposition,receipt_id FROM main.gogoke_action_native_receipts WHERE domain_id=? AND operation_id=?", &[domain_id,operation_id],14)?;
-    if rows.is_empty() { return Ok(None); }
-    if rows.len()!=1 { return denied(); }
-    let row=&rows[0];
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    if rows.len() != 1 {
+        return denied();
+    }
+    let row = &rows[0];
     let object=format!("{{\"attemptId\":{},\"bindingId\":{},\"disposition\":{},\"evidenceHash\":{},\"generation\":{},\"nativeRequestId\":{},\"nativeSessionId\":{},\"operationId\":{},\"runtimeInstanceId\":{},\"semanticDigest\":{},\"sendAuthority\":{},\"sourceEpoch\":{},\"trustedReceiptRef\":{}}}",quote(&row[3]),quote(&row[5]),quote(&row[12]),quote(&row[11]),quote(&row[6]),quote(&row[9]),quote(&row[10]),quote(operation_id),quote(&row[8]),quote(&row[2]),quote(&row[4]),quote(&row[7]),quote(&row[0])).into_bytes();
-    let times=tx.query("SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND receipt_id=?", &[domain_id,&row[13]],1)?;
-    if times.len()!=1 { return denied(); }
+    let times = tx.query(
+        "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND receipt_id=?",
+        &[domain_id, &row[13]],
+        1,
+    )?;
+    if times.len() != 1 {
+        return denied();
+    }
     let record = action_domain_record(
-        domain_id,"ActionNativeReceipt",&format!("native-receipt:{operation_id}"),operation_id,
-        object,"ActionNativeReceiptRecorded","ActionNativeReceiptRecorded",&times[0][0],
+        domain_id,
+        "ActionNativeReceipt",
+        &format!("native-receipt:{operation_id}"),
+        operation_id,
+        object,
+        "ActionNativeReceiptRecorded",
+        "ActionNativeReceiptRecorded",
+        &times[0][0],
     );
     let storage = reconcile_existing_action_domain_record(tx, record)?;
-    if storage.disposition!="RECONCILED" || storage.receipt_id!=row[13] { return denied(); }
+    if storage.disposition != "RECONCILED" || storage.receipt_id != row[13] {
+        return denied();
+    }
     Ok(Some(row.clone()))
 }
 
@@ -624,18 +639,36 @@ fn load_validated_completion(
     operation_id: &str,
 ) -> Result<Option<Vec<String>>> {
     let rows=tx.query("SELECT reservation_id,semantic_digest,attempt_id,send_authority,binding_id,generation,source_epoch,runtime_instance_id,native_request_id,native_session_id,trusted_receipt_ref,evidence_hash,disposition,receipt_id FROM main.gogoke_action_completion_receipts WHERE domain_id=? AND operation_id=?", &[domain_id,operation_id],14)?;
-    if rows.is_empty() { return Ok(None); }
-    if rows.len()!=1 { return denied(); }
-    let row=&rows[0];
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    if rows.len() != 1 {
+        return denied();
+    }
+    let row = &rows[0];
     let object=format!("{{\"attemptId\":{},\"bindingId\":{},\"disposition\":{},\"evidenceHash\":{},\"generation\":{},\"nativeRequestId\":{},\"nativeSessionId\":{},\"operationId\":{},\"reservationId\":{},\"runtimeInstanceId\":{},\"semanticDigest\":{},\"sendAuthority\":{},\"sourceEpoch\":{},\"trustedReceiptRef\":{}}}",quote(&row[2]),quote(&row[4]),quote(&row[12]),quote(&row[11]),quote(&row[5]),quote(&row[8]),quote(&row[9]),quote(operation_id),quote(&row[0]),quote(&row[7]),quote(&row[1]),quote(&row[3]),quote(&row[6]),quote(&row[10])).into_bytes();
-    let times=tx.query("SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND receipt_id=?", &[domain_id,&row[13]],1)?;
-    if times.len()!=1 { return denied(); }
+    let times = tx.query(
+        "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND receipt_id=?",
+        &[domain_id, &row[13]],
+        1,
+    )?;
+    if times.len() != 1 {
+        return denied();
+    }
     let record = action_domain_record(
-        domain_id,"ActionCompletion",&format!("complete:{operation_id}"),operation_id,
-        object,"ActionCompletionRecorded","ActionCompletionRecorded",&times[0][0],
+        domain_id,
+        "ActionCompletion",
+        &format!("complete:{operation_id}"),
+        operation_id,
+        object,
+        "ActionCompletionRecorded",
+        "ActionCompletionRecorded",
+        &times[0][0],
     );
     let storage = reconcile_existing_action_domain_record(tx, record)?;
-    if storage.disposition!="RECONCILED" || storage.receipt_id!=row[13] { return denied(); }
+    if storage.disposition != "RECONCILED" || storage.receipt_id != row[13] {
+        return denied();
+    }
     Ok(Some(row.clone()))
 }
 
@@ -684,18 +717,25 @@ pub(super) fn record_trusted_native_action_receipt(
             ActionCompletionDisposition::Rejected => "REJECTED",
             ActionCompletionDisposition::AcceptanceUnknown => return denied(),
         };
-        let existing=load_validated_native_receipt(tx,&evidence.domain_id,&evidence.operation_id)?;
+        let existing =
+            load_validated_native_receipt(tx, &evidence.domain_id, &evidence.operation_id)?;
         if let Some(existing) = existing {
             let expected = vec![
-                evidence.trusted_receipt_ref.clone(), evidence.reservation_id.clone(),
-                evidence.semantic_digest.clone(), evidence.attempt_id.clone(),
-                evidence.send_authority.clone(), evidence.binding_id.clone(),
-                evidence.generation.clone(), evidence.source_epoch.clone(),
-                evidence.runtime_instance_id.clone(), evidence.native_request_id.clone(),
-                evidence.native_session_id.clone(), evidence.evidence_hash.clone(),
+                evidence.trusted_receipt_ref.clone(),
+                evidence.reservation_id.clone(),
+                evidence.semantic_digest.clone(),
+                evidence.attempt_id.clone(),
+                evidence.send_authority.clone(),
+                evidence.binding_id.clone(),
+                evidence.generation.clone(),
+                evidence.source_epoch.clone(),
+                evidence.runtime_instance_id.clone(),
+                evidence.native_request_id.clone(),
+                evidence.native_session_id.clone(),
+                evidence.evidence_hash.clone(),
                 expected_disposition.to_owned(),
             ];
-            if existing[..13]!=expected {
+            if existing[..13] != expected {
                 return Err(OrchestrationError::OperationConflict);
             }
             return Ok(evidence.trusted_receipt_ref.clone());
@@ -761,6 +801,87 @@ pub(super) fn record_trusted_native_action_receipt(
     })
 }
 
+/// Converts only an opaque native custodian stop receipt into the authoritative
+/// completion path. The service cannot supply any of the trusted evidence
+/// fields, and a process exit code alone is never sufficient.
+pub(crate) fn complete_close_action_from_native_stop(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    request: &BeginCommittedAction,
+    stop: &TrustedNativeStopReceipt,
+) -> Result<ActionCompletionReceipt> {
+    let proof = stop.proof();
+    if !proof.errors.is_empty()
+        || !proof.parent_exited
+        || proof.active_job_processes != Some(0)
+        || proof.identity_status != "exact"
+        || !proof.process_handle_present
+        || !proof.job_handle_present
+        || !proof.writer_fence_verified
+        || proof.deadline_exceeded
+    {
+        return denied();
+    }
+    let evidence = transaction::run(connection, |tx| {
+        ensure_schema(tx)?;
+        let action = tx.query(
+            "SELECT reservation_id,semantic_digest,profile_id,state FROM main.gogoke_action_reservations WHERE operation_id=?",
+            &[&request.operation_id],
+            4,
+        )?;
+        let intent = tx.query(
+            "SELECT attempt_id,send_authority,binding_id,generation,source_epoch,runtime_instance_id,session_id,target_domain_id,action_kind FROM main.gogoke_action_authority_intents WHERE domain_id=? AND operation_id=?",
+            &[&request.domain_id, &request.operation_id],
+            9,
+        )?;
+        if action.len() != 1
+            || intent.len() != 1
+            || action[0][0] != request.reservation_id
+            || !matches!(action[0][3].as_str(), "dispatching" | "outcome-unknown")
+            || intent[0][8] != "close"
+            || proof.binding.domain_id != intent[0][7]
+            || proof.binding.profile_id != action[0][2]
+            || proof.binding.binding_id != intent[0][2]
+            || proof.binding.generation != intent[0][3]
+            || proof.binding.source_epoch != intent[0][4]
+            || proof.binding.runtime_instance_id != intent[0][5]
+        {
+            return denied();
+        }
+        let lineage = super::session_lineage::read_session_lineage_in_transaction(
+            tx,
+            &intent[0][7],
+            &intent[0][6],
+        )?;
+        if proof.binding.native_session_id != lineage.native.native_session_id
+            || proof.binding.binding_id != lineage.native.binding_id
+            || proof.binding.generation != lineage.native.generation
+            || proof.binding.source_epoch != lineage.native.source_epoch
+        {
+            return denied();
+        }
+        let evidence_hash = proof.proof_hash();
+        Ok(TrustedActionCompletionEvidence {
+            domain_id: request.domain_id.clone(),
+            operation_id: request.operation_id.clone(),
+            reservation_id: request.reservation_id.clone(),
+            semantic_digest: action[0][1].clone(),
+            attempt_id: intent[0][0].clone(),
+            send_authority: intent[0][1].clone(),
+            binding_id: intent[0][2].clone(),
+            generation: intent[0][3].clone(),
+            source_epoch: intent[0][4].clone(),
+            runtime_instance_id: intent[0][5].clone(),
+            native_request_id: proof.ticket.opaque().to_owned(),
+            native_session_id: lineage.native.native_session_id,
+            trusted_receipt_ref: format!("native-stop:{}", &evidence_hash[7..]),
+            evidence_hash,
+            disposition: ActionCompletionDisposition::Completed,
+        })
+    })?;
+    record_trusted_native_action_receipt(connection, &evidence)?;
+    complete_action_from_native_receipt(connection, request)
+}
+
 /// Commits only a receipt previously persisted by the trusted native-host
 /// ingress. Without such evidence, the durable state becomes
 /// `ACCEPTANCE_UNKNOWN`; this is not Action completion and cannot be resent.
@@ -783,7 +904,7 @@ pub(crate) fn complete_action_from_native_receipt(
         ) {
             return denied();
         }
-        let native=load_validated_native_receipt(tx,&request.domain_id,&request.operation_id)?;
+        let native = load_validated_native_receipt(tx, &request.domain_id, &request.operation_id)?;
         if native.is_none() {
             tx.write("UPDATE main.gogoke_action_reservations SET state='outcome-unknown',outcome_kind='outcome-unknown' WHERE operation_id=? AND reservation_id=? AND state IN ('dispatching','outcome-unknown')", &[&request.operation_id,&request.reservation_id])?;
             return Ok(ActionCompletionReceipt {
@@ -794,14 +915,14 @@ pub(crate) fn complete_action_from_native_receipt(
                 semantic_digest: action[0][0].clone(),
             });
         }
-        let native=vec![native.expect("checked native receipt")];
+        let native = vec![native.expect("checked native receipt")];
         if native[0][1] != request.reservation_id
             || native[0][2] != action[0][0]
             || native[0][4] != action[0][3]
         {
             return denied();
         }
-        let existing=load_validated_completion(tx,&request.domain_id,&request.operation_id)?;
+        let existing = load_validated_completion(tx, &request.domain_id, &request.operation_id)?;
         if let Some(existing) = existing {
             let terminal = match native[0][12].as_str() {
                 "COMPLETED" => "completed",

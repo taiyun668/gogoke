@@ -2,17 +2,16 @@
 //! IPC remains unprivileged: the legacy typed dispatcher never receives OwnerIssuer.
 use super::atomic::DomainRecordReceipt;
 use super::authority::{
-    self, AppendExecutionRecipe, AppendTaskMaterial, AuthorizedContextReadSet,
-    AuthorizedTaskPackageReceipt,
-    CommitTaskContextRequirements, ContextAssemblyBasis, ContextAssemblySnapshot,
-    ContextAssemblySource, ContextManifestAuthorityReceipt, ContextManifestCommitInput,
-    ContextManifestReplayIdentity, ContextReadRequest, ContextReadSet, ContextReadSnapshot,
-    DecisionAuthoritySnapshot, DecisionCommitInput, DecisionCommitReceipt, DelegationGrantIdentity,
-    DelegationGrantInput, DelegationGrantSnapshot, DurableDecisionReplay, GrantRef, GrantSpec,
-    GranteeContextReadRequest, OwnerIssuer, OwnerOutcomeAppend, PrepareAuthorizedTaskPackage,
-    AppendDreamProposal, AppendDreamRun, AppendEvaluation, AppendObjectiveOutcome, DreamReceipt,
-    EvaluationReceipt, ExecutionRecipeReceipt,
-    ExecutionRecipeVersion, ObjectiveOutcomeVersion,
+    self, ActionCompletionReceipt, AppendDreamProposal, AppendDreamRun, AppendEvaluation,
+    AppendExecutionRecipe, AppendObjectiveOutcome, AppendTaskMaterial, AuthorizedContextReadSet,
+    AuthorizedTaskPackageReceipt, BeginCommittedAction, CommitTaskContextRequirements,
+    ContextAssemblyBasis, ContextAssemblySnapshot, ContextAssemblySource,
+    ContextManifestAuthorityReceipt, ContextManifestCommitInput, ContextManifestReplayIdentity,
+    ContextReadRequest, ContextReadSet, ContextReadSnapshot, DecisionAuthoritySnapshot,
+    DecisionCommitInput, DecisionCommitReceipt, DelegationGrantIdentity, DelegationGrantInput,
+    DelegationGrantSnapshot, DreamReceipt, DurableDecisionReplay, EvaluationReceipt,
+    ExecutionRecipeReceipt, ExecutionRecipeVersion, GrantRef, GrantSpec, GranteeContextReadRequest,
+    ObjectiveOutcomeVersion, OwnerIssuer, OwnerOutcomeAppend, PrepareAuthorizedTaskPackage,
     PromotionRequest, SessionLineageCommand, SessionLineageReceipt, SessionSnapshot,
     TaskContextRequirements, TaskContextRequirementsReceipt, TaskMaterialReceipt,
     TaskMaterialVersion,
@@ -22,6 +21,7 @@ use super::orchestration::OrchestrationError;
 use super::same_open::{OpenLedger, SameOpenError, VerifiedDatabaseConnection};
 use super::session::{open_product_database, serve_authenticated_pipe, serve_lines, serve_pipe};
 use crate::ipc::PrivatePipeConnection;
+use crate::process::TrustedNativeStopReceipt;
 use crate::root::RootLock;
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -309,7 +309,10 @@ impl<'root> ProductDatabase<'root> {
 
     /// Dream records are durable candidate evidence only. This typed path cannot
     /// activate a proposal or write production facts.
-    pub(crate) fn append_dream_run(&mut self, request: &AppendDreamRun) -> Result<DomainRecordReceipt> {
+    pub(crate) fn append_dream_run(
+        &mut self,
+        request: &AppendDreamRun,
+    ) -> Result<DomainRecordReceipt> {
         authority::append_dream_run(&mut self.connection, request)
     }
 
@@ -424,6 +427,16 @@ impl<'root> ProductDatabase<'root> {
             recipe_id,
             revision,
         )
+    }
+
+    /// Private native composition path for a close Action. Only the opaque
+    /// receipt returned by this host's ProcessCustodian can reach it.
+    pub(crate) fn complete_close_action(
+        &mut self,
+        request: &BeginCommittedAction,
+        stop: &TrustedNativeStopReceipt,
+    ) -> Result<ActionCompletionReceipt> {
+        authority::complete_close_action_from_native_stop(&mut self.connection, request, stop)
     }
 }
 

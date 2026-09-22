@@ -261,6 +261,11 @@ impl ProcessTicket {
     pub fn opaque(&self) -> &str {
         &self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_opaque_for_test(value: String) -> Self {
+        Self(value)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -268,7 +273,11 @@ pub struct NativeBinding {
     pub binary_digest_sha256: String,
     pub profile_id: String,
     pub domain_id: String,
+    pub binding_id: String,
     pub generation: String,
+    pub source_epoch: String,
+    pub runtime_instance_id: String,
+    pub native_session_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -364,7 +373,11 @@ impl NativeStopProof {
         append_field(&mut bytes, &self.binding.binary_digest_sha256);
         append_field(&mut bytes, &self.binding.profile_id);
         append_field(&mut bytes, &self.binding.domain_id);
+        append_field(&mut bytes, &self.binding.binding_id);
         append_field(&mut bytes, &self.binding.generation);
+        append_field(&mut bytes, &self.binding.source_epoch);
+        append_field(&mut bytes, &self.binding.runtime_instance_id);
+        append_field(&mut bytes, &self.binding.native_session_id);
         append_field(&mut bytes, &self.identity.pid.to_string());
         append_field(&mut bytes, &self.identity.creation_time_100ns.to_string());
         append_field(&mut bytes, &self.identity.image_path.to_string_lossy());
@@ -392,6 +405,24 @@ impl NativeStopProof {
             append_field(&mut bytes, error);
         }
         format!("sha256:{}", hex_bytes(&sha256(&bytes)))
+    }
+}
+
+/// Opaque evidence produced only by the native custodian after it has observed
+/// the exact process/Job stop. Other modules may inspect it but cannot construct
+/// one from caller-supplied fields.
+pub(crate) struct TrustedNativeStopReceipt {
+    proof: NativeStopProof,
+}
+
+impl TrustedNativeStopReceipt {
+    pub(crate) fn proof(&self) -> &NativeStopProof {
+        &self.proof
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_proof_for_test(proof: NativeStopProof) -> Self {
+        Self { proof }
     }
 }
 
@@ -706,6 +737,19 @@ impl ProcessCustodian {
         Ok(pending)
     }
 
+    pub(crate) fn stop_for_action<RequestClose>(
+        &mut self,
+        ticket: &ProcessTicket,
+        budgets: StopBudgets,
+        request_close: RequestClose,
+    ) -> Result<TrustedNativeStopReceipt, ProcessCustodyError>
+    where
+        RequestClose: FnOnce() -> Result<(), String> + Send + 'static,
+    {
+        self.stop(ticket, budgets, request_close)
+            .map(|proof| TrustedNativeStopReceipt { proof })
+    }
+
     /// Confirms the exact proof that this native host observed. The service
     /// supplies only the identity it durably committed, never a caller-forged
     /// proof. Failed, repeated, or unknown stops remain owned.
@@ -970,6 +1014,9 @@ fn validate_binding(binding: &NativeBinding) -> Result<(), ProcessCustodyError> 
     for (field, value) in [
         ("profileId", binding.profile_id.as_str()),
         ("domainId", binding.domain_id.as_str()),
+        ("bindingId", binding.binding_id.as_str()),
+        ("runtimeInstanceId", binding.runtime_instance_id.as_str()),
+        ("nativeSessionId", binding.native_session_id.as_str()),
     ] {
         if value.is_empty() || value.len() > 256 || value.contains('\0') {
             return Err(ProcessCustodyError::BindingMismatch(field));
@@ -981,6 +1028,16 @@ fn validate_binding(binding: &NativeBinding) -> Result<(), ProcessCustodyError> 
         || !binding.generation.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(ProcessCustodyError::BindingMismatch("generation"));
+    }
+    if binding.source_epoch.is_empty()
+        || binding.source_epoch.len() > 256
+        || binding.source_epoch.starts_with('0')
+        || !binding
+            .source_epoch
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return Err(ProcessCustodyError::BindingMismatch("sourceEpoch"));
     }
     Ok(())
 }
@@ -1410,7 +1467,11 @@ mod tests {
                 binary_digest_sha256: digest,
                 profile_id: "profile-controlled".to_owned(),
                 domain_id: "domain-controlled".to_owned(),
+                binding_id: "binding-controlled".to_owned(),
                 generation: "1".to_owned(),
+                source_epoch: "1".to_owned(),
+                runtime_instance_id: "runtime-controlled".to_owned(),
+                native_session_id: "native-session-controlled".to_owned(),
             },
         }
     }
@@ -1648,7 +1709,11 @@ mod tests {
                 binary_digest_sha256: format!("sha256:{}", "c".repeat(64)),
                 profile_id: "profile".to_owned(),
                 domain_id: "domain".to_owned(),
+                binding_id: "binding".to_owned(),
                 generation: "7".to_owned(),
+                source_epoch: "3".to_owned(),
+                runtime_instance_id: "runtime".to_owned(),
+                native_session_id: "native-session".to_owned(),
             },
             identity: ProcessIdentity {
                 pid: 42,
@@ -1669,7 +1734,7 @@ mod tests {
         };
         assert_eq!(
             proof.proof_hash(),
-            "sha256:6de76f072fd07f424de91943871f249eb3bdc2f22b7b33dcf302cd14fdd38e7e"
+            "sha256:4e0367e866f93e9c4ec8abbf6b881f02ada6f531c25df4c3dcb9cb8e9b6e2dab"
         );
     }
 

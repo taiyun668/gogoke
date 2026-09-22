@@ -123,14 +123,13 @@ mod outcome;
 pub(crate) use outcome::{append_owner_override_outcome, OutcomeVersionRef, OwnerOutcomeAppend};
 mod objective_outcome;
 pub(crate) use objective_outcome::{
-    append_objective_outcome, read_objective_outcome, AppendObjectiveOutcome,
-    ObjectiveEvidenceRef, ObjectiveObservationWindow, ObjectiveOutcomeVersion,
-    ObjectiveVersionRef,
+    append_objective_outcome, read_objective_outcome, AppendObjectiveOutcome, ObjectiveEvidenceRef,
+    ObjectiveObservationWindow, ObjectiveOutcomeVersion, ObjectiveVersionRef,
 };
+mod evaluation;
 #[cfg(test)]
 #[path = "objective_outcome_tests.rs"]
 mod objective_outcome_tests;
-mod evaluation;
 pub(crate) use evaluation::{
     append_evaluation, read_evaluation, AppendEvaluation, EvaluationEvidenceRef,
     EvaluationOutcomeRef, EvaluationReceipt, EvaluationVersionRef,
@@ -138,8 +137,8 @@ pub(crate) use evaluation::{
 mod dream;
 pub(crate) use dream::{
     append_dream_proposal, append_dream_run, read_dream_proposal, read_dream_run,
-    AppendDreamProposal, AppendDreamRun, DreamAllowedChange, DreamBudgetLease,
-    DreamEvaluationRef, DreamObjectRef, DreamReceipt, DreamVersionRef,
+    AppendDreamProposal, AppendDreamRun, DreamAllowedChange, DreamBudgetLease, DreamEvaluationRef,
+    DreamObjectRef, DreamReceipt, DreamVersionRef,
 };
 #[cfg(test)]
 #[path = "dream_tests.rs"]
@@ -177,6 +176,7 @@ mod decision_commit_tests;
 
 mod action_authority;
 pub(crate) use action_authority::{
-    begin_committed_action, prepare_action_authority, BeginCommittedAction,
-    BeginCommittedDisposition, PrepareActionAuthority, PreparedActionAuthority,
+    begin_committed_action, complete_close_action_from_native_stop, prepare_action_authority,
+    ActionCompletionReceipt, BeginCommittedAction, BeginCommittedDisposition,
+    PrepareActionAuthority, PreparedActionAuthority,
 };
