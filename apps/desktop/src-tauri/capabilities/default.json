@@ -1,0 +1,39 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "capabilities": [
+    {
+      "identifier": "desktop-default",
+      "description": "Capability for desktop windows",
+      "windows": ["main", "about"],
+      "platforms": ["macOS", "windows", "linux"],
+      "permissions": [
+        "core:default",
+        "core:webview:allow-set-webview-zoom",
+        "opener:default",
+        "dialog:default",
+        "window-state:default",
+        "liquid-glass:default",
+        "notification:default",
+        "core:window:allow-close",
+        "core:window:allow-is-maximized",
+        "core:window:allow-minimize",
+        "core:window:allow-toggle-maximize",
+        "core:window:allow-set-effects",
+        "core:window:allow-start-dragging"
+      ]
+    },
+    {
+      "identifier": "mobile-default",
+      "description": "Capability for mobile main window",
+      "windows": ["main"],
+      "platforms": ["iOS", "android"],
+      "permissions": [
+        "core:default",
+        "core:webview:allow-set-webview-zoom",
+        "opener:default",
+        "dialog:default",
+        "notification:default"
+      ]
+    }
+  ]
+}

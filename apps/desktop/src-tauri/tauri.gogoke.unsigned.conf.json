@@ -1,0 +1,8 @@
+{
+  "productName": "gogoke",
+  "identifier": "app.gogoke.desktop",
+  "bundle": {
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false
+  }
+}

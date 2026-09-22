@@ -1,0 +1,10 @@
+accept	{"":2,"𐀀":1}	{"𐀀":1,"":2}
+accept	{"z":0,"𐀀":1,"a":2}	{"a":2,"z":0,"𐀀":1}
+accept	{"z":0,"a":1}	{"a":1,"z":0}
+reject	{"x":1,"x":2}	DUPLICATE_KEY
+accept	{"value":"\ud800"}	{"value":"\ud800"}
+accept	{"value":"\udc00"}	{"value":"\udc00"}
+accept	{"value":"𐀀"}	{"value":"𐀀"}
+accept	{"":1,"𐀀":2,"\udc00":3,"\ud800":4,"a":5}	{"a":5,"\ud800":4,"𐀀":2,"\udc00":3,"":1}
+reject	{"\ud800":1,"\ud800":2}	DUPLICATE_KEY
+reject	{"𐀀":1,"\ud800\udc00":2}	DUPLICATE_KEY

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "gogoke",
+  "version": "0.1.2",
+  "identifier": "app.gogoke.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "gogoke",
+        "width": 1200,
+        "height": 700,
+        "minWidth": 360,
+        "minHeight": 600,
+        "dragDropEnabled": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 19,
+          "y": 24
+        },
+        "transparent": true,
+        "devtools": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**/*"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "iOS": {
+      "frameworks": [
+        "libz.tbd",
+        "libiconv.tbd"
+      ]
+    },
+    "icon": [
+      "icons/generated/32x32.png",
+      "icons/generated/128x128.png",
+      "icons/generated/128x128@2x.png",
+      "icons/generated/icon.icns",
+      "icons/generated/icon.ico"
+    ],
+    "resources": [
+      "../LICENSE",
+      "../THIRD_PARTY_NOTICES.md"
+    ],
+    "macOS": {
+      "entitlements": "./Entitlements.plist",
+      "infoPlist": "./Info.plist"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+name: gogoke public source hygiene
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-source-hygiene:
+    name: Scan committed public source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Positive control and scanner tests
+        run: |
+          python tools/check-public-source.py --self-test --control-only
+          python -m unittest discover -s tools/tests -p test_check_public_source.py -v
+      - name: Scan every committed file in the candidate tree
+        run: python tools/check-public-source.py

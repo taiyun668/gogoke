@@ -1,0 +1,504 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gogoke.invalid/contracts/s1/public.schema.json",
+  "title": "gogoke S1 public objects",
+  "oneOf": [
+    { "$ref": "#/$defs/Session" },
+    { "$ref": "#/$defs/NativeBinding" },
+    { "$ref": "#/$defs/Execution" },
+    { "$ref": "#/$defs/Delivery" },
+    { "$ref": "#/$defs/PublicEvent" },
+    { "$ref": "#/$defs/CapabilitySnapshot" },
+    { "$ref": "#/$defs/ContextPackage" },
+    { "$ref": "#/$defs/HumanActionRequest" },
+    { "$ref": "#/$defs/ProcessIdentity" },
+    { "$ref": "#/$defs/OwnershipResult" },
+    { "$ref": "#/$defs/CommandSuccess" },
+    { "$ref": "#/$defs/CommandFailure" }
+  ],
+  "x-gogoke-canonicalJson": {
+    "encoding": "UTF-8",
+    "objectKeyOrder": "ascending UTF-8 bytes",
+    "arrayOrder": "preserved",
+    "jsonNumbers": "canonical integers only",
+    "duplicateKeys": "rejected"
+  },
+  "x-gogoke-limits": {
+    "frameBytes": 4194304,
+    "titleUtf8Bytes": 256,
+    "textUtf8Bytes": 1048576,
+    "contextItems": 128,
+    "controlQueueItems": 64,
+    "sessionQueueItems": 128,
+    "outputCacheItems": 1024,
+    "outputCacheBytes": 8388608,
+    "journalBytes": 1073741824,
+    "journalControlReserveBytes": 16777216,
+    "capabilityTtlSeconds": 300,
+    "stopGracefulSeconds": 10,
+    "stopTerminationSeconds": 5,
+    "stopObservationSeconds": 5,
+    "stopTotalSeconds": 30
+  },
+  "$defs": {
+    "SchemaVersion": { "type": "integer", "minimum": 1, "const": 1 },
+    "OpaqueId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "DecimalU64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "x-gogoke-maximum": "18446744073709551615"
+    },
+    "UtcTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?(Z|[+]00:00)$"
+    },
+    "SessionLifecycle": { "enum": ["active", "archived"] },
+    "ContinuationMode": { "enum": ["native", "fixed_context", "new"] },
+    "ExecutionState": {
+      "enum": ["created", "running", "completed", "failed", "cancelled"]
+    },
+    "AcceptanceState": {
+      "enum": [
+        "recorded",
+        "queued",
+        "dispatching",
+        "accepted",
+        "acceptance_unknown",
+        "rejected",
+        "cancelled"
+      ]
+    },
+    "CapabilityState": { "enum": ["supported", "unsupported", "unknown"] },
+    "HumanActionState": { "enum": ["pending", "resolved", "expired", "cancelled"] },
+    "PublicEventKind": {
+      "enum": [
+        "session_updated",
+        "binding_updated",
+        "delivery_updated",
+        "execution_started",
+        "execution_output_delta",
+        "execution_completed",
+        "execution_failed",
+        "execution_cancelled",
+        "human_action_requested",
+        "human_action_resolved",
+        "context_created",
+        "delegation_result",
+        "stream_gap",
+        "diagnostic"
+      ]
+    },
+    "ErrorCode": {
+      "enum": [
+        "FEATURE_SEALED",
+        "UNAUTHORIZED",
+        "SCOPE_MISMATCH",
+        "STALE_BINDING",
+        "UNSUPPORTED",
+        "CAPABILITY_UNKNOWN",
+        "PROTOCOL_VERSION_MISMATCH",
+        "INVALID_FRAME",
+        "OPERATION_CONFLICT",
+        "ACCEPTANCE_UNKNOWN",
+        "ROOT_UNAVAILABLE",
+        "ROOT_IN_USE",
+        "ROOT_ID_MISMATCH",
+        "UNSUPPORTED_ROOT",
+        "STORE_CORRUPT",
+        "STORE_WRITE_FAILED",
+        "DURABILITY_UNKNOWN",
+        "PROCESS_IDENTITY_UNKNOWN",
+        "STOP_UNCONFIRMED",
+        "LEGACY_ROUTE_DISABLED",
+        "QUEUE_FULL",
+        "RESYNC_REQUIRED",
+        "CONFIG_CHANGED",
+        "CANCELLED"
+      ]
+    },
+    "Session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sessionId",
+        "scopeId",
+        "privacyDomainId",
+        "title",
+        "lifecycle",
+        "revision"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "sessionId": { "$ref": "#/$defs/OpaqueId" },
+        "scopeId": { "$ref": "#/$defs/OpaqueId" },
+        "privacyDomainId": { "$ref": "#/$defs/OpaqueId" },
+        "title": { "type": "string", "x-gogoke-maxUtf8Bytes": 256 },
+        "lifecycle": { "$ref": "#/$defs/SessionLifecycle" },
+        "revision": { "$ref": "#/$defs/DecimalU64" }
+      }
+    },
+    "NativeBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "bindingId",
+        "sessionId",
+        "driverId",
+        "instanceId",
+        "profileRevision",
+        "authRevision",
+        "domainId",
+        "generation",
+        "nativeSessionId",
+        "continuationMode"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "bindingId": { "$ref": "#/$defs/OpaqueId" },
+        "sessionId": { "$ref": "#/$defs/OpaqueId" },
+        "driverId": { "type": "string", "minLength": 1 },
+        "instanceId": { "$ref": "#/$defs/OpaqueId" },
+        "profileRevision": { "$ref": "#/$defs/DecimalU64" },
+        "authRevision": { "$ref": "#/$defs/DecimalU64" },
+        "domainId": { "$ref": "#/$defs/OpaqueId" },
+        "generation": { "$ref": "#/$defs/DecimalU64" },
+        "nativeSessionId": { "type": ["string", "null"] },
+        "continuationMode": { "$ref": "#/$defs/ContinuationMode" }
+      }
+    },
+    "Execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "executionId",
+        "sessionId",
+        "bindingId",
+        "generation",
+        "state",
+        "createdAt",
+        "completedAt",
+        "resultRef"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "executionId": { "$ref": "#/$defs/OpaqueId" },
+        "sessionId": { "$ref": "#/$defs/OpaqueId" },
+        "bindingId": { "$ref": "#/$defs/OpaqueId" },
+        "generation": { "$ref": "#/$defs/DecimalU64" },
+        "state": { "$ref": "#/$defs/ExecutionState" },
+        "createdAt": { "$ref": "#/$defs/UtcTimestamp" },
+        "completedAt": {
+          "oneOf": [{ "$ref": "#/$defs/UtcTimestamp" }, { "type": "null" }]
+        },
+        "resultRef": { "type": ["string", "null"] }
+      }
+    },
+    "Delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "executionId",
+        "sessionId",
+        "bindingId",
+        "generation",
+        "requestFingerprint",
+        "intentKind",
+        "acceptanceState",
+        "durableReceiptId",
+        "nativeReceipt"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "operationId": { "$ref": "#/$defs/OpaqueId" },
+        "executionId": { "$ref": "#/$defs/OpaqueId" },
+        "sessionId": { "$ref": "#/$defs/OpaqueId" },
+        "bindingId": { "$ref": "#/$defs/OpaqueId" },
+        "generation": { "$ref": "#/$defs/DecimalU64" },
+        "requestFingerprint": { "type": "string", "minLength": 1 },
+        "intentKind": { "type": "string", "minLength": 1 },
+        "acceptanceState": { "$ref": "#/$defs/AcceptanceState" },
+        "durableReceiptId": {
+          "oneOf": [{ "$ref": "#/$defs/OpaqueId" }, { "type": "null" }]
+        },
+        "nativeReceipt": {}
+      }
+    },
+    "PublicEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "eventId",
+        "sessionId",
+        "executionId",
+        "bindingId",
+        "generation",
+        "streamEpoch",
+        "sequence",
+        "kind",
+        "payload"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "eventId": { "$ref": "#/$defs/OpaqueId" },
+        "sessionId": { "$ref": "#/$defs/OpaqueId" },
+        "executionId": {
+          "oneOf": [{ "$ref": "#/$defs/OpaqueId" }, { "type": "null" }]
+        },
+        "bindingId": {
+          "oneOf": [{ "$ref": "#/$defs/OpaqueId" }, { "type": "null" }]
+        },
+        "generation": { "$ref": "#/$defs/DecimalU64" },
+        "streamEpoch": { "$ref": "#/$defs/DecimalU64" },
+        "sequence": { "$ref": "#/$defs/DecimalU64" },
+        "kind": { "$ref": "#/$defs/PublicEventKind" },
+        "payload": {}
+      }
+    },
+    "ExecutableId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "hash", "version", "platform"],
+      "properties": {
+        "path": { "type": "string" },
+        "hash": { "type": "string" },
+        "version": { "type": "string" },
+        "platform": { "type": "string" }
+      }
+    },
+    "CapabilityEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason", "evidenceRef"],
+      "properties": {
+        "state": { "$ref": "#/$defs/CapabilityState" },
+        "reason": { "type": "string" },
+        "evidenceRef": { "type": ["string", "null"] }
+      }
+    },
+    "CapabilitySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "snapshotId",
+        "instanceId",
+        "executableId",
+        "mode",
+        "profileRevision",
+        "authRevision",
+        "observedAt",
+        "expiresAt",
+        "evidenceSource",
+        "capabilities"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "snapshotId": { "$ref": "#/$defs/OpaqueId" },
+        "instanceId": { "$ref": "#/$defs/OpaqueId" },
+        "executableId": { "$ref": "#/$defs/ExecutableId" },
+        "mode": { "type": "string", "minLength": 1 },
+        "profileRevision": { "$ref": "#/$defs/DecimalU64" },
+        "authRevision": { "$ref": "#/$defs/DecimalU64" },
+        "observedAt": { "$ref": "#/$defs/UtcTimestamp" },
+        "expiresAt": { "$ref": "#/$defs/UtcTimestamp" },
+        "evidenceSource": { "type": "string", "minLength": 1 },
+        "capabilities": {
+          "type": "object",
+          "propertyNames": { "type": "string", "minLength": 1 },
+          "additionalProperties": { "$ref": "#/$defs/CapabilityEvidence" }
+        }
+      }
+    },
+    "ContextItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "digest", "visibility"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "minLength": 1 },
+        "visibility": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ContextPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "packageId",
+        "recipient",
+        "scopeId",
+        "domainId",
+        "taskId",
+        "sourceVersion",
+        "items",
+        "permissionCeiling",
+        "expiresAt"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "packageId": { "$ref": "#/$defs/OpaqueId" },
+        "recipient": { "type": "string", "minLength": 1 },
+        "scopeId": { "$ref": "#/$defs/OpaqueId" },
+        "domainId": { "$ref": "#/$defs/OpaqueId" },
+        "taskId": { "type": "string", "minLength": 1 },
+        "sourceVersion": { "type": "string", "minLength": 1 },
+        "items": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/ContextItem" }
+        },
+        "permissionCeiling": { "type": "object" },
+        "expiresAt": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "HumanActionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "requestId",
+        "executionId",
+        "bindingId",
+        "generation",
+        "continuationId",
+        "domainId",
+        "expiresAt",
+        "allowedAnswers",
+        "permissionCeiling",
+        "state"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "requestId": { "$ref": "#/$defs/OpaqueId" },
+        "executionId": { "$ref": "#/$defs/OpaqueId" },
+        "bindingId": { "$ref": "#/$defs/OpaqueId" },
+        "generation": { "$ref": "#/$defs/DecimalU64" },
+        "continuationId": { "type": "string", "minLength": 1 },
+        "domainId": { "$ref": "#/$defs/OpaqueId" },
+        "expiresAt": { "$ref": "#/$defs/UtcTimestamp" },
+        "allowedAnswers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "permissionCeiling": { "type": "object" },
+        "state": { "$ref": "#/$defs/HumanActionState" }
+      }
+    },
+    "ProcessIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "hostId",
+        "instanceId",
+        "processHandleRef",
+        "pid",
+        "startedAtTicks",
+        "launchEpoch",
+        "imageDigest",
+        "containmentId"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "hostId": { "$ref": "#/$defs/OpaqueId" },
+        "instanceId": { "$ref": "#/$defs/OpaqueId" },
+        "processHandleRef": { "type": "string", "minLength": 1 },
+        "pid": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "startedAtTicks": {
+          "oneOf": [{ "$ref": "#/$defs/DecimalU64" }, { "type": "null" }]
+        },
+        "launchEpoch": { "$ref": "#/$defs/DecimalU64" },
+        "imageDigest": { "type": "string", "minLength": 1 },
+        "containmentId": { "type": ["string", "null"] }
+      }
+    },
+    "OwnershipIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "stage", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/ErrorCode" },
+        "stage": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "OwnershipResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "observation",
+        "inMemoryState",
+        "persistedState",
+        "durabilityAck",
+        "custodyState",
+        "errors"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "observation": { "enum": ["observed", "not_observed", "unknown"] },
+        "inMemoryState": { "enum": ["recorded", "not_recorded", "unknown"] },
+        "persistedState": { "enum": ["recorded", "not_recorded", "unknown"] },
+        "durabilityAck": { "enum": ["confirmed", "failed", "unknown"] },
+        "custodyState": { "enum": ["retained", "released", "transferred", "unknown"] },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OwnershipIssue" }
+        }
+      }
+    },
+    "SideEffectState": { "enum": ["none", "possible", "confirmed", "unknown"] },
+    "CommandError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "stage",
+        "retryable",
+        "sideEffectState",
+        "correlationId",
+        "message"
+      ],
+      "properties": {
+        "code": { "$ref": "#/$defs/ErrorCode" },
+        "stage": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "sideEffectState": { "$ref": "#/$defs/SideEffectState" },
+        "correlationId": { "$ref": "#/$defs/OpaqueId" },
+        "message": { "type": "string" }
+      }
+    },
+    "CommandSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "ok", "value", "receipt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "ok": { "const": true },
+        "value": {},
+        "receipt": {}
+      }
+    },
+    "CommandFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "ok", "error"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/SchemaVersion" },
+        "ok": { "const": false },
+        "error": { "$ref": "#/$defs/CommandError" }
+      }
+    }
+  }
+}

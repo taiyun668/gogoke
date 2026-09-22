@@ -1,0 +1,25 @@
+{
+  "checkpoint": "MC-003",
+  "restored": 182,
+  "verified": 182,
+  "negative_controls": [
+    {
+      "variant": "missing",
+      "rejected": true
+    },
+    {
+      "variant": "corrupt",
+      "rejected": true
+    },
+    {
+      "variant": "path_escape",
+      "rejected": true
+    },
+    {
+      "variant": "symlink",
+      "rejected": true
+    }
+  ],
+  "negative_rejected": 4,
+  "meaning": "local checkpoint integrity and recovery only, no external timestamp"
+}

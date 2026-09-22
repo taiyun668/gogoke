@@ -1,0 +1,13 @@
+{
+  "schema": "gogoke.sqlite-source-identity.v1",
+  "source": "libsqlite3-sys 0.38.2 bundled amalgamation",
+  "sqlite_version": "3.53.2",
+  "sqlite_source_id": "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24",
+  "sqlite3_c_sha256": "0a409f1633283fa31a9126b11fbfd64a1991c5d30defad07e5745d4667f5e23d",
+  "sqlite3_h_sha256": "9e69a1353a4288450b0d5239ede11fc7f1f4c8e5eb07491fc8317eacb5b7de7e",
+  "archive_sha256": "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8",
+  "license": "SQLite public domain; Rust package wrappers retain their declared licenses",
+  "historical_evidence": "docs/plan/evidence/p05-sqlite-supply-chain/",
+  "patch_state": "UNMODIFIED_INPUT_B1_SCAFFOLD",
+  "same_open_vfs": "NOT_IMPLEMENTED"
+}

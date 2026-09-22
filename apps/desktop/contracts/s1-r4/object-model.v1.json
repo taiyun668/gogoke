@@ -1,0 +1,29 @@
+{
+  "schema": "gogoke.s1-r4.objects.v1",
+  "wire": { "encoding": "utf-8-json", "envelope": ["schema", "objectType", "object"] },
+  "objects": {
+    "RuntimeDriver": ["driverId", "adapterVersion", "artifactDigest", "configSchemaRef", "requiredHostServices", "admissionRef"],
+    "RuntimeInstance": ["instanceId", "driverId", "binaryIdentity", "profileRef", "authRevision", "hostRef", "capacityPoolRef"],
+    "ModelRef": ["runtimeInstanceId", "nativeModelId", "resolvedVersion", "capabilityRevision"],
+    "RoleSpec": ["roleId", "revision", "responsibility", "requiredCapabilities", "delegableCeiling", "reviewIndependence"],
+    "Seat": ["seatId", "roleId", "scope", "domainId", "lifecycle", "grantRef"],
+    "ExecutionRecipe": ["recipeId", "revision", "seatId", "runtimeInstanceId", "modelRef", "toolProfile", "isolationProfile", "contextManifestId", "budgetPolicy", "admissionRef"],
+    "NativeBinding": ["bindingId", "generation", "sourceEpoch", "instanceId", "nativeIdentity", "domainId", "lineageRef", "custodyRef"],
+    "ContextObject": ["contextId", "version", "scope", "domainId", "kind", "contentHash", "sourceRef", "sourceAuthority", "derivedFrom", "validity", "supersedes", "accessPolicyRevision"],
+    "ContextManifest": ["manifestId", "taskId", "seatId", "bindingGeneration", "domainId", "policyRevision", "sourceSnapshot", "requiredConstraints", "includedVersions", "redactions", "selectionDecisionId", "manifestHash"],
+    "ExposureReceipt": ["receiptId", "manifestId", "bindingId", "generation", "evidenceLevel", "nativeSourceCoverage", "taintLabels", "evidenceRefs"],
+    "SessionLineage": ["sessionId", "bindingId", "parentRefs", "operationKind", "inheritedExposure", "sourceEpoch"],
+    "DecisionRecord": ["decisionId", "family", "stateViewHash", "candidateHash", "sourceRevisions", "backend", "modelRequested", "modelResolved", "questionVersion", "probabilities", "nativeConfidence", "calibrationRef", "mode", "state", "actionId"],
+    "OutcomeRecord": ["outcomeId", "decisionId", "actionId", "revision", "labelSource", "evidenceRefs", "observationWindow", "censorStatus", "quality", "cost", "latency", "rework", "safetyEvents"],
+    "CalibrationProfile": ["profileId", "family", "modelVersion", "questionViewVersion", "locale", "taskDomain", "datasetSplitHash", "rubricHash", "sampleCounts", "uncertaintyIntervals", "coverageRisk", "testOnly", "qualificationGrant"],
+    "DreamRun": ["runId", "snapshotHash", "domainId", "budgetLease", "stepReceipts", "preemptionState", "datasetSplitHash", "recipeRef"],
+    "DreamProposal": ["proposalId", "runId", "kind", "basePolicyRevision", "candidateHash", "allowedChangeSet", "evaluationRefs", "heldoutReceipt", "state", "activationGrant", "rollbackRef"]
+  },
+  "states": {
+    "exposure": ["HOST_PREPARED", "HOST_DELIVERED", "NATIVE_ACKED", "INHERITED", "POSSIBLE", "UNKNOWN"],
+    "context": ["ACTIVE", "SUPERSEDED", "CONFLICTED", "STALE", "REVOKED", "ARCHIVED"],
+    "decision": ["REQUESTED", "EVALUATING", "VALIDATED", "COMMITTED", "STALE", "REJECTED", "ABSTAINED", "FAILED", "CANCELLED"],
+    "outcome": ["PENDING", "OBSERVED", "CORRECTED", "CENSORED"],
+    "dream": ["DRAFT", "DEV_VALIDATED", "CALIBRATED", "HOLDOUT_VALIDATED", "SHADOW", "CANARY", "ACTIVE", "REJECTED", "RETIRED", "REVOKED"]
+  }
+}

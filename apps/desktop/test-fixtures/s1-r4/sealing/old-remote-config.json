@@ -1,0 +1,17 @@
+{
+  "backendMode": "remote",
+  "remoteBackendProvider": "tcp",
+  "remoteBackendHost": "fixture.invalid:4732",
+  "remoteBackendToken": "fixture-token",
+  "remoteBackends": [
+    {
+      "id": "legacy-remote",
+      "name": "Legacy remote",
+      "provider": "tcp",
+      "host": "fixture.invalid:4732",
+      "token": "fixture-token",
+      "lastConnectedAtMs": 1700000000000
+    }
+  ],
+  "activeRemoteBackendId": "legacy-remote"
+}

@@ -1,0 +1,105 @@
+name: gogoke native-host CI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-host-windows-real-axes:
+    name: Native host Windows real process axes
+    timeout-minutes: 30
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Build and run required native-host process axes
+        id: native-axes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = 'apps/desktop/native-host/Cargo.toml'
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $axes = @(
+            @{ id = 'b07_two_process'; target = 'apps/desktop/native-host/tests/b07_two_process.rs' },
+            @{ id = 'host_typed_ops'; target = 'apps/desktop/native-host/tests/host_typed_ops.rs' }
+          )
+          $results = @()
+          $failed = $false
+          foreach ($axis in $axes) {
+            $log = Join-Path $evidenceRoot "$($axis.id).log"
+            if (-not (Test-Path -LiteralPath $axis.target -PathType Leaf)) {
+              $results += [ordered]@{
+                axis = $axis.id
+                target = $axis.target
+                state = 'FAIL_INSTRUMENT'
+                exit_code = $null
+                discovered = 0
+                executed = 0
+                passed = 0
+                failed = 0
+                skipped = 0
+                reason = 'TARGET_MISSING'
+                log = $log
+              }
+              $failed = $true
+              continue
+            }
+            $output = & cargo test --locked --manifest-path $manifest --test $axis.id -- --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Tee-Object -FilePath $log | Write-Host
+            $text = $output -join "`n"
+            $running = [regex]::Matches($text, '(?m)^running (\d+) tests?$')
+            $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+            $discovered = if ($running.Count -eq 0) { 0 } else { ($running | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum }
+            $passed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[2].Value } | Measure-Object -Sum).Sum }
+            $testFailed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[3].Value } | Measure-Object -Sum).Sum }
+            $skipped = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[4].Value } | Measure-Object -Sum).Sum }
+            $executed = $passed + $testFailed
+            $instrumentOk = $summaries.Count -gt 0 -and $discovered -gt 0 -and $executed -gt 0
+            $state = if (-not $instrumentOk) { 'FAIL_INSTRUMENT' } elseif ($exitCode -ne 0 -or $testFailed -ne 0) { 'FAIL' } else { 'PASS' }
+            $reason = if (-not $instrumentOk) { 'ZERO_TESTS_OR_MACHINE_SUMMARY_MISSING' } elseif ($exitCode -ne 0 -or $testFailed -ne 0) { 'TEST_FAILURE' } else { $null }
+            $results += [ordered]@{
+              axis = $axis.id
+              target = $axis.target
+              state = $state
+              exit_code = $exitCode
+              discovered = $discovered
+              executed = $executed
+              passed = $passed
+              failed = $testFailed
+              skipped = $skipped
+              reason = $reason
+              log = $log
+            }
+            if ($state -ne 'PASS') { $failed = $true }
+          }
+          $machineResult = Join-Path $evidenceRoot 'machine-result.json'
+          [ordered]@{
+            schema = 'gogoke.native-host-ci-evidence.v1'
+            commit_sha = '${{ github.sha }}'
+            run_id = '${{ github.run_id }}'
+            run_attempt = '${{ github.run_attempt }}'
+            runner_os = '${{ runner.os }}'
+            runner_image = $env:ImageOS
+            evidence_scope = 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP'
+            axes = $results
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
+          "machine_result=$machineResult" >> $env:GITHUB_OUTPUT
+          if ($failed) { throw 'One or more required native-host axes failed or did not execute.' }
+      - name: Upload native-host machine evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-native-host-evidence
+          if-no-files-found: error
+          retention-days: 30

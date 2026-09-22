@@ -1,0 +1,21 @@
+{
+  "schema": "gogoke.s1-r4.field-rules.v1",
+  "objects": {
+    "RuntimeDriver": {"driverId":"driverId","adapterVersion":"string","artifactDigest":"string","configSchemaRef":"string","requiredHostServices":"stringArray","admissionRef":"string"},
+    "RuntimeInstance": {"instanceId":"instanceId","driverId":"driverId","binaryIdentity":"string","profileRef":"string","authRevision":"u64","hostRef":"string","capacityPoolRef":"string"},
+    "ModelRef": {"runtimeInstanceId":"instanceId","nativeModelId":"string","resolvedVersion":"string","capabilityRevision":"u64"},
+    "RoleSpec": {"roleId":"string","revision":"u64","responsibility":"string","requiredCapabilities":"stringArray","delegableCeiling":"json","reviewIndependence":"boolean"},
+    "Seat": {"seatId":"string","roleId":"string","scope":"string","domainId":"string","lifecycle":"string","grantRef":"string"},
+    "ExecutionRecipe": {"recipeId":"string","revision":"u64","seatId":"string","runtimeInstanceId":"instanceId","modelRef":"jsonObject","toolProfile":"json","isolationProfile":"json","contextManifestId":"string","budgetPolicy":"json","admissionRef":"string"},
+    "NativeBinding": {"bindingId":"string","generation":"u64","sourceEpoch":"u64","instanceId":"instanceId","nativeIdentity":"string","domainId":"string","lineageRef":"string","custodyRef":"string"},
+    "ContextObject": {"contextId":"string","version":"u64","scope":["enum",["GLOBAL","PROJECT","SESSION"]],"domainId":"string","kind":"string","contentHash":"string","sourceRef":"json","sourceAuthority":"json","derivedFrom":"stringArray","validity":["enum",["ACTIVE","SUPERSEDED","CONFLICTED","STALE","REVOKED","ARCHIVED"]],"supersedes":"stringArray","accessPolicyRevision":"u64"},
+    "ContextManifest": {"manifestId":"string","taskId":"string","seatId":"string","bindingGeneration":"u64","domainId":"string","policyRevision":"u64","sourceSnapshot":"json","requiredConstraints":"jsonArray","includedVersions":"jsonArray","redactions":"jsonArray","selectionDecisionId":"string","manifestHash":"string"},
+    "ExposureReceipt": {"receiptId":"string","manifestId":"string","bindingId":"string","generation":"u64","evidenceLevel":["enum",["HOST_PREPARED","HOST_DELIVERED","NATIVE_ACKED","INHERITED","POSSIBLE","UNKNOWN"]],"nativeSourceCoverage":"json","taintLabels":"stringArray","evidenceRefs":"stringArray"},
+    "SessionLineage": {"sessionId":"string","bindingId":"string","parentRefs":"stringArray","operationKind":"string","inheritedExposure":"json","sourceEpoch":"u64"},
+    "DecisionRecord": {"decisionId":"string","family":"string","stateViewHash":"string","candidateHash":"string","sourceRevisions":"jsonObject","backend":"string","modelRequested":"string","modelResolved":"string","questionVersion":"string","probabilities":"jsonObject","nativeConfidence":"json","calibrationRef":"string","mode":"string","state":["enum",["REQUESTED","EVALUATING","VALIDATED","COMMITTED","STALE","REJECTED","ABSTAINED","FAILED","CANCELLED"]],"actionId":"string"},
+    "OutcomeRecord": {"outcomeId":"string","decisionId":"string","actionId":"string","revision":"u64","labelSource":"string","evidenceRefs":"stringArray","observationWindow":"json","censorStatus":["enum",["PENDING","OBSERVED","CORRECTED","CENSORED"]],"quality":"json","cost":"json","latency":"json","rework":"json","safetyEvents":"jsonArray"},
+    "CalibrationProfile": {"profileId":"string","family":"string","modelVersion":"string","questionViewVersion":"string","locale":"string","taskDomain":"string","datasetSplitHash":"string","rubricHash":"string","sampleCounts":"jsonObject","uncertaintyIntervals":"jsonObject","coverageRisk":"json","testOnly":"boolean","qualificationGrant":"json"},
+    "DreamRun": {"runId":"string","snapshotHash":"string","domainId":"string","budgetLease":"json","stepReceipts":"stringArray","preemptionState":"string","datasetSplitHash":"string","recipeRef":"string"},
+    "DreamProposal": {"proposalId":"string","runId":"string","kind":"string","basePolicyRevision":"u64","candidateHash":"string","allowedChangeSet":"json","evaluationRefs":"stringArray","heldoutReceipt":"string","state":["enum",["DRAFT","DEV_VALIDATED","CALIBRATED","HOLDOUT_VALIDATED","SHADOW","CANARY","ACTIVE","REJECTED","RETIRED","REVOKED"]],"activationGrant":"json","rollbackRef":"string"}
+  }
+}

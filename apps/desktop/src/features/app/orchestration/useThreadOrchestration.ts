@@ -1,0 +1,515 @@
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { pushErrorToast } from "@/services/toasts";
+import type {
+  AccessMode,
+  AppMention,
+  AppSettings,
+  ComposerSendIntent,
+  ServiceTier,
+} from "@/types";
+import { normalizeCodexArgsInput } from "@/utils/codexArgsInput";
+import { useThreadCodexParams } from "@threads/hooks/useThreadCodexParams";
+import { getIgnoredCodexArgsFlagsMetadata } from "@threads/utils/codexArgsProfiles";
+import {
+  buildThreadCodexSeedPatch,
+  createPendingThreadSeed,
+  NO_THREAD_SCOPE_SUFFIX,
+  resolveThreadCodexState,
+  type PendingNewThreadSeed,
+} from "@threads/utils/threadCodexParamsSeed";
+import { makeThreadCodexParamsKey } from "@threads/utils/threadStorage";
+import { useThreadCodexOrchestration } from "./useThreadCodexOrchestration";
+
+type SetState<T> = Dispatch<SetStateAction<T>>;
+
+type PersistThreadCodexParams = (
+  patch: {
+    modelId?: string | null;
+    effort?: string | null;
+    serviceTier?: ServiceTier | null | undefined;
+    accessMode?: AccessMode | null;
+    collaborationModeId?: string | null;
+    codexArgsOverride?: string | null;
+  },
+) => void;
+
+type UseThreadSelectionHandlersOrchestrationParams = {
+  appSettingsLoading: boolean;
+  setAppSettings: SetState<AppSettings>;
+  queueSaveSettings: (next: AppSettings) => Promise<AppSettings | void>;
+  activeThreadIdRef: MutableRefObject<string | null>;
+  setSelectedModelId: (id: string | null) => void;
+  setSelectedEffort: (effort: string | null) => void;
+  setSelectedServiceTier: (tier: ServiceTier | null | undefined) => void;
+  setSelectedCollaborationModeId: (id: string | null) => void;
+  setAccessMode: SetState<AccessMode>;
+  setSelectedCodexArgsOverride?: (value: string | null) => void;
+  persistThreadCodexParams: PersistThreadCodexParams;
+};
+
+type UseThreadCodexBootstrapOrchestrationParams = {
+  activeWorkspaceId: string | null | undefined;
+};
+
+type UseThreadCodexSyncOrchestrationParams = {
+  activeWorkspaceId: string | null | undefined;
+  activeThreadId: string | null;
+  appSettings: Pick<
+    AppSettings,
+    "defaultAccessMode" | "lastComposerModelId" | "lastComposerReasoningEffort"
+  >;
+  threadCodexParamsVersion: number;
+  getThreadCodexParams: ReturnType<typeof useThreadCodexParams>["getThreadCodexParams"];
+  patchThreadCodexParams: ReturnType<typeof useThreadCodexParams>["patchThreadCodexParams"];
+  setThreadCodexSelectionKey: SetState<string | null>;
+  setAccessMode: SetState<AccessMode>;
+  setPreferredModelId: SetState<string | null>;
+  setPreferredEffort: SetState<string | null>;
+  setPreferredServiceTier: SetState<ServiceTier | null | undefined>;
+  setPreferredCollabModeId: SetState<string | null>;
+  setPreferredCodexArgsOverride?: SetState<string | null>;
+  activeThreadIdRef: MutableRefObject<string | null>;
+  pendingNewThreadSeedRef: MutableRefObject<PendingNewThreadSeed | null>;
+  selectedModelId: string | null;
+  resolvedEffort: string | null;
+  selectedServiceTier: ServiceTier | null | undefined;
+  accessMode: AccessMode;
+  selectedCollaborationModeId: string | null;
+  selectedCodexArgsOverride?: string | null;
+};
+
+type MainTab = "home" | "projects" | "codex" | "git" | "log";
+
+type SendOrQueueHandler = (
+  text: string,
+  images: string[],
+  appMentions?: AppMention[],
+  submitIntent?: ComposerSendIntent,
+) => Promise<void>;
+
+type UseThreadUiOrchestrationParams = {
+  activeWorkspaceId: string | null | undefined;
+  activeThreadId: string | null;
+  accessMode: AccessMode;
+  selectedServiceTier: ServiceTier | null | undefined;
+  selectedCollaborationModeId: string | null;
+  selectedCodexArgsOverride?: string | null;
+  pendingNewThreadSeedRef: MutableRefObject<PendingNewThreadSeed | null>;
+  runWithDraftStart: (runner: () => Promise<void>) => Promise<void>;
+  handleComposerSend: SendOrQueueHandler;
+  clearDraftState: () => void;
+  exitDiffView: () => void;
+  resetPullRequestSelection: () => void;
+  selectWorkspace: (workspaceId: string) => void;
+  setActiveThreadId: (threadId: string | null, workspaceId?: string) => void;
+  setActiveTab: SetState<MainTab>;
+  isCompact: boolean;
+  removeThread: (workspaceId: string, threadId: string) => void;
+  clearDraftForThread: (threadId: string) => void;
+  removeImagesForThread: (threadId: string) => void;
+};
+
+export function useThreadCodexBootstrapOrchestration({
+  activeWorkspaceId,
+}: UseThreadCodexBootstrapOrchestrationParams) {
+  const activeWorkspaceIdForParamsRef = useRef<string | null>(activeWorkspaceId ?? null);
+
+  useEffect(() => {
+    activeWorkspaceIdForParamsRef.current = activeWorkspaceId ?? null;
+  }, [activeWorkspaceId]);
+
+  return useThreadCodexOrchestration({ activeWorkspaceIdForParamsRef });
+}
+
+export function useThreadCodexSyncOrchestration({
+  activeWorkspaceId,
+  activeThreadId,
+  appSettings,
+  threadCodexParamsVersion,
+  getThreadCodexParams,
+  patchThreadCodexParams,
+  setThreadCodexSelectionKey,
+  setAccessMode,
+  setPreferredModelId,
+  setPreferredEffort,
+  setPreferredServiceTier,
+  setPreferredCollabModeId,
+  setPreferredCodexArgsOverride,
+  activeThreadIdRef,
+  pendingNewThreadSeedRef,
+  selectedModelId,
+  resolvedEffort,
+  selectedServiceTier,
+  accessMode,
+  selectedCollaborationModeId,
+  selectedCodexArgsOverride,
+}: UseThreadCodexSyncOrchestrationParams) {
+  useLayoutEffect(() => {
+    const workspaceId = activeWorkspaceId ?? null;
+    const threadId = activeThreadId ?? null;
+    activeThreadIdRef.current = threadId;
+
+    if (!workspaceId) {
+      return;
+    }
+
+    const stored = getThreadCodexParams(
+      workspaceId,
+      threadId ?? NO_THREAD_SCOPE_SUFFIX,
+    );
+    const noThreadStored = getThreadCodexParams(workspaceId, NO_THREAD_SCOPE_SUFFIX);
+    const resolved = resolveThreadCodexState({
+      workspaceId,
+      threadId,
+      defaultAccessMode: appSettings.defaultAccessMode,
+      lastComposerModelId: appSettings.lastComposerModelId,
+      lastComposerReasoningEffort: appSettings.lastComposerReasoningEffort,
+      stored,
+      noThreadStored,
+      pendingSeed: pendingNewThreadSeedRef.current,
+    });
+
+    setThreadCodexSelectionKey(resolved.scopeKey);
+    setAccessMode(resolved.accessMode);
+    setPreferredModelId(resolved.preferredModelId);
+    setPreferredEffort(resolved.preferredEffort);
+    setPreferredServiceTier(resolved.preferredServiceTier);
+    setPreferredCollabModeId(resolved.preferredCollabModeId);
+    setPreferredCodexArgsOverride?.(resolved.preferredCodexArgsOverride);
+  }, [
+    activeThreadId,
+    activeWorkspaceId,
+    appSettings.defaultAccessMode,
+    appSettings.lastComposerModelId,
+    appSettings.lastComposerReasoningEffort,
+    getThreadCodexParams,
+    setPreferredCollabModeId,
+    setPreferredCodexArgsOverride,
+    setPreferredEffort,
+    setPreferredModelId,
+    setPreferredServiceTier,
+    setThreadCodexSelectionKey,
+    threadCodexParamsVersion,
+    setAccessMode,
+    activeThreadIdRef,
+    pendingNewThreadSeedRef,
+  ]);
+
+  const seededThreadParamsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const workspaceId = activeWorkspaceId ?? null;
+    const threadId = activeThreadId ?? null;
+    if (!workspaceId || !threadId) {
+      return;
+    }
+
+    const key = makeThreadCodexParamsKey(workspaceId, threadId);
+    if (seededThreadParamsRef.current.has(key)) {
+      return;
+    }
+
+    const stored = getThreadCodexParams(workspaceId, threadId);
+    if (stored) {
+      seededThreadParamsRef.current.add(key);
+      return;
+    }
+
+    seededThreadParamsRef.current.add(key);
+    const pendingSeed = pendingNewThreadSeedRef.current;
+    patchThreadCodexParams(
+      workspaceId,
+      threadId,
+      buildThreadCodexSeedPatch({
+        workspaceId,
+        selectedModelId,
+        resolvedEffort,
+        accessMode,
+        selectedCollaborationModeId,
+        codexArgsOverride:
+          selectedCodexArgsOverride === undefined
+            ? undefined
+            : selectedCodexArgsOverride,
+        pendingSeed,
+      }),
+    );
+    if (pendingSeed?.workspaceId === workspaceId) {
+      pendingNewThreadSeedRef.current = null;
+    }
+  }, [
+    activeThreadId,
+    activeWorkspaceId,
+    accessMode,
+    getThreadCodexParams,
+    patchThreadCodexParams,
+    resolvedEffort,
+    selectedCollaborationModeId,
+    selectedCodexArgsOverride,
+    selectedModelId,
+    pendingNewThreadSeedRef,
+  ]);
+
+  useEffect(() => {
+    const workspaceId = activeWorkspaceId ?? null;
+    const threadId = activeThreadId ?? null;
+    if (!workspaceId || !threadId || selectedServiceTier === undefined) {
+      return;
+    }
+
+    const noThreadStored = getThreadCodexParams(workspaceId, NO_THREAD_SCOPE_SUFFIX);
+    if (noThreadStored?.serviceTier !== undefined) {
+      return;
+    }
+
+    patchThreadCodexParams(workspaceId, NO_THREAD_SCOPE_SUFFIX, {
+      serviceTier: selectedServiceTier,
+    });
+  }, [
+    activeThreadId,
+    activeWorkspaceId,
+    getThreadCodexParams,
+    patchThreadCodexParams,
+    selectedServiceTier,
+  ]);
+}
+
+export function useThreadSelectionHandlersOrchestration({
+  appSettingsLoading,
+  setAppSettings,
+  queueSaveSettings,
+  activeThreadIdRef,
+  setSelectedModelId,
+  setSelectedEffort,
+  setSelectedServiceTier,
+  setSelectedCollaborationModeId,
+  setAccessMode,
+  setSelectedCodexArgsOverride,
+  persistThreadCodexParams,
+}: UseThreadSelectionHandlersOrchestrationParams) {
+  const handleSelectModel = useCallback(
+    (id: string | null) => {
+      setSelectedModelId(id);
+      const hasActiveThread = Boolean(activeThreadIdRef.current);
+      if (!appSettingsLoading && !hasActiveThread) {
+        setAppSettings((current) => {
+          if (current.lastComposerModelId === id) {
+            return current;
+          }
+          const nextSettings = { ...current, lastComposerModelId: id };
+          void queueSaveSettings(nextSettings);
+          return nextSettings;
+        });
+      }
+      persistThreadCodexParams({ modelId: id });
+    },
+    [
+      activeThreadIdRef,
+      appSettingsLoading,
+      persistThreadCodexParams,
+      queueSaveSettings,
+      setAppSettings,
+      setSelectedModelId,
+    ],
+  );
+
+  const handleSelectEffort = useCallback(
+    (raw: string | null) => {
+      const next = typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+      setSelectedEffort(next);
+      const hasActiveThread = Boolean(activeThreadIdRef.current);
+      if (!appSettingsLoading && !hasActiveThread) {
+        setAppSettings((current) => {
+          if (current.lastComposerReasoningEffort === next) {
+            return current;
+          }
+          const nextSettings = { ...current, lastComposerReasoningEffort: next };
+          void queueSaveSettings(nextSettings);
+          return nextSettings;
+        });
+      }
+      persistThreadCodexParams({ effort: next });
+    },
+    [
+      activeThreadIdRef,
+      appSettingsLoading,
+      persistThreadCodexParams,
+      queueSaveSettings,
+      setAppSettings,
+      setSelectedEffort,
+    ],
+  );
+
+  const handleSelectServiceTier = useCallback(
+    (tier: ServiceTier | null | undefined) => {
+      setSelectedServiceTier(tier);
+      persistThreadCodexParams({ serviceTier: tier });
+    },
+    [persistThreadCodexParams, setSelectedServiceTier],
+  );
+
+  const handleSelectCollaborationMode = useCallback(
+    (id: string | null) => {
+      setSelectedCollaborationModeId(id);
+      persistThreadCodexParams({ collaborationModeId: id });
+    },
+    [persistThreadCodexParams, setSelectedCollaborationModeId],
+  );
+
+  const handleSelectAccessMode = useCallback(
+    (mode: AccessMode) => {
+      setAccessMode(mode);
+      persistThreadCodexParams({ accessMode: mode });
+    },
+    [persistThreadCodexParams, setAccessMode],
+  );
+
+  const handleSelectCodexArgsOverride = useCallback(
+    (value: string | null) => {
+      const next = normalizeCodexArgsInput(value);
+      if (next && getIgnoredCodexArgsFlagsMetadata(next).hasIgnoredFlags) {
+        pushErrorToast({
+          title: "Some codex args are ignored",
+          message: "Selected flags are ignored for per-thread overrides.",
+        });
+      }
+      setSelectedCodexArgsOverride?.(next);
+      persistThreadCodexParams({ codexArgsOverride: next });
+    },
+    [persistThreadCodexParams, setSelectedCodexArgsOverride],
+  );
+
+  return {
+    handleSelectModel,
+    handleSelectEffort,
+    handleSelectServiceTier,
+    handleSelectCollaborationMode,
+    handleSelectAccessMode,
+    handleSelectCodexArgsOverride,
+  };
+}
+
+export function useThreadUiOrchestration({
+  activeWorkspaceId,
+  activeThreadId,
+  accessMode,
+  selectedServiceTier,
+  selectedCollaborationModeId,
+  selectedCodexArgsOverride,
+  pendingNewThreadSeedRef,
+  runWithDraftStart,
+  handleComposerSend,
+  clearDraftState,
+  exitDiffView,
+  resetPullRequestSelection,
+  selectWorkspace,
+  setActiveThreadId,
+  setActiveTab,
+  isCompact,
+  removeThread,
+  clearDraftForThread,
+  removeImagesForThread,
+}: UseThreadUiOrchestrationParams) {
+  const rememberPendingNewThreadSeed = useCallback(() => {
+    pendingNewThreadSeedRef.current = createPendingThreadSeed({
+      activeThreadId: activeThreadId ?? null,
+      activeWorkspaceId: activeWorkspaceId ?? null,
+      selectedServiceTier,
+      selectedCollaborationModeId,
+      accessMode,
+      codexArgsOverride: selectedCodexArgsOverride ?? null,
+    });
+  }, [
+    accessMode,
+    activeThreadId,
+    activeWorkspaceId,
+    pendingNewThreadSeedRef,
+    selectedServiceTier,
+    selectedCollaborationModeId,
+    selectedCodexArgsOverride,
+  ]);
+
+  const handleComposerSendWithDraftStart = useCallback(
+    (
+      text: string,
+      images: string[],
+      appMentions?: AppMention[],
+      submitIntent?: ComposerSendIntent,
+    ) => {
+      rememberPendingNewThreadSeed();
+      return runWithDraftStart(() =>
+        appMentions && appMentions.length > 0
+          ? handleComposerSend(text, images, appMentions, submitIntent)
+          : handleComposerSend(text, images, undefined, submitIntent),
+      );
+    },
+    [handleComposerSend, rememberPendingNewThreadSeed, runWithDraftStart],
+  );
+
+  const handleSelectWorkspaceInstance = useCallback(
+    (workspaceId: string, threadId: string) => {
+      exitDiffView();
+      resetPullRequestSelection();
+      clearDraftState();
+      selectWorkspace(workspaceId);
+      setActiveThreadId(threadId, workspaceId);
+      if (isCompact) {
+        setActiveTab("codex");
+      }
+    },
+    [
+      clearDraftState,
+      exitDiffView,
+      isCompact,
+      resetPullRequestSelection,
+      selectWorkspace,
+      setActiveTab,
+      setActiveThreadId,
+    ],
+  );
+
+  const handleOpenThreadLink = useCallback(
+    (threadId: string, workspaceId?: string | null) => {
+      const targetWorkspaceId = workspaceId ?? activeWorkspaceId;
+      if (!targetWorkspaceId) {
+        return;
+      }
+      exitDiffView();
+      resetPullRequestSelection();
+      clearDraftState();
+      if (targetWorkspaceId !== activeWorkspaceId) {
+        selectWorkspace(targetWorkspaceId);
+      }
+      setActiveThreadId(threadId, targetWorkspaceId);
+    },
+    [
+      activeWorkspaceId,
+      clearDraftState,
+      exitDiffView,
+      resetPullRequestSelection,
+      selectWorkspace,
+      setActiveThreadId,
+    ],
+  );
+
+  const handleArchiveActiveThread = useCallback(() => {
+    if (!activeWorkspaceId || !activeThreadId) {
+      return;
+    }
+    removeThread(activeWorkspaceId, activeThreadId);
+    clearDraftForThread(activeThreadId);
+    removeImagesForThread(activeThreadId);
+  }, [
+    activeThreadId,
+    activeWorkspaceId,
+    clearDraftForThread,
+    removeImagesForThread,
+    removeThread,
+  ]);
+
+  return {
+    handleComposerSendWithDraftStart,
+    handleSelectWorkspaceInstance,
+    handleOpenThreadLink,
+    handleArchiveActiveThread,
+  };
+}

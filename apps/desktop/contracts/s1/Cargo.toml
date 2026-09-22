@@ -1,0 +1,17 @@
+[package]
+name = "gogoke-public-contracts-s1"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+
+[lib]
+path = "../../src-tauri/src/public_core/mod.rs"
+
+[dependencies]
+chrono = { version = "=0.4.43", features = ["clock"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+uuid = { version = "=1.20.0", features = ["v4"] }
+
+[workspace]

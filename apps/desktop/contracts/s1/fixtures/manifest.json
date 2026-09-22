@@ -1,0 +1,311 @@
+{
+  "schemaVersion": 1,
+  "canonicalPositive": [
+    {
+      "file": "positive/session.json",
+      "target": "Session"
+    },
+    {
+      "file": "positive/public-event-no-native-thread-turn.json",
+      "target": "PublicEvent"
+    },
+    {
+      "file": "positive/ownership-unknown.json",
+      "target": "OwnershipResult"
+    },
+    {
+      "file": "positive/native-binding.json",
+      "target": "NativeBinding"
+    },
+    {
+      "file": "positive/execution.json",
+      "target": "Execution"
+    },
+    {
+      "file": "positive/delivery.json",
+      "target": "Delivery"
+    },
+    {
+      "file": "positive/capability-snapshot.json",
+      "target": "CapabilitySnapshot"
+    },
+    {
+      "file": "positive/context-package.json",
+      "target": "ContextPackage"
+    },
+    {
+      "file": "positive/human-action-request.json",
+      "target": "HumanActionRequest"
+    },
+    {
+      "file": "positive/process-identity.json",
+      "target": "ProcessIdentity"
+    },
+    {
+      "file": "positive/ownership-with-error.json",
+      "target": "OwnershipResult"
+    },
+    {
+      "file": "positive/command-success.json",
+      "target": "CommandSuccess"
+    },
+    {
+      "file": "positive/command-failure.json",
+      "target": "CommandFailure"
+    }
+  ],
+  "negative": [
+    {
+      "file": "negative/duplicate-key.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "DuplicateKey"
+    },
+    {
+      "file": "negative/noncanonical-number.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "NonCanonicalNumber"
+    },
+    {
+      "file": "negative/invalid-utf8.hex",
+      "encoding": "hex",
+      "target": "Session",
+      "error": "InvalidUtf8"
+    },
+    {
+      "file": "negative/missing-required.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "MissingRequiredField"
+    },
+    {
+      "file": "negative/overflow-counter.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "ValueOverflow"
+    },
+    {
+      "file": "negative/unknown-major.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "UnknownMajorVersion"
+    },
+    {
+      "file": "negative/unknown-field.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/invalid-enum.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/invalid-uuid.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/wrong-nullable.json",
+      "encoding": "utf8",
+      "target": "PublicEvent",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/missing-receipt.json",
+      "encoding": "utf8",
+      "target": "CommandSuccess",
+      "error": "MissingRequiredField"
+    },
+    {
+      "file": "negative/pid-string.json",
+      "encoding": "utf8",
+      "target": "ProcessIdentity",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/pid-overflow.json",
+      "encoding": "utf8",
+      "target": "ProcessIdentity",
+      "error": "ValueOverflow"
+    },
+    {
+      "file": "negative/leading-zero-counter.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "NonCanonicalNumber"
+    },
+    {
+      "file": "negative/invalid-calendar.json",
+      "encoding": "utf8",
+      "target": "Execution",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/generic-integer-overflow.json",
+      "encoding": "utf8",
+      "target": "PublicEvent",
+      "error": "NonCanonicalNumber"
+    },
+    {
+      "file": "negative/generic-integer-underflow.json",
+      "encoding": "utf8",
+      "target": "PublicEvent",
+      "error": "NonCanonicalNumber"
+    },
+    {
+      "file": "negative/truncated-object.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "InvalidJson"
+    },
+    {
+      "file": "negative/truncated-string.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "InvalidJson"
+    },
+    {
+      "file": "negative/truncated-array.json",
+      "encoding": "utf8",
+      "target": "PublicEvent",
+      "error": "InvalidJson"
+    },
+    {
+      "file": "negative/empty-capability-name.json",
+      "encoding": "utf8",
+      "target": "CapabilitySnapshot",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/schema-version-wrong-type.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/schema-version-negative.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/schema-version-zero.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/schema-version-fractional.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/schema-version-null.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/schema-version-escaped-key-fractional.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/duplicate-before-schema-version-fractional.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "DuplicateKey"
+    },
+    {
+      "file": "negative/schema-version-fractional-before-duplicate.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "DuplicateKey"
+    },
+    {
+      "file": "negative/generic-integer-overflow-before-escaped-duplicate.json",
+      "encoding": "utf8",
+      "target": "PublicEvent",
+      "error": "DuplicateKey"
+    },
+    {
+      "file": "negative/timestamp-leap-second.json",
+      "encoding": "utf8",
+      "target": "Execution",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/timestamp-negative-zero-offset.json",
+      "encoding": "utf8",
+      "target": "Execution",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/timestamp-lowercase-tz.json",
+      "encoding": "utf8",
+      "target": "Execution",
+      "error": "SchemaViolation"
+    },
+    {
+      "file": "negative/escaped-lone-high-surrogate.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "InvalidJson"
+    },
+    {
+      "file": "negative/escaped-lone-low-surrogate.json",
+      "encoding": "utf8",
+      "target": "Session",
+      "error": "InvalidJson"
+    }
+  ],
+  "nativeProtocolSources": [
+    {
+      "provider": "codex",
+      "sourcePath": "apps/desktop/contracts/s1/fixtures/native-protocol-sources/fake-codex-app-server.mjs",
+      "sha256": "5a391058eb6681fe1a5f7e1a354a413cbb92723308c1e957b7dc72399966fed3",
+      "sourceAnchor": "send({ id: message.id, result: { userAgent: \"fake-codex-app-server\" } });",
+      "representativeFrame": "{\"id\":1,\"result\":{\"userAgent\":\"fake-codex-app-server\"}}",
+      "expectedError": "MissingRequiredField"
+    },
+    {
+      "provider": "codex",
+      "sourcePath": "apps/desktop/contracts/s1/fixtures/native-protocol-sources/fake-codex-native-input.mjs",
+      "sha256": "ef966cfd70ba256b0370eb23a70c87b4a2e497abc301057386dbecf634725469",
+      "sourceAnchor": "send({ method: \"turn/started\", params: { threadId: \"fake-codex-thread\", turn: { id: activeTurnId } } });",
+      "representativeFrame": "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"fake-codex-thread\",\"turn\":{\"id\":\"fake-input-turn\"}}}",
+      "expectedError": "MissingRequiredField"
+    },
+    {
+      "provider": "claude",
+      "sourcePath": "apps/desktop/contracts/s1/fixtures/native-protocol-sources/fake-claude-stream.mjs",
+      "sha256": "1e7588a81fa9ffaea3376996bee486729a4773462ddcae17b961a6b4a79040ca",
+      "sourceAnchor": "type: \"assistant\", uuid: \"fake-assistant\"",
+      "representativeFrame": "{\"type\":\"assistant\",\"uuid\":\"fake-assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"partial output\"}]}}",
+      "expectedError": "MissingRequiredField"
+    },
+    {
+      "provider": "claude",
+      "sourcePath": "apps/desktop/contracts/s1/fixtures/native-protocol-sources/fake-claude-native-input.mjs",
+      "sha256": "169058919394c8adf31181ed099b3c0727ab450123560f03a35ba8c55a3355fb",
+      "sourceAnchor": "send({ type: \"system\", subtype: \"init\", session_id: \"fake-claude-session\", apiKeySource: \"none\" });",
+      "representativeFrame": "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fake-claude-session\",\"apiKeySource\":\"none\"}",
+      "expectedError": "MissingRequiredField"
+    },
+    {
+      "provider": "grok",
+      "sourcePath": "apps/desktop/contracts/s1/fixtures/native-protocol-sources/fake-grok-acp.mjs",
+      "sha256": "697ade66293f4b957f7146b0d3ceb4df33f3b8e1bdfa9f0c73eda86418e3493d",
+      "sourceAnchor": "protocolVersion: 1,",
+      "representativeFrame": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"authMethods\":[{\"id\":\"cached_token\"}],\"defaultAuthMethodId\":\"cached_token\"}}",
+      "expectedError": "MissingRequiredField"
+    }
+  ]
+}

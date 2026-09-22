@@ -1,0 +1,63 @@
+import { useMemo, useState } from "react";
+import { useI18n } from "@/i18n";
+
+type PlanReadyFollowupMessageProps = {
+  onAccept: () => void;
+  onSubmitChanges: (changes: string) => void;
+};
+
+export function PlanReadyFollowupMessage({
+  onAccept,
+  onSubmitChanges,
+}: PlanReadyFollowupMessageProps) {
+  const { tx } = useI18n();
+  const [changes, setChanges] = useState("");
+  const trimmed = useMemo(() => changes.trim(), [changes]);
+
+  return (
+    <div className="message request-user-input-message">
+      <div
+        className="bubble request-user-input-card"
+        role="group"
+        aria-label={tx("Plan ready")}
+      >
+        <div className="request-user-input-header">
+          <div className="request-user-input-title">{tx("Plan ready")}</div>
+        </div>
+        <div className="request-user-input-body">
+          <section className="request-user-input-question">
+            <div className="request-user-input-question-text">
+              {tx("Start building from this plan, or describe changes to the plan.")}
+            </div>
+            <textarea
+              className="request-user-input-notes"
+              placeholder={tx("Describe what you want to change in the plan...")}
+              value={changes}
+              onChange={(event) => setChanges(event.target.value)}
+              rows={3}
+            />
+          </section>
+        </div>
+        <div className="request-user-input-actions">
+          <button
+            type="button"
+            className="plan-ready-followup-change"
+            onClick={() => {
+              if (!trimmed) {
+                return;
+              }
+              onSubmitChanges(trimmed);
+              setChanges("");
+            }}
+            disabled={!trimmed}
+          >
+            {tx("Send changes")}
+          </button>
+          <button type="button" className="primary" onClick={onAccept}>
+            {tx("Implement this plan")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,1 @@
+{"custodyState":"retained","durabilityAck":"unknown","errors":[{"code":"CANCELLED","message":"not durable","stage":"fixture"}],"inMemoryState":"unknown","observation":"unknown","persistedState":"unknown","schemaVersion":1}

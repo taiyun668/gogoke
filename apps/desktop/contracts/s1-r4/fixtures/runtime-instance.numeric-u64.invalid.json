@@ -1,0 +1,1 @@
+{"schema":"gogoke.s1-r4.objects.v1","objectType":"RuntimeInstance","object":{"instanceId":"one","driverId":"novel","binaryIdentity":"sha256:x","profileRef":"p","authRevision":1,"hostRef":"h","capacityPoolRef":"c"}}

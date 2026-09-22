@@ -1,0 +1,714 @@
+GOGOKE_ROUTE_B_PATCH_V1
+
+BEGIN INSERT_BEFORE
+ANCHOR
+static int winClose(sqlite3_file *id){
+CODE
+/* GOGOKE_ROUTE_B_SAME_OPEN_BEGIN: generated from the fixed SQLite amalgamation. */
+typedef struct GogokeRouteBMainHandoff GogokeRouteBMainHandoff;
+struct GogokeRouteBMainHandoff {
+  HANDLE h;
+  char *zPath;
+  int createdNew;
+  int readWrite;
+  unsigned long long rootVolume;
+  unsigned char rootFileId[16];
+  DWORD ownerThreadId;
+  unsigned long generation;
+};
+
+static volatile LONG gogokeRouteBStrict = 0;
+static volatile LONG gogokeRouteBPending = 0;
+static volatile LONG gogokeRouteBStrictOwnerThreadId = 0;
+static GogokeRouteBMainHandoff gogokeRouteBHandshake = {
+  INVALID_HANDLE_VALUE, 0, 0, 0, 0, {0}, 0, 0
+};
+static volatile LONG gogokeRouteBGeneration = 0;
+static volatile LONG gogokeRouteBAdopted = 0;
+static volatile LONG gogokeRouteBLastAdoptedGeneration = 0;
+static volatile LONG gogokeRouteBLastOwnerGeneration = 0;
+static volatile LONG gogokeRouteBStockMainOpen = 0;
+static volatile LONG gogokeRouteBRejected = 0;
+static volatile LONG gogokeRouteBCloseSuccess = 0;
+static volatile LONG gogokeRouteBCloseUnknown = 0;
+static volatile LONG gogokeRouteBLastClosedGeneration = 0;
+static volatile LONG gogokeRouteBCloseLedgerOverflow = 0;
+#ifdef GOGOKE_ROUTE_B_TESTING
+static volatile LONG gogokeRouteBForceNextCloseFailure = 0;
+static volatile LONG gogokeRouteBTestFullPathnameReentry = 0;
+static volatile LONG gogokeRouteBLastReentryResult = 0;
+#endif
+static __declspec(thread) int gogokeRouteBInMainOpen = 0;
+
+#define GOGOKE_ROUTE_B_CLOSE_LEDGER_SLOTS 32
+typedef struct GogokeRouteBCloseRecord GogokeRouteBCloseRecord;
+struct GogokeRouteBCloseRecord {
+  volatile LONG generation;
+  volatile LONG calls;
+  volatile LONG result;
+  volatile LONG error;
+};
+static GogokeRouteBCloseRecord gogokeRouteBCloseLedger[
+  GOGOKE_ROUTE_B_CLOSE_LEDGER_SLOTS
+];
+static volatile LONG gogokeRouteBCloseLedgerCursor = 0;
+static __declspec(thread) unsigned long gogokeRouteBThreadAdoptedGeneration = 0;
+
+static void gogokeRouteBRecordClose(
+  unsigned long generation,
+  int result,
+  DWORD error
+){
+  LONG slot = InterlockedIncrement(&gogokeRouteBCloseLedgerCursor)-1;
+  unsigned long index = ((unsigned long)slot) % GOGOKE_ROUTE_B_CLOSE_LEDGER_SLOTS;
+  GogokeRouteBCloseRecord *p = &gogokeRouteBCloseLedger[index];
+  LONG previous = InterlockedCompareExchange(&p->generation, 0, 0);
+  if( previous!=0 && previous!=(LONG)generation ){
+    InterlockedIncrement(&gogokeRouteBCloseLedgerOverflow);
+  }
+  InterlockedExchange(&p->calls, 1);
+  InterlockedExchange(&p->result, result ? 1 : 0);
+  InterlockedExchange(&p->error, (LONG)error);
+  InterlockedExchange(&p->generation, (LONG)generation);
+}
+
+static int gogokeRouteBPathMatches(const char *zName){
+  return zName!=0 && gogokeRouteBHandshake.zPath!=0
+      && strcmp(zName, gogokeRouteBHandshake.zPath)==0;
+}
+
+static int gogokeRouteBPathHasUriQuery(const char *zPath){
+  const char *zSearch = zPath;
+  if( zPath!=0 && zPath[0]=='\\' && zPath[1]=='\\'
+   && zPath[2]=='?' && zPath[3]=='\\' ){
+    zSearch = zPath + 4;
+  }
+  return zSearch!=0 && strchr(zSearch, '?')!=0;
+}
+
+static void gogokeRouteBClearHandshake(void){
+  if( gogokeRouteBHandshake.zPath!=0 ){
+    sqlite3_free(gogokeRouteBHandshake.zPath);
+    gogokeRouteBHandshake.zPath = 0;
+  }
+  gogokeRouteBHandshake.h = INVALID_HANDLE_VALUE;
+  gogokeRouteBHandshake.createdNew = 0;
+  gogokeRouteBHandshake.readWrite = 0;
+  gogokeRouteBHandshake.rootVolume = 0;
+  memset(gogokeRouteBHandshake.rootFileId, 0, sizeof(gogokeRouteBHandshake.rootFileId));
+  gogokeRouteBHandshake.ownerThreadId = 0;
+  gogokeRouteBHandshake.generation = 0;
+  InterlockedExchange(&gogokeRouteBPending, 0);
+}
+
+static int gogokeRouteBHandleAdmissible(HANDLE h, int readWrite){
+  if( h==0 || h==INVALID_HANDLE_VALUE || !readWrite ) return 0;
+  if( GetFileType(h)!=FILE_TYPE_DISK ) return 0;
+  return 1;
+}
+
+SQLITE_API int sqlite3_gogoke_require_main_handle(void){
+  if( InterlockedCompareExchange(&gogokeRouteBStrict, 1, 0)!=0 ){
+    return SQLITE_BUSY;
+  }
+  InterlockedExchange(&gogokeRouteBStrictOwnerThreadId,
+                      (LONG)GetCurrentThreadId());
+  gogokeRouteBThreadAdoptedGeneration = 0;
+  return SQLITE_OK;
+}
+
+SQLITE_API int sqlite3_gogoke_bind_main_handle(
+  void *pHandle,
+  const char *zPath,
+  int createdNew,
+  int readWrite,
+  unsigned long long rootVolume,
+  const unsigned char *pRootFileId,
+  int rootFileIdLength
+){
+  HANDLE h = (HANDLE)pHandle;
+  DWORD ownerThreadId = GetCurrentThreadId();
+  if( InterlockedCompareExchange(&gogokeRouteBStrict, 0, 0)==0
+   || ownerThreadId!=(DWORD)InterlockedCompareExchange(
+        &gogokeRouteBStrictOwnerThreadId, 0, 0)
+   || zPath==0 || zPath[0]==0 || gogokeRouteBPathHasUriQuery(zPath)
+   || pRootFileId==0 || rootFileIdLength!=16
+   || !gogokeRouteBHandleAdmissible(h, readWrite) ){
+    return SQLITE_MISUSE_BKPT;
+  }
+  if( InterlockedCompareExchange(&gogokeRouteBPending, 1, 0)!=0 ){
+    return SQLITE_BUSY;
+  }
+  gogokeRouteBHandshake.zPath = sqlite3_mprintf("%s", zPath);
+  if( gogokeRouteBHandshake.zPath==0 ){
+    InterlockedExchange(&gogokeRouteBPending, 0);
+    return SQLITE_NOMEM_BKPT;
+  }
+  gogokeRouteBHandshake.h = h;
+  gogokeRouteBHandshake.createdNew = createdNew!=0;
+  gogokeRouteBHandshake.readWrite = readWrite!=0;
+  gogokeRouteBHandshake.rootVolume = rootVolume;
+  memcpy(gogokeRouteBHandshake.rootFileId, pRootFileId, 16);
+  gogokeRouteBHandshake.ownerThreadId = ownerThreadId;
+  gogokeRouteBHandshake.generation = (unsigned long)InterlockedIncrement(&gogokeRouteBGeneration);
+  InterlockedExchange(&gogokeRouteBLastOwnerGeneration,
+                      (LONG)gogokeRouteBHandshake.generation);
+  return SQLITE_OK;
+}
+
+SQLITE_API unsigned long sqlite3_gogoke_owner_generation(void){
+  if( GetCurrentThreadId()!=(DWORD)InterlockedCompareExchange(
+        &gogokeRouteBStrictOwnerThreadId, 0, 0) ){
+    return 0;
+  }
+  return gogokeRouteBHandshake.generation;
+}
+
+SQLITE_API void *sqlite3_gogoke_cancel_main_handle(
+  unsigned long expected_generation
+){
+  HANDLE h = INVALID_HANDLE_VALUE;
+  DWORD ownerThreadId = GetCurrentThreadId();
+  if( ownerThreadId!=(DWORD)InterlockedCompareExchange(
+        &gogokeRouteBStrictOwnerThreadId, 0, 0) ){
+    return 0;
+  }
+  if( expected_generation!=0
+   && gogokeRouteBHandshake.generation!=expected_generation ){
+    return 0;
+  }
+  if( InterlockedCompareExchange(&gogokeRouteBPending, 0, 1)==1 ){
+    h = gogokeRouteBHandshake.h;
+    gogokeRouteBHandshake.h = INVALID_HANDLE_VALUE;
+    if( gogokeRouteBHandshake.zPath!=0 ){
+      sqlite3_free(gogokeRouteBHandshake.zPath);
+      gogokeRouteBHandshake.zPath = 0;
+    }
+    /* Keep generation until end_main_open. Session close is owned==expected
+    ** only; wiping generation here forced a historical-OR that a stale end
+    ** could satisfy. */
+  }
+  return h==INVALID_HANDLE_VALUE ? 0 : (void*)h;
+}
+
+SQLITE_API int sqlite3_gogoke_end_main_open(
+  unsigned long expected_generation
+){
+  unsigned long owned = gogokeRouteBHandshake.generation;
+  if( GetCurrentThreadId()!=(DWORD)InterlockedCompareExchange(
+        &gogokeRouteBStrictOwnerThreadId, 0, 0) ){
+    return SQLITE_MISUSE_BKPT;
+  }
+  if( owned!=expected_generation ){
+    return SQLITE_MISUSE_BKPT;
+  }
+  if( InterlockedCompareExchange(&gogokeRouteBPending, 0, 0)!=0 ){
+    return SQLITE_BUSY;
+  }
+  InterlockedExchange(&gogokeRouteBStrict, 0);
+  InterlockedExchange(&gogokeRouteBStrictOwnerThreadId, 0);
+  gogokeRouteBClearHandshake();
+  return SQLITE_OK;
+}
+
+SQLITE_API unsigned long sqlite3_gogoke_bound_generation(void){
+  if( GetCurrentThreadId()!=gogokeRouteBHandshake.ownerThreadId
+   || InterlockedCompareExchange(&gogokeRouteBPending, 0, 0)==0 ){
+    return 0;
+  }
+  return gogokeRouteBHandshake.generation;
+}
+
+SQLITE_API const char *sqlite3_gogoke_bound_vfs_name(void){
+  sqlite3_vfs *pVfs = sqlite3_vfs_find(0);
+  return pVfs==0 ? 0 : pVfs->zName;
+}
+
+#ifdef GOGOKE_ROUTE_B_TESTING
+SQLITE_API int sqlite3_gogoke_test_enable_full_pathname_reentry(void){
+  InterlockedExchange(&gogokeRouteBTestFullPathnameReentry, 1);
+  return SQLITE_OK;
+}
+
+SQLITE_API int sqlite3_gogoke_test_last_reentry_result(void){
+  return (int)InterlockedCompareExchange(&gogokeRouteBLastReentryResult, 0, 0);
+}
+#endif
+
+SQLITE_API unsigned long sqlite3_gogoke_current_adopted_generation(void){
+  return gogokeRouteBThreadAdoptedGeneration;
+}
+
+SQLITE_API int sqlite3_gogoke_get_close_ledger(
+  unsigned long generation,
+  unsigned long long *pCalls,
+  int *pResult,
+  unsigned long *pError
+){
+  /* Newest-first. The ring is diagnostic; a missing generation is NOTFOUND
+  ** and must not be treated as a successful close. Overflow is counted
+  ** separately so wrap-around is distinguishable from "never closed". */
+  LONG cursor = InterlockedCompareExchange(&gogokeRouteBCloseLedgerCursor, 0, 0);
+  unsigned long start = (unsigned long)cursor;
+  int i;
+  for(i=0; i<GOGOKE_ROUTE_B_CLOSE_LEDGER_SLOTS; i++){
+    unsigned long index = (start + GOGOKE_ROUTE_B_CLOSE_LEDGER_SLOTS - 1 - (unsigned long)i)
+      % GOGOKE_ROUTE_B_CLOSE_LEDGER_SLOTS;
+    GogokeRouteBCloseRecord *p = &gogokeRouteBCloseLedger[index];
+    if( (unsigned long)InterlockedCompareExchange(&p->generation, 0, 0)
+          == generation ){
+      if( pCalls ) *pCalls = (unsigned long long)InterlockedCompareExchange(&p->calls, 0, 0);
+      if( pResult ) *pResult = (int)InterlockedCompareExchange(&p->result, 0, 0);
+      if( pError ) *pError = (unsigned long)InterlockedCompareExchange(&p->error, 0, 0);
+      return SQLITE_OK;
+    }
+  }
+  return SQLITE_NOTFOUND;
+}
+
+SQLITE_API unsigned long sqlite3_gogoke_close_ledger_overflow(void){
+  return (unsigned long)InterlockedCompareExchange(&gogokeRouteBCloseLedgerOverflow, 0, 0);
+}
+
+#ifdef GOGOKE_ROUTE_B_TESTING
+SQLITE_API int sqlite3_gogoke_test_force_next_close_failure(void){
+  InterlockedExchange(&gogokeRouteBForceNextCloseFailure, 1);
+  return SQLITE_OK;
+}
+#endif
+
+SQLITE_API int sqlite3_gogoke_get_open_ledger(
+  unsigned long long *pAdopted,
+  unsigned long long *pStock,
+  unsigned long long *pRejected,
+  unsigned long long *pCloseSuccess,
+  unsigned long long *pCloseUnknown,
+  unsigned long long *pLastClosedGeneration
+){
+  if( pAdopted ) *pAdopted = (unsigned long long)InterlockedCompareExchange(&gogokeRouteBAdopted, 0, 0);
+  if( pStock ) *pStock = (unsigned long long)InterlockedCompareExchange(&gogokeRouteBStockMainOpen, 0, 0);
+  if( pRejected ) *pRejected = (unsigned long long)InterlockedCompareExchange(&gogokeRouteBRejected, 0, 0);
+  if( pCloseSuccess ) *pCloseSuccess = (unsigned long long)InterlockedCompareExchange(&gogokeRouteBCloseSuccess, 0, 0);
+  if( pCloseUnknown ) *pCloseUnknown = (unsigned long long)InterlockedCompareExchange(&gogokeRouteBCloseUnknown, 0, 0);
+  if( pLastClosedGeneration ) *pLastClosedGeneration = (unsigned long long)InterlockedCompareExchange(&gogokeRouteBLastClosedGeneration, 0, 0);
+  return SQLITE_OK;
+}
+
+/* GOGOKE_ROUTE_B_SAME_OPEN_END. */
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+  assert( id!=0 );
+#ifndef SQLITE_OMIT_WAL
+  assert( pFile->pShm==0 );
+#endif
+CODE
+  if( pFile->gogokeRouteBAdopted && pFile->gogokeRouteBCloseAttempted ){
+    /* A repeated SQLite close must not reach CloseHandle again. */
+    return SQLITE_IOERR_CLOSE;
+  }
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+int rc = SQLITE_OK;            /* Function Return Code */
+#if !defined(NDEBUG) || SQLITE_OS_WINCE
+  int eType = flags&0x0FFF00;  /* Type of file to open */
+#endif
+CODE
+  int gogokeRouteBAdoptedFile = 0;
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+  int gogokeRouteBAdoptedFile = 0;
+CODE
+  if( (flags & SQLITE_OPEN_MAIN_DB)!=0
+   && InterlockedCompareExchange(&gogokeRouteBStrict, 0, 0)==0
+   && (zName==0 || strcmp(zName, ":memory:")==0) ){
+    InterlockedIncrement(&gogokeRouteBStockMainOpen);
+  }
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+  DWORD lastErrno;        /* The Windows errno from the last I/O error */
+CODE
+  unsigned long gogokeRouteBGeneration;
+  unsigned char gogokeRouteBAdopted;
+  unsigned char gogokeRouteBCloseAttempted;
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+  pFile->h = h;
+CODE
+  if( gogokeRouteBAdoptedFile ){
+    pFile->gogokeRouteBAdopted = 1;
+    pFile->gogokeRouteBGeneration = gogokeRouteBHandshake.generation;
+    sqlite3_free(gogokeRouteBHandshake.zPath);
+    gogokeRouteBHandshake.zPath = 0;
+  }
+
+END
+
+BEGIN REPLACE
+ANCHOR
+OLD
+  do{
+    rc = osCloseHandle(pFile->h);
+    /* SimulateIOError( rc=0; cnt=MX_CLOSE_ATTEMPT; ); */
+  }while( rc==0 && ++cnt < MX_CLOSE_ATTEMPT && (sqlite3_win32_sleep(100), 1) );
+CODE
+  if( pFile->gogokeRouteBAdopted ){
+    /* The Route-B handle was already consumed by SQLite.  Exactly one
+    ** checked CloseHandle is permitted; donor retry logic is forbidden. */
+    DWORD closeError = NO_ERROR;
+#ifdef GOGOKE_ROUTE_B_TESTING
+    if( InterlockedExchange(&gogokeRouteBForceNextCloseFailure, 0) ){
+      /* Test-only fault injection still performs the one OS close, then
+      ** publishes a deterministic UNKNOWN result for the Rust boundary. */
+      (void)osCloseHandle(pFile->h);
+      rc = 0;
+      closeError = ERROR_INVALID_HANDLE;
+    }else
+#endif
+    {
+      rc = osCloseHandle(pFile->h);
+      if( !rc ) closeError = osGetLastError();
+    }
+    pFile->gogokeRouteBCloseAttempted = 1;
+    gogokeRouteBRecordClose(
+      pFile->gogokeRouteBGeneration, rc!=0, closeError
+    );
+    if( rc ){
+      InterlockedIncrement(&gogokeRouteBCloseSuccess);
+      InterlockedExchange(&gogokeRouteBLastClosedGeneration,
+                          (LONG)pFile->gogokeRouteBGeneration);
+      pFile->h = NULL;
+    }else{
+      InterlockedIncrement(&gogokeRouteBCloseUnknown);
+      /* Poison the donor file slot so a later sqlite3_close retry cannot
+      ** issue a second CloseHandle against an UNKNOWN handle state. */
+      pFile->h = INVALID_HANDLE_VALUE;
+    }
+  }else{
+    do{
+      rc = osCloseHandle(pFile->h);
+      /* SimulateIOError( rc=0; cnt=MX_CLOSE_ATTEMPT; ); */
+    }while( rc==0 && ++cnt < MX_CLOSE_ATTEMPT && (sqlite3_win32_sleep(100), 1) );
+  }
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+  void (*xInit)(void)
+){
+  int rc = SQLITE_OK;
+CODE
+#ifdef SQLITE_OS_WIN
+  /* This amalgamation never admits sqlite3_auto_extension. Policy, not a
+  ** measurement: there is no always-zero accessor. */
+  UNUSED_PARAMETER(xInit);
+  UNUSED_PARAMETER(rc);
+  return SQLITE_MISUSE_BKPT;
+#endif
+
+END
+
+BEGIN INSERT_BEFORE
+ANCHOR
+SQLITE_PRIVATE void sqlite3AutoLoadExtensions(sqlite3 *db){
+CODE
+SQLITE_API unsigned long sqlite3_gogoke_auto_extension_count(void){
+  unsigned long count = 0;
+  wsdAutoextInit;
+  count = (unsigned long)wsdAutoext.nExt;
+  return count;
+}
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+SQLITE_PRIVATE void sqlite3AutoLoadExtensions(sqlite3 *db){
+CODE
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+  wsdAutoextInit;
+  if( wsdAutoext.nExt==0 ){
+    /* Common case: early out without every having to acquire a mutex */
+    return;
+  }
+CODE
+#ifdef SQLITE_OS_WIN
+  {
+    sqlite3_mutex *mutex = sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_MAIN);
+    sqlite3_mutex_enter(mutex);
+    /* A callback may have been registered before the Route-B session began
+    ** (or by an embedded donor).  Clear the list before any invocation. */
+    sqlite3_free(wsdAutoext.aExt);
+    wsdAutoext.aExt = 0;
+    wsdAutoext.nExt = 0;
+    sqlite3_mutex_leave(mutex);
+    return;
+  }
+#endif
+
+END
+
+BEGIN REPLACE
+ANCHOR
+OLD
+  if( isReadWrite ){
+    dwDesiredAccess = GENERIC_READ | GENERIC_WRITE;
+  }else{
+    dwDesiredAccess = GENERIC_READ;
+  }
+
+  /* SQLITE_OPEN_EXCLUSIVE is used to make sure that a new file is
+  ** created. SQLite doesn't use it to indicate "exclusive access"
+  ** as it is usually understood.
+  */
+  if( isExclusive ){
+    /* Creates a new file, only if it does not already exist. */
+    /* If the file exists, it fails. */
+    dwCreationDisposition = CREATE_NEW;
+  }else if( isCreate ){
+    /* Open existing file, or create if it doesn't exist */
+    dwCreationDisposition = OPEN_ALWAYS;
+  }else{
+    /* Opens a file, only if it exists. */
+    dwCreationDisposition = OPEN_EXISTING;
+  }
+
+  if( 0==sqlite3_uri_boolean(zName, "exclusive", 0) ){
+    dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
+  }else{
+    dwShareMode = 0;
+  }
+
+  if( isDelete ){
+#if SQLITE_OS_WINCE
+    dwFlagsAndAttributes = FILE_ATTRIBUTE_HIDDEN;
+    isTemp = 1;
+#else
+    dwFlagsAndAttributes = FILE_ATTRIBUTE_TEMPORARY
+                               | FILE_ATTRIBUTE_HIDDEN
+                               | FILE_FLAG_DELETE_ON_CLOSE;
+#endif
+  }else{
+    dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL;
+  }
+  /* Reports from the internet are that performance is always
+  ** better if FILE_FLAG_RANDOM_ACCESS is used.  Ticket #2699. */
+#if SQLITE_OS_WINCE
+  dwFlagsAndAttributes |= FILE_FLAG_RANDOM_ACCESS;
+#endif
+
+  if( osIsNT() ){
+    do{
+      h = osCreateFileW((LPCWSTR)zConverted,
+                        dwDesiredAccess,
+                        dwShareMode, NULL,
+                        dwCreationDisposition,
+                        dwFlagsAndAttributes,
+                        NULL);
+      if( h!=INVALID_HANDLE_VALUE ) break;
+      if( isReadWrite ){
+        int rc2;
+        sqlite3BeginBenignMalloc();
+        rc2 = winAccess(pVfs, zUtf8Name, SQLITE_ACCESS_READ|NORETRY, &isRO);
+        sqlite3EndBenignMalloc();
+        if( rc2==SQLITE_OK && isRO ) break;
+      }
+    }while( winRetryIoerr(&cnt, &lastErrno) );
+  }
+#ifdef SQLITE_WIN32_HAS_ANSI
+  else{
+    do{
+      h = osCreateFileA((LPCSTR)zConverted,
+                        dwDesiredAccess,
+                        dwShareMode, NULL,
+                        dwCreationDisposition,
+                        dwFlagsAndAttributes,
+                        NULL);
+      if( h!=INVALID_HANDLE_VALUE ) break;
+      if( isReadWrite ){
+        int rc2;
+        sqlite3BeginBenignMalloc();
+        rc2 = winAccess(pVfs, zUtf8Name, SQLITE_ACCESS_READ|NORETRY, &isRO);
+        sqlite3EndBenignMalloc();
+        if( rc2==SQLITE_OK && isRO ) break;
+      }
+    }while( winRetryIoerr(&cnt, &lastErrno) );
+  }
+#endif
+  winLogIoerr(cnt, __LINE__);
+
+CODE
+  if( (flags & SQLITE_OPEN_MAIN_DB)!=0
+   && InterlockedCompareExchange(&gogokeRouteBStrict, 0, 0)!=0 ){
+    if( gogokeRouteBInMainOpen>0
+     || (flags & SQLITE_OPEN_URI)!=0 || !isReadWrite || isReadonly
+     || GetCurrentThreadId()!=gogokeRouteBHandshake.ownerThreadId
+     || InterlockedCompareExchange(&gogokeRouteBPending, 0, 0)==0
+     || !gogokeRouteBPathMatches(zName)
+     || !gogokeRouteBHandleAdmissible(gogokeRouteBHandshake.h, 1) ){
+      InterlockedIncrement(&gogokeRouteBRejected);
+      h = INVALID_HANDLE_VALUE;
+      lastErrno = ERROR_ACCESS_DENIED;
+    }else{
+      h = gogokeRouteBHandshake.h;
+      gogokeRouteBHandshake.h = INVALID_HANDLE_VALUE;
+      gogokeRouteBAdoptedFile = 1;
+      gogokeRouteBThreadAdoptedGeneration = gogokeRouteBHandshake.generation;
+      InterlockedExchange(&gogokeRouteBLastAdoptedGeneration,
+                          (LONG)gogokeRouteBHandshake.generation);
+      InterlockedExchange(&gogokeRouteBPending, 0);
+      InterlockedIncrement(&gogokeRouteBAdopted);
+      sqlite3_free(zConverted);
+      zConverted = 0;
+    }
+  }
+
+  else if( (flags & SQLITE_OPEN_MAIN_DB)!=0
+    && zName!=0 && strcmp(zName, ":memory:")!=0 ){
+    /* This amalgamation is the dedicated Route-B image: a disk main
+    ** database is never allowed to fall back to the donor CreateFile path. */
+    InterlockedIncrement(&gogokeRouteBRejected);
+    h = INVALID_HANDLE_VALUE;
+    lastErrno = ERROR_ACCESS_DENIED;
+  }
+
+  else{
+  if( isReadWrite ){
+    dwDesiredAccess = GENERIC_READ | GENERIC_WRITE;
+  }else{
+    dwDesiredAccess = GENERIC_READ;
+  }
+
+  /* SQLITE_OPEN_EXCLUSIVE is used to make sure that a new file is
+  ** created. SQLite doesn't use it to indicate "exclusive access"
+  ** as it is usually understood.
+  */
+  if( isExclusive ){
+    /* Creates a new file, only if it does not already exist. */
+    /* If the file exists, it fails. */
+    dwCreationDisposition = CREATE_NEW;
+  }else if( isCreate ){
+    /* Open existing file, or create if it doesn't exist */
+    dwCreationDisposition = OPEN_ALWAYS;
+  }else{
+    /* Opens a file, only if it exists. */
+    dwCreationDisposition = OPEN_EXISTING;
+  }
+
+  if( 0==sqlite3_uri_boolean(zName, "exclusive", 0) ){
+    dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
+  }else{
+    dwShareMode = 0;
+  }
+
+  if( isDelete ){
+#if SQLITE_OS_WINCE
+    dwFlagsAndAttributes = FILE_ATTRIBUTE_HIDDEN;
+    isTemp = 1;
+#else
+    dwFlagsAndAttributes = FILE_ATTRIBUTE_TEMPORARY
+                               | FILE_ATTRIBUTE_HIDDEN
+                               | FILE_FLAG_DELETE_ON_CLOSE;
+#endif
+  }else{
+    dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL;
+  }
+  /* Reports from the internet are that performance is always
+  ** better if FILE_FLAG_RANDOM_ACCESS is used.  Ticket #2699. */
+#if SQLITE_OS_WINCE
+  dwFlagsAndAttributes |= FILE_FLAG_RANDOM_ACCESS;
+#endif
+
+  if( osIsNT() ){
+    do{
+      h = osCreateFileW((LPCWSTR)zConverted,
+                        dwDesiredAccess,
+                        dwShareMode, NULL,
+                        dwCreationDisposition,
+                        dwFlagsAndAttributes,
+                        NULL);
+      if( h!=INVALID_HANDLE_VALUE ) break;
+      if( isReadWrite ){
+        int rc2;
+        sqlite3BeginBenignMalloc();
+        rc2 = winAccess(pVfs, zUtf8Name, SQLITE_ACCESS_READ|NORETRY, &isRO);
+        sqlite3EndBenignMalloc();
+        if( rc2==SQLITE_OK && isRO ) break;
+      }
+    }while( winRetryIoerr(&cnt, &lastErrno) );
+  }
+#ifdef SQLITE_WIN32_HAS_ANSI
+  else{
+    do{
+      h = osCreateFileA((LPCSTR)zConverted,
+                        dwDesiredAccess,
+                        dwShareMode, NULL,
+                        dwCreationDisposition,
+                        dwFlagsAndAttributes,
+                        NULL);
+      if( h!=INVALID_HANDLE_VALUE ) break;
+      if( isReadWrite ){
+        int rc2;
+        sqlite3BeginBenignMalloc();
+        rc2 = winAccess(pVfs, zUtf8Name, SQLITE_ACCESS_READ|NORETRY, &isRO);
+        sqlite3EndBenignMalloc();
+        if( rc2==SQLITE_OK && isRO ) break;
+      }
+    }while( winRetryIoerr(&cnt, &lastErrno) );
+  }
+#endif
+  winLogIoerr(cnt, __LINE__);
+  }
+
+END
+
+BEGIN INSERT_BEFORE
+ANCHOR
+  rc = winFullPathnameNoMutex(pVfs, zRelative, nFull, zFull);
+CODE
+#ifdef SQLITE_OS_WIN
+  if( InterlockedCompareExchange(&gogokeRouteBPending, 0, 0)!=0
+   && GetCurrentThreadId()==gogokeRouteBHandshake.ownerThreadId ){
+    gogokeRouteBInMainOpen += 1;
+  }
+#endif
+
+END
+
+BEGIN INSERT_AFTER
+ANCHOR
+  rc = winFullPathnameNoMutex(pVfs, zRelative, nFull, zFull);
+  sqlite3_mutex_leave(pMutex);
+CODE
+#ifdef SQLITE_OS_WIN
+#ifdef GOGOKE_ROUTE_B_TESTING
+  if( InterlockedCompareExchange(&gogokeRouteBTestFullPathnameReentry, 0, 1)==1
+   && zFull!=0 && zFull[0]!=0 ){
+    sqlite3 *reentryDb = 0;
+    int reentry = sqlite3_open_v2(zFull, &reentryDb, SQLITE_OPEN_READWRITE, 0);
+    InterlockedExchange(&gogokeRouteBLastReentryResult, reentry);
+    if( reentryDb!=0 ) sqlite3_close(reentryDb);
+  }
+#endif
+  if( gogokeRouteBInMainOpen>0 ) gogokeRouteBInMainOpen -= 1;
+#endif
+
+END

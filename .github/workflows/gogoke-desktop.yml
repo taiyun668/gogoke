@@ -1,0 +1,200 @@
+name: gogoke desktop CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/desktop/**"
+      - "tools/sign-gogoke-release-manifest.ps1"
+      - "tools/publish-gogoke-release.ps1"
+      - "tools/smoke-gogoke-update.ps1"
+      - ".github/workflows/gogoke-desktop.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/desktop/**"
+      - "tools/sign-gogoke-release-manifest.ps1"
+      - "tools/publish-gogoke-release.ps1"
+      - "tools/smoke-gogoke-update.ps1"
+      - ".github/workflows/gogoke-desktop.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Browser build and tests
+    timeout-minutes: 30
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm ci
+      - run: npm run check:product-identity
+      - name: Check release trust boundary
+        shell: pwsh
+        run: |
+          $public = (Get-Content src-tauri/gogoke-release-public-key.txt -Raw).Trim()
+          if ($public -notmatch '^[0-9A-Fa-f]{128}$') {
+            throw "gogoke release public key must be P-256 X||Y"
+          }
+          $trackedPrivate = @(git ls-files | Where-Object {
+            $_ -match '(^|/)(release-key\.txt|.*private.*release.*key.*)$'
+          })
+          if ($trackedPrivate.Count -ne 0) {
+            throw "A private release key appears to be tracked: $($trackedPrivate -join ', ')"
+          }
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  unsigned-windows:
+    name: Unsigned Windows NSIS
+    timeout-minutes: 60
+    needs: web
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.89.0
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - name: Restore Rust registry, git sources, and build outputs
+        id: rust-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: gogoke-${{ runner.os }}-${{ runner.arch }}-rust-1.89.0-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/src/**', 'apps/desktop/src-tauri/update/**', 'apps/desktop/src-tauri/capabilities/**', 'apps/desktop/src-tauri/*.json', 'apps/desktop/src-tauri/icons/**', 'apps/desktop/package.json', 'apps/desktop/package-lock.json', 'apps/desktop/src/**', 'apps/desktop/index.html', 'apps/desktop/vite.config.ts', 'apps/desktop/tsconfig*.json') }}
+          restore-keys: |
+            gogoke-${{ runner.os }}-${{ runner.arch }}-rust-1.89.0-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}-
+      - name: Remove cached deliverables
+        shell: pwsh
+        run: |
+          $cachedExecutable = "src-tauri/target/release/gogoke.exe"
+          if (Test-Path -LiteralPath $cachedExecutable) {
+            Remove-Item -LiteralPath $cachedExecutable -Force -ErrorAction Stop
+          }
+          $cachedBundle = "src-tauri/target/release/bundle"
+          if (Test-Path -LiteralPath $cachedBundle) {
+            Remove-Item -LiteralPath $cachedBundle -Recurse -Force -ErrorAction Stop
+          }
+      - name: Install native build tools
+        run: choco install cmake llvm -y --no-progress
+      - name: Configure libclang
+        shell: pwsh
+        run: |
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+      - run: npm ci
+      - run: npm run prepare:gogoke-icons
+      - name: Test the gogoke release verifier
+        run: cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
+      - name: Build unsigned gogoke installer
+        run: npm run tauri:build:win:unsigned
+      - name: Save Rust registry, git sources, and build outputs
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Stage local-only unsigned gogoke executable
+        shell: pwsh
+        run: |
+          $stage = "desktop-local-only"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $source = Get-Item src-tauri/target/release/gogoke.exe
+          $destination = Join-Path $stage "gogoke.exe"
+          Copy-Item $source.FullName $destination
+          Copy-Item LICENSE "$stage/LICENSE"
+          Copy-Item THIRD_PARTY_NOTICES.md "$stage/THIRD_PARTY_NOTICES.md"
+          $status = (Get-AuthenticodeSignature $destination).Status
+          if ($status -ne "NotSigned") {
+            throw "Local-only executable unexpectedly produced $status"
+          }
+          $hash = (Get-FileHash $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "# gogoke-Version: $version"
+            "# local-only: unsigned executable; release smoke not yet passed"
+            "$hash  gogoke.exe"
+          ) | Set-Content "$stage/SHA256SUMS.local-only" -Encoding ascii
+      - name: Upload local-only unsigned gogoke executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-windows-local-only-unsigned-executable
+          path: apps/desktop/desktop-local-only/*
+          if-no-files-found: error
+      - name: Stage installer, portable executable, and checksums
+        shell: pwsh
+        run: |
+          $stage = "desktop-artifacts"
+          $portable = "desktop-portable"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          $installers = @(Get-Item src-tauri/target/release/bundle/nsis/*.exe)
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installers.Count)"
+          }
+          $installer = $installers[0]
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $releaseInstaller = Join-Path $stage "gogoke-$version-windows-x64-unsigned-setup.exe"
+          Copy-Item $installer.FullName $releaseInstaller
+          Copy-Item src-tauri/target/release/gogoke.exe "$portable/gogoke.exe"
+          Copy-Item LICENSE "$portable/LICENSE"
+          Copy-Item THIRD_PARTY_NOTICES.md "$portable/THIRD_PARTY_NOTICES.md"
+          foreach ($file in @($releaseInstaller, "$portable/gogoke.exe")) {
+            $status = (Get-AuthenticodeSignature $file).Status
+            if ($status -ne "NotSigned") {
+              throw "Unsigned trial unexpectedly produced $status for $file"
+            }
+          }
+          $portableZip = Join-Path $stage "gogoke-$version-windows-x64-unsigned-portable.zip"
+          Compress-Archive -Path "$portable/*" -DestinationPath $portableZip
+          $hashLines = @(Get-ChildItem $stage -File |
+            Sort-Object Name |
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name })
+          @("# gogoke-Version: $version") + $hashLines |
+            Set-Content "$stage/SHA256SUMS.windows" -Encoding ascii
+      - name: Smoke full update, readiness, and rollback
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $releaseInstaller = Join-Path "desktop-artifacts" "gogoke-$version-windows-x64-unsigned-setup.exe"
+          & ../../tools/smoke-gogoke-update.ps1 -Installer $releaseInstaller -Version $version
+          if ($LASTEXITCODE -ne 0) {
+            throw "gogoke update smoke failed with exit code $LASTEXITCODE"
+          }
+      - name: Upload smoke-verified unsigned release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-windows-unsigned
+          path: apps/desktop/desktop-artifacts/*
+          if-no-files-found: error
