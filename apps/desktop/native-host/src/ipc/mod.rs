@@ -114,7 +114,8 @@ mod platform {
     const ACL_SIZE_INFORMATION_CLASS: Dword = 2;
     const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
     const ACCESS_DENIED_ACE_TYPE: u8 = 1;
-    const GENERIC_ALL: Dword = 0x1000_0000;
+    // The pipe object maps the SDDL GA bit to FILE_ALL_ACCESS in its applied ACE.
+    const FILE_ALL_ACCESS: Dword = 0x001f_01ff;
 
     #[repr(C)]
     struct SecurityAttributes {
@@ -727,7 +728,7 @@ mod platform {
             assert!(dacl.0, "DACL must be protected");
             assert_eq!(dacl.1.len(), 1, "DACL must contain one ACE: {dacl:?}");
             assert_eq!(dacl.1[0].0, ACCESS_ALLOWED_ACE_TYPE);
-            assert_eq!(dacl.1[0].1, GENERIC_ALL);
+            assert_eq!(dacl.1[0].1, FILE_ALL_ACCESS);
             assert_eq!(dacl.1[0].2, listener.expected_sid());
             assert_ne!(dacl.1[0].2, "S-1-1-0", "Everyone must not be admitted");
             assert_ne!(dacl.1[0].2, "S-1-5-11", "Authenticated Users must not be admitted");
