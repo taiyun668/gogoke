@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - executable product boundary owns stdin/stdout.
 import * as NodeFS from "node:fs";
 
 import { constructGogokeService } from "./index.ts";
@@ -148,5 +149,5 @@ export async function runGogokeProductProcess(argv: readonly string[]): Promise<
   const input = NodeFS.readFileSync(0);
   const request = decodeProductGoalRequest(input);
   const response = await handleProductGoalRequest(request, paths);
-  NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+  // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.\n  NodeFS.writeFileSync(1, `${JSON.stringify(response)}\\n`);
 }
