@@ -2,7 +2,7 @@
 
 ## R1 接包
 
-只用Owner给出的固定PLAN_COMMIT读取本目录，先运行python verify_plan.py --root . --self-test。它是计划校验，不是G0。缺文件或摘要不符阻断，不能凭旧聊天补计划。parent/source/donor/Pi对象固定；确认实际workspace HEAD/dirty/untracked/未推送/活进程，保全现有修改，禁止reset/clean/按名称kill。不要把旧PR正文授权当新开工许可。公开仓库的执行身份仅按 PUBLIC_EXECUTION_BINDING.json 另行解析：固定 PLAN_COMMIT 和旧 source/donor SHA 仍为历史来源，不是公开候选 HEAD；公开资格检查须有该文件指定的 Owner 合并授权 receipt，缺失时 fail closed。此绑定不改门、检查、GN 或产品语义。
+只用Owner给出的固定PLAN_COMMIT读取本目录，先运行python verify_plan.py --root . --self-test。它是计划校验，不是G0。缺文件或摘要不符阻断，不能凭旧聊天补计划。parent/source/donor/Pi对象固定；确认实际workspace HEAD/dirty/untracked/未推送/活进程，保全现有修改，禁止reset/clean/按名称kill。不要把旧PR正文授权当新开工许可。公开仓库的执行身份仅按 PUBLIC_EXECUTION_BINDING.json 另行解析：固定 PLAN_COMMIT 和旧 source/donor SHA 仍为历史来源，不是公开候选 HEAD；下文私有分支与旧 AUTHORIZATION_RECEIPT/INTAKE_RECEIPT 的接包路径不在公开仓库重建；公开资格检查须有该文件指定的 Owner 合并授权 receipt，缺失时 fail closed。此绑定不改门、检查、GN 或产品语义。
 
 Owner发送本方案CODEX_START意味着仅限当前整段源码/文档/测试和Controller提交推送的启动授权。先从PLAN_COMMIT另建codex/gogoke-s1-r4-execution-r1（若已存在先核所有权/HEAD，不覆盖）。新增AUTHORIZATION_RECEIPT和INTAKE_RECEIPT；不改旧PR#6/#7及冻结分支。本方案分支不作为release合并目标。
 
