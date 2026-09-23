@@ -1,0 +1,97 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-012",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "4346b3b8757f6dc171101c2a3184cd180babea9a",
+  "recorded_utc": "2026-09-23T01:45:17Z",
+  "reason": "Consume Claude's 18-item merge review and Route-B supplemental ruling; preserve parallel B/D candidate and C authority boundary",
+  "review_provenance": "Owner supplied Claude's merge review and separate Route-B ruling in this conversation; this checkpoint records the received decisions, not a new Controller acceptance",
+  "accepted_code_pending_cloud_tests": [
+    {"scope":"Route-B core","private_commit":"6fc8c634bffcc5096bf44fc9d8f390d3505a2ca4"},
+    {"scope":"physical root","private_commit":"33c4251d74afb742634bc46b87b05a09205c3ce8"},
+    {"scope":"FilePin","private_commit":"b7389d3c7544d80cf10895de0db7b820f6945624"},
+    {"scope":"atomic SQLite","private_commit":"f298187ecf4eef747ac3bd9259a4bf32868056c7"},
+    {"scope":"Route-B supply","private_commit":"d286e6fc92ecac947f15ce26c0fc2128dbfcd810"},
+    {"scope":"process wiring","private_commit":"32ece0cca95d33b6348fb0216483220e1cce7cf9"},
+    {"scope":"Context Assembly","private_commit":"57f65da901a452bb6f9a3dd60aa5cf6dc530636b"},
+    {"scope":"TS delegation","private_commit":"d51d4e885dcfa7317a9addc438d966abd8bc50c9"},
+    {"scope":"native delegation","private_commit":"7b157164592d150c38e7097d0fb1d15491a158e7"},
+    {"scope":"resolver","private_commit":"8483bf6cedaacf0b7db382c616a72181dadcbd93"},
+    {"scope":"ATP","private_commit":"b1a3da29e32c2f0f0f0916b048f7f420c5653db6"},
+    {"scope":"durable lineage","private_commit":"dd2807e9f4af2d860c61dc51df645bb9f2430c01"},
+    {"scope":"ExecutionRecipe","private_commit":"8a534197817689bce0bf571b9e731aa4abe84282"},
+    {"scope":"Action","private_commit":"69b851003d62b46be922107488ffd846608c1496"}
+  ],
+  "route_b_ruling_detail": {
+    "state": "ACCEPT_CODE_PENDING_CLOUD_TESTS",
+    "public_native_host_tree": "c56dc3417908e5341103ac2827216f52f35aa602",
+    "prior_two_axis_run": "c8f3a5a3@35799638957: b07_two_process and host_typed_ops each 1/1 on Windows Server",
+    "authentication": "32-byte BCryptGenRandom token passed to parent via stdout; authenticated named pipe requires an AuthenticateService first frame and constant-time token check; unauthenticated serve_pipe/serve_lines allow only Shutdown",
+    "protocol": "Server-side admission replaces client accessAdmitted; closed operation allowlist and strict flat-string decoder reject duplicate/forbidden/nested/coerced fields; RecordActionOutcome and AppendOwnerOutcome are not service operations",
+    "atomicity": "Event continuity, stream-head CAS with changes()==1, BEGIN IMMEDIATE and CommitUnknown on uncertain commit remain",
+    "same_open": "F4 close-ledger test is single-close/no retry, UNKNOWN is not success, overflow increment is bounded to 0 or 1; prior F3 extension_admitted code is gone",
+    "excluded_scope": "New context/decision/dream/recipe operations in session.rs belong to their separate A-category review entries",
+    "N1": "CLOSED_BY_MC-011",
+    "non_claim": "Code-level ruling and two process axes do not replace D2 all-lib cloud evidence or Windows 11 desktop validation"
+  },
+  "rework_candidates": {
+    "B1": {"branch":"codex/r4-b1-rework-r1","commit":"bd58cbb58a37e3a3cdb9b7eb639247147e95db11","scope":"negative-zero parse/canonical rejection and frozen sources","focused_tests":"desktop 15/15, T3 contracts 14/14, exit 0; source scan 0 leaks","state":"CANDIDATE_NOT_REVIEWED"},
+    "B2": {"branch":"codex/r4-b2-rework-r1","commit":"0adc81a2ed07bdedd3b171837413e7a7963d7acd","scope":"minimal-service input snapshot and matching tests","focused_tests":"30/30, exit 0; source scan 0 leaks","state":"CANDIDATE_NOT_REVIEWED"},
+    "combined": {"branch":"codex/r4-g1-rework-candidate-r1","commit":"cf1f6c7a3ae2cb550faf62cc3c841f4c1da40fe9","state":"CANDIDATE_NOT_REVIEWED; no main integration"}
+  },
+  "cloud_test_instrument": {
+    "branch":"codex/r4-cloud-evidence-r1",
+    "commit":"259afa9c835c7230036ec762d9756b27dbf69202",
+    "run_id":"35807293510",
+    "state_at_checkpoint":"IN_PROGRESS; no PASS inferred",
+    "D1":"44 files are 35 Vite+ suites and 9 node:test files; each runner must report framework-owned counts, zero execution is FAIL_INSTRUMENT; Node tests bind cloud-built native-host",
+    "D2":"Existing native-host workflow now runs all cargo test --lib and appends counts/exit to machine-result.json; Windows Server is not Windows 11",
+    "local_diagnostic":"Signed Node diagnostic selected 44 files and produced real failure; not cloud qualification or acceptance"
+  },
+  "C_tools_gap": {
+    "state":"BLOCKED_PUBLIC_AUTHORITY_REBIND_OR_PLAN_REVISION",
+    "finding":"Private 7ff6f3fb is a codec-test import patch, not the tools tree. eca956db has five tools; ca7660fd adds the sixth manifest builder. Current public RUNBOOK/CHECKS/EXECUTION_PLAN still refer to absent tools/gogoke-s1-r4 while private runner hardcodes private repository, execution branch, source head and authorization receipt unavailable in public history.",
+    "proposal":"Carry the six tool source files from private ca7660fd only as a candidate, but revise the public qualification contract to bind current public repository, candidate SHA and Owner authorization without copying or fabricating the private receipt; keep machine-generated absolute-path receipts out of Git. Re-run verify_plan.py and independent review after the public authority binding is explicitly decided.",
+    "non_claim":"No tool export or plan revision is accepted by this proposal; WP01 and S1-01-V remain BLOCKED"
+  },
+  "registered_nonblocking": [
+    "m1: Shutdown predicate should use decoded.name",
+    "m2: ryu-js =1.0.3 (Apache-2.0 OR BSL-1.0) requires Rust dependency license notice"
+  ],
+  "accepted_sidebranch_inventory": {
+    "result": "No third fully missing accepted repair found beyond B1 and B2; differing blobs below require current-candidate tests and do not inherit gate PASS",
+    "equal_scopes": [
+      "6fc8c634 native-host lib/process files",
+      "3aa0ad59 databasePreflight.ts and test",
+      "d51d4e88 policy.test.ts",
+      "7b157164 native bootstrap.rs foreign-key check",
+      "69b85100 host_typed_ops.rs"
+    ],
+    "evolved_but_semantics_present": [
+      "33c4251d root/mod.rs: RootPathChanged and ordinary-directory FILE_SHARE_WRITE",
+      "b7389d3c root/mod.rs: interior-NUL pre-rejection and wide-call count",
+      "f298187e atomicRecord.ts and test: descriptor and typed-array shadow getters",
+      "d286e6fc SQLite build.rs, identity and lock: source/generated hashes and TRUSTED_SCHEMA=0",
+      "32ece0cc process custody: BCryptGenRandom, ticket, nonce and binding",
+      "57f65da9 Context Assembly: mandatory metadata and stale/tamper rejection",
+      "7b157164 delegation tests: foreign_key_check and poison regression",
+      "8483bf6c nativeHostClient: strict JSON, duplicate-member and delegation reply guards",
+      "b1a3da29 ATP: parent-grant fields and evolved surrogate parser",
+      "dd2807e9 lineage: schema, receipt uniqueness and exposure consistency",
+      "8a534197 ExecutionRecipe: core-schema and persistent validation"
+    ],
+    "citation_correction": "Private 4be803e6 is a G1 checkpoint document commit, not itself the B1 code patch; the actual missing B1 code was restored by the named B1 candidate"
+  },
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 remain unpromoted",
+  "next_action": "Read both cloud machine results, repair real failures and instrument gaps without reducing selectors; test combined B1/B2 candidate in CI, request fresh review; keep C blocked pending public authority/plan binding decision while continuing safe independent work."
+}
