@@ -906,12 +906,12 @@ const decisionReplyRecord = (value: unknown): NativeDecisionRecord => {
     !["RULES", "FAKE", "REPLAY"].includes(String(record.backendKind)) ||
     (record.modelRequested !== null && typeof record.modelRequested !== "string") ||
     (record.modelResolved !== null && typeof record.modelResolved !== "string") ||
-    typeof record.budgetUnits !== "number" ||
-    !Number.isSafeInteger(record.budgetUnits) ||
-    record.budgetUnits < 0 ||
-    typeof record.deadlineEpochMs !== "number" ||
-    !Number.isSafeInteger(record.deadlineEpochMs) ||
-    record.deadlineEpochMs < 0
+    typeof record.budgetUnits !== "string" ||
+    !/^(0|[1-9][0-9]*)$/u.test(record.budgetUnits) ||
+    !Number.isSafeInteger(Number(record.budgetUnits)) ||
+    typeof record.deadlineEpochMs !== "string" ||
+    !/^(0|[1-9][0-9]*)$/u.test(record.deadlineEpochMs) ||
+    !Number.isSafeInteger(Number(record.deadlineEpochMs))
   ) {
     throw new NativeHostClientError("DECISION_REPLY", "durable Decision semantics are invalid");
   }
@@ -933,8 +933,8 @@ const decisionReplyRecord = (value: unknown): NativeDecisionRecord => {
     backendKind: record.backendKind as NativeDecisionRecord["backendKind"],
     choice: record.choice as string,
     reason: "QUALIFIED_BOUNDED_SELECTION",
-    budgetUnits: record.budgetUnits,
-    deadlineEpochMs: record.deadlineEpochMs,
+    budgetUnits: Number(record.budgetUnits),
+    deadlineEpochMs: Number(record.deadlineEpochMs),
   });
 };
 
