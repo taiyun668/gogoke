@@ -1,0 +1,59 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-013",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "95514eae13766d388358d4a32b0c145d35e59d91",
+  "recorded_utc": "2026-09-23T02:06:06Z",
+  "reason": "Record actual D1/D2 cloud failures, B1/B2 candidate custody, and public qualification proposal without false gate promotion",
+  "review_record": "Claude independent review is now in public main via PR #2 at 443e29c3; MC-012 records its A-E and Route-B scope without changing acceptance tiers",
+  "rework": {
+    "B1": "codex/r4-b1-rework-r1@bd58cbb58a37e3a3cdb9b7eb639247147e95db11; desktop 15/15 and T3 codec 14/14 focused pass; no independent review",
+    "B2": "codex/r4-b2-rework-r1@0adc81a2ed07bdedd3b171837413e7a7963d7acd; minimalService 30/30 focused pass; no independent review",
+    "combined_candidate": "codex/r4-g1-rework-candidate-r1@47d8f74c25145a3335bacd301e007ed8fa67c906; not main, not accepted",
+    "desktop_ci": "run 35807748181: Browser build and tests SUCCESS; Unsigned Windows NSIS SUCCESS; this does not replace D1/D2 or fresh review"
+  },
+  "D1": {
+    "instrument": "35 Vite+ files plus 9 node:test files, exact 44-file selection; machine result includes discovered/executed/pass/fail/skip and nonzero requirement; category processes now have bounded 120-second waits",
+    "base_run": "35808247369@05560852: 44 files selected; Vite 460 executed, 459 passed, 1 failed; Node host bound but timed out without final framework summary; overall FAIL_INSTRUMENT",
+    "combined_run": "35808247473@47d8f74c: 44 files selected; Vite 466 executed, 465 passed, 1 failed; Node host bound but timed out without final framework summary; overall FAIL_INSTRUMENT",
+    "first_vite_failure": "cognitionVertical.test.ts foreign Manifest rejection received missing manifest instead of expected INVALID_MANIFEST_LINEAGE; retain test and repair actual failure",
+    "node_truth": "Timed-out group is not 0-test PASS; bounded machine result records timed_out=true and no authoritative Node execution totals",
+    "next_probe": "Isolate hanging node:test file(s) as diagnostic only while keeping the formal 9-file group and its fail-closed result"
+  },
+  "D2": {
+    "base_run": "35807293510@259afa9c: cargo test --lib discovered/executed 382, passed 379, failed 3, skipped 0, exit 101; b07_two_process and host_typed_ops each 1/1 PASS",
+    "combined_run": "35808247473@47d8f74c: same 382/379/3/0 and exit 101; no acceptance inference",
+    "failed_tests": [
+      "ipc::platform::tests::applies_current_user_only_dacl_and_first_instance_guard",
+      "process::windows::tests::native_host_prepare_and_activate_are_separate_fail_closed_phases",
+      "process::windows::tests::real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree"
+    ],
+    "diagnostic_candidate": "codex/r4-native-lib-diagnostics-r1@8d32def65959cda010a9d93614cd52cd1d299654; DACL test reads real ACE/SID rather than SDDL substring; two process tests retain 5-second bounds and add entry/error/exit/Job evidence; no production permission changed",
+    "diagnostic_run": "35808822878 in progress; three focused probes have failed and full lib remains active at this checkpoint; exact failure details pending artifact"
+  },
+  "C_tools_gap": {
+    "state": "BLOCKED_PUBLIC_AUTHORITY_REBIND_OR_PLAN_REVISION",
+    "proposal_commit": "95514eae13766d388358d4a32b0c145d35e59d91",
+    "proposal_path": "docs/design/gogoke-s1-r4-public-qualification-rebind-proposal.md",
+    "meaning": "Proposal only; fixed plan and authorization not modified, private receipt not copied or fabricated, WP01/S1-01-V not accepted"
+  },
+  "custody": "Main and all named B1/B2/cloud-evidence/combined/native-diagnostic worktrees are clean and pushed; generated dependency and cloud artifacts remain outside committed public source",
+  "non_claims": [
+    "A-category code ACCEPT remains PENDING_CLOUD_TESTS because D1/D2 have real failures or instrument failure",
+    "No test selector was weakened and no native code was compiled locally",
+    "Windows Server cloud runs are not Windows 11 desktop qualification",
+    "m1 decoded Shutdown and m2 ryu-js license notice remain registered nonblocking",
+    "59 due checks remain unpromoted"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Download diagnostic cloud artifact, classify DACL/process failures from observed evidence; isolate Node group hang without altering formal coverage; repair cognitionVertical lineage failure, then rerun complete D1/D2 on a fresh combined candidate and seek independent review. Public qualification authority proposal awaits Owner/GPT decision while safe work continues."
+}
