@@ -656,6 +656,8 @@ def public_binding(candidate_commit: str) -> tuple[dict[str, Any] | None, str | 
             errors.append("public execution binding repository/schema mismatch")
         if binding.get("provenance_plan_commit") != PLAN_COMMIT or binding.get("authorization_receipt_path") != AUTH_REL or binding.get("authorization_receipt_schema") != "gogoke.s1-r4.public-authorization.v1":
             errors.append("public execution binding provenance/authorization mismatch")
+        if binding.get("candidate_ref") != "checked-out public repository HEAD at qualification time":
+            errors.append("public execution binding does not identify the current candidate HEAD rule")
         expected_hash = manifest.get("sha256", {}).get("PUBLIC_EXECUTION_BINDING.json")
         if expected_hash != hashlib.sha256(binding_bytes).hexdigest():
             errors.append("public execution binding does not match current plan manifest")
