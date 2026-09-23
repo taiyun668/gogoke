@@ -147,3 +147,60 @@ A 类要转为验收证据，必须先补上 D1、D2，按执行数记账（exec
 ### E. 非阻断
 
 同第 5 节的 m1、m2。
+
+---
+
+## 7. D1/D2 首次云端全量测试（候选 `cfcb8a7d`）
+
+运行 [35810241052](https://github.com/taiyun668/gogoke/actions/runs/35810241052)。machine-result 已下载核对：
+- 服务端测试：44 个文件（Vite 35、node:test 9），532 个发现、532 个执行、532 个通过，跳过 0。
+- native-host：lib 单元测试 382/382 通过；release 构建和两条进程轴也都通过。
+
+新的运行器 `tools/ci/gogoke-server-tests.mjs` 有三条硬规则：文件集合必须与预期一致；测试数为 0 记 `FAIL_INSTRUMENT`；任何跳过都判为非 PASS。三条都成立。
+
+A 类 14 项据此由施工方绑定到对应测试轴（MC-014）。这不等于到期检查通过。
+
+## 8. PR #3（B1/B2 返工与集中修复）
+
+**第一轮（head `cfcb8a7d`）：B2 须返工，其余 ACCEPT。**
+- B1：负零拒绝与 `Object.freeze` 已补回。与 `4be803e6` 做 token 级比对，唯一差异是尾逗号。负零测试已恢复，断言 `UNSAFE_JSON_NUMBER`。
+- 集中修复都是真修，没有削弱测试：
+  - `nativeHostClient` 的启动握手改为一个监听器按顺序接收，修复了逐行挂监听时丢行的竞态。
+  - 管道 DACL 测试改为读二进制快照，断言 protected、只有 1 条 ACE、ACCESS_ALLOWED、`FILE_ALL_ACCESS`、SID 为当前用户，比原来的 SDDL 字符串断言更严。
+  - 进程测试只加了诊断信息，原有断言一条没少。
+- B2：生产代码与 `5014096f` 一致，但测试是重写的，用例 21→17、断言 53→42，缺少以下覆盖：
+  - 数组的重复、稀疏、非字符串元素；
+  - null 原型记录的放行；
+  - 可选能力取值器不被执行。
+
+**第二轮（head `efa1a6fd`）：ACCEPT。**
+- B2 恢复为 21 个用例、54 条断言，上述情形逐项都有覆盖。
+- 运行 [35813586330](https://github.com/taiyun668/gogoke/actions/runs/35813586330)：服务端 536/536，native lib 382/382，release 构建和两条进程轴均通过。
+
+## 9. PR #5（m1 Shutdown 判断）
+
+**结论：ACCEPT，已合入（`cdbff122`）。**
+- `successful_shutdown` 只在解码出 `Shutdown` 且处理成功时才退出；嵌套字段不再触发关闭。
+- 新增测试覆盖正例和反例。
+- 回归：native lib 383/383，服务端 532/532。
+
+## 10. PR #4（资格工具六文件）
+
+**结论：审阅通过，维持草稿，不合并。**
+- 缺少授权 receipt 时，`auth_from_candidate` 返回错误，fail closed。
+- 它仍锚定私有仓库和私有授权提交，在公开仓库中无法满足，因此不可运行。
+- 须先由 GPT 起草公开授权锚，再由 Owner 本人在 GitHub 合并，之后按提案改造、再送审。
+- WP01、S1-01-V 维持 BLOCKED。
+
+## 11. PR #6（m2 native-host Rust 依赖许可清单）
+
+**结论：ACCEPT，作为清单准确。**
+- 四个外部 crate 的版本和校验和与 `native-host/Cargo.lock` 逐项一致：
+  - `ryu-js` 1.0.3（Apache-2.0 OR BSL-1.0），运行时依赖；
+  - `cc`、`find-msvc-tools`、`shlex`（均为 MIT OR Apache-2.0），只用于构建，不进入二进制。
+- 清单放在会被打包的 `apps/desktop/THIRD_PARTY_NOTICES.md` 中，位置正确。
+
+**非阻断，属于发布前事项**
+- 建议写明 `ryu-js` 选用 BSL-1.0（二进制分发时无须附带许可文本）。
+- 更大的缺口在桌面应用本体：`src-tauri/Cargo.lock` 有 629 个 crate，现有通知基本没有覆盖；打包进前端的 npm 依赖也一样。建议在 CI 中用工具（如 cargo-about）为 Rust 与 npm 的生产依赖生成完整的许可与版权声明，并随安装包分发。
+- 此项不是法律意见。
