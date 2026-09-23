@@ -311,6 +311,17 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual([], errors)
         self.assertEqual("e" * 40, value["owner_merge_commit"])
 
+    def test_post_merge_authorization_edit_fails_closed(self):
+        auth, binding = self.public_auth_fixture()
+        raw = json.dumps(auth).encode("utf-8")
+        with mock.patch.object(self.runner, "public_binding", return_value=(binding, "a" * 40, [])), \
+             mock.patch.object(self.runner, "git_oid", return_value=("d" * 40, None)), \
+             mock.patch.object(self.runner, "authorization_introduction", return_value=("e" * 40, [])), \
+             mock.patch.object(self.runner, "owner_merged_public_authorization", return_value=(True, None)), \
+             mock.patch.object(self.runner, "git_bytes", side_effect=lambda ref, _path: b'{"changed":true}' if ref == "e" * 40 else raw):
+            _value, errors = self.runner.auth_from_candidate({"commit": "c" * 40})
+        self.assertTrue(any("differs from Owner merge introduction" in error for error in errors))
+
     def test_plan_loaded_from_different_public_candidate_fails_closed(self):
         candidate = self.runner.git_identity()
         stale = copy.deepcopy(self.plan)
