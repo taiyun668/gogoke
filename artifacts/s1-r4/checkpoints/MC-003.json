@@ -1,0 +1,76 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-003",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "0d9d443ad818291342e9c602be78d1b4e244f36d",
+  "recorded_utc": "2026-09-23T00:02:15Z",
+  "reason": "Record first authorized public push, Windows Server native process evidence, UTF-8 plan verifier repair, and environment custody change",
+  "public_push": {
+    "main": "0d9d443ad818291342e9c602be78d1b4e244f36d",
+    "native_wip": "codex/gogoke-s1-r4-native-close-r1@43b2e1a3c02a25e2afc2179585e216b430950893",
+    "lineage_wip": "codex/gogoke-s1-r4-lineage-r1@7a2f8d5890cdddcffa60f981e9ceb143199a9331",
+    "wip_semantics": "no tests, no review, not a candidate",
+    "merge_or_force_push": false
+  },
+  "source_hygiene": {
+    "commit": "0d9d443ad818291342e9c602be78d1b4e244f36d",
+    "run_id": "35800024820",
+    "job_id": "106988027431",
+    "state": "PASS",
+    "positive_control_step": "success",
+    "committed_source_scan_step": "success",
+    "local_scan": "24133 committed files, 0 leaks; known-sensitive positive control rejected with exit 1"
+  },
+  "native_windows_server": {
+    "commit": "c8f3a5a3134e88de0ee556748b80df838b9a5ef7",
+    "run_id": "35799638957",
+    "run_attempt": 1,
+    "job_id": "106986789241",
+    "machine_result_artifact": "native-host-evidence-c8f3a5a3134e88de0ee556748b80df838b9a5ef7-35799638957-1/machine-result.json",
+    "b07_two_process": {"state": "PASS", "discovered": 1, "executed": 1, "passed": 1, "failed": 0, "skipped": 0, "exit_code": 0},
+    "host_typed_ops": {"state": "PASS", "discovered": 1, "executed": 1, "passed": 1, "failed": 0, "skipped": 0, "exit_code": 0},
+    "non_claim": "Real Windows Server run at this exact commit; not Windows 11 desktop validation, not all Route-B due checks, not G2 acceptance"
+  },
+  "plan_verifier": {
+    "commit": "0d9d443ad818291342e9c602be78d1b4e244f36d",
+    "change": "All text reads and self-test/result writes explicitly use UTF-8; MANIFEST hash updated",
+    "command": "python -B verify_plan.py --root . --self-test",
+    "exit_code": 0,
+    "status": "PASS_PLAN_STRUCTURE_ONLY",
+    "checks": 1965,
+    "negative_controls": "21/21 rejected",
+    "runtime_verified": false
+  },
+  "environment_custody": {
+    "registered_worktree_junction": "Original user-profile worktree directory is a junction to the D-drive custody root; no worktree was deleted in this checkpoint",
+    "temp_archive": "604 construction directories were moved to a D-drive archive with an external MANIFEST.csv; no archive item was deleted in this checkpoint",
+    "fresh_private_repository_inventory": "204 worktrees registered, 2 prunable old Temp entries; differs from the earlier 183/0 snapshot and requires separate custody review; no prune performed",
+    "new_isolation_and_tool_roots": "D drive only"
+  },
+  "desktop_ci": {
+    "prior_commit": "c8f3a5a3134e88de0ee556748b80df838b9a5ef7",
+    "prior_run_id": "35799527357",
+    "prior_failure": "setup-node cache dependency path was missing because the npm lockfile was ignored; no desktop tests ran",
+    "repair_commit": "d130944214ba65aa80225f8231f50b0f36adcd63",
+    "current_run_id": "35800024898",
+    "state_at_checkpoint": "IN_PROGRESS; npm ci, product identity, release trust boundary, and typecheck succeeded; tests running"
+  },
+  "unresolved": [
+    "N1 release-object test-hook checker can silently pass after a read failure; retain for scoped repair",
+    "No Windows 11 desktop validation or signed native-host release availability evidence",
+    "59 due checks remain unpromoted; cloud process-axis evidence does not replace other check semantics",
+    "Current desktop CI run has not completed at this checkpoint",
+    "Fresh private worktree registry differs from the earlier custody snapshot; do not prune without item review"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Observe exact desktop CI outcome, repair ordinary failures without weakening tests, retain N1, then continue the S1-R4 dependency path and current-candidate qualification."
+}
