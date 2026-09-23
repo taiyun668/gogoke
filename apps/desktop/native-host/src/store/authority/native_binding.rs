@@ -161,6 +161,8 @@ fn instance_record(input: &AppendRuntimeInstanceIdentity) -> Result<DomainRecord
 
 fn load_instance(tx:&mut Transaction<'_, '_>,domain:&str,instance:&str,version:&str)->Result<Option<RuntimeInstanceIdentitySnapshot>> {
     ensure_schema(tx)?;
+    let versions=count(tx,"SELECT COUNT(*) FROM main.gogoke_runtime_instance_identity_versions WHERE domain_id=? AND instance_id=?",&[domain,instance])?;
+    stream_integrity(tx,domain,&format!("gogoke.runtime-instance-identity.v1/{instance}"),INSTANCE_TYPE,instance,versions)?;
     let rows=tx.query("SELECT domain_id,instance_id,identity_version,driver_id,profile_ref,profile_revision,account_state,account_ref,auth_revision,content_hash,operation_id,receipt_id FROM main.gogoke_runtime_instance_identity_versions WHERE domain_id=? AND instance_id=? AND identity_version=?",&[domain,instance,version],12)?;
     if rows.is_empty(){return Ok(None)}
     if rows.len()!=1 {return denied()}
@@ -256,6 +258,8 @@ fn check_lineage(tx:&mut Transaction<'_, '_>,domain:&str,binding:&str,generation
 
 fn load_binding(tx:&mut Transaction<'_, '_>,identity:&NativeBindingIdentity,currentness:bool)->Result<Option<NativeBindingVersion>> {
     ensure_schema(tx)?;
+    let versions=count(tx,"SELECT COUNT(*) FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=?",&[&identity.domain_id,&identity.binding_id])?;
+    stream_integrity(tx,&identity.domain_id,&format!("gogoke.native-binding.v1/{}",identity.binding_id),BINDING_TYPE,&identity.binding_id,versions)?;
     let rows=tx.query("SELECT domain_id,binding_id,generation,source_epoch,instance_id,instance_version,native_identity,lineage_ref,custody_ref,content_hash,operation_id,receipt_id FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=? AND generation=?",&[&identity.domain_id,&identity.binding_id,&identity.generation],12)?;
     if rows.is_empty(){return Ok(None)}
     if rows.len()!=1{return denied()}
