@@ -187,7 +187,7 @@ class RunnerTests(unittest.TestCase):
         injected = {
             "OPENAI_KEY": "secret",
             "AWS_ACCESS_KEY_ID": "secret",
-            "NPM_CONFIG_USERCONFIG": "C:/secret/.npmrc",
+            "NPM_CONFIG_USERCONFIG": "C:/tmp/secret/.npmrc",
             "HTTPS_PROXY": "http://proxy.invalid",
             "NORMAL_R4_TEST": "removed-by-fresh-allowlist",
         }
