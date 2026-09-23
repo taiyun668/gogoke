@@ -21,7 +21,11 @@ const runGh: GhRunner = (args) => {
 
 /** Read-only public GitHub fetches may use the current gh credential for rate limits. */
 export function currentGhToken(runner: GhRunner = runGh): string {
-  const token = runner(["auth", "token", "--hostname", "github.com"]);
+  // Actions supplies GH_TOKEN directly; the installed product uses the user's
+  // existing gh login when that environment credential is absent.
+  const token = runner === runGh && process.env.GH_TOKEN !== undefined
+    ? process.env.GH_TOKEN
+    : runner(["auth", "token", "--hostname", "github.com"]);
   if (token.length < 20 || token.includes("\n") || token.includes("\r")) {
     throw new GhCredentialError("GH_AUTH_UNAVAILABLE");
   }
