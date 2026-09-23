@@ -1,0 +1,19 @@
+{
+  "schema": "gogoke.s1-r4.plan-manifest.v2",
+  "status": "DESIGN_PROPOSAL_NOT_AUTHORIZED",
+  "baseline_commit": "e79dc718b98eef4a36ec88ee4d7ac43d63e0ca7a",
+  "sha256": {
+    "PLAN.md": "9de6e69e818a7fe05adfb56a3dba2c278a9d297d412074184ea12cd4ad34be8c",
+    "PLAN.json": "7f601dba4f0dc45b0d99e9a487161176a926beb51c60a00e1462cb79d0018347",
+    "verify_plan.py": "9b1def21ec86087dcbfa22eaa71c0e808383796b985a67f4ed10acd29819bc4a"
+  },
+  "repo_sha256": {
+    "docs/design/gogoke-s1-r4-plan-v1/PLAN.md": "543a592cfd6a7451f3c0003734de773e355e98ec2398604d9ad7386758149c3f",
+    "docs/design/gogoke-s1-r4-plan-v1/MANIFEST.json": "c181c7b2cafa06eeaa5930c3d065560f53eb874dedfe6a1d35afd91bac9a7043"
+  },
+  "excluded": [
+    "MANIFEST.json",
+    "VALIDATION.json"
+  ],
+  "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance"
+}
