@@ -1,0 +1,41 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-033",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "d6f984d6c2f3751151cdca1d006bc8825ff7b36e",
+  "recorded_utc": "2026-09-23T08:01:11Z",
+  "reason": "Preserve NativeBinding authority construction and four-finding repair evidence at the latest pushed WIP",
+  "native_binding": {
+    "branch": "codex/r4-native-binding-authority-r1",
+    "latest_head": "7237f84e97fbebe4fc7620320d1180ee406c51db",
+    "state": "wip: no independent acceptance, not a stage or due-check candidate",
+    "wip_commits": ["d5c1d99a1610280673f8fbaa027791ba2f2dbaa4","507b09861d3a4d4f5ee93d9cbd70aec7565ace6c","cf96ba63b716999e72ca66c9a82f03c8be552759","c0e8177f1b04bc75c14381df6f6b05eeda32f339","61efc3b02f6d4d88ff33bedaad85e4edefae0c90","c4c128732ffcaf97667ed7d24144c03258243ae6","65e98b34fcf378e4a867d9fa39e8d4c3533255db","b3f15437deb6d8196563222433a85e91fa655c03","7237f84e97fbebe4fc7620320d1180ee406c51db"],
+    "first_failure": "Run 35830366148 at c0e8177f: native lib 383 passed/1 failed, exit 101; INSERT had 14 values for 13 columns. Server job succeeded.",
+    "first_repair": "Run 35830855475 at 61efc3b0: native lib 384/384, 0 failed/skipped, b07 and host_typed_ops each 1/1, server success.",
+    "expanded_tests": "Run 35831382430 at c4c12873: native lib 385/385, b07/host each 1/1, server success. Fresh independent risk audit found NB-R1 through NB-R4 in account replacement, private instance version, head/schema rollback and damaged event/receipt bodies.",
+    "focused_repair": "Run 35832652681 at 65e98b34: native lib 385/385 and process axes each 1/1; server first attempt failed its existing 1 ms custody deadline child, second attempt on the same SHA passed 536/536. No deadline/selector was weakened.",
+    "counterexample_repair": "Run 35833523727 at b3f15437: native lib 389/389, process axes each 1/1, server success. Tests include generation after account change, projection reassignment, head rollback, partial schema and event/receipt body damage.",
+    "current_cloud": "Run 35834148591 bound to 7237f84e: native lib 390 discovered/executed/passed, 0 failed/skipped; b07_two_process and host_typed_ops 1/1 each; server job success. Windows Server real run, not Windows 11 desktop validation.",
+    "current_source_hygiene": "Local signed-Python scan of current branch: 0 leaks, known-sensitive positive control rejected.",
+    "latest_review": "Fresh focused independent review of NB-R1..R4 on 7237f84e is IN_PROGRESS; earlier c4 risk findings are not acceptance of current repairs.",
+    "production_boundary": "ProductDatabase offers private typed Owner-checked in-process operations; protocol names exist, but authenticated session handlers and TS service path for these operations are not implemented. Main-service pipe authentication alone is not Owner or Controller product authority. No qualification group has run and T10.L remains NOT_RUN."
+  },
+  "other_custody": {
+    "PR4": "43624d9ca285a99125ee8fbad2e2c2bb569e5a6f remains draft; Windows runner self-test 60/60 and source hygiene PASS; fresh Claude review pending. Owner PR #11 authorization was merged, but runner is not merged or qualified.",
+    "PR10": "d32260e1a418a1cf98fa0101ffaf4b0836abea42 remains draft with cloud checks green and Claude review pending.",
+    "cleanup": "MC-030 dry-run is pending Claude's independent review; zero worktrees, generated directories or links removed."
+  },
+  "local_workspace_hygiene": {
+    "new_directories_this_checkpoint": [],
+    "cleaned_directories_this_checkpoint": [],
+    "retained": [
+      {"path":"%GOGOKE_WORK_ROOT%/branches/native-binding-authority","logical_bytes_at_MC032":274127557,"reason":"active scoped authority WIP, all source commits pushed","cleanup_when":"after current candidate review, integration and handoff"},
+      {"path":"%LOCALAPPDATA%/gogoke-agent-tmp/mc032-controller","logical_bytes_at_measurement":2687253,"reason":"bounded source scan and exact cloud machine reports for active repair","cleanup_when":"after repair/review; exact target and reparse state must be checked before removal"}
+    ],
+    "unchanged_retention": "Other active worktrees and pending cleanup candidates are enumerated in MC-030/MC-031; pnpm store remains on the same D volume before and after."
+  },
+  "gate_state": {"G0":"PASS","G1":"IN_PROGRESS_NOT_ACCEPTED","G2":"NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY","G3":"IN_PROGRESS_NOT_ACCEPTED","G4":"IN_PROGRESS_NOT_ACCEPTED","G5":"NOT_RUN","GN":"NOT_AUTHORIZED"},
+  "due_checks": "59 unpromoted",
+  "next_action": "Complete fresh focused review and repair any latest findings; then fresh full-axis risk review and eventual external Claude review. Establish properly authorized typed service/TS production reachability before any T10.L or G1 acceptance claim. Continue PR #4/#10 reviews and await Claude cleanup verdict without deleting local custody early."
+}
