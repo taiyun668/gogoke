@@ -163,6 +163,8 @@ extern "system" {
     fn DeleteProcThreadAttributeList(list: *mut c_void);
     fn ReadFile(file: Handle, buffer: *mut c_void, length: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
     fn WriteFile(file: Handle, buffer: *const c_void, length: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
+    fn PeekNamedPipe(file: Handle, buffer: *mut c_void, buffer_size: u32, read: *mut u32,
+        available: *mut u32, bytes_left: *mut u32) -> i32;
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
     fn SetInformationJobObject(
         job: Handle,
@@ -887,6 +889,69 @@ impl ManagedProcess {
         Ok(!self.process.is_inheritable()? && !self.job.is_inheritable()?)
     }
 
+    /// Byte-bounded synchronous protocol transport. The product caller must
+    /// provide write liveness, admission and the beginCommitted boundary;
+    /// neither an ACK nor these bytes prove completion.
+    pub fn write_protocol(&self, bytes: &[u8]) -> io::Result<()> {
+        let protocol = self.protocol.as_ref().ok_or_else(||
+            io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
+        if bytes.is_empty() || bytes.len() > 64 * 1024 || bytes.last() != Some(&b'\n') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "protocol command must be one bounded JSONL frame"));
+        }
+        let mut written = 0u32;
+        if unsafe { WriteFile(protocol.stdin_write.raw(), bytes.as_ptr().cast(),
+            bytes.len() as u32, &mut written, ptr::null_mut()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if written as usize != bytes.len() {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "partial protocol command"));
+        }
+        Ok(())
+    }
+
+    /// Reads one LF frame with an explicit deadline and byte bound. EOF or
+    /// process exit before LF is an error, never a task result.
+    pub fn read_protocol_frame(&self, deadline: Duration) -> io::Result<Vec<u8>> {
+        let protocol = self.protocol.as_ref().ok_or_else(||
+            io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
+        if deadline.is_zero() || deadline > Duration::from_secs(30) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "protocol deadline out of bounds"));
+        }
+        let started = Instant::now();
+        let mut frame = Vec::new();
+        loop {
+            if started.elapsed() >= deadline {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "protocol frame deadline"));
+            }
+            let mut available = 0u32;
+            if unsafe { PeekNamedPipe(protocol.stdout_read.raw(), ptr::null_mut(), 0,
+                ptr::null_mut(), &mut available, ptr::null_mut()) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if available == 0 {
+                if self.wait(Duration::ZERO)? {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "process exited before protocol frame"));
+                }
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            let mut byte = 0u8;
+            let mut read = 0u32;
+            if unsafe { ReadFile(protocol.stdout_read.raw(), (&mut byte as *mut u8).cast(),
+                1, &mut read, ptr::null_mut()) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if read != 1 {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "partial protocol frame"));
+            }
+            frame.push(byte);
+            if frame.len() > 64 * 1024 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "protocol frame too large"));
+            }
+            if byte == b'\n' { return Ok(frame); }
+        }
+    }
+
     pub fn wait(&self, timeout: Duration) -> io::Result<bool> {
         wait_handle(self.process.raw(), duration_ms(timeout))
     }
@@ -1602,17 +1667,12 @@ mod tests {
         let pipes = managed.protocol.as_ref().expect("protocol pipes");
         assert!(!pipes.stdin_write.is_inheritable().expect("parent stdin handle"));
         assert!(!pipes.stdout_read.is_inheritable().expect("parent stdout handle"));
-        let input = b"controlled\n";
-        let mut written = 0u32;
-        assert_ne!(unsafe { WriteFile(pipes.stdin_write.raw(), input.as_ptr().cast(),
-            input.len() as u32, &mut written, ptr::null_mut()) }, 0);
-        assert_eq!(written as usize, input.len());
+        assert_eq!(managed.write_protocol(b"no delimiter").unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(managed.read_protocol_frame(Duration::ZERO).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        managed.write_protocol(b"controlled\n").expect("bounded command write");
+        let output = managed.read_protocol_frame(Duration::from_secs(5)).expect("bounded frame read");
+        assert!(String::from_utf8_lossy(&output).contains("echo:controlled"));
         assert!(managed.wait(Duration::from_secs(5)).expect("child exit"));
-        let mut output = [0u8; 128];
-        let mut read = 0u32;
-        assert_ne!(unsafe { ReadFile(pipes.stdout_read.raw(), output.as_mut_ptr().cast(),
-            output.len() as u32, &mut read, ptr::null_mut()) }, 0);
-        assert!(String::from_utf8_lossy(&output[..read as usize]).contains("echo:controlled"));
     }
 
     #[test]
