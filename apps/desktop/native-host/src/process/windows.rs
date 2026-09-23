@@ -1982,6 +1982,8 @@ mod tests {
             Err(ProcessCustodyError::DurableIdentityMismatch(_))
         ));
         assert!(custodian.active(&prepared.ticket).is_some());
+        assert!(proof.errors.is_empty() && proof.parent_exited && proof.writer_fence_verified
+            && proof.active_job_processes == Some(0), "stop proof before durable release: {proof:?}");
         let confirmed = custodian
             .confirm_stop_durable(&DurableStopConfirmation {
                 ticket: prepared.ticket.clone(),
