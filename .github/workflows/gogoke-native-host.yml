@@ -259,7 +259,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    name: Gogoke server 44-file cloud tests
+    name: Gogoke server 45-file cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
     env:
@@ -282,6 +282,8 @@ jobs:
         run: cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml
       - name: Verify machine-result parsers with failing controls
         run: node --test tools/ci/gogoke-server-tests.test.mjs
+      - name: Verify controlled Pi protocol fixture process
+        run: node --test apps/desktop/test-fixtures/s1-r4/ledger/controlled-pi.test.mjs
       - name: Run all Gogoke server test files and write machine result
         if: ${{ !cancelled() }}
         shell: pwsh
