@@ -109,6 +109,13 @@ mod platform {
     const SECURITY_DESCRIPTOR_REVISION: Dword = 1;
     const DACL_SECURITY_INFORMATION: Dword = 0x0000_0004;
     const SE_KERNEL_OBJECT: Dword = 6;
+    const ERROR_SUCCESS: Dword = 0;
+    const SE_DACL_PROTECTED: u16 = 0x1000;
+    const ACL_SIZE_INFORMATION_CLASS: Dword = 2;
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+    // The pipe object maps the SDDL GA bit to FILE_ALL_ACCESS in its applied ACE.
+    const FILE_ALL_ACCESS: Dword = 0x001f_01ff;
 
     #[repr(C)]
     struct SecurityAttributes {
@@ -126,6 +133,26 @@ mod platform {
     #[repr(C)]
     struct TokenUser {
         user: SidAndAttributes,
+    }
+
+    #[repr(C)]
+    struct AclSizeInformation {
+        ace_count: Dword,
+        acl_bytes_in_use: Dword,
+        acl_bytes_free: Dword,
+    }
+
+    #[repr(C)]
+    struct AceHeader {
+        ace_type: u8,
+        ace_flags: u8,
+        ace_size: u16,
+    }
+
+    #[repr(C)]
+    struct AccessAllowedAce {
+        header: AceHeader,
+        mask: Dword,
     }
 
     #[link(name = "kernel32")]
@@ -195,6 +222,28 @@ mod platform {
             sacl: *mut *mut c_void,
             descriptor: *mut SecurityDescriptor,
         ) -> Dword;
+        fn GetSecurityDescriptorDacl(
+            descriptor: SecurityDescriptor,
+            dacl_present: *mut Bool,
+            dacl: *mut *mut c_void,
+            dacl_defaulted: *mut Bool,
+        ) -> Bool;
+        fn GetSecurityDescriptorControl(
+            descriptor: SecurityDescriptor,
+            control: *mut u16,
+            revision: *mut u32,
+        ) -> Bool;
+        fn GetAclInformation(
+            acl: *mut c_void,
+            information: *mut c_void,
+            information_length: Dword,
+            information_class: Dword,
+        ) -> Bool;
+        fn GetAce(
+            acl: *mut c_void,
+            ace_index: Dword,
+            ace: *mut *mut c_void,
+        ) -> Bool;
         fn ConvertSecurityDescriptorToStringSecurityDescriptorW(
             descriptor: SecurityDescriptor,
             revision: Dword,
@@ -422,6 +471,94 @@ mod platform {
             Ok(result)
         }
 
+        #[cfg(test)]
+        fn applied_dacl_snapshot(&self) -> Result<(bool, Vec<(u8, Dword, String)>), PrivateIpcError> {
+            let mut descriptor = null_mut();
+            let status = unsafe {
+                GetSecurityInfo(
+                    self.handle.raw(),
+                    SE_KERNEL_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                    &mut descriptor,
+                )
+            };
+            if status != ERROR_SUCCESS {
+                return Err(PrivateIpcError::Os {
+                    operation: "GetSecurityInfo",
+                    source: io::Error::from_raw_os_error(status as i32),
+                });
+            }
+            let descriptor_allocation = OwnedLocal(descriptor);
+            let mut control = 0u16;
+            let mut _revision = 0u32;
+            if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut _revision) }
+                == FALSE
+            {
+                return Err(os_error("GetSecurityDescriptorControl"));
+            }
+            let mut present = FALSE;
+            let mut dacl = null_mut();
+            let mut _defaulted = FALSE;
+            if unsafe {
+                GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut _defaulted)
+            } == FALSE
+            {
+                return Err(os_error("GetSecurityDescriptorDacl"));
+            }
+            if present == FALSE || dacl.is_null() {
+                return Ok(((control & SE_DACL_PROTECTED) != 0, Vec::new()));
+            }
+            let mut size = AclSizeInformation {
+                ace_count: 0,
+                acl_bytes_in_use: 0,
+                acl_bytes_free: 0,
+            };
+            if unsafe {
+                GetAclInformation(
+                    dacl,
+                    (&mut size as *mut AclSizeInformation).cast(),
+                    std::mem::size_of::<AclSizeInformation>() as Dword,
+                    ACL_SIZE_INFORMATION_CLASS,
+                )
+            } == FALSE
+            {
+                return Err(os_error("GetAclInformation"));
+            }
+            let mut entries = Vec::with_capacity(size.ace_count as usize);
+            for index in 0..size.ace_count {
+                let mut ace = null_mut();
+                if unsafe { GetAce(dacl, index, &mut ace) } == FALSE || ace.is_null() {
+                    return Err(os_error("GetAce"));
+                }
+                let header = unsafe { &*(ace.cast::<AceHeader>()) };
+                let (mask, sid) = if header.ace_type == ACCESS_ALLOWED_ACE_TYPE
+                    || header.ace_type == ACCESS_DENIED_ACE_TYPE
+                {
+                    let allowed = unsafe { &*(ace.cast::<AccessAllowedAce>()) };
+                    let sid = unsafe {
+                        (ace.cast::<u8>().add(8) as Sid)
+                    };
+                    let mut text = null_mut();
+                    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == FALSE {
+                        return Err(os_error("ConvertSidToStringSidW(ACE SID)"));
+                    }
+                    let allocation = OwnedLocal(text.cast());
+                    let text = unsafe { wide_pointer_to_string(text) };
+                    drop(allocation);
+                    (allowed.mask, text)
+                } else {
+                    (0, String::new())
+                };
+                entries.push((header.ace_type, mask, sid));
+            }
+            drop(descriptor_allocation);
+            Ok(((control & SE_DACL_PROTECTED) != 0, entries))
+        }
+
         pub fn accept_current_user(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
             if unsafe { ConnectNamedPipe(self.handle.raw(), null_mut()) } == FALSE
                 && io::Error::last_os_error().raw_os_error() != Some(ERROR_PIPE_CONNECTED)
@@ -585,21 +722,16 @@ mod platform {
         fn applies_current_user_only_dacl_and_first_instance_guard() {
             let endpoint = unique_endpoint("acl");
             let listener = PrivatePipeListener::bind(&endpoint).expect("bind private pipe");
-            let dacl = listener.applied_dacl_sddl().expect("read applied DACL");
-            assert!(dacl.contains(listener.expected_sid()));
-            assert!(
-                !dacl.contains(";;;WD"),
-                "Everyone must not be admitted: {dacl}"
-            );
-            assert!(
-                !dacl.contains(";;;AU"),
-                "Authenticated Users must not be admitted: {dacl}"
-            );
-            assert_eq!(
-                dacl.matches("(A;").count(),
-                1,
-                "DACL must contain only the current-user allow ACE: {dacl}"
-            );
+            let dacl = listener
+                .applied_dacl_snapshot()
+                .expect("read applied DACL");
+            assert!(dacl.0, "DACL must be protected");
+            assert_eq!(dacl.1.len(), 1, "DACL must contain one ACE: {dacl:?}");
+            assert_eq!(dacl.1[0].0, ACCESS_ALLOWED_ACE_TYPE);
+            assert_eq!(dacl.1[0].1, FILE_ALL_ACCESS);
+            assert_eq!(dacl.1[0].2, listener.expected_sid());
+            assert_ne!(dacl.1[0].2, "S-1-1-0", "Everyone must not be admitted");
+            assert_ne!(dacl.1[0].2, "S-1-5-11", "Authenticated Users must not be admitted");
             assert!(PrivatePipeListener::bind(&endpoint).is_err());
         }
 

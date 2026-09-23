@@ -1601,19 +1601,15 @@ export class NativeHostClient {
       throw new NativeHostClientError("HOST_STDIO", "native-host stdout was not created");
     }
     const stdout = NodeReadline.createInterface({ input: child.stdout });
-    const locked = await readStdoutLine(stdout);
-    if (!locked.startsWith("LOCKED")) {
+    let handshake: Awaited<ReturnType<typeof readStartupHandshake>>;
+    try {
+      handshake = await readStartupHandshake(stdout);
+    } catch (error) {
       stdout.close();
       child.kill();
-      throw new NativeHostClientError("HOST_LOCK", locked);
+      throw error;
     }
-    const pipeLine = await readStdoutLine(stdout);
-    if (!pipeLine.startsWith("PIPE\t")) {
-      stdout.close();
-      child.kill();
-      throw new NativeHostClientError("HOST_PIPE", pipeLine);
-    }
-    const capabilityLine = await readStdoutLine(stdout);
+    const { pipeLine, capabilityLine } = handshake;
     stdout.close();
     if (!capabilityLine.startsWith("CAPABILITY\t")) {
       child.kill();
@@ -1891,21 +1887,43 @@ function readExact(fd: number, buffer: Buffer): void {
   }
 }
 
-function readStdoutLine(stdout: NodeReadline.Interface): Promise<string> {
+export function readStartupHandshake(stdout: NodeReadline.Interface): Promise<{
+  readonly pipeLine: string;
+  readonly capabilityLine: string;
+}> {
   return new Promise((resolve, reject) => {
+    let stage = 0;
+    let pipeLine = "";
     const onLine = (line: string) => {
-      cleanup();
-      resolve(line);
+      if (stage === 0) {
+        if (!line.startsWith("LOCKED")) {
+          cleanup();
+          reject(new NativeHostClientError("HOST_LOCK", line));
+        } else {
+          stage = 1;
+        }
+      } else if (stage === 1) {
+        if (!line.startsWith("PIPE\t")) {
+          cleanup();
+          reject(new NativeHostClientError("HOST_PIPE", line));
+        } else {
+          pipeLine = line;
+          stage = 2;
+        }
+      } else {
+        cleanup();
+        resolve({ pipeLine, capabilityLine: line });
+      }
     };
     const onClose = () => {
       cleanup();
-      reject(new NativeHostClientError("HOST_EOF", "native-host closed stdout"));
+      reject(new NativeHostClientError("HOST_EOF", "native-host closed stdout before handshake"));
     };
     const cleanup = () => {
       stdout.off("line", onLine);
       stdout.off("close", onClose);
     };
-    stdout.once("line", onLine);
+    stdout.on("line", onLine);
     stdout.once("close", onClose);
   });
 }

@@ -140,11 +140,160 @@ jobs:
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           "machine_result=$machineResult" >> $env:GITHUB_OUTPUT
           if ($failed -or $releaseResult.state -ne 'PASS') { throw 'Release build or one or more required native-host axes failed or did not execute.' }
+      - name: Run focused native-host lib failure probes
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $probes = @(
+            @{ id = 'ipc-dacl'; filter = 'applies_current_user_only_dacl_and_first_instance_guard' },
+            @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
+            @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' }
+          )
+          $results = @()
+          foreach ($probe in $probes) {
+            $log = Join-Path $evidenceRoot "focused-$($probe.id).log"
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $probe.filter -- --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Tee-Object -FilePath $log | Write-Host
+            $text = $output -join "`n"
+            $running = [regex]::Matches($text, '(?m)^running (\d+) tests?$')
+            $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+            $discovered = if ($running.Count -eq 0) { 0 } else { ($running | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum }
+            $passed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[2].Value } | Measure-Object -Sum).Sum }
+            $failed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[3].Value } | Measure-Object -Sum).Sum }
+            $skipped = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[4].Value } | Measure-Object -Sum).Sum }
+            $state = if ($discovered -ne 1 -or $passed + $failed -ne 1 -or $summaries.Count -eq 0) {
+              'FAIL_INSTRUMENT'
+            } elseif ($exitCode -ne 0 -or $failed -ne 0 -or $skipped -ne 0) {
+              'FAIL'
+            } else {
+              'PASS'
+            }
+            $results += [ordered]@{
+              id = $probe.id
+              filter = $probe.filter
+              exit_code = $exitCode
+              discovered = $discovered
+              executed = $passed + $failed
+              passed = $passed
+              failed = $failed
+              skipped = $skipped
+              state = $state
+              log = "focused-$($probe.id).log"
+            }
+          }
+          $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
+          if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
+      - name: Run all native-host library unit tests
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $log = Join-Path $evidenceRoot 'lib-tests.log'
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath $log | Write-Host
+          $text = $output -join "`n"
+          $running = [regex]::Matches($text, '(?m)^running (\d+) tests?$')
+          $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+          $discovered = if ($running.Count -eq 0) { 0 } else { ($running | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum }
+          $passed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[2].Value } | Measure-Object -Sum).Sum }
+          $testFailed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[3].Value } | Measure-Object -Sum).Sum }
+          $skipped = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[4].Value } | Measure-Object -Sum).Sum }
+          $executed = $passed + $testFailed
+          $state = if ($summaries.Count -eq 0 -or $discovered -eq 0 -or $executed -eq 0) {
+            'FAIL_INSTRUMENT'
+          } elseif ($exitCode -ne 0 -or $testFailed -ne 0 -or $skipped -ne 0) {
+            'FAIL'
+          } else {
+            'PASS'
+          }
+          $machineResult = Join-Path $evidenceRoot 'machine-result.json'
+          $machine = if (Test-Path -LiteralPath $machineResult -PathType Leaf) {
+            Get-Content -LiteralPath $machineResult -Raw | ConvertFrom-Json -AsHashtable
+          } else {
+            [ordered]@{
+              schema = 'gogoke.native-host-ci-evidence.v1'
+              commit_sha = '${{ github.sha }}'
+              run_id = '${{ github.run_id }}'
+              run_attempt = '${{ github.run_attempt }}'
+              runner_os = '${{ runner.os }}'
+              runner_image = $env:ImageOS
+              evidence_scope = 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP'
+              axes = @()
+            }
+          }
+          $machine['lib_tests'] = [ordered]@{
+            command = 'cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture'
+            exit_code = $exitCode
+            discovered = $discovered
+            executed = $executed
+            passed = $passed
+            failed = $testFailed
+            skipped = $skipped
+            state = $state
+            log = 'lib-tests.log'
+          }
+          $focusedPath = Join-Path $evidenceRoot 'focused-lib-probes.json'
+          $machine['focused_lib_probes'] = if (Test-Path -LiteralPath $focusedPath -PathType Leaf) {
+            @(Get-Content -LiteralPath $focusedPath -Raw | ConvertFrom-Json)
+          } else {
+            @()
+          }
+          $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
+          if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
       - name: Upload native-host machine evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/gogoke-native-host-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  gogoke-server-tests:
+    name: Gogoke server 44-file cloud tests
+    timeout-minutes: 45
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.13.1"
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Install locked server dependencies without lifecycle scripts
+        working-directory: third_party/t3code
+        shell: pwsh
+        run: pnpm install --filter 't3...' --frozen-lockfile --ignore-scripts --store-dir (Join-Path $env:RUNNER_TEMP 'pnpm-store')
+      - name: Build exact native-host test fixture in cloud
+        run: cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml
+      - name: Verify machine-result parsers with failing controls
+        run: node --test tools/ci/gogoke-server-tests.test.mjs
+      - name: Run all Gogoke server test files and write machine result
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $env:GOGOKE_SERVER_EVIDENCE_ROOT = Join-Path $env:RUNNER_TEMP 'gogoke-server-evidence'
+          $env:GOGOKE_NATIVE_HOST = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/native-host/target/release/gogoke-native-host.exe'
+          node tools/ci/gogoke-server-tests.mjs
+      - name: Upload Gogoke server machine evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-server-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-server-evidence
           if-no-files-found: error
           retention-days: 30
