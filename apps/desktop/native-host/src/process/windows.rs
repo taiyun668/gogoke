@@ -1898,7 +1898,7 @@ mod tests {
         let marker = unique_marker("two-phase");
         let marker_text = marker.to_string_lossy();
         let invalid_path_char = marker_text.chars().find(|ch| !ch.is_ascii_alphanumeric()
-            && !matches!(ch, ':' | '\\' | '/' | '-' | '_' | '.'));
+            && !matches!(ch, ':' | '\\' | '/' | '-' | '_' | '.' | '~'));
         assert!(invalid_path_char.is_none(),
             "cmd marker fixture has unsupported character U+{:04X}",
             invalid_path_char.unwrap_or('\0') as u32);
