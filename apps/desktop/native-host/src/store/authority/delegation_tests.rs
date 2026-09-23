@@ -84,6 +84,7 @@ fn future() -> u64 {
 #[test]
 fn fixed_r2_test_grant_replays_once_without_broadening_or_reissuing() {
     fixture(|connection, owner| {
+        let admitted = super::bootstrap::read_product_identity(connection, owner).unwrap();
         let request = || DelegationGrantInput {
             principal: DelegationPrincipal {
                 principal_id: owner.principal_id().into(),
@@ -112,9 +113,9 @@ fn fixed_r2_test_grant_replays_once_without_broadening_or_reissuing() {
             },
         };
         let first = issue_r2_test_owner_delegation_once(
-            connection, owner, "r2-test-operation-one", request()).unwrap();
+            connection, owner, &admitted, "r2-test-operation-one", request()).unwrap();
         let replay = issue_r2_test_owner_delegation_once(
-            connection, owner, "r2-test-operation-one", request()).unwrap();
+            connection, owner, &admitted, "r2-test-operation-one", request()).unwrap();
         assert_eq!(first, replay);
         assert_eq!(transaction::run(connection, |tx| tx.query(
             "SELECT count(*) FROM main.gogoke_authority_grant_heads", &[], 1)).unwrap()[0][0], "1");
@@ -123,13 +124,17 @@ fn fixed_r2_test_grant_replays_once_without_broadening_or_reissuing() {
         let mut broader = request();
         broader.ceiling.max_response_bytes += 1;
         assert!(issue_r2_test_owner_delegation_once(
-            connection, owner, "r2-test-operation-one", broader).is_err());
+            connection, owner, &admitted, "r2-test-operation-one", broader).is_err());
+        let mut stale = admitted.clone();
+        stale.policy_revision = "999".into();
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, &stale, "r2-test-operation-one", request()).is_err());
         revoke_owner_delegation(connection, owner, &DelegationGrantIdentity {
             grant_id: first.reference.grant_id,
             revision: first.reference.revision,
         }).unwrap();
         assert!(issue_r2_test_owner_delegation_once(
-            connection, owner, "r2-test-operation-one", request()).is_err(),
+            connection, owner, &admitted, "r2-test-operation-one", request()).is_err(),
             "revocation cannot be bypassed by replaying the operation");
     });
 }

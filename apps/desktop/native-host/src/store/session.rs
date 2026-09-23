@@ -32,7 +32,7 @@ use crate::root::RootLock;
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub fn open_product_database<'root>(
     root: &'root RootLock,
@@ -965,6 +965,58 @@ fn handle_authenticated_line_with_process(
             )?;
             Ok(controller_admission_body(&identity))
         }
+        "PrepareR2TestDelegation" => {
+            let fields = action_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let operation_id = required(&fields, "operationId")?;
+            if operation_id != "r2-02-controlled-task" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let expiry = SystemTime::now().duration_since(UNIX_EPOCH)
+                .map_err(|_| OrchestrationError::AccessDenied)?.as_millis() as u64 + 3_600_000;
+            let grant = authority::issue_r2_test_owner_delegation_once(
+                connection, owner, &admitted, operation_id,
+                authority::DelegationGrantInput {
+                    principal: authority::DelegationPrincipal {
+                        principal_id: admitted.principal_id.clone(),
+                        project_id: "project-r2-02-test".into(),
+                        domain_id: "domain-r2-02-test".into(),
+                        role: "controller".into(),
+                        seat_id: admitted.seat_id.clone(),
+                    },
+                    binding: authority::DelegationBinding {
+                        session_id: "session-r2-02-source".into(),
+                        execution_id: "execution-r2-02-source".into(),
+                        generation: "1".into(),
+                    },
+                    expires_at_epoch_ms: expiry,
+                    ceiling: authority::AuthorityCeiling {
+                        allowed_actions: vec!["delegate".into()],
+                        allowed_target_principal_ids: vec!["principal-r2-02-worker".into()],
+                        allowed_target_domain_ids: vec!["domain-r2-02-test".into()],
+                        allowed_sinks: vec!["task-package".into()],
+                        allowed_material_classes: vec![],
+                        explicit_private_material_ids: vec![],
+                        allowed_continuation_responses: vec![],
+                        max_material_items: 0,
+                        max_material_bytes: 0,
+                        max_response_bytes: 32 * 1024,
+                    },
+                },
+            )?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_GRANT_PREPARED_NOT_ACTION\",\"grantRef\":{},\"revision\":{},\"revocationHead\":{},\"expiresAtEpochMs\":{}}}",
+                json_quote(&grant.reference.grant_id), json_quote(&grant.reference.revision),
+                json_quote(&grant.reference.revocation_head),
+                json_quote(&grant.expires_at_epoch_ms.to_string())))
+        }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
             let expected = required(&fields,"expectedPreviousTaskRevision")?;
@@ -1746,6 +1798,21 @@ mod context_tests {
         assert!(handle_authenticated_line_with_process(
             &mut connection, &owner, Some(&mut custodian), &action,
         ).is_err(), "current profile fields alone cannot create Action authority");
+
+        let fixed = format!(
+            "{{\"operation\":\"PrepareR2TestDelegation\",\"operationId\":\"r2-02-controlled-task\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id),
+        );
+        let first = handle_authenticated_line(&mut connection, &owner, &fixed).unwrap();
+        assert!(first.contains("TEST_ONLY_GRANT_PREPARED_NOT_ACTION"));
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &fixed).unwrap(), first,
+            "a lost reply must not mint another grant");
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &fixed.replace("r2-02-controlled-task", "another-task")).is_err());
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &fixed.replace("\"role\":\"controller\"", "\"allowedActions\":\"any\",\"role\":\"controller\"")).is_err());
 
         connection.close_checked().unwrap();
         drop(root);

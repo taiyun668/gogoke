@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::super::orchestration::OrchestrationError;
 use super::super::digest::content_hash;
 use super::super::same_open::VerifiedDatabaseConnection;
-use super::bootstrap::{self, OwnerIssuer, Profile};
+use super::bootstrap::{self, OwnerIssuer, ProductIdentitySnapshot, Profile};
 use super::catalog::verify_grant_payload_kind;
 use super::catalog::{current_profile, seat_issuer};
 use super::model::{denied, identifier, next_revision, revision, GrantRef};
@@ -412,6 +412,7 @@ pub(crate) fn issue_owner_delegation(
 pub(crate) fn issue_r2_test_owner_delegation_once(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
+    admitted: &ProductIdentitySnapshot,
     operation_id: &str,
     input: DelegationGrantInput,
 ) -> Result<DelegationGrantSnapshot> {
@@ -452,6 +453,14 @@ pub(crate) fn issue_r2_test_owner_delegation_once(
     transaction::run(connection, |tx| {
         let profile = current_profile(tx)?;
         validate_owner(owner, &profile)?;
+        if profile.profile_id != admitted.profile_id
+            || profile.root_identity != admitted.root_identity
+            || profile.principal_id != admitted.principal_id
+            || profile.seat_id != admitted.seat_id
+            || profile.policy_revision != admitted.policy_revision
+            || profile.revocation_head != admitted.revocation_head {
+            return denied();
+        }
         let heads = tx.query(
             "SELECT revision,revoked FROM main.gogoke_authority_grant_heads WHERE grant_id=?",
             &[&identity.grant_id], 2,
