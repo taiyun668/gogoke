@@ -364,7 +364,7 @@ fn preauthorized_action_runs_exact_fixture_once_and_records_native_completion() 
         let source_hash = crate::store::digest::content_hash(source.as_bytes());
         let material = format!(
             "{{\"repository\":\"taiyun668/gogoke\",\"commit\":\"{}\",\"path\":\"apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json\",\"sha256\":\"{}\",\"content\":{}}}",
-            "a".repeat(40), &source_hash[7..], quote(&source),
+            "f6a820dda05a3eac5c29be48c4149bff7e1c9598", &source_hash[7..], quote(&source),
         );
         let message = format!(
             "{{\"schema\":\"gogoke.s1-r4.r2-02.fixture-task.v1\",\"testOnly\":true,\"source\":{material}}}"

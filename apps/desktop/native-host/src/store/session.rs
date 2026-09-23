@@ -1129,6 +1129,32 @@ fn handle_authenticated_line_with_process(
                 || grant.reference.revocation_head != admitted.revocation_head {
                 return Err(OrchestrationError::AccessDenied);
             }
+            let context = authority::read_grantee_context(connection,
+                &authority::GranteeContextReadRequest {
+                    principal_id: "principal-r2-02-worker".into(),
+                    seat_id: "seat-r2-02-worker".into(),
+                    source: authority::ContextReadRequest {
+                        source_domain_id: "domain-r2-02-source".into(),
+                        context_id: "context-r2-02-public-fixture".into(),
+                        version: "1".into(),
+                        expected_scope: "PROJECT".into(),
+                        expected_content_hash: "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e".into(),
+                        expected_access_policy_revision: admitted.policy_revision.clone(),
+                        destination_domain_id: "domain-r2-02-test".into(),
+                        destination_scope: "PROJECT".into(),
+                        promotion_kind: "PROJECT_ONLY".into(),
+                        policy_revision: admitted.policy_revision.clone(),
+                        grant: authority::GrantRef {
+                            grant_id: authority::r2_public_context_grant_id(),
+                            revision: "1".into(),
+                            revocation_head: admitted.revocation_head.clone(),
+                        },
+                    },
+                })?;
+            if context.state != "ACTIVE" || context.source.source_hash !=
+                "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e" {
+                return Err(OrchestrationError::AccessDenied);
+            }
             let recorded_at = r2_test_recorded_at(connection, "r2-02-task-context")?;
             let receipt = authority::commit_task_context_requirements(connection,
                 &CommitTaskContextRequirements {
@@ -1136,7 +1162,11 @@ fn handle_authenticated_line_with_process(
                     domain_id: "domain-r2-02-test".into(),
                     task_id: "task-r2-02-test".into(),
                     expected_previous_revision: None,
-                    mandatory_refs: vec![],
+                    mandatory_refs: vec![MandatoryContextRef {
+                        source_domain_id: "domain-r2-02-source".into(),
+                        context_id: "context-r2-02-public-fixture".into(),
+                        version: "1".into(),
+                    }],
                     event_id: "r2-02-task-event".into(),
                     receipt_id: "r2-02-task-receipt".into(),
                     recorded_at,

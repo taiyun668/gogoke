@@ -106,6 +106,7 @@ pub(crate) use execution_recipe::{
 pub(crate) use bootstrap::OwnerIssuer;
 pub(crate) use catalog::{
     delegate_owner_grant, issue_owner_grant, issue_r2_public_context_grant_once,
+    r2_public_context_grant_id,
     revise_owner_grant, revoke_owner_grant,
 };
 pub(crate) use context_read::{

@@ -227,6 +227,11 @@ pub(crate) fn issue_owner_grant(
     })
 }
 
+pub(crate) fn r2_public_context_grant_id() -> String {
+    let digest = content_hash(format!("r2-02-public-context-grant:{}", super::PUBLIC_R2_MANIFEST_BLOB).as_bytes());
+    format!("grant:r2-02-context:{}", &digest[7..])
+}
+
 /// One Owner-issued context.read grant for the public R2 fixture only. The
 /// deterministic identity makes a lost reply replay the same bounded grant.
 pub(crate) fn issue_r2_public_context_grant_once(
@@ -244,8 +249,7 @@ pub(crate) fn issue_r2_public_context_grant_once(
         destination_scope: "PROJECT".into(),
         delegable_depth: 0,
     };
-    let digest = content_hash(format!("r2-02-public-context-grant:{}", super::PUBLIC_R2_MANIFEST_BLOB).as_bytes());
-    let grant_id = format!("grant:r2-02-context:{}", &digest[7..]);
+    let grant_id = r2_public_context_grant_id();
     transaction::run(connection, |tx| {
         let profile = current_profile(tx)?;
         owner.check(&profile)?;

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { PiManagedSession } from "../adapters/pi/session.ts";
 import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
-import { prepareR2ControlledManifest } from "../context/assembly/r2ControlledManifest.ts";
+import { prepareR2ControlledManifest, prepareR2PublicContext } from "../context/assembly/r2ControlledManifest.ts";
 import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
 import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
@@ -70,6 +70,11 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.deepEqual(grant.ceiling.allowedActions, ["delegate"]);
     Assert.deepEqual(grant.ceiling.allowedTargetPrincipalIds, ["principal-r2-02-worker"]);
     Assert.deepEqual(grant.ceiling.explicitPrivateMaterialIds, []);
+    const contextGrant = await client.prepareR2TestContextGrant(caller);
+    Assert.equal(contextGrant.state, "TEST_ONLY_CONTEXT_GRANT_PREPARED");
+    Assert.deepEqual(await client.prepareR2TestContextGrant(caller), contextGrant);
+    await prepareR2PublicContext({ store: client, source, grant: contextGrant,
+      policyRevision: identity.policyRevision });
     const task = await client.prepareR2TestTask(caller);
     Assert.equal(task.disposition, "COMMITTED");
     Assert.equal((await client.prepareR2TestTask(caller)).disposition, "RECONCILED");
@@ -77,7 +82,10 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       domainId: "domain-r2-02-test", taskId: "task-r2-02-test",
     }), {
       domainId: "domain-r2-02-test", taskId: task.taskId, taskRevision: task.taskRevision,
-      contentHash: task.contentHash, mandatoryRefs: [],
+      contentHash: task.contentHash, mandatoryRefs: [{
+        sourceDomainId: "domain-r2-02-source", contextId: "context-r2-02-public-fixture",
+        version: "1",
+      }],
     });
     const message = JSON.stringify({
       schema: "gogoke.s1-r4.r2-02.fixture-task.v1", testOnly: true,
@@ -151,10 +159,11 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       });
       Assert.equal(preparedAction.kind, task === 0 ? "reserved" : "replay");
       const manifest = await prepareR2ControlledManifest({
-        store: client, basis, grant: preparedGrant, recordedAt: decisionRecordedAt,
+        store: client, basis, grant: preparedGrant, contextGrant, source,
+        recordedAt: decisionRecordedAt,
       });
       Assert.equal(manifest.manifestId, "manifest-r2-02-test");
-      Assert.deepEqual(manifest.includedVersions, []);
+      Assert.equal(manifest.includedVersions.length, 1);
       if (manifestHash === undefined) manifestHash = manifest.manifestHash;
       else Assert.equal(manifest.manifestHash, manifestHash);
       session = new PiManagedSession({
