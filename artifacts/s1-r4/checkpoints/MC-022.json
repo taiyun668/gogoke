@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-022",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "0cea77f723991680f15c2ee7f2869f3e9f040ac5",
+  "recorded_utc": "2026-09-23T03:41:26Z",
+  "reason": "Correct nonblocking m2 notice candidate to the file actually bundled with desktop artifacts",
+  "m2": {
+    "branch": "codex/r4-m2-license-inventory-r1",
+    "current_head": "bec6d799ea895c3d00ab40875bf8369bb796a234",
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/6",
+    "finding": "The initial m2 candidate placed the four-crate inventory only in root THIRD_PARTY_NOTICES.md, but the desktop workflow and Tauri bundle consume apps/desktop/THIRD_PARTY_NOTICES.md; root-only text would not reach those artifacts",
+    "repair": "Place the single detailed inventory in apps/desktop/THIRD_PARTY_NOTICES.md and make root THIRD_PARTY_NOTICES.md index that bundled file; no build or release workflow changed",
+    "inventory": "native-host Cargo.lock pins ryu-js 1.0.3 runtime and cc 1.4.2, find-msvc-tools 0.1.10, shlex 2.0.1 build dependencies; all four version/checksum identities verified against the bundled notice and crates.io-declared license expressions",
+    "source_scan": "Exact candidate 24151 committed files, 0 leaks, sensitive positive control rejected; PR source-hygiene check PASS",
+    "desktop_ci_at_checkpoint": "PR-triggered Browser build and tests is in progress; no full run result inferred",
+    "non_claim": "Source inventory and bundle-path check are not a legal conclusion, a full installer attribution review, signing or publication authority; PR remains draft and unmerged"
+  },
+  "other_lanes": {
+    "PR3": "efa1a6fd full cloud D1 536/536 and D2 382/382 PASS; PR source hygiene, Browser build/tests and Unsigned Windows NSIS PASS; fresh Claude review pending, no merge",
+    "PR4": "Disabled six-file qualification-tool candidate remains draft; GPT public authorization draft and Owner-only merge absent, WP01/S1-01-V BLOCKED",
+    "PR5": "Accepted m1 decoded Shutdown merged as cdbff122, recorded in MC-018"
+  },
+  "custody": "Main and m2/B/C candidate worktrees are clean and pushed; generated package and cloud artifacts remain outside public Git with exact local paths in the external custody note",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Observe exact PR #6 desktop CI final state, then obtain independent notice/distribution review before any m2 integration. Await fresh Claude verdict on PR #3 and GPT/Owner authorization anchor for C; continue only safe dependency-independent S1-R4 work."
+}
