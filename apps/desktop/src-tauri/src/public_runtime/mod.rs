@@ -268,5 +268,4 @@ mod tests {
 }
 
 
-mod product_entry;
-pub(crate) use product_entry::gogoke_r2_goal_probe;
+pub(crate) mod product_entry;
