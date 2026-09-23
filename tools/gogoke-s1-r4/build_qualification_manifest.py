@@ -1,8 +1,8 @@
-"""Build the MC-125 qualification manifest from fixed PLAN bytes.
+"""Build the MC-125 qualification manifest from committed public PLAN bytes.
 
 This is an evidence/traceability instrument.  It deliberately keeps the
 PLAN's official due status separate from runner readiness and from any local
-harness observations.  The fixed PLAN is read with ``git show`` so a checkout
+harness observations.  The candidate PLAN is read with ``git show`` so a checkout
 with CRLF or moving execution files cannot silently change the 59-check map.
 """
 
@@ -59,8 +59,8 @@ def run_git(*args: str) -> bytes:
     return result.stdout
 
 
-def fixed_plan_blob(name: str) -> bytes:
-    return run_git("show", f"{PLAN_SHA}:{PLAN_ROOT}/{name}")
+def fixed_plan_blob(name: str, candidate_head: str) -> bytes:
+    return run_git("show", f"{candidate_head}:{PLAN_ROOT}/{name}")
 
 
 def json_bytes(data: bytes, label: str) -> Any:
@@ -859,9 +859,10 @@ def source_finding(commands: list[dict[str, Any]]) -> dict[str, Any]:
 def build_manifest(
     output_dir: Path, *, include_formal_results: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    fixed_blobs = {name: fixed_plan_blob(name) for name in PLAN_FILES}
+    current_head = run_git("rev-parse", "HEAD").decode().strip()
+    fixed_blobs = {name: fixed_plan_blob(name, current_head) for name in PLAN_FILES}
     fixed = {
-        name: json_bytes(fixed_blobs[name], f"{PLAN_SHA}:{name}")
+        name: json_bytes(fixed_blobs[name], f"{current_head}:{name}")
         for name in PLAN_FILES
     }
     checks = fixed["CHECKS.json"]
@@ -870,7 +871,6 @@ def build_manifest(
     registry, registry_raw = load_registry()
     commands, registry_metadata = registry_commands(registry)
     logs = current_evidence_logs()
-    current_head = run_git("rev-parse", "HEAD").decode().strip()
     branch = run_git("branch", "--show-current").decode().strip()
     status = run_git("status", "--porcelain=v1", "--untracked-files=all").decode("utf-8", errors="replace")
 
@@ -1047,12 +1047,12 @@ def build_manifest(
             "capability": {
                 "ids": capability_ids,
                 "groups": capability_groups,
-                "source": f"{PLAN_SHA}:{PLAN_ROOT}/CAPABILITY_TASK_MAP.json",
+                "source": f"{current_head}:{PLAN_ROOT}/CAPABILITY_TASK_MAP.json",
             },
             "task": {
                 "ids": task_ids,
                 "dependencies": dependencies,
-                "source": f"{PLAN_SHA}:{PLAN_ROOT}/EXECUTION_PLAN.json",
+                "source": f"{current_head}:{PLAN_ROOT}/EXECUTION_PLAN.json",
             },
             "implementation_surface": implementation_surface,
             "test_surface": test_surface,
@@ -1143,6 +1143,7 @@ def build_manifest(
     source_identity = {
         "frozen_source_sha": FROZEN_SOURCE_SHA,
         "fixed_plan_sha": PLAN_SHA,
+        "public_plan_commit": current_head,
         "package_start_sha": PACKAGE_START_SHA,
         "package_head_at_generation": current_head,
         "branch_at_generation": branch,
