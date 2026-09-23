@@ -189,6 +189,64 @@ test("SessionLineage mutation frames are closed, typed, and never carry replay i
   );
 });
 
+test("SessionLineage exposure ingress rejects duplicate native sources and unbound inheritance", () => {
+  const base = {
+    operationId: "lineage-exposure-op",
+    domainId: "domain-one",
+    eventId: "lineage-exposure-event",
+    receiptId: "lineage-exposure-receipt",
+    recordedAt: "2026-09-22T00:00:00Z",
+  };
+  const exposure = {
+    receiptId: "exposure-one",
+    manifestId: "manifest-one",
+    bindingId: "binding-one",
+    generation: "7" as never,
+    evidenceLevel: "NATIVE_ACKED" as const,
+    nativeSourceCoverage: {
+      complete: false,
+      observations: [
+        { sourceRef: "source-one", status: "PARTIAL" as const },
+        { sourceRef: "source-one", status: "COMPLETE" as const },
+      ],
+      unknownSources: [],
+    },
+    taintLabels: [],
+    evidenceRefs: [],
+  };
+  assert.throws(
+    () => encodeSessionLineageCommandFrame({
+      ...base,
+      lineageOperation: {
+        operation: "APPEND_EXPOSURE_RECEIPT",
+        sessionId: "session-one",
+        expectedRevision: "1",
+        exposure,
+      },
+    }),
+    (error: unknown) => error instanceof NativeHostClientError && error.code === "SESSION_LINEAGE_FRAME",
+  );
+  assert.throws(
+    () => encodeSessionLineageCommandFrame({
+      ...base,
+      lineageOperation: {
+        operation: "APPEND_EXPOSURE_RECEIPT",
+        sessionId: "session-one",
+        expectedRevision: "1",
+        exposure: {
+          ...exposure,
+          evidenceLevel: "INHERITED",
+          nativeSourceCoverage: {
+            ...exposure.nativeSourceCoverage,
+            observations: [{ sourceRef: "source-one", status: "PARTIAL" as const }],
+          },
+        },
+      },
+    }),
+    (error: unknown) => error instanceof NativeHostClientError && error.code === "SESSION_LINEAGE_FRAME",
+  );
+});
+
 test("ExecutionRecipe uses flat string request fields and exact typed reply", () => {
   const frame = JSON.parse(encodeExecutionRecipeFrame({
     operationId: "recipe-op", domainId: "domain-one", expectedPreviousRevision: null,

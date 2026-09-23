@@ -724,6 +724,10 @@ const lineageExposure = (value: unknown, path: string): ExposureReceipt => {
       },
     ),
   );
+  const observedSourceRefs = observations.map((item) => item.sourceRef);
+  if (new Set(observedSourceRefs).size !== observedSourceRefs.length) {
+    return lineageError(`${path}.nativeSourceCoverage.observations contains duplicate sources`);
+  }
   const unknownSources = lineageStringList(
     coverage.unknownSources,
     `${path}.nativeSourceCoverage.unknownSources`,
@@ -735,6 +739,9 @@ const lineageExposure = (value: unknown, path: string): ExposureReceipt => {
         `${path}.nativeSourceCoverage.inheritedFromReceiptId`,
       )
     : undefined;
+  if (fields.evidenceLevel === "INHERITED" && !inherited) {
+    return lineageError(`${path}.nativeSourceCoverage.inheritedFromReceiptId is required`);
+  }
   const complete =
     !inherited &&
     observations.length > 0 &&
