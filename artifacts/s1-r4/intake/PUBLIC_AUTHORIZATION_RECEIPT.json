@@ -1,0 +1,25 @@
+{
+  "schema": "gogoke.s1-r4.public-authorization.v1",
+  "owner_instruction": "OWNER_MERGED_PUBLIC_S1_R4_AUTHORIZATION",
+  "validity": {
+    "path": "artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+    "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
+    "missing_stale_or_inconsistent": "FAIL_CLOSED"
+  },
+  "repository": "taiyun668/gogoke",
+  "plan": {
+    "provenance_plan_commit": "cbdc6ad592947370941024a87dbb9168a5b59055",
+    "public_plan_path": "docs/design/gogoke-s1-r4-plan-v1/",
+    "public_plan_manifest_blob": "c9efd380bb9b52a1be18b96bfc3cac4c5f5ff84b",
+    "stale_when": "the public plan MANIFEST.json blob differs from the value above"
+  },
+  "carryover": {
+    "source_archive_repository": "taiyun668/gogo-party",
+    "source_archive_head": "b976e8f29f8d41adffa9ee60d3fe464a2fc3505e",
+    "public_content_import_commit": "f3136b0a84086d7b5f77abb1f87e854648cd54e3",
+    "public_carryover_checkpoint": "MC-001"
+  },
+  "authorized_gates": ["G0", "G1", "G2", "G3", "G4", "G5"],
+  "continuous_after_gate_pass": true,
+  "completion_claim": false
+}

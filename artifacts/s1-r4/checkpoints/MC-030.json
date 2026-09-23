@@ -1,0 +1,100 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-030",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "b90ddbab7324799252943f9fbaef1403f86b95c9",
+  "recorded_utc": "2026-09-23T06:17:40Z",
+  "reason": "Consume Owner-merged PR #12 workspace hygiene and PR #11 authorization, inventory local residues, and submit a no-delete cleanup dry-run for Claude review",
+  "hygiene_rule": {
+    "source": "PR #12 merged by Owner at 2cd2c573713b159d986cc5b134304608727e8867",
+    "path_placeholder": "%GOGOKE_WORK_ROOT% denotes the current Gogoke construction root on the project D volume; it is a reporting placeholder, not a shell variable",
+    "future_task_temp_root": "%LOCALAPPDATA%/gogoke-agent-tmp/<task-id>",
+    "size_method": "Read-only recursive file lengths; reparse points skipped, not followed; byte counts are logical file sizes, not physical disk blocks or reclaim guarantees",
+    "new_local_directories_since_MC029": [],
+    "local_directories_cleaned_since_MC029": [],
+    "cleanup_execution": "NOT_RUN_PENDING_CLAUDE_REVIEW"
+  },
+  "pnpm_store": {
+    "before": "%PROJECT_VOLUME%/.pnpm-store/v11",
+    "after": "%PROJECT_VOLUME%/.pnpm-store/v11",
+    "effective_store_bytes": 3192557660,
+    "decision": "Already on the same D volume as every current Gogoke worktree; no global or repository configuration change was needed. The older %GOGOKE_WORK_ROOT%/pnpm-store is a separate stale cleanup candidate."
+  },
+  "public_authorization": {
+    "owner_merge": "PR #11 b90ddbab7324799252943f9fbaef1403f86b95c9 at 2026-09-23T06:12:51Z, GitHub merged_by=taiyun668",
+    "single_file": "artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+    "receipt_blob": "86737e250b7919c9fadf72eb2b47688a19e5f908",
+    "current_plan_manifest_blob": "c9efd380bb9b52a1be18b96bfc3cac4c5f5ff84b",
+    "execution_state": "Owner merge supplies the public authorization anchor, but runner PR #4 remains a draft code candidate pending fresh review and merge. No qualification group has run; WP01/S1-01-V remain unqualified and 59 due checks NOT_RUN."
+  },
+  "worktree_dry_run": {
+    "observed_count": 19,
+    "preflight": "All 19 worktrees were clean. Each branch HEAD matched its remote branch at inventory time; main was then fast-forwarded to PR #12. No worktree remove command was issued.",
+    "retain": [
+      {"name":"gogoke-public-export","bytes":442113374,"reason":"active main integration checkout","cleanup_when":"after S1-R4 handoff or project closure"},
+      {"name":"branches/tools-candidate","bytes":274348548,"reason":"PR #4 exact-head runner candidate awaiting independent review","cleanup_when":"after PR #4 is reviewed, merged or explicitly abandoned, and its active custody ends"},
+      {"name":"branches/notice-followups","bytes":274101816,"reason":"PR #10 exact-head notice hardening candidate awaiting independent review","cleanup_when":"after PR #10 is reviewed, merged or explicitly abandoned"},
+      {"name":"branches/lineage","bytes":273687866,"reason":"pushed lineage WIP not reviewed or integrated","cleanup_when":"after WIP content is accepted into a current candidate or explicitly retired"},
+      {"name":"branches/native-close","bytes":273670782,"reason":"pushed native-close WIP not reviewed or integrated","cleanup_when":"after WIP content is accepted into a current candidate or explicitly retired"}
+    ],
+    "proposed_git_worktree_remove_after_claude_review": [
+      ["branches/b1-rework",3895086475,"bd58cbb5"],
+      ["branches/b2-rework",3642067494,"23ab33a5"],
+      ["branches/cloud-evidence",1554424320,"71ff9520"],
+      ["branches/full-license-bundle",470489478,"d56c37a9"],
+      ["branches/g1-rework-candidate",3698672212,"efa1a6fd"],
+      ["branches/m1-cloud-candidate",274000763,"5929dfe3"],
+      ["branches/m1-shutdown",273995593,"dc6867fb"],
+      ["branches/m2-license",274014706,"bec6d799"],
+      ["branches/n1-negative",273952671,"b62fc32a"],
+      ["branches/n1-release-check",273952542,"a76e377c"],
+      ["branches/native-lib-diagnostics",273985854,"a7c22506"],
+      ["branches/public-authorization",274104084,"0b90dc5a"],
+      ["branches/public-plan-binding",274071105,"282d6b9f"],
+      ["branches/wp10a",505405986,"5702d703"]
+    ],
+    "review_condition": "Claude must confirm each proposed tree is no longer named by an active next_action or generated custody, and that accepted/merged source or cloud evidence remains recoverable from commits and run IDs. Ambiguous rows remain retained; no forced worktree removal."
+  },
+  "temporary_directory_dry_run": {
+    "root": "%GOGOKE_WORK_ROOT%",
+    "root_entry_count": 42,
+    "branch_container": "branches/ remains because six child worktrees are retained",
+    "proposed_cleanup_after_claude_review": [
+      ["archive-probe",14429],["archive-probe-lf",14344],["cargo-home",1121921802],
+      ["checkout-probe",14429],["checkout-probe-lf",14344],
+      ["cloud-base-native-35807293510",144486],["cloud-bounded-base-35808247369",328842],
+      ["cloud-bounded-candidate-35808247473",330465],["cloud-evidence-diagnostic",190025],
+      ["custody",1482277589],["fresh-byte-probe",15448],["g1-b223-server-35809821055",188325],
+      ["g1-cfcb-native-35810241052",178984],["g1-cfcb-server-35810241052",188281],
+      ["g1-efa-native-35813586330",178984],["g1-efa-server-35813586330",189359],
+      ["g1-local-after-handshake",191671],["license-bundle-pr9-35818751835",24777400],
+      ["license-bundle-pr9-35819820697",24773871],["license-cloud-35817882906",765727],
+      ["license-generated-pr9-35818751835",765727],["license-generated-pr9-35819820697",765727],
+      ["m1-native-35812254747",179095],["m1-server-35812254747",188315],
+      ["m2-cloud-35815140790",24711738],["main-native-35816471863",179097],
+      ["main-server-35816471863",189338],["n1-main-35805375774",92717],
+      ["n1-negative-35805099386",80528],["n1-positive-35805034252",92717],
+      ["native-ci-run-35799638957",62068],["native-dacl-35809952754",178984],
+      ["native-lib-diagnostics-35808822878",364660],["notice-followups-35822377156",819582],
+      ["notice-followups-bundle-35822377156",24783606],["npm-cache",43284070],
+      ["pnpm-store",3061285440],["seat-fixture-source",11148],
+      ["test-temp",3793776],["toolchain",102765403]
+    ],
+    "reason": "Generated cloud downloads, probe copies, obsolete task caches, isolated toolchain or build targets; run IDs and committed hashes, not these local directories, are evidence. The custody directory has only generated target roots, not unpushed source.",
+    "pre_delete_check": "Claude review, exact resolved path within the intended root, no active handle/process, no active next_action, and explicit non-following reparse-point handling. Read-only, long-path or occupied entries must be recorded and skipped."
+  },
+  "non_directory_residue": {
+    "root_loose_files_at_initial_inventory": 106,
+    "logical_bytes_at_initial_inventory": 332145493,
+    "largest": "gogoke-export-source.tar (294369280 bytes)",
+    "state": "Listed for separate file-level review; later scanner output files may raise the live count. Not part of this directory-removal dry-run. Existing local custody notes do not by themselves justify keeping generated evidence copies."
+  },
+  "process_custody": "Read-only process inventory found only the inspection shell referring to this work root; no named Gogoke construction command was active. No process was stopped.",
+  "gate_state": {
+    "G0": "PASS","G1": "IN_PROGRESS_NOT_ACCEPTED","G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED","G4": "IN_PROGRESS_NOT_ACCEPTED","G5": "NOT_RUN","GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Submit this dry-run to Claude for independent cleanup review; execute no removal before its decision. Continue PR #4/#10 and Route-B NativeBinding construction within the existing boundaries. Treat Owner-merged PR #11 as an authorization anchor, not as runner qualification or gate acceptance."
+}
