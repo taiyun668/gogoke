@@ -1,0 +1,55 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-016",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "b61bade99d044e89a911be7ff4c3846f2c0edb03",
+  "recorded_utc": "2026-09-23T02:51:48Z",
+  "reason": "Record Owner's public authorization-anchor decision, disabled six-file tool candidate, complete PR #3 CI, and independent nonblocking work",
+  "C_owner_decision": {
+    "state": "OWNER_CONTRACT_RECEIVED_NOT_YET_IMPLEMENTED",
+    "draft_authority": "GPT drafts the public authorization anchor for taiyun668/gogoke, permitted scope, GN=false, every forbidden operation and bound plan version; Codex only organizes its immutable fields as a separate PR, with no run results or agent-generated authorization",
+    "effectiveness": "Only an Owner GitHub merge by taiyun668 makes that authorization anchor valid; the future runner must verify the Owner merge commit and fail closed on missing, stale or mismatched anchor",
+    "before_owner_merge": "WP01 and S1-01-V remain BLOCKED; qualification checks must not be enabled",
+    "no_self_authority": "No public authorization file or runner authority rebind has been created by Codex"
+  },
+  "C_tools_candidate": {
+    "branch": "codex/r4-public-qualification-tools-candidate-r1",
+    "head": "45f1843d001683e11ea893d6601e8cca8d8711f6",
+    "source_private_commit": "ca7660fd74cbaeba0c244fb363d60f6af0c43350",
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/4",
+    "source_files": 6,
+    "byte_equal": "5/6; test_run_checks.py has only one synthetic NPM_CONFIG_USERCONFIG fixture-path normalization into a recognized temporary fixture namespace, with the same removal assertion",
+    "source_scan": "24152 committed files, 0 leaks; sensitive positive control rejected; first scan found that one fixture path and did not pass until normalized",
+    "non_claim": "Tool files are candidate-only; the private repository/source/authorization constants remain intentionally unbound to public authority, no qualification command was run, PR is draft and must not be merged or used for acceptance",
+    "review": "Fresh Claude review pending for six-file content and one-line fixture change",
+    "pr_hygiene_at_checkpoint": "PENDING"
+  },
+  "B_D_candidate": {
+    "commit": "cfcb8a7d3b2d9f7578599b913c343ac6e187a441",
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/3",
+    "pr_checks": "Source hygiene, Browser build and tests, and Unsigned Windows NSIS all PASS",
+    "machine_evidence": "35810241052: D1 44 files / 532 of 532 executed-pass; D2 all lib 382 of 382, three focused probes 3 of 3, b07 and host_typed_ops each 1 of 1; no failed or skipped required tests",
+    "fresh_review": "CLAUDE_PENDING; no main integration or gate promotion"
+  },
+  "nonblocking_m1": {
+    "branch": "codex/r4-m1-decoded-shutdown-r1",
+    "commit": "dc6867fb65eaf345238f7f0e53e00e0c8ea4999d",
+    "scope": "Use a successful decoded Shutdown operation instead of raw substring in all three native service loops; synthetic nested-operation negative test added",
+    "source_scan": "0 leaks and sensitive positive control rejected",
+    "state": "SOURCE_CANDIDATE_ONLY; no native cloud test or independent review, not accepted"
+  },
+  "nonblocking_m2": "ryu-js Rust dependency license notice remains REGISTERED_NOT_FIXED",
+  "custody": "Main and all named worktrees are clean and pushed. Fixed export archive, generated dependencies and cloud artifacts remain outside public Git with exact paths in an external local custody note.",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Obtain fresh Claude review for PR #3 and #4; do not merge either draft. Await GPT's public authorization-anchor draft and Owner-only merge before enabling C qualification. Continue independent S1-R4 work, including cloud validation of m1, while keeping gates and due checks evidence-bound."
+}
