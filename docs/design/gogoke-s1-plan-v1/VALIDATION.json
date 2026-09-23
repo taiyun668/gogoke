@@ -1,0 +1,152 @@
+{
+  "schema": "gogoke.s1.plan-validation.v1",
+  "status": "PASS_PLAN_STRUCTURE_ONLY",
+  "source_basis": "bc665a852833952b76d9508401193bedd2198436",
+  "planning_base": "a06619719bbac73a892d9e7b27b911cac77d8aa8",
+  "baseline_checks": 2553,
+  "baseline_errors": [],
+  "tasks": 19,
+  "work_packages": 6,
+  "retained_tests": 68,
+  "retained_check_deadlines": 157,
+  "due_s1": 33,
+  "negative_cases": [
+    {
+      "case": "drop_wp",
+      "rejected": true,
+      "errors": [
+        "wp_set"
+      ]
+    },
+    {
+      "case": "wp_dependency",
+      "rejected": true,
+      "errors": [
+        "wp_dependency:WP03"
+      ]
+    },
+    {
+      "case": "cycle",
+      "rejected": true,
+      "errors": [
+        "task_dag"
+      ]
+    },
+    {
+      "case": "duplicate_task",
+      "rejected": true,
+      "errors": [
+        "task_set"
+      ]
+    },
+    {
+      "case": "drop_check",
+      "rejected": true,
+      "errors": [
+        "check_uniqueness",
+        "check_deadlines"
+      ]
+    },
+    {
+      "case": "postpone_check",
+      "rejected": true,
+      "errors": [
+        "check_deadlines"
+      ]
+    },
+    {
+      "case": "runtime_pass",
+      "rejected": true,
+      "errors": [
+        "runtime_not_executed"
+      ]
+    },
+    {
+      "case": "auto_authorize",
+      "rejected": true,
+      "errors": [
+        "authorization"
+      ]
+    },
+    {
+      "case": "grok_worker",
+      "rejected": true,
+      "errors": [
+        "executor:S1-10A-P"
+      ]
+    },
+    {
+      "case": "self_review",
+      "rejected": true,
+      "errors": [
+        "review_roles"
+      ]
+    },
+    {
+      "case": "worker_push",
+      "rejected": true,
+      "errors": [
+        "worker_no_push"
+      ]
+    },
+    {
+      "case": "shared_hotspot",
+      "rejected": true,
+      "errors": [
+        "hotspot:apps/desktop/src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "case": "overlap",
+      "rejected": true,
+      "errors": [
+        "write_conflict:S1-10A-P:S1-10A-U"
+      ]
+    },
+    {
+      "case": "root_kernel_write",
+      "rejected": true,
+      "errors": [
+        "write_scope:crates/core/src/lib.rs"
+      ]
+    },
+    {
+      "case": "missing_source",
+      "rejected": true,
+      "errors": [
+        "read_path:not-a-real-source.ts",
+        "read_sources_bound"
+      ]
+    },
+    {
+      "case": "wrong_blob",
+      "rejected": true,
+      "errors": [
+        "source_blob:.codex/agents/auditor.toml"
+      ]
+    },
+    {
+      "case": "fake_command",
+      "rejected": true,
+      "errors": [
+        "existing_command:WEB-TYPE"
+      ]
+    },
+    {
+      "case": "omit_task_check",
+      "rejected": true,
+      "errors": [
+        "task_check_coverage"
+      ]
+    }
+  ],
+  "runtime_verified": false,
+  "semantic_plan_independently_approved": false,
+  "product_tests_executed": false,
+  "source_files_written": false,
+  "limitations": [
+    "Structure checks are not proof of semantic design completeness or product correctness.",
+    "Source bytes checked against published blob list; whole checkout/tree verification is a separate recorded identity check.",
+    "No test command in TEST_MATRIX was executed by this validator."
+  ]
+}

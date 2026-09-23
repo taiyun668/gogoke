@@ -1,0 +1,51 @@
+observation	capability_behavior	entry_family	sink_family	owning_wp	first_validation_check	disposition	assertion
+R3-001	C28.1	F06	S04	WP08	T33.L	retain-public	A newly allocated terminal tab ID is not evidence that a PTY already exists.
+R3-002	C28.1	F06	S04	WP08	T33.L	retain-public	Visible xterm readiness opens once per bound terminal generation.
+R3-003	C14.1	F06	S05	WP05	T09.L	retain-public	Hiding a terminal panel disposes rendering without falsely reporting backend shutdown.
+R3-004	C28.1	F06	S13	WP08	T33.L	retain-public	Bounded in-memory output is not a durable transcript and is not silently reused across identities.
+R3-005	C14.1	F06	S08	WP04	T18.L	replace-binding	Reader-driven terminal-exit cannot become an execution-success event.
+R3-006	C14.1	F06	S05	WP05	T09.L	retain-public	Tab removal before unawaited backend close preserves visible close-failure diagnosis.
+R3-007	C28.1	F06	S05	WP08	T33.L	retain-public	Manual restart failure clears pending launch and prevents unintended stdin write.
+R3-008	C05.2	F06	S04	WP08	T34.L	retain-public	Single-script ready gating proves write targeting, not script exit or success.
+R3-009	C05.2	F06	S04	WP08	T34.L	retain-public	Multiple launch IDs retain independent pending writes and failure toasts.
+R3-010	C05.2	F06	S01	WP08	T34.L	replace-binding	Setup marker creation must not inherit the semantics of manual launch completion.
+R3-011	C28.1	F06	S13	WP08	T33.L	retain-public	Ephemeral tab state and persistent backend resources have different restart behavior.
+R3-012	C04.1	F03	S01	WP08	T03.L	replace-binding	Focus/visible refresh failure cannot certify the stale closure workspace set as current.
+R3-013	C34.2	F14	S07	WP10a	T56.L	seal-preserve	Visible remote workspace polling is sealed independently of connect buttons.
+R3-014	C34.2	F14	S04	WP10a	T56.L	seal-preserve	DOM and Tauri focus-triggered connect/resume routes cannot restore sealed remote behavior.
+R3-015	C34.1	F14	S07	WP10b	T44.L	replace-binding	Thread polling uses explicit live/processing state and is not a server lease.
+R3-016	C34.1	F14	S08	WP10b	T44.L	replace-binding	Unsubscribe failure followed by subscribe cannot be represented as an atomic switch.
+R3-017	C34.1	F14	S08	WP04	T16.L	replace-binding	Late detach within or after the ten-second window cannot revive an old binding.
+R3-018	C34.1	F14	S08	WP10b	T44.L	replace-binding	Blur/hidden cleanup records uncertain unsubscribe rather than confirmed server removal.
+R3-019	C34.1	F08	S08	WP10b	T44.L	replace-binding	Connected notifications may reconnect live subscriptions and are not badge-only events.
+R3-020	C34.1	F08	S08	WP04	T16.L	replace-binding	Activity/heartbeat display does not certify subscription continuity or absence of gaps.
+R3-021	C35.1	F12	S04	WP05	T08.L	replace-binding	Notification deep-link replacement/expiry and failed connect must preserve target scope.
+R3-022	C11.1	F08	S08	WP04	T16.L	replace-binding	Ignored Tauri emit failure cannot be promoted to delivered event.
+R3-023	C06.1	F08	S08	WP02	T10.L	replace-binding	Raw workspace/thread identity requires public binding generation and sequence provenance.
+R3-024	C11.1	F08	S08	WP04	T16.L	replace-binding	Initial native-listen failure and later subscribers require explicit retry/error attribution.
+R3-025	C11.1	F08	S08	WP04	T16.L	replace-binding	Unsubscribe before async listen completion must clean up without claiming buffered delivery.
+R3-026	C11.1	F08	S08	WP04	T16.L	replace-binding	Two semantic hubs for the same native event must not cause duplicate execution or notifications.
+R3-027	C37.2	F08	S10	WP09b	T23.L	retain-public	Raw events reach debug before supported-method filtering and require redaction.
+R3-028	C15.1	F08	S06	WP04	T19.L	replace-binding	Missing approval IDs or empty questions must not create fabricated actionable continuations.
+R3-029	C11.1	F08	S08	WP04	T18.L	replace-binding	Malformed camel/snake event fields are diagnosed rather than silently becoming completion.
+R3-030	C11.2	F08	S08	WP04	T18.L	retain-public	Unsupported events remain diagnosable but never authorize unknown actions.
+R3-031	C19.1	F08	S08	WP06	T65.L	replace-binding	Native background-thread hiding is not a public seat lifecycle or task completion.
+R3-032	C06.2	F07	S06	WP05	T09.L	retain-public	Archive cascades preserve per-descendant partial failures and do not delete original history.
+R3-033	C20.1	F09	S06	WP09a	T58.L	adapter-only	Account/connected events cause native refresh and invalidate the correct capability identity only.
+R3-034	C03.2	F08	S08	WP05	T66.L	replace-binding	Agent deltas and completed messages retain distinct activity/unread rules.
+R3-035	C03.2	F08	S13	WP05	T66.L	replace-binding	Active thread ID alone cannot clear unread across windows, projects or read versions.
+R3-036	C03.2	F08	S08	WP05	T66.L	replace-binding	Stale turn errors do not alter current unread or active execution state.
+R3-037	C03.1	F08	S13	WP05	T08.L	retain-public	Thread start/activity naming does not implicitly mark unread or create public subagent authority.
+R3-038	C19.1	F08	S08	WP06	T65.L	replace-binding	Plan delta, native complete status and Plan-ready notification remain separate facts.
+R3-039	C35.2	F12	S10	WP09b	T23.L	retain-public	Completion notification duration/focus/dedup gates must not leak private reply excerpts.
+R3-040	C35.1	F12	S08	WP05	T66.L	retain-public	Reordered item-complete/turn-complete events do not double-notify or lose unread state.
+R3-041	C35.2	F12	S12	WP05	T12.L	retain-public	Sound notification success is independent of system-notification success.
+R3-042	C15.1	F12	S10	WP04	T19.L	replace-binding	Approval notification dedup keys include the correct request generation and scope.
+R3-043	C15.2	F12	S10	WP09b	T23.L	retain-public	Question notification text and metadata are redacted independently of spacing retries.
+R3-044	C19.1	F12	S08	WP06	T65.L	retain-public	Queued plan notices are ephemeral and must not assert durable execution history.
+R3-045	C35.2	F12	S12	WP05	T12.L	retain-public	Sound and system subagent filters are separately preserved or explicitly reconciled.
+R3-046	C35.2	F12	S11	WP05	T54.L	retain-public	Permission denial and fallback failure must not be represented as visible notification delivery.
+R3-047	C35.1	F12	S08	WP05	T66.L	replace-binding	A deep link recorded before notify attempt is not evidence the user saw a notification.
+R3-048	C35.2	F12	S12	WP05	T12.L	retain-public	AudioContext resume/fetch/decode/start and autoplay/device failures are separately reported.
+R3-049	C07.2	F12	S10	WP09b	T23.L	retain-public	Copy-thread exports the selected transcript only; clipboard acceptance is not Delivery.
+R3-050	C10.1	F22	S02	WP08	T35.L	retain-public	OS drop paths flow through native and browser consumers with target and generation validation.

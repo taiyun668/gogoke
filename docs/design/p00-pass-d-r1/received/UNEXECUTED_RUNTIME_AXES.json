@@ -1,0 +1,20 @@
+{
+  "schema": "gogoke.p00.c2-f01.focused-review.unexecuted-runtime-axes.r3",
+  "runtime_verified": false,
+  "not_executed": [
+    "Real CLI/provider/account/profile/login/payment or credential use",
+    "Real PID creation/reuse, descendant discovery, process-tree termination, residual-process custody, or old-writer fencing",
+    "Real filesystem locks, fsync/directory durability, crash recovery, fixed-temp collisions, alias/symlink/junction handling, corruption, or migration",
+    "Real daemon/listener/remote/Tailscale/mobile transport, RPC retry/order/backpressure/event-gap/TLS/first-connect behavior",
+    "Real UI, permission prompts, privacy domains, clipboard/opener/dialog/window/notification/audio/microphone/model/capture/transcription",
+    "Real user workspace Git/GitHub, Files, PTY, attachment, or generator side effects",
+    "Product build/no-Codex matrix, package/provenance, install/update/readiness/rollback/registry/sign/publish/TestFlight",
+    "Stage1, census, the older 49 source/model scenarios, and the product test suite were not rerun in R3"
+  ],
+  "executed_only": [
+    "Passive Git/source identity checks",
+    "TypeScript AST/source-join checks",
+    "Exact-source method bodies under fake dependencies (31 cases)",
+    "Metadata/object-preservation checks and synthetic negative mutations"
+  ]
+}

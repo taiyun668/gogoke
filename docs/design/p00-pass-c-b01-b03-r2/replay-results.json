@@ -1,0 +1,163 @@
+{
+  "schema": "gogoke.p00.pass-c.replay.r2",
+  "scope": "AUTHOR_SIDE_INTAKE_STATIC_REPLAY_AND_MOCKED_ALGORITHMS_NOT_INDEPENDENT_REVIEW",
+  "status": "PASS",
+  "commands": [
+    {
+      "name": "stage1",
+      "command": [
+        "/opt/pyvenv/bin/python",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source/tools/gogoke-p00-census/test_census.py"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:04.777516+00:00",
+      "finished_utc": "2026-09-19T03:00:06.572029+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "a674f5a91b4d569f386733869b6a0ebe686c340c42168941cbd5948263c928cd"
+    },
+    {
+      "name": "census-first",
+      "command": [
+        "/opt/pyvenv/bin/python",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source/tools/gogoke-p00-census/census.py",
+        "--root",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source",
+        "--source-commit",
+        "bc665a852833952b76d9508401193bedd2198436",
+        "--out",
+        "<workdir>/p00-c-r2/outputs/census-first.json"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:06.572195+00:00",
+      "finished_utc": "2026-09-19T03:00:08.223371+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "census-second",
+      "command": [
+        "/opt/pyvenv/bin/python",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source/tools/gogoke-p00-census/census.py",
+        "--root",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source",
+        "--source-commit",
+        "bc665a852833952b76d9508401193bedd2198436",
+        "--out",
+        "<workdir>/p00-c-r2/outputs/census-second.json"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:08.223484+00:00",
+      "finished_utc": "2026-09-19T03:00:09.847981+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "safe-fixtures-repeat",
+      "command": [
+        "node",
+        "<workdir>/p00-c-r2/work/candidate/docs/design/p00-pass-c-b01-b03-r2/safe_source_fixtures.mjs",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:09.851632+00:00",
+      "finished_utc": "2026-09-19T03:00:10.386198+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "89fbaef240713280272db46dfb0f6fc457a9f0c58d869c0548824071fb78e356",
+      "stderr_sha256": "632df416c4693bcc4dc531eef611e0b234bf7b8833c577cb7fc5157ef169549c"
+    },
+    {
+      "name": "source-head",
+      "command": [
+        "git",
+        "-C",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:10.386345+00:00",
+      "finished_utc": "2026-09-19T03:00:10.388244+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "03dca55ba4207c447b5ec06ebf42132f61e088c1e4d43d5a020b7b23cc01b612",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "source-tree",
+      "command": [
+        "git",
+        "-C",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source",
+        "rev-parse",
+        "HEAD^{tree}"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:10.388345+00:00",
+      "finished_utc": "2026-09-19T03:00:10.390147+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "7b7a8e62cb8fe9e4db3cb2c1ae553d1819164251770913143ade818e620ad99c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "source-parent",
+      "command": [
+        "git",
+        "-C",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source",
+        "rev-parse",
+        "HEAD^"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:10.390170+00:00",
+      "finished_utc": "2026-09-19T03:00:10.392795+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "56ebf57af2f53f782604d53b4c8b9504e6573eec4ba58be1dfb4a005769c8a1a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "source-fsck",
+      "command": [
+        "git",
+        "-C",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source",
+        "fsck",
+        "--strict",
+        "--full",
+        "--no-reflogs"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:10.392846+00:00",
+      "finished_utc": "2026-09-19T03:00:10.531948+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "source-remotes",
+      "command": [
+        "git",
+        "-C",
+        "<workdir>/p00-c-r2/work/source/p00-offline-source",
+        "remote"
+      ],
+      "cwd": "<workdir>/p00-c-r2/work/source/p00-offline-source",
+      "started_utc": "2026-09-19T03:00:10.532000+00:00",
+      "finished_utc": "2026-09-19T03:00:10.534059+00:00",
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "stage1_tests": 14,
+  "census_sha256": "723ab21a17b2033c6c7152b12b4b57fef997cc6ada72eda53f34953bf229721e",
+  "census_repeat_byte_equal": true,
+  "census_packaged_byte_equal": true,
+  "safe_fixture_count": 49,
+  "fixture_repeat_byte_equal": true,
+  "source_bytes_modes_verified": 2806,
+  "original_source_commit_unchanged": true,
+  "production_native_runtime_verified": false,
+  "retained_failed_attempts_file": "FAILURES.json"
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "gogo.security.audit-vocabulary.v1",
+  "document_status": "BASELINE_ONLY",
+  "forbidden_field_names": ["secret", "secret_value", "token", "cookie", "password", "private_key", "raw_credential"],
+  "required_common_fields": ["event_id", "occurred_at", "project_id", "correlation_id", "actor_id", "outcome"],
+  "events": [
+    {"id": "AUD-001", "name": "controller.intent.accepted", "authoritative_plane": "Controller", "producer": "Controller", "required_fields": ["intent_id", "policy_revision", "source_revision"]},
+    {"id": "AUD-002", "name": "store.assignment.claimed", "authoritative_plane": "Coordination Store", "producer": "Coordination Store", "required_fields": ["assignment_id", "attempt_id", "lease_id", "fence"]},
+    {"id": "AUD-003", "name": "runner.command.dispatched", "authoritative_plane": "Runner", "producer": "Runner", "required_fields": ["command_id", "assignment_id", "attempt_id", "runner_epoch", "fence"]},
+    {"id": "AUD-004", "name": "adapter.native_evidence.observed", "authoritative_plane": "Adapter", "producer": "Adapter", "required_fields": ["adapter_id", "adapter_version", "session_generation", "evidence_strength", "evidence_digest"]},
+    {"id": "AUD-005", "name": "controller.receipt.committed", "authoritative_plane": "Controller", "producer": "Controller", "required_fields": ["receipt_id", "assignment_id", "attempt_id", "fence", "receipt_digest"]},
+    {"id": "AUD-006", "name": "policy.high_risk.decision", "authoritative_plane": "Controller", "producer": "Policy Gate", "required_fields": ["action_kind", "decision", "decision_id", "decision_owner"]},
+    {"id": "AUD-007", "name": "isolation.access.denied", "authoritative_plane": "Controller", "producer": "Authorization layer", "required_fields": ["requested_project_id", "resource_kind", "reason_code"]},
+    {"id": "AUD-008", "name": "credential.handle.resolution", "authoritative_plane": "Runner", "producer": "Host-local credential provider", "required_fields": ["credential_handle_id", "assignment_id", "role", "resolution_status"]},
+    {"id": "AUD-009", "name": "adapter.evidence.degraded", "authoritative_plane": "Adapter", "producer": "Adapter", "required_fields": ["adapter_id", "from_strength", "to_strength", "reason_code"]},
+    {"id": "AUD-010", "name": "context.projection.verified", "authoritative_plane": "Controller", "producer": "Context Compiler or Projector", "required_fields": ["snapshot_id", "manifest_digest", "projection_digest", "load_proof_digest"]},
+    {"id": "AUD-011", "name": "artifact.state.changed", "authoritative_plane": "Coordination Store", "producer": "Artifact service", "required_fields": ["artifact_id", "descriptor_revision", "content_digest", "state"]},
+    {"id": "AUD-012", "name": "supply_chain.candidate.verified", "authoritative_plane": "Controller", "producer": "CI verifier", "required_fields": ["candidate_build_id", "source_revision", "sbom_digest", "provenance_digest", "verification_status"]},
+    {"id": "AUD-013", "name": "recovery.reconciliation.completed", "authoritative_plane": "Controller", "producer": "Controller", "required_fields": ["recovery_id", "store_integrity_status", "side_effect_reconciliation_status"]}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "records": 250,
+  "sha256": "5cb4bf5818d0c49b85573b8bcb4524037f0ccdda0e846fc0662b3036640dbf7d",
+  "last_record_sha256": "a529f0ba0bd11f40e308087b21f6d23bee8d22c27616dfd525e04b3c5d5ba5bf",
+  "all_record_hashes_and_links_valid": true,
+  "utc_monotonic": true,
+  "frozen_prefix_unchanged": true,
+  "frozen_prefix_bytes": 190065,
+  "frozen_prefix_sha256": "a7b1ee230ec95b49cf1d43f2277a1c051adec535ed9e70830390f8637ea70a05",
+  "freeze_complete_utc": "2026-09-19T01:26:43.351111Z",
+  "first_after_freeze_utc": "2026-09-19T01:26:57.922984Z",
+  "first_pass_a_utc": "2026-09-19T01:28:05.838158Z",
+  "semantic_reconciliation_complete_utc": "2026-09-19T01:38:32.558896Z",
+  "first_pr_query_utc": "2026-09-19T01:41:08.153808Z",
+  "last_audit_evidence_record_utc": "2026-09-19T01:45:19.467146Z",
+  "time_source": "actual container UTC; not third-party signed",
+  "full_platform_raw_log_export": false,
+  "runtime_product_side_effects": false
+}

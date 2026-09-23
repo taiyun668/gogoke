@@ -1,0 +1,25 @@
+{
+  "schema": "gogoke.p00.c2-f01.focused-review.receipt.r3",
+  "created_utc": "2026-09-19T12:57:59.591554+00:00",
+  "verdict": "EVIDENCE_GAP_CAN_CLOSE",
+  "c2_f01": "CLOSED_AS_EVIDENCE",
+  "b03": "EVIDENCE_GAP_CLOSED",
+  "prior_closures_preserved": [
+    "B01",
+    "B02",
+    "K16",
+    "K17"
+  ],
+  "independent_ast": "PASS_SOURCE_JOIN_AND_EVIDENCE_SCOPE",
+  "preservation": "PASS_PRESERVATION_AND_OBJECT_IDENTITIES",
+  "negative_mutations": "PASS_NEGATIVE_MUTATIONS_REJECTED",
+  "source_tracked_bytes": "PASS",
+  "command_count": 51,
+  "nonzero_attempts": 4,
+  "runtime_verified": false,
+  "production_files_changed": false,
+  "existing_tests_changed": false,
+  "pr_merged": false,
+  "p00": "NOT_ACCEPTED",
+  "code_entry_gate": "CLOSED_PENDING_GPT_P00_REVIEW"
+}

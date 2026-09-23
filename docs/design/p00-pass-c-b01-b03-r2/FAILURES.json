@@ -1,0 +1,33 @@
+{
+  "mode": "AUTHOR_FIXTURE_INSTRUMENT_FAILURES_NOT_PRODUCT_DEFECTS",
+  "failures": [
+    {
+      "attempt": "safe_source_fixtures v1",
+      "exit_code": 139,
+      "cause": "Node segfault; exact engine cause unknown",
+      "script_sha256": "a493ae27d332856455296c2905a52d584b8b22834dc22ed5aae5ba90d26f3a2c"
+    },
+    {
+      "attempt": "v2 diagnostic case logging",
+      "exit_code": 139,
+      "last_case": "B02-refused-identity",
+      "cause": "same combination failed; ordinary node/vm/type-strip probes all exited0",
+      "script_sha256": "137d3eca184cbf19b97e0da40e13139c38891b438bccf881db6f1a78450fe2f8"
+    },
+    {
+      "attempt": "v3 pure-JS transpiler",
+      "exit_code": 1,
+      "cause": "Claude fixture omitted explicit fake executable; no real executable run",
+      "script_sha256": "607d2ba602d196003a445e1943d90aa36806990ddc3d9fc90a84e732ec67527d"
+    },
+    {
+      "attempt": "verify_repair v1",
+      "exit_code": 1,
+      "cause": "Qualified-only Tauri regex missed unqualified is_mobile_runtime; fixed zero-or-more namespace components, retained expected 129",
+      "script_sha256": "5a34776969e904feb3cb279e1c574c872e5171af56f8af8b9bdddeb6f2c432e5"
+    }
+  ],
+  "final_transport": "local TypeScript5.8.3 transpileModule + vm.runInContext; allowlisted fake dependencies",
+  "final_script": "safe_source_fixtures.mjs",
+  "logs_retained_in_delivery_zip": true
+}

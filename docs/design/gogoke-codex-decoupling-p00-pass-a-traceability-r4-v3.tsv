@@ -1,0 +1,56 @@
+observation	capability_behavior	entry_family	sink_family	owning_wp	first_validation_check	disposition	assertion
+R4-001	C40.1	F19	S15	WP03	T60.L	retain-public	Npm postinstall/pre-hooks invoke destructive icon sync and must not be run as read-only probes.
+R4-002	C40.2	F19	S15	WP03	T60.L	retain-public	Windows icon generation pins the CLI and generated-output directory independently of build success.
+R4-003	C40.1	F19	S15	WP03	T60.L	retain-public	Tsc/Vite and Tauri beforeBuild writers remain distinct lifecycle steps.
+R4-004	C40.1	F19	S15	WP01	T61.L	evidence-only	Unix/Windows doctor checks print advice without executing a package installer.
+R4-005	C40.1	F19	S15	WP13	T48.L	evidence-only	Brand/identity checks cannot certify Codex decoupling or preserved behavior.
+R4-006	C40.1	F19	S02	WP13	T48.L	retain-public	Codemod dry and write modes differ; partial file rewrites are not rolled back automatically.
+R4-007	C38.1	F19	S12	WP05	T54.L	replace-binding	Test effective merged CSP/asset/window config rather than one standalone JSON file.
+R4-008	C39.1	F19	S14	WP12	T46.L	retain-trust	Disabling Tauri updater artifacts does not disable the custom installer/update path.
+R4-009	C38.1	F19	S11	WP05	T54.L	retain-public	Plugin capability declarations are not per-call authority or successful platform behavior.
+R4-010	C40.2	F19	S15	WP03	T60.L	retain-public	Build.rs runs pinned external build generation and iOS link branches.
+R4-011	C39.2	F18	S14	WP12	T46.L	retain-trust	Startup failure consumption may rotate logs and write state before automatic update check.
+R4-012	C39.1	F18	S14	WP12	T46.L	retain-trust	Manual updater events remain a separate check/download entry.
+R4-013	C39.1	F18	S07	WP12	T46.L	retain-trust	Non-Windows no-offer and Windows mutex/network paths are separately validated.
+R4-014	C39.1	F18	S14	WP12	T59.L	retain-trust	Enforce HTTPS host/redirect/signature/version/asset identity before using release content.
+R4-015	C39.1	F18	S14	WP12	T59.L	retain-trust	Prepared-cache reuse requires matching identity and digest; failed download leaves explicit residue.
+R4-016	C39.2	F18	S14	WP12	T38.L	retain-trust	Remove-final then failed rename cannot be described as atomic state replacement.
+R4-017	C39.1	F18	S07	WP12	T46.L	retain-trust	UI checking state includes installer transfer and disk writes, not just feed lookup.
+R4-018	C39.1	F18	S14	WP12	T59.L	retain-trust	Revalidate release identity and staged bytes at install time, not only during check.
+R4-019	C39.1	F18	S14	WP12	T59.L	retain-trust	Coordinator staging, applying state and ready paths bind the exact install operation.
+R4-020	C14.2	F18	S04	WP12	T46.L	retain-trust	Application exit after coordinator spawn does not prove coordinator or installer readiness.
+R4-021	C39.2	F18	S14	WP12	T38.L	retain-trust	Coordinator spawn failure and failed error-state persistence retain independent diagnostics.
+R4-022	C39.1	F18	S14	WP12	T59.L	retain-trust	Valid ready receipt and best-effort installed-state update are separate success facts.
+R4-023	C37.1	F18	S14	WP12	T38.L	retain-trust	Failure-log rotation errors must not hide an unreported rollback failure.
+R4-024	C39.1	F21	S13	WP12	T42.L	retain-trust	Pending-version storage and independent release-notes fetch never replace signed update authority.
+R4-025	C39.1	F18	S14	WP12	T46.L	retain-trust	Coordinator FileShare.None lock is scoped to its path and does not prove global root uniqueness.
+R4-026	C14.2	F18	S05	WP03	T52.L	retain-trust	Parent PID wait must resist PID reuse and mismatched executable identity.
+R4-027	C39.1	F18	S14	WP12	T59.L	retain-trust	Rehash installer after parent exit to detect authorization-to-execution byte changes.
+R4-028	C39.2	F18	S14	WP12	T46.L	retain-trust	Reparse target, unexpected ownership and existing backup rejection precede target movement.
+R4-029	C39.2	F18	S14	WP12	T46.L	retain-trust	Registry export creates a separate backup artifact whose failure prevents unsafe progression.
+R4-030	C39.1	F18	S04	WP12	T46.L	retain-trust	Installer exit, new executable launch and ready receipt each have separate assertions.
+R4-031	C39.2	F18	S14	WP12	T42.L	retain-trust	Cleanup failure after ready must not silently roll back without preserving the actual phase.
+R4-032	C14.2	F18	S05	WP03	T52.L	retain-trust	Forced new-process stop and bounded wait cannot claim full descendant shutdown on ignored failure.
+R4-033	C39.2	F18	S14	WP12	T46.L	retain-trust	Rollback without old target records uninstaller failure before target cleanup.
+R4-034	C39.2	F18	S14	WP12	T42.L	retain-trust	Rollback with backup distinguishes target restoration from registry restoration failure.
+R4-035	C39.2	F18	S04	WP12	T46.L	retain-trust	Old-app restart requires identity and observed readiness, not mere file existence.
+R4-036	C39.1	F18	S14	WP12	T46.L	retain-trust	A retained lock file is not evidence that the coordinator lock is still held.
+R4-037	C40.1	F19	S15	WP01	T61.L	evidence-only	Desktop workflow path filtering must not be generalized to unconditional general PR CI.
+R4-038	C40.1	F19	S15	WP13	T48.L	evidence-only	Windows web job results do not verify macOS/Linux/mobile native runtime.
+R4-039	C39.1	F19	S15	WP12	T60.M	retain-trust	Unsigned job cache cleanup, tool installation and fresh executable identity are recorded separately.
+R4-040	C39.1	F19	S14	WP12	T59.L	retain-trust	Pre-smoke local-only unsigned artifact cannot be labelled smoke-verified installer.
+R4-041	C39.1	F19	S14	WP12	T46.L	retain-trust	Release artifact upload is tied to the actual smoke candidate and checksums.
+R4-042	C39.2	F19	S14	WP12	T46.L	retain-trust	Full updater smoke runs real processes/install/uninstall and is not a parser self-test.
+R4-043	C14.2	F19	S05	WP03	T52.L	retain-trust	ExecutablePath-based smoke cleanup still requires PID creation-time protection.
+R4-044	C39.1	F19	S14	WP12	T59.L	retain-trust	Key creation writes private and public material and remains explicitly authorized only.
+R4-045	C39.1	F19	S14	WP12	T59.L	retain-trust	Existing-manifest signing may rewrite the manifest before writing its signature.
+R4-046	C39.1	F19	S14	WP12	T59.L	retain-trust	No-Publish validation still signs; its PASS message is not a read-only result.
+R4-047	C39.1	F19	S07	WP12	T59.L	retain-trust	Publishing uploads four artifacts without automatic remote rollback.
+R4-048	C34.2	F19	S04	WP10b	T45.L	seal-preserve	Simulator skip-build still installs/launches; preserve artifacts without enabling execution.
+R4-049	C34.2	F19	S04	WP10b	T45.L	seal-preserve	Device skip-build/open-Xcode branches retain explicit installation and launch boundaries.
+R4-050	C20.1	F19	S10	WP09b	T23.L	retain-trust	ASC validation and local env/contact metadata must not enter ordinary logs or migration.
+R4-051	C39.1	F19	S07	WP12	T60.M	retain-trust	TestFlight skip-build still uploads and changes remote metadata.
+R4-052	C39.1	F19	S07	WP12	T60.M	retain-trust	TestFlight skip-submit only skips the final review step, not prior mutations.
+R4-053	C39.2	F19	S07	WP12	T60.M	retain-trust	Ignored ASC subcommand errors retain per-step partial remote state.
+R4-054	C40.2	F19	S15	WP12	T60.M	retain-trust	Missing daemon warning plus dylib/rpath/codesign changes cannot certify a complete app bundle.
+R4-055	C39.1	F19	S14	WP12	T60.M	retain-trust	Tracked and local/env iOS signing configuration need an effective-config identity.
