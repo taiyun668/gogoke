@@ -30,6 +30,58 @@ export type NativeHostReply = {
   readonly elapsedMicros: number;
 };
 
+export interface NativeProductIdentitySnapshot {
+  readonly policyRevision: string;
+  readonly principalId: string;
+  readonly profileId: string;
+  readonly revocationHead: string;
+  readonly rootIdentity: string;
+  readonly seatId: string;
+}
+
+const decodeProductIdentity = (body: string): NativeProductIdentitySnapshot => {
+  const value: unknown = JSON.parse(body);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("PRODUCT_IDENTITY_REPLY", "identity reply must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = [
+    "policyRevision",
+    "principalId",
+    "profileId",
+    "revocationHead",
+    "rootIdentity",
+    "seatId",
+  ] as const;
+  const ownKeys = Reflect.ownKeys(record);
+  if (
+    ownKeys.length !== keys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key as (typeof keys)[number])) ||
+    keys.some(
+      (key) =>
+        typeof record[key] !== "string" ||
+        (record[key] as string).length === 0 ||
+        record[key] !== (record[key] as string).trim(),
+    )
+  ) {
+    throw new NativeHostClientError("PRODUCT_IDENTITY_REPLY", "identity reply fields are invalid");
+  }
+  if (
+    !/^(?:0|[1-9][0-9]*)$/.test(record.policyRevision as string) ||
+    !/^(?:0|[1-9][0-9]*)$/.test(record.revocationHead as string)
+  ) {
+    throw new NativeHostClientError("PRODUCT_IDENTITY_REPLY", "identity revisions are not canonical");
+  }
+  return Object.freeze({
+    policyRevision: record.policyRevision as string,
+    principalId: record.principalId as string,
+    profileId: record.profileId as string,
+    revocationHead: record.revocationHead as string,
+    rootIdentity: record.rootIdentity as string,
+    seatId: record.seatId as string,
+  });
+};
+
 export interface NativeDecisionAuthoritySnapshot {
   readonly operationId: string;
   readonly candidateId: string;
@@ -1679,6 +1731,12 @@ export class NativeHostClient {
 
   async getReceipt(commandId: string): Promise<NativeHostReply> {
     return this.request(JSON.stringify({ commandId, operation: "GetReceipt" }));
+  }
+
+  async readProductIdentity(): Promise<NativeProductIdentitySnapshot> {
+    return decodeProductIdentity(
+      this.request(JSON.stringify({ operation: "ReadProductIdentity" })).body,
+    );
   }
 
   async publishDecisionSnapshot(input: NativeDecisionAuthoritySnapshot): Promise<void> {

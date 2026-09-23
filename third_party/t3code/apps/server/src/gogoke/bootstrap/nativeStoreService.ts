@@ -15,6 +15,7 @@ import type {
   NativeContextManifestReplayIdentity,
   NativeGranteeContextReadRequest,
   NativeHostReply,
+  NativeProductIdentitySnapshot,
   NativeExecutionRecipeAppendRequest,
   NativeExecutionRecipeReceipt,
   NativeObjectiveOutcomeRequest, NativeEvaluationRequest, NativeAuthorityRecordReceipt,
@@ -35,11 +36,16 @@ import type {
   DurableDispatchOutcome,
   ReserveActionResult,
 } from "../actions/typedAction.ts";
+import { validateMinimalReleaseRequest } from "../releasePolicy.ts";
 import {
   constructMinimalService,
   type MinimalServiceConstructionRequest,
 } from "./minimalService.ts";
-import { RootProfileOwnership } from "./rootProfileOwnership.ts";
+import {
+  RootProfileOwnership,
+  type RootProfileIdentity,
+  type ServiceAuthority,
+} from "./rootProfileOwnership.ts";
 
 export interface NativeStoreSession extends NativeDelegationGrantReader {
   commitProject(input: {
@@ -51,6 +57,8 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   }): Promise<NativeHostReply>;
   readSnapshot(limit?: number): Promise<NativeHostReply>;
   getReceipt(commandId: string): Promise<NativeHostReply>;
+  /** Native Product Authority identity; the service capability itself is not a grant. */
+  readonly readProductIdentity?: () => Promise<NativeProductIdentitySnapshot>;
   commitContextVersion(input: CommitContextVersionRequest): Promise<ContextCommitReceipt>;
   reserve(input: DurableActionReservation): Promise<ReserveActionResult>;
   begin(reservationId: string, input: DurableActionReservation): Promise<BeginActionResult>;
@@ -111,12 +119,23 @@ export interface NativeStoreConnector {
 
 export interface GogokeNativeStoreService {
   readonly store: NativeStoreSession;
+  /** Actual Product Authority identity bound to this native-host instance. */
+  readonly identity: NativeProductIdentitySnapshot;
   /** Releases the process-local owner only after native store shutdown is confirmed. */
   close(): Promise<void>;
 }
 
+export interface NativeStoreAdmissionRequest {
+  readonly authority: ServiceAuthority;
+  /** Optional expectations only; Product Authority supplies the authoritative identity. */
+  readonly rootIdentity?: string;
+  readonly profileId?: string;
+  readonly requestedCapabilities?: readonly string[];
+  readonly enabledRuntimeDriverIds?: readonly string[];
+}
+
 export interface GogokeNativeStoreConstructionRequest {
-  readonly request: MinimalServiceConstructionRequest;
+  readonly request: NativeStoreAdmissionRequest;
   readonly root: string;
   readonly hostBinary: string;
 }
@@ -133,7 +152,8 @@ const invalid = (path: string, detail: string): never => {
 function passiveRecord(
   value: unknown,
   path: string,
-  expected: ReadonlyArray<string>,
+  required: ReadonlyArray<string>,
+  optional: ReadonlyArray<string> = [],
 ): Readonly<Record<string, unknown>> {
   if (
     typeof value !== "object" ||
@@ -147,9 +167,10 @@ function passiveRecord(
   const keys = Reflect.ownKeys(value);
   if (keys.some((key) => typeof key === "symbol")) return invalid(path, "has symbol keys");
   const names = keys as ReadonlyArray<string>;
-  const extra = names.find((name) => !expected.includes(name));
+  const allowed = new Set([...required, ...optional]);
+  const extra = names.find((name) => !allowed.has(name));
   if (extra !== undefined) return invalid(`${path}.${extra}`, "is not allowed");
-  const missing = expected.find((name) => !names.includes(name));
+  const missing = required.find((name) => !names.includes(name));
   if (missing !== undefined) return invalid(`${path}.${missing}`, "is required");
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const snapshot: Record<string, unknown> = {};
@@ -163,6 +184,38 @@ function passiveRecord(
   return Object.freeze(snapshot);
 }
 
+function canonicalString(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    return invalid(path, "must be canonical text");
+  }
+  return value;
+}
+
+function canonicalStringArray(value: unknown, path: string): readonly string[] {
+  if (
+    !Array.isArray(value) ||
+    NodeUtilTypes.isProxy(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype
+  ) {
+    return invalid(path, "must be a non-Proxy plain array");
+  }
+  const descriptors=Object.getOwnPropertyDescriptors(value);
+  const result:string[]=[];
+  for(let index=0;index<value.length;index+=1){
+    const descriptor=descriptors[String(index)];
+    if(descriptor===undefined||!("value" in descriptor)||descriptor.enumerable!==true){
+      return invalid(`${path}[${index}]`,"must be an enumerable data property");
+    }
+    result.push(canonicalString(descriptor.value,`${path}[${index}]`));
+  }
+  const allowed=new Set(["length",...result.map((_value,index)=>String(index))]);
+  if(Reflect.ownKeys(descriptors).some(key=>typeof key!=="string"||!allowed.has(key))){
+    return invalid(path,"has extra properties");
+  }
+  if (new Set(result).size !== result.length) return invalid(path, "must not contain duplicates");
+  return Object.freeze(result);
+}
+
 function absoluteWindowsPath(value: unknown, path: string): string {
   if (
     typeof value !== "string" ||
@@ -174,6 +227,39 @@ function absoluteWindowsPath(value: unknown, path: string): string {
     return invalid(path, "must be a canonical absolute Windows path");
   }
   return value;
+}
+
+function snapshotAdmissionRequest(value: unknown): NativeStoreAdmissionRequest {
+  const record = passiveRecord(value, "input.request", ["authority"], [
+    "rootIdentity",
+    "profileId",
+    "requestedCapabilities",
+    "enabledRuntimeDriverIds",
+  ]);
+  const authority = record.authority;
+  if (authority !== "legacy" && authority !== "public") {
+    return invalid("input.request.authority", "must be legacy or public");
+  }
+  const rootIdentity = record.rootIdentity === undefined
+    ? undefined
+    : canonicalString(record.rootIdentity, "input.request.rootIdentity");
+  const profileId = record.profileId === undefined
+    ? undefined
+    : canonicalString(record.profileId, "input.request.profileId");
+  const requestedCapabilities = record.requestedCapabilities === undefined
+    ? undefined
+    : canonicalStringArray(record.requestedCapabilities, "input.request.requestedCapabilities");
+  const enabledRuntimeDriverIds = record.enabledRuntimeDriverIds === undefined
+    ? undefined
+    : canonicalStringArray(record.enabledRuntimeDriverIds, "input.request.enabledRuntimeDriverIds");
+  validateMinimalReleaseRequest({ requestedCapabilities, enabledRuntimeDriverIds });
+  return Object.freeze({
+    authority,
+    ...(rootIdentity === undefined ? {} : { rootIdentity }),
+    ...(profileId === undefined ? {} : { profileId }),
+    ...(requestedCapabilities === undefined ? {} : { requestedCapabilities }),
+    ...(enabledRuntimeDriverIds === undefined ? {} : { enabledRuntimeDriverIds }),
+  });
 }
 
 function snapshotConstruction(input: InternalConstructionRequest): InternalConstructionRequest {
@@ -192,7 +278,7 @@ function snapshotConstruction(input: InternalConstructionRequest): InternalConst
     return invalid("input.ownership", "must be a RootProfileOwnership");
   }
   return Object.freeze({
-    request: record.request as MinimalServiceConstructionRequest,
+    request: snapshotAdmissionRequest(record.request),
     root: absoluteWindowsPath(record.root, "input.root"),
     hostBinary: absoluteWindowsPath(record.hostBinary, "input.hostBinary"),
     ownership: record.ownership,
@@ -202,24 +288,86 @@ function snapshotConstruction(input: InternalConstructionRequest): InternalConst
   });
 }
 
+function assertExpectedIdentity(
+  request: NativeStoreAdmissionRequest,
+  identity: NativeProductIdentitySnapshot,
+): void {
+  const expectations: ReadonlyArray<readonly [keyof RootProfileIdentity, string | undefined, string]> = [
+    ["rootIdentity", request.rootIdentity, identity.rootIdentity],
+    ["profileId", request.profileId, identity.profileId],
+  ];
+  for (const [field, expected, actual] of expectations) {
+    if (expected !== undefined && expected !== actual) {
+      invalid(`input.request.${field}`, "does not match native Product Authority");
+    }
+  }
+}
+
 /**
  * Narrow construction seam used by the canonical wrapper and focused tests.
- * It is intentionally not re-exported by bootstrap/index.ts.
+ * Release policy and caller shape are validated before native process creation.
+ * The authoritative root/profile/Seat identity is then read from the authenticated
+ * Product Authority channel before process-local ownership is acquired.
  */
 export async function constructNativeStoreServiceForAdapter(
   raw: InternalConstructionRequest,
 ): Promise<GogokeNativeStoreService> {
   const input = snapshotConstruction(raw);
-  const constructed = await constructMinimalService({
-    request: input.request,
-    ownership: input.ownership,
-    constructLocalNonModelService: () =>
-      input.connector.attach({ root: input.root, hostBinary: input.hostBinary }),
-  });
+  const session = await input.connector.attach({ root: input.root, hostBinary: input.hostBinary });
+  let identity: NativeProductIdentitySnapshot;
+  try {
+    if (typeof session.readProductIdentity !== "function") {
+      return invalid("native.readProductIdentity", "is required for public construction");
+    }
+    identity = await session.readProductIdentity();
+    assertExpectedIdentity(input.request, identity);
+  } catch (error) {
+    try {
+      await session.close();
+    } catch (closeError) {
+      throw new AggregateError(
+        [error, closeError],
+        "native identity admission failed and shutdown is unknown",
+      );
+    }
+    throw error;
+  }
+
+  let constructed;
+  try {
+    const request: MinimalServiceConstructionRequest = Object.freeze({
+      authority: input.request.authority,
+      rootIdentity: identity.rootIdentity,
+      profileId: identity.profileId,
+      ...(input.request.requestedCapabilities === undefined
+        ? {}
+        : { requestedCapabilities: input.request.requestedCapabilities }),
+      ...(input.request.enabledRuntimeDriverIds === undefined
+        ? {}
+        : { enabledRuntimeDriverIds: input.request.enabledRuntimeDriverIds }),
+    });
+    constructed = constructMinimalService({
+      request,
+      ownership: input.ownership,
+      constructLocalNonModelService: () => session,
+    });
+  } catch (error) {
+    try {
+      await session.close();
+    } catch (closeError) {
+      throw new AggregateError(
+        [error, closeError],
+        "native ownership admission failed and shutdown is unknown",
+      );
+    }
+    throw error;
+  }
+
   let closed = false;
   let closing: Promise<void> | undefined;
   return Object.freeze({
     store: constructed.service,
+    identity,
     close: () => {
       if (closed) return Promise.resolve();
       if (closing !== undefined) return closing;

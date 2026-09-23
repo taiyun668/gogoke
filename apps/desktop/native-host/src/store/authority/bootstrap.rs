@@ -34,6 +34,16 @@ pub(super) struct Profile {
     pub revocation_head: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProductIdentitySnapshot {
+    pub profile_id: String,
+    pub root_identity: String,
+    pub principal_id: String,
+    pub seat_id: String,
+    pub policy_revision: String,
+    pub revocation_head: String,
+}
+
 impl OwnerIssuer {
     pub(crate) fn principal_id(&self) -> &str {
         &self.principal_id
@@ -235,6 +245,24 @@ pub(super) fn profile(tx: &mut Transaction<'_, '_>) -> Result<Profile> {
         issuer_id: row[4].clone(),
         policy_revision: row[5].clone(),
         revocation_head: row[6].clone(),
+    })
+}
+
+pub(crate) fn read_product_identity(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+) -> Result<ProductIdentitySnapshot> {
+    transaction::run(connection, |tx| {
+        let current = profile(tx)?;
+        owner.check(&current)?;
+        Ok(ProductIdentitySnapshot {
+            profile_id: current.profile_id,
+            root_identity: current.root_identity,
+            principal_id: current.principal_id,
+            seat_id: current.seat_id,
+            policy_revision: current.policy_revision,
+            revocation_head: current.revocation_head,
+        })
     })
 }
 

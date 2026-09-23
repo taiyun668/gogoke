@@ -25,6 +25,7 @@ import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 import { sshHelperCommand } from "./cli/sshHelper.ts";
 import { themeCommand } from "./cli/theme.ts";
 import { triageCommand } from "./cli/triage.ts";
+import { runGogokeProductProcess } from "./gogoke/bootstrap/productEntry.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -85,9 +86,7 @@ if (
     runtimeMain: import.meta.main,
   })
 ) {
-  Command.run(cli, { version: packageJson.version }).pipe(
-    Effect.scoped,
-    Effect.provide(CliRuntimeLayer),
+  Effect.tryPromise(() => runGogokeProductProcess(process.argv.slice(2))).pipe(
     NodeRuntime.runMain,
   );
 }

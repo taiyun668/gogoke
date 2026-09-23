@@ -12,6 +12,14 @@ const request = {
 
 function fixture() {
   const session: NativeStoreSession = {
+    readProductIdentity: vi.fn(async () => ({
+      policyRevision: "1",
+      principalId: "owner:fixture",
+      profileId: request.profileId,
+      revocationHead: "0",
+      rootIdentity: request.rootIdentity,
+      seatId: "owner-seat:fixture",
+    })),
     commitProject: vi.fn(async () => ({ ok: true, body: "COMMITTED", elapsedMicros: 1 })),
     readSnapshot: vi.fn(async () => ({ ok: true, body: "{}", elapsedMicros: 1 })),
     getReceipt: vi.fn(async () => ({ ok: true, body: "{}", elapsedMicros: 1 })),

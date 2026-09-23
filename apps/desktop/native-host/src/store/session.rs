@@ -500,6 +500,18 @@ fn json_string_array(values: &[String]) -> String {
     format!("[{}]", values.iter().map(|value| json_quote(value)).collect::<Vec<_>>().join(","))
 }
 
+fn product_identity_body(identity: &authority::ProductIdentitySnapshot) -> String {
+    format!(
+        "{{\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"rootIdentity\":{},\"seatId\":{}}}",
+        json_quote(&identity.policy_revision),
+        json_quote(&identity.principal_id),
+        json_quote(&identity.profile_id),
+        json_quote(&identity.revocation_head),
+        json_quote(&identity.root_identity),
+        json_quote(&identity.seat_id),
+    )
+}
+
 fn delegation_grant_body(grant: &authority::DelegationGrantSnapshot) -> String {
     let parent = grant.parent.as_ref().map_or_else(
         || "null".to_owned(),
@@ -542,6 +554,11 @@ fn handle_authenticated_line(
 ) -> Result<String, OrchestrationError> {
     let decoded = decode_operation_frame(line.as_bytes()).map_err(protocol_error)?;
     match decoded.name {
+        "ReadProductIdentity" => {
+            let _fields = action_fields(line, &["operation"])?;
+            let identity = authority::read_product_identity(connection, owner)?;
+            Ok(product_identity_body(&identity))
+        }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
             let expected = required(&fields,"expectedPreviousTaskRevision")?;
