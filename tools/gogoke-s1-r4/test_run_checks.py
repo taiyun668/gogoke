@@ -347,7 +347,7 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaises(self.runner.RunnerError):
             self.runner.output_path(str(ROOT / "tools/gogoke-s1-r4/registry.json"))
         with self.assertRaises(self.runner.RunnerError):
-            self.runner.output_path(str(ROOT / "artifacts/s1-r4/intake/AUTHORIZATION_RECEIPT.json"))
+            self.runner.output_path(str(ROOT / self.runner.AUTH_REL))
         with self.assertRaises(self.runner.RunnerError):
             self.runner.output_path("artifacts/s1-r4/runner.json")
         with tempfile.TemporaryDirectory() as temporary:
