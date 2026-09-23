@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { PiManagedSession } from "../adapters/pi/session.ts";
 import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
+import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
 import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
 import { handleProductGoalRequest } from "./productEntry.ts";
@@ -88,6 +89,8 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     let lineageBinding: string | undefined;
     let recipeHash: string | undefined;
     let actionDigest: string | undefined;
+    let decisionReceiptId: string | undefined;
+    const decisionRecordedAt = new Date().toISOString();
     for (let task = 0; task < 2; task += 1) {
       let session!: PiManagedSession;
       let stopProofHash = "";
@@ -129,6 +132,18 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
           Assert.match(basis.actionDigest, /^sha256:[0-9a-f]{64}$/);
           if (actionDigest === undefined) actionDigest = basis.actionDigest;
           else Assert.equal(basis.actionDigest, actionDigest);
+          const decision = await commitR2ControlledDecision({
+            store: client!, basis, grant: preparedGrant, recordedAt: decisionRecordedAt,
+          });
+          if (decisionReceiptId === undefined) {
+            Assert.equal(decision.kind, "committed");
+            if (decision.kind !== "committed") throw new Error("Decision did not commit");
+            decisionReceiptId = decision.decisionReceiptId;
+          } else {
+            Assert.equal(decision.kind, "replayed");
+            if (decision.kind !== "replayed") throw new Error("Decision did not replay");
+            Assert.equal(decision.decisionReceiptId, decisionReceiptId);
+          }
           const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
           stopProofHash = evidence.stopProofHash;
           for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
