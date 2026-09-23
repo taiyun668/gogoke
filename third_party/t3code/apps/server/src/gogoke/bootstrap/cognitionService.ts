@@ -152,8 +152,8 @@ export class CognitionLineageError extends Error {
     | "INVALID_DECISION_LINEAGE"
     | "INVALID_ACTION_LINEAGE"
     | "VERTICAL_ALREADY_CREATED";
-  constructor(code: CognitionLineageError["code"]) {
-    super(code);
+  constructor(code: CognitionLineageError["code"], options?: ErrorOptions) {
+    super(code, options);
     this.code = code;
   }
 }
@@ -298,6 +298,8 @@ export function constructCognitionService(
           bindingGeneration: lineage.bindingGeneration,
           sourceEpoch: lineage.sourceEpoch,
           runtimeInstanceId: lineage.runtimeInstanceId,
+        }).catch((error: unknown) => {
+          throw new CognitionLineageError("INVALID_MANIFEST_LINEAGE", { cause: error });
         });
         if (
           receipt.operationId !== input.assemblyPlan.snapshot.operationId ||

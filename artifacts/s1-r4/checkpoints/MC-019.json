@@ -1,0 +1,58 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-019",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "9f073292337488d092e68dc520d169878aa41bdc",
+  "recorded_utc": "2026-09-23T03:22:50Z",
+  "reason": "Bind the repaired B2 hostile-input coverage and exact new-head D1/D2 cloud results without reusing the predecessor review",
+  "review_context": {
+    "source": "Owner relayed Claude's PR #3 verdict: predecessor cfcb8a7d was REWORK only for B2 test coverage; other named implementation changes ACCEPT at that older content",
+    "current_pr": "https://github.com/taiyun668/gogoke/pull/3",
+    "current_head": "efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b",
+    "current_status": "DRAFT_FRESH_CLAUDE_REVIEW_PENDING; no merge or self-acceptance"
+  },
+  "B2_repair": {
+    "private_reference": "5014096ff1366354ed08d0642d8b2b31de0db354",
+    "test_file": "third_party/t3code/apps/server/src/gogoke/bootstrap/minimalService.test.ts",
+    "coverage": "Existing cases retained; 21 top-level cases and 53 expect calls. Explicit tests cover sparse/duplicate/non-string arrays, null-prototype input/request acceptance, optional accessor non-execution, custom-prototype request rejection, and failure before ownership/constructor effects.",
+    "focused": "34/34 Vitest pass, exit 0",
+    "typecheck": "T3 server tsc --noEmit exit 0",
+    "B2_branch": "codex/r4-b2-rework-r1@23ab33a5d4e005a0ef1bbfdae02c2b4bce97d0f6",
+    "source_scan": "Exact candidate scan 24142 files, zero leaks, positive sensitive control rejected"
+  },
+  "cloud_D1_D2": {
+    "run_id": "35813586330",
+    "bound_commit": "efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b",
+    "run_attempt": 1,
+    "job_states": "Gogoke server 44-file cloud tests SUCCESS; Native host Windows real process axes SUCCESS",
+    "D1_artifact": "gogoke-server-evidence-efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b-35813586330-1/machine-result.json",
+    "D1": "44 files selected: 35 Vite+ 470/470, 9 node:test 66/66, total 536/536 executed/pass, failed 0, skipped 0, native-host bound",
+    "D2_artifact": "native-host-evidence-efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b-35813586330-1/machine-result.json",
+    "D2": "release build PASS exit 0, full lib 382/382 executed/pass exit 0, three focused DACL/Job probes 3/3, b07_two_process and host_typed_ops each 1/1, failed 0, skipped 0",
+    "platform_limit": "Windows Server cloud evidence, not Windows 11 desktop or signed release availability"
+  },
+  "pr_checks_at_checkpoint": "PR #3 source hygiene and Browser build/tests passed at the new head; PR-triggered Unsigned Windows NSIS still in progress",
+  "review_evidence_comment": "https://github.com/taiyun668/gogoke/pull/3#issuecomment-5788419524",
+  "other_lanes": {
+    "PR5": "Claude ACCEPT and all checks PASS; ordinary non-force merge cdbff122 already recorded in MC-018",
+    "PR4": "Reviewed disabled source candidate remains draft/unmerged; GPT public authorization draft and Owner-only merge still absent, WP01/S1-01-V BLOCKED",
+    "m2": "Rust dependency license notice remains REGISTERED_NOT_FIXED"
+  },
+  "non_claims": [
+    "The current PR #3 head has not received fresh Claude acceptance",
+    "Cloud group counts do not substitute for each of the 59 due-check semantics or negative controls",
+    "G1-G5 remain not accepted; GN remains not authorized"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Obtain the remaining exact-head PR desktop check, then fresh independent Claude review of efa1a6fd. Repair any finding on a new bound candidate; keep PR #4 disabled and C blocked until GPT/Owner public authorization anchor. Continue safe independent S1-R4 construction."
+}

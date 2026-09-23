@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-025",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "4f957db47a7f975ccac69874e8a0b278ec4449a4",
+  "recorded_utc": "2026-09-23T04:43:23Z",
+  "reason": "Correct one discovery-time statement in MC-024 and bind exact cloud evidence without promoting qualifications",
+  "mc024_correction": "PR #7 was merged by taiyun668 at 2026-09-23T04:01:06Z as 5da95c950a5d6e1cb2cf34095dd064cd458a3441, before MC-024 was recorded. MC-024's phrase 'during this checkpoint' described when Controller discovered the remote change, not the actual merge time. MC-024 is retained unchanged as historical evidence.",
+  "public_main_cloud_evidence": {
+    "candidate": "c6ecbb6638aea07f7a21392dcd8184c6b4529a3a",
+    "run_id": "35816471863",
+    "scope": "WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP",
+    "native_host": "machine-result.json: release build exit 0; lib 383 discovered/executed/passed, 0 failed/skipped; b07_two_process 1/1; host_typed_ops 1/1; focused IPC DACL, prepare/activate and Job descendant 1/1 each",
+    "server": "machine-result.json: 44 files (35 Vite, 9 node:test), 536 discovered/executed/passed, 0 failed/skipped, exit 0",
+    "non_claim": "These exact-head cloud construction results are not Windows 11 desktop validation, 59 individual due-check PASS, or G1/G2/G3/G4 acceptance."
+  },
+  "public_rebind": {
+    "plan": "PR #8 current head 02c6312138ead77d9e8db1543d3330d171c7cc2f; plan self-test PASS_PLAN_STRUCTURE_ONLY 1969 and 23/23 negatives; source scan 0 leaks with failing positive control; PR source hygiene PASS; independent Claude review pending",
+    "review_custody": "Local read-only Claude CLI attempt returned 'Not logged in'; no login, credential action, or review verdict was inferred. An exact-head review packet was posted on PR #8.",
+    "runner": "PR #4 head 383ac4d3 is wip: no tests, no review, not a candidate. Local Python diagnostic before its last path-only WIP: 55/55; source scan 0 leaks. It remains disabled until plan merge and future Owner-merged authorization.",
+    "authorization": "NOT_CREATED; future single-file PR must be merged by Owner taiyun668; WP01/S1-01-V BLOCKED"
+  },
+  "release_notices": "PR #9 head fe8d7b72 cloud run 35818751835: Browser build/tests SUCCESS; notice generation SUCCESS with 124 npm production packages/125 notice sources and 398 Windows Rust dependency identities covered, missing-entry negative control rejected; Unsigned Windows NSIS still IN_PROGRESS. No bundle/distribution or legal-compliance acceptance claimed.",
+  "custody": "Named source branches are committed and pushed, worktrees clean; generated machine artifacts, notices and scan reports remain uncommitted outside public Git or ignored. No local native compile result used as gate evidence.",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Inspect PR #9 exact-head installer job and bundled notices; obtain independent Claude review of PR #8 and repair if needed before normal merge; then integrate the public runner rebind for fresh review. Do not create or merge the authorization receipt early or run qualification before Owner merge. Continue unrelated safe construction."
+}

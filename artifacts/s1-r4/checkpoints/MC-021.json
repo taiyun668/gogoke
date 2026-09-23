@@ -1,0 +1,40 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-021",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "87e7a4bb80903531939a0b970a5069e08a991d0b",
+  "recorded_utc": "2026-09-23T03:33:58Z",
+  "reason": "Preserve complete PR #3 CI and nonblocking m2 notice candidate while waiting for independent and Owner authority decisions",
+  "PR3": {
+    "url": "https://github.com/taiyun668/gogoke/pull/3",
+    "current_head": "efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b",
+    "state": "DRAFT_FRESH_CLAUDE_REVIEW_PENDING_NOT_MERGED",
+    "B2": "21 top-level cases, 53 expect calls, focused 34/34, T3 typecheck exit 0",
+    "D1_D2": "35813586330 SUCCESS; all 44 server files 536/536 and native lib 382/382, release build, focused DACL/Job and two process axes PASS; zero required-test skips",
+    "pr_checks": "35813581921 source hygiene PASS; 35813581943 Browser build/tests and Unsigned Windows NSIS PASS, including smoke; only conditional Rust cache-save maintenance skipped",
+    "non_claim": "No fresh Claude verdict for the new head, no merge or due-check/gate promotion"
+  },
+  "PR4": "Reviewed six-file qualification source candidate remains draft, disabled and unmerged; GPT public authorization draft and Owner taiyun668 authorization merge absent, WP01/S1-01-V BLOCKED",
+  "PR5": "Owner-relayed Claude ACCEPT; scoped ordinary merge cdbff122 into main recorded in MC-018",
+  "m2": {
+    "branch": "codex/r4-m2-license-inventory-r1",
+    "commit": "4e60171463cb9352d95fe2cb2a5a05aab0658fbf",
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/6",
+    "scope": "Root THIRD_PARTY_NOTICES inventory of the four external native-host Cargo.lock crates: ryu-js runtime and cc/find-msvc-tools/shlex build dependencies, with pinned versions, checksums and crates.io declared license expressions",
+    "checks": "Four lockfile package identities matched their notice rows; committed-source hygiene and its positive control passed; PR source hygiene passed",
+    "state": "NOTICE_CANDIDATE_ONLY; installer license-text/attribution distribution and legal review not yet established; not merged or accepted"
+  },
+  "custody": "Main and named PR #3/#4/#5/#6 worktrees are clean and pushed; generated dependency and cloud-artifact paths remain outside public Git in the external local custody note",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Receive fresh Claude review of PR #3 current head and source/legal review of PR #6. Keep PR #4 disabled until GPT drafts the public authorization anchor and Owner personally merges its separate PR; then rebind the runner and review before any qualification. Continue only dependency-safe S1-R4 work without self-acceptance."
+}

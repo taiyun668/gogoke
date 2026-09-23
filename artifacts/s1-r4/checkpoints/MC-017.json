@@ -1,0 +1,46 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-017",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "e4ffabdc1b2d216e0b8a0463db8dc5f132eeb159",
+  "recorded_utc": "2026-09-23T03:00:52Z",
+  "reason": "Record exact m1 cloud regression and independent review lane while preserving B/C boundaries",
+  "m1": {
+    "finding": "Shutdown exit used a raw text substring and could stop after a non-Shutdown frame containing nested Shutdown text",
+    "source_branch": "codex/r4-m1-decoded-shutdown-r1",
+    "source_commit": "dc6867fb65eaf345238f7f0e53e00e0c8ea4999d",
+    "source_blob": "fc27b60308321844193888cc24129c4f7be72744",
+    "change": "All three service loops stop only after successful handling with decoded.name=Shutdown; synthetic nested-operation and rejected-operation checks remain",
+    "cloud_candidate": "5929dfe39ab6755ca6f7a865a0df3fe095a95667",
+    "cloud_blob_equal_to_source": true,
+    "run_id": "35812254747",
+    "server_job": "SUCCESS; all 44 files, 532/532 executed/pass, zero failed/skipped",
+    "native_job": "SUCCESS; release build exit 0, full lib 383/383 including the new Shutdown regression, three DACL/Job probes 3/3, two process axes each 1/1, zero failed/skipped",
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/5",
+    "state": "CONSTRUCTION_CANDIDATE_CLOUD_TESTED_FRESH_REVIEW_PENDING; not merged or accepted"
+  },
+  "review_lanes": {
+    "B1_B2_D1_D2": "Draft PR #3 at cfcb8a7d; full exact-candidate cloud/native/desktop CI passed, Claude fresh review pending, no merge",
+    "C_tools": "Draft PR #4 at 45f1843d; six-file source candidate only, public hygiene passed, qualification disabled and Claude review pending, no merge",
+    "m1": "Draft PR #5 at dc6867fb; independent review pending, no merge"
+  },
+  "public_authority": "GPT must draft public authorization anchor; Codex may organize it into a separate PR only after receiving that draft; effectiveness requires Owner taiyun668 merge commit and runner validation of merged_by/currentness. No such anchor exists or was fabricated. WP01/S1-01-V remain BLOCKED.",
+  "nonblocking_m2": "ryu-js and other Rust dependency license notice remains REGISTERED_NOT_FIXED",
+  "custody": "All named public worktrees are clean and pushed. Cloud artifacts, the fixed six-file export archive, and generated dependencies are retained outside public Git; exact local paths are in an external local custody note.",
+  "non_claims": [
+    "No PR #3, #4 or #5 has a fresh independent acceptance or merge authorization",
+    "No test run is Windows 11 desktop validation or signed native-host release availability",
+    "59 due checks remain unpromoted; GN not authorized"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Receive Claude's fresh review for PR #3/#4/#5; repair findings on new bound candidates without self-acceptance. Keep C qualification disabled until GPT draft and Owner-only authorization merge; continue dependency-safe S1-R4 work and preserve exact cloud evidence tiers."
+}

@@ -2,7 +2,7 @@ export const RELEASE_FEATURE_SEALED_CODE = "FEATURE_SEALED";
 
 export const LOCAL_NON_MODEL_CAPABILITY = "local-non-model" as const;
 
-export const SEALED_RELEASE_CAPABILITIES = [
+export const SEALED_RELEASE_CAPABILITIES = Object.freeze([
   "remote-access",
   "mobile-client",
   "tailscale",
@@ -16,7 +16,7 @@ export const SEALED_RELEASE_CAPABILITIES = [
   "network-listener",
   "network-egress",
   "model-runtime",
-] as const;
+] as const);
 
 export type SealedReleaseCapability = (typeof SEALED_RELEASE_CAPABILITIES)[number];
 export type ReleaseCapability = typeof LOCAL_NON_MODEL_CAPABILITY | SealedReleaseCapability;

@@ -49,6 +49,14 @@ pub fn open_product_database<'root>(
     Ok(connection)
 }
 
+fn successful_shutdown(line: &str, handled: &Result<String, OrchestrationError>) -> bool {
+    handled.is_ok()
+        && matches!(
+            decode_operation_frame(line.as_bytes()),
+            Ok(decoded) if decoded.name == "Shutdown"
+        )
+}
+
 pub fn serve_lines<R: BufRead, W: Write>(
     connection: &mut VerifiedDatabaseConnection<'_>,
     input: R,
@@ -64,7 +72,9 @@ pub fn serve_lines<R: BufRead, W: Write>(
             continue;
         }
         let started = Instant::now();
-        let reply = match handle_unprivileged_line(connection, &line) {
+        let handled = handle_unprivileged_line(connection, &line);
+        let should_stop = successful_shutdown(&line, &handled);
+        let reply = match handled {
             Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
             Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
         };
@@ -72,7 +82,7 @@ pub fn serve_lines<R: BufRead, W: Write>(
         output
             .flush()
             .map_err(|_| OrchestrationError::Invalid("stdout"))?;
-        if line.contains("\"operation\":\"Shutdown\"") {
+        if should_stop {
             break;
         }
     }
@@ -117,12 +127,14 @@ pub(crate) fn serve_authenticated_pipe(
         let frame = pipe.read_frame().map_err(|_| OrchestrationError::Invalid("pipe read"))?;
         let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
         let started = Instant::now();
-        let reply = match handle_authenticated_line(connection, owner, line) {
+        let handled = handle_authenticated_line(connection, owner, line);
+        let should_stop = successful_shutdown(line, &handled);
+        let reply = match handled {
             Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
             Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
         };
         pipe.write_frame(reply.as_bytes()).map_err(|_| OrchestrationError::Invalid("pipe write"))?;
-        if line.contains("\"operation\":\"Shutdown\"") { break; }
+        if should_stop { break; }
     }
     Ok(())
 }
@@ -137,13 +149,15 @@ pub fn serve_pipe(
             .map_err(|_| OrchestrationError::Invalid("pipe read"))?;
         let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
         let started = Instant::now();
-        let reply = match handle_unprivileged_line(connection, line) {
+        let handled = handle_unprivileged_line(connection, line);
+        let should_stop = successful_shutdown(line, &handled);
+        let reply = match handled {
             Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
             Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
         };
         pipe.write_frame(reply.as_bytes())
             .map_err(|_| OrchestrationError::Invalid("pipe write"))?;
-        if line.contains("\"operation\":\"Shutdown\"") {
+        if should_stop {
             break;
         }
     }
@@ -152,7 +166,7 @@ pub fn serve_pipe(
 
 #[cfg(test)]
 mod service_capability_tests {
-    use super::capability_matches;
+    use super::{capability_matches, successful_shutdown, OrchestrationError};
 
     #[test]
     fn service_capability_requires_exact_lower_hex_secret() {
@@ -161,6 +175,18 @@ mod service_capability_tests {
         assert!(!capability_matches(&secret, &"ac".repeat(32)));
         assert!(!capability_matches(&secret, &secret.to_uppercase()));
         assert!(!capability_matches(&secret, "ab"));
+    }
+
+    #[test]
+    fn shutdown_requires_a_successful_decoded_shutdown_operation() {
+        let success = Ok("{\"shutdown\":true}".to_owned());
+        let rejected = Err(OrchestrationError::AccessDenied);
+        let exact = r#"{"operation":"Shutdown"}"#;
+        let nested = r#"{"operation":"GetReceipt","nested":{"operation":"Shutdown"}}"#;
+        assert!(nested.contains("\"operation\":\"Shutdown\""));
+        assert!(successful_shutdown(exact, &success));
+        assert!(!successful_shutdown(exact, &rejected));
+        assert!(!successful_shutdown(nested, &success));
     }
 }
 

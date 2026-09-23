@@ -7,6 +7,7 @@ The repository license covers gogoke-owned source. Included third-party source a
 | CodexMonitor desktop foundation | Dimillian/CodexMonitor, imported at `8a2dd1f87c42a0b331f5a243b9752cc80adb763a`, MIT, Thomas Ricouard | `apps/desktop/LICENSE`, `apps/desktop/THIRD_PARTY_NOTICES.md` |
 | T3 Code donor | pingdotgg/t3code at `d6f291303ddc0c9a14f570266a4d9eff6d431593`, MIT, T3 Tools Inc. | `third_party/t3code/LICENSE` |
 | SQLite amalgamation | SQLite 3.53.2, public domain; pinned source and hashes are recorded with the vendored copy | `apps/desktop/native-host/vendor/sqlite-3.53.2/SOURCE_IDENTITY.json` |
+| Native-host Rust dependencies | Four crates pinned by `apps/desktop/native-host/Cargo.lock`; declared license expressions and checksums are inventoried in the bundled desktop notice | `apps/desktop/THIRD_PARTY_NOTICES.md` |
 | Alchemy Effect donor subtree | Apache-2.0, Functionless Corp.; its own third-party attribution includes MIT components | `third_party/t3code/.repos/alchemy-effect/LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md` |
 | Effect Smol donor subtree and packages | MIT, Effectful Technologies Inc.; package-specific notices are preserved | `third_party/t3code/.repos/effect-smol/LICENSE` and each `packages/**/LICENSE` |
 | Ghostty terminal source | MIT, Mitchell Hashimoto and Ghostty contributors | `third_party/t3code/native/libghostty-vt/LICENSE` |

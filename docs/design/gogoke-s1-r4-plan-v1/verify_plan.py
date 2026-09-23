@@ -13,7 +13,7 @@ FROZEN = {
 REQUIRED = ['PLAN.md','ARCHITECTURE.md','OPEN_ADAPTER.md','CONTEXT.md','DECISION.md',
  'DREAM_EVALUATION.md','RUNBOOK.md','CODEX_START.md','INPUTS.json','OBJECT_MODEL.json',
  'EXECUTION_PLAN.json','CHECKS.json','CAPABILITY_TASK_MAP.json','DECISION_FAMILIES.json',
- 'QUALIFICATION_TARGETS.json','GATES_AUTHORIZATION.json','SOURCES.json','verify_plan.py']
+ 'QUALIFICATION_TARGETS.json','GATES_AUTHORIZATION.json','SOURCES.json','PUBLIC_EXECUTION_BINDING.json','verify_plan.py']
 SECTIONS = {'A':'ARCHITECTURE.md','O':'OPEN_ADAPTER.md','C':'CONTEXT.md','D':'DECISION.md',
  'E':'DREAM_EVALUATION.md','R':'RUNBOOK.md'}
 
@@ -48,6 +48,19 @@ def validate(root: Path, manifest: bool=True):
   plan=load(root/'EXECUTION_PLAN.json'); matrix=load(root/'CHECKS.json'); caps=load(root/'CAPABILITY_TASK_MAP.json')
   targets=load(root/'QUALIFICATION_TARGETS.json'); gates=load(root/'GATES_AUTHORIZATION.json')
   obj=load(root/'OBJECT_MODEL.json'); families=load(root/'DECISION_FAMILIES.json')
+  public=load(root/'PUBLIC_EXECUTION_BINDING.json')
+  test(public=={
+   'schema':'gogoke.s1-r4.public-execution-binding.v1',
+   'repository':'taiyun668/gogoke',
+   'provenance_plan_commit':'cbdc6ad592947370941024a87dbb9168a5b59055',
+   'source_archive_repository':'taiyun668/gogo-party',
+   'source_archive_head':'b976e8f29f8d41adffa9ee60d3fe464a2fc3505e',
+   'public_content_import_commit':'f3136b0a84086d7b5f77abb1f87e854648cd54e3',
+   'public_carryover_checkpoint':'MC-001',
+   'candidate_ref':'checked-out public repository HEAD at qualification time',
+   'authorization_receipt_path':'artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json',
+   'authorization_receipt_schema':'gogoke.s1-r4.public-authorization.v1',
+  },'PUBLIC_EXECUTION_BINDING')
   test(plan['status']=='DESIGN_FIXED_NOT_IMPLEMENTED','CLAIM_TIER')
   test(plan['source_head']==inp['source_head']=='88ef8e7dfbf5ba5aef58743dc45fa660f946276e','SOURCE_IDENTITY')
   test(inp['parent_plan']=='3b78e65361d0b75814c91d5a566d78a5e7fa013b','PARENT_IDENTITY')
@@ -191,6 +204,8 @@ def self_test(root: Path):
  ('remove_final_gate',mutation('GATES_AUTHORIZATION.json',lambda d:d['gates'].pop(5))),
  ('self_acceptance',mutation('EXECUTION_PLAN.json',lambda d:d['defaults'].update(worker_self_acceptance=True))),
  ('erase_censored_state',mutation('OBJECT_MODEL.json',lambda d:d['states']['outcome'].remove('CENSORED'))),
+ ('public_binding_wrong_repository',mutation('PUBLIC_EXECUTION_BINDING.json',lambda d:d.update(repository='taiyun668/gogo-party'))),
+ ('public_binding_wrong_authorization',mutation('PUBLIC_EXECUTION_BINDING.json',lambda d:d.update(authorization_receipt_schema='wrong'))),
  ]
  outcomes=[]
  for name,apply in variants:

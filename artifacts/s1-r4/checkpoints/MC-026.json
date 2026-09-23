@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-026",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "2363c36ca94f024ed3b3a422e6c52421fa66c95e",
+  "recorded_utc": "2026-09-23T05:04:12Z",
+  "reason": "Bind current cloud installer notice evidence and public authorization runner WIP without self-acceptance",
+  "release_notice_candidate": {
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/9",
+    "head": "d56c37a92a70efa8ede2108b833a01a6a07ba477",
+    "run_id": "35819820697",
+    "job_results": "Browser build/tests SUCCESS; Generate locked dependency notices SUCCESS; Unsigned Windows NSIS SUCCESS; exact-head public-source hygiene PASS",
+    "generated_coverage": "124 npm production packages, 125 notice sources; 398 Windows Rust production dependency identities covered; missing-entry negative control rejected",
+    "installed_smoke": "Cloud update smoke logged PASS installed notice byte identity for npm-production-notices.html and rust-dependency-notices.html, then PASS update handoff/readiness/replacement/rollback",
+    "portable_zip": "Both notice members were read from the same-run unsigned portable ZIP and match same-run generated reports by SHA-256: npm ee9b17721431351b688d56aafa4daae4f054634b733865cf7c82a8a80a3b8ae9; Rust a910fa8750491c833acde133183984c9a12bea71ca5caede760aac44490779cc",
+    "scope": "Windows Server cloud construction and unsigned packaging evidence, not Windows 11 desktop validation",
+    "review_state": "FRESH_INDEPENDENT_CLAUDE_REVIEW_PENDING; draft PR not merged",
+    "non_claim": "Generated declarations and installed-byte identity do not establish legal sufficiency, signing, publication, or any S1 gate acceptance."
+  },
+  "public_authorization_rebind": {
+    "plan": "PR #8 current head 282d6b9f649b54c91a34fd140dec3d3557c325fc; structural self-test 1969 checks and 23/23 negative controls, source hygiene PASS; fresh Claude review pending; not merged",
+    "runner": "PR #4 head a6bb527a remains wip: no tests, no review, not a candidate. Local signed-Python diagnostic 57/57 and source scan 0 leaks; duplicate JSON and non-finite values now fail closed, as do missing/non-Owner/plan-mismatch fixtures. These do not enable qualification.",
+    "authorization": "NOT_CREATED; Owner-only merge of its future single-file PR remains required after the plan and runner sequence; WP01/S1-01-V BLOCKED"
+  },
+  "custody": "Main, plan, runner, and notice branches are clean and pushed; downloaded cloud artifacts and scanner output are outside public Git. No local unsigned installer or freshly built native executable was run.",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Obtain fresh independent Claude verdicts on exact PR #8 and PR #9 heads; repair any findings, then merge each only after its checks pass. After the plan merges, integrate the runner rebind as a non-WIP candidate for fresh review. Only after that sequence open the single-file public authorization PR for Owner merge; do not run WP01/S1-01-V beforehand. Continue dependency-safe S1-R4 work."
+}

@@ -10,6 +10,7 @@ on:
       - "tools/sign-gogoke-release-manifest.ps1"
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
+      - "tools/gogoke-release/**"
       - ".github/workflows/gogoke-desktop.yml"
   pull_request:
     branches:
@@ -19,6 +20,7 @@ on:
       - "tools/sign-gogoke-release-manifest.ps1"
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
+      - "tools/gogoke-release/**"
       - ".github/workflows/gogoke-desktop.yml"
 
 permissions:
@@ -62,10 +64,84 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  licenses:
+    name: Generate locked dependency notices
+    timeout-minutes: 45
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.13.1"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install exact locked npm tree without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prove npm notice generator rejects missing source material
+        run: node --test ../../tools/gogoke-release/generate-npm-notices.test.mjs
+      - name: Generate npm production SPDX and bundled notice text
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path generated -Force | Out-Null
+          npm sbom --omit=dev --sbom-format=spdx | Set-Content generated/npm-production.spdx.json -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw "npm sbom failed: $LASTEXITCODE" }
+          node ../../tools/gogoke-release/generate-npm-notices.mjs generated/npm-production.spdx.json generated/npm-production-notices.html
+          if ($LASTEXITCODE -ne 0) { throw "npm notice generation failed: $LASTEXITCODE" }
+      - name: Install pinned cargo-about into isolated runner root
+        shell: pwsh
+        run: |
+          $toolRoot = Join-Path $env:RUNNER_TEMP 'cargo-about'
+          cargo install --locked --version 0.8.4 cargo-about --root $toolRoot
+          if ($LASTEXITCODE -ne 0) { throw "cargo-about install failed: $LASTEXITCODE" }
+          "$(Join-Path $toolRoot 'bin')" >> $env:GITHUB_PATH
+      - name: Generate Rust license and copyright text from locked graph
+        shell: pwsh
+        run: |
+          Push-Location src-tauri
+          try {
+            cargo about generate -o ../generated/rust-dependency-notices.html about.hbs
+            if ($LASTEXITCODE -ne 0) { throw "cargo-about generation failed: $LASTEXITCODE" }
+          } finally { Pop-Location }
+          foreach ($path in @('generated/npm-production-notices.html', 'generated/rust-dependency-notices.html')) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "license notice missing or empty: $path"
+            }
+          }
+          $tree = @(cargo tree --locked --edges normal,build --target x86_64-pc-windows-msvc --prefix none --manifest-path src-tauri/Cargo.toml)
+          if ($LASTEXITCODE -ne 0) { throw "Windows release dependency tree unavailable: $LASTEXITCODE" }
+          if ($tree.Count -eq 0 -or $tree[0] -notmatch '^([^ ]+) v([^ ]+)') { throw "Windows dependency root identity unavailable" }
+          $rootIdentity = "$($matches[1]) $($matches[2])"
+          $expected = @($tree | ForEach-Object {
+            if ($_ -match '^([^ ]+) v([^ ]+)') { "$($matches[1]) $($matches[2])" }
+          } | Where-Object { $_ -ne $rootIdentity } | Sort-Object -Unique)
+          $notice = Get-Content generated/rust-dependency-notices.html -Raw
+          $listed = @([regex]::Matches($notice, '<li>([^<]+)</li>') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+          if ($expected.Count -lt 100 -or $listed.Count -lt 100) { throw "Rust notice inventory is unexpectedly empty" }
+          $missing = @(Compare-Object $expected $listed | Where-Object SideIndicator -eq '<=')
+          if ($missing.Count -ne 0) { throw "Rust notice lacks Windows production dependencies: $($missing.InputObject -join ', ')" }
+          $negative = @(Compare-Object @('missing-fixture 0.0.1') $listed | Where-Object SideIndicator -eq '<=')
+          if ($negative.Count -ne 1) { throw "Rust notice coverage negative control did not fail" }
+          Write-Output "Rust notice coverage: $($expected.Count) Windows dependency identities covered; negative control rejected"
+      - name: Upload generated license evidence for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-license-notices-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            apps/desktop/generated/npm-production.spdx.json
+            apps/desktop/generated/npm-production-notices.html
+            apps/desktop/generated/rust-dependency-notices.html
+          if-no-files-found: error
+          retention-days: 30
+
   unsigned-windows:
     name: Unsigned Windows NSIS
     timeout-minutes: 60
-    needs: web
+    needs: [web, licenses]
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.89.0
@@ -80,6 +156,19 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@1.89.0
+      - name: Download notices from this exact workflow run
+        uses: actions/download-artifact@v4
+        with:
+          name: gogoke-license-notices-${{ github.sha }}-${{ github.run_id }}
+          path: apps/desktop/generated
+      - name: Require generated notices before installer build
+        shell: pwsh
+        run: |
+          foreach ($path in @('generated/npm-production-notices.html', 'generated/rust-dependency-notices.html')) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "Installer notice missing or empty: $path"
+            }
+          }
       - name: Restore Rust registry, git sources, and build outputs
         id: rust-cache
         uses: actions/cache/restore@v4
@@ -135,6 +224,8 @@ jobs:
           Copy-Item $source.FullName $destination
           Copy-Item LICENSE "$stage/LICENSE"
           Copy-Item THIRD_PARTY_NOTICES.md "$stage/THIRD_PARTY_NOTICES.md"
+          Copy-Item generated/npm-production-notices.html "$stage/npm-production-notices.html"
+          Copy-Item generated/rust-dependency-notices.html "$stage/rust-dependency-notices.html"
           $status = (Get-AuthenticodeSignature $destination).Status
           if ($status -ne "NotSigned") {
             throw "Local-only executable unexpectedly produced $status"
@@ -169,6 +260,8 @@ jobs:
           Copy-Item src-tauri/target/release/gogoke.exe "$portable/gogoke.exe"
           Copy-Item LICENSE "$portable/LICENSE"
           Copy-Item THIRD_PARTY_NOTICES.md "$portable/THIRD_PARTY_NOTICES.md"
+          Copy-Item generated/npm-production-notices.html "$portable/npm-production-notices.html"
+          Copy-Item generated/rust-dependency-notices.html "$portable/rust-dependency-notices.html"
           foreach ($file in @($releaseInstaller, "$portable/gogoke.exe")) {
             $status = (Get-AuthenticodeSignature $file).Status
             if ($status -ne "NotSigned") {
@@ -188,7 +281,7 @@ jobs:
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $releaseInstaller = Join-Path "desktop-artifacts" "gogoke-$version-windows-x64-unsigned-setup.exe"
-          & ../../tools/smoke-gogoke-update.ps1 -Installer $releaseInstaller -Version $version
+          & ../../tools/smoke-gogoke-update.ps1 -Installer $releaseInstaller -Version $version -ExpectedNoticeDirectory generated
           if ($LASTEXITCODE -ne 0) {
             throw "gogoke update smoke failed with exit code $LASTEXITCODE"
           }
