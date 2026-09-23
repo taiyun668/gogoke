@@ -1,5 +1,14 @@
+// @effect-diagnostics nodeBuiltinImport:off - cloud integration fixture uses runner temp paths.
+import * as NodeFS from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { expect, it } from "@effect/vitest";
-import { decodeProductGoalRequest, parseProductProcessArgs } from "./productEntry.ts";
+import {
+  decodeProductGoalRequest,
+  handleProductGoalRequest,
+  parseProductProcessArgs,
+} from "./productEntry.ts";
 
 const valid = JSON.stringify({
   goal: {
@@ -56,3 +65,27 @@ it("seals donor server commands at the executable argument boundary", () => {
     hostBinary: "C:\\Gogoke\\gogoke-native-host.exe",
   });
 });
+
+
+it.runIf(process.platform === "win32" && Boolean(process.env.GOGOKE_NATIVE_HOST))(
+  "reaches the cloud-built native Product Authority through admitted Controller/Seat context",
+  async () => {
+    const hostBinary = process.env.GOGOKE_NATIVE_HOST;
+    if (hostBinary === undefined) throw new Error("GOGOKE_NATIVE_HOST missing");
+    const root = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "gogoke-r2-entry-"));
+    try {
+      const response = await handleProductGoalRequest(decodeProductGoalRequest(Buffer.from(valid)), {
+        root,
+        hostBinary,
+      });
+      expect(response.goal.id).toBe("goal-r2-01");
+      expect(response.ledger.repository).toBe("fixture/authorized-project");
+      expect(response.caller.admitted).toBe(true);
+      expect(response.caller.role).toBe("controller");
+      expect(response.nativeHost.reachable).toBe(true);
+      expect(response.acceptance).toBe("TEST_FIXTURE_NOT_ADOPTED");
+    } finally {
+      await NodeFS.rm(root, { force: true, recursive: true });
+    }
+  },
+);

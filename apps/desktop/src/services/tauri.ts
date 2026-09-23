@@ -1219,3 +1219,37 @@ export async function sendNotification(
 
   await attemptFallback();
 }
+
+
+export type GogokeProductGoalRequest = {
+  goal: { id: string; title: string };
+  ledger: {
+    repository: string;
+    commit: string;
+    path: string;
+    contentHash: string;
+  };
+};
+
+export type GogokeProductGoalView = GogokeProductGoalRequest & {
+  caller: {
+    admitted: true;
+    policyRevision: string;
+    principalId: string;
+    profileId: string;
+    revocationHead: string;
+    role: "controller";
+    seatId: string;
+  };
+  nativeHost: {
+    reachable: true;
+    elapsedMicros: number;
+  };
+  acceptance: "TEST_FIXTURE_NOT_ADOPTED";
+};
+
+export async function runGogokeR2GoalProbe(
+  request: GogokeProductGoalRequest,
+): Promise<GogokeProductGoalView> {
+  return invoke<GogokeProductGoalView>("gogoke_r2_goal_probe", { request });
+}

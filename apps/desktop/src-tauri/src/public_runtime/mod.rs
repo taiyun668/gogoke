@@ -266,3 +266,7 @@ mod tests {
         assert!(guard.activated().is_err());
     }
 }
+
+
+mod product_entry;
+pub(crate) use product_entry::gogoke_r2_goal_probe;
