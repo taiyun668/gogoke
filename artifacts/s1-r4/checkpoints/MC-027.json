@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-027",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "cd5b9b04af7fa4b1b629ef3e6abd6c72e04d049d",
+  "recorded_utc": "2026-09-23T05:26:22Z",
+  "reason": "Bind Claude's exact-head decisions, ordinary merges, the public plan blob, and the next runner candidate without gate promotion",
+  "reviewed_merges": {
+    "PR8": "Claude ACCEPT at 282d6b9f649b54c91a34fd140dec3d3557c325fc; source hygiene PASS; ordinary merge d3ecc50764646afae40f33860c5120dcc6480afa",
+    "PR9": "Claude ACCEPT at d56c37a92a70efa8ede2108b833a01a6a07ba477; exact-head cloud run 35819820697 three jobs SUCCESS and source hygiene PASS; ordinary merge cd5b9b04af7fa4b1b629ef3e6abd6c72e04d049d",
+    "plan_manifest_blob": "c9efd380bb9b52a1be18b96bfc3cac4c5f5ff84b",
+    "post_merge_plan_self_test": "PASS_PLAN_STRUCTURE_ONLY, 1969 checks, 23/23 negative controls; not product or gate acceptance"
+  },
+  "public_authorization_rebind": {
+    "runner_candidate": "PR #4 head 3bd0e9e5528c2b31994ba79693c66382e3c8141b, based on current public main; six source files, 58/58 local Python diagnostics, 59 due IDs mapped to 23 registry commands with official statuses still NOT_RUN; source hygiene 0 leaks with failing positive control",
+    "candidate_scope": "Code candidate only. Fresh Claude review pending; no qualification group executed; 16 fixture commands remain NEEDS_CURRENT_CANDIDATE.",
+    "authorization_file": "NOT_CREATED. Future receipt must contain only Owner-authorized fields and the actual public plan MANIFEST blob, in a single-file PR merged by Owner taiyun668 after runner review.",
+    "blocked": "WP01/S1-01-V remain BLOCKED until Owner merges the public authorization receipt; missing/stale/non-Owner authorization remains fail closed"
+  },
+  "notice_followups": {
+    "draft_pr": "PR #10 head d32260e1a418a1cf98fa0101ffaf4b0836abea42; current cloud run 35822377156 IN_PROGRESS; fresh review pending",
+    "scope": "Four non-blocking findings from Claude's PR #9 review: SPDX-described npm root, crates.io version source links including MPL, real declaration-entry removal negative control, README cloud-only installer boundary",
+    "non_claim": "PR #9 acceptance and merge do not qualify PR #10; it remains a separate candidate and is not merged."
+  },
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "custody": "Main and named runner/notice branches are committed and pushed, with no uncommitted source; generated reports stay outside public Git or ignored. No local native build was used as gate evidence.",
+  "next_action": "Obtain fresh Claude review of PR #4 exact head; repair findings or merge normally only after review and green checks. Then create the single-file public authorization PR using the current MANIFEST blob and leave its merge to Owner. Do not run qualification before that merge. In parallel, inspect PR #10 exact-head cloud result and send it for fresh review; continue other dependency-safe S1-R4 work."
+}
