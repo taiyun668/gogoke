@@ -8,7 +8,9 @@ import { collectProductionNotices, renderNotices } from "./generate-npm-notices.
 test("production notice generator rejects missing text, unknown license and path escape", () => {
   const root = mkdtempSync(join(tmpdir(), "gogoke-npm-notice-test-"));
   try {
-    const packages = [{ name: "gogoke", versionInfo: "0.1.2" }];
+    const rootId = "SPDXRef-Package-gogoke-current";
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "gogoke", version: "9.9.9" }), "utf8");
+    const packages = [{ name: "gogoke", versionInfo: "9.9.9", SPDXID: rootId, packageFileName: "" }];
     for (let index = 0; index < 100; index += 1) {
       const name = `fixture-${index}`;
       const packageFileName = `node_modules/${name}`;
@@ -17,10 +19,12 @@ test("production notice generator rejects missing text, unknown license and path
       writeFileSync(join(dir, "LICENSE"), `Copyright fixture ${index}\nMIT license text`, "utf8");
       packages.push({ name, versionInfo: "1.0.0", licenseDeclared: "MIT", packageFileName });
     }
-    const sbom = { packages };
+    const sbom = { documentDescribes: [rootId], packages };
     const notices = collectProductionNotices(sbom, root);
     assert.equal(notices.length, 100);
     assert.match(renderNotices(notices, "abc"), /Copyright fixture 99/);
+    assert.throws(() => collectProductionNotices({ ...sbom, documentDescribes: ["wrong"] }, root), /root package disagrees/);
+    assert.throws(() => collectProductionNotices({ ...sbom, documentDescribes: [] }, root), /exactly one root/);
 
     unlinkSync(join(root, "node_modules/fixture-0/LICENSE"));
     assert.throws(() => collectProductionNotices(sbom, root), /license\/copyright text missing/);

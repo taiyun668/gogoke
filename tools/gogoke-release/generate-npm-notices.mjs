@@ -25,11 +25,21 @@ export function collectProductionNotices(sbom, desktopRoot = ROOT) {
   if (!Array.isArray(sbom?.packages) || sbom.packages.length < 2) {
     throw new Error("FAIL_INSTRUMENT: production SPDX package set is empty");
   }
+  const rootPackage = JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8"));
+  const describes = sbom.documentDescribes;
+  if (!Array.isArray(describes) || describes.length !== 1 || typeof describes[0] !== "string") {
+    throw new Error("FAIL_INSTRUMENT: SPDX must describe exactly one root package");
+  }
+  const roots = sbom.packages.filter((entry) => entry.SPDXID === describes[0]);
+  if (roots.length !== 1 || roots[0].name !== rootPackage.name ||
+      roots[0].versionInfo !== rootPackage.version || roots[0].packageFileName !== "") {
+    throw new Error("FAIL_INSTRUMENT: SPDX root package disagrees with desktop package.json");
+  }
   const nodeModules = resolve(desktopRoot, "node_modules");
   const seen = new Set();
   const notices = [];
   for (const entry of sbom.packages) {
-    if (entry.name === "gogoke" && entry.versionInfo === "0.1.2") continue;
+    if (entry === roots[0]) continue;
     if (typeof entry.name !== "string" || typeof entry.versionInfo !== "string" ||
         typeof entry.licenseDeclared !== "string" ||
         !entry.licenseDeclared || entry.licenseDeclared === "NOASSERTION" ||

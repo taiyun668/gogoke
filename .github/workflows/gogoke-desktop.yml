@@ -119,12 +119,20 @@ jobs:
             if ($_ -match '^([^ ]+) v([^ ]+)') { "$($matches[1]) $($matches[2])" }
           } | Where-Object { $_ -ne $rootIdentity } | Sort-Object -Unique)
           $notice = Get-Content generated/rust-dependency-notices.html -Raw
-          $listed = @([regex]::Matches($notice, '<li>([^<]+)</li>') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+          $listed = @([regex]::Matches($notice, '<li>([^<]+)') | ForEach-Object { $_.Groups[1].Value -replace ' — source: $', '' } | Sort-Object -Unique)
           if ($expected.Count -lt 100 -or $listed.Count -lt 100) { throw "Rust notice inventory is unexpectedly empty" }
           $missing = @(Compare-Object $expected $listed | Where-Object SideIndicator -eq '<=')
           if ($missing.Count -ne 0) { throw "Rust notice lacks Windows production dependencies: $($missing.InputObject -join ', ')" }
-          $negative = @(Compare-Object @('missing-fixture 0.0.1') $listed | Where-Object SideIndicator -eq '<=')
-          if ($negative.Count -ne 1) { throw "Rust notice coverage negative control did not fail" }
+          $victim = $expected | Where-Object { $listed -contains $_ } | Select-Object -First 1
+          if (-not $victim) { throw "Rust notice coverage control has no real dependency to remove" }
+          $pattern = '<li>' + [regex]::Escape($victim) + '.*?</li>'
+          $tampered = [regex]::Replace($notice, $pattern, '')
+          if ($tampered -eq $notice) { throw "Rust notice coverage control failed to remove a real entry" }
+          $tamperedListed = @([regex]::Matches($tampered, '<li>([^<]+)') | ForEach-Object { $_.Groups[1].Value -replace ' — source: $', '' } | Sort-Object -Unique)
+          $negative = @(Compare-Object $expected $tamperedListed | Where-Object SideIndicator -eq '<=')
+          if ($negative.Count -lt 1 -or $negative.InputObject -notcontains $victim) {
+            throw "Rust notice coverage control accepted a declaration missing $victim"
+          }
           Write-Output "Rust notice coverage: $($expected.Count) Windows dependency identities covered; negative control rejected"
       - name: Upload generated license evidence for review
         if: always()
