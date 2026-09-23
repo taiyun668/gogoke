@@ -1276,7 +1276,7 @@ describe("SettingsView Codex section", () => {
     }
   });
 
-  it("supports multiple saved remotes on iOS runtime", async () => {
+  it("preserves multiple saved remotes on iOS without connecting", async () => {
     cleanup();
     const onUpdateAppSettings = vi.fn().mockResolvedValue(undefined);
     const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
@@ -1410,31 +1410,29 @@ describe("SettingsView Codex section", () => {
       fireEvent.change(screen.getByLabelText("New remote token"), {
         target: { value: "token-travel" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Connect & add" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save remote" }));
 
       await waitFor(() => {
-        expect(onUpdateAppSettings).toHaveBeenCalledTimes(2);
+        expect(onUpdateAppSettings).toHaveBeenCalledTimes(1);
       });
-      const trialSettings = onUpdateAppSettings.mock.calls[0]?.[0] as AppSettings;
-      const connectedSettings = onUpdateAppSettings.mock.calls[1]?.[0] as AppSettings;
-      expect(trialSettings.remoteBackends).toHaveLength(3);
-      expect(trialSettings.activeRemoteBackendId).toBeTruthy();
-      expect(trialSettings.remoteBackendHost).toBe("travel-mac.tailnet.ts.net:4732");
-      expect(trialSettings.remoteBackendToken).toBe("token-travel");
-      expect(connectedSettings.remoteBackends).toHaveLength(3);
-      const connectedEntry = connectedSettings.remoteBackends.find(
-        (entry) => entry.id === connectedSettings.activeRemoteBackendId,
+      const savedSettings = onUpdateAppSettings.mock.calls[0]?.[0] as AppSettings;
+      expect(savedSettings.remoteBackends).toHaveLength(3);
+      expect(savedSettings.activeRemoteBackendId).toBeTruthy();
+      expect(savedSettings.remoteBackendHost).toBe("travel-mac.tailnet.ts.net:4732");
+      expect(savedSettings.remoteBackendToken).toBe("token-travel");
+      const savedEntry = savedSettings.remoteBackends.find(
+        (entry) => entry.id === savedSettings.activeRemoteBackendId,
       );
-      expect(connectedEntry?.lastConnectedAtMs).toEqual(expect.any(Number));
+      expect(savedEntry?.lastConnectedAtMs ?? null).toBeNull();
       expect(screen.queryByRole("dialog", { name: "Add remote" })).toBeNull();
-      expect(listWorkspacesMock).toHaveBeenCalled();
+      expect(listWorkspacesMock).toHaveBeenCalledTimes(0);
 
       onUpdateAppSettings.mockClear();
       fireEvent.click(screen.getByRole("button", { name: "Add remote" }));
       fireEvent.change(screen.getByLabelText("New remote token"), {
         target: { value: "" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Connect & add" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save remote" }));
 
       await waitFor(() => {
         expect(screen.getByText("Remote backend token is required.")).toBeTruthy();
