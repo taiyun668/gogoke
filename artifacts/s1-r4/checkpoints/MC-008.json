@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-008",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "91d6365b0675bbdfda2e2e6a48b4de1787fd3c4d",
+  "recorded_utc": "2026-09-23T00:45:58Z",
+  "reason": "Record final exact-commit WP10A cloud installer outcome without promoting independent review or gates",
+  "wp10a_candidate": {
+    "commit": "5702d7035513bc88af9b9fa8ac7b541657ac914a",
+    "branch": "codex/gogoke-wp10a-scope-closure-r1",
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/1",
+    "review": "CLAUDE_PENDING_FRESH_INDEPENDENT_REVIEW",
+    "main_integration": "NOT_DONE"
+  },
+  "manual_cloud_ci": {
+    "run_id": "35802709546",
+    "event": "workflow_dispatch",
+    "bound_commit": "5702d7035513bc88af9b9fa8ac7b541657ac914a",
+    "final_state": "SUCCESS",
+    "browser_job": "SUCCESS; typecheck, npm test and frontend build executed",
+    "unsigned_windows_nsis_job": "SUCCESS; release verifier, installer build, update/readiness/rollback smoke and artifact staging completed",
+    "failed_steps": 0,
+    "skipped_steps": 0,
+    "review_evidence_comment": "https://github.com/taiyun668/gogoke/pull/1#issuecomment-5787036405",
+    "non_claim": "Windows Server cloud run, not Windows 11 desktop validation, signing, publication, independent review or S1-R4 gate acceptance"
+  },
+  "pr_ci": {
+    "source_hygiene_run_id": "35803027052",
+    "source_hygiene": "SUCCESS",
+    "desktop_run_id": "35803027055",
+    "desktop_state_at_checkpoint": "IN_PROGRESS; browser job passed, unsigned installer job not final"
+  },
+  "unresolved": [
+    "Fresh Claude review of the WP10A candidate and new SettingsView test provenance",
+    "Pull-request-triggered duplicate installer job still running at this checkpoint",
+    "N1 checker requires independent review/current-candidate qualification",
+    "59 due checks and gate states remain unpromoted"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Receive fresh independent Claude finding on PR #1; do not merge or self-accept. Continue dependency-safe S1-R4 work and monitor the separate PR installer run to a factual final state."
+}
