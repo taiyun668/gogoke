@@ -1,0 +1,7 @@
+model = "gpt-6-sol"
+model_reasoning_effort = "medium"
+
+[agents]
+# 明确、重复或批量的默认子任务使用 Luna/high；固定角色按任务风险显式覆盖。
+default_subagent_model = "gpt-6-luna"
+default_subagent_reasoning_effort = "high"

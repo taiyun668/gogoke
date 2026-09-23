@@ -1,0 +1,72 @@
+{
+  "schema": "gogoke.p00.pass-d.manifest.v1",
+  "manifest_excludes_itself": true,
+  "files": [
+    {
+      "path": "DECISION.json",
+      "bytes": 2909,
+      "sha256": "29acc3df9ebb9bb4735f3028bdf446f5d69117228c62617239d95720dc9411d0",
+      "git_blob": "65c89a89fd6c2a280f823633244d89abcc3f6f48"
+    },
+    {
+      "path": "INTAKE_VERIFICATION.json",
+      "bytes": 9466,
+      "sha256": "6f3b70fbe881f78789e8a1b26139c5973b4cbd8b684c317c10b91a91b9c53323",
+      "git_blob": "5df5424521c378bb8566912fd16c70eb1bd3a803"
+    },
+    {
+      "path": "REPLAY.md",
+      "bytes": 1583,
+      "sha256": "eda51dd2a6b60ec39fb068bd350017c3e0ae3eefbf230f1a4382eb2130a5c653",
+      "git_blob": "a70054f1d3a229a5136cda69d1ac5f5ff9f8f5c8"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 5492,
+      "sha256": "2e3c3ad5c32816c01afe41d45173b2a3638cc3c3df394d3ffdacfb2f6f6e7dff",
+      "git_blob": "461ea30f881ad86b37d34be490874addf94340be"
+    },
+    {
+      "path": "RUNTIME_OBLIGATIONS.json",
+      "bytes": 6841,
+      "sha256": "6b6d2ba3599090c912da4808b89757fccc31e307d51e745a780c9ea485889c47",
+      "git_blob": "eef50e0529f9304e8f6e01313983448882ce9771"
+    },
+    {
+      "path": "received/FIXED_OBJECTS.json",
+      "bytes": 1475,
+      "sha256": "1121ee3b9750cc38b7add108d3c8dcfb68b00f3f09fd9fc48b56bfcbabb28826",
+      "git_blob": "437029f3367b1b46d0089812474a5114b48a99df"
+    },
+    {
+      "path": "received/FOCUSED_REVIEW_REPORT.md",
+      "bytes": 6997,
+      "sha256": "51b5389b0e308954c85aa8ca92fac21ad0b4dac3a0f90b3d5601991cdccaf4cc",
+      "git_blob": "b731211fd1d5928720fcd6b96f657cd6d2795f66"
+    },
+    {
+      "path": "received/ITEM_RECONCILIATION.json",
+      "bytes": 1449,
+      "sha256": "13e70e51970a202732a68e1705bf8811cf4a63e69c42fcc296bd1001bce79c29",
+      "git_blob": "3f01131c048d2fca2de625e700f78fee7c619fe6"
+    },
+    {
+      "path": "received/PACKAGE_IDENTITY.json",
+      "bytes": 440,
+      "sha256": "852bb6fcd070a549d2a329e1ad17acdf46ddcf23bbb9273e39db3004ad177c55",
+      "git_blob": "82601065c231463e529c08892b650dd4336cedbf"
+    },
+    {
+      "path": "received/REVIEW_RECEIPT.json",
+      "bytes": 765,
+      "sha256": "b4a3cdf52fb36dbfded42c4ceb9ef858866f33c03fadbd6b74a6972e6ac68236",
+      "git_blob": "0dd22215a556d88d9a78cbbda9d6d0b3c9a8067a"
+    },
+    {
+      "path": "received/UNEXECUTED_RUNTIME_AXES.json",
+      "bytes": 1333,
+      "sha256": "c9bef4ab1ba33c9a41c079aeb3146406a235d95b40cd6d595582ecc7095351dc",
+      "git_blob": "4536f9a1a073a9a5fb81906e61107b939cabd3d3"
+    }
+  ]
+}

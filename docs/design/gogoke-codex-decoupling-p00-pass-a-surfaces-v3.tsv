@@ -1,0 +1,134 @@
+method	tauri_registry	daemon_registry	desktop_route	disconnect_retry_allowlist	effects	entry_family	owning_wp	first_validation_check	current_fact_and_case
+get_app_settings	T	workspace:literal	local	no	R+OS	F09	WP05	T12.L	Local config overlay and best-effort window appearance; daemon getter has no desktop window.
+update_app_settings	T	workspace:literal	local	no	W+P+OS	F09	WP02	T39.L	Five native config writes precede app-settings persistence; reset client and best-effort start are local side effects.
+get_codex_config_path	T	codex:literal	local	no	R	F09	WP07	T26.L	Desktop always returns its local default CODEX_HOME config path; direct daemon caller gets daemon-host path.
+gogoke_update_check	T	-	local	no	N+W	F18	WP12	T59.L	Windows signed-feed check may download installer and publish prepared state; other platforms return no offer.
+gogoke_update_install	T	-	local	no	W+P+X	F18	WP12	T46.L	Revalidate release and installer, stage coordinator/applying state, spawn then exit; not ready acknowledgment.
+gogoke_update_signal_ready	T	-	local	no	W	F18	WP12	T59.L	No ready argument is no-op; valid temp receipt is created once and installed-state update is best effort.
+gogoke_update_take_failure	T	-	local	no	R+W	F18	WP12	T38.L	Read/rotate failure log and best-effort state update can partially succeed.
+file_read	T	workspace:literal	remote-when-enabled	yes	R	F11	WP08	T22.L	Resolve kind/scope/root and symlink policy on the selected host; no full-size limit in text IO.
+file_write	T	workspace:literal	remote-when-enabled	no	W	F11	WP07	T25.L	Direct write with global-AGENTS exception and dangling-symlink gap; remote mode writes on daemon host.
+read_image_as_data_url	T	-	local	no	R+P+W	F11	WP08	T35.L	Remote/mobile guard still runs local normalization/read; macOS HEIF conversion writes temp via sips.
+write_text_file	T	-	local	no	W	F11	WP08	T22.L	Local arbitrary nonempty path, mkdir parents, direct export write; backend does not verify a save-dialog receipt.
+list_workspaces	T	workspace:literal	remote-when-enabled	yes	R+X(D)	F03	WP03	T52.L	Desktop lists its map; daemon rereads disk and may kill stale shared sessions without surviving-alias check.
+is_workspace_path_dir	T	workspace:literal	remote-when-enabled	yes	R	F04	WP08	T22.L	Directory predicate is not write authorization or connection readiness.
+add_workspace	T	workspace:literal	remote-when-enabled	no	W+P	F04	WP08	T34.L	Select/reuse/spawn native session before registry persistence; failure compensation differs for new versus shared session.
+add_workspace_from_git_url	T	workspace:literal	remote-when-enabled	no	N+W+P	F04	WP08	T34.L	Clone then connect/persist; best-effort delete can leave partial destination.
+add_clone	T	workspace:literal	local	no	W+P	F04	WP08	T34.L	Desktop adapter is local even in remote mode; daemon method separately clones on daemon host.
+add_worktree	T	workspace:literal	remote-when-enabled	no	W+P	F04	WP08	T34.L	Desktop remote-tracking finder is None; daemon supplies Some; disk creation precedes registry/session completion.
+worktree_setup_status	T	workspace:literal	remote-when-enabled	yes	R	F04	WP08	T34.L	Decide from script and marker existence, not child exit or successful setup.
+worktree_setup_mark_ran	T	workspace:literal	remote-when-enabled	no	W	F04	WP08	T34.L	Mkdir and write timestamp marker without requiring an execution-success receipt.
+remove_workspace	T	workspace:literal	remote-when-enabled	no	W+X	F04	WP08	T34.L	Child worktree removal, shared-session release and persistence permit explicit partial results.
+remove_worktree	T	workspace:literal	remote-when-enabled	no	W+X	F04	WP08	T34.L	Stop before Git/remove/prune/persist; failed deletion does not undo stopping.
+rename_worktree	T	workspace:literal	remote-when-enabled	no	W+P	F04	WP08	T34.L	Branch rename, move, config save and session-path registration are not one transaction.
+rename_worktree_upstream	T	workspace:literal	remote-when-enabled	no	N+W	F04	WP08	T34.L	Push new, delete old, set upstream; each step can leave remote/local effects.
+apply_worktree_changes	T	workspace:literal	local	no	W+P	F05	WP08	T34.L	Desktop adapter remains local; patch into parent can partially apply before returning error.
+update_workspace_settings	T	workspace:literal	remote-when-enabled	no	W	F04	WP08	T34.L	Backend memory/child settings change before disk write; frontend rollback does not restore backend memory.
+set_workspace_runtime_codex_args	T	workspace:literal	remote-when-enabled	yes	P+X	F04	WP03	T51.L	May replace all shared session keys then kill old process; allowlisted retry is not proof of safety.
+connect_workspace	T	workspace:literal	remote-when-enabled	yes	P	F04	WP03	T51.L	Reuses arbitrary first live shared session without profile/auth/home/privacy key equivalence.
+list_workspace_files	T	workspace:literal	remote-when-enabled	yes	R	F11	WP08	T22.L	Walk target-host workspace with its limits and exclusions; same name does not grant arbitrary file access.
+read_workspace_file	T	workspace:literal	remote-when-enabled	yes	R	F11	WP08	T22.L	Canonicalize root/candidate and enforce host-specific bounded UTF-8 read.
+open_workspace_in	T	workspace:literal	local	no	P+OS	F11	WP08	T22.L	Desktop local app/command execution; direct daemon call executes on daemon host instead.
+get_open_app_icon	T	workspace:literal	local	no	R+P+W	F11	WP03	T50.L	Desktop local metadata/icon conversion; macOS defaults plus sips writes temp; daemon has separate caller.
+start_thread	T	codex:literal	remote-when-enabled	no	I	F07	WP04	T13.L	Native thread creation requires a connected session and creates native state; returned ID is not public identity.
+send_user_message	T	codex:literal	remote-when-enabled	no	I+R	F07	WP04	T14.L	Encode text/images/mentions and native turn-start; uncertain acceptance forbids blind replay.
+turn_steer	T	codex:literal	remote-when-enabled	no	I	F07	WP04	T15.L	Explicit turn-bound immediate steering is not ordinary queued input.
+turn_interrupt	T	codex:literal	remote-when-enabled	no	I	F07	WP04	T17.L	Native interrupt request acceptance does not prove tools and descendants stopped.
+start_review	T	codex:literal	remote-when-enabled	no	I	F07	WP06	T28.L	Native review target/delivery is not independent public review or authorization to merge.
+respond_to_server_request	T	codex:literal	remote-when-enabled	no	I	F07	WP04	T19.L	Native result reply needs original request identity; daemon raw ID/result fields are not authority proof.
+remember_approval_rule	T	codex:literal	local	no	W	F10	WP04	T19.L	Desktop always writes local default.rules; no native reload receipt is returned. Do not elevate body text to permission.
+resume_thread	T	codex:literal	remote-when-enabled	yes	I	F07	WP04	T20.L	Native resume mutates active context and continuation; retry requires reconciliation.
+read_thread	T	codex:literal	remote-when-enabled	yes	Q	F07	WP09b	T40.L	Native content read retains account/home/source identity and selected privacy domain.
+thread_live_subscribe	T	codex:literal	remote-when-enabled	yes	I+E	F07	WP04	T16.L	Native subscribe followed by attached notification has no durable sequence/generation receipt.
+thread_live_unsubscribe	T	codex:literal	remote-when-enabled	yes	I+E	F07	WP04	T16.L	Native detach acknowledgment does not certify every transport observer stopped receiving.
+fork_thread	T	codex:literal	remote-when-enabled	no	I	F07	WP06	T29.L	Native fork is distinct from copying visible material and may carry native context/history.
+list_threads	T	codex:literal	remote-when-enabled	yes	Q	F07	WP09b	T40.L	Native cursor pages and workspace routing are not a complete imported public history.
+list_mcp_server_status	T	codex:literal	remote-when-enabled	yes	Q	F10	WP07	T27.L	Status discovery does not enable a connector or share credentials between instances.
+archive_thread	T	codex:literal	remote-when-enabled	no	I	F07	WP05	T09.L	Archive native thread without deleting original history; descendant cascade may partially succeed.
+compact_thread	T	codex:literal	remote-when-enabled	no	I	F07	WP06	T29.L	Native compaction is distinct from UI folding or a generated summary.
+set_thread_name	T	codex:literal	remote-when-enabled	no	I	F07	WP05	T09.L	Native naming and public/local custom-name metadata retain separate authorities.
+collaboration_mode_list	T	codex:literal	remote-when-enabled	yes	Q	F09	WP09a	T06.L	Mode discovery is version/profile dependent and does not authorize orchestration.
+generate_commit_message	T	git:constant	remote-when-enabled	no	I+R	F07	WP08	T30.L	Read selected diff, start hidden read-only-requested native turn, archive best effort; generator is a real native call.
+generate_run_metadata	T	codex:literal	remote-when-enabled	no	I	F07	WP08	T30.L	Generated title/worktree name derives from a hidden native prompt, not a metadata-only local calculation.
+generate_agent_description	T	codex:literal	remote-when-enabled	no	I	F07	WP08	T30.L	Generated role text is not permission and does not automatically create an agent config file.
+get_config_model	T	codex:literal	remote-when-enabled	yes	R	F09	WP09a	T06.L	Read native selected-workspace configuration; cannot define the public model type universe.
+codex_doctor	T	codex:literal	local	no	P	F09	WP03	T50.L	Desktop always runs local version/help/node probes; matching daemon method does not make desktop remote.
+codex_update	T	-	local	no	N+W+P	F09	WP12	T59.L	Native npm/brew install/update is explicit provider installation mutation, not ordinary detection.
+model_list	T	codex:literal	remote-when-enabled	yes	Q	F09	WP09a	T06.L	List native model capabilities for the selected binding; unknown is not supported.
+experimental_feature_list	T	codex:literal	remote-when-enabled	yes	Q	F09	WP09a	T06.L	Native feature listing is version scoped and remains adapter data.
+set_codex_feature_flag	T	codex:literal	remote-when-enabled	no	W	F10	WP07	T26.L	Write native feature config only for the intended provider root and preserve unknown fields.
+account_rate_limits	T	codex:literal	remote-when-enabled	yes	Q	F09	WP09b	T36.L	Official account limits are not interchangeable with local token-history estimates.
+account_read	T	codex:literal	remote-when-enabled	yes	Q+R	F09	WP09b	T23.L	Native account/read failure may fall back to local auth.json decoded email/plan metadata; no JWT signature verification or fresh login proof.
+codex_login	T	codex:literal	remote-when-enabled	no	I	F09	WP09b	T23.L	Native login may write credentials and return sensitive auth URL; no automatic login authorization.
+codex_login_cancel	T	codex:literal	remote-when-enabled	no	I	F09	WP04	T20.L	Desktop request names only workspace; core looks up PendingStart or stored login ID. A canceled local wait is not proof of native cancellation.
+skills_list	T	codex:literal	remote-when-enabled	yes	Q	F10	WP07	T27.L	Resource discovery and preview are distinct from enabling scripts or tool access.
+apps_list	T	codex:literal	remote-when-enabled	yes	Q	F10	WP07	T27.L	Native app/connector list is not cross-provider connectivity proof.
+get_agents_settings	T	codex:literal	remote-when-enabled	yes	R	F10	WP07	T26.L	Read global config and role summaries; external config_file references can be displayed with existence metadata, while developer-instruction content is read only through the managed-path guard.
+set_agents_core_settings	T	codex:literal	remote-when-enabled	no	W	F10	WP07	T26.L	Modify bounded native agent settings without converting template metadata into tool authority.
+create_agent	T	codex:literal	remote-when-enabled	no	W	F10	WP07	T26.L	Write managed role file then persist global config; config failure attempts removal of the new file, with rollback failure still possible.
+update_agent	T	codex:literal	remote-when-enabled	no	W	F10	WP07	T26.L	Role file/config/rename changes are not atomic; external original files must be preserved.
+delete_agent	T	codex:literal	remote-when-enabled	no	W	F10	WP07	T26.L	Back up and delete requested managed file before persisting config removal; config failure attempts restoration and can report restore failure; external role files are not deleted.
+read_agent_config_toml	T	codex:literal	remote-when-enabled	yes	R	F10	WP07	T26.L	This endpoint resolves a managed role only, rejects external config_file and symlink path components; list display of an external reference does not authorize reading its content here.
+write_agent_config_toml	T	codex:literal	remote-when-enabled	no	W	F10	WP07	T26.L	Resolve managed role and reject symlink components, then write supplied text directly; this function does not parse the supplied role content as TOML before writing.
+prompts_list	T	prompts:literal	local	no	R+W	F10	WP07	T25.L	Desktop always local; list ensures workspace prompts directory and may skip unreadable files.
+prompts_create	T	prompts:literal	local	no	W	F10	WP07	T25.L	Validate name/scope, mkdir and direct-write on adapter's host; no hidden provider execution.
+prompts_update	T	prompts:literal	local	no	W	F10	WP07	T25.L	Write next_path first, then remove old target on name change; failed removal can leave both files; not rename-then-write.
+prompts_delete	T	prompts:literal	local	no	W	F10	WP07	T25.L	Resolve scoped path then delete; no trash/undo receipt is implied.
+prompts_move	T	prompts:literal	local	no	W	F10	WP07	T25.L	Cross-device rename fallback copies then removes source; failed remove leaves both copies.
+prompts_workspace_dir	T	prompts:literal	local	no	W	F10	WP07	T25.L	A directory query creates its target directory and always runs locally through desktop adapter.
+prompts_global_dir	T	prompts:literal	local	no	W	F10	WP07	T25.L	Resolve native global root then mkdir; desktop and direct daemon callers have different host roots.
+get_git_status	T	git:constant	remote-when-enabled	yes	R+P	F05	WP08	T03.L	Libgit2 status plus git check-ignore subprocess; polling is independent of mutation commands.
+init_git_repo	T	git:constant	remote-when-enabled	no	W+P	F05	WP08	T34.L	Initialize/add/initial commit with confirmation and initialized-plus-commit-error result.
+create_github_repo	T	git:constant	remote-when-enabled	no	N+W+P	F05	WP08	T34.L	Create remote repo, set origin, push, PATCH default branch with partial-success fields.
+list_git_roots	T	git:constant	remote-when-enabled	yes	R	F05	WP08	T22.L	Bounded no-follow directory scan is not remote access or mutation authorization.
+get_git_diffs	T	git:constant	remote-when-enabled	yes	R	F05	WP05	T54.L	Read text/images/libgit2 diffs with size limits and per-item omissions; rendering remains separate.
+get_git_log	T	git:constant	remote-when-enabled	yes	R	F05	WP11b	T47.L	History traversal, totals and ahead/behind can be expensive; enabled polling is an automatic entry.
+get_git_commit_diff	T	git:constant	remote-when-enabled	yes	R	F05	WP08	T22.L	Selected commit diff requires exact repository/object/path identity.
+get_git_remote	T	git:constant	remote-when-enabled	yes	R	F05	WP08	T03.L	Read origin-or-first remote; absence is null, not a network/authentication result.
+stage_git_file	T	git:constant	remote-when-enabled	no	W+P	F05	WP08	T34.L	Rename may stage old/new paths sequentially and partially fail.
+stage_git_all	T	git:constant	remote-when-enabled	no	W+P	F05	WP08	T34.L	git add -A changes index for all included paths.
+unstage_git_file	T	git:constant	remote-when-enabled	no	W+P	F05	WP08	T34.L	Restore staged old/new paths without conflating partial result with full rollback.
+revert_git_file	T	git:constant	remote-when-enabled	no	W+P	F05	WP08	T34.L	Restore error triggers clean fallback, not only a missing-file error.
+revert_git_all	T	git:constant	remote-when-enabled	no	W+P	F05	WP08	T34.L	UI confirmation precedes restore then clean; daemon endpoint needs its own authority check.
+commit_git	T	git:constant	remote-when-enabled	no	W+P	F05	WP08	T34.L	Commit may invoke hooks; successful commit persists even if a following UI push fails.
+push_git	T	git:constant	remote-when-enabled	no	N+W+P	F05	WP08	T34.L	Best-effort fetch can fail before push still runs; remote acceptance needs separate reconciliation.
+pull_git	T	git:constant	remote-when-enabled	no	N+W+P	F05	WP08	T34.L	Autostash/no-rebase fallback branches can already have changed repository state.
+fetch_git	T	git:constant	remote-when-enabled	no	N+W+P	F05	WP08	T34.L	Fetch/prune mutates local refs; not a pure read.
+sync_git	T	git:constant	remote-when-enabled	no	N+W+P	F05	WP08	T34.L	Pull then push is a compound nontransactional operation.
+get_github_issues	T	git:constant	remote-when-enabled	yes	N+P	F05	WP08	T03.L	Fetch up to 50 issues and separate total with fallback; do not claim exhaustive results.
+get_github_pull_requests	T	git:constant	remote-when-enabled	yes	N+P	F05	WP08	T03.L	Fetch open PR list and total separately; partial total is qualified.
+get_github_pull_request_diff	T	git:constant	remote-when-enabled	yes	N+P	F05	WP08	T22.L	gh PR diff parser handles paths without granting write scope.
+get_github_pull_request_comments	T	git:constant	remote-when-enabled	yes	N+P	F05	WP08	T03.L	Issue-comment page is not the full review/inline-comment universe.
+checkout_github_pull_request	T	git:constant	remote-when-enabled	no	N+W+P	F05	WP08	T34.L	gh PR checkout mutates branch/worktree and may contact remote.
+list_git_branches	T	git:constant	remote-when-enabled	yes	R	F05	WP08	T03.L	Libgit2 local-branch enumeration has no shell constructor but remains a source entry.
+checkout_git_branch	T	git:constant	remote-when-enabled	no	W	F05	WP08	T34.L	Safe checkout then set HEAD; failures preserve actual repository state.
+create_git_branch	T	git:constant	remote-when-enabled	no	W	F05	WP08	T34.L	Branch creation precedes checkout and can survive a checkout failure.
+terminal_open	T	-	local	no	P	F06	WP08	T33.L	PTY spawn/registry reuse/concurrent compensation are distinct; desktop/mobile implementations differ.
+terminal_write	T	-	local	no	I	F06	WP08	T33.L	Write and flush shell stdin, not proof of command success; stale-generation cleanup needs guarding.
+terminal_resize	T	-	local	no	I	F06	WP08	T33.L	Resize existing PTY with minimum geometry; closed-session cleanup is separate.
+terminal_close	T	-	local	no	X	F06	WP03	T52.L	Remove registry then ignore child-kill result; successful return is not stopped-tree proof.
+dictation_model_status	T	-	local	no	R	F17	WP10a	T57.L	Exists-only readiness and automatic status hook are not verified model integrity.
+dictation_download_model	T	-	local	no	N+W	F17	WP10a	T57.L	Fixed URL/digest, partial writer and cancel-generation behavior; seal but preserve assets.
+dictation_cancel_download	T	-	local	no	X+W	F17	WP10a	T57.L	Abort/task cancel plus best-effort partial cleanup does not prove released writer ownership.
+dictation_remove_model	T	-	local	no	W	F17	WP10a	T57.L	Delete model and cached reference without proving another Arc-bound transcription stopped.
+dictation_start	T	-	local	no	PERM+P	F17	WP10a	T57.L	Ready/Idle guard, possible permission prompt and capture thread; Listening is only stream readiness.
+dictation_request_permission	T	-	local	no	PERM	F17	WP10a	T57.L	macOS prompt path differs from non-macOS true stub; seal direct entry independently.
+dictation_stop	T	-	local	no	X+P+E	F17	WP10a	T57.L	Capture stop then asynchronous transcription; returns Processing before result.
+dictation_cancel	T	-	local	no	X+E	F17	WP10a	T57.L	Listening stop differs from processing cancellation that can leave blocking CPU work running.
+local_usage_snapshot	T	workspace:literal	remote-when-enabled	yes	R	F09	WP09b	T36.L	Read target-host native history; local estimates are not official remaining allowance.
+tailscale_status	T	-	local	no	P+N	F15	WP10a	T56.L	Probe Tailscale CLI/network identity; macOS launchctl fallback and private tailnet data.
+tailscale_daemon_command_preview	T	-	local	no	R	F15	WP10a	T56.L	Return placeholder command without spawning or exposing token.
+tailscale_daemon_start	T	-	local	no	P+N+X	F15	WP10a	T56.L	Auth/ownership/version preflight may stop old daemon then spawn an all-interface listener.
+tailscale_daemon_stop	T	-	local	no	X+N	F15	WP10a	T56.L	Managed child or ownership-verified external stop followed by probe; acknowledgment is not stopped.
+tailscale_daemon_status	T	-	local	no	N+R	F15	WP10a	T56.L	Inspect/probe current daemon; source Running state and actual health differ.
+menu_set_accelerators	T	daemon:literal	local	no	OS	F13	WP05	T12.L	Desktop updates native accelerators; daemon implementation deliberately no-ops.
+set_tray_recent_threads	T	-	local	no	OS	F12	WP09b	T23.L	Expose scoped recent labels and IDs to OS tray; not a durable public identity authority.
+set_tray_session_usage	T	-	local	no	OS	F12	WP09b	T36.L	Tray usage labels do not create official quota or cumulative accounting truth.
+is_macos_debug_build	T	daemon:literal	local	no	R	F12	WP05	T12.L	Local cfg query; daemon same-named query reports its own host/build.
+app_build_type	T	-	local	no	R	F02	WP05	T12.L	Return current build classification without implying other platform support.
+send_notification_fallback	T	daemon:literal	local	no	P+OS	F12	WP09b	T23.L	Local macOS-debug osascript; direct daemon fallback runs on daemon host; other builds error.
+is_mobile_runtime	T	-	local	no	R	F16	WP10b	T45.L	Compile/runtime platform indication is not support for desktop-only implementations.
+ping	-	daemon:literal	direct-daemon	no	R	F15	WP10b	T43.L	Health response does not certify all subsystems, ownership or completed shutdown.
+daemon_info	-	daemon:literal	direct-daemon	no	R	F15	WP03	T51.L	Name/version/PID/binaryPath lack process creation-time identity and public binding authority.
+daemon_shutdown	-	daemon:literal	direct-daemon	no	X	F15	WP03	T32.L	Return ok before delayed process exit without draining requests or native descendants.
+auth	-	transport-only	direct-transport	no	PERM+E	F14	WP04	T19.L	Transport token gate controls request/event access; no-token dev branch is explicit and not public per-operation authorization.

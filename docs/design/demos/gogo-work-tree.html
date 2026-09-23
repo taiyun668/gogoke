@@ -1,0 +1,825 @@
+<title>GOGO 工作树</title>
+<style>
+  /* 颜色取自 apps/desktop/src/styles（themes.dark.css / base.css）。
+     结构、尺寸、动效照 Zfinix/aster 的 AgentGroup.tsx + index.css（c8cda02）：
+     圆井头像、状态只活在端点与头像、跑动的虚线、运行行的文字微光、真实进度条。 */
+  :root {
+    color-scheme: dark;
+    --surface-messages: rgba(8, 10, 16, 0.94);
+    --surface-card: rgba(30, 32, 40, 0.94);
+    --surface-card-muted: rgba(24, 26, 34, 0.9);
+    --surface-item: rgba(28, 30, 38, 0.88);
+    --surface-control: rgba(40, 44, 55, 0.7);
+    --surface-control-hover: rgba(54, 60, 72, 0.8);
+    --surface-bubble-user: rgba(77, 153, 255, 0.55);
+    --text-primary: #e6e7ea;
+    --text-stronger: rgba(255, 255, 255, 0.85);
+    --text-muted: rgba(255, 255, 255, 0.7);
+    --text-subtle: rgba(255, 255, 255, 0.6);
+    --text-faint: rgba(255, 255, 255, 0.5);
+    --text-dim: rgba(255, 255, 255, 0.35);
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --text-accent: rgba(164, 195, 255, 0.7);
+    --status-success: rgba(120, 235, 190, 0.95);
+    --status-warning: rgba(255, 175, 85, 0.95);
+    --status-error: rgba(255, 110, 110, 0.95);
+    --status-unknown: rgba(255, 255, 255, 0.3);
+    --ui-font: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --code-font: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
+    --s1: 4px; --s2: 8px; --s3: 12px;
+    /* gogoke ds-tokens.css 的时长与曲线 */
+    --ds-dur-fast: 120ms; --ds-dur-normal: 160ms; --ds-dur-slow: 220ms; --ds-dur-entrance: 200ms;
+    --ds-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ds-ease-out-soft: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    --ds-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ds-spinner-dur: 0.7s;
+    --ease: var(--ds-ease-out);
+  }
+
+  body { background: #0a0d13; color: var(--text-primary); font-family: var(--ui-font); font-size: 13px; line-height: 1.5; }
+  .page { max-width: 940px; margin: 0 auto; padding-inline: 16px; padding-block: 22px 56px; }
+  .intro h1 { font-size: 19px; font-weight: 600; margin: 0 0 5px; }
+  .intro p { margin: 0; color: var(--text-subtle); font-size: 12.5px; max-width: 64ch; }
+
+  .bar { display: flex; gap: 6px; margin: 16px 0 6px; flex-wrap: wrap; align-items: center; }
+  .bar .lab { font-size: 11px; color: var(--text-dim); margin-right: 2px; }
+  .bar button {
+    font: inherit; font-size: 11.5px; color: var(--text-muted);
+    background: var(--surface-control); border: 1px solid var(--border-subtle);
+    border-radius: 6px; padding: 4px 11px; cursor: pointer;
+  }
+  .bar button:hover { background: var(--surface-control-hover); }
+  .bar button[aria-pressed="true"] { color: var(--text-stronger); border-color: var(--border-strong); background: var(--surface-control-hover); }
+  .bar button:focus-visible { outline: 1px solid var(--border-strong); outline-offset: 1px; }
+  .clock { margin-left: auto; color: var(--text-dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .now { color: var(--text-faint); font-size: 11.5px; margin: 0 0 12px; min-height: 17px; }
+
+  .stream { display: flex; flex-direction: column; gap: 10px; min-height: 400px; }
+  .msg .whoami { font-size: 11px; color: var(--text-dim); margin-bottom: 3px; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .msg.user .body { background: var(--surface-bubble-user); color: #fff; border-radius: 12px; padding: 7px 12px; max-width: 72%; }
+  .msg code, .card code { font-family: var(--code-font); font-size: 11.5px; color: var(--text-subtle); }
+  .enter { animation: ds-toast-in var(--ds-dur-entrance) var(--ds-ease-out) both; }
+  @keyframes ds-toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .pop { animation: ds-card-in var(--ds-dur-slow) var(--ds-ease-out) both; }
+  @keyframes ds-card-in { from { opacity: 0; scale: .98; } to { opacity: 1; scale: 1; } }
+  .dots span { animation: blink 1.2s infinite; }
+  .dots span:nth-child(2) { animation-delay: .2s; }
+  .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+
+  /* ================= 编组卡 ================= */
+  .net {
+    display: flex; flex-direction: column;
+    border: 1px solid var(--border-subtle); border-radius: 12px;
+    background: var(--surface-card-muted); overflow: hidden;
+  }
+  .net-head {
+    display: flex; align-items: center; gap: var(--s2); width: 100%;
+    text-align: left; font: inherit; color: var(--text-faint);
+    padding: var(--s2) var(--s3); background: none; border: none; cursor: pointer;
+  }
+  .net-head:hover { background: var(--surface-item); }
+  .net-head:focus-visible { outline: 1px solid var(--border-strong); outline-offset: -1px; }
+  .net-title { display: flex; align-items: center; gap: var(--s2); flex: none; font-weight: 600; color: var(--text-stronger); }
+  .net-counts { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .net-summary { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .net-caret { display: flex; flex: none; color: var(--text-faint); opacity: .7; transition: transform var(--ds-dur-normal) var(--ds-ease-out); }
+  .net.open .net-caret { transform: rotate(180deg); }
+
+  /* 进度条：已收口席位占这一批的份额，一个席位落地才走一格 */
+  .net-progress { height: 2px; background: var(--surface-card); }
+  .net-progress i { display: block; width: 100%; height: 100%; background: var(--text-faint); opacity: .5; transform: scaleX(0); transform-origin: left center; transition: transform 420ms var(--ds-ease-out); }
+
+  /* 展开：高度过渡，可中断 */
+  .disclose { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ds-dur-slow) var(--ds-ease-out), opacity var(--ds-dur-normal) var(--ds-ease-out); opacity: 0; }
+  .disclose > div { overflow: hidden; min-height: 0; }
+  .disclose.on { grid-template-rows: 1fr; opacity: 1; }
+
+  /* 左边根节点，右边一行一个席位，SVG 铺满整张图从中间穿过去 */
+  .graph { position: relative; display: grid; grid-template-columns: auto 1fr; column-gap: 36px; align-items: center; padding: var(--s3); }
+  .wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .wire { fill: none; stroke: var(--border-strong); stroke-width: 1.25; }
+  .wires g[data-status="run"] { color: var(--status-warning); }
+  .wires g[data-status="done"] { color: var(--status-success); }
+  .wires g[data-status="error"] { color: var(--status-error); }
+  .wires g[data-status="held"] { color: var(--text-accent); }
+  .wires g[data-status="unknown"] { color: var(--status-unknown); }
+  .wire-flow { fill: none; stroke: currentColor; stroke-width: 1.25; stroke-dasharray: 3 5; animation: wire-flow .9s linear infinite; }
+  @keyframes wire-flow { to { stroke-dashoffset: -8; } }
+  .wire-end { fill: currentColor; }
+  .wire-port { fill: var(--text-faint); }
+
+  .root-pill { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-radius: 8px; background: var(--surface-card); color: var(--text-stronger); font-weight: 600; font-size: 12px; }
+  .root-pill[data-running="true"] > svg { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: .35; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
+
+  .nodes { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+  .node {
+    display: flex; align-items: center; gap: var(--s2); width: 100%; min-width: 0;
+    text-align: left; font: inherit; color: var(--text-primary);
+    padding: 5px var(--s2); border: none; border-radius: 8px;
+    background: var(--surface-item); cursor: pointer; transition: background var(--ds-dur-fast) var(--ds-ease-out);
+  }
+  .node:hover, .node[data-selected="true"] { background: var(--surface-card); }
+  .node[data-selected="true"] .node-line { color: var(--text-primary); }
+  .node:focus-visible { outline: 1px solid var(--border-strong); outline-offset: -1px; }
+  .node[data-status="run"] { --tint: var(--status-warning); }
+  .node[data-status="done"] { --tint: var(--status-success); }
+  .node[data-status="error"] { --tint: var(--status-error); }
+  .node[data-status="held"] { --tint: var(--text-accent); }
+  .node[data-status="unknown"] { --tint: var(--status-unknown); }
+
+  /* 头像是一口圆井：跑的时候是转的加载环，落地后换成填实的结果标记，原地交叉淡入 */
+  .avatar {
+    position: relative; display: flex; align-items: center; justify-content: center; flex: none;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--surface-card); color: var(--text-primary);
+    transition: background-color var(--ds-dur-slow) var(--ds-ease-out), color var(--ds-dur-slow) var(--ds-ease-out);
+  }
+  .avatar svg { width: 12px; height: 12px; stroke-width: 1.7; animation: glyph var(--ds-dur-slow) var(--ds-ease-spring) both; }
+  @keyframes glyph { from { opacity: 0; scale: .5; } to { opacity: 1; scale: 1; } }
+  /* 跑动中用 gogoke 的 working-spinner：2px 环，顶边提亮，0.7s */
+  .node[data-status="run"] .avatar svg { display: none; }
+  .node[data-status="run"] .avatar::after {
+    content: ""; width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.2); border-top-color: var(--text-stronger);
+    animation: working-spin var(--ds-spinner-dur) linear infinite;
+  }
+  @keyframes working-spin { to { transform: rotate(360deg); } }
+  .node[data-status="done"] .avatar,
+  .node[data-status="error"] .avatar { background: var(--tint); color: #0a0d13; }
+
+  .node-name { flex: none; font-weight: 600; font-size: 12.5px; color: var(--text-stronger); }
+  .node-line { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--text-faint); font-size: .92em; }
+  .node-verb { flex: none; font-weight: 500; }
+  .node-detail, .node-say { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .node-detail { font-family: var(--code-font); font-size: 11.5px; }
+  /* 跑着的那一行，文字自己在动：说明它还在变，而不是一个不表达任何东西的转圈 */
+  .node[data-status="run"] .node-detail,
+  .node[data-status="run"] .node-say {
+    color: transparent;
+    background: linear-gradient(90deg, rgba(255,255,255,0.3), rgba(255,255,255,0.95), rgba(255,255,255,0.3));
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+    animation: working-shimmer 2.2s ease-in-out infinite;
+  }
+  @keyframes working-shimmer { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+  .node[data-status="error"] .node-say { color: var(--status-error); }
+  .node-state { display: flex; flex: none; color: var(--text-faint); opacity: .5; transition: opacity var(--ds-dur-fast) var(--ds-ease-out), transform var(--ds-dur-normal) var(--ds-ease-out); }
+  .node:hover .node-state, .node[data-selected="true"] .node-state { opacity: 1; }
+  .node[data-selected="true"] .node-state { transform: rotate(90deg); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .enter, .pop, .avatar svg, .avatar::after, .working-spinner, .working-text, .wire-flow, .root-pill[data-running="true"] > svg, .dots span { animation: none !important; }
+    .node[data-status="run"] .node-detail, .node[data-status="run"] .node-say {
+      animation: none; background: none; -webkit-background-clip: border-box; background-clip: border-box; color: var(--text-faint);
+    }
+    .disclose, .net-progress i { transition: none; }
+  }
+
+  /* gogoke 的运行药丸：转环 + 微光文字 + 计时 */
+  .working {
+    display: inline-flex; align-items: center; gap: 10px; align-self: flex-start;
+    margin: 0 var(--s3) var(--s3); padding: 8px 12px; color: var(--text-muted); font-size: 11px;
+    letter-spacing: .01em; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface-card);
+  }
+  .working-spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.2); border-top-color: var(--text-stronger); animation: working-spin var(--ds-spinner-dur) linear infinite; }
+  .working-text { color: transparent; background: linear-gradient(90deg, rgba(255,255,255,0.3), rgba(255,255,255,0.95), rgba(255,255,255,0.3)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; animation: working-shimmer 2.2s ease-in-out infinite; }
+  .working-timer { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; color: var(--text-stronger); }
+
+  .turn-complete { display: flex; align-items: center; gap: 12px; margin: 2px 0 4px; color: var(--text-muted); font-size: 11px; letter-spacing: .02em; }
+  .turn-complete-line { flex: 1; height: 1px; background: linear-gradient(90deg, transparent, var(--border-strong)); }
+
+  /* ---------- 选中席位的详情：整张图下面，一次一个 ---------- */
+  .panel { border-top: 1px solid var(--border-subtle); padding: var(--s2) var(--s3) var(--s3); color: var(--text-faint); }
+  .panel-head { display: flex; align-items: center; gap: var(--s2); min-height: 24px; }
+  .panel-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text-stronger); font-size: 12.5px; }
+  .panel-title em { font-style: normal; font-weight: 400; color: var(--text-faint); }
+  .panel-time { flex: none; font-size: .85em; font-variant-numeric: tabular-nums; }
+  .steps { display: flex; align-items: center; gap: var(--s1); flex: none; }
+  .step { display: inline-flex; align-items: center; gap: 3px; padding: 1px 5px; border-radius: 4px; background: var(--surface-item); font-size: .85em; font-variant-numeric: tabular-nums; }
+  .step[data-write="true"] { background: var(--surface-card); color: var(--text-muted); }
+  .panel-ask { margin: var(--s1) 0 0; font-size: .92em; line-height: 1.45; color: var(--text-subtle); }
+  .fail { display: flex; align-items: flex-start; gap: 6px; margin: var(--s2) 0 0; padding: 5px 7px; border-radius: 4px; background: color-mix(in srgb, var(--status-error) 9%, transparent); color: var(--status-error); font-size: .92em; line-height: 1.4; }
+  .fail svg { flex: none; margin-top: 2px; }
+  .fail-fix { display: block; margin-top: 2px; color: var(--text-faint); }
+  .log { display: flex; flex-direction: column; gap: 3px; margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--border-subtle); }
+  .log-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .log-verb { flex: none; width: 5.5em; font-size: .92em; font-weight: 500; }
+  .log-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--code-font); font-size: 11px; color: var(--text-muted); }
+  .log-note { font-style: italic; }
+  .report { margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--border-subtle); font-size: .92em; }
+  .report div + div { margin-top: 2px; }
+  .report code { font-family: var(--code-font); font-size: 11px; color: var(--text-muted); }
+
+
+  /* ---------- 决定卡：尺寸与结构逐项照 Beautiful UI RecommendationCard.tsx（ff0f74d），配色换成 gogoke ---------- */
+  .rc { width: min(380px, 100%); overflow: hidden; border-radius: 16px; background: var(--surface-card); box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.34); }
+  .rc-pad { padding: 14px 16px 12px; }
+  .rc-title { font-size: 14px; font-weight: 500; color: var(--text-stronger); }
+  .rc-body { margin: 6px 0 0; min-height: 48px; font-size: 13px; line-height: 1.625; color: var(--text-muted); animation: rc-fade 180ms ease-out both; }
+  @keyframes rc-fade { from { opacity: 0; } to { opacity: 1; } }
+
+  /* 行内实体：16px 单字圆牌 + 名字，装在一枚软药丸里 */
+  .ent { margin: 0 2px; display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; background: var(--surface-item); padding: 1px 6px 1px 3px; vertical-align: middle; box-shadow: 0 0 0 1px var(--border-subtle); }
+  .ent .mono { width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; line-height: 1; color: #fff; background: #e08a3c; }
+  .ent .nm { font-size: 12px; font-weight: 500; color: var(--text-stronger); }
+  /* 行内数值 */
+  .vp { margin: 0 2px; display: inline-flex; align-items: center; border-radius: 999px; padding: 0 6px; vertical-align: middle; font-size: 12px; font-weight: 500; }
+  .vp.neutral { background: var(--surface-item); color: var(--text-muted); box-shadow: 0 0 0 1px var(--border-subtle); }
+  .vp.green { background: color-mix(in srgb, var(--status-success) 16%, transparent); color: var(--status-success); box-shadow: 0 0 0 1px color-mix(in srgb, var(--status-success) 28%, transparent); }
+
+  /* 三格强度条：填到第 n 格用该选项的色，其余是线色 */
+  .meter { display: inline-flex; align-items: flex-end; gap: 2px; }
+  .meter i { width: 4px; height: 10px; border-radius: 999px; background: var(--border-strong); transition: background-color 300ms var(--ds-ease-out); }
+
+  /* 其他选项抽屉：卡里新开的一段 */
+  .rc-drawer { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 300ms var(--ds-ease-out), opacity 300ms var(--ds-ease-out); }
+  .rc-drawer.on { grid-template-rows: 1fr; opacity: 1; }
+  .rc-drawer > div { overflow: hidden; }
+  .rc-drawer-inner { border-top: 1px solid var(--border-subtle); padding: 8px; }
+  .rc-drawer-label { padding: 0 6px 4px; font-size: 11px; font-weight: 500; color: var(--text-dim); }
+  .rc-alt { display: flex; width: 100%; align-items: center; gap: 10px; border: 0; background: none; font: inherit; color: var(--text-stronger); text-align: left; border-radius: 8px; padding: 6px; cursor: pointer; transition: background 100ms var(--ds-ease-out); }
+  .rc-alt:hover, .rc-alt:focus-visible { background: var(--surface-item); outline: none; }
+  .rc-alt-short { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+  .rc-alt-label { flex: none; font-size: 11px; color: var(--text-dim); }
+
+  .rc-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px 14px; }
+  .rc-foot .lvl { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; color: var(--text-muted); }
+  .rc-foot .acts { display: flex; align-items: center; gap: 8px; margin-right: -2px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 27px; padding: 0 12px; border-radius: 999px; border: 0;
+    font: inherit; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer;
+    transition: transform 150ms ease-out, background-color 150ms ease-out, opacity 150ms ease-out;
+  }
+  .btn:active { transform: scale(.96); }
+  .btn[disabled] { opacity: .5; pointer-events: none; }
+  .btn.secondary { background: var(--surface-card); color: var(--text-stronger); box-shadow: 0 0 0 1px var(--border-strong); }
+  .btn.secondary:hover, .btn.secondary[aria-expanded="true"] { background: var(--surface-item); }
+  .btn.accent { background: rgba(77, 153, 255, 0.95); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,0.14); }
+  .btn.accent:hover { background: rgba(77, 153, 255, 1); }
+  .btn.primary { background: var(--text-stronger); color: #0a0d13; box-shadow: inset 0 1px 0 rgba(255,255,255,0.14); }
+  .btn.primary:hover { opacity: .9; }
+  .btn.success { background: var(--status-success); color: #0a0d13; box-shadow: inset 0 1px 0 rgba(255,255,255,0.14); }
+
+  /* ---------- 主控给出的卡片 ---------- */
+  .card { border: 1px solid var(--border-strong); border-radius: 10px; padding: 10px 12px; }
+  .card.gate { border-left: 2px solid var(--status-warning); }
+  .card.accept { border-left: 2px solid var(--status-success); }
+  .card .gt { color: var(--text-stronger); font-size: 12.5px; font-weight: 600; }
+  .card .gb { color: var(--text-subtle); font-size: 11.5px; margin-top: 3px; }
+  .card .ga { display: flex; gap: 6px; margin-top: 9px; flex-wrap: wrap; }
+  .card .ga button {
+    font: inherit; font-size: 11.5px; color: var(--text-stronger);
+    background: var(--surface-control); border: 1px solid var(--border-strong);
+    border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: background var(--ds-dur-fast) var(--ds-ease-out);
+  }
+  .card .ga button:hover { background: var(--surface-control-hover); }
+
+  .state.run { color: var(--status-warning); }
+  .state.done { color: var(--status-success); }
+  .state.acc { color: var(--text-accent); }
+
+  .composer { margin-top: 10px; border: 1px solid var(--border-strong); border-radius: 10px; padding: 9px 11px; color: var(--text-dim); font-size: 12px; display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .composer .to { color: var(--text-muted); }
+
+  .legend { margin-top: 22px; color: var(--text-faint); font-size: 11.5px; }
+  .legend b { color: var(--text-muted); font-weight: 500; }
+  .legend p { margin: 0 0 6px; }
+
+  @media (max-width: 640px) {
+    .graph { grid-template-columns: 1fr; column-gap: 0; }
+    .graph-root, .wires { display: none; }
+    .node-detail { font-size: 11px; }
+  }
+</style>
+
+<div class="page">
+  <div class="intro">
+    <h1>一次完整的派活</h1>
+    <p>主控对话窗。席位不跟你说话：有问题先交给主控，主控自己答或者派人去答，只有主控定不了的才会来问你。最底下那块永远是"正在进行"，主控这一轮说的话和给的选择都堆在它上面。</p>
+  </div>
+
+  <div class="bar">
+    <button type="button" id="play" aria-pressed="true">暂停</button>
+    <button type="button" id="restart">重播</button>
+    <span class="lab" style="margin-left:6px">速度</span>
+    <button type="button" class="spd" data-s="1" aria-pressed="true">1×</button>
+    <button type="button" class="spd" data-s="2" aria-pressed="false">2×</button>
+    <button type="button" class="spd" data-s="4" aria-pressed="false">4×</button>
+    <span class="clock" id="clock">0s</span>
+  </div>
+  <p class="now" id="now"></p>
+
+  <div class="stream" id="stream"></div>
+  <div id="composer-slot"></div>
+
+  <div class="legend">
+    <p><b>行上那一句</b>　跑着的时候是它最近一个动作，文字自己在微微发光；收口之后换成它交回的第一句结论；失败是问题加出路两行。</p>
+    <p><b>颜色只在两处</b>　头像的圆井和连线末端的那个点。线本身保持中性，跑着的线上有一条流动的虚线。</p>
+    <p><b>进度条</b>　已收口席位占这一批的份额，一个席位落地才走一格。</p>
+    <p><b>点一行</b>　整张图下面开一块：派发原文、工具计数、逐步动作、交回的材料。一次只开一个。</p>
+  </div>
+</div>
+<script>
+(function () {
+  var ICON = {
+    run: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round"/></svg>',
+    done: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" opacity=".22"/><path d="M8 12.4l2.6 2.6L16.2 9.4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
+    error: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" opacity=".22"/><path d="M9 9l6 6M15 9l-6 6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
+    held: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h8M13 8l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    unknown: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/></svg>'
+  };
+  var CHEV = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>';
+  var CARET = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>';
+  var BOT = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4M9 14h.01M15 14h.01"/></svg>';
+  var ALERT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg>';
+  var WORD = { run: "运行中", done: "已收口", error: "失败", held: "等主控处理", unknown: "待核对" };
+
+  var stream = document.getElementById("stream");
+  var slot = document.getElementById("composer-slot");
+  var nowLine = document.getElementById("now");
+  var clockEl = document.getElementById("clock");
+
+  var tasks = [];           // {id,name,status,task,log:[],report,startedAt,endedAt,note}
+  var selected = null;
+  var net = null, nodesEl = null, graphEl = null, rootPill = null, panelEl = null, composerEl = null, typingNode = null;
+  var elapsed = 0, ticker = null, speed = 1, playing = true, waitingForYou = false;
+  var queue = [], qi = 0, timer = null;
+
+  function el(tag, cls, html) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (html != null) n.innerHTML = html;
+    return n;
+  }
+  function label(sec) {
+    if (sec < 60) return sec + "s";
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return s ? m + "m " + s + "s" : m + "m";
+  }
+  function say(t) { nowLine.textContent = t; }
+  function get(id) { for (var i = 0; i < tasks.length; i++) if (tasks[i].id === id) return tasks[i]; return null; }
+  function above(node) {
+    if (net && net.parentNode === stream) stream.insertBefore(node, net);
+    else stream.appendChild(node);
+    return node;
+  }
+
+  /* ---- 一条失败拆成「出了什么事」和「怎么办」 ---- */
+  function failure(text) {
+    var m = /^([\s\S]*?[。．.;；!！?？])\s*([\s\S]+)$/.exec(String(text || "").trim());
+    if (!m) return { what: text, fix: null };
+    return { what: m[1], fix: m[2] };
+  }
+  /* ---- 报告的第一句有内容的话，就是这一行要显示的结论 ---- */
+  function gist(report) {
+    if (!report) return null;
+    var lines = report.split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].replace(/^[-*+]\s+/, "").trim();
+      if (line) return line;
+    }
+    return null;
+  }
+  /* ---- 工具计数：读了几次、改了几次 ---- */
+  function tally(log) {
+    var order = [], counts = {};
+    log.forEach(function (item) {
+      if (item.kind !== "tool") return;
+      if (!(item.verb in counts)) { counts[item.verb] = 0; order.push(item.verb); }
+      counts[item.verb] += 1;
+    });
+    return order.map(function (v) { return { verb: v, count: counts[v], write: v === "改" || v === "写" || v === "提交" }; });
+  }
+  function actionCount(t) { return t.log.filter(function (i) { return i.kind === "tool"; }).length; }
+
+  /* ---------- 编组卡 ---------- */
+  function makeNet() {
+    net = el("div", "net open enter");
+    net.innerHTML =
+      '<button class="net-head" type="button">' +
+        '<span class="net-title">' + BOT + "正在进行</span>" +
+        '<span class="net-counts"></span>' +
+        '<span class="net-summary"></span>' +
+        '<span class="net-state net-caret">' + CARET + "</span>" +
+      "</button>" +
+      '<div class="net-progress"><i></i></div>' +
+      '<div class="disclose on net-body"><div><div class="graph">' +
+        '<div class="graph-root"><span class="root-pill" data-running="true">' + BOT + " 主控</span></div>" +
+        '<svg class="wires" aria-hidden></svg>' +
+        '<div class="nodes"></div>' +
+      "</div></div></div>" +
+      '<div class="disclose panel-wrap"><div></div></div>' +
+      '<div class="working-slot"></div>';
+    net.querySelector(".net-head").addEventListener("click", function () {
+      net.classList.toggle("open");
+      net.querySelector(".net-body").classList.toggle("on", net.classList.contains("open"));
+      if (!net.classList.contains("open")) net.querySelector(".panel-wrap").classList.remove("on");
+      else if (selected) net.querySelector(".panel-wrap").classList.add("on");
+      requestAnimationFrame(wires);
+    });
+    nodesEl = net.querySelector(".nodes");
+    graphEl = net.querySelector(".graph");
+    rootPill = net.querySelector(".root-pill");
+    stream.appendChild(net);
+    render();
+  }
+
+  function addTask(id, name, task) {
+    tasks.push({ id: id, name: name, status: "run", task: task, log: [], report: null, startedAt: elapsed, endedAt: null, note: "已派发，正在启动" });
+    render();
+  }
+  function act(id, verb, detail) {
+    var t = get(id); if (!t) return;
+    t.log.push({ kind: "tool", verb: verb, detail: detail || "" });
+    t.note = null;
+    render();
+  }
+  function note(id, text) {
+    var t = get(id); if (!t) return;
+    t.log.push({ kind: "note", text: text });
+    t.note = text;
+    render();
+  }
+  function status(id, s, extra) {
+    var t = get(id); if (!t) return;
+    extra = extra || {};
+    t.status = s;
+    if (extra.note !== undefined) t.note = extra.note;
+    if (extra.report) t.report = extra.report;
+    if (extra.error) t.error = extra.error;
+    if (s !== "run") t.endedAt = elapsed;
+    render();
+  }
+
+  /* ---------- 渲染 ---------- */
+  function render() {
+    if (!net) return;
+    var run = 0, done = 0, failed = 0, held = 0, unknown = 0, actions = 0, settled = 0;
+    tasks.forEach(function (t) {
+      actions += actionCount(t);
+      if (t.status === "run") run++;
+      else if (t.status === "done") { done++; settled++; }
+      else if (t.status === "error") { failed++; settled++; }
+      else if (t.status === "held") held++;
+      else unknown++;
+    });
+    var counts = [];
+    if (run) counts.push(run + " 处理中");
+    if (done) counts.push(done + " 改动就绪");
+    if (failed) counts.push(failed + " 失败");
+    if (held) counts.push(held + " 等主控处理");
+    if (unknown) counts.push(unknown + " 待核对");
+    net.querySelector(".net-counts").textContent = counts.join(" · ");
+    net.querySelector(".net-summary").textContent =
+      (actions ? actions + " 动作 · " : "") + label(elapsed);
+    var fill = net.querySelector(".net-progress i");
+    fill.style.transform = "scaleX(" + (tasks.length ? settled / tasks.length : 0) + ")";
+    net.querySelector(".net-progress").setAttribute("aria-label", settled + " / " + tasks.length + " 个席位已收口");
+    rootPill.setAttribute("data-running", String(run > 0));
+
+    nodesEl.innerHTML = "";
+    tasks.forEach(function (t) {
+      var live = t.status === "run" ? t.log[t.log.length - 1] : null;
+      var line;
+      if (live && live.kind === "tool") {
+        line = '<span class="node-verb">' + live.verb + "</span>" +
+               (live.detail ? '<span class="node-detail">' + live.detail + "</span>" : "");
+      } else if (t.status === "error" && t.error) {
+        line = '<span class="node-say bad">' + failure(t.error).what + "</span>";
+      } else if (t.status === "done" && t.report) {
+        line = '<span class="node-say">' + gist(t.report) + "</span>";
+      } else {
+        line = '<span class="node-say' + (t.status === "held" ? "" : "") + '">' + (t.note || (live && live.text) || t.task) + "</span>";
+      }
+      var node = el("button", "node");
+      node.type = "button";
+      node.setAttribute("data-selected", String(selected === t.id));
+      node.setAttribute("aria-expanded", String(selected === t.id));
+      node.setAttribute("title", t.task);
+      node.setAttribute("data-status", t.status);
+      node.innerHTML =
+        '<span class="avatar">' + ICON[t.status] + "</span>" +
+        '<span class="node-name">' + t.name + "</span>" +
+        '<span class="node-line">' + line + "</span>" +
+        '<span class="node-state">' + CHEV + "</span>";
+      node.addEventListener("click", function () {
+        selected = selected === t.id ? null : t.id;
+        render();
+        requestAnimationFrame(wires);
+      });
+      nodesEl.appendChild(node);
+    });
+
+    // 详情面板：整张图下面，一次只开一个
+    var wrap = net.querySelector(".panel-wrap");
+    var host = wrap.firstElementChild;
+    var sel = selected ? get(selected) : null;
+    wrap.classList.toggle("on", Boolean(sel) && net.classList.contains("open"));
+    if (!sel) { host.innerHTML = ""; panelEl = null; }
+    if (sel) {
+      var steps = tally(sel.log);
+      var time = label((sel.endedAt == null ? elapsed : sel.endedAt) - sel.startedAt);
+      panelEl = el("div", "panel");
+      panelEl.innerHTML =
+        '<div class="panel-head">' +
+          '<span class="panel-title">' + sel.name + " <em>" + WORD[sel.status] + "</em></span>" +
+          '<span class="steps">' + steps.map(function (s) {
+            return '<span class="step" data-write="' + s.write + '">' + s.verb + " " + s.count + "</span>";
+          }).join("") + "</span>" +
+          '<span class="panel-time">' + time + "</span>" +
+        "</div>" +
+        '<p class="panel-ask">' + sel.task + "</p>" +
+        (sel.status === "error" && sel.error ? failHtml(sel.error) : "") +
+        '<div class="log">' + sel.log.map(function (i) {
+          return i.kind === "tool"
+            ? '<div class="log-line"><span class="log-verb">' + i.verb + "</span>" +
+              (i.detail ? '<span class="log-detail">' + i.detail + "</span>" : "") + "</div>"
+            : '<div class="log-line log-note">' + i.text + "</div>";
+        }).join("") + "</div>" +
+        (sel.report ? '<div class="report">' + sel.report.split("\n").map(function (l) { return "<div>" + l + "</div>"; }).join("") + "</div>" : "");
+      host.innerHTML = "";
+      host.appendChild(panelEl);
+    }
+    var slotEl = net.querySelector(".working-slot");
+    var runner = null;
+    for (var i = 0; i < tasks.length; i++) if (tasks[i].status === "run") { runner = tasks[i]; break; }
+    if (runner && net.classList.contains("open")) {
+      var last = runner.log[runner.log.length - 1];
+      var what = last && last.kind === "tool" ? runner.name + " 正在" + last.verb + " " + (last.detail || "") : runner.name + " 正在处理";
+      slotEl.innerHTML = '<div class="working"><span class="working-spinner"></span>' +
+        '<span class="working-text">' + what + "</span>" +
+        '<span class="working-timer">' + label(elapsed - runner.startedAt) + "</span></div>";
+    } else {
+      slotEl.innerHTML = "";
+    }
+    requestAnimationFrame(wires);
+  }
+
+  function failHtml(error) {
+    var f = failure(error);
+    return '<p class="fail">' + ALERT + '<span>' + f.what + (f.fix ? '<span class="fail-fix">' + f.fix + "</span>" : "") + "</span></p>";
+  }
+
+  /* ---------- 连线：量出来的，不是算出来的 ---------- */
+  function wires() {
+    if (!net || !net.classList.contains("open") || !graphEl) return;
+    var svg = net.querySelector(".wires");
+    var box = graphEl.getBoundingClientRect(), from = rootPill.getBoundingClientRect();
+    if (!box.width) return;
+    svg.setAttribute("viewBox", "0 0 " + box.width + " " + box.height);
+    svg.style.width = box.width + "px"; svg.style.height = box.height + "px";
+    var x1 = from.right - box.left, y1 = from.top + from.height / 2 - box.top, out = "";
+    Array.prototype.forEach.call(nodesEl.children, function (node, i) {
+      var t = tasks[i]; if (!t) return;
+      var to = node.getBoundingClientRect();
+      var x2 = to.left - box.left + 2, y2 = to.top + to.height / 2 - box.top;
+      var bend = Math.max((x2 - x1) / 2, 8);
+      var d = "M " + x1 + " " + y1 + " C " + (x1 + bend) + " " + y1 + ", " + (x2 - bend) + " " + y2 + ", " + x2 + " " + y2;
+      out += '<g><path class="wire" d="' + d + '"></path>' +
+             (t.status === "run" ? '<path class="wire-flow" d="' + d + '"></path>' : "") +
+             '<circle class="wire-end" cx="' + x2 + '" cy="' + y2 + '" r="2"></circle></g>';
+    });
+    if (tasks.length) out += '<circle class="wire-port" cx="' + x1 + '" cy="' + y1 + '" r="2.5"></circle>';
+    svg.innerHTML = out;
+  }
+
+  /* ---------- 主控的输出 ---------- */
+  function userMsg(t) { return above(el("div", "msg user enter", '<div class="body">' + t + "</div>")); }
+  function botMsg(t) { return above(el("div", "msg enter", '<div class="whoami">主控</div><div class="body">' + t + "</div>")); }
+  function typing() { return above(el("div", "msg enter", '<div class="whoami">主控</div><div class="body dots" style="color:var(--text-dim)"><span>*</span><span>*</span><span>*</span></div>')); }
+  function composer(left, right) {
+    if (!composerEl) { composerEl = el("div", "composer"); slot.appendChild(composerEl); }
+    composerEl.innerHTML = '<span class="to">' + left + "</span><span>" + (right || "") + "</span>";
+  }
+
+  function controllerAsks() {
+    waitingForYou = true; pause(true);
+    say("停在这里等你。审计把问题交给主控，主控自己定不了，才来问你 —— 卡挂在主控名下。");
+
+    /* 选项形状照 RecommendationCard 的 RecommendationOption：body / short / signal / tone / label / cta */
+    var OPTIONS = [
+      { key: "card",
+        body: '按 <span class="ent"><span class="mono" style="background:#5b8def">规</span><span class="nm">项目视觉规范</span></span> 的写法，价格与标题左端对齐，影响 <span class="vp green">3 个文件</span>',
+        short: "卡片左边缘 · 规范里写过", signal: 3, tone: "var(--status-success)", label: "有明确依据", cta: "就按这个", ctaVariant: "accent" },
+      { key: "img",
+        body: '价格跟随主图起点，与卡片留白错开。规范里没写过这一种，<span class="vp neutral">需要你定</span>',
+        short: "图片左边缘", signal: 2, tone: "var(--status-warning)", label: "需要你定", cta: "改用这个", ctaVariant: "primary" },
+      { key: "keep",
+        body: '这一轮先不动对齐，只改行距，价格位置留到下一轮再说。',
+        short: "先不动对齐", signal: 0, tone: "var(--status-unknown)", label: "没有依据", cta: "先不动", ctaVariant: "primary" }
+    ];
+    var selected = 0, open = false, accepted = false;
+
+    var card = el("div", "msg pop");
+    card.innerHTML = '<div class="whoami">主控</div><div class="rc"></div>';
+    var box = card.querySelector(".rc");
+    above(card);
+
+    function meter(signal, tone) {
+      var out = '<span class="meter">';
+      for (var i = 0; i < 3; i++) out += '<i style="background:' + (i < signal ? tone : "var(--border-strong)") + '"></i>';
+      return out + "</span>";
+    }
+
+    function draw() {
+      var a = OPTIONS[selected];
+      var others = OPTIONS.map(function (o, i) { return { o: o, i: i }; }).filter(function (x) { return x.i !== selected; });
+      box.innerHTML =
+        '<div class="rc-pad">' +
+          '<span class="rc-title">价格对齐按哪个基准？</span>' +
+          '<p class="rc-body">' + a.body + "</p>" +
+        "</div>" +
+        '<div class="rc-drawer' + (open ? " on" : "") + '"><div><div class="rc-drawer-inner">' +
+          '<p class="rc-drawer-label">其他选项</p>' +
+          others.map(function (x) {
+            return '<button type="button" class="rc-alt" data-i="' + x.i + '">' + meter(x.o.signal, x.o.tone) +
+              '<span class="rc-alt-short">' + x.o.short + "</span>" +
+              '<span class="rc-alt-label">' + x.o.label + "</span></button>";
+          }).join("") +
+        "</div></div></div>" +
+        '<div class="rc-foot">' +
+          '<span class="lvl">' + meter(a.signal, a.tone) + a.label + "</span>" +
+          '<span class="acts">' +
+            '<button type="button" class="btn secondary alts" aria-expanded="' + open + '">其他选项</button>' +
+            '<button type="button" class="btn ' + (accepted ? "success" : a.ctaVariant) + ' take"' + (accepted ? " disabled" : "") + ">" +
+              (accepted ? "已采纳" : a.cta) + "</button>" +
+          "</span>" +
+        "</div>";
+
+      box.querySelector(".alts").addEventListener("click", function () { open = !open; draw(); });
+      box.querySelectorAll(".rc-alt").forEach(function (b) {
+        b.addEventListener("click", function () { selected = Number(b.getAttribute("data-i")); accepted = false; draw(); });
+      });
+      box.querySelector(".take").addEventListener("click", function () {
+        accepted = true; open = false; draw();
+        status("audit", "run", { note: null });
+        act("audit", "读", "src/card.css");
+        waitingForYou = false; pause(false); next();
+      });
+    }
+    draw();
+  }
+
+  function gate() {
+    waitingForYou = true; pause(true);
+    say("停在这里等你。段落对账点是房间的闸门，自动接力已暂停。");
+    var g = el("div", "card gate pop");
+    g.innerHTML =
+      '<div class="gt">到达段落对账点</div>' +
+      '<div class="gb">自动接力已暂停。目标锚点：商品卡信息层级清楚，价格逻辑不变。checkpoint <code>8f21a4</code> → HEAD <code>e4f5a67</code>，净改动 3 个文件。</div>' +
+      '<div class="ga"><button type="button" data-g="on">交给审计核对</button><button type="button" data-g="stop">先停下</button></div>';
+    above(g);
+    g.querySelectorAll("button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (b.getAttribute("data-g") === "stop") {
+          g.innerHTML = '<div class="gt">已请求停止</div><div class="gb">在途回合可以收尾，不会再发起新接力。已产生的改动不会自动回退。</div>' +
+            '<div class="ga"><button type="button">还是继续</button></div>';
+          g.querySelector("button").addEventListener("click", function () {
+            g.querySelector(".ga").remove(); waitingForYou = false; pause(false); next();
+          });
+          return;
+        }
+        g.querySelector(".ga").remove();
+        g.querySelector(".gb").innerHTML += "　你选了继续。";
+        waitingForYou = false; pause(false); next();
+      });
+    });
+  }
+
+  function finale() {
+    net.classList.remove("open");
+    net.querySelector(".net-title").innerHTML = BOT + "商品卡太挤，改清楚";
+    net.querySelector(".net-counts").innerHTML = '<span class="state done">可验收</span> · 对账已过，独立性 PASS，verify ok';
+    var accept = el("div", "msg pop");
+    accept.innerHTML = '<div class="whoami">主控</div><div class="card accept">' +
+      '<div class="gt">这一段做完了，等你验收</div>' +
+      '<div class="gb">成果：商品卡排版，改了 3 个文件<span style="color:var(--text-dim)"> · 版本 <code>e4f5a67</code></span>。' +
+      '审计独立性 PASS（施工 codex / 审计 claude，provider family 不同）；verify ok 由房间记录，不采用审计席自述。</div>' +
+      '<div class="ga"><button type="button">验收这件</button><button type="button">看改动</button><button type="button">还要再改</button></div></div>';
+    above(accept);
+    accept.querySelectorAll("button")[0].addEventListener("click", function () {
+      accept.querySelector(".ga").remove();
+      accept.querySelector(".gt").textContent = "已验收";
+      accept.querySelector(".gb").innerHTML = "今天 " + new Date().toTimeString().slice(0, 5) + " 由你验收。这段目标不再接受派发；后续改动要新开目标。";
+      net.querySelector(".net-counts").innerHTML = '<span class="state acc">已验收</span> · 版本 <code>e4f5a67</code>';
+      say("走完了。这件事现在就是列表里的一行。点上面的重播再看一遍。");
+    });
+    say("归一：三条线都收回主控，正在进行折成一行，状态变成可验收。");
+  }
+
+  /* ---------- 时间线 ---------- */
+  function script() {
+    return [
+      [300, function () { say("你把要求说给主控。"); userMsg("商品卡太挤了，帮我改清楚一点，价格别动。"); composer("发给 主控", ""); }],
+      [900, function () { typingNode = typing(); }],
+      [1500, function () {
+        if (typingNode) { typingNode.remove(); typingNode = null; }
+        botMsg("先让施工改卡片排版，审计核对视觉规范，秘书查这块历史上改过几次。价格逻辑我标成禁止修改。");
+        say("主控在回复里 @ 了三个席位 —— 派活就是这一步。");
+      }],
+      [700, function () { makeNet(); say("最底下这块永远是正在进行；主控之后说的话都堆在它上面。"); }],
+      [450, function () { addTask("build", "施工 Codex", "商品卡信息层级改清楚；价格逻辑禁止修改。"); say("发散：一条 @ 派给三个席位，就分出三条线。"); }],
+      [380, function () { addTask("sec", "秘书 Grok", "查商品卡样式历史上改过几次、分别因为什么。只读。"); }],
+      [380, function () { addTask("audit", "审计 Claude", "按视觉规范核对施工交回的版本，独立判断。"); }],
+      [800, function () { act("build", "读", "src/card.tsx"); }],
+      [650, function () { act("sec", "搜", "卡片 间距"); }],
+      [650, function () { act("audit", "读", "docs/ui-rules.md"); }],
+      [750, function () {
+        note("sec", "问历史记录放在哪，已交给主控");
+        status("sec", "held");
+        say("秘书有问题了 —— 它问的是主控，不是你。");
+      }],
+      [900, function () {
+        botMsg('秘书问历史记录在哪，我直接告诉它了：<code>docs/history/</code>，不用你管。');
+        status("sec", "run", { note: null });
+        act("sec", "读", "docs/history/card-changes.md");
+        say("主控自己答得上来的就自己答了，你这边只看到一句说明。");
+      }],
+      [800, function () { act("build", "改", "src/card.css"); }],
+      [850, function () {
+        note("audit", "核对卡在价格基准，已交给主控");
+        status("audit", "held");
+        say("审计也有问题，同样先交给主控 —— 这次主控自己定不了。");
+      }],
+      [600, controllerAsks],
+      [700, function () { act("build", "改", "src/grid.css"); }],
+      [700, function () { act("sec", "读", "docs/history/2025-11-card.md"); }],
+      [800, function () {
+        status("sec", "unknown", { note: "投递结果待核对，不自动重发" });
+        say("秘书那条没收到回执 —— 如实标成待核对，不计入任何一边。");
+      }],
+      [1000, function () {
+        act("build", "提交", "a1b2c3d 商品卡：行距与价格位置");
+        act("build", "提交", "e4f5a67 卡片栅格在窄屏换行");
+        status("build", "done", { report:
+          "商品卡行距和价格位置已改，价格逻辑一行未动。\n" +
+          "commit a1b2c3d 商品卡：行距与价格位置\n" +
+          "commit e4f5a67 卡片栅格在窄屏换行\n" +
+          "涉及文件 src/card.tsx  src/card.css  src/grid.css\n" +
+          "交给下一席位的是这些仓库引用，不是这段话" });
+        above(el("div", "turn-complete enter", '<span class="turn-complete-label">施工这一轮结束</span><span class="turn-complete-line"></span>'));
+        say("施工收口。它那一行现在显示的是它交回的第一句结论，不是状态词。");
+      }],
+      [900, gate],
+      [700, function () { act("audit", "读", "e4f5a67 的净改动"); }],
+      [1100, function () {
+        act("audit", "跑", "npm test -- card");
+        status("audit", "done", { report:
+          "三个文件的改动与视觉规范一致，价格逻辑未被改动。\n" +
+          "被审对象 e4f5a67，结论绑定这个版本\n" +
+          "独立性由房间按 provider family 记录，不采用审计席自述" });
+      }],
+      [900, finale]
+    ];
+  }
+
+  function next() {
+    if (qi >= queue.length) return;
+    var step = queue[qi++];
+    timer = setTimeout(function () {
+      step[1]();
+      if (!waitingForYou) next();
+    }, step[0] / speed);
+  }
+  function pause(on) {
+    playing = !on;
+    document.getElementById("play").textContent = playing ? "暂停" : "继续";
+    if (on) { clearTimeout(timer); clearInterval(ticker); ticker = null; }
+    else if (!ticker) ticker = setInterval(tick, 1000 / speed);
+  }
+  function tick() { elapsed += 1; clockEl.textContent = label(elapsed); if (net) render(); }
+
+  function start() {
+    clearTimeout(timer); clearInterval(ticker); ticker = null;
+    stream.innerHTML = ""; slot.innerHTML = "";
+    tasks = []; selected = null;
+    net = nodesEl = graphEl = rootPill = panelEl = composerEl = typingNode = null;
+    elapsed = 0; clockEl.textContent = "0s"; waitingForYou = false;
+    queue = script(); qi = 0; playing = true;
+    document.getElementById("play").textContent = "暂停";
+    ticker = setInterval(tick, 1000 / speed);
+    next();
+  }
+
+  document.getElementById("play").addEventListener("click", function () {
+    if (waitingForYou) { say("先在上面点一下，流程才会继续。"); return; }
+    pause(playing);
+    if (playing) next();
+  });
+  document.getElementById("restart").addEventListener("click", start);
+  document.querySelectorAll(".spd").forEach(function (b) {
+    b.addEventListener("click", function () {
+      speed = Number(b.getAttribute("data-s"));
+      document.querySelectorAll(".spd").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+      if (ticker) { clearInterval(ticker); ticker = setInterval(tick, 1000 / speed); }
+    });
+  });
+  window.addEventListener("resize", wires);
+  start();
+})();
+
+</script>

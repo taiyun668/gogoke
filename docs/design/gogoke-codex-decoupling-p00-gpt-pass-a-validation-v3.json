@@ -1,0 +1,42 @@
+{
+  "schema": "gogoke.p00.pass-a.validation.v3.4-c2-f01",
+  "mode": "AUTHOR_SIDE_PASS_C_NOT_INDEPENDENT_ACCEPTANCE",
+  "result": "PASS_PINNED_SYMBOL_JOINS_AND_MOCKED_CALLER_OBSERVATIONS",
+  "source_basis": "bc665a852833952b76d9508401193bedd2198436",
+  "current_replay": {
+    "symbol_check_exit": 0,
+    "selection_rows": 14,
+    "concrete_tokens": 34,
+    "semantic_labels": 9,
+    "caller_edges": 15,
+    "baseline_errors": 0,
+    "symbol_negatives_rejected": 14,
+    "fixture_exit": 0,
+    "source_mock_cases": 31,
+    "future_model_cases": 0,
+    "repeat_symbol_byte_equal": true,
+    "repeat_fixture_byte_equal": true,
+    "source_tracked_identity_checked": 2806,
+    "source_fsck_exit": 0
+  },
+  "results": {
+    "symbols": "docs/design/p00-pass-c-c2-f01-r3/symbol-results.json",
+    "source_mocks": "docs/design/p00-pass-c-c2-f01-r3/fixture-results.json",
+    "old_checker_on_new_index": "docs/design/p00-pass-c-c2-f01-r3/verify-repair-results.json",
+    "commands": "docs/design/p00-pass-c-c2-f01-r3/execution.json"
+  },
+  "prior_r2_validation": {
+    "path": "docs/design/gogoke-codex-decoupling-p00-gpt-pass-a-validation-v3.json",
+    "commit": "5d15a11ecd33763df31172dbdd3426f9f740ab0c",
+    "sha256": "fcad19232b81db3a3540ede5f1b819f707093f117b0f108591946f2f0a1a30a6"
+  },
+  "stage1_rerun_this_revision": false,
+  "census_rerun_this_revision": false,
+  "r2_49_fixture_cases_rerun_this_revision": false,
+  "product_test_suite_run": false,
+  "runtime_verified": false,
+  "independent_focused_review_completed_on_current_payload": false,
+  "source_callgraph_machine_proof": false,
+  "scope": "31 cases observe fixed source bodies under fake dependencies and overlap prior tests. They are not 31 production acceptance tests. Prior R2 evidence remains fixed; no count-addition claim.",
+  "failure_policy": "Initial document generation SyntaxError exit1 retained, then corrected. No prior failed record removed. Other exploratory nonzero results are separately classified in execution.json."
+}

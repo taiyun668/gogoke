@@ -1,0 +1,829 @@
+{
+  "schema": "gogoke.p00.pass-c.reuse-contracts.r2",
+  "source_basis": "bc665a852833952b76d9508401193bedd2198436",
+  "scope": "EVIDENCE_CORRECTION_AND_REQUIRED_CONTRACT; NOT_IMPLEMENTATION_OR_CODE_ENTRY_APPROVAL",
+  "finding_ids": [
+    "B01",
+    "B02",
+    "B03"
+  ],
+  "selection_matrix": [
+    [
+      "packages/seat-runtime/src/seat.ts",
+      "Seat/SeatOwner/SeatDeliveryTracker/input validators",
+      "INTERNALIZE_CONTRACT_OR_PURE_MECHANISM",
+      "No root/scheduler adoption; in-memory tracker is not durable Delivery authority",
+      "WP01/WP04"
+    ],
+    [
+      "packages/seat-runtime/src/seat-runtime.ts",
+      "parsers/buildIsolatedEnv/assertSeatHomeSafe/PersistentCodexSeat",
+      "RETAIN_PROVIDER_DIFFERENCES; REPLACE_HOST_AND_STORAGE_BINDINGS",
+      "Direct imports close.ts,persistence.ts,seat.ts; no constructor/start/close adoption before RT26-30/W21-28/P20-23/Q13-14 approval",
+      "WP02/WP03/WP04"
+    ],
+    [
+      "packages/seat-runtime/src/claude-seat.ts",
+      "PersistentClaudeSeat/parsers",
+      "SELECTIVE_PROVIDER_ADAPTER_ONLY",
+      "Imports seat-runtime.ts for home safety and shared persistence/close; its env builder and owner timestamps differ",
+      "WP03/WP04"
+    ],
+    [
+      "packages/seat-runtime/src/grok-acp-seat.ts",
+      "PersistentGrokSeat/parsers",
+      "SELECTIVE_PROVIDER_ADAPTER_ONLY",
+      "Imports seat-runtime.ts for environment builder; GROK_HOME distinct; shared persistence/close",
+      "WP03/WP04"
+    ],
+    [
+      "packages/seat-runtime/src/persistence.ts",
+      "atomicWriteFile/atomicWriteJson/appendJsonLineAtomic",
+      "REPLACE_AUTHORITY_BOUNDARY_BEFORE_REUSE",
+      "Mechanism does not provide cross-writer lock, read-modify-write serialization or transaction; see W28",
+      "WP02"
+    ],
+    [
+      "packages/seat-runtime/src/close.ts",
+      "closeSeatProcess/terminateProcessTree/queryProcessStartTicks/mayKillProcess",
+      "REUSE_ONLY_UNDER_NEW_HOST_CONTRACT",
+      "Logical returned result is not verified descendant exit; retain residual identity",
+      "WP03"
+    ],
+    [
+      "packages/seat-runtime/src/index.ts",
+      "barrel exports",
+      "NO_BLIND_BARREL_IMPORT",
+      "Exports all native Seat implementations plus contracts; choose symbols and recurse dependencies",
+      "WP01/WP03"
+    ],
+    [
+      "packages/seat-runtime/src/demo.ts",
+      "run/cleanup demonstration",
+      "NOT_ADOPTED_HOST",
+      "Numeric returns are diagnostic examples, not product ownership authority",
+      "WP03"
+    ],
+    [
+      "packages/room/src/accounts.ts",
+      "AccountStore/accountEnv/loginEnv/resolveCliLaunch/probeHome/login/logout",
+      "SELECT_SYMBOLS_ONLY; STORE_AND_AUTH_FLOWS_NOT_ADOPTED_AS_IS",
+      "Imports mask.ts and fs/process/OS; explicit credential paths, native side effects, dataRoot/accounts and writes remain inventoried",
+      "WP02/WP09a/WP09b"
+    ],
+    [
+      "packages/room/src/instances.ts",
+      "InstanceStore/ROOM_BOOT_ID/claim/noteProcess/releaseAllFor/remove",
+      "DO_NOT_ADOPT_STORE_OR_BUSY_AUTHORITY",
+      "Imports proc.ts/accounts.ts/mask.ts; empty-on-corruption, unknown-as-absent and fixed .tmp are not public ownership contracts",
+      "WP02/WP03"
+    ],
+    [
+      "packages/room/src/proc.ts",
+      "processStartedAt/isSameProcess",
+      "REFERENCE_ONLY_UNTIL_UNKNOWN_IS_DISTINCT",
+      "execFileSync/10s probes; null can be lookup failure as well as absence; no proof of exited child",
+      "WP03"
+    ],
+    [
+      "packages/room/src/mask.ts",
+      "maskSecrets",
+      "INTERNALIZE_PURE_REDACTION_WITH_TESTS",
+      "No repo imports or writes; regex redaction not an authorization or complete privacy boundary",
+      "WP04/WP09b"
+    ],
+    [
+      "packages/room/src/server.ts",
+      "shutdown/closeAndRelease/safelyCloseSeat/ensureSeat/ensureSeatInner",
+      "NOT_ADOPTED_CALLER_COUNTEREXAMPLES",
+      "Preserve exact call-chain evidence; no Room scheduling/HTTP/server or authority imported",
+      "WP00/WP03"
+    ],
+    [
+      "crates/gogo-{core,store,protocol}/",
+      "standalone Rust kernel/store/protocol",
+      "NOT_ADOPTED_KERNEL_OR_DATABASE",
+      "Selected pure validation/path mechanisms need separate symbol review; no second store/lease/scheduler authority",
+      "WP00/WP01/WP02"
+    ]
+  ],
+  "transitive_imports": [
+    {
+      "source": "packages/seat-runtime/src/index.ts",
+      "import_line": 1,
+      "specifier": "./seat-runtime.ts",
+      "target": "packages/seat-runtime/src/seat-runtime.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/index.ts",
+      "import_line": 8,
+      "specifier": "./grok-acp-seat.ts",
+      "target": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/index.ts",
+      "import_line": 15,
+      "specifier": "./claude-seat.ts",
+      "target": "packages/seat-runtime/src/claude-seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/index.ts",
+      "import_line": 21,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/index.ts",
+      "import_line": 36,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/seat-runtime.ts",
+      "import_line": 10,
+      "specifier": "./close.ts",
+      "target": "packages/seat-runtime/src/close.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/seat-runtime.ts",
+      "import_line": 11,
+      "specifier": "./persistence.ts",
+      "target": "packages/seat-runtime/src/persistence.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/seat-runtime.ts",
+      "import_line": 16,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/seat-runtime.ts",
+      "import_line": 21,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/claude-seat.ts",
+      "import_line": 25,
+      "specifier": "./close.ts",
+      "target": "packages/seat-runtime/src/close.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/claude-seat.ts",
+      "import_line": 26,
+      "specifier": "./persistence.ts",
+      "target": "packages/seat-runtime/src/persistence.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/claude-seat.ts",
+      "import_line": 27,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/claude-seat.ts",
+      "import_line": 32,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/claude-seat.ts",
+      "import_line": 36,
+      "specifier": "./seat-runtime.ts",
+      "target": "packages/seat-runtime/src/seat-runtime.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "import_line": 6,
+      "specifier": "./seat-runtime.ts",
+      "target": "packages/seat-runtime/src/seat-runtime.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "import_line": 7,
+      "specifier": "./close.ts",
+      "target": "packages/seat-runtime/src/close.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "import_line": 8,
+      "specifier": "./persistence.ts",
+      "target": "packages/seat-runtime/src/persistence.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "import_line": 13,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "import_line": 14,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/demo.ts",
+      "import_line": 12,
+      "specifier": "./grok-acp-seat.ts",
+      "target": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/demo.ts",
+      "import_line": 13,
+      "specifier": "./seat-runtime.ts",
+      "target": "packages/seat-runtime/src/seat-runtime.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/seat-runtime/src/demo.ts",
+      "import_line": 14,
+      "specifier": "./seat.ts",
+      "target": "packages/seat-runtime/src/seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 10,
+      "specifier": "./accounts.ts",
+      "target": "packages/room/src/accounts.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 11,
+      "specifier": "./instances.ts",
+      "target": "packages/room/src/instances.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 37,
+      "specifier": "./halt-conditions.ts",
+      "target": "packages/room/src/halt-conditions.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 46,
+      "specifier": "./runtime-context.ts",
+      "target": "packages/room/src/runtime-context.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 47,
+      "specifier": "./room-registry.ts",
+      "target": "packages/room/src/room-registry.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 48,
+      "specifier": "./role-policy.ts",
+      "target": "packages/room/src/role-policy.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 49,
+      "specifier": "./projects.ts",
+      "target": "packages/room/src/projects.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 61,
+      "specifier": "./install.ts",
+      "target": "packages/room/src/install.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 66,
+      "specifier": "./winpath.ts",
+      "target": "packages/room/src/winpath.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 67,
+      "specifier": "./onboard.ts",
+      "target": "packages/room/src/onboard.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 74,
+      "specifier": "./fake-seat.ts",
+      "target": "packages/room/src/fake-seat.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 75,
+      "specifier": "./repository-preview.ts",
+      "target": "packages/room/src/repository-preview.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/server.ts",
+      "import_line": 81,
+      "specifier": "./input-references.ts",
+      "target": "packages/room/src/input-references.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/instances.ts",
+      "import_line": 17,
+      "specifier": "./proc.ts",
+      "target": "packages/room/src/proc.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/instances.ts",
+      "import_line": 18,
+      "specifier": "./accounts.ts",
+      "target": "packages/room/src/accounts.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/instances.ts",
+      "import_line": 68,
+      "specifier": "./mask.ts",
+      "target": "packages/room/src/mask.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/instances.ts",
+      "import_line": 69,
+      "specifier": "./mask.ts",
+      "target": "packages/room/src/mask.ts",
+      "target_tracked": true
+    },
+    {
+      "source": "packages/room/src/accounts.ts",
+      "import_line": 28,
+      "specifier": "./mask.ts",
+      "target": "packages/room/src/mask.ts",
+      "target_tracked": true
+    }
+  ],
+  "persistent_call_sites": [
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 389,
+      "call": "mkdirSync(join(this.home, \"AppData\", \"Local\"), { recursive: true });",
+      "following_lines": "    mkdirSync(join(this.seatRoot, \"prompts\"), { recursive: true });\n\n    const child = spawn(this.codexExecutable, this.codexArguments ?? [\"app-server\", \"--stdio\"], {\n      cwd: this.home,\n      env: buildIsolatedEnv(process.env, this.home),\n      windowsHide: true,\n      stdio: [\"pipe\", \"pipe\", \"pipe\"],"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 390,
+      "call": "mkdirSync(join(this.seatRoot, \"prompts\"), { recursive: true });",
+      "following_lines": "\n    const child = spawn(this.codexExecutable, this.codexArguments ?? [\"app-server\", \"--stdio\"], {\n      cwd: this.home,\n      env: buildIsolatedEnv(process.env, this.home),\n      windowsHide: true,\n      stdio: [\"pipe\", \"pipe\", \"pipe\"],\n    });"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 403,
+      "call": "appendJsonLineAtomic(this.protocolPath, {",
+      "following_lines": "        at: new Date().toISOString(),\n        direction: \"stderr\",\n        chunk,\n      });\n    });\n    this.startTicks = tryQueryProcessStartTicks(child.pid ?? 0);\n    this.exitPromise = new Promise((resolveExit) => {"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 428,
+      "call": "atomicWriteJson(this.ownerPath, owner);",
+      "following_lines": "\n    const initialized = asObject(\n      await this.request(\"initialize\", {\n        clientInfo: {\n          name: \"gogo-seat-runtime\",\n          title: \"GOGO Seat Runtime\",\n          version: \"0.1.0\","
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 480,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"seat-started\",\n      runId: this.runId,\n      seatId: this.seatId,\n      threadId: this.threadId,\n      model: this.model,\n      reasoningEffort: this.reasoningEffort,\n      home: this.home,"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 504,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"seat-settings-updated\",\n      runId: this.runId,\n      seatId: this.seatId,\n      threadId: this.threadId,\n      model,\n      reasoningEffort,\n      updatedAt: new Date().toISOString(),"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 605,
+      "call": "atomicWriteFile(promptPath, prompt);",
+      "following_lines": "    return promptPath;\n  }\n\n  async probeEffectiveHome(): Promise<string> {\n    if (!this.child) throw new Error(\"seat is not running\");\n    const processHandle = `home-probe-${randomUUID()}`;\n    const command ="
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 654,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"seat-stopped\",\n      runId: this.runId,\n      exitCode,\n      signal: result.signal,\n      outcome: result.outcome,\n      stoppedAt: new Date().toISOString(),\n    });"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 662,
+      "call": "atomicWriteJson(join(this.seatRoot, \"state.json\"), {",
+      "following_lines": "      seatId: this.seatId,\n      runId: this.runId,\n      state: exitCode === 0 ? \"stopped\" : \"failed\",\n      exitCode,\n      stoppedAt: new Date().toISOString(),\n    });\n    return exitCode;"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 1034,
+      "call": "appendJsonLineAtomic(this.transcriptPath, { type: \"turn\", runId: this.runId, ...record });",
+      "following_lines": "        this.deliveryTracker.terminal(input.deliveryId, \"completed transcript persisted\", record);\n      }\n    }\n    this.deliveryByTurn.delete(turnId);\n    this.deliveryInputByTurn.delete(turnId);\n    if (this.activeDeliveryId === input.deliveryId) this.activeDeliveryId = null;\n    if (this.activeTurnId === turnId) this.activeTurnId = null;"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 1116,
+      "call": "appendJsonLineAtomic(this.eventsPath, event);",
+      "following_lines": "    if (!this.onEvent) return;\n    try {\n      this.onEvent(event);\n    } catch (error) {\n      appendJsonLineAtomic(this.protocolPath, {\n        at: new Date().toISOString(),\n        runId: this.runId,"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 1121,
+      "call": "appendJsonLineAtomic(this.protocolPath, {",
+      "following_lines": "        at: new Date().toISOString(),\n        runId: this.runId,\n        direction: \"event-callback-error\",\n        error: error instanceof Error ? error.message : String(error),\n      });\n    }\n  }"
+    },
+    {
+      "path": "packages/seat-runtime/src/seat-runtime.ts",
+      "line": 1187,
+      "call": "appendJsonLineAtomic(this.protocolPath, {",
+      "following_lines": "      at: new Date().toISOString(),\n      runId: this.runId,\n      direction,\n      message,\n    });\n  }\n"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 202,
+      "call": "try { appendJsonLineAtomic(this.eventsPath, event); } catch { /* 事件落盘失败不该打断回合 */ }",
+      "following_lines": "    this.onEvent?.(event);\n  }\n\n  async start(): Promise<SeatOwner> {\n    if (this.child) throw new Error(\"席位已经在运行\");\n    mkdirSync(this.seatRoot, { recursive: true });\n    mkdirSync(this.home, { recursive: true });"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 208,
+      "call": "mkdirSync(this.seatRoot, { recursive: true });",
+      "following_lines": "    mkdirSync(this.home, { recursive: true });\n\n    const args = [\n      ...this.executablePrefix,\n      \"-p\",\n      \"--input-format\", \"stream-json\",\n      \"--output-format\", \"stream-json\","
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 209,
+      "call": "mkdirSync(this.home, { recursive: true });",
+      "following_lines": "\n    const args = [\n      ...this.executablePrefix,\n      \"-p\",\n      \"--input-format\", \"stream-json\",\n      \"--output-format\", \"stream-json\",\n      \"--verbose\","
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 258,
+      "call": "atomicWriteJson(this.ownerPath, owner);",
+      "following_lines": "    appendJsonLineAtomic(this.transcriptPath, {\n      type: \"seat-started\", runId: this.runId, seatId: this.seatId,\n      model: this.model, home: this.home, workspace: this.workspace,\n      access: this.access, owner, startedAt: owner.capturedAt,\n    });\n    return owner;\n  }"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 259,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"seat-started\", runId: this.runId, seatId: this.seatId,\n      model: this.model, home: this.home, workspace: this.workspace,\n      access: this.access, owner, startedAt: owner.capturedAt,\n    });\n    return owner;\n  }\n"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 309,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "        type: \"quota\", runId: this.runId, at, ...this.quota,\n      });\n      return;\n    }\n\n    if (event.type === \"assistant\" && this.active) {\n      if (!this.active.received) {"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 350,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "          type: \"turn-error\", runId: this.runId,\n          turnNumber: pending.turnNumber, threadId: this.sessionId ?? \"\", turnId: pending.turnId,\n          promptFile: pending.promptFile, user: pending.user, assistant, status, completedAt: at,\n          billing: this.billing,\n        });\n        this.emit({\n          turnNumber: pending.turnNumber, threadId: this.sessionId ?? \"\", turnId: pending.turnId,"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 374,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "        type: \"turn\", runId: this.runId, ...turn,\n        costUsd: typeof event.total_cost_usd === \"number\" ? event.total_cost_usd : undefined,\n        billing: this.billing,\n        quota: this.quota,\n      });\n      this.emit({\n        turnNumber: turn.turnNumber, threadId: turn.threadId, turnId: turn.turnId,"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 390,
+      "call": "mkdirSync(join(this.seatRoot, \"prompts\"), { recursive: true });",
+      "following_lines": "    const file = join(this.seatRoot, \"prompts\", `${this.runId}.turn-${turnNumber}.txt`);\n    atomicWriteFile(file, prompt);\n    return file;\n  }\n\n  async sendPromptFile(promptFile: string, deliveryId = resolve(promptFile)): Promise<SeatTurn> {\n    const absolutePromptFile = resolve(promptFile);"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 392,
+      "call": "atomicWriteFile(file, prompt);",
+      "following_lines": "    return file;\n  }\n\n  async sendPromptFile(promptFile: string, deliveryId = resolve(promptFile)): Promise<SeatTurn> {\n    const absolutePromptFile = resolve(promptFile);\n    this.deliveryTracker.begin(deliveryId, absolutePromptFile);\n    if (!this.child || this.child.stdin.destroyed || this.child.stdin.writableEnded) {"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 611,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"interject\", runId: this.runId, turnId: expectedTurnId,\n      text, at: new Date().toISOString(),\n    });\n  }\n\n  async probeEffectiveHome(): Promise<string> {\n    // 进程的 HOME 就是我们注入的那个；隔离由 isolatedEnv 保证，无需再问一次子进程"
+    },
+    {
+      "path": "packages/seat-runtime/src/claude-seat.ts",
+      "line": 645,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"seat-stopped\", runId: this.runId, exitCode: result.exitCode,\n      outcome: result.outcome,\n      stoppedAt: new Date().toISOString(),\n    });\n    return result.exitCode;\n  }\n}"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 163,
+      "call": "mkdirSync(join(this.seatRoot, \"prompts\"), { recursive: true });",
+      "following_lines": "    mkdirSync(this.grokHome, { recursive: true });\n\n    const permissionArgs =\n      this.access === \"workspace-write\"\n        ? [\"--permission-mode\", \"bypassPermissions\"]\n        : [\n            \"--permission-mode\","
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 164,
+      "call": "mkdirSync(this.grokHome, { recursive: true });",
+      "following_lines": "\n    const permissionArgs =\n      this.access === \"workspace-write\"\n        ? [\"--permission-mode\", \"bypassPermissions\"]\n        : [\n            \"--permission-mode\",\n            \"dontAsk\","
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 226,
+      "call": "appendJsonLineAtomic(this.protocolPath, {",
+      "following_lines": "        at: new Date().toISOString(),\n        runId: this.runId,\n        direction: \"stderr\",\n        chunk,\n      });\n    });\n    this.exitPromise = new Promise((resolveExit) => {"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 253,
+      "call": "atomicWriteJson(this.ownerPath, owner);",
+      "following_lines": "\n    const initialized = asObject(\n      await this.request(\n        \"initialize\",\n        {\n          protocolVersion: 1,\n          clientCapabilities: {"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 303,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"seat-started\",\n      runId: this.runId,\n      seatId: this.seatId,\n      threadId: this.sessionId,\n      model: this.model,\n      provider: \"xai-grok-build-cli\",\n      transport: \"acp-stdio\","
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 328,
+      "call": "atomicWriteFile(promptPath, prompt);",
+      "following_lines": "    return promptPath;\n  }\n\n  async sendPromptFile(promptFile: string, deliveryId = resolve(promptFile)): Promise<SeatTurn> {\n    const absolutePromptFile = resolve(promptFile);\n    this.deliveryTracker.begin(deliveryId, absolutePromptFile);\n    if (!this.child || !this.sessionId) {"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 423,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "            type: \"turn\",\n            runId: this.runId,\n            stopReason,\n            ...record,\n          });\n          this.deliveryTracker.terminal(deliveryId, \"completed transcript persisted\", record);\n          return record;"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 494,
+      "call": "appendJsonLineAtomic(this.transcriptPath, {",
+      "following_lines": "      type: \"seat-stopped\",\n      runId: this.runId,\n      exitCode,\n      signal: result.signal,\n      stoppedAt: new Date().toISOString(),\n    });\n    atomicWriteJson(join(this.seatRoot, \"state.json\"), {"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 501,
+      "call": "atomicWriteJson(join(this.seatRoot, \"state.json\"), {",
+      "following_lines": "      seatId: this.seatId,\n      runId: this.runId,\n      state: exitCode === 0 ? \"stopped\" : \"failed\",\n      exitCode,\n      stoppedAt: new Date().toISOString(),\n    });\n    return exitCode;"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 705,
+      "call": "appendJsonLineAtomic(this.eventsPath, event);",
+      "following_lines": "    if (!this.onEvent) return;\n    try {\n      this.onEvent(event);\n    } catch (error) {\n      appendJsonLineAtomic(this.protocolPath, {\n        at: new Date().toISOString(),\n        runId: this.runId,"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 710,
+      "call": "appendJsonLineAtomic(this.protocolPath, {",
+      "following_lines": "        at: new Date().toISOString(),\n        runId: this.runId,\n        direction: \"event-callback-error\",\n        error: error instanceof Error ? error.message : String(error),\n      });\n    }\n  }"
+    },
+    {
+      "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+      "line": 723,
+      "call": "appendJsonLineAtomic(this.protocolPath, {",
+      "following_lines": "      at: new Date().toISOString(),\n      runId: this.runId,\n      direction,\n      message,\n    });\n  }\n"
+    }
+  ],
+  "lifecycle": {
+    "sources": [
+      "packages/room/src/server.ts:2783-2840,4900-4938",
+      "packages/seat-runtime/src/close.ts:25-47,95-171,198-274",
+      "packages/seat-runtime/src/seat-runtime.ts:639-669",
+      "packages/seat-runtime/src/claude-seat.ts:622-653",
+      "packages/seat-runtime/src/grok-acp-seat.ts:481-511"
+    ],
+    "current_host_deadline_ms": 8000,
+    "current_grace_ms": 10000,
+    "current_after_kill_wait_ms": 5000,
+    "additional_time": "recordedStartTicks wait, queryProcessStartTicks up to 10000ms, kill command up to 10000ms; no claim 15000ms is a total wall bound. already-exited-but-promise-pending can take two post-kill waits.",
+    "current_result_codes": {
+      "0": "can also mean missing local child/exitPromise, not only proven clean exit",
+      "124": "timeout-killed label even when after-kill wait times out; does not prove death",
+      "125": "identity refused; do not kill or release",
+      "other": "natural process error / signal or exception; retain detailed result and ownership status"
+    },
+    "caller_counterexamples": [
+      "shutdown awaits close but discards number, deletes seat, logs closed; at 8s can process.exit(0) before 10s escalation; second signal exits(1) immediately.",
+      "closeAndRelease retains 125 initially, but treats 124 as killed and releases despite helper not proving exit.",
+      "Codex/Grok clear child/session fields after returned 124/125; Claude clears child before await. A second close can return 0 and then release the still-uncertain instance.",
+      "transcript/state persistence after field clearing can throw; resulting failed Promise or failed state is not retained live-process custody."
+    ],
+    "required_host": "The ONE gogoke ExecutionHost, not Room, owns close admission, full deadline, process identity, writer lease and durable residual receipt. WP01 defines typed results; WP02 owns durable custody; WP03 implements and verifies before any worker reuse.",
+    "required_outcomes": [
+      "GRACEFUL_EXIT_CONFIRMED",
+      "EXIT_NONZERO_CONFIRMED",
+      "KILL_ATTEMPTED",
+      "KILL_REFUSED",
+      "DIRECT_EXIT_CONFIRMED_DESCENDANTS_UNKNOWN",
+      "RESIDUAL_UNKNOWN",
+      "HOST_DEADLINE_EXPIRED",
+      "CLOSE_EXCEPTION",
+      "NO_HANDLE_WITH_UNRESOLVED_RECEIPT"
+    ],
+    "required_receipt_fields": [
+      "rootId",
+      "bindingId",
+      "generation",
+      "instanceId",
+      "credentialHomeId",
+      "pid",
+      "processStartTicks",
+      "child_handle_identity",
+      "descendant_scope",
+      "writer_lease",
+      "last_seen",
+      "close_phase",
+      "deadline",
+      "numeric_result",
+      "direct_exit_evidence",
+      "descendant_exit_evidence",
+      "writer_drain_evidence",
+      "persistence_result"
+    ],
+    "release_policy": "Only reconciled exact-identity direct exit AND descendant disposition AND no old writer AND durable receipt permit owner/home reuse. Kill return, Promise resolution, EOF, 0/124/125 alone never suffice. Preserve quarantine on host deadline, refusal, unknown identity, failed receipt or retry; no second-close shortcut.",
+    "deadline_policy": "One monotonic host budget must account for grace, identity probe, kill command, after-kill observation and receipt commit. Shorter forced exit persists unresolved custody BEFORE exit; never silently release or declare zero success. Budget must not be solved by only increasing 8 to10.",
+    "first_checks": [
+      "WP03/T32.L",
+      "WP03/T52.L",
+      "WP03/T63.L"
+    ],
+    "product_runtime_verified": false
+  },
+  "roots_writers": [
+    [
+      "RT26",
+      "dataRoot",
+      "resolve(options.dataRoot), hence relative input depends on process cwd; not credentialHome",
+      "WP02/T55.L",
+      "Validate canonical rootId/schema/alias; no second product data authority"
+    ],
+    [
+      "RT27",
+      "dataRoot/seats/seatId",
+      "owner.json/state.json/transcript.jsonl/protocol.jsonl/grok-acp.jsonl/events.jsonl",
+      "WP02/T39.L",
+      "Retain source+hash+provider+privacy+generation; migration to sole store idempotent, originals preserved; never merge homes implicitly"
+    ],
+    [
+      "RT28",
+      "credentialHome or seatRoot/home",
+      "Codex/Claude keep supplied string; Grok resolves it; explicit boolean bypasses overlap assertion",
+      "WP03/T50.L,T51.L",
+      "Do not copy secrets or migrate native home; authorization bound to exact canonical profile/host/revision/domain"
+    ],
+    [
+      "RT29",
+      "credentialHome/.grok and AppData/{Local,Roaming}",
+      "Grok mkdir(.grok); Codex mkdir(AppData/Local); env defines HOME/USERPROFILE/APPDATA/LOCALAPPDATA/GROK_HOME",
+      "WP03/T50.L",
+      "Provider-native cache/history/auth remain native-owned; verify actual child environment later"
+    ],
+    [
+      "RT30",
+      "seatRoot/prompts/<generated-name>",
+      "writePrompt -> atomicWriteFile; prompt files distinct from account home",
+      "WP02/T39.L",
+      "Public material store needs content/privacy identity, retention and collision policy before reuse"
+    ],
+    [
+      "RT31",
+      "dataRoot/accounts/<id>/{account.json,home}",
+      "AccountStore constructor mkdir; create/save/softRemove write JSON; native login/logout/probe separate",
+      "WP02/T39.L",
+      "Do not adopt store; migrate metadata only with explicit rules, never clone credential contents"
+    ],
+    [
+      "RT32",
+      "InstanceStore.root/{instances.json,instances/<id>,instances.json.tmp,*.broken-*}",
+      "load/carryOver/save/claim/release/remove and OS identity helpers",
+      "WP02/T39.L,T55.L",
+      "Non-adopted store; inventory only; preserve corrupt data and uncertain busy identity; no auto-release on probe failure"
+    ]
+  ],
+  "writer_contracts": [
+    [
+      "W21",
+      "owner.json",
+      "Codex/Grok start -> real-query owner; Claude start uses String(Date.now()) for public owner while close uses a separate queried promise",
+      "No multi-process writer lock; failed persistence can follow spawn",
+      "WP02/T39.L;WP03/T51.L,T63.L"
+    ],
+    [
+      "W22",
+      "state.json",
+      "Codex/Grok close after clearing child/session refs",
+      "exitCode=0 -> stopped else failed, not proof of process gone; Claude does not write this file in inspected implementation",
+      "WP03/T32.L,T63.L"
+    ],
+    [
+      "W23",
+      "transcript.jsonl",
+      "all three: start/turn/close/aux markers via appendJsonLineAtomic",
+      "Whole-file RMW; competing snapshots can overwrite; close logging can throw after custody lost",
+      "WP02/T39.L;WP03/T63.L"
+    ],
+    [
+      "W24",
+      "protocol.jsonl and grok-acp.jsonl",
+      "Codex/Grok request/notification/stdout/stderr -> append; Claude no separate protocol path in inspected class",
+      "Raw provider output may be private; read/write/rename failure differs from transport acceptance",
+      "WP02/T39.L;WP04/T49.L"
+    ],
+    [
+      "W25",
+      "events.jsonl",
+      "emit -> append in three classes",
+      "Claude catches append error then continues event delivery; Codex/Grok append can throw; callback success not durable event proof",
+      "WP02/T39.L;WP04/T16.L,T49.L"
+    ],
+    [
+      "W26",
+      "prompts/*",
+      "writePrompt -> atomicWriteFile in three classes",
+      "Write completion not provider acceptance; material must stay under seat/public root, not bound home",
+      "WP02/T39.L;WP04/T11.L"
+    ],
+    [
+      "W27",
+      "native home and native-created files",
+      "start mkdirs, provider child writes after injected env; Codex/Claude/Grok roots differ",
+      "Host-selection flag is caller-provided, not an approval receipt; no copy/migration of tokens; exact native internal writes external platform validation",
+      "WP03/T50.L,T51.L"
+    ],
+    [
+      "W28",
+      "persistence temp and final destination",
+      "mkdir parent -> unique pid+UUID .tmp opened wx/0600 -> write -> fsync file -> close -> rename -> best-effort fsync directory",
+      "write/fsync/rename errors propagate with temp possibly left; directory fsync error swallowed; not a cross-writer lock, no multi-file transaction, append reads whole previous file",
+      "WP02/T39.L,T55.L"
+    ],
+    [
+      "W29",
+      "AccountStore account.json / homes",
+      "create/save/softRemove; fs.writeFileSync direct; login/probe separate process effects",
+      "No store-level file transaction/lock seen; bad get/list data null/skipped; softRemove preserves home. Not adopted implementation",
+      "WP02/T39.L;WP09b/T23.L"
+    ],
+    [
+      "W30",
+      "InstanceStore JSON / temp / dirs / quarantine",
+      "save fixed .tmp then rename; load attempts broken rename then empty pool; claim/release/remove writes/deletes",
+      "No cross-process serialization; instance ID/ROOM_BOOT_ID not full execution identity; unknown query must not release old writer; no automatic native-home deletion. Not adopted implementation",
+      "WP02/T39.L,T55.L;WP03/T63.L"
+    ]
+  ],
+  "permission_contracts": [
+    [
+      "Q13",
+      "explicit host-home exception",
+      "Owner selection must produce scoped approval naming provider/host/canonical home/account auth revision/domain/generation/allowed effects/expiry; true boolean is not that receipt. No implicit fallback, no automatic secret migration",
+      "WP03/T50.L,T51.L;WP09b/T23.L"
+    ],
+    [
+      "Q14",
+      "root/writer release and close result",
+      "Quarantine unresolved process/home and descendants; retain immutable custody across retries and restart. A missing handle is not proof of no owner",
+      "WP03/T52.L,T63.L"
+    ],
+    [
+      "Q15",
+      "selective helpers and raw logs",
+      "No wholesale accounts/instances import by barrel; transitive process/probe/logging effects declared per selected symbol. Redaction is not declassification or permission",
+      "WP04/T11.L,T49.L;WP09b/T23.L"
+    ]
+  ],
+  "native_vs_model": "safe_source_fixtures.mjs executes pinned TS algorithms or exact extracted server functions in a VM with mock fs, fake clock, fake process and fake child handles. FUTURE_CONTRACT_MODEL_ONLY rows are only oracles. No OS closure, socket, filesystem durability, genuine auth or installation is proved.",
+  "remaining_runtime": "All original runtime axes remain NOT_RUN; sources remain defective until authorized implementation. These are evidence closures proposed for focused review, not closed product defects.",
+  "prior_pass_b": "The earlier PASS_FOR_DEFECT_CLOSURE with unprovable chronology is not acceptance authority. Latest received B rerun is CHANGES_REQUIRED at the original fixed A payload. Prior PF07 C is retained off-branch as unaccepted evidence; not silently imported.",
+  "source_symbol_binding_manifest": "docs/design/p00-pass-c-c2-f01-r3/symbol-bindings.json",
+  "ownership_handoff_addendum": "docs/design/p00-pass-c-c2-f01-r3/ownership-contract.json"
+}

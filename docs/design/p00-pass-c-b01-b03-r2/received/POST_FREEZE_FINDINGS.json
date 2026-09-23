@@ -1,0 +1,178 @@
+[
+  {
+    "id": "B01",
+    "severity": "MATERIAL_EVIDENCE_ERROR",
+    "title": "两项 daemon handler 归属错误，分 handler 计数也错误",
+    "origin": "Independent frozen dispatcher inventory, compared after freeze",
+    "independent_ids": [
+      "IF01",
+      "E17"
+    ],
+    "candidate_location": "pass-a-surfaces-v3.tsv: local_usage_snapshot and menu_set_accelerators; pass-a-replay-v3.md §2",
+    "source_fact": "local_usage_snapshot is workspace.rs:266, not codex; menu_set_accelerators is daemon.rs:18, not workspace. Actual literal partition daemon=6, workspace=25, codex=39, prompts=7; git constants=27. Total 104 and literal total77 remain unchanged.",
+    "author_claim": "surfaces labels codex:literal and workspace:literal respectively; replay states daemon5/workspace25/codex40/prompts7",
+    "impact": "The published per-method source join is wrong. Aggregate method parity and 16 metadata negatives cannot certify handler attribution; this is an audit-data error, not a claim that runtime dispatch selects a wrong handler.",
+    "required_change": "Correct both published rows and all dependent partition counts/replay/validation summaries; regenerate evidence blob identities in a new payload. Compare every method+handler+arm-kind tuple, not only the method-name set.",
+    "owner": "WP00 / evidence correction before defect-closure; future source-accounting check WP01/T61.L",
+    "first_safe_case": "Passive source comparison rejects either changed handler label while 104/77 totals stay constant. No product runtime needed.",
+    "runtime_executed": false,
+    "source_evidence": [
+      {
+        "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "3f18527f7bd01bd8ace7c9e6c2c82e4a87a36502",
+        "sha256": "4db93bc57646cb8c35eea26e8909c9446cf02510cbaf51875e8ce68b250d08a0",
+        "start_line": 260,
+        "end_line": 274,
+        "source_excerpt": "260:             )\n261:         }\n262:         \"get_open_app_icon\" => {\n263:             let request = parse_request_or_err!(params, workspace_rpc::GetOpenAppIconRequest);\n264:             Some(serialize_result(state.get_open_app_icon(request.app_name)).await)\n265:         }\n266:         \"local_usage_snapshot\" => {\n267:             let days = parse_optional_u32(params, \"days\");\n268:             let workspace_path = parse_optional_string(params, \"workspacePath\");\n269:             Some(serialize_result(state.local_usage_snapshot(days, workspace_path)).await)\n270:         }\n271:         _ => None,\n272:     }\n273: }"
+      },
+      {
+        "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "e491f0372edda68f96b7e55b8c845d406792f693",
+        "sha256": "b9ef48a565b176ff8d4ae52ea018966abcfadb079ba4f6304f0b4bd80a1e09df",
+        "start_line": 1,
+        "end_line": 44,
+        "source_excerpt": "1: use super::*;\n2: \n3: pub(super) async fn try_handle(\n4:     state: &DaemonState,\n5:     method: &str,\n6:     params: &Value,\n7: ) -> Option<Result<Value, String>> {\n8:     match method {\n9:         \"ping\" => Some(Ok(json!({ \"ok\": true }))),\n10:         \"daemon_info\" => Some(Ok(state.daemon_info())),\n11:         \"daemon_shutdown\" => {\n12:             tokio::spawn(async {\n13:                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;\n14:                 std::process::exit(0);\n15:             });\n16:             Some(Ok(json!({ \"ok\": true })))\n17:         }\n18:         \"menu_set_accelerators\" => {\n19:             let updates: Vec<Value> = match params {\n20:                 Value::Object(map) => match map\n21:                     .get(\"updates\")\n22:                     .cloned()\n23:                     .map(serde_json::from_value)\n24:                     .transpose()\n25:                 {\n26:                     Ok(value) => value.unwrap_or_default(),\n27:                     Err(err) => return Some(Err(err.to_string())),\n28:                 },\n29:                 _ => Vec::new(),\n30:             };\n31:             Some(\n32:                 state\n33:                     .menu_set_accelerators(updates)\n34:                     .await\n35:                     .map(|_| json!({ \"ok\": true })),\n36:             )\n37:         }\n38:         \"is_macos_debug_build\" => {\n39:             let is_debug = state.is_macos_debug_build().await;\n40:             Some(Ok(Value::Bool(is_debug)))\n41:         }\n42:         \"send_notification_fallback\" => {\n43:             let title = match parse_string(params, \"title\") {\n44:                 Ok(value) => value,"
+      }
+    ]
+  },
+  {
+    "id": "B02",
+    "severity": "BOUNDARY_CHANGING_SOURCE_GAP",
+    "title": "Room/Seat 关闭的总期限、返回码与残留 owner 未被具体承接",
+    "origin": "IF10/IF11 frozen independently; exact caller return-code and reference-clearing detail added after freeze",
+    "independent_ids": [
+      "IF10",
+      "IF11",
+      "E31",
+      "AU05",
+      "AU07"
+    ],
+    "candidate_location": "authorities F20/P17/P19; P00-v3 asset table close.ts/seat-runtime.ts; C14.2/C33.2",
+    "source_fact": "Room waits at most8000ms then process.exit(0). Seat default close waits10000ms before terminate; it can wait a further5000ms after kill, plus identity/kill-command time. Room awaits Promise<number> but never tests its returned number, deletes the seat and logs closed. PersistentCodexSeat clears child/thread references after any returned close result, including refused/timeout, then writes failed state.",
+    "author_claim": "Existing policy requires unknown-identity/residual tests, non-adoption of whole Room, and generic old-writer fencing. These are acknowledged but do not state this cross-layer deadline or consume the numeric result at this actual caller.",
+    "impact": "A still-live child may outlast the host deadline. A resolved nonzero code need not mean the child or its descendants exited. This affects reuse of selected close.ts/seat-runtime.ts and owner hand-off; it is not a request to adopt or repair the whole legacy Room product now. No orphan was actually created in this audit.",
+    "required_change": "Add explicit source/caller/failure rows and separate graceful exit, attempted kill, refused kill, unknown residual, host forced exit and ownership quarantine. State which selected worker host owns the full deadline and retains uncertain identity; do not release/reassign home or writer merely because close resolved. Keep Room non-adoption explicit.",
+    "owner": "WP00 evidence correction; WP03/T32.L,T52.L,T63.L before selected process lifecycle reuse",
+    "first_safe_case": "Fake clock + mocked Seat/child handles: 8s host deadline vs10s grace; close resolves124/125; kill returns but exited promise stays pending. Assert no successful-close label or owner-release/replacement receipt. No real provider, PID kill or daemon.",
+    "runtime_executed": false,
+    "source_evidence": [
+      {
+        "path": "packages/room/src/server.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "0961b392a5a7d6e64fa72a3a6898f1dba5c39259",
+        "sha256": "4f09078bf5c874de2f69277ddc7974582ff1e45d9c320719da834b2cd7295044",
+        "start_line": 4900,
+        "end_line": 4938,
+        "source_excerpt": "4900: const SHUTDOWN_DEADLINE_MS = 8000;\n4901: let shuttingDown = false;\n4902: \n4903: async function shutdown(signal: string): Promise<void> {\n4904:   // 第二次按 Ctrl+C 就是「别等了」。人有权强退，但得是他自己选的。\n4905:   if (shuttingDown) { console.log(\"  再次收到信号，立即退出。\"); process.exit(1); }\n4906:   shuttingDown = true;\n4907: \n4908:   // 登录进程没有可见窗口，房间一走人就再也管不着它了 —— 先同步带走。\n4909:   reapLogins();\n4910: \n4911:   const pending = [...seats.keys()];\n4912:   if (pending.length) {\n4913:     console.log(`\\n  ${signal}：关闭 ${pending.length} 个席位…`);\n4914:     const closing = Promise.all(pending.map(async (id) => {\n4915:       try { await seats.get(id)?.close(); seats.delete(id); console.log(`   ${id} 已关闭`); }\n4916:       catch (error) { console.error(`   ${id} 关闭失败：${String((error as Error)?.message || error)}`); }\n4917:     }));\n4918:     // 席位可能卡在一次工具调用上，close() 未必回得来。给一个总期限，\n4919:     // 但期限到了要**说出来**留下的是谁 —— 孤儿进程还占着凭据目录，\n4920:     // 静默退出等于把这个事故藏起来，留给下一次启动。\n4921:     const timedOut = await Promise.race([\n4922:       closing.then(() => false),\n4923:       new Promise<boolean>((r) => setTimeout(() => r(true), SHUTDOWN_DEADLINE_MS)),\n4924:     ]);\n4925:     if (timedOut) {\n4926:       const stuck = [...seats.keys()];\n4927:       console.error(\n4928:         `  ${SHUTDOWN_DEADLINE_MS / 1000} 秒内没关掉：${stuck.map((x) => \"@\" + x).join(\"、\")}\\n` +\n4929:         `  这些 CLI 进程会变成孤儿，仍然占着它们的实例目录。` +\n4930:         `下次启动前请确认它们已经退出，否则会出现一份凭据两个进程。`,\n4931:       );\n4932:     }\n4933:   }\n4934:   process.exit(0);\n4935: }\n4936: \n4937: for (const sig of [\"SIGINT\", \"SIGTERM\", \"SIGHUP\"] as const) {\n4938:   process.on(sig, () => { void shutdown(sig); });"
+      },
+      {
+        "path": "packages/seat-runtime/src/close.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "0c2c1b58aa80549fed849fa8fede35dda6d5d5a4",
+        "sha256": "ac21d2f7f04ad15c73d4cd0759e0ee89a3bf60569c7029b700ae18930b3bee86",
+        "start_line": 25,
+        "end_line": 71,
+        "source_excerpt": "25: /** 超时收尾：进程不是自己退的，是被我们强杀的。绝不能当成关闭成功。 */\n26: export const SEAT_CLOSE_TIMEOUT_EXIT_CODE = 124;\n27: /** 身份对不上，我们拒绝下手；进程可能还活着，同样不是关闭成功。 */\n28: export const SEAT_CLOSE_REFUSED_EXIT_CODE = 125;\n29: /** 三家统一的收尾宽限期 */\n30: export const SEAT_CLOSE_GRACE_MS = 10_000;\n31: /** 强杀之后再等进程真的消失的时间 */\n32: const AFTER_KILL_WAIT_MS = 5_000;\n33: \n34: export type SeatCloseOutcome =\n35:   /** 进程自己退出了，exitCode 是它真实的退出码 */\n36:   | \"exited\"\n37:   /** 超时，已按进程树强杀 */\n38:   | \"timeout-killed\"\n39:   /** 超时，但进程身份校验没过，我们没有下手 */\n40:   | \"kill-refused\";\n41: \n42: export interface SeatCloseResult {\n43:   readonly outcome: SeatCloseOutcome;\n44:   /** 0 只在进程自己干净退出时出现 */\n45:   readonly exitCode: number;\n46:   readonly signal: NodeJS.Signals | null;\n47: }\n48: \n49: export interface ProcessExit {\n50:   code: number | null;\n51:   signal: NodeJS.Signals | null;\n52: }\n53: \n54: /**\n55:  * 是否允许按这个 pid 下手（INV-PID-1 的判据本体，做成纯函数便于两面取证）。\n56:  *\n57:  * recordedStartTicks 为空表示启动时没记下身份，那就只剩句柄这一道闸；\n58:  * 记了身份却查不到当前值时一律拒绝 —— 查不到意味着我们无从确认，\n59:  * 宁可留一个孤儿进程，也不要再误杀一次别人的进程。\n60:  */\n61: export function mayKillProcess(input: {\n62:   pid: number | undefined;\n63:   handleExited: boolean;\n64:   recordedStartTicks: string | null;\n65:   currentStartTicks: string | null;\n66: }): boolean {\n67:   if (!input.pid || !Number.isInteger(input.pid) || input.pid <= 0) return false;\n68:   if (input.handleExited) return false;\n69:   if (input.recordedStartTicks === null) return true;\n70:   if (input.currentStartTicks === null) return false;\n71:   return input.currentStartTicks === input.recordedStartTicks;"
+      },
+      {
+        "path": "packages/seat-runtime/src/close.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "0c2c1b58aa80549fed849fa8fede35dda6d5d5a4",
+        "sha256": "ac21d2f7f04ad15c73d4cd0759e0ee89a3bf60569c7029b700ae18930b3bee86",
+        "start_line": 131,
+        "end_line": 171,
+        "source_excerpt": "131: export async function closeSeatProcess(options: {\n132:   child: ChildProcess;\n133:   exited: Promise<ProcessExit>;\n134:   timeoutMs: number;\n135:   recordedStartTicks: string | null;\n136: }): Promise<SeatCloseResult> {\n137:   const { child, exited, timeoutMs, recordedStartTicks } = options;\n138:   child.stdin?.end();\n139:   const graceful = await raceWithTimeout(exited, timeoutMs);\n140:   if (graceful !== \"timeout\") {\n141:     return {\n142:       outcome: \"exited\",\n143:       exitCode: graceful.code ?? (graceful.signal ? 1 : 0),\n144:       signal: graceful.signal,\n145:     };\n146:   }\n147:   const killed = await terminateProcessTree(child, recordedStartTicks);\n148:   if (killed === \"already-exited\") {\n149:     // 句柄在超时与强杀之间刚好退了：这仍是它自己退的，按真实退出码报。\n150:     const late = await raceWithTimeout(exited, AFTER_KILL_WAIT_MS);\n151:     if (late !== \"timeout\") {\n152:       return {\n153:         outcome: \"exited\",\n154:         exitCode: late.code ?? (late.signal ? 1 : 0),\n155:         signal: late.signal,\n156:       };\n157:     }\n158:   }\n159:   if (killed === \"refused\") {\n160:     return {\n161:       outcome: \"kill-refused\",\n162:       exitCode: SEAT_CLOSE_REFUSED_EXIT_CODE,\n163:       signal: null,\n164:     };\n165:   }\n166:   const after = await raceWithTimeout(exited, AFTER_KILL_WAIT_MS);\n167:   return {\n168:     outcome: \"timeout-killed\",\n169:     exitCode: SEAT_CLOSE_TIMEOUT_EXIT_CODE,\n170:     signal: after === \"timeout\" ? null : after.signal,\n171:   };"
+      },
+      {
+        "path": "packages/seat-runtime/src/seat.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "baac803629e1a7ad2e2ef2ae045d7b02307ae97b",
+        "sha256": "047e5f494d0469c786bbbc8c4e2d6d1e787571ea59e1a787b28c49fd5c3cd36e",
+        "start_line": 220,
+        "end_line": 240,
+        "source_excerpt": "220:   start(): Promise<SeatOwner>;\n221:   writePrompt(turnNumber: number, prompt: string): string;\n222:   sendPromptFile(promptFile: string, deliveryId?: string): Promise<SeatTurn>;\n223:   deliveryStatus(deliveryId: string): SeatDeliveryStatus | undefined;\n224:   waitForDeliveryTerminal(deliveryId: string): Promise<SeatTurn>;\n225:   /**\n226:    * Add user direction to exactly the currently active turn. Implementations\n227:    * must reject an idle or stale expected turn rather than guessing.\n228:    */\n229:   interject(expectedTurnId: string, text: string): Promise<void>;\n230:   /** Provider-authored input requests still awaiting an answer on this exact process. */\n231:   pendingCliInputs?(): readonly SeatNativeInputRequest[];\n232:   /** Reply on the provider's original request channel; never starts or interjects a turn. */\n233:   answerCliInput?(\n234:     expected: SeatNativeInputBinding,\n235:     answers: SeatNativeInputAnswers,\n236:   ): Promise<void>;\n237:   /** Current process' public account metadata, when the official CLI exposes it. */\n238:   getAccountIdentity?(): SeatAccountIdentity | null;\n239:   probeEffectiveHome(): Promise<string>;\n240:   close(): Promise<number>;"
+      },
+      {
+        "path": "packages/seat-runtime/src/seat-runtime.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "220c036e96f3aee911ced48f2f6ea4e09b5681fc",
+        "sha256": "e5e924733d5a3c2ea15402eba1a42918413229562b7da4a608c69323c4acd9c2",
+        "start_line": 639,
+        "end_line": 669,
+        "source_excerpt": "639:   async close(): Promise<number> {\n640:     const child = this.child;\n641:     const exitPromise = this.exitPromise;\n642:     if (!child || !exitPromise) return 0;\n643:     // 收尾走共用实现。这里原本是「超时就 reject 且从不 kill」——\n644:     // 而所有调用方都 .catch(() => undefined) 之后当作已关闭，于是进程还活着，\n645:     // 界面已经说停了，实例也显示空闲。\n646:     const result = await closeSeatProcess({\n647:       child, exited: exitPromise, timeoutMs: SEAT_CLOSE_GRACE_MS,\n648:       recordedStartTicks: await this.startTicks,\n649:     });\n650:     this.child = null;\n651:     this.threadId = null;\n652:     this.cancelAllCliInputs();\n653:     const exitCode = result.exitCode;\n654:     appendJsonLineAtomic(this.transcriptPath, {\n655:       type: \"seat-stopped\",\n656:       runId: this.runId,\n657:       exitCode,\n658:       signal: result.signal,\n659:       outcome: result.outcome,\n660:       stoppedAt: new Date().toISOString(),\n661:     });\n662:     atomicWriteJson(join(this.seatRoot, \"state.json\"), {\n663:       seatId: this.seatId,\n664:       runId: this.runId,\n665:       state: exitCode === 0 ? \"stopped\" : \"failed\",\n666:       exitCode,\n667:       stoppedAt: new Date().toISOString(),\n668:     });\n669:     return exitCode;"
+      }
+    ]
+  },
+  {
+    "id": "B03",
+    "severity": "BOUNDARY_CHANGING_SOURCE_GAP",
+    "title": "选用 Seat runtime 的传递 root/writer 与显式 real-home 例外未进入具体权威表",
+    "origin": "IF12/IF16 and E27-E30/AU07 frozen; constructor and import detail expanded after freeze",
+    "independent_ids": [
+      "IF12",
+      "IF16",
+      "E27",
+      "E28",
+      "E29",
+      "E30",
+      "AU07"
+    ],
+    "candidate_location": "authorities F20/P17, RT01-RT25/W01-W20/Q01-Q12; P00-v3 asset table seat-runtime.ts and selective Room helpers",
+    "source_fact": "Selected seat-runtime.ts imports persistence.ts. dataRoot/seats/seatId owns owner/state/transcript/protocol/events and prompt files, while credentialHome may differ; allowRealUserHome skips the home-safe assertion. Room explicit host selection forwards credentialHome=homedir and allowRealUserHome=true. appendJsonLineAtomic is read-whole-file then temp/rename, with no helper-level writer lock.",
+    "author_claim": "F20 correctly refuses wholesale Room/kernel import and general V3 policy requires a sole authority. It does not enumerate these selected-module root/writer/exception contracts; desktop RT/W tables cannot substitute for the Node graph.",
+    "impact": "Choosing selected runtime modules can carry persistent writes and an explicit home exception even without importing server.ts. A rename is not a cross-writer serialization proof. No unauthorized access, actual concurrent lost update, secret read or default-home fallback is claimed. Explicit host use can be authorized and is not inherently a vulnerability.",
+    "required_change": "Add symbol+transitive dependency inventory for the selected runtime/persistence/Seat helpers. Record dataRoot vs credentialHome ownership, every persistent target and writer, helper locking/failure behavior, explicit-host approval contract and migration disposition. Explicitly list remaining Room server/scheduler and standalone Rust store as non-adopted mechanisms.",
+    "owner": "WP00 evidence correction; WP02/T39.L,T55.L root/writer contract and WP03/T50.L,T51.L,T63.L before worker reuse; privacy WP04/T11.L,T49.L",
+    "first_safe_case": "Pure fixture configs with temp roots and fake filesystem/spawn recorder: distinguish default isolated, separately bound and explicit-host homes; reject undeclared writes; model competing append intents and failed rename; verify no real home or credentials touched.",
+    "runtime_executed": false,
+    "source_evidence": [
+      {
+        "path": "packages/seat-runtime/src/seat-runtime.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "220c036e96f3aee911ced48f2f6ea4e09b5681fc",
+        "sha256": "e5e924733d5a3c2ea15402eba1a42918413229562b7da4a608c69323c4acd9c2",
+        "start_line": 1,
+        "end_line": 31,
+        "source_excerpt": "1: import { spawn, type ChildProcessWithoutNullStreams } from \"node:child_process\";\n2: import { randomUUID } from \"node:crypto\";\n3: import {\n4:   existsSync,\n5:   mkdirSync,\n6:   readFileSync,\n7: } from \"node:fs\";\n8: import { homedir } from \"node:os\";\n9: import { basename, join, normalize, resolve, sep } from \"node:path\";\n10: import { closeSeatProcess, SEAT_CLOSE_GRACE_MS, tryQueryProcessStartTicks } from \"./close.ts\";\n11: import {\n12:   appendJsonLineAtomic,\n13:   atomicWriteFile,\n14:   atomicWriteJson,\n15: } from \"./persistence.ts\";\n16: import {\n17:   SeatDeliveryTracker,\n18:   assertSeatNativeInputAnswers,\n19:   assertSeatNativeInputRequest,\n20: } from \"./seat.ts\";\n21: import type {\n22:   Seat,\n23:   SeatAccountIdentity,\n24:   SeatCapabilities,\n25:   SeatEvent,\n26:   SeatNativeInputAnswers,\n27:   SeatNativeInputBinding,\n28:   SeatNativeInputRequest,\n29:   SeatOwner,\n30:   SeatTurn,\n31: } from \"./seat.ts\";"
+      },
+      {
+        "path": "packages/seat-runtime/src/seat-runtime.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "220c036e96f3aee911ced48f2f6ea4e09b5681fc",
+        "sha256": "e5e924733d5a3c2ea15402eba1a42918413229562b7da4a608c69323c4acd9c2",
+        "start_line": 152,
+        "end_line": 179,
+        "source_excerpt": "152:   /**\n153:    * 账号绑定：把席位进程的 HOME 指到某个账号的隔离目录，从而使用那个账号的凭据。\n154:    * 这是「一个账号一个 worker」的落点 —— 实测：Claude 凭据落 <HOME>/.claude/.credentials.json，\n155:    * Grok 只认 GROK_HOME，完全不看 HOME —— 各家的变量必须分别设。\n156:    * 不给就用席位自己的目录（那样它没有任何凭据，跑不起来除非继承默认环境）。\n157:    * 注意：transcript / protocol / events 始终留在席位自己的目录，不跟账号走。\n158:    */\n159:   credentialHome?: string;\n160:   /**\n161:    * 显式允许把 HOME 指向真实用户家目录，即「用本机已登录的 CLI」。\n162:    * INV2_DEFAULT_HOME 的用意是防止席位**意外**落进用户家目录；\n163:    * 复用本机 CLI 是 Owner 的显式选择，代价已在界面写明。\n164:    * 例外必须在调用点明示，不靠默认值溜进来。\n165:    */\n166:   allowRealUserHome?: boolean;\n167: }\n168: \n169: export function assertSeatHomeSafe(\n170:   seatHome: string,\n171:   realUserHome = homedir(),\n172: ): void {\n173:   const seat = canonicalPath(seatHome);\n174:   const real = canonicalPath(realUserHome);\n175:   if (within(seat, real) || within(real, seat)) {\n176:     throw new Error(\n177:       `INV2_DEFAULT_HOME: seat home must not equal, contain, or be contained by the real user home (seat=${seatHome}, real=${realUserHome})`,\n178:     );\n179:   }"
+      },
+      {
+        "path": "packages/seat-runtime/src/seat-runtime.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "220c036e96f3aee911ced48f2f6ea4e09b5681fc",
+        "sha256": "e5e924733d5a3c2ea15402eba1a42918413229562b7da4a608c69323c4acd9c2",
+        "start_line": 345,
+        "end_line": 433,
+        "source_excerpt": "345:    * 那个进程 —— 存成 Promise 是为了不给启动路径加一次子进程查询的等待。\n346:    */\n347:   private startTicks: Promise<string | null> = Promise.resolve(null);\n348:   private exitPromise: Promise<{\n349:     code: number | null;\n350:     signal: NodeJS.Signals | null;\n351:   }> | null = null;\n352: \n353:   constructor(options: SeatRuntimeOptions) {\n354:     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(options.seatId)) {\n355:       throw new Error(\n356:         \"seatId must contain only letters, digits, dot, underscore, or hyphen\",\n357:       );\n358:     }\n359:     this.dataRoot = resolve(options.dataRoot);\n360:     this.seatId = options.seatId;\n361:     this.seatRoot = join(this.dataRoot, \"seats\", this.seatId);\n362:     // 席位自己的目录始终存在（放 transcript/protocol/events）；\n363:     // 进程的 HOME 则可以指向某个账号的隔离目录 —— 一个账号一个 worker。\n364:     this.home = options.credentialHome ?? join(this.seatRoot, \"home\");\n365:     if (!options.allowRealUserHome) assertSeatHomeSafe(this.home);\n366:     this.usesBoundAccount = Boolean(options.credentialHome);\n367:     this.workspace = options.workspace;\n368:     this.access = options.access ?? \"readonly\";\n369:     // 写权限只能落在显式给出的工作区里；没有工作区就不存在写权限。\n370:     if (this.access === \"workspace-write\" && !this.workspace) {\n371:       throw new Error(\n372:         \"ACCESS_WITHOUT_WORKSPACE: workspace-write 需要显式指定 workspace，否则不授予写权限。\",\n373:       );\n374:     }\n375:     this.transcriptPath = join(this.seatRoot, \"transcript.jsonl\");\n376:     this.protocolPath = join(this.seatRoot, \"protocol.jsonl\");\n377:     this.eventsPath = join(this.seatRoot, \"events.jsonl\");\n378:     this.ownerPath = join(this.seatRoot, \"owner.json\");\n379:     this.model = options.model ?? \"gpt-5.6-sol\";\n380:     this.reasoningEffort = options.reasoningEffort ?? \"medium\";\n381:     this.codexExecutable = options.codexExecutable ?? resolveCodexExecutable();\n382:     this.codexArguments = options.codexArguments;\n383:     this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000;\n384:     this.onEvent = options.onEvent;\n385:   }\n386: \n387:   async start(): Promise<SeatOwner> {\n388:     if (this.child) throw new Error(\"seat is already running\");\n389:     mkdirSync(join(this.home, \"AppData\", \"Local\"), { recursive: true });\n390:     mkdirSync(join(this.seatRoot, \"prompts\"), { recursive: true });\n391: \n392:     const child = spawn(this.codexExecutable, this.codexArguments ?? [\"app-server\", \"--stdio\"], {\n393:       cwd: this.home,\n394:       env: buildIsolatedEnv(process.env, this.home),\n395:       windowsHide: true,\n396:       stdio: [\"pipe\", \"pipe\", \"pipe\"],\n397:     });\n398:     this.child = child;\n399:     child.stdout.setEncoding(\"utf8\");\n400:     child.stderr.setEncoding(\"utf8\");\n401:     child.stdout.on(\"data\", (chunk: string) => this.onStdout(chunk));\n402:     child.stderr.on(\"data\", (chunk: string) => {\n403:       appendJsonLineAtomic(this.protocolPath, {\n404:         at: new Date().toISOString(),\n405:         direction: \"stderr\",\n406:         chunk,\n407:       });\n408:     });\n409:     this.startTicks = tryQueryProcessStartTicks(child.pid ?? 0);\n410:     this.exitPromise = new Promise((resolveExit) => {\n411:       child.once(\"exit\", (code, signal) => {\n412:         const error = new Error(\n413:           `Codex seat process exited before completing pending work (code=${String(code)}, signal=${String(signal)})`,\n414:         );\n415:         this.rejectAll(error);\n416:         resolveExit({ code, signal });\n417:       });\n418:     });\n419:     await onceSpawned(child);\n420: \n421:     const pid = child.pid;\n422:     if (!pid) throw new Error(\"Codex seat process started without a pid\");\n423:     const owner: SeatOwner = {\n424:       pid,\n425:       processStartTicks: await queryProcessStartTicks(pid),\n426:       capturedAt: new Date().toISOString(),\n427:     };\n428:     atomicWriteJson(this.ownerPath, owner);\n429: \n430:     const initialized = asObject(\n431:       await this.request(\"initialize\", {\n432:         clientInfo: {\n433:           name: \"gogo-seat-runtime\","
+      },
+      {
+        "path": "packages/seat-runtime/src/persistence.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "78023a1a169ba63ec6e3296ced315092f6fd9622",
+        "sha256": "942790f7ad0c834fb29f5cd1ae7a7f68e2ef960a7c82063210e05f471835a4e5",
+        "start_line": 1,
+        "end_line": 48,
+        "source_excerpt": "1: import { randomUUID } from \"node:crypto\";\n2: import {\n3:   closeSync,\n4:   existsSync,\n5:   fsyncSync,\n6:   mkdirSync,\n7:   openSync,\n8:   readFileSync,\n9:   renameSync,\n10:   writeFileSync,\n11: } from \"node:fs\";\n12: import { dirname } from \"node:path\";\n13: \n14: function fsyncDirectory(directory: string): void {\n15:   try {\n16:     const descriptor = openSync(directory, \"r\");\n17:     try {\n18:       fsyncSync(descriptor);\n19:     } finally {\n20:       closeSync(descriptor);\n21:     }\n22:   } catch {\n23:     // Windows can reject opening a directory for fsync; the file itself was fsynced.\n24:   }\n25: }\n26: \n27: export function atomicWriteFile(file: string, content: string): void {\n28:   mkdirSync(dirname(file), { recursive: true });\n29:   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;\n30:   const descriptor = openSync(temporary, \"wx\", 0o600);\n31:   try {\n32:     writeFileSync(descriptor, content, \"utf8\");\n33:     fsyncSync(descriptor);\n34:   } finally {\n35:     closeSync(descriptor);\n36:   }\n37:   renameSync(temporary, file);\n38:   fsyncDirectory(dirname(file));\n39: }\n40: \n41: export function atomicWriteJson(file: string, value: unknown): void {\n42:   atomicWriteFile(file, `${JSON.stringify(value, null, 2)}\\n`);\n43: }\n44: \n45: export function appendJsonLineAtomic(file: string, value: unknown): void {\n46:   const existing = existsSync(file) ? readFileSync(file, \"utf8\") : \"\";\n47:   atomicWriteFile(file, `${existing}${JSON.stringify(value)}\\n`);\n48: }"
+      },
+      {
+        "path": "packages/room/src/server.ts",
+        "commit": "bc665a852833952b76d9508401193bedd2198436",
+        "git_blob": "0961b392a5a7d6e64fa72a3a6898f1dba5c39259",
+        "sha256": "4f09078bf5c874de2f69277ddc7974582ff1e45d9c320719da834b2cd7295044",
+        "start_line": 1580,
+        "end_line": 1648,
+        "source_excerpt": "1580:     // claim 之后这个函数还会抛错（审计席写权限、provider 组合没实现、spawn 失败），\n1581:     // 抛出去就再也没人还这把锁 —— 实例卡死在「正在用」，而根本没有进程在跑。\n1582:     // 所以从这里往下整段包起来，任何失败都回滚。\n1583:     instanceStore.claim(inst.id, id);\n1584:     claim.instanceId = inst.id;\n1585:     boundHome = inst.dir;\n1586:     usingHostCli = inst.kind === \"host\";\n1587:   } else if (!s.accountId) {\n1588:     throw new Error(\n1589:       `席位 @${id} 还没有选运行实例。在席位设置里选「本机已登录的 CLI」` +\n1590:       `或「本席位独立实例」，独立实例还需要登录一次。`,\n1591:     );\n1592:   } else if (s.accountId === HOST_INSTANCE_ID) {\n1593:     boundHome = homedir();\n1594:     usingHostCli = true;\n1595:   } else {\n1596:     boundHome = seatOwnHome(id);\n1597:     const cli = cliNameFor(s.provider);\n1598:     const executable = resolveCliLaunch(cli)?.file ?? resolveClaudeExecutable();\n1599:     const login = executable\n1600:       ? await probeHome(boundHome, cli, executable)\n1601:       : { loginState: \"unknown\" as const, message: `找不到 ${cli} 可执行文件` };\n1602:     if (login.loginState !== \"ready\") {\n1603:       throw new Error(\n1604:         `席位 @${id} 的独立实例还没有登录任何账号。` +\n1605:         `在席位设置里点「登录 / 换账号」，登录后重启席位即可。` +\n1606:         `（${login.message}）`,\n1607:       );\n1608:     }\n1609:   }\n1610:   let seat: Seat;\n1611:   const hookSeat = createHookSeat(id);\n1612:   if (hookSeat) {\n1613:     seat = hookSeat;\n1614:   } else if (s.providerFamily === \"openai\" && s.kind === \"persistent\") {\n1615:     push({ from: id, to: null, type: \"SYSTEM_STATUS\", text: `席位启动中（${s.model}，隔离家目录）`, hop: 0,\n1616:       conversationId: context.conversationId, replyToId: context.replyToId, branchId: context.branchId });\n1617:     seat = new PersistentCodexSeat({\n1618:       dataRoot: DATA_ROOT, seatId: id, model: s.model,\n1619:       reasoningEffort: s.reasoningEffort ?? \"medium\",\n1620:       workspace: config.workspace, access,\n1621:       // 实例目录：会话与记忆在这里；本机 CLI 是显式选择的例外\n1622:       ...(boundHome ? { credentialHome: boundHome } : {}),\n1623:       ...(usingHostCli ? { allowRealUserHome: true } : {}),\n1624:       onEvent: (event) => handleSeatEvent(id, event),\n1625:     });\n1626:   } else if (s.providerFamily === \"xai\" && s.provider === \"grok\" && s.kind === \"persistent\") {\n1627:     push({ from: id, to: null, type: \"SYSTEM_STATUS\",\n1628:       text: `官方 Grok ACP 席位启动中（${s.model} · 登录态由 grok CLI 管理）`, hop: 0,\n1629:       conversationId: context.conversationId, replyToId: context.replyToId, branchId: context.branchId });\n1630:     seat = new PersistentGrokSeat({\n1631:       dataRoot: DATA_ROOT, seatId: id, workspace: config.workspace,\n1632:       model: s.model, reasoningEffort: s.reasoningEffort ?? \"high\", access,\n1633:       ...(boundHome ? { credentialHome: boundHome } : {}),\n1634:       ...(usingHostCli ? { allowRealUserHome: true } : {}),\n1635:       onEvent: (event) => handleSeatEvent(id, event),\n1636:     });\n1637:   } else if (s.providerFamily === \"anthropic\" && s.provider === \"claude\" && s.kind === \"persistent\") {\n1638:     push({ from: id, to: null, type: \"SYSTEM_STATUS\",\n1639:       text: `Claude 常驻席位启动中（${s.model} · stream-json 双向通道）`, hop: 0,\n1640:       conversationId: context.conversationId, replyToId: context.replyToId, branchId: context.branchId });\n1641:     seat = new PersistentClaudeSeat({\n1642:       dataRoot: DATA_ROOT, seatId: id, workspace: config.workspace,\n1643:       model: s.model, access,\n1644:       // 绑定实例：HOME 指向它的隔离目录，凭据随之而来\n1645:       ...(boundHome ? { credentialHome: boundHome } : {}),\n1646:       ...(usingHostCli ? { allowRealUserHome: true } : {}),\n1647:       onEvent: (event) => handleSeatEvent(id, event),\n1648:     });"
+      }
+    ]
+  }
+]

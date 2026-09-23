@@ -1,5 +1,9 @@
 # gogoke Agent rules
 
+项目级 Codex 路由与角色边界见 [docs/model-routing.md](docs/model-routing.md)；它约束 Controller、Codex subagent 及其发起的 Grok 独立通道。
+Controller 负责目标、范围、委派、升级和最终技术判断，Owner 保留最终权威；既有治理、任务卡和更强规则继续有效。
+施工、规划、审计和 specialist 必须保持各自窄边界，不能改目标、契约、安全边界或自行验收。
+
 ## Scope Discipline
 
 优先采用完整满足任务的最小连贯改动；不得为方便、清理、重构、格式化或推测性改进而扩大范围。只有目标的真实依赖要求时才扩大范围，并保持在必要的最小边界内。

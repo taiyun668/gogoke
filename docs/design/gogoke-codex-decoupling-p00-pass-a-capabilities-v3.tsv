@@ -1,0 +1,85 @@
+capability_behavior	entry_families	owning_wp	first_validation_checks	required_disposition	acceptance_assertion	capability_primary_wp
+C01.1	F01,F02,F19	WP11b	T01.L,T02.L	replace-bootstrap	Boot/build without Codex driver, binary, login or Home; no hidden install or provider fallback.	WP05
+C01.2	F01,F02,F13,F21	WP05	T12.L	retain-public	Preserve native window/theme/keyboard/zoom/accessibility/IME behavior; compare cold/warm performance separately at T47.L.	WP05
+C02.1	F01,F13,F21	WP05	T07.L,T12.L	retain-public	Keep chat/diff split, resizing, visibility and saved dimensions without provider coupling.	WP05
+C02.2	F07,F13,F21	WP05	T07.L,T09.L	replace-binding	Two views bind explicit public sessions and input targets without duplicate native execution.	WP05
+C03.1	F03,F08,F12,F21	WP05	T08.L	retain-public	Workspace switching, recent ordering and migrated sort metadata preserve scope and attribution.	WP05
+C03.2	F08,F12,F21	WP05	T66.L	replace-read-version	Only consumption of the correct session/read version clears unread; late/background/cross-project events do not clear it.	WP05
+C04.1	F03,F04,F05,F11	WP08	T03.L,T34.L	decouple-connect	Directory, Git and file operations remain usable without connecting a model.	WP08
+C04.2	F04,F07,F09	WP02	T10.L	replace-identity	Workspace/public session/native binding/profile versions do not collide; real profile switching also requires T51.N1.	WP08
+C05.1	F03,F04,F05	WP08	T34.L	retain-public	Clone/worktree creation, rename and removal preserve existing modifications and report partial results.	WP08
+C05.2	F03,F04,F06	WP04	T24.L	explicit-execution	Creating a directory or reading task text does not authorize a launch/setup script; no-Codex startup checked at T02.L.	WP08
+C06.1	F04,F07,F08	WP02	T10.L	public-session	Composite identity separates native thread ID, instance, account, root, domain and binding generation.	WP02
+C06.2	F07,F08,F21	WP05	T09.L	retain-metadata	Names/pins/archive/reopen preserve lifecycle; archive is not deletion of native history; migration also T37.L.	WP02
+C07.1	F07,F09,F21	WP08	T03.L	import-with-provenance	Authorized imported history remains readable when native Home is absent; migration/source mapping also T37/T40.	WP02
+C07.2	F11,F12,F21	WP04	T11.L	privacy-scoped-export	Search/index/copy/export contain only the authorized domain and selected material, not hidden secrets or side chats.	WP02
+C08.1	F13,F21,F22	WP05	T07.L	retain-public	Two composer drafts, attachments, focus and async selection remain independent.	WP05
+C08.2	F07,F08,F12	WP04	T11.L,T49.L	separate-domains	Controller, worker, auditor and global roles do not inherit private conversations by sharing workspace or account.	WP05
+C09.1	F13,F22	WP05	T12.L	retain-public	Chinese IME, shortcuts, streamed focus and normal completion survive rebinding.	WP05
+C09.2	F07,F13,F22	WP04	T13.L,T24.L	explicit-intent	Command-like text and mention syntax never grant execution authority or bypass delivery identity.	WP05
+C10.1	F11,F22	WP08	T35.L	freeze-input	Picker, native drop, browser drop/paste and FileReader paths freeze the intended original for the chosen target.	WP08
+C10.2	F11,F22	WP08	T22.L,T35.L	scope-resources	Path/asset access respects independent project/product/native domains and protects originals.	WP08
+C11.1	F07,F08	WP01	T05.L	protocol-adapter	Heterogeneous frames including missing thread/turn fields decode with provenance; malformed/partial/gap streams not falsely complete.	WP04
+C11.2	F07,F08,F22	WP04	T18.L	preserve-fact-source	Tool/native/model declarations keep their source and failure; model plan text does not invent host execution facts.	WP04
+C12.1	F07,F14	WP04	T13.L,T14.L	durable-delivery	Same operation/fingerprint is reconciled, conflicting fingerprint rejected, unknown acceptance not replayed blindly.	WP04
+C12.2	F07,F08,F14	WP04	T16.L,T17.L,T20.L	control-priority	Ordinary input cannot starve control; duplicate/late replies cannot revive canceled or terminal operations.	WP04
+C13.1	F07,F13	WP04	T15.L	native-steer-intent	Steer differs from queued send and rejects stale turn/binding targets.	WP04
+C13.2	F07,F09	WP09a	T06.L,T58.L	capability-gated	Unsupported/unknown steer remains explicit for each binary/profile/mode; no silent downgrade.	WP04
+C14.1	F02,F06,F07,F15	WP04	T17.L	separate-lifecycles	View close, UI disconnect, turn interrupt, session close and host exit are separate outcomes.	WP03
+C14.2	F04,F06,F15,F23	WP03	T31.L,T52.L,T63.L	identity-checked-stop	Unknown PID identity cannot authorize tree kill; descendants and old writers must be reconciled before replacement. Selected Node close/Room caller: 8s host vs10s grace, codes124/125, repeated-close/missing-handle and descendant-unknown must retain custody (B02).	WP03
+C15.1	F07,F08,F10	WP04	T19.L,T20.L	bound-continuation	Approval/input answers bind original request, session, generation and limited scope; remembered rule is a separate write.	WP04
+C15.2	F08,F12,F22	WP04	T24.L	trusted-controls	Rendered content cannot forge approval controls; sensitive answers excluded from ordinary log/export at T23.L.	WP04
+C16.1	F07	WP06	T29.L	distinguish-fork	Native fork and continuation from fixed visible material are labeled differently and tested separately.	WP06
+C16.2	F07,F11	WP06	T28.L	fixed-source-cut	Fork/continuation retains source and cutoff; copied parent history cannot bypass privacy boundaries.	WP06
+C17.1	F07,F22	WP06	T29.L	distinguish-compact	UI folding, generated summary and native compaction remain distinct actions and receipts.	WP06
+C17.2	F07,F21	WP09b	T40.L	preserve-history	Original history, provenance and recovery mode survive compaction/summary; native Home loss does not imply content deletion.	WP06
+C18.1	F05,F07	WP06	T28.L	fixed-review-material	Review uses fixed Git/material identities; generated report never authorizes merge or adoption.	WP06
+C18.2	F07,F08	WP04	T11.L,T49.L,T67.L	clean-review-binding	Formal audit gets a clean binding and selected material, not owner chat, builder context or native fork inheritance.	WP06
+C19.1	F07,F08,F22	WP06	T65.L	separate-activity-facts	Model plan, native subagent and host task state are distinct; native subagent is not a public seat authority.	WP06
+C19.2	F08,F14	WP04	T16.L,T67.L	generation-and-scope	Duplicate/late activity cannot revive canceled tasks or collide across parent/project scopes.	WP06
+C20.1	F09,F15	WP09a	T58.L	native-auth-reference	Official login/secret references preserved without token cloning; binding/binary/auth changes invalidate evidence.	WP09b
+C20.2	F04,F07,F09	WP03	T31.L,T51.L	separate-capacity-context	Shared account capacity does not imply shared context; neither arbitrary shared Arc nor one-seat-one-account is assumed.	WP09b
+C21.1	F07,F09	WP01	T05.L	provider-extension	Public model/mode controls consume verified selected-instance capability, not Codex-specific enums as universal truth.	WP09b
+C21.2	F04,F07,F09	WP03	T31.L,T51.L	freeze-target	In-flight operations do not silently change account/model/mode when settings or runtime args change.	WP09b
+C22.1	F08,F09,F12	WP09b	T36.L	provenance-metering	Cumulative/delta, account sharing, windows and units are distinguished; duplicate events do not double-count.	WP09b
+C22.2	F09,F12	WP09a	T06.L	unknown-not-zero	Unknown usage remains unknown; local JSONL/JWT plan hints are not official remaining allowance.	WP09b
+C23.1	F10	WP07	T25.L	public-resource-root	Public prompt CRUD/parameters work without CODEX_HOME; native execution and target-specific generation are separate checks.	WP07
+C23.2	F10,F21	WP07	T25.L	preserve-import-source	Name conflicts, damaged inputs and repeated imports keep originals and domain identity without accidental execution.	WP07
+C24.1	F10,F11	WP07	T25.L,T26.L	split-public-native-root	Public AGENTS/rule/config editing does not secretly write provider Home or delete developer files.	WP07
+C24.2	F07,F10,F22	WP04	T24.L	bounded-loading	Project/native config text does not expand authorization; actual launch inheritance checked at T50.L.	WP07
+C25.1	F07,F10	WP07	T27.L	source-tagged-resources	Discovery/view/enable are separate; selected assets carry provenance and license identity.	WP07
+C25.2	F10,F19	WP04	T24.L	inert-import	Importing a skill/plugin cannot execute its scripts or grant new tool authority.	WP07
+C26.1	F07,F09,F10	WP07	T27.L	capability-specific-connectors	MCP/App status or listing is not cross-provider connection proof.	WP07
+C26.2	F09,F10,F14	WP04	T19.L	isolate-secrets	Connector account secrets and grants do not silently propagate between instances.	WP07
+C27.1	F10	WP07	T26.L	public-template-data	Public templates avoid Codex config writes; unknown native fields and external user-managed role files preserved.	WP07
+C27.2	F07,F10	WP04	T19.L,T24.L,T67.L	template-not-authority	Role text cannot assign instances or execution privileges; native agent file editing remains scoped.	WP07
+C28.1	F06	WP08	T33.L	retain-pty	PTY create/resize/output/reconnect preserve tabs without duplicate spawn; UI hiding is not process close.	WP08
+C28.2	F06,F22	WP03	T52.L	separate-user-terminal	User PTY and model tool processes have separate ownership; OSC52/control sequences also need T54.L.	WP08
+C29.1	F04,F05	WP08	T03.L,T34.L	retain-offline-git	No-model Git status/diff/branch/commit/clone/worktree/sync remain functional and preserve partial outcomes.	WP08
+C29.2	F05,F11,F22	WP04	T24.L	fixed-authorized-target	Model prose cannot replace fixed object/path authorization; safe temporary-repo path tests follow at T22.L.	WP08
+C30.1	F05,F07	WP08	T03.L,T30.L	split-query-and-generation	GitHub queries work without model; Ask PR uses fixed material and explicitly selected generation instance.	WP08
+C30.2	F05,F07,F09	WP09b	T23.L	separate-credentials	GitHub credentials do not follow model-account selection; failed generation preserves draft.	WP08
+C31.1	F03,F05,F07,F10	WP08	T30.L	replace-three-generators	Commit message, run metadata and agent description each use a real selected non-Codex instance; manual text is not generated evidence.	WP08
+C31.2	F03,F05,F07,F10	WP05	T12.L	preserve-ui-contract	All three buttons, context inputs and failure drafts retained; each provider/version checked separately at T30/T62.	WP08
+C32.1	F11,F22	WP08	T03.L,T22.L	retain-offline-files	Public file tree/search/read/export/open work offline with Chinese and spaced paths.	WP08
+C32.2	F11,F21,F22	WP02	T55.L	independent-root-boundaries	Product/project/native/asset roots and aliases are independent; file target and renderer tests also T22/T54.	WP08
+C33.1	F02,F04,F06,F07,F15,F19	WP03	T50.L,T52.L	single-process-contract	Every launch declares actual program/env/home/cwd and identity; stop result distinguishes parent and descendants.	WP03
+C33.2	F04,F14,F15,F20,F23,F24	WP03	T41.L,T51.L,T63.L	single-writer-owner	Reuse requires compatible binding identity and old writer reconciliation, not just a live Arc or DB lease. Selected worker module imports must bind root/writer leases and durable residual receipts before reuse, never release on close Promise or missing handle (B02/B03).	WP03
+C34.1	F08,F14,F15	WP04	T16.L	cursor-snapshot	Local IPC reconnect uses version/cursor/gap/snapshot without resending already accepted work through an old route.	WP10b
+C34.2	F14,F15,F16	WP10a	T56.L	seal-remote	Old clients/config/startup/mobile paths cannot restore deferred external remote exposure.	WP10b
+C35.1	F08,F12,F13	WP05	T08.L,T09.L,T66.L	public-session-navigation	Tray/notification/deep links reauthorize public target and do not falsely clear unread or create another execution.	WP05
+C35.2	F08,F12	WP04	T11.L,T67.L	scoped-notification	Private conversation and worker activity do not automatically become owner notification contents or tasks.	WP05
+C36.1	F01,F13,F17	WP10a	T57.L	preserve-disabled-target	Seal status/UI/shortcut/direct command/permission/download/capture entry surfaces; current source is still active.	WP10a
+C36.2	F17,F18,F21	WP12	T37.L,T42.L	preserve-assets	Keep model bytes/path/hash/config through upgrade/rollback; reactivation separately authorized.	WP10a
+C37.1	F09,F15,F21,F24,F25	WP02	T39.L,T55.L	fail-closed-storage	Corrupt JSON/root/schema cannot silently produce empty authoritative data then overwrite originals. Inventory Seat owner/state/transcript/protocol/events/prompts, atomic helper failure/RMW, AccountStore and InstanceStore non-adoption and migration (B03).	WP09b
+C37.2	F09,F12,F21	WP09a	T06.L	qualified-diagnostics	Unknown states and usage remain qualified; raw debug/export needs independent secret filtering at T23.L.	WP09b
+C38.1	F07,F10,F11,F22	WP03	T21.L,T50.L	enforced-boundaries	Native/OS read-only and inherited environment are tested, not inferred from policy flags or UI checks.	WP04
+C38.2	F07,F08,F14,F20	WP04	T11.L,T49.L,T67.L	minimal-handoff	Private upstream/downstream conversations, restoration and old write domains remain isolated from authorized task packages.	WP04
+C39.1	F18,F19	WP12	T46.L,T59.L	preserve-trust-chain	Installer/package/worker identity, signed manifest and readiness are individually checked; data import cannot change trust roots.	WP12
+C39.2	F18,F19,F21	WP12	T37.L,T38.L,T42.L	preserve-new-data	Upgrade/rollback retains post-upgrade additions; uninstall does not delete user CLI, model or history assets.	WP12
+C40.1	F19,F20	WP01	T61.L	traceable-boundaries	Behavior/entry/removal/test/stage/artifact graph has rejection checks; brand checks alone do not prove decoupling.	WP13
+C40.2	F19,F20	WP00	T68.P	fixed-evidence	Fixed candidate, independent pass and owner decision are distinct; author validation cannot become Pass B or production acceptance.	WP13
+C41.1	F02,F09,F14,F15,F16	WP10a	T56.L	preserve-local-seal-external	Seal UI/RPC/auto-start/mobile remote entry paths without deleting the local daemon.	WP10a
+C41.2	F15,F16,F18,F21	WP12	T37.L,T42.L	preserve-owned-records	Preserve only gogoke-owned remote records; do not copy or mutate external Tailscale identity.	WP10a
+C42.1	F07,F08,F20	WP04	T24.L,T49.L,T67.L	new-minimal-contract	Future structured CLI-to-CLI delegation checks real caller/target/material; no current public delegation completion is claimed.	WP04
+C42.2	F07,F08,F20,F23,F24,F25	WP04	T19.L,T67.L	no-legacy-authority	Worker replies return to controller and formal audit uses clean binding; Room/native subagent cannot bypass public authority. Select symbols, not Room/Seat barrel authority; keep canonical dataRoot/credentialHome and explicit host approval distinct (B03).	WP04

@@ -1,0 +1,111 @@
+[
+  {
+    "id": "B01",
+    "verdict": "CLOSED_AS_EVIDENCE",
+    "label": "证据缺口可关闭",
+    "reason": "两处有效行已修；独立 token 枚举逐 method/handler/arm-kind 对账，104 项无差异；原两个错标签及保持分组数的交换均被拒绝。",
+    "source_refs": [
+      "rpc/workspace.rs:266",
+      "rpc/daemon.rs:18"
+    ],
+    "checks": [
+      "verify_repair_replay",
+      "independent_source_delta"
+    ],
+    "retained_anchors": [
+      "IF01",
+      "E17"
+    ],
+    "runtime_fixed": false
+  },
+  {
+    "id": "B02",
+    "verdict": "CLOSED_AS_EVIDENCE",
+    "label": "证据缺口可关闭",
+    "reason": "8s/10s/5s及额外身份/kill预算、124/125、二次close、缺句柄、三provider清引用、回写失败、唯一ExecutionHost和耐久残留保管/旧writer隔离均已具体承接。源码风险未修。",
+    "source_refs": [
+      "server.ts:2800-2834,4900-4938",
+      "close.ts:25-47,95-171,198-274",
+      "seat-runtime.ts:639-670",
+      "claude-seat.ts:622-651",
+      "grok-acp-seat.ts:481-509"
+    ],
+    "checks": [
+      "safe_source_fixtures_replay",
+      "independent_targeted_fixtures",
+      "manual_source_to_lifecycle_contract_review"
+    ],
+    "retained_anchors": [
+      "IF10",
+      "IF11",
+      "E31",
+      "AU05",
+      "AU07"
+    ],
+    "first_checks": [
+      "WP03/T32.L",
+      "WP03/T52.L",
+      "WP03/T63.L"
+    ],
+    "runtime_fixed": false
+  },
+  {
+    "id": "B03",
+    "verdict": "CHANGES_REQUIRED",
+    "label": "CHANGES_REQUIRED",
+    "reason": "root/writer、显式host许可、metadata迁移和不整体引入Room/Rust另内核的主体补证已承接，但 selection_matrix 两个具体源码符号不能解析：confirmOwner 和 startSeat。见 C2-F01。",
+    "source_refs": [
+      "reuse-contracts.json:76,97",
+      "instances.ts:325-338",
+      "server.ts:1488-1504,1652-1657",
+      "proc.ts:17-38"
+    ],
+    "checks": [
+      "verify_repair_replay",
+      "independent_ts_ast",
+      "symbol_adjudication",
+      "independent_targeted_fixtures"
+    ],
+    "retained_anchors": [
+      "IF12",
+      "IF16"
+    ],
+    "first_checks": [
+      "WP00:定向证据修订",
+      "WP02/T39.L,T55.L",
+      "WP03/T50.L,T51.L,T63.L"
+    ],
+    "runtime_fixed": false
+  },
+  {
+    "id": "K16",
+    "verdict": "CLOSED_AS_EVIDENCE",
+    "label": "证据缺口可关闭",
+    "reason": "prompt update 已纠正为先写 next_path，再删旧 target_path；删除失败可留双文件。move 的 rename→EXDEV copy/remove 是另一函数且跨设备 fallback 为 Unix 条件。",
+    "source_refs": [
+      "prompts_core.rs:399-408",
+      "prompts_core.rs:90-108"
+    ],
+    "checks": [
+      "verify_repair_replay",
+      "independent_source_delta",
+      "manual_order_review"
+    ],
+    "runtime_fixed": false
+  },
+  {
+    "id": "K17",
+    "verdict": "CLOSED_AS_EVIDENCE",
+    "label": "证据缺口可关闭",
+    "reason": "Agent create/update/delete 的补偿顺序、可失败补偿、managed-only读写与直接write不预解析新TOML，均已同步至六条相关surfaces及K/权威表。",
+    "source_refs": [
+      "agents_config_core.rs:128-379,603-615,661-710"
+    ],
+    "checks": [
+      "verify_repair_replay",
+      "independent_source_delta",
+      "manual_order_and_path_review"
+    ],
+    "runtime_fixed": false
+  }
+]

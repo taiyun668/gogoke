@@ -1,0 +1,272 @@
+{
+  "schema": "gogoke.p00.pass-d.runtime-obligations.v1",
+  "source_basis": "bc665a852833952b76d9508401193bedd2198436",
+  "reviewed_payload": "c055e125531e166cb67a45531a3c7a8aa9d70330",
+  "test_deadline_authority": {
+    "path": "docs/design/gogoke-codex-decoupling-plan-v3.md",
+    "git_blob": "a818790f2780e439096e1d246679fb9ed228d88a",
+    "sha256": "9f10891d764305d0fdad56b7bb34b54abf1503aa882918faba7a1b26b67a4c9d",
+    "sections": [
+      "7",
+      "9"
+    ]
+  },
+  "rule": "This is a handoff index, not a revised test plan. All original checks and N1/I/M deadlines remain effective. first_wp starts an axis; per_check_deadline determines each test deadline. All states stay NOT_RUN until actual evidence exists.",
+  "axes": [
+    {
+      "id": "DR01",
+      "axis": "root aliases/locks/corruption/migration",
+      "checks": [
+        "T39.L",
+        "T55.L",
+        "T55.H",
+        "T37.L",
+        "T38.L",
+        "T42.L"
+      ],
+      "first_wp": "WP02",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T39.L": "WP02",
+        "T55.L": "WP02",
+        "T55.H": "WP03",
+        "T37.L": "WP12",
+        "T38.L": "WP12",
+        "T42.L": "WP12"
+      }
+    },
+    {
+      "id": "DR02",
+      "axis": "native CLI/profile/auth/env/cost/capacity",
+      "checks": [
+        "T21.L",
+        "T31.L",
+        "T50.L",
+        "T51.L",
+        "T58.L",
+        "T62.L"
+      ],
+      "first_wp": "WP03",
+      "real_native_first": "WP11a per-provider N1; new providers admitted before WP11b I",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T21.L": "WP03",
+        "T31.L": "WP03",
+        "T50.L": "WP03",
+        "T51.L": "WP03",
+        "T58.L": "WP09a",
+        "T62.L": "WP11b"
+      }
+    },
+    {
+      "id": "DR03",
+      "axis": "PID/descendants/old writer",
+      "checks": [
+        "T32.L",
+        "T52.L",
+        "T63.L"
+      ],
+      "first_wp": "WP03",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T32.L": "WP03",
+        "T52.L": "WP03",
+        "T63.L": "WP03"
+      }
+    },
+    {
+      "id": "DR04",
+      "axis": "delivery/retry/order/event gaps/backpressure/continuation",
+      "checks": [
+        "T13.L",
+        "T14.L",
+        "T16.L",
+        "T18.L",
+        "T19.L",
+        "T20.L",
+        "T53.L"
+      ],
+      "first_wp": "WP04",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T13.L": "WP04",
+        "T14.L": "WP04",
+        "T16.L": "WP04",
+        "T18.L": "WP04",
+        "T19.L": "WP04",
+        "T20.L": "WP04",
+        "T53.L": "WP04"
+      }
+    },
+    {
+      "id": "DR05",
+      "axis": "privacy/content/OS/IME/dual-view/unread",
+      "checks": [
+        "T11.L",
+        "T49.L",
+        "T07.L",
+        "T12.L",
+        "T54.L",
+        "T66.L",
+        "T23.L"
+      ],
+      "first_wp": "WP04",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T11.L": "WP04",
+        "T49.L": "WP04",
+        "T07.L": "WP05",
+        "T12.L": "WP05",
+        "T54.L": "WP05",
+        "T66.L": "WP05",
+        "T23.L": "WP09b"
+      }
+    },
+    {
+      "id": "DR06",
+      "axis": "Git/gh/files/PTY/attachments/generators",
+      "checks": [
+        "T22.L",
+        "T30.L",
+        "T33.L",
+        "T34.L",
+        "T35.L"
+      ],
+      "first_wp": "WP08",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T22.L": "WP08",
+        "T30.L": "WP08",
+        "T33.L": "WP08",
+        "T34.L": "WP08",
+        "T35.L": "WP08"
+      }
+    },
+    {
+      "id": "DR07",
+      "axis": "external remote/daemon/Tailscale/mobile sealing",
+      "checks": [
+        "T56.L",
+        "T43.L",
+        "T44.L",
+        "T45.L"
+      ],
+      "first_wp": "WP10a",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T56.L": "WP10a",
+        "T43.L": "WP10b",
+        "T44.L": "WP10b",
+        "T45.L": "WP10b"
+      }
+    },
+    {
+      "id": "DR08",
+      "axis": "voice/permission/model/capture/transcription sealing",
+      "checks": [
+        "T57.L",
+        "T37.L",
+        "T42.L"
+      ],
+      "first_wp": "WP10a",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T57.L": "WP10a",
+        "T37.L": "WP12",
+        "T42.L": "WP12"
+      }
+    },
+    {
+      "id": "DR09",
+      "axis": "installation/update/registry/ready/rollback/sign/publish/TestFlight",
+      "checks": [
+        "T38.L",
+        "T42.L",
+        "T46.L",
+        "T59.L",
+        "T60.M"
+      ],
+      "first_wp": "WP12",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T38.L": "WP12",
+        "T42.L": "WP12",
+        "T46.L": "WP12",
+        "T59.L": "WP12",
+        "T60.M": "WP12"
+      }
+    },
+    {
+      "id": "DR10",
+      "axis": "build/no-Codex/provenance/performance/full platform matrix",
+      "checks": [
+        "T60.L",
+        "T01.L",
+        "T02.L",
+        "T47.L",
+        "T62.L",
+        "T68.L"
+      ],
+      "first_wp": "WP03",
+      "status": "NOT_RUN",
+      "per_check_deadline": {
+        "T60.L": "WP03",
+        "T01.L": "WP11b",
+        "T02.L": "WP11b",
+        "T47.L": "WP11b",
+        "T62.L": "WP11b",
+        "T68.L": "WP13"
+      }
+    }
+  ],
+  "closed_findings_implementation_obligations": {
+    "B01": {
+      "T61.L": "WP01"
+    },
+    "B02": {
+      "T32.L": "WP03",
+      "T52.L": "WP03",
+      "T63.L": "WP03"
+    },
+    "B03/C2-F01": {
+      "T39.L": "WP02",
+      "T55.L": "WP02",
+      "T32.L": "WP03",
+      "T50.L": "WP03",
+      "T51.L": "WP03",
+      "T52.L": "WP03",
+      "T63.L": "WP03",
+      "T11.L": "WP04",
+      "T49.L": "WP04"
+    },
+    "K16/K17": {
+      "T25.L": "WP07",
+      "T26.L": "WP07"
+    }
+  },
+  "first_batch_recommended_not_authorized": [
+    {
+      "wp": "WP10a",
+      "scope": "Seal external remote and voice entry paths while retaining local daemon, code, model bytes/paths/hashes/config and rollback conditions. Do not stop system services or touch real credentials.",
+      "first_checks": {
+        "T56.L": "WP10a",
+        "T57.L": "WP10a"
+      }
+    },
+    {
+      "wp": "WP01",
+      "scope": "Public Session/Binding/Execution/Delivery/Event/Capability/ContextPackage/HumanActionRequest contracts; ownership/cleanup result types, versions, boundary ledger and traceability rejection tests. Do not add a second Room/kernel/store authority or run providers.",
+      "first_checks": {
+        "T05.L": "WP01",
+        "T61.L": "WP01"
+      }
+    }
+  ],
+  "dependency_holds": {
+    "WP02": "After P01 plus separate bounded work authorization; real root/OS-lock/corruption and migration fixtures required before reuse.",
+    "WP03": "After P02 and P10a plus separate bounded work authorization; exact PID/descendants/custody/old-writer proof before mechanism reuse."
+  },
+  "production_authorized_now": [],
+  "external_actions_authorized_now": [],
+  "runtime_verified": false
+}

@@ -1,0 +1,37 @@
+{
+  "verdict": "CHANGES_REQUIRED",
+  "fixed_snapshot": "55a8443ef98f1cc231f4f45d78c3bc3cad93a9e4",
+  "fixed_payload": "620b49270f99f18cd9d8d5e7ffa68b76c5f274df",
+  "production_baseline": "bc665a852833952b76d9508401193bedd2198436",
+  "production_tree": "746024abeb2e6d35ac88fd1b2e315fceb0e9f54f",
+  "independent_freeze_sha256": "685936270e4b4ae45354140c0aebbc05079c63e46abe197944e5b34c58d88507",
+  "P00": "NOT_ACCEPTED",
+  "code_entry_gate": "CLOSED_PENDING_GPT_P00_REVIEW",
+  "old_pass_b_c_used": false,
+  "author_conclusions_read_before_freeze": false,
+  "findings": [
+    "B01: two incorrect daemon handler labels and partition counts",
+    "B02: selected Room/Seat close deadline/result/owner boundary",
+    "B03: selected Seat transitive root/writer and explicit home contract"
+  ],
+  "structural_reconciliation": "303 observations/84 behaviors/133 methods; actual candidate retains two verified handler mismatches",
+  "stage1_tests": {
+    "ran": 14,
+    "failed": 0,
+    "exit_code": 0
+  },
+  "negative_controls": {
+    "rejected": 16,
+    "basis": "new error beyond two known baseline mismatches"
+  },
+  "production_runtime_executed": false,
+  "pr": {
+    "number": 6,
+    "state": "open",
+    "merged": false,
+    "head": "55a8443ef98f1cc231f4f45d78c3bc3cad93a9e4",
+    "base": "bc665a852833952b76d9508401193bedd2198436",
+    "changed_files": 26,
+    "documentation_evidence_only": true
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema": "gogoke.p00.c2-f01.focused-review.item-reconciliation.r3",
+  "review_completed_utc": "2026-09-19T12:57:59.591554+00:00",
+  "verdict": "EVIDENCE_GAP_CAN_CLOSE",
+  "items": [
+    {
+      "id": "C2-F01",
+      "parent": "B03",
+      "result": "CLOSED_AS_EVIDENCE",
+      "runtime_fixed": false,
+      "reason": "Both invalid source-symbol names are replaced with pinned actual declarations; caller edges, identity-unknown branches, persistence failures, rollback/release behavior, residual custody, and old-writer fencing are explicitly joined to source and future owners."
+    },
+    {
+      "id": "B03",
+      "result": "EVIDENCE_GAP_CLOSED",
+      "runtime_fixed": false,
+      "reason": "The remaining C2-F01 source-join defect is closed; the broader R2 root/writer/permission/migration evidence remains preserved and is not re-adjudicated as runtime-safe."
+    },
+    {
+      "id": "B01",
+      "result": "CLOSED_AS_EVIDENCE_PRESERVED",
+      "reopened": false
+    },
+    {
+      "id": "B02",
+      "result": "CLOSED_AS_EVIDENCE_PRESERVED",
+      "reopened": false
+    },
+    {
+      "id": "K16",
+      "result": "CLOSED_AS_EVIDENCE_PRESERVED",
+      "reopened": false
+    },
+    {
+      "id": "K17",
+      "result": "CLOSED_AS_EVIDENCE_PRESERVED",
+      "reopened": false
+    }
+  ],
+  "p00": "NOT_ACCEPTED",
+  "code_entry_gate": "CLOSED_PENDING_GPT_P00_REVIEW",
+  "pass_d_completed": false,
+  "owner_authorized_code_entry": false
+}
