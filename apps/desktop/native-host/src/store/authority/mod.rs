@@ -8,6 +8,14 @@ mod model;
 mod promotion;
 mod promotion_commit;
 mod transaction;
+mod process_custody;
+
+pub(crate) use process_custody::{
+    initialize as initialize_process_custody_schema,
+    mark_active as mark_process_active,
+    mark_unknown as mark_process_unknown,
+    record_prepared as record_prepared_process,
+};
 
 pub(crate) use bootstrap::{
     admit_owner_controller_caller, initialize_profile, read_product_identity,

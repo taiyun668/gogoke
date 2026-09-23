@@ -106,6 +106,7 @@ fn capability_matches(expected: &str, observed: &str) -> bool {
 pub(crate) fn serve_authenticated_pipe(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
+    process_custodian: &mut crate::process::ProcessCustodian,
     pipe: &PrivatePipeConnection,
     expected_capability: &str,
 ) -> Result<(), OrchestrationError> {
@@ -127,7 +128,7 @@ pub(crate) fn serve_authenticated_pipe(
         let frame = pipe.read_frame().map_err(|_| OrchestrationError::Invalid("pipe read"))?;
         let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
         let started = Instant::now();
-        let handled = handle_authenticated_line(connection, owner, line);
+        let handled = handle_authenticated_line_with_process(connection, owner, Some(process_custodian), line);
         let should_stop = successful_shutdown(line, &handled);
         let reply = match handled {
             Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
@@ -558,9 +559,19 @@ const ACTION_PREPARE_FIELDS: [&str; 13] = [
     "packageOperationId", "parentGrantRef", "payload", "recipeId", "reservationId", "sessionId", "taskId",
 ];
 
+#[cfg(test)]
 fn handle_authenticated_line(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
+    line: &str,
+) -> Result<String, OrchestrationError> {
+    handle_authenticated_line_with_process(connection, owner, None, line)
+}
+
+fn handle_authenticated_line_with_process(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    _process_custodian: Option<&mut crate::process::ProcessCustodian>,
     line: &str,
 ) -> Result<String, OrchestrationError> {
     let decoded = decode_operation_frame(line.as_bytes()).map_err(protocol_error)?;

@@ -1676,6 +1676,42 @@ mod tests {
     }
 
     #[test]
+    fn prepared_process_identity_is_durable_before_activation() {
+        use crate::root::RootLock;
+        use crate::store::authority::{initialize_process_custody_schema, mark_process_active,
+            mark_process_unknown, record_prepared_process};
+        use crate::store::same_open::route_b_test_guard;
+        use crate::store::session::open_product_database;
+
+        let _guard = route_b_test_guard();
+        let path = unique_marker("prepared-coordination");
+        fs::create_dir(&path).expect("root");
+        let root = RootLock::acquire(&path).expect("root lock");
+        let database = path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).expect("database");
+        initialize_process_custody_schema(&mut connection).expect("coordination schema");
+        let mut custodian = ProcessCustodian::new().expect("custodian");
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+            "-Command".into(), "Start-Sleep -Seconds 1".into()];
+        let prepared = custodian.prepare(&request(launch)).expect("suspended process");
+        record_prepared_process(&mut connection, "r2-02-test", &prepared).expect("durable PREPARED");
+        assert!(record_prepared_process(&mut connection, "r2-02-test", &prepared).is_err());
+        custodian.activate(&prepared).expect("activate exact prepared identity");
+        mark_process_active(&mut connection, "r2-02-test", &prepared).expect("durable ACTIVE");
+        assert!(mark_process_active(&mut connection, "r2-02-test", &prepared).is_err());
+        mark_process_unknown(&mut connection, "r2-02-test", &prepared).expect("unknown on unresolved outcome");
+        assert!(mark_process_active(&mut connection, "r2-02-test", &prepared).is_err());
+        drop(custodian);
+        connection.close_checked().expect("close checked");
+        drop(root);
+        fs::remove_file(&database).ok();
+        fs::remove_file(format!("{}-wal", database.display())).ok();
+        fs::remove_file(format!("{}-shm", database.display())).ok();
+        fs::remove_dir(&path).ok();
+    }
+
+    #[test]
     fn unknown_or_mismatched_identity_never_authorizes_pid_targeting() {
         let recorded = ProcessIdentity {
             pid: 101,
