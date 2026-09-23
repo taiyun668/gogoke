@@ -136,6 +136,37 @@ export interface NativeR2TestRecipeReceipt {
   readonly contentHash: string;
 }
 
+export interface NativeR2ActionDecisionBasis {
+  readonly state: "TEST_ONLY_DECISION_BASIS_NOT_ACTION";
+  readonly actionDigest: string;
+  readonly stateViewHash: string;
+  readonly taskRevision: string;
+  readonly policyRevision: string;
+  readonly bindingId: string;
+  readonly bindingGeneration: string;
+}
+
+export function decodeR2ActionDecisionBasis(body: string): NativeR2ActionDecisionBasis {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_DECISION", "invalid native Decision basis"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_DECISION", "invalid native Decision basis");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 7 ||
+      record.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
+      typeof record.actionDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.actionDigest) ||
+      typeof record.stateViewHash !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.stateViewHash) ||
+      typeof record.taskRevision !== "string" || !/^[1-9][0-9]*$/.test(record.taskRevision) ||
+      typeof record.policyRevision !== "string" || !/^[1-9][0-9]*$/.test(record.policyRevision) ||
+      typeof record.bindingId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.bindingId) ||
+      record.bindingGeneration !== "1") {
+    throw new NativeHostClientError("R2_TEST_DECISION", "native Decision basis mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2ActionDecisionBasis);
+}
+
 export function decodeR2TestRecipeReceipt(body: string): NativeR2TestRecipeReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
@@ -2094,6 +2125,27 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
     return decodeR2TestRecipeReceipt(body);
+  }
+
+  async readR2TestActionDecisionBasis(
+    caller: NativeControllerCallerContext,
+    promptJson: string,
+  ): Promise<NativeR2ActionDecisionBasis> {
+    if (Buffer.byteLength(promptJson, "utf8") > 32 * 1024 ||
+        promptJson.includes("\n") || promptJson.includes("\r")) {
+      throw new NativeHostClientError("R2_TEST_DECISION", "invalid prompt frame");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReadR2TestActionDecisionBasis",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      promptJson,
+    })).body;
+    return decodeR2ActionDecisionBasis(body);
   }
 
   async runControlledFixtureProbe(input: {

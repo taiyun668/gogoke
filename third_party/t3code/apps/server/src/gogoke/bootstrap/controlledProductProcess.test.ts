@@ -87,6 +87,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     let packageDigest: string | undefined;
     let lineageBinding: string | undefined;
     let recipeHash: string | undefined;
+    let actionDigest: string | undefined;
     for (let task = 0; task < 2; task += 1) {
       let session!: PiManagedSession;
       let stopProofHash = "";
@@ -123,6 +124,11 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
             Assert.equal(recipe.disposition, "RECONCILED");
             Assert.equal(recipe.contentHash, recipeHash);
           }
+          const basis = await client!.readR2TestActionDecisionBasis(caller, promptJson);
+          Assert.equal(basis.state, "TEST_ONLY_DECISION_BASIS_NOT_ACTION");
+          Assert.match(basis.actionDigest, /^sha256:[0-9a-f]{64}$/);
+          if (actionDigest === undefined) actionDigest = basis.actionDigest;
+          else Assert.equal(basis.actionDigest, actionDigest);
           const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
           stopProofHash = evidence.stopProofHash;
           for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));

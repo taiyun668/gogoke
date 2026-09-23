@@ -227,6 +227,41 @@ fn current_selection(
     Ok((package, task, lineage, recipe, profile))
 }
 
+/// Preparatory Decision input derived from current Product Authority records.
+/// It does not reserve an Action or grant send authority; Action prepare/begin
+/// must recheck the same records after the Decision is committed.
+pub(crate) fn derive_action_decision_basis(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    request: &PrepareActionAuthority,
+) -> Result<ActionDecisionBasis> {
+    if request.action_kind != "queue" || request.lane != "work" {
+        return denied();
+    }
+    transaction::run(connection, |tx| {
+        let (package, task, lineage, recipe, profile) = current_selection(tx, request)?;
+        if request.payload.as_slice() != package.instruction.as_bytes() {
+            return denied();
+        }
+        let payload_digest = content_hash(&request.payload);
+        let semantic_digest = intent_digest(request, &package.package_digest,
+            &task.task_revision, &recipe.recipe.revision, &recipe.content_hash,
+            &profile.policy_revision, &payload_digest);
+        let state_view_hash = content_hash(format!(
+            "r2-02-decision-state:{}:{}:{}:{}",
+            package.package_digest, task.task_revision,
+            recipe.content_hash, lineage.native.generation,
+        ).as_bytes());
+        Ok(ActionDecisionBasis {
+            semantic_digest,
+            state_view_hash,
+            task_revision: task.task_revision,
+            policy_revision: profile.policy_revision,
+            binding_id: lineage.native.binding_id,
+            generation: lineage.native.generation,
+        })
+    })
+}
+
 pub(crate) fn prepare_action_authority(
     connection: &mut VerifiedDatabaseConnection<'_>,
     request: &PrepareActionAuthority,
@@ -1463,6 +1498,16 @@ pub(crate) struct NativeActionFixtureSelection {
     pub runtime_instance_id: String,
     pub semantic_digest: String,
     pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ActionDecisionBasis {
+    pub semantic_digest: String,
+    pub state_view_hash: String,
+    pub task_revision: String,
+    pub policy_revision: String,
+    pub binding_id: String,
+    pub generation: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

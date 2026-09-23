@@ -1318,6 +1318,47 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.version.recipe.revision),
                 json_quote(&receipt.version.content_hash)))
         }
+        "ReadR2TestActionDecisionBasis" => {
+            let fields = action_fields(line, &[
+                "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId", "promptJson",
+            ])?;
+            let prompt = required(&fields, "promptJson")?;
+            validate_r2_test_prompt(prompt)?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant_ref = authority::r2_test_grant_id("r2-02-controlled-task")?;
+            let grant = authority::read_current_delegation(connection, &grant_ref)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let basis = authority::derive_action_decision_basis(connection,
+                &authority::PrepareActionAuthority {
+                    domain_id: "domain-r2-02-test".into(),
+                    parent_grant_ref: grant_ref,
+                    package_operation_id: "r2-02-package".into(),
+                    task_id: "task-r2-02-test".into(),
+                    recipe_id: "recipe-r2-02-test".into(),
+                    session_id: "session-r2-02-worker".into(),
+                    context_manifest_id: "manifest-r2-02-test".into(),
+                    action_operation_id: "opr_22222222222222222222222222222222".into(),
+                    reservation_id: "reservation-r2-02-controlled".into(),
+                    action_kind: "queue".into(),
+                    lane: "work".into(),
+                    payload: prompt.as_bytes().to_vec(),
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_DECISION_BASIS_NOT_ACTION\",\"actionDigest\":{},\"stateViewHash\":{},\"taskRevision\":{},\"policyRevision\":{},\"bindingId\":{},\"bindingGeneration\":{}}}",
+                json_quote(&basis.semantic_digest), json_quote(&basis.state_view_hash),
+                json_quote(&basis.task_revision), json_quote(&basis.policy_revision),
+                json_quote(&basis.binding_id), json_quote(&basis.generation)))
+        }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
             let expected = required(&fields,"expectedPreviousTaskRevision")?;

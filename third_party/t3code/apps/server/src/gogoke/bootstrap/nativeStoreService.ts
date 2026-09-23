@@ -23,6 +23,7 @@ import type {
   NativeR2TestLineageReceipt,
   NativeR2TestTaskReceipt,
   NativeR2TestRecipeReceipt,
+  NativeR2ActionDecisionBasis,
   NativeControlledFixtureProbe,
   NativeControlledFixtureAction,
   NativeControlledFixtureActionInput,
@@ -88,6 +89,10 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   readonly prepareR2TestRecipe?: (
     caller: NativeControllerCallerContext,
   ) => Promise<NativeR2TestRecipeReceipt>;
+  readonly readR2TestActionDecisionBasis?: (
+    caller: NativeControllerCallerContext,
+    promptJson: string,
+  ) => Promise<NativeR2ActionDecisionBasis>;
   readonly runControlledFixtureProbe?: (input: {
     readonly caller: NativeControllerCallerContext;
     readonly operationId: string;

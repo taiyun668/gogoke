@@ -190,9 +190,10 @@ mod decision_commit_tests;
 
 mod action_authority;
 pub(crate) use action_authority::{
-    begin_committed_action, derive_native_action_current_facts, prepare_action_authority,
+    begin_committed_action, derive_action_decision_basis, derive_native_action_current_facts,
+    prepare_action_authority,
     read_native_action_fixture_selection, record_trusted_native_action_receipt,
-    complete_action_from_native_receipt, ActionCompletionDisposition, BeginCommittedAction,
+    complete_action_from_native_receipt, ActionCompletionDisposition, ActionDecisionBasis, BeginCommittedAction,
     BeginCommittedDisposition, NativeActionCurrentFactsRefs, NativeActionFixtureSelection,
     TrustedActionCompletionEvidence,
     PrepareActionAuthority, PreparedActionAuthority,
