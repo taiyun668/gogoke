@@ -1896,15 +1896,15 @@ mod tests {
     #[test]
     fn native_host_prepare_and_activate_are_separate_fail_closed_phases() {
         let marker = unique_marker("two-phase");
-        let entry_marker = unique_marker("two-phase-entry");
+        let marker_text = marker.to_string_lossy();
+        assert!(marker_text.chars().all(|ch| ch.is_ascii_alphanumeric()
+            || matches!(ch, ':' | '\\' | '/' | '-' | '_' | '.')),
+            "cmd marker fixture requires a path without shell metacharacters");
         let mut launch = ProcessLaunch::new(system_cmd());
         launch.arguments = vec![
             "/D".to_owned(),
             "/C".to_owned(),
-            format!(
-                "echo entered>\"{}\" && echo activated>\"{}\"",
-                entry_marker.display(), marker.display()
-            ),
+            format!("echo activated>{marker_text}"),
         ];
         let mut custodian = ProcessCustodian::new().expect("custodian");
         let prepared = custodian
@@ -1913,8 +1913,7 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
         assert!(
             !marker.exists(),
-            "prepare must not run the child; entry={:?}",
-            entry_marker.exists()
+            "prepare must not run the child"
         );
 
         let mismatch = PreparedCustody {
@@ -1930,8 +1929,7 @@ mod tests {
         ));
         assert!(
             !marker.exists(),
-            "identity mismatch must remain suspended; entry={:?}",
-            entry_marker.exists()
+            "identity mismatch must remain suspended"
         );
 
         custodian
@@ -1943,18 +1941,17 @@ mod tests {
         let exit_code = process_exit_code(active.process.raw()).ok().flatten();
         assert!(
             waited,
-            "fixture did not finish: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={}",
+            "fixture did not finish: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} marker={}",
             started.elapsed().as_millis(),
             active.active_job_processes().ok(),
-            entry_marker.exists()
+            marker.exists()
         );
         assert_eq!(
             fs::read_to_string(&marker).ok().map(|value| value.trim().to_owned()),
             Some("activated".to_owned()),
-            "fixture activation failed: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={}",
+            "fixture activation failed: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?}",
             started.elapsed().as_millis(),
-            active.active_job_processes().ok(),
-            entry_marker.exists()
+            active.active_job_processes().ok()
         );
         let proof = custodian
             .stop(
@@ -1998,7 +1995,6 @@ mod tests {
             Err(ProcessCustodyError::DuplicateTicket(_))
         ));
         let _ = fs::remove_file(marker);
-        let _ = fs::remove_file(entry_marker);
     }
 
     #[test]
