@@ -1096,10 +1096,9 @@ pub(crate) fn complete_action_from_native_receipt(
     })
 }
 
-/// Rechecks every durable coordinate available at this base. The final native
-/// runtime/capability/admission/current-binding heads do not yet have trusted
-/// producers, so this candidate deliberately cannot CAS `reserved` to
-/// `dispatching`; no caller or persisted snapshot can substitute for those heads.
+/// Rechecks the durable selection and the native-derived current facts before
+/// the one-way `reserved` to `dispatching` transition. The caller cannot supply
+/// runtime, capability, admission, or binding authority through IPC.
 pub(crate) fn begin_committed_action(
     connection: &mut VerifiedDatabaseConnection<'_>,
     request: &BeginCommittedAction,
