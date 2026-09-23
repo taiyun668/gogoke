@@ -9,12 +9,21 @@ import {
 } from "../releasePolicy.ts";
 import { constructMinimalService } from "./minimalService.ts";
 import { constructGogokeService } from "./index.ts";
-import { RootProfileOwnership, RootProfileOwnershipError } from "./rootProfileOwnership.ts";
+import {
+  RootProfileOwnership,
+  RootProfileOwnershipError,
+  type RootProfileOwnershipRequest,
+} from "./rootProfileOwnership.ts";
 
 const request = {
   authority: "public" as const,
   rootIdentity: "volume:0123456789abcdef/file:42",
   profileId: "current-user",
+};
+
+type MinimalServiceRequestForTest = typeof request & {
+  readonly requestedCapabilities?: readonly string[];
+  readonly enabledRuntimeDriverIds?: readonly string[];
 };
 
 const FIXED_SEALED_CAPABILITIES = [
@@ -242,38 +251,27 @@ it("captures a volatile then getter once and still releases ownership on rejecti
   retry.ownership.release();
 });
 
-it("snapshots accessor-backed identity once before validation and ownership", () => {
-  const makeAccessorRequest = () => {
-    let rootReads = 0;
-    const accessorRequest = {
-      authority: "public" as const,
-      get rootIdentity() {
-        rootReads += 1;
-        return rootReads === 1 ? "same-validated-root" : `forged-reread-${rootReads}`;
-      },
-      profileId: "current-user",
-    };
-    return { accessorRequest, rootReads: () => rootReads };
+it("rejects accessor-backed identity without executing the accessor", () => {
+  let rootReads = 0;
+  const accessorRequest = {
+    authority: "public" as const,
+    get rootIdentity() {
+      rootReads += 1;
+      return "accessor-identity-root";
+    },
+    profileId: "current-user",
   };
+  const constructor = vi.fn(() => ({ kind: "forged" }));
 
-  const first = makeAccessorRequest();
-  const lease = constructMinimalService({
-    request: first.accessorRequest,
-    ownership: new RootProfileOwnership(),
-    constructLocalNonModelService: () => ({ kind: "first" }),
-  });
-  expect(first.rootReads()).toBe(1);
-
-  const second = makeAccessorRequest();
   expect(() =>
     constructMinimalService({
-      request: second.accessorRequest,
+      request: accessorRequest,
       ownership: new RootProfileOwnership(),
-      constructLocalNonModelService: () => ({ kind: "second" }),
+      constructLocalNonModelService: constructor,
     }),
-  ).toThrow(RootProfileOwnershipError);
-  expect(second.rootReads()).toBe(1);
-  lease.ownership.release();
+  ).toThrow("must be an enumerable data property");
+  expect(rootReads).toBe(0);
+  expect(constructor).not.toHaveBeenCalled();
 });
 
 it("rejects invalid runtime authority values", () => {
@@ -284,4 +282,175 @@ it("rejects invalid runtime authority values", () => {
       constructLocalNonModelService: () => ({ kind: "forged" }),
     }),
   ).toThrow("authority must be legacy or public");
+});
+
+it("rejects accessor-backed input before executing the accessor", () => {
+  let requestReads = 0;
+  const input = {
+    get request() {
+      requestReads += 1;
+      return request;
+    },
+    ownership: new RootProfileOwnership(),
+    constructLocalNonModelService: vi.fn(() => ({ kind: "forged" })),
+  };
+
+  expect(() => constructMinimalService(input)).toThrow("must be an enumerable data property");
+  expect(requestReads).toBe(0);
+  expect(input.constructLocalNonModelService).not.toHaveBeenCalled();
+});
+
+it("rejects extra, symbol, non-enumerable, and custom-prototype records", () => {
+  const symbolKey = Symbol("forged");
+  const candidates: readonly object[] = [
+    { ...request, extra: true },
+    { ...request, [symbolKey]: true },
+    Object.defineProperty({ ...request }, "profileId", {
+      value: "current-user",
+      enumerable: false,
+    }),
+    Object.assign(Object.create({ inherited: true }), request),
+  ];
+
+  for (const candidate of candidates) {
+    expect(() =>
+      constructMinimalService({
+        request: candidate as typeof request,
+        ownership: new RootProfileOwnership(),
+        constructLocalNonModelService: () => ({ kind: "forged" }),
+      }),
+    ).toThrow("INVALID_MINIMAL_SERVICE_INPUT");
+  }
+
+  const nullPrototypeRequest = Object.assign(Object.create(null), request) as typeof request;
+  const constructed = constructMinimalService({
+    request: nullPrototypeRequest,
+    ownership: new RootProfileOwnership(),
+    constructLocalNonModelService: () => ({ kind: "local" }),
+  });
+  constructed.ownership.release();
+});
+
+it("rejects Proxy input and request records without invoking traps", () => {
+  const traps = vi.fn();
+  const handler: ProxyHandler<object> = {
+    get: () => {
+      traps();
+      return undefined;
+    },
+    getOwnPropertyDescriptor: () => {
+      traps();
+      return undefined;
+    },
+    getPrototypeOf: () => {
+      traps();
+      return Object.prototype;
+    },
+    ownKeys: () => {
+      traps();
+      return [];
+    },
+  };
+  const normalInput = {
+    request,
+    ownership: new RootProfileOwnership(),
+    constructLocalNonModelService: () => ({ kind: "forged" }),
+  };
+
+  expect(() =>
+    constructMinimalService(new Proxy(normalInput, handler) as typeof normalInput),
+  ).toThrow("must be a non-Proxy plain object");
+  expect(traps).not.toHaveBeenCalled();
+
+  expect(() =>
+    constructMinimalService({
+      ...normalInput,
+      request: new Proxy(request, handler) as typeof request,
+    }),
+  ).toThrow("must be a non-Proxy plain object");
+  expect(traps).not.toHaveBeenCalled();
+});
+
+it("rejects malformed capability arrays before ownership or construction", () => {
+  const sparseArray: string[] = [];
+  sparseArray.length = 1;
+  const extendedArray = [LOCAL_NON_MODEL_CAPABILITY];
+  Object.defineProperty(extendedArray, "extra", { value: true, enumerable: true });
+  const symbolArray = [LOCAL_NON_MODEL_CAPABILITY];
+  Object.defineProperty(symbolArray, Symbol("forged"), { value: true, enumerable: true });
+  let accessorReads = 0;
+  const accessorArray = [LOCAL_NON_MODEL_CAPABILITY];
+  Object.defineProperty(accessorArray, "0", {
+    enumerable: true,
+    get: () => {
+      accessorReads += 1;
+      return LOCAL_NON_MODEL_CAPABILITY;
+    },
+  });
+  const proxyTraps = vi.fn();
+  const proxyArray = new Proxy([LOCAL_NON_MODEL_CAPABILITY], {
+    get: (target, key, receiver) => {
+      proxyTraps();
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const candidates: readonly unknown[] = [
+    sparseArray,
+    extendedArray,
+    symbolArray,
+    accessorArray,
+    [1],
+    [LOCAL_NON_MODEL_CAPABILITY, LOCAL_NON_MODEL_CAPABILITY],
+    proxyArray,
+  ];
+
+  for (const field of ["requestedCapabilities", "enabledRuntimeDriverIds"] as const) {
+    for (const [index, candidate] of candidates.entries()) {
+      expect(() =>
+        constructMinimalService({
+          request: {
+            ...request,
+            rootIdentity: `hostile-${field}-array-root-${index}`,
+            [field]: candidate as readonly string[],
+          },
+          ownership: new RootProfileOwnership(),
+          constructLocalNonModelService: () => ({ kind: "forged" }),
+        }),
+      ).toThrow("INVALID_MINIMAL_SERVICE_INPUT");
+    }
+  }
+  expect(accessorReads).toBe(0);
+  expect(proxyTraps).not.toHaveBeenCalled();
+});
+
+it("passes frozen request and array snapshots to ownership", () => {
+  let acquiredRequest: RootProfileOwnershipRequest | undefined;
+  class CapturingOwnership extends RootProfileOwnership {
+    override acquire(value: RootProfileOwnershipRequest) {
+      acquiredRequest = value;
+      return super.acquire(value);
+    }
+  }
+  const requestedCapabilities = [LOCAL_NON_MODEL_CAPABILITY];
+  const enabledRuntimeDriverIds: string[] = [];
+  const constructed = constructMinimalService({
+    request: {
+      ...request,
+      requestedCapabilities,
+      enabledRuntimeDriverIds,
+    },
+    ownership: new CapturingOwnership(),
+    constructLocalNonModelService: () => ({ kind: "local" }),
+  });
+  const captured = acquiredRequest as MinimalServiceRequestForTest | undefined;
+
+  expect(captured).toBeDefined();
+  expect(Object.isFrozen(captured)).toBe(true);
+  expect(Object.isFrozen(captured?.requestedCapabilities)).toBe(true);
+  expect(Object.isFrozen(captured?.enabledRuntimeDriverIds)).toBe(true);
+  requestedCapabilities.push("telemetry");
+  enabledRuntimeDriverIds.push("codex");
+  expect(captured?.requestedCapabilities).toEqual([LOCAL_NON_MODEL_CAPABILITY]);
+  expect(captured?.enabledRuntimeDriverIds).toEqual([]);
+  constructed.ownership.release();
 });
