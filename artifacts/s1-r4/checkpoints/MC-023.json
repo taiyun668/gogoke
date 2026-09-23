@@ -1,0 +1,39 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-023",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "6a52c52902d12f6ad83b6ad709efb621e34ea7b6",
+  "recorded_utc": "2026-09-23T03:50:55Z",
+  "reason": "Bind m2 notice candidate to completed exact-head CI and the actual portable artifact bytes without claiming legal or installer acceptance",
+  "m2": {
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/6",
+    "head": "bec6d799ea895c3d00ab40875bf8369bb796a234",
+    "state": "DRAFT_NOTICE_CANDIDATE_REVIEW_PENDING_NOT_MERGED",
+    "notice_source": "apps/desktop/THIRD_PARTY_NOTICES.md is the single detailed native-host Rust crate inventory; root THIRD_PARTY_NOTICES.md indexes it",
+    "fixed_inventory": "Four Cargo.lock crates with exact version/checksum identity: ryu-js runtime, cc/find-msvc-tools/shlex build dependencies; license expressions sourced from crates.io version metadata",
+    "source_scan": "24151 committed files, 0 leaks; known-sensitive positive control rejected",
+    "pr_source_hygiene_run": "35815140777 PASS",
+    "pr_desktop_run": "35815140790 SUCCESS in Browser build/tests and Unsigned Windows NSIS; only conditional Rust cache-save maintenance skipped",
+    "portable_artifact": "gogoke-0.1.2-windows-x64-unsigned-portable.zip from run 35815140790 contains one THIRD_PARTY_NOTICES.md whose SHA-256 is d08c6804e6bfc16b30644a5f805f8a3cd1b04d78fedc57719b849e74119caf33, byte-identical to the candidate's desktop notice",
+    "evidence_comment": "https://github.com/taiyun668/gogoke/pull/6#issuecomment-5788652660",
+    "non_claim": "Portable notice presence is verified; actual NSIS notice extraction, sufficiency of license texts/attribution, and legal compliance are not accepted. No signing or publication."
+  },
+  "other_lanes": {
+    "PR3": "efa1a6fd D1 536/536 and D2 382/382 PASS; exact-head PR source hygiene, Browser build/tests and Unsigned Windows NSIS PASS; fresh Claude review pending, no merge",
+    "PR4": "Six-file qualification source candidate remains draft and disabled; GPT public authorization draft and Owner-only merge absent, WP01/S1-01-V BLOCKED",
+    "PR5": "Accepted m1 ordinary merge cdbff122 already recorded in MC-018"
+  },
+  "custody": "Main and named candidate worktrees remain committed, pushed and clean; downloaded build artifacts stay outside public Git with exact local paths in the external custody note",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Obtain independent source/distribution review of m2 PR #6 and fresh Claude review of PR #3. Keep PR #4 disabled until GPT drafts the public authorization anchor and Owner personally merges that separate PR; then rebind and review the runner before qualification."
+}
