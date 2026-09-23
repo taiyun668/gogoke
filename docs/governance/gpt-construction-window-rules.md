@@ -105,6 +105,10 @@ GitHub 等远端写入可能出现 403、422、超时、5xx 或返回状态与�
 - Windows Server 云端通过不能替代计划要求的 Owner Windows 11 正式安装包实机结论。
 - 完整日志与机器结果落 durable artifacts，聊天只保留足够继续施工的信息。
 
+## 8a. 复核安排
+
+网页端 GPT 施工窗口没有子 agent，不做逐包 fresh 复核。按 Owner 决定：GPT 连续施工，累积一批成果后，由 Claude 统一做一次跨模型复核，结论写回 GitHub（PR 评论或检查点）。
+
 ## 9. 当前 S1-R4 v2 施工入口
 
 当前施工事实必须重新从 GitHub 读取；不要把本节 SHA 当永久最新值。
