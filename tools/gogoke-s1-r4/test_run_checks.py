@@ -300,6 +300,10 @@ class RunnerTests(unittest.TestCase):
         with common[0], common[1], common[2], mock.patch.object(self.runner, "public_binding", return_value=(binding, "b" * 40, [])), mock.patch.object(self.runner, "owner_merged_public_authorization", return_value=(True, None)):
             _value, errors = self.runner.auth_from_candidate(candidate)
         self.assertTrue(any("authorization plan differs" in error for error in errors))
+        with common[0], common[1], common[2], mock.patch.object(self.runner, "public_binding", return_value=(binding, "a" * 40, [])), mock.patch.object(self.runner, "owner_merged_public_authorization", return_value=(True, None)):
+            value, errors = self.runner.auth_from_candidate(candidate)
+        self.assertEqual([], errors)
+        self.assertEqual("e" * 40, value["owner_merge_commit"])
 
     def test_plan_loaded_from_different_public_candidate_fails_closed(self):
         candidate = self.runner.git_identity()
