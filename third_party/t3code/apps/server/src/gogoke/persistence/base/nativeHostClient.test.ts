@@ -2,6 +2,8 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeReadline from "node:readline";
+import * as NodeStream from "node:stream";
 import * as NodeTest from "node:test";
 
 import {
@@ -15,11 +17,44 @@ import {
   encodeDreamProposalFrame,
   NativeHostClient,
   NativeHostClientError,
+  readStartupHandshake,
   type NativeDelegationGrantSnapshot,
 } from "./nativeHostClient.ts";
 
 const assert: typeof NodeAssert = NodeAssert;
 const test: typeof NodeTest.test = NodeTest.test;
+
+test("startup handshake retains all three lines emitted in one pipe chunk", async () => {
+  const pipe = new NodeStream.PassThrough();
+  const lines = NodeReadline.createInterface({ input: pipe });
+  try {
+    const startup = readStartupHandshake(lines);
+    pipe.write("LOCKED\nPIPE\tfixture\nCAPABILITY\t" + "a".repeat(64) + "\n");
+    assert.deepEqual(await startup, {
+      pipeLine: "PIPE\tfixture",
+      capabilityLine: "CAPABILITY\t" + "a".repeat(64),
+    });
+  } finally {
+    lines.close();
+    pipe.destroy();
+  }
+});
+
+test("startup handshake rejects an invalid second line without waiting for a third", async () => {
+  const pipe = new NodeStream.PassThrough();
+  const lines = NodeReadline.createInterface({ input: pipe });
+  try {
+    const startup = readStartupHandshake(lines);
+    pipe.write("LOCKED\nNOT_A_PIPE\n");
+    await assert.rejects(
+      startup,
+      (error: unknown) => error instanceof NativeHostClientError && error.code === "HOST_PIPE",
+    );
+  } finally {
+    lines.close();
+    pipe.destroy();
+  }
+});
 
 const delegationGrant: NativeDelegationGrantSnapshot = {
   binding: { executionId: "execution-one", generation: "18446744073709551615", sessionId: "session-one" },
