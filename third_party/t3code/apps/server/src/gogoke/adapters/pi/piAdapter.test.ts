@@ -129,6 +129,40 @@ describe("R4-O-PI managed ACK and binding semantics", () => {
     assert.equal(stream.commands[0]?.streamingBehavior, "followUp");
   });
 
+  it("observes only agent_settled as protocol settlement for one fresh task", async () => {
+    const { stream, session } = fixture();
+    stream.handler = (command) => {
+      stream.respond(command);
+      stream.feed({ type: "agent_start" });
+      stream.feed({ type: "agent_end", willRetry: false, messages: [] });
+    };
+    let settled = false;
+    const observation = session.promptAndObserveSettlement("controlled fixture", 1_000);
+    void observation.then(() => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "agent_end does not settle queued continuation");
+    stream.feed({ type: "agent_settled" });
+    assert.deepEqual(await observation, {
+      status: "protocol-settled-not-result",
+      accepted: { status: "accepted", requestId: "gogoke-pi-1", command: "prompt" },
+    });
+    await NodeAssert.rejects(session.prompt("second task"), (error: unknown) =>
+      error instanceof PiManagedSessionError && error.code === "DISPATCH_PAUSED");
+  });
+
+  it("does not accept unpaired settlement or stream closure as a task result", async () => {
+    const { stream, session } = fixture();
+    stream.handler = (command) => {
+      stream.respond(command);
+      stream.feed({ type: "agent_settled" });
+    };
+    const observation = session.promptAndObserveSettlement("controlled fixture", 1_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    session.close("controlled process exited before agent_start");
+    await NodeAssert.rejects(observation, (error: unknown) =>
+      error instanceof PiManagedSessionError && error.code === "SESSION_CLOSED");
+  });
+
   it("never creates a binding when new_session is cancelled", async () => {
     const { stream, session } = fixture();
     stream.handler = (command) => {

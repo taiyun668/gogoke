@@ -37,6 +37,12 @@ export interface PiAcceptedCommand {
   readonly command: "prompt" | "steer" | "follow_up";
 }
 
+export interface PiSettledObservation {
+  /** Protocol settlement is not a validated task Result or Outcome. */
+  readonly status: "protocol-settled-not-result";
+  readonly accepted: PiAcceptedCommand;
+}
+
 export interface PiPauseResult {
   readonly admission: "paused";
   readonly cleared: {

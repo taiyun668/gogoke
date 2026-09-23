@@ -8,6 +8,7 @@ import type {
   PiPauseResult,
   PiProtectionAdmission,
   PiRpcDiagnostic,
+  PiSettledObservation,
 } from "./types.ts";
 
 const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
@@ -30,7 +31,8 @@ export type PiManagedSessionErrorCode =
   | "SESSION_CLOSED"
   | "WRITE_FAILED"
   | "REMOTE_REJECTED"
-  | "INVALID_RESPONSE";
+  | "INVALID_RESPONSE"
+  | "SETTLEMENT_TIMEOUT";
 
 export class PiManagedSessionError extends Error {
   readonly code: PiManagedSessionErrorCode;
@@ -158,6 +160,12 @@ export class PiManagedSession {
   #writeTail: Promise<void> = Promise.resolve();
   #pauseFlight: Promise<PiPauseResult> | undefined;
   #pauseComplete = false;
+  #exclusiveTaskUsed = false;
+  #settlement: {
+    started: boolean;
+    resolve: () => void;
+    reject: (error: PiManagedSessionError) => void;
+  } | undefined;
 
   constructor(options: PiManagedSessionOptions) {
     const admission = snapshotPiProtectionAdmission(options.admission);
@@ -198,6 +206,37 @@ export class PiManagedSession {
     const command: JsonRecord = { type: "prompt", message };
     if (streamingBehavior !== undefined) command.streamingBehavior = streamingBehavior;
     return this.#accepted("prompt", command);
+  }
+
+  /** One fresh session per controlled task because Pi events have no request id. */
+  async promptAndObserveSettlement(message: string, timeoutMs: number): Promise<PiSettledObservation> {
+    this.#requireDispatch();
+    if (this.#exclusiveTaskUsed || this.#nextRequest !== 0 || this.#pending.size !== 0) {
+      throw new PiManagedSessionError("INVALID_ADMISSION", "settlement requires a fresh exclusive session");
+    }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new PiManagedSessionError("INVALID_ADMISSION", "settlement timeout must be positive");
+    }
+    let settle!: () => void;
+    let rejectSettlement!: (error: PiManagedSessionError) => void;
+    const observed = new Promise<void>((resolve, reject) => {
+      settle = resolve;
+      rejectSettlement = reject;
+    });
+    this.#settlement = { started: false, resolve: settle, reject: rejectSettlement };
+    const accepted = this.#accepted("prompt", { type: "prompt", message });
+    this.#exclusiveTaskUsed = true;
+    const timer = setTimeout(() => {
+      this.#settlement?.reject(new PiManagedSessionError("SETTLEMENT_TIMEOUT", "agent_settled was not observed"));
+      this.#settlement = undefined;
+    }, timeoutMs);
+    try {
+      const [command] = await Promise.all([accepted, observed]);
+      return Object.freeze({ status: "protocol-settled-not-result" as const, accepted: command });
+    } finally {
+      clearTimeout(timer);
+      this.#settlement = undefined;
+    }
   }
 
   steer(message: string): Promise<PiAcceptedCommand> {
@@ -298,6 +337,8 @@ export class PiManagedSession {
     const error = new PiManagedSessionError("SESSION_CLOSED", reason);
     for (const pending of this.#pending.values()) pending.reject(error);
     this.#pending.clear();
+    this.#settlement?.reject(error);
+    this.#settlement = undefined;
   }
 
   async #accepted(
@@ -344,6 +385,12 @@ export class PiManagedSession {
     }
     const frozen = deepFreeze(value);
     if (frozen.type !== "response") {
+      if (frozen.type === "agent_start" && this.#settlement !== undefined) {
+        this.#settlement.started = true;
+      } else if (frozen.type === "agent_settled" && this.#settlement?.started === true) {
+        this.#settlement.resolve();
+        this.#settlement = undefined;
+      }
       this.#options.onEvent?.(frozen);
       return;
     }
@@ -402,6 +449,9 @@ export class PiManagedSession {
 
   #requireDispatch(): void {
     if (this.#closed) throw this.#closedError();
+    if (this.#exclusiveTaskUsed) {
+      throw new PiManagedSessionError("DISPATCH_PAUSED", "exclusive Pi task has consumed this session");
+    }
     if (!this.#dispatchOpen) {
       throw new PiManagedSessionError("DISPATCH_PAUSED", "Pi dispatch admission is paused");
     }
