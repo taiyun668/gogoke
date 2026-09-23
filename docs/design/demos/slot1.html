@@ -1,0 +1,69 @@
+<section class="slot" data-slot="decision-card">
+      <div class="slot-top">
+        <span class="slot-no">01</span>
+        <h2 class="slot-name">需要你定的选择卡</h2>
+        <p class="slot-cap">主控自己定不了、必须你来决定时出示的那一张</p>
+        <span class="slot-badge">未定</span>
+      </div>
+      <div class="surface">
+        <button class="use" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span class="uselabel">用这个</span></button>
+        <div class="demo">
+
+          <div data-cand="rec-card" data-name="推荐卡"
+               data-src="Beautiful UI · RecommendationCard · MIT · ff0f74d"
+               data-note="主控先给一个建议，把理由摆在句子里；其他做法收在抽屉里，选谁主按钮就跟着变。适合一次只定一件事。">
+            <div class="rc" data-demo="rec">
+              <div class="rc-pad">
+                <span class="rc-title">价格对齐按哪个基准？</span>
+                <p class="rc-body"></p>
+              </div>
+              <div class="rc-drawer"><div><div class="rc-alts">
+                <p>其他做法</p>
+                <div class="rc-altlist"></div>
+              </div></div></div>
+              <div class="rc-foot">
+                <span class="lvl"></span>
+                <span class="acts">
+                  <button type="button" class="pbtn sec" data-act="alts">其他做法</button>
+                  <button type="button" class="pbtn acc" data-act="take">就按这个</button>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div data-cand="rui-card" data-name="原生问题卡"
+               data-src="gogoke · RequestUserInputMessage · 产品现有"
+               data-note="产品里已经有的那张：多题排队、每题可以补一句话、全部答完统一交回。改造成本最低。" hidden>
+            <div class="rui" data-demo="rui">
+              <div class="rui-h"><b>需要你回答</b><span class="rui-count"></span></div>
+              <div class="rui-body"></div>
+              <textarea class="rui-n" rows="2" placeholder="补充说明（可选）"></textarea>
+              <div class="rui-a"><button type="button" class="pbtn acc" data-act="submit" disabled>提交</button></div>
+            </div>
+          </div>
+
+          <div data-cand="approval-steps" data-name="逐题审批卡"
+               data-src="Beautiful UI · ApprovalCard · MIT · ff0f74d"
+               data-note="一次只问一题，答完自动进下一题，卡片高度跟着长；右下角是安静的跳过加一个深色的继续。适合连着问几题。" hidden>
+            <div class="ap" data-demo="ap">
+              <button type="button" class="ap-x" aria-label="收起">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+              <div class="ap-pad">
+                <div class="ap-view"><div class="ap-stack"></div></div>
+              </div>
+              <div class="ap-foot">
+                <span class="ap-step"><button type="button" class="ap-nav" data-act="prev" aria-label="上一题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 15l-6-6-6 6"/></svg></button><span class="ap-count"></span><button type="button" class="ap-nav" data-act="next" aria-label="下一题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></span>
+                <span class="acts">
+                  <button type="button" class="pbtn sec" data-act="skip">跳过</button>
+                  <button type="button" class="pbtn ink" data-act="continue">继续 <span class="ret">⏎</span></button>
+                </span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <div class="variant" role="tablist"></div>
+      </div>
+      <div class="caption"><p class="txt"></p><span class="src"></span></div>
+    </section>

@@ -1,0 +1,501 @@
+{
+  "schema": "gogoke.p00.pass-c.safe-fixtures.r2",
+  "node": "v22.16.0",
+  "typescript": "5.8.3",
+  "source_sha256": {
+    "packages/seat-runtime/src/close.ts": "ac21d2f7f04ad15c73d4cd0759e0ee89a3bf60569c7029b700ae18930b3bee86",
+    "packages/room/src/server.ts": "4f09078bf5c874de2f69277ddc7974582ff1e45d9c320719da834b2cd7295044",
+    "packages/seat-runtime/src/seat-runtime.ts": "e5e924733d5a3c2ea15402eba1a42918413229562b7da4a608c69323c4acd9c2",
+    "packages/seat-runtime/src/persistence.ts": "942790f7ad0c834fb29f5cd1ae7a7f68e2ef960a7c82063210e05f471835a4e5",
+    "packages/seat-runtime/src/seat.ts": "047e5f494d0469c786bbbc8c4e2d6d1e787571ea59e1a787b28c49fd5c3cd36e",
+    "packages/seat-runtime/src/grok-acp-seat.ts": "b283d0644695f0d527a941adf0f9ba390c4d437f8a248db941e0b448aa3c0479",
+    "packages/seat-runtime/src/claude-seat.ts": "e6590234d237f548a374c56c32267af1d0b66e2c5e4e3cee39c3de65de9936bb"
+  },
+  "case_count": 49,
+  "cases": [
+    {
+      "id": "B02-natural-0",
+      "scope": "EXACT_SOURCE_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "exitCode": 0,
+        "os_exit_proven": false
+      }
+    },
+    {
+      "id": "B02-natural-7",
+      "scope": "EXACT_SOURCE_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "exitCode": 7,
+        "os_exit_proven": false
+      }
+    },
+    {
+      "id": "B02-kill-without-exit-success",
+      "scope": "EXACT_SOURCE_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "exitCode": 124,
+        "child_still_live": true,
+        "kill_is_not_exit": true,
+        "fallback": false
+      }
+    },
+    {
+      "id": "B02-kill-without-exit-kill-command",
+      "scope": "EXACT_SOURCE_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "exitCode": 124,
+        "child_still_live": true,
+        "kill_is_not_exit": true,
+        "fallback": true
+      }
+    },
+    {
+      "id": "B02-refused-identity",
+      "scope": "EXACT_SOURCE_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "exitCode": 125,
+        "no_kill": true
+      }
+    },
+    {
+      "id": "B02-host-8000-before-grace-10000",
+      "scope": "EXTRACTED_EXACT_CALLER_WITH_FAKE_CLOCK",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "host_exit_ms": 8000,
+        "kill_start_ms": 10000,
+        "host_result": 0,
+        "child_still_live": true
+      }
+    },
+    {
+      "id": "B02-shutdown-ignores-124",
+      "scope": "EXTRACTED_EXACT_CALLER_WITH_FAKE_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "numeric_result": 124,
+        "seat_deleted": true,
+        "incorrect_success_log": true
+      }
+    },
+    {
+      "id": "B02-shutdown-ignores-125",
+      "scope": "EXTRACTED_EXACT_CALLER_WITH_FAKE_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "numeric_result": 125,
+        "seat_deleted": true,
+        "incorrect_success_log": true
+      }
+    },
+    {
+      "id": "B02-repeat-close-PersistentCodexSeat",
+      "scope": "EXACT_SOURCE_AND_EXTRACTED_CALLER_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "first": 125,
+        "second": 0,
+        "owner_released_on_second_call": true,
+        "production_fix_applied": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentCodexSeat-isolated",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/audit/data/seats/a/home",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentCodexSeat-bound",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/audit/profile",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentCodexSeat-host-denied",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentCodexSeat-host-explicit",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/real-user",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B02-repeat-close-PersistentGrokSeat",
+      "scope": "EXACT_SOURCE_AND_EXTRACTED_CALLER_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "first": 125,
+        "second": 0,
+        "owner_released_on_second_call": true,
+        "production_fix_applied": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentGrokSeat-isolated",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/audit/data/seats/a/home",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentGrokSeat-bound",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/audit/profile",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentGrokSeat-host-denied",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentGrokSeat-host-explicit",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/real-user",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B02-repeat-close-PersistentClaudeSeat",
+      "scope": "EXACT_SOURCE_AND_EXTRACTED_CALLER_MOCKED_DEPENDENCIES",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "first": 125,
+        "second": 0,
+        "owner_released_on_second_call": true,
+        "production_fix_applied": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentClaudeSeat-isolated",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/audit/data/seats/a/home",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentClaudeSeat-bound",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/audit/profile",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentClaudeSeat-host-denied",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-home-PersistentClaudeSeat-host-explicit",
+      "scope": "EXACT_SOURCE_CONSTRUCTOR_WITH_SYNTHETIC_PATHS",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "home": "/real-user",
+        "logs_root": "/audit/data/seats/a",
+        "prompt_path": "/audit/data/seats/a/prompts/fixture-1.turn-1.txt",
+        "authorization_proven": false,
+        "real_home_touched": false
+      }
+    },
+    {
+      "id": "B03-persistence-write",
+      "scope": "EXACT_SOURCE_PERSISTENCE_WITH_FAKE_FILESYSTEM",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "old_preserved_in_fakefs": true,
+        "temp_retained": true,
+        "failed_step": "write"
+      }
+    },
+    {
+      "id": "B03-persistence-fsync-file",
+      "scope": "EXACT_SOURCE_PERSISTENCE_WITH_FAKE_FILESYSTEM",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "old_preserved_in_fakefs": true,
+        "temp_retained": true,
+        "failed_step": "fsync-file"
+      }
+    },
+    {
+      "id": "B03-persistence-rename",
+      "scope": "EXACT_SOURCE_PERSISTENCE_WITH_FAKE_FILESYSTEM",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "old_preserved_in_fakefs": true,
+        "temp_retained": true,
+        "failed_step": "rename"
+      }
+    },
+    {
+      "id": "B03-persistence-fsync-dir",
+      "scope": "EXACT_SOURCE_PERSISTENCE_WITH_FAKE_FILESYSTEM",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "directory_durability_proven": false,
+        "error_swallowed": true
+      }
+    },
+    {
+      "id": "B03-competing-append-intents",
+      "scope": "EXACT_HELPER_CONTROLLED_STORAGE_INTERLEAVING_NOT_OS_RACE",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "lost_intent": "B",
+        "schedule": "A snapshot -> B publish -> A publish",
+        "actual_multiprocess_race_run": false
+      }
+    },
+    {
+      "id": "B03-temp-mode-and-rename",
+      "scope": "EXACT_SOURCE_PERSISTENCE_WITH_FAKE_FILESYSTEM",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "exclusive_temp_mode": "0600",
+        "cross_writer_lock_proven": false
+      }
+    },
+    {
+      "id": "B02-oracle-reject-directExited",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "owner_quarantined": true
+      }
+    },
+    {
+      "id": "B02-oracle-reject-descendantsExited",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "owner_quarantined": true
+      }
+    },
+    {
+      "id": "B02-oracle-reject-writerDrained",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "owner_quarantined": true
+      }
+    },
+    {
+      "id": "B02-oracle-reject-identityMatched",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "owner_quarantined": true
+      }
+    },
+    {
+      "id": "B02-oracle-reject-persistedReceipt",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "owner_quarantined": true
+      }
+    },
+    {
+      "id": "B02-oracle-reject-hostDeadline",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "owner_quarantined": true
+      }
+    },
+    {
+      "id": "B02-oracle-release-verified",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "release_requires_all_receipts": true
+      }
+    },
+    {
+      "id": "B03-oracle-undeclared-writer",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "wrong_home_and_prefix_collision_rejected": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-missing",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-provider",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-host",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-accountId",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-home",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-domain",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-authRevision",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-generation",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-expiry",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-effects",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-approval-not-explicit",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "rejected": true,
+        "synthetic_home_only": true
+      }
+    },
+    {
+      "id": "B03-oracle-host-explicit-bound",
+      "scope": "FUTURE_CONTRACT_MODEL_ONLY",
+      "status": "PASS_EXPECTED_OBSERVATION",
+      "detail": {
+        "approval_binding_required": true,
+        "does_not_authorize_secret_migration": true
+      }
+    }
+  ],
+  "real_child_processes_spawned": 0,
+  "real_network_calls": 0,
+  "real_home_reads_or_writes": 0,
+  "product_runtime_verified": false,
+  "production_files_changed": false,
+  "scope": "SOURCE_ALGORITHMS_WITH_SYNTHETIC_DEPENDENCIES_PLUS_SEPARATE_FUTURE_ORACLES; NOT_NATIVE_PROCESS_OR_DURABILITY_PROOF"
+}

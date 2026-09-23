@@ -1,0 +1,53 @@
+observation	capability_behavior	entry_family	sink_family	owning_wp	first_validation_check	disposition	assertion
+R6-001	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Desktop real and mobile stub modules retain explicit platform support and sealing status.
+R6-002	C36.2	F17	S01	WP02	T55.L	seal-preserve	Model-root resolution must not fall back to cwd and must retain existing asset provenance.
+R6-003	C36.2	F17	S07	WP10a	T57.L	seal-preserve	Fixed model URLs and digests are preserved without authorizing download.
+R6-004	C36.2	F17	S09	WP10a	T57.L	seal-preserve	Exists-only Ready status is not verified model integrity or successful load.
+R6-005	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Automatic status/listener hookup is distinct from download and is covered by the sealed entry map.
+R6-006	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Switching downloads cannot let an old task mutate the new generation's status or file.
+R6-007	C36.2	F17	S07	WP10a	T57.L	seal-preserve	Connect/total timeout do not supply a byte/disk budget for model responses.
+R6-008	C36.2	F17	S02	WP10a	T57.L	seal-preserve	Opening a partial model truncates it; progress emit is not persisted successful download.
+R6-009	C36.2	F17	S05	WP10a	T57.L	seal-preserve	Abort plus best-effort partial deletion does not prove the old task released the path.
+R6-010	C36.2	F17	S02	WP10a	T57.L	seal-preserve	Digest/flush/rename publication has explicit existing-target and platform failure behavior.
+R6-011	C36.2	F17	S02	WP10a	T57.L	seal-preserve	Removing a model file does not cancel transcription already holding its Arc context.
+R6-012	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Direct permission command and start-triggered macOS prompt are independently sealed.
+R6-013	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Non-macOS permission true does not certify actual device/OS permission.
+R6-014	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Listening means stream-play readiness, not transcript completion or durable capture.
+R6-015	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Reaching the sample cap does not itself stop the microphone stream.
+R6-016	C36.1	F17	S08	WP10a	T57.L	seal-preserve	Capture error, stop signal and async Idle update are not one atomic event.
+R6-017	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Stop returns Processing before transcription and must not imply transcript delivery.
+R6-018	C36.2	F17	S09	WP10a	T57.L	seal-preserve	Cached model context must be bound to asset identity rather than only model ID.
+R6-019	C36.1	F17	S05	WP10a	T57.L	seal-preserve	Cancel in Processing suppresses output but does not necessarily interrupt blocking CPU work.
+R6-020	C36.1	F17	S05	WP10a	T57.L	seal-preserve	Listening cancel reports stop/join failures instead of treating Idle state as shutdown evidence.
+R6-021	C36.2	F17	S08	WP04	T18.L	seal-preserve	Emitted transcript plus ephemeral React ID is not a durable Session-bound Delivery.
+R6-022	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Key release before slow permission/start cannot leave unexpected active capture after the grace window.
+R6-023	C36.1	F17	S08	WP10a	T57.L	seal-preserve	Swallowed shortcut rejection and failed event emit require a diagnosable non-success state.
+R6-024	C36.1	F17	S09	WP10a	T57.L	seal-preserve	Registered commands, hooks and enabled shortcuts mean source-active until code sealing is actually tested.
+R6-025	C24.1	F10	S02	WP07	T25.L	retain-public	Supported scope/kind combinations remain explicit; workspace config is rejected rather than silently redirected.
+R6-026	C24.1	F10	S02	WP07	T26.L	replace-binding	Global public file editing must not silently use the provider's CODEX_HOME as product authority.
+R6-027	C32.2	F11	S02	WP08	T22.L	retain-public	Strict workspace AGENTS checks cover existing and dangling symlinks plus replacement races.
+R6-028	C24.1	F10	S02	WP07	T25.L	retain-public	Intentional global AGENTS external-symlink compatibility is explicitly distinguished from root containment.
+R6-029	C24.1	F10	S02	WP07	T25.L	retain-public	Global config strict symlink policy must also reject a dangling external target before write.
+R6-030	C32.1	F11	S02	WP08	T22.L	retain-public	Unbounded read_to_end and always-false truncation require explicit size and partial-response semantics.
+R6-031	C24.1	F10	S02	WP07	T25.L	retain-public	Direct write failure may truncate or partially change the file and is not atomic replacement.
+R6-032	C32.2	F11	S07	WP08	T22.L	retain-public	File read/write target the daemon host in remote mode and must display that authority.
+R6-033	C07.2	F11	S02	WP08	T22.L	retain-public	Arbitrary export requires a verified user-selected target, not merely a nonempty path argument.
+R6-034	C10.2	F11	S02	WP08	T22.L	replace-binding	Remote/mobile image command still reads locally; machine identity cannot be inferred from mode alone.
+R6-035	C10.1	F11	S02	WP08	T35.L	retain-public	Image normalization/encoding leaves Codex module ownership without losing format and size safeguards.
+R6-036	C37.1	F09	S01	WP02	T39.L	replace-binding	Five native config cross-writes and app settings save have independent partial-success outcomes.
+R6-037	C07.2	F12	S10	WP09b	T23.L	retain-public	All twelve clipboard callers retain content-specific privacy and failure handling.
+R6-038	C38.1	F22	S11	WP05	T54.L	retain-public	Code-block HTTP links and ordinary HTTP/HTTPS/mailto links have distinct scheme and callback rules.
+R6-039	C32.2	F22	S11	WP08	T22.L	retain-public	File URL, relative, absolute and mounted-path links do not implicitly authorize external roots.
+R6-040	C32.1	F13	S13	WP05	T12.L	retain-public	Selected external-app preference is stored before execution and is not rolled back on open failure.
+R6-041	C20.1	F09	S11	WP09b	T23.L	adapter-only	Provider auth URL is sensitive and does not become a public arbitrary-URL executor.
+R6-042	C38.1	F13	S11	WP04	T19.L	retain-public	Dialog selection/confirmation is not server-side permission or durable Owner authorization.
+R6-043	C29.2	F13	S11	WP08	T34.L	retain-public	Each menu action reaches its actual callback; popup construction alone is not a mutation result.
+R6-044	C01.2	F02	S11	WP05	T12.L	retain-public	Native menu show/focus/emit failures are not successful user-visible navigation.
+R6-045	C39.1	F02	S14	WP12	T46.L	retain-trust	Check-update menu remains linked to network/cache writers.
+R6-046	C14.1	F02	S05	WP10b	T44.L	retain-public	Platform quit/close/hide paths keep different host-lifecycle contracts.
+R6-047	C35.2	F12	S10	WP09b	T23.L	retain-public	Tray labels and raw IDs cross the main-window boundary and require privacy scope.
+R6-048	C35.1	F12	S08	WP05	T08.L	replace-binding	Tray-open-thread revalidates the public target rather than trusting an old raw native ID.
+R6-049	C01.2	F09	S11	WP05	T12.L	retain-public	Settings persistence and actual native theme application have independent error states.
+R6-050	C01.2	F02	S11	WP05	T12.L	retain-public	Single-instance focus does not forward the second instance's arguments or cwd.
+R6-051	C01.2	F21	S13	WP05	T12.L	retain-public	Pinned window-state plugin persistence needs its own observed root/format before migration.
+R6-052	C01.2	F02	S11	WP05	T12.L	retain-public	Linux environment, macOS lifecycle, Windows chrome and iOS insets require separate platform evidence.

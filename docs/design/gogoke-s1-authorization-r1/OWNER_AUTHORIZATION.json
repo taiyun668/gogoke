@@ -1,0 +1,94 @@
+{
+  "schema": "gogoke.s1.owner-authorization.v1",
+  "authorization_id": "S1-OWNER-AUTH-001",
+  "recorded_utc": "2026-09-19T15:58:10.752279+00:00",
+  "record_type": "CONTROLLER_TRANSCRIPTION_OF_EXPLICIT_OWNER_APPROVAL_NOT_DIGITAL_SIGNATURE",
+  "owner_message_verbatim": "ok，确认授权，直接推进",
+  "approved_proposition": "接受 P00 施工前技术结论，按固定 S1 计划一次授权完整六包代码施工、Controller 提交推送、限定临时目录/假进程/私有本地 IPC/构建测试；不授权 PR 合并、真实账号与费用、用户数据迁移、外部监听、麦克风及安装发布。",
+  "repository": "taiyun668/gogo-party",
+  "source_basis": "bc665a852833952b76d9508401193bedd2198436",
+  "source_tree": "746024abeb2e6d35ac88fd1b2e315fceb0e9f54f",
+  "plan_commit": "34b7f891e4e17715b08491570740516d6cf7f49f",
+  "plan_root": "docs/design/gogoke-s1-plan-v1",
+  "plan_tasks_git_blob": "29a32c6c4bd721fd19ed25df60670f173fbb32a8",
+  "plan_tasks_sha256": "c13368a24abbef0aa82cd150ffd26b42e81dfa9bd6d4bbeb7ef495065978fcb9",
+  "pass_d_evidence": "9ec7ca56566b667271013d75d867f2008aeeceda",
+  "pass_d_registration": "3fbef8d2b16f729d6f99dc05b37bc53ca96636fd",
+  "reviewed_r3_payload": "c055e125531e166cb67a45531a3c7a8aa9d70330",
+  "p00_acceptance": "ACCEPTED_FOR_CODE_ENTRY",
+  "p00_acceptance_scope": "PRECONSTRUCTION_EVIDENCE_ONLY_NOT_PRODUCT_ACCEPTANCE",
+  "code_entry_gate": "OPEN_FOR_AUTHORIZED_S1_ONLY",
+  "owner_code_entry_decision": "AUTHORIZED_FULL_S1",
+  "authorized_production_work_packages": [
+    "WP10a",
+    "WP01",
+    "WP02",
+    "WP03",
+    "WP09a",
+    "WP04"
+  ],
+  "stage_products": [
+    "P10a",
+    "P01",
+    "P02",
+    "P03",
+    "P09a",
+    "P04"
+  ],
+  "authorized_write_scope": {
+    "source_of_truth": "34b7f891e4e17715b08491570740516d6cf7f49f:docs/design/gogoke-s1-plan-v1/TASKS.json",
+    "selectors": [
+      "tasks[*].write_scopes",
+      "controller_shared_write_scopes"
+    ],
+    "include": "Only the 19 approved task cards, their declared same-domain tests, Controller integration and S1 execution receipts. This authorization adds governance/start records, not unrestricted repository write scope.",
+    "exclude": "Read-source paths are not write permission. packages/room, packages/seat-runtime and root crates remain read-only references; original audit/plan branches and payloads remain fixed."
+  },
+  "allowed_test_effects": [
+    "Build and test approved S1 changes in isolated workspaces; inspect lifecycle scripts first and obey pinned dependency constraints.",
+    "Dedicated temporary roots with synthetic data: real file/OS lock, fsync, crash/recovery and corruption fixtures within that test scope.",
+    "Known fake CLI/helper child processes and controlled S1 test-host processes with recorded identity, containment, cleanup and residual custody.",
+    "Private per-user local IPC (named pipe or Unix-domain socket) between those test processes; no external network listener.",
+    "Authorized production-mutation copies for implementation validation, with tests preserved; no changes to live user workspaces."
+  ],
+  "controller_permissions": [
+    "Create/use one S1 integration branch and isolated worktrees",
+    "Commit and push only scoped implementation/tests and receipts",
+    "Use a dedicated draft PR as task and evidence carrier; no merge or auto-merge"
+  ],
+  "construction_worker_commit_push": false,
+  "not_authorized": [
+    "PR merge or auto-merge",
+    "Force-push, reset/clean or overwrite user work",
+    "Real product-provider accounts, login/logout, credentials or paid calls",
+    "User data/home migration or deletion",
+    "External listener, live daemon/Tailscale or mobile/remote activation",
+    "Microphone/recording/model download or deletion",
+    "Product installation/update/registry/readiness on user systems, signing, release, publishing or TestFlight",
+    "S2/S3 or any work package outside the six authorized S1 packages",
+    "Changing architecture/contracts/safety/acceptance, role permissions, global settings or unapproved dependencies"
+  ],
+  "platform_policy": {
+    "research_design": "GPT",
+    "implementation": "Codex",
+    "continuous": "Proceed through all three S1 waves without per-task reapproval when dependencies and approved gates pass. Ordinary build/debug stays in Codex.",
+    "escalate": "Stop only affected paths for real scope/contract/safety decisions; continue independent safe tasks. After S1, return research/design to GPT. Do not repeatedly redesign each WP."
+  },
+  "team_policy": "Use fixed project Sol/Luna/Astra roles; verify actual session identity/tools/slots, do not claim config implies a running agent. Workers do not commit/push. Fresh reviewers do not self-accept. No extra sessions to bypass capacity; Grok/Claude are not newly authorized by this record.",
+  "start_conditions": [
+    "Read complete fixed plan/contracts/tasks/test matrix/handoff",
+    "Verify actual Git baseline and dirty state without discarding user work",
+    "Confirm effective role/tool/sandbox/platform capabilities; preserve restrictions",
+    "Report acceptance receipt with actual branch/HEAD and first task; missing Windows means platform checks remain blocked, not PASS"
+  ],
+  "implementation_acceptance": "Six products, 33 S1-due checks, required independent reviews, controlled end-to-end demonstration and full retained deferred obligations. Authorization does not mark any check complete.",
+  "integration_branch": "codex/gogoke-s1-execution-r1",
+  "dispatch_state_at_recording": "READY_TO_REQUEST_CODEX_ACCEPTANCE",
+  "codex_task_id": null,
+  "runtime_verified": false,
+  "product_tests_executed_by_this_authorization": false,
+  "product_acceptance": false,
+  "merge_authorized": false,
+  "historical_state_rule": "Plan TASKS and CODEX_HANDOFF at the approved SHA retain their pre-authorization PENDING fields. This later explicit Owner record changes authorization only; do not edit the frozen plan to make its validator pass or rewrite B/C/D history.",
+  "identity_note": "This record is pinned by its actual Git commit in the external handoff; it does not predict its own SHA."
+}

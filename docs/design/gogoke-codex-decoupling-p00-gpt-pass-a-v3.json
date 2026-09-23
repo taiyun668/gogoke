@@ -1,0 +1,488 @@
+{
+  "schema": "gogoke.p00.pass-a.corrected-candidate.v3.4-c2-f01",
+  "date": "2026-09-19",
+  "timezone": "UTC",
+  "repository": "taiyun668/gogo-party",
+  "pr": 6,
+  "production_source_basis_commit": "bc665a852833952b76d9508401193bedd2198436",
+  "received_handoff_commit": "b88988fd9621b048e883336d79ab1bb433a4cefa",
+  "previous_checkpoint_payload": "59dd05cfe1321da7650e6cbb61bb17858b083710",
+  "parent_evidence_head": "3ed20ef3b84e8b26ac2985337da6c87aae3e7ed2",
+  "pass_a_state": "REVISED_PENDING_C2_F01_FOCUSED_REVIEW",
+  "completion_scope": "AUTHOR_SIDE_C2_F01_REPAIR_NOT_INDEPENDENT_ACCEPTANCE",
+  "p00_acceptance": "NOT_ACCEPTED",
+  "code_entry_gate": "CLOSED_PENDING_GPT_P00_REVIEW",
+  "runtime_verified": false,
+  "context_isolated_gpt_review_completed": false,
+  "pass_b_completed": false,
+  "pass_b_ready": false,
+  "global_orphan_sink_count": null,
+  "all_function_callers_proven": false,
+  "full_local_checkout": true,
+  "stage1_tests_rerun": false,
+  "census_regenerated": false,
+  "production_files_changed": false,
+  "existing_tests_changed": false,
+  "remote_current_state": "active/source-present",
+  "voice_current_state": "active/source-present",
+  "authorized_production_work_packages": [],
+  "known_unclassified_boundary_changing_entry_families": [],
+  "counts": {
+    "entry_families": 25,
+    "reverse_sink_families": 18,
+    "roots": 32,
+    "writers": 30,
+    "processes": 24,
+    "networks": 10,
+    "permissions": 15,
+    "os_sinks": 12,
+    "external_boundaries": 6,
+    "observations": 303,
+    "capabilities": 42,
+    "capability_behaviors": 84,
+    "surface_rows": 133,
+    "tauri_commands": 129,
+    "daemon_business_methods": 104,
+    "shared_methods": 101,
+    "tauri_only": 28,
+    "daemon_only": 3,
+    "wire_auth": 1,
+    "disconnect_retry_allowlist": 36,
+    "shared_but_desktop_local": 19,
+    "corrigenda": 27,
+    "historical_pa_findings_inherited": 32,
+    "daemon_literal_by_handler": {
+      "daemon": 6,
+      "workspace": 25,
+      "codex": 39,
+      "prompts": 7
+    },
+    "safe_fixture_cases": 49,
+    "new_metadata_negatives": 19,
+    "r3_selection_rows": 14,
+    "r3_concrete_symbol_tokens": 34,
+    "r3_semantic_labels": 9,
+    "r3_caller_edges": 15,
+    "r3_source_mock_cases": 31,
+    "r3_symbol_negative_cases": 14
+  },
+  "published_evidence_objects": [
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-gpt-pass-a-v3.md",
+      "git_blob": "0a191d5f1b7760f27b5c507bbc6c2cd68db857e9",
+      "sha256": "eafad136dd814dde747e5b8b0c4866cef343d94ea5cb391fcf077c5174891114"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-gpt-pass-a-validation-v3.json",
+      "git_blob": "4b5af2b7960b20b42a24a0593303969f2591d816",
+      "sha256": "f9c1e7bf804d65f47588f53b9bb63a4d40318a54e57c524c873744712c036432"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-authorities-v3.md",
+      "git_blob": "80861cc4a3fa004f33bf432906b2b01acdd9b019",
+      "sha256": "fb05006788d95687c8d95ea509e886361b63ae474d809918a89620f55b650003"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-capabilities-v3.tsv",
+      "git_blob": "5f0140f31e91bad8ec8a61b9bfcdceb7a8cf92ac",
+      "sha256": "9d0e2204bf052f658b8d01b1e7e83fd23ece2d274d639858794afe4fb04cf393"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-corrigenda-v3.md",
+      "git_blob": "0e158e0e0afe16726ea435c0c4c02b70afcac498",
+      "sha256": "a3398903d9de647419f905bb731c2ab9dec3fef3d1d8af7629ac75f71c5be6ff"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-replay-v3.md",
+      "git_blob": "39a5f390703155ecc3ab32629c04e8b106984aaa",
+      "sha256": "fea6104d2a1cbe91c82566a8642247c00108c8782617c7d97e1ddefd8d210075"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-surfaces-v3.tsv",
+      "git_blob": "42e184b19443c406b2aa11c658d597036b44cb9b",
+      "sha256": "d8a452940128e3ac905970c117d0c67c7a616777f78225a38587aa17dc27a860"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r1-v3.tsv",
+      "git_blob": "223c447e9d16c4a0e0fac2129e761dd74277e7e3",
+      "sha256": "4b5a5e0ee0cda20b07a3162b81cd81b8b0743d32b57e51841042ceabaa8a4de6"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r2-v3.tsv",
+      "git_blob": "f0a34398f153b0bf4cbd1d9965818835e5caa689",
+      "sha256": "4ece6e13989a986ef8f4f60aa0de0d443b12e3f621f9b35dbe96360a10e67eb7"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r3-v3.tsv",
+      "git_blob": "8ddae784540bccd6f2f12607e1b96a46eb1da156",
+      "sha256": "b2c5f9b0878ecd7acb6a3cedd1a2c5e0d9124843d6d62fd89e13e582b96df823"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r4-v3.tsv",
+      "git_blob": "824d3bb23dc64e77e632799294b140a6c8297477",
+      "sha256": "3193c35a55c012e4b2e099fe021dbf2ab3dfcd801d3e0fc16cda0904a578b219"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r5-v3.tsv",
+      "git_blob": "14c40cf4965062458f723ce102d83b281d239fe7",
+      "sha256": "dd18ae914fd0908d71fb9ccd809807a8b7407e7878bf8d7761782795ae325034"
+    },
+    {
+      "path": "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r6-v3.tsv",
+      "git_blob": "889437cd6e306404c28fb5cce384676f98e095b2",
+      "sha256": "4da3aa4fe47125cdeb4b165a2212e32f7de82324bfa69471aef08bdad2b30de1"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/FAILURES.json",
+      "git_blob": "476da1853e023943435fb5e0f77fb4228a76997f",
+      "sha256": "ece9468fffbb6dc97eedc3e6b398b4b05206887f8c49540d8322a033cbeac51d"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/REPORT.md",
+      "git_blob": "a035f96279e467aea9cc164f92f1f8b606823d0e",
+      "sha256": "4ce8502c805c55b8e1823e604ac9ee12f349ab4a7b9a36afaf23b42389d02951"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/received/CHRONOLOGY_VALIDATION.json",
+      "git_blob": "66942de33910ffb825a17223d437761123f4c646",
+      "sha256": "880f7f5f3905d801f753e11ce47d3f7768c8e370aa45f2d9e3321ed059979a3a"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/received/FREEZE_RECEIPT.json",
+      "git_blob": "73a3842647739173008c1e599fa5573064e2d524",
+      "sha256": "cc7868cc4ac6016a3d2ec4f6952607f653510158ed2d8931304956d3b1646341"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/received/POST_FREEZE_FINDINGS.json",
+      "git_blob": "3fcca058490ccf3fa7e35d5e801486e2d9c0f596",
+      "sha256": "7fced7eafb8ace14f91305ec529b934c91909afee20576751e5d9d9bbe2580f4"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/received/RESULT.json",
+      "git_blob": "36908db3e222875f01af0efe3272116e7e095151",
+      "sha256": "c604f8f220cada60e6a94ea35397222ebe097f4c7318ca76a3ec5f0bee64de24"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/replay-results.json",
+      "git_blob": "68b911bf921f4723b65bb70bdeb329c943ab6322",
+      "sha256": "ea765c4e7e0c4c063122ea42ca4781b2e09b99b3c8afe6ae0ac6687776e37afa"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/reuse-contracts.json",
+      "git_blob": "fadf18537989eadae031502cfea8566705a07392",
+      "sha256": "12f609400673667495f918a89823ae2d02636469d780eaed10b0c22b9b3d385f"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/safe-fixtures.json",
+      "git_blob": "52d006ea55f2ddd6a26724ed8a1f1db49fa674e0",
+      "sha256": "89fbaef240713280272db46dfb0f6fc457a9f0c58d869c0548824071fb78e356"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/safe_source_fixtures.mjs",
+      "git_blob": "319757bba4448a768be5391ed0d5ded2d669cf3e",
+      "sha256": "7289e784bf72d3bb9cc958164c87e520691fa2fd251901fe4a3500bfa9335092"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/source-identities.json",
+      "git_blob": "dfaa206ce490982802496d1117e92d81e87fc757",
+      "sha256": "42082c3fd0af990ed7bea8cbe250149c8e8cee9f3857d3196905fb66174de0fb"
+    },
+    {
+      "path": "docs/design/p00-pass-c-b01-b03-r2/verify_repair.py",
+      "git_blob": "83c6aacc18e69f02510d518422e48dff7df8942a",
+      "sha256": "acac52484410259d352da98fce0dd5c518f0f1e56e3fc972f432dc3add6db0b0"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/AUTHORITY_ADDENDUM.md",
+      "git_blob": "215f24b5ea4055c381d8d7d86518f782a2e4fa7e",
+      "sha256": "26825aacc4df1f22d4c2757b9b0a5a1a8d76ec2eaf646bf95c65c50e51a7c914"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/REPLAY.md",
+      "git_blob": "152566094aa47b06fbfb511f308e0b322a5a49d8",
+      "sha256": "3a57d2f797f4a57dc77479c993f64f6970e568cc5bd3ee8304d027ca556f9112"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/REPORT.md",
+      "git_blob": "5759146727aa3f9915ce50b645f5d47003f7c5e9",
+      "sha256": "129a91e8ee2be773ca57a580bb7027b2b49e14c1d12bb2b1748f98f6da16b56c"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/fixture-results.json",
+      "git_blob": "22a78e8b35f7ccf77a7850c898cd908e0b26fb9a",
+      "sha256": "9a75b713d4492767f4afb43a8e84d1b4e3f79c036b954e0e1e2f3854dc5c9dda"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/ownership-contract.json",
+      "git_blob": "4b8bb8af55d0a11ae9169fb853797a62d1e3f666",
+      "sha256": "0f59ddf44bb45b6db6497a4b9add2f1d1b2f7dde9b27a67cf928b9452031de3b"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/preservation.json",
+      "git_blob": "c59ca05cccbd20271d14194011a4b889af6377be",
+      "sha256": "5d7485bca19bef11ff9cad60bb364a5e77ec7d1aeab415599663b6e396af5508"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/received/DELTA_FINDINGS.json",
+      "git_blob": "d5b07d5a53e1aff548bf3d6a822663669c6f80bf",
+      "sha256": "71460393354332dd58b9b2267409371a9f556ac6af92e71fc3de31f9f62d7007"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/received/FOCUSED_REVIEW_REPORT.md",
+      "git_blob": "73fe131e0c8317b60f7bc470535e951cdeb2c2d6",
+      "sha256": "7f2fdbde40636caa5161d0a79f3a8e9ea95ecc66b04e747ff0ae127824e0a01b"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/received/ITEM_RECONCILIATION.json",
+      "git_blob": "ed48474fcda2ba516795c3c7f4605786792540c3",
+      "sha256": "51fcbd8f08e595a43d771ff150db7aad0a94f638c37600b4bdc1996f1635e929"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/received/REVIEW_RECEIPT.json",
+      "git_blob": "fd0753c325694ea31a42de3fb8260c80c6bdb819",
+      "sha256": "af53fcdf70c66368098f00e47f73bd6599cbbfebd93f3b2274a2dfb8889df60b"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/symbol-bindings.json",
+      "git_blob": "fa5df6ef434e731b0533e3c39215aa67f5174b30",
+      "sha256": "758ca5a477b84b2e7fde0a27037b2c5b072c6e9fb1538d9abe5678cbbe0a06cb"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/symbol-results.json",
+      "git_blob": "9c2d4cb2edfe1064e7d49f13f2001ab81b013afd",
+      "sha256": "d89e554b7a9f4ffa8f1a2511725ca0c1f18944975309cf0c54a85184a827a346"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/symbol_tools.mjs",
+      "git_blob": "2b802dd118d45e50b5ce759cd686aa218b07a506",
+      "sha256": "299354b77ee8a17c79ea90c987f2f548d57cc026dbc5e708381c8b0d3122f616"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/targeted_fixtures.mjs",
+      "git_blob": "109289455c779ee121a7f82a252b231b919a5450",
+      "sha256": "b9dcee6d341d31be6d001ffa171fd073020ff8c1344840dde4008379b8abcfb2"
+    },
+    {
+      "path": "docs/design/p00-pass-c-c2-f01-r3/verify_symbols.mjs",
+      "git_blob": "7cb60b85b73281c0ad49766c54c0659f93e26ba8",
+      "sha256": "800309741e05608432357446127d47dc06bc3d8c7cf1d4b58d8cfeafb8888cdc"
+    }
+  ],
+  "source_join": {
+    "observation": "Each Rn-NNN joins the identically named observation in the H-pinned R1-R6 report; preserve actual entry, sink, current fact, failure and original fixed-source index. Apply K01-K27 overrides first. The TSV adds primary cross-cutting behavior, entry/sink family, disposition, owning WP, first check and a unique scenario requirement.",
+    "capability": "84 behavior rows retain original V3 IDs and primary capability WP. owning_wp is the owner of that row first validation, not a change to the original capability lead. Sources/current behavior join entry families and surfaces; acceptance_assertion is a future requirement, never a runtime claim.",
+    "surface": "Every method+handler+arm-kind is compared to the pinned dispatcher source; name/count equality is insufficient. 133 rows retain routes/first-checks.",
+    "authority": "Original F/S/RT/W/P/N/Q/O plus mandatory §10 concrete Node lifecycle/root/writer/approval annex; 40 relative imports and37 direct write/helper calls. R3 ownership-contract and source-symbol/caller bindings are mandatory appendices for C2-F01; original authority text is byte-preserved.",
+    "historical_checkpoint": "All PA01-PA32 facts/cases from prior payload retained by fixed reference; corrigenda maps them into the effective authority tables. Raw R1-R6 and legacy census remain unchanged."
+  },
+  "effects_legend": {
+    "R": "file/local read",
+    "W": "file/repository/config write including mkdir/delete",
+    "P": "process or OS thread creation/probe",
+    "X": "stop/kill/exit/task cancellation",
+    "N": "network/listener/download/upload",
+    "I": "native mutation/control/stdin input",
+    "Q": "native query with potential native-internal effects, not a pure-effect guarantee",
+    "E": "event/subscription",
+    "PERM": "permission/authentication gate",
+    "OS": "external OS effect",
+    "(D)": "daemon-specific additional effect"
+  },
+  "unexecuted_runtime_axes": [
+    {
+      "axis": "root aliases/locks/corruption/migration",
+      "checks": [
+        "T39.L",
+        "T55.L",
+        "T55.H",
+        "T37.L",
+        "T38.L",
+        "T42.L"
+      ],
+      "first_wp": "WP02"
+    },
+    {
+      "axis": "native CLI/profile/auth/env/cost/capacity",
+      "checks": [
+        "T21.L",
+        "T31.L",
+        "T50.L",
+        "T51.L",
+        "T58.L",
+        "T62.L"
+      ],
+      "first_wp": "WP03",
+      "real_native_first": "WP11a per-provider N1; new providers admitted before WP11b I"
+    },
+    {
+      "axis": "PID/descendants/old writer",
+      "checks": [
+        "T32.L",
+        "T52.L",
+        "T63.L"
+      ],
+      "first_wp": "WP03"
+    },
+    {
+      "axis": "delivery/retry/order/event gaps/backpressure/continuation",
+      "checks": [
+        "T13.L",
+        "T14.L",
+        "T16.L",
+        "T18.L",
+        "T19.L",
+        "T20.L",
+        "T53.L"
+      ],
+      "first_wp": "WP04"
+    },
+    {
+      "axis": "privacy/content/OS/IME/dual-view/unread",
+      "checks": [
+        "T11.L",
+        "T49.L",
+        "T07.L",
+        "T12.L",
+        "T54.L",
+        "T66.L",
+        "T23.L"
+      ],
+      "first_wp": "WP04"
+    },
+    {
+      "axis": "Git/gh/files/PTY/attachments/generators",
+      "checks": [
+        "T22.L",
+        "T30.L",
+        "T33.L",
+        "T34.L",
+        "T35.L"
+      ],
+      "first_wp": "WP08"
+    },
+    {
+      "axis": "external remote/daemon/Tailscale/mobile sealing",
+      "checks": [
+        "T56.L",
+        "T43.L",
+        "T44.L",
+        "T45.L"
+      ],
+      "first_wp": "WP10a"
+    },
+    {
+      "axis": "voice/permission/model/capture/transcription sealing",
+      "checks": [
+        "T57.L",
+        "T37.L",
+        "T42.L"
+      ],
+      "first_wp": "WP10a"
+    },
+    {
+      "axis": "installation/update/registry/ready/rollback/sign/publish/TestFlight",
+      "checks": [
+        "T38.L",
+        "T42.L",
+        "T46.L",
+        "T59.L",
+        "T60.M"
+      ],
+      "first_wp": "WP12"
+    },
+    {
+      "axis": "build/no-Codex/provenance/performance/full platform matrix",
+      "checks": [
+        "T60.L",
+        "T01.L",
+        "T02.L",
+        "T47.L",
+        "T62.L",
+        "T68.L"
+      ],
+      "first_wp": "WP03"
+    }
+  ],
+  "ix01": {
+    "state": "HISTORICAL_SCRIPT_UPLOAD_BLOCK_RETAINED_NOT_BYPASSED",
+    "script_committed": false,
+    "earlier_checker_result_used_as_closure_proof": false,
+    "replay_basis": "Historical blocked script remains unuploaded and unused. R2 newly authored narrow repair checker and source-algorithm fixtures are separately identified; no encoding/path/channel bypass."
+  },
+  "freeze_protocol": "New R3 payload parent is R2 registration; following registration pins returned payload SHA. Original PR6 and R2 branch unchanged.",
+  "next_action": "Only independently review C2-F01 symbol/caller/write-failure delta and new hashes. Preserve B01/B02/K16/K17 closures; then separate Pass D and Owner decision.",
+  "pass_c_state": "AUTHOR_REPAIR_READY_PENDING_C2_F01_REVIEW",
+  "latest_pass_b_verdict": "CHANGES_REQUIRED",
+  "latest_pass_b_reviewed_payload": "620b49270f99f18cd9d8d5e7ffa68b76c5f274df",
+  "old_pass_b_status": "NO_VALID_VERDICT_CHRONOLOGY_NOT_PROVABLE",
+  "independent_focused_review_completed": false,
+  "repair_report": "docs/design/p00-pass-c-c2-f01-r3/REPORT.md",
+  "repair_findings": [
+    "C2-F01"
+  ],
+  "supplemental_corrections": [
+    "K16 prompt update order",
+    "K17 agent delete/rollback order"
+  ],
+  "evidence_branch": "codex/gogoke-decoupling-v3-p00-pass-c-c2-f01-r3",
+  "latest_pass_b_completed_on_original_payload": true,
+  "current_payload_independent_review_completed": false,
+  "manifest_scope": "Published objects include inherited evidence and new R3 files. This index, inherited R2 verification.json, R3 verify-repair-results.json and execution.json are excluded to avoid result/index cycles; they remain bound by the complete payload Git tree.",
+  "closed_author_readable_gaps": [
+    {
+      "id": "G01",
+      "evidence": [
+        "authorities F01-F03/F06/F08/F11-F13/F16-F17/F21-F22 and O01-O12",
+        "corrigenda K09-K11/K23",
+        "R3/R6 traceability"
+      ],
+      "claim": "Known UI/lifecycle/direct-sink caller families classified; no formal whole-function reachability claim. Prior claim superseded where B01-B03 found gaps; R2 has since received focused review; current item status is recorded in retained_independent_evidence_closures and remaining_independent_evidence_closure, not inferred from this historical family claim."
+    },
+    {
+      "id": "G02",
+      "evidence": [
+        "authorities F04-F11, roots/writers/process/permissions",
+        "corrigenda K02-K08/K15-K22",
+        "surfaces native/resources/config methods"
+      ],
+      "claim": "Native/config/rules/prompts/agents/generator effects and sibling callers attributed; no public native-authority assumption. Prior claim superseded where B01-B03 found gaps; R2 has since received focused review; current item status is recorded in retained_independent_evidence_closures and remaining_independent_evidence_closure, not inferred from this historical family claim."
+    },
+    {
+      "id": "G03",
+      "evidence": [
+        "133-row surfaces",
+        "104 daemon business + wire auth layer",
+        "19 shared-but-desktop-local exceptions",
+        "K01"
+      ],
+      "claim": "Every recorded registered method has effect/host/owner/first-check classification; name parity is not behavioral parity. Prior claim superseded where B01-B03 found gaps; R2 has since received focused review; current item status is recorded in retained_independent_evidence_closures and remaining_independent_evidence_closure, not inferred from this historical family claim."
+    },
+    {
+      "id": "G04",
+      "evidence": [
+        "authorities F19/F20, EB01-EB06",
+        "303 observation rows",
+        "84 behavior rows",
+        "PA01-PA32 inheritance"
+      ],
+      "claim": "Known transitive source/package/tool families and all inherited observations mapped; Room whole authority not adopted. Prior claim superseded where B01-B03 found gaps; R2 has since received focused review; current item status is recorded in retained_independent_evidence_closures and remaining_independent_evidence_closure, not inferred from this historical family claim."
+    }
+  ],
+  "prior_focused_review": {
+    "verdict": "CHANGES_REQUIRED",
+    "payload": "5d15a11ecd33763df31172dbdd3426f9f740ab0c",
+    "report": "docs/design/p00-pass-c-c2-f01-r3/received/FOCUSED_REVIEW_REPORT.md",
+    "zip_sha256": "03204138c9b8a931a07038f7157bc32d8a006b9415882c3a1844adc6b1588a46"
+  },
+  "retained_independent_evidence_closures": [
+    "B01",
+    "B02",
+    "K16",
+    "K17"
+  ],
+  "remaining_independent_evidence_closure": {
+    "B03": "PENDING_C2_F01_REVIEW",
+    "C2-F01": "PENDING"
+  },
+  "historical_replay_note": "R2 Stage1/census/49 cases preserved at the prior payload; not executed anew for this narrow revision."
+}

@@ -1,0 +1,42 @@
+[
+  {
+    "id": "C2-F01",
+    "parent_item": "B03",
+    "severity": "TARGETED_EVIDENCE_SOURCE_JOIN_ERROR",
+    "scope": "Evidence only, not a claim of new production vulnerability",
+    "candidate_commit": "5d15a11ecd33763df31172dbdd3426f9f740ab0c",
+    "candidate_file": "docs/design/p00-pass-c-b01-b03-r2/reuse-contracts.json",
+    "locations": [
+      {
+        "line": 76,
+        "recorded": "InstanceStore/ROOM_BOOT_ID/claim/confirmOwner/releaseAllFor/remove",
+        "actual": "InstanceStore.noteProcess",
+        "source": "packages/room/src/instances.ts:325-338"
+      },
+      {
+        "line": 97,
+        "recorded": "shutdown/closeAndRelease/safelyCloseSeat/startSeat",
+        "actual": "ensureSeat / ensureSeatInner, invoking seat.start then instanceStore.noteProcess",
+        "source": "packages/room/src/server.ts:1488-1504,1652-1657"
+      }
+    ],
+    "independent_proof": [
+      "Independent TS AST: no declaration for either concrete symbol in the designated source file.",
+      "Raw AST produced five candidates; run/login/logout adjudicated as descriptive labels, not escalated.",
+      "Actual noteProcess method fake dependency tests: missing PID or unknown query returns without persistence; known identity invokes save; save failure occurs after in-memory identity mutation.",
+      "verify_repair.py validates source hashes, 40 imports, 37 helper call sites and table schemas, not all listed source selection symbols; its exit0 cannot certify this join."
+    ],
+    "required_changes": [
+      "Replace the two labels with pinned actual source symbols, or explicitly separate semantic labels from source_symbols and provide exact aliases, paths, lines and blob IDs.",
+      "Bind ensureSeat -> ensureSeatInner -> seat.start -> noteProcess -> InstanceStore.save and ensureSeat catch/releaseAllFor; distinguish identity lookup null/unknown from proof of exit, and persistence failure from durable ownership. Do not adopt/repair whole Room.",
+      "Add passive source-symbol existence/alias-join check: corrected baseline 0; reject confirmOwner/startSeat or synthetic missing names while import/writer counts remain unchanged. Keep raw negative outcomes and update any changed manifest object IDs in a new fixed payload.",
+      "Recheck only the affected B03 symbol/caller/writer evidence, published hashes and unchanged source/gate. B01/B02/K16/K17 closures need not be discarded if their bytes remain unchanged."
+    ],
+    "not_required": [
+      "No production source or existing tests changes.",
+      "No real PID/CLI/auth/daemon/listener/network/migration operation.",
+      "No new whole-repository Pass B."
+    ],
+    "status": "CHANGES_REQUIRED"
+  }
+]

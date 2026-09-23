@@ -1,0 +1,56 @@
+observation	capability_behavior	entry_family	sink_family	owning_wp	first_validation_check	disposition	assertion
+R1-001	C04.1	F03	S04	WP08	T03.L	replace-binding	Restore without clicking connect; failed restore must not silently lose retry eligibility.
+R1-002	C05.2	F06	S01	WP08	T34.L	retain-public	Saving an empty or nonempty launch script changes configuration without executing it.
+R1-003	C05.2	F06	S04	WP08	T34.L	retain-public	Manual launch must bind workspace, terminal and ready generation before one stdin write.
+R1-004	C05.2	F06	S04	WP08	T34.L	retain-public	A setup restart failure must not be mistaken for successful restart or script completion.
+R1-005	C05.1	F04	S02	WP08	T34.L	retain-public	A setup marker existence decision must remain distinct from an execution receipt.
+R1-006	C05.2	F04	S01	WP08	T34.L	replace-binding	Persist marker provenance and reject equating mark-ran with successful exit.
+R1-007	C28.1	F06	S04	WP08	T33.L	retain-public	Open an existing stale PTY registry entry and observe liveness and resource cleanup separately.
+R1-008	C28.2	F06	S04	WP08	T33.L	retain-public	Closed-stream write cleanup must not remove a replacement generation; flush is not command success.
+R1-009	C28.1	F06	S04	WP08	T33.L	retain-public	Resize visible sessions and enforce minimum geometry without opening another PTY.
+R1-010	C14.2	F06	S05	WP03	T52.L	replace-binding	Injected PTY kill failure must remain visible after registry removal; no all-stopped receipt.
+R1-011	C14.1	F06	S05	WP04	T18.L	replace-binding	PTY read EOF and read error must not impersonate child exit status.
+R1-012	C28.1	F06	S04	WP08	T33.L	retain-public	Two concurrent opens must account for both spawned candidates and failed compensation.
+R1-013	C05.1	F04	S03	WP08	T34.L	retain-public	Fail after worktree creation and before session/config persistence; preserve partial disk effects.
+R1-014	C05.1	F04	S05	WP08	T34.L	retain-public	Remove worktree with missing parent or prune error; distinguish stopped process from deleted disk.
+R1-015	C24.1	F04	S02	WP07	T25.L	retain-public	Copy AGENTS through temporary file; exercise copy and rename cleanup failures without authorizing scripts.
+R1-016	C29.1	F05	S03	WP08	T34.L	retain-public	Apply a conflicting patch into the parent repository and expose partial application.
+R1-017	C29.1	F05	S03	WP08	T34.L	retain-public	Stage renamed paths; second-path failure must preserve the first-path result.
+R1-018	C29.1	F05	S03	WP08	T34.L	retain-public	Stage-all is an index mutation, not a status query.
+R1-019	C29.1	F05	S03	WP08	T34.L	retain-public	Unstage rename pairs without discarding unrelated working-tree changes.
+R1-020	C29.2	F05	S03	WP08	T34.L	retain-public	Exercise every restore failure leading to clean; do not assume only missing files trigger fallback.
+R1-021	C29.2	F05	S03	WP08	T34.L	retain-public	Keep revert-all confirmation and expose restore-success/clean-failure partial loss.
+R1-022	C29.2	F05	S04	WP03	T50.L	retain-public	Commit invokes external hooks and credentials under a captured program/env/cwd boundary.
+R1-023	C29.1	F05	S07	WP08	T34.L	retain-public	A failed pre-push fetch does not erase the subsequent push attempt or remote result.
+R1-024	C29.1	F05	S03	WP08	T34.L	retain-public	Replay pull fallback parameter branches with independent repository-state assertions.
+R1-025	C29.1	F05	S07	WP08	T34.L	retain-public	Fetch/prune changes local refs even when treated as a remote read.
+R1-026	C29.1	F05	S03	WP08	T34.L	retain-public	Pull success followed by push failure must not trigger blind replay of the whole sync.
+R1-027	C29.1	F05	S03	WP08	T34.L	retain-public	Initialization may succeed while initial commit fails; preserve confirmation and partial status.
+R1-028	C29.1	F05	S07	WP08	T34.L	retain-public	Account separately for repo creation, origin, push and default-branch PATCH.
+R1-029	C30.1	F05	S03	WP08	T34.L	retain-public	PR checkout is a local mutation and network-capable operation, not PR preview.
+R1-030	C30.1	F05	S07	WP08	T03.L	retain-public	Issue total fallback to returned-list length must be labelled incomplete.
+R1-031	C30.1	F05	S07	WP08	T03.L	retain-public	PR total fallback must not claim all remote PRs were enumerated.
+R1-032	C30.1	F05	S07	WP08	T22.L	retain-public	Parse quoted and renamed PR diff paths without extending the authorized root.
+R1-033	C30.1	F05	S07	WP08	T03.L	retain-public	Issue-comments endpoint and first-page output must not be labelled all review comments.
+R1-034	C29.1	F05	S03	WP08	T03.L	retain-public	Libgit2 branch enumeration remains represented without a Command constructor.
+R1-035	C29.1	F05	S03	WP08	T34.L	retain-public	Safe checkout and HEAD update are separately checked for failure.
+R1-036	C29.1	F05	S03	WP08	T34.L	retain-public	Branch creation surviving a failed checkout must remain visible.
+R1-037	C39.1	F18	S14	WP12	T59.L	retain-trust	Startup ready signaling must bind installer receipt and actual product readiness.
+R1-038	C39.1	F18	S14	WP12	T46.L	retain-trust	Auto-check guards and previous-failure consumption must be tested separately.
+R1-039	C39.1	F18	S14	WP12	T46.L	retain-trust	Native updater menu must reach check/download rather than a UI-only state change.
+R1-040	C39.2	F18	S13	WP12	T42.L	retain-trust	Failed install after pending-version storage must preserve truthful pending state.
+R1-041	C39.1	F18	S07	WP12	T59.L	retain-trust	Release-notes fetch remains a separate network entry when auto-check is disabled.
+R1-042	C37.1	F21	S13	WP12	T37.L	retain-public	Pending-version storage failure must not become installation authority.
+R1-043	C40.1	F19	S15	WP03	T60.L	retain-public	Icon sync deletes then copies; missing dependency and failed copy have distinct outcomes.
+R1-044	C40.1	F19	S15	WP01	T61.L	evidence-only	Doctor installation advice is not an executable installer edge.
+R1-045	C40.2	F19	S15	WP03	T60.L	retain-public	Tauri icon generation is a pinned external build writer, not a pure script string.
+R1-046	C40.1	F19	S15	WP01	T61.L	evidence-only	Desktop path filters and pre-smoke artifacts do not prove all PR CI or runtime verification.
+R1-047	C39.1	F19	S14	WP12	T59.L	retain-trust	No-Publish mode still accesses signing material and writes artifacts.
+R1-048	C39.1	F19	S14	WP12	T59.L	retain-trust	Release-view authorization/network failure must not be classified as confirmed nonexistence.
+R1-049	C39.1	F19	S14	WP12	T59.L	retain-trust	Manifest rewrite and signature write are two effects with version rejection checks.
+R1-050	C39.1	F19	S14	WP12	T59.L	retain-trust	NewKey protection of private key does not imply protection of existing public-key output.
+R1-051	C39.2	F19	S14	WP12	T46.L	retain-trust	Installer smoke is a real install/uninstall/process test and requires separate authorization.
+R1-052	C41.1	F15	S04	WP10a	T56.L	seal-preserve	Local mode with an existing daemon must not bypass the remote-sealing startup policy.
+R1-053	C14.2	F02	S05	WP03	T52.L	retain-public	Application exit after ignored daemon-stop failure cannot assert descendants stopped.
+R1-054	C14.1	F06	S05	WP08	T33.L	retain-public	Restart closes state first and does not itself create the replacement PTY.
+R1-055	C34.1	F14	S07	WP10b	T43.L	replace-binding	Remote adapter errors must not silently fall through to a second local execution.

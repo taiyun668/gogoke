@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.p00.c2-f01.focused-review.fixed-objects.r3",
+  "review_completed_utc": "2026-09-19T12:57:59.591554+00:00",
+  "repository": "taiyun668/gogo-party",
+  "production_source": {
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "tree": "746024abeb2e6d35ac88fd1b2e315fceb0e9f54f",
+    "parent": "94254b6c8aac11ce52931a0f882bc89f708557b7"
+  },
+  "original_independent_snapshot": "55a8443ef98f1cc231f4f45d78c3bc3cad93a9e4",
+  "r2_payload": "5d15a11ecd33763df31172dbdd3426f9f740ab0c",
+  "r2_registration": {
+    "commit": "3ed20ef3b84e8b26ac2985337da6c87aae3e7ed2",
+    "tree": "c3e602ffa43049306ea4943b80372a6399e849a4"
+  },
+  "r3_payload": {
+    "commit": "c055e125531e166cb67a45531a3c7a8aa9d70330",
+    "tree": "bfc7908f28a850594d74beb537f49be9d614ccdc",
+    "parent": "3ed20ef3b84e8b26ac2985337da6c87aae3e7ed2"
+  },
+  "r3_registration": {
+    "commit": "7427b1eaba920e30a188623cea05807df9114ee5",
+    "tree": "8582a032c7bb7ef98d2f1dc8a0045e0cf6615b68",
+    "parent": "c055e125531e166cb67a45531a3c7a8aa9d70330"
+  },
+  "r3_delivery_zip": {
+    "sha256": "58f15f570d50c3d4b0e210c279b2dd0ac89091ec2490ab3eec769723af6fa4a9",
+    "internal_sha256s": "PASS"
+  },
+  "source_package_zip": {
+    "sha256": "cbbe3204755c6066fc0f3a07d9bcab1ef7283c56def81f1e22f2023e844f5f0e",
+    "internal_sha256s": "PASS"
+  },
+  "preserved_independent_freeze": {
+    "sha256": "685936270e4b4ae45354140c0aebbc05079c63e46abe197944e5b34c58d88507",
+    "rewritten": false
+  }
+}

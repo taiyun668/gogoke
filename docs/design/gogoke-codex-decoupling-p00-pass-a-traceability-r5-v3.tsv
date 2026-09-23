@@ -1,0 +1,48 @@
+observation	capability_behavior	entry_family	sink_family	owning_wp	first_validation_check	disposition	assertion
+R5-001	C34.1	F14	S07	WP10b	T43.L	replace-binding	Remote client creation is demand-driven and distinct from startup-managed daemon control.
+R5-002	C41.1	F14	S07	WP10a	T56.L	seal-preserve	Raw TCP without application TLS must not be represented as verified peer identity.
+R5-003	C38.1	F14	S07	WP04	T19.L	replace-binding	Optional client token and required server authentication are tested as distinct states.
+R5-004	C12.1	F14	S07	WP04	T53.L	replace-binding	Queue-send and response deadlines have separate acceptance states and pending cleanup.
+R5-005	C12.1	F14	S07	WP04	T14.L	replace-binding	Response timeout after server execution remains unknown acceptance and forbids blind resend.
+R5-006	C12.1	F14	S07	WP04	T14.L	replace-binding	Only exact disconnect errors trigger one allowlisted retry; writes are not generally replayable.
+R5-007	C33.2	F14	S04	WP03	T51.L	replace-binding	Runtime-args/connect/resume/live retries need method-level idempotence or reconciliation.
+R5-008	C11.1	F14	S08	WP04	T18.L	replace-binding	Invalid JSON, unknown shapes and unmatched IDs are diagnosed without fabricated completion.
+R5-009	C11.1	F14	S08	WP04	T16.L	replace-binding	Only three bridged notification kinds do not establish parity for every OS event.
+R5-010	C12.1	F14	S07	WP04	T14.L	replace-binding	Disconnect draining does not collapse unsent, partially sent and executed requests into one fact.
+R5-011	C32.2	F14	S02	WP08	T22.L	replace-binding	WSL UNC normalization must retain explicit target-machine/distro identity rather than silently broadening paths.
+R5-012	C41.1	F15	S07	WP10a	T56.L	seal-preserve	Loopback standalone and all-interface managed listeners are separate sealing entries.
+R5-013	C38.1	F14	S07	WP04	T19.L	replace-binding	No-token dev mode, unauthorized requests and authenticated event subscription are independently checked.
+R5-014	C11.1	F14	S08	WP04	T18.L	replace-binding	Malformed or ID-less requests retain diagnostic policy even when no error response is possible.
+R5-015	C12.2	F14	S07	WP04	T53.L	replace-binding	Per-connection concurrency limits do not imply per-session execution order.
+R5-016	C12.2	F14	S07	WP04	T53.L	replace-binding	Slow clients cannot create unbounded response/event memory without an explicit budget.
+R5-017	C11.1	F14	S08	WP04	T16.L	replace-binding	Broadcast lag requires gap/cursor/snapshot handling rather than silently continuing.
+R5-018	C11.1	F14	S08	WP04	T16.L	replace-binding	No event receivers is not durable delivery; producer send failure remains observable.
+R5-019	C14.1	F14	S05	WP10b	T44.L	replace-binding	Client EOF aborts transport tasks but does not falsely certify cancellation of spawned business work.
+R5-020	C14.2	F15	S05	WP03	T32.L	replace-binding	Shutdown acknowledgment precedes 100ms process exit and must not impersonate drained writers.
+R5-021	C35.1	F14	S11	WP10b	T44.L	retain-public	Daemon no-op menus and daemon-host notification fallback are explicitly non-equivalent to desktop UX.
+R5-022	C37.1	F15	S01	WP02	T39.L	replace-binding	Initial invalid settings/workspaces must fail closed instead of authorizing an empty writer state.
+R5-023	C33.2	F15	S01	WP02	T55.L	replace-binding	Missing HOME/XDG must not construct a cwd-relative standalone daemon root.
+R5-024	C33.2	F15	S01	WP02	T55.L	replace-binding	Managed --data-dir must identify the same canonical product root and actual lock owner.
+R5-025	C14.2	F15	S05	WP03	T52.L	replace-binding	List-triggered stale pruning must not kill a shared Arc still referenced by a surviving workspace.
+R5-026	C37.1	F15	S01	WP02	T39.L	replace-binding	Subsequent storage read failure retains stale memory but must report staleness, unlike successful empty load.
+R5-027	C33.2	F15	S05	WP03	T63.L	replace-binding	Pruned map membership is not proof that the removed native writer has stopped.
+R5-028	C32.2	F11	S02	WP08	T22.L	retain-public	Daemon file canonicalization, UTF-8 and 400k limits apply independently of public Files policy.
+R5-029	C41.1	F02	S04	WP10a	T56.L	seal-preserve	Startup remote and local-existing-daemon branches are both sealed while retaining local-host capability.
+R5-030	C41.1	F09	S04	WP10a	T56.L	seal-preserve	Settings save cannot silently start/restart a sealed remote daemon.
+R5-031	C14.2	F02	S05	WP03	T52.L	retain-public	Exit stop/keep setting must not equate app exit with daemon or child-tree termination.
+R5-032	C41.2	F15	S10	WP09b	T23.L	seal-preserve	Command preview uses placeholders and does not expose token or claim a process was started.
+R5-033	C41.1	F15	S07	WP10a	T56.L	seal-preserve	Preflight token/binary/root/listener probes are separate from actual bind/readiness.
+R5-034	C14.2	F15	S05	WP03	T52.L	replace-binding	Version mismatch restart requires ownership/auth before attempting shutdown or signals.
+R5-035	C14.2	F15	S05	WP03	T52.L	replace-binding	PID from daemon info or listener tooling is insufficient without creation-time identity.
+R5-036	C20.1	F15	S10	WP09b	T23.L	replace-binding	Token in daemon argv is a local process-inspection exposure and requires a protected launch channel.
+R5-037	C33.1	F15	S04	WP03	T32.L	replace-binding	Spawn-success Running status must be reconciled with actual bind/auth/ping readiness.
+R5-038	C14.2	F15	S05	WP03	T52.L	replace-binding	Managed child kill/wait and subsequent probe retain distinct failures.
+R5-039	C14.2	F15	S05	WP03	T52.L	replace-binding	External daemon force-stop remains ownership-guarded and verifies the final listener state.
+R5-040	C41.2	F15	S04	WP03	T50.L	seal-preserve	Tailscale probe uses the correctly spelled binary and macOS launchctl/direct fallback identities.
+R5-041	C41.2	F15	S10	WP09b	T23.L	seal-preserve	Tailnet/DNS/host/IP diagnostics remain private external identity, not public migration content.
+R5-042	C33.2	F15	S01	WP02	T55.L	replace-binding	Daemonctl platform home fallbacks cannot create a relative product root.
+R5-043	C20.1	F15	S10	WP09b	T23.L	replace-binding	Argument, environment and settings token precedence must preserve secrecy and selected identity.
+R5-044	C41.1	F15	S07	WP10a	T56.L	seal-preserve	Status probes network; start/stop mutate processes and cannot evade sealing via the CLI entry.
+R5-045	C41.1	F16	S07	WP10a	T56.L	seal-preserve	Configured mobile wizard auto-test is blocked independently of its visible Connect button.
+R5-046	C41.1	F16	S01	WP10a	T56.L	seal-preserve	Failed mobile connection leaves first saved remote config; restore must not reactivate it.
+R5-047	C20.1	F16	S10	WP09b	T23.L	seal-preserve	React/settings/profile token copies are individually excluded from ordinary export and migration.

@@ -1,0 +1,27 @@
+{
+  "created_utc": "2026-09-19T04:11:12.826525+00:00",
+  "verdict": "CHANGES_REQUIRED",
+  "report_path": "deliverables/FOCUSED_REVIEW_REPORT.md",
+  "report_sha256": "7f2fdbde40636caa5161d0a79f3a8e9ea95ecc66b04e747ff0ae127824e0a01b",
+  "fixed_objects": {
+    "repository": "taiyun668/gogo-party",
+    "source_commit": "bc665a852833952b76d9508401193bedd2198436",
+    "source_tree": "746024abeb2e6d35ac88fd1b2e315fceb0e9f54f",
+    "source_parent": "94254b6c8aac11ce52931a0f882bc89f708557b7",
+    "original_pass_a": "620b49270f99f18cd9d8d5e7ffa68b76c5f274df",
+    "original_snapshot": "55a8443ef98f1cc231f4f45d78c3bc3cad93a9e4",
+    "payload_commit": "5d15a11ecd33763df31172dbdd3426f9f740ab0c",
+    "payload_parent": "55a8443ef98f1cc231f4f45d78c3bc3cad93a9e4",
+    "payload_tree": "5f76373bfbf8588db55a2714ffca46979fac12e4",
+    "registration_commit": "3ed20ef3b84e8b26ac2985337da6c87aae3e7ed2",
+    "registration_parent": "5d15a11ecd33763df31172dbdd3426f9f740ab0c",
+    "registration_tree": "c3e602ffa43049306ea4943b80372a6399e849a4",
+    "original_freeze_sha256": "685936270e4b4ae45354140c0aebbc05079c63e46abe197944e5b34c58d88507",
+    "old_ready_zip_sha256": "cbbe3204755c6066fc0f3a07d9bcab1ef7283c56def81f1e22f2023e844f5f0e",
+    "r2_delivery_zip_sha256": "e3a5d24dc779f6b748739001dd6f0c738a55e29bc2c7bfa085d1b0d93a8620a4"
+  },
+  "original_freeze_unchanged": true,
+  "targeted_delta_not_new_blind_audit": true,
+  "report_committed_to_github": false,
+  "no_production_authorization": true
+}

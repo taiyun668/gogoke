@@ -1,0 +1,45 @@
+observation	capability_behavior	entry_family	sink_family	owning_wp	first_validation_check	disposition	assertion
+R2-001	C29.1	F05	S03	WP08	T03.L	retain-public	Three-second status polling and check-ignore subprocess remain independent of model connection.
+R2-002	C29.1	F05	S03	WP08	T34.L	retain-public	Debounced refresh must reject a timer belonging to the old workspace.
+R2-003	C02.1	F05	S13	WP05	T07.L	retain-public	Diff preload/cache identity includes workspace and whitespace mode; empty response is not completion.
+R2-004	C32.2	F05	S12	WP05	T54.L	retain-public	Text/image size budgets and SVG display must preserve partial-result provenance.
+R2-005	C31.1	F07	S06	WP08	T30.L	replace-binding	Commit-message input with staged changes must not pretend to include unstaged/untracked changes.
+R2-006	C33.1	F05	S05	WP03	T52.L	retain-public	Check-ignore stdin failure invokes kill/wait; verify no unreported descendant remains.
+R2-007	C01.2	F05	S03	WP11b	T47.L	retain-public	Ten-second log polling and double history traversal must meet long-history performance criteria.
+R2-008	C30.1	F05	S03	WP08	T03.L	retain-public	A configured origin is not proof of remote access or authentication.
+R2-009	C30.1	F05	S07	WP08	T03.L	retain-public	GitHub panel queries retain bounded lists and explicitly qualified totals.
+R2-010	C30.1	F05	S07	WP08	T03.L	retain-public	Diff and comments are separate credential/network operations with separate failures.
+R2-011	C32.1	F05	S02	WP08	T22.L	retain-public	Repository scan honors depth, count, excluded directories and no-follow-link policy.
+R2-012	C29.2	F05	S03	WP08	T22.L	retain-public	Selected absolute Git roots outside workspace require their own explicit authorization.
+R2-013	C29.1	F05	S03	WP08	T34.L	retain-public	Stage/unstage/revert multi-path steps expose partial results and destructive fallback.
+R2-014	C29.2	F05	S03	WP08	T34.L	retain-public	Restore success before clean failure is not reported as an unchanged repository.
+R2-015	C29.1	F05	S03	WP08	T34.L	retain-public	Commit with no staged files may first stage all; preserve the user-visible scope.
+R2-016	C29.1	F05	S03	WP08	T34.L	retain-public	Commit remains real when push/sync fails and commit draft is cleared.
+R2-017	C29.1	F05	S03	WP08	T34.L	retain-public	Every push/pull/sync fallback has its own post-state and replay policy.
+R2-018	C29.1	F05	S03	WP08	T34.L	retain-public	Initial-commit failure retains initialized repository status and recovery instruction.
+R2-019	C29.1	F05	S07	WP08	T34.L	retain-public	Remote repo and local origin survive later push/PATCH failure without fabricated rollback.
+R2-020	C29.2	F05	S03	WP08	T34.L	retain-public	Invalid branch names and safe-checkout rejection do not conceal an already created branch.
+R2-021	C30.1	F05	S03	WP08	T34.L	retain-public	Successful PR checkout refreshes branch/status/log without treating checkout as preview.
+R2-022	C29.1	F05	S03	WP08	T34.L	retain-public	Conflicting parent worktree apply reports changed parent state despite error.
+R2-023	C04.1	F03	S01	WP08	T03.L	replace-binding	Failed initial workspace list must not be indistinguishable from an empty loaded registry.
+R2-024	C04.1	F03	S04	WP08	T03.L	replace-binding	Restore auto-connect is independent of explicit workspace selection and Git polling.
+R2-025	C04.1	F03	S02	WP08	T34.L	retain-public	Add-many tracks candidate-level failures and successes rather than batch all-or-nothing.
+R2-026	C04.1	F04	S01	WP08	T34.L	replace-binding	Workspace persistence failure compensates newly spawned sessions but does not kill reused ones.
+R2-027	C05.1	F04	S03	WP08	T34.L	retain-public	Clone setup/spawn/persist failure may leave disk state after best-effort cleanup.
+R2-028	C05.1	F04	S03	WP08	T34.L	retain-public	URL clone destination cleanup failure must retain the exact attempted target and residue.
+R2-029	C33.2	F04	S04	WP03	T51.L	replace-binding	Two workspaces sharing the first live Arc must be separated by profile/auth/domain identity when required.
+R2-030	C14.2	F04	S05	WP03	T52.L	retain-public	Removing one shared reference must not kill the process while other references survive.
+R2-031	C33.2	F04	S04	WP03	T51.L	replace-binding	Runtime-argument changes currently replace all shared keys; test selected-binding isolation.
+R2-032	C33.2	F04	S05	WP03	T63.L	replace-binding	In-flight requests and old writers remain fenced during new-spawn/map-swap/old-kill failure.
+R2-033	C05.1	F04	S03	WP08	T34.L	retain-public	Desktop missing remote-tracking finder and daemon-provided finder are explicit non-parity branches.
+R2-034	C05.1	F04	S01	WP08	T34.L	retain-public	Failed worktree registry write must account for created worktree and newly spawned session.
+R2-035	C05.1	F04	S05	WP08	T34.L	retain-public	Parent removal with child errors retains an explicit partial registry and disk result.
+R2-036	C04.2	F04	S01	WP08	T34.L	replace-binding	Frontend optimistic rollback must not pretend backend in-memory settings rolled back.
+R2-037	C05.1	F04	S03	WP08	T34.L	retain-public	Rename branch/move/persist compensation failures preserve actual disk and session path state.
+R2-038	C29.1	F04	S07	WP08	T34.L	retain-public	Remote branch push/delete/upstream steps require separate receipts and no blind compound retry.
+R2-039	C34.1	F14	S07	WP10b	T43.L	replace-binding	Remote workspace commands propagate remote failures and preserve normalized target identity.
+R2-040	C32.2	F11	S04	WP08	T22.L	retain-public	Clone/apply/open/icon local adapters remain local despite matching daemon methods.
+R2-041	C32.1	F11	S04	WP03	T50.L	retain-public	Windows cmd/bat and macOS open/CLI paths capture exact argv, cwd and inherited environment.
+R2-042	C32.2	F11	S04	WP08	T22.L	retain-public	Explicit external app/command configuration is not permission for arbitrary model-selected targets.
+R2-043	C04.1	F04	S02	WP02	T55.L	replace-binding	Tilde expansion uses a product/platform resolver rather than a public dependency on Codex home.
+R2-044	C04.2	F03	S04	WP03	T32.L	replace-binding	Connected map membership must not impersonate a live child process.

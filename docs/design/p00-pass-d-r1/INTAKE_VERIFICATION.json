@@ -1,0 +1,230 @@
+{
+  "schema": "gogoke.p00.pass-d.intake-verification.v1",
+  "role": "CONTROLLER_TECHNICAL_SYNTHESIS_NOT_NEW_BLIND_AUDIT",
+  "review_zip_sha256": "b258335fb7281df8c80179bb3aacd3bcf8e53962c0ef82b469fd5d188c963d15",
+  "package_files_verified": 140,
+  "delivered_files_verified": 21,
+  "received_originals": [
+    {
+      "path": "received/FOCUSED_REVIEW_REPORT.md",
+      "bytes": 6997,
+      "sha256": "51b5389b0e308954c85aa8ca92fac21ad0b4dac3a0f90b3d5601991cdccaf4cc",
+      "git_blob": "b731211fd1d5928720fcd6b96f657cd6d2795f66"
+    },
+    {
+      "path": "received/ITEM_RECONCILIATION.json",
+      "bytes": 1449,
+      "sha256": "13e70e51970a202732a68e1705bf8811cf4a63e69c42fcc296bd1001bce79c29",
+      "git_blob": "3f01131c048d2fca2de625e700f78fee7c619fe6"
+    },
+    {
+      "path": "received/REVIEW_RECEIPT.json",
+      "bytes": 765,
+      "sha256": "b4a3cdf52fb36dbfded42c4ceb9ef858866f33c03fadbd6b74a6972e6ac68236",
+      "git_blob": "0dd22215a556d88d9a78cbbda9d6d0b3c9a8067a"
+    },
+    {
+      "path": "received/FIXED_OBJECTS.json",
+      "bytes": 1475,
+      "sha256": "1121ee3b9750cc38b7add108d3c8dcfb68b00f3f09fd9fc48b56bfcbabb28826",
+      "git_blob": "437029f3367b1b46d0089812474a5114b48a99df"
+    },
+    {
+      "path": "received/UNEXECUTED_RUNTIME_AXES.json",
+      "bytes": 1333,
+      "sha256": "c9bef4ab1ba33c9a41c079aeb3146406a235d95b40cd6d595582ecc7095351dc",
+      "git_blob": "4536f9a1a073a9a5fb81906e61107b939cabd3d3"
+    }
+  ],
+  "independent_freeze_sha256": "685936270e4b4ae45354140c0aebbc05079c63e46abe197944e5b34c58d88507",
+  "independent_freeze_preservation": "Matched bytes inside original rerun ZIP; not rewritten or re-certified for chronology.",
+  "source_tracked_blob_bytes_verified": 2806,
+  "tree_reconstruction": {
+    "source": "746024abeb2e6d35ac88fd1b2e315fceb0e9f54f",
+    "original-snapshot": "f46d1a25cb31b9f6dcae2ecc44f6a6daa5544ef9",
+    "r2-payload": "5f76373bfbf8588db55a2714ffca46979fac12e4",
+    "r2-registration": "c3e602ffa43049306ea4943b80372a6399e849a4",
+    "r3-payload": "bfc7908f28a850594d74beb537f49be9d614ccdc",
+    "r3-registration": "8582a032c7bb7ef98d2f1dc8a0045e0cf6615b68"
+  },
+  "github_source_to_r3_registration": {
+    "ahead": 24,
+    "behind": 0,
+    "changed_files": 56,
+    "only_root_handoff_or_docs_design": true
+  },
+  "recorded_replay": {
+    "role": "CONTROLLER_PASS_D_REPLAY_NOT_NEW_INDEPENDENT_REVIEW",
+    "commands_executed": 7,
+    "all_exit_zero": true,
+    "symbols_negative_cases": 14,
+    "source_fake_dependency_cases": 31,
+    "repeated_outputs_and_published_bytes_equal": true,
+    "reviewer_ast_checks": 124,
+    "reviewer_preservation_checks": 250,
+    "runtime_verified": false,
+    "not_rerun": [
+      "whole Pass B",
+      "Stage1",
+      "census",
+      "old 49 cases",
+      "product tests"
+    ]
+  },
+  "output_hashes": [
+    {
+      "output": "reviewer-ast.json",
+      "sha256": "ba63696d85f5b874f6880a36bfdfd2e8ce80091bd19691e801e222ea89a84d41",
+      "status": "PASS_SOURCE_JOIN_AND_EVIDENCE_SCOPE",
+      "errors": []
+    },
+    {
+      "output": "reviewer-negatives.json",
+      "sha256": "f4be83edf25e62b93b3d364afb8725af4373cc20e186c462212d5fa157856d2d",
+      "status": "PASS_NEGATIVE_MUTATIONS_REJECTED",
+      "errors": 0
+    },
+    {
+      "output": "reviewer-preservation.json",
+      "sha256": "041971cf073dea31b5dfc9d03efdaa446ff5340323e7b1c7445555e6ca751fe6",
+      "status": "PASS_PRESERVATION_AND_OBJECT_IDENTITIES",
+      "errors": []
+    },
+    {
+      "output": "symbols-1.json",
+      "sha256": "d89e554b7a9f4ffa8f1a2511725ca0c1f18944975309cf0c54a85184a827a346",
+      "status": "PASS_PINNED_SYMBOL_JOINS",
+      "errors": 0
+    },
+    {
+      "output": "fixtures-1.json",
+      "sha256": "9a75b713d4492767f4afb43a8e84d1b4e3f79c036b954e0e1e2f3854dc5c9dda",
+      "status": "PASS_EXPECTED_SOURCE_OBSERVATION",
+      "errors": 0
+    }
+  ],
+  "reviewer_result_comparison": {
+    "ast": "byte-identical",
+    "negative_mutations": "byte-identical",
+    "preservation": "All 250 checks and values identical except common_files_compared=80 versus original27, because current replay projects inherited unchanged evidence too. Expected changed set remains the same four paths."
+  },
+  "replay_commands": [
+    {
+      "id": "symbols-1",
+      "start_utc": "2026-09-19T13:21:37.033742+00:00",
+      "end_utc": "2026-09-19T13:21:37.575890+00:00",
+      "argv": [
+        "node",
+        "<workdir>/p00-d/candidate-r3/docs/design/p00-pass-c-c2-f01-r3/verify_symbols.mjs",
+        "<workdir>/p00-d/source/p00-offline-source",
+        "<workdir>/p00-d/candidate-r3",
+        "<workdir>/p00-d/results/symbols-1.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "2d91575e401163ca436bb20ee161ef784bec8b102fd2dfe53002a9c6f90781f4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "fixtures-1",
+      "start_utc": "2026-09-19T13:21:37.576110+00:00",
+      "end_utc": "2026-09-19T13:21:38.319933+00:00",
+      "argv": [
+        "node",
+        "<workdir>/p00-d/candidate-r3/docs/design/p00-pass-c-c2-f01-r3/targeted_fixtures.mjs",
+        "<workdir>/p00-d/source/p00-offline-source",
+        "<workdir>/p00-d/results/fixtures-1.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7ef875eaced5fd77ad1ad52b465745c2907fa2d6505dcf6e19f08f99e9f5d8b2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "symbols-2",
+      "start_utc": "2026-09-19T13:21:38.320164+00:00",
+      "end_utc": "2026-09-19T13:21:38.835806+00:00",
+      "argv": [
+        "node",
+        "<workdir>/p00-d/candidate-r3/docs/design/p00-pass-c-c2-f01-r3/verify_symbols.mjs",
+        "<workdir>/p00-d/source/p00-offline-source",
+        "<workdir>/p00-d/candidate-r3",
+        "<workdir>/p00-d/results/symbols-2.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "2d91575e401163ca436bb20ee161ef784bec8b102fd2dfe53002a9c6f90781f4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "fixtures-2",
+      "start_utc": "2026-09-19T13:21:38.836032+00:00",
+      "end_utc": "2026-09-19T13:21:39.612708+00:00",
+      "argv": [
+        "node",
+        "<workdir>/p00-d/candidate-r3/docs/design/p00-pass-c-c2-f01-r3/targeted_fixtures.mjs",
+        "<workdir>/p00-d/source/p00-offline-source",
+        "<workdir>/p00-d/results/fixtures-2.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7ef875eaced5fd77ad1ad52b465745c2907fa2d6505dcf6e19f08f99e9f5d8b2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "reviewer-ast",
+      "start_utc": "2026-09-19T13:21:39.613051+00:00",
+      "end_utc": "2026-09-19T13:21:40.043190+00:00",
+      "argv": [
+        "node",
+        "<workdir>/p00-d/review/p00_pass_c_r3_review/deliverables/independent_r3_ast_review.mjs",
+        "<workdir>/p00-d/source/p00-offline-source",
+        "<workdir>/p00-d/candidate-r3",
+        "<workdir>/p00-d/results/reviewer-ast.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c896484f3fb05f6bd58d0f8ff1b7e3989d13484bdac1f01f57856447bae8901a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "reviewer-negatives",
+      "start_utc": "2026-09-19T13:21:40.043516+00:00",
+      "end_utc": "2026-09-19T13:21:42.434833+00:00",
+      "argv": [
+        "python",
+        "<workdir>/p00-d/review/p00_pass_c_r3_review/deliverables/independent_negative_mutations.py",
+        "<workdir>/p00-d/source/p00-offline-source",
+        "<workdir>/p00-d/candidate-r3",
+        "<workdir>/p00-d/review/p00_pass_c_r3_review/deliverables/independent_r3_ast_review.mjs",
+        "<workdir>/p00-d/results/reviewer-negatives.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "8e946e0707fb227e02416c6045bf76d4c3515c8e87db9d9d2d9110f9020c274b",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "reviewer-preservation",
+      "start_utc": "2026-09-19T13:21:42.435071+00:00",
+      "end_utc": "2026-09-19T13:21:43.040153+00:00",
+      "argv": [
+        "python",
+        "<workdir>/p00-d/review/p00_pass_c_r3_review/deliverables/independent_preservation_check.py",
+        "<workdir>/p00-d/candidate-r2",
+        "<workdir>/p00-d/candidate-r3",
+        "<workdir>/p00-d/r3/registration",
+        "<workdir>/p00-d/previous-review/p00_pass_c_r2_review/deliverables",
+        "<workdir>/p00-d/r3",
+        "<workdir>/p00-d/results/reviewer-preservation.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "bed6074d3c83a2263cc956c1b9a107a96bda9e9412b19b0344205b30240b5168",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "limits": [
+    "No new independent B/C verdict issued by this context.",
+    "Original reviewer logs and unsuccessful attempts preserved in the received ZIP, not reclassified as product failures.",
+    "Container hashes and timestamps are not third-party signatures or a platform tool transcript.",
+    "No production tests, builds or real product/OS effects executed."
+  ],
+  "full_review_zip_uploaded_to_github": false,
+  "full_review_zip_location": "User Library p00-pass-c-r3-focused-review.zip; also included unchanged in final D delivery ZIP.",
+  "result": "PASS_INTAKE_IDENTITY_AND_REPLAY_ONLY",
+  "runtime_verified": false
+}

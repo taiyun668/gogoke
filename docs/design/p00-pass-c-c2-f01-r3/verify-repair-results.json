@@ -1,0 +1,991 @@
+{
+  "schema": "gogoke.p00.pass-c.repair-check.r2",
+  "mode": "AUTHOR_PASS_C_NOT_ISOLATED_REVIEW",
+  "status": "PASS_PASSIVE_TUPLE_IDENTITY_AND_CONTRACT_SCHEMA_ONLY",
+  "source_files_bound": 23,
+  "method_count": 104,
+  "literal_handler_counts": {
+    "codex": 39,
+    "daemon": 6,
+    "prompts": 7,
+    "workspace": 25
+  },
+  "git_constant_arms": 27,
+  "corrected_candidate_errors": [],
+  "original_bad_labels_detected": [
+    "local_usage_snapshot:handler:workspace:literal",
+    "menu_set_accelerators:handler:daemon:literal"
+  ],
+  "observations": 303,
+  "capability_behaviors": 84,
+  "surfaces": 133,
+  "negative_cases": [
+    {
+      "id": "N01",
+      "status": "REJECTED",
+      "errors": [
+        "observations set"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N02",
+      "status": "REJECTED",
+      "errors": [
+        "observations duplicate",
+        "observations set"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N03",
+      "status": "REJECTED",
+      "errors": [
+        "Cref:0"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N04",
+      "status": "REJECTED",
+      "errors": [
+        "entry_family:0"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N05",
+      "status": "REJECTED",
+      "errors": [
+        "sink_family:0"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N06",
+      "status": "REJECTED",
+      "errors": [
+        "WP/check:0"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N07",
+      "status": "REJECTED",
+      "errors": [
+        "runtime_verified"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N08",
+      "status": "REJECTED",
+      "errors": [
+        "code_entry_gate"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N09",
+      "status": "REJECTED",
+      "errors": [
+        "global_orphan_sink_count"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N10",
+      "status": "REJECTED",
+      "errors": [
+        "methods set"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N11",
+      "status": "REJECTED",
+      "errors": [
+        "prompts_list:route"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N12",
+      "status": "REJECTED",
+      "errors": [
+        "send_user_message:retry"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N13",
+      "status": "REJECTED",
+      "errors": [
+        "methods set"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N14",
+      "status": "REJECTED",
+      "errors": [
+        "generate_commit_message:handler:git:constant"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N15",
+      "status": "REJECTED",
+      "errors": [
+        "capabilities set"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "N16",
+      "status": "REJECTED",
+      "errors": [
+        "duplicate scenario"
+      ],
+      "same_method_count": false,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "B01-usage-wrong-handler",
+      "status": "REJECTED",
+      "errors": [
+        "local_usage_snapshot:handler:workspace:literal"
+      ],
+      "same_method_count": true,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "B01-menu-wrong-handler",
+      "status": "REJECTED",
+      "errors": [
+        "menu_set_accelerators:handler:daemon:literal"
+      ],
+      "same_method_count": true,
+      "same_handler_distribution": false
+    },
+    {
+      "id": "B01-swap-keeps-all-totals-and-partitions",
+      "status": "REJECTED",
+      "errors": [
+        "local_usage_snapshot:handler:workspace:literal",
+        "menu_set_accelerators:handler:daemon:literal"
+      ],
+      "same_method_count": true,
+      "same_handler_distribution": true
+    }
+  ],
+  "published_objects_checked": [
+    "docs/design/gogoke-codex-decoupling-p00-gpt-pass-a-v3.md",
+    "docs/design/gogoke-codex-decoupling-p00-gpt-pass-a-validation-v3.json",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-authorities-v3.md",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-capabilities-v3.tsv",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-corrigenda-v3.md",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-replay-v3.md",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-surfaces-v3.tsv",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r1-v3.tsv",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r2-v3.tsv",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r3-v3.tsv",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r4-v3.tsv",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r5-v3.tsv",
+    "docs/design/gogoke-codex-decoupling-p00-pass-a-traceability-r6-v3.tsv",
+    "docs/design/p00-pass-c-b01-b03-r2/FAILURES.json",
+    "docs/design/p00-pass-c-b01-b03-r2/REPORT.md",
+    "docs/design/p00-pass-c-b01-b03-r2/received/CHRONOLOGY_VALIDATION.json",
+    "docs/design/p00-pass-c-b01-b03-r2/received/FREEZE_RECEIPT.json",
+    "docs/design/p00-pass-c-b01-b03-r2/received/POST_FREEZE_FINDINGS.json",
+    "docs/design/p00-pass-c-b01-b03-r2/received/RESULT.json",
+    "docs/design/p00-pass-c-b01-b03-r2/replay-results.json",
+    "docs/design/p00-pass-c-b01-b03-r2/reuse-contracts.json",
+    "docs/design/p00-pass-c-b01-b03-r2/safe-fixtures.json",
+    "docs/design/p00-pass-c-b01-b03-r2/safe_source_fixtures.mjs",
+    "docs/design/p00-pass-c-b01-b03-r2/source-identities.json",
+    "docs/design/p00-pass-c-b01-b03-r2/verify_repair.py",
+    "docs/design/p00-pass-c-c2-f01-r3/AUTHORITY_ADDENDUM.md",
+    "docs/design/p00-pass-c-c2-f01-r3/REPLAY.md",
+    "docs/design/p00-pass-c-c2-f01-r3/REPORT.md",
+    "docs/design/p00-pass-c-c2-f01-r3/fixture-results.json",
+    "docs/design/p00-pass-c-c2-f01-r3/ownership-contract.json",
+    "docs/design/p00-pass-c-c2-f01-r3/preservation.json",
+    "docs/design/p00-pass-c-c2-f01-r3/received/DELTA_FINDINGS.json",
+    "docs/design/p00-pass-c-c2-f01-r3/received/FOCUSED_REVIEW_REPORT.md",
+    "docs/design/p00-pass-c-c2-f01-r3/received/ITEM_RECONCILIATION.json",
+    "docs/design/p00-pass-c-c2-f01-r3/received/REVIEW_RECEIPT.json",
+    "docs/design/p00-pass-c-c2-f01-r3/symbol-bindings.json",
+    "docs/design/p00-pass-c-c2-f01-r3/symbol-results.json",
+    "docs/design/p00-pass-c-c2-f01-r3/symbol_tools.mjs",
+    "docs/design/p00-pass-c-c2-f01-r3/targeted_fixtures.mjs",
+    "docs/design/p00-pass-c-c2-f01-r3/verify_symbols.mjs"
+  ],
+  "source_import_tuples_recomputed": 40,
+  "source_writer_tuples_recomputed": 37,
+  "contract_source_tuple_negative_cases": [
+    {
+      "field": "transitive_imports",
+      "status": "REJECTED",
+      "same_count": true,
+      "errors": [
+        "import/source tuple mismatch"
+      ]
+    },
+    {
+      "field": "persistent_call_sites",
+      "status": "REJECTED",
+      "same_count": true,
+      "errors": [
+        "write/source tuple mismatch"
+      ]
+    }
+  ],
+  "method_tuples": [
+    {
+      "method": "ping",
+      "handler": "daemon",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+      "line": 9
+    },
+    {
+      "method": "daemon_info",
+      "handler": "daemon",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+      "line": 10
+    },
+    {
+      "method": "daemon_shutdown",
+      "handler": "daemon",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+      "line": 11
+    },
+    {
+      "method": "menu_set_accelerators",
+      "handler": "daemon",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+      "line": 18
+    },
+    {
+      "method": "is_macos_debug_build",
+      "handler": "daemon",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+      "line": 38
+    },
+    {
+      "method": "send_notification_fallback",
+      "handler": "daemon",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+      "line": 42
+    },
+    {
+      "method": "list_workspaces",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 71
+    },
+    {
+      "method": "is_workspace_path_dir",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 72
+    },
+    {
+      "method": "add_workspace",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 78
+    },
+    {
+      "method": "add_workspace_from_git_url",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 85
+    },
+    {
+      "method": "add_worktree",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 98
+    },
+    {
+      "method": "worktree_setup_status",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 111
+    },
+    {
+      "method": "worktree_setup_mark_ran",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 115
+    },
+    {
+      "method": "connect_workspace",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 119
+    },
+    {
+      "method": "set_workspace_runtime_codex_args",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 125
+    },
+    {
+      "method": "remove_workspace",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 137
+    },
+    {
+      "method": "remove_worktree",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 141
+    },
+    {
+      "method": "rename_worktree",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 145
+    },
+    {
+      "method": "rename_worktree_upstream",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 156
+    },
+    {
+      "method": "update_workspace_settings",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 168
+    },
+    {
+      "method": "list_workspace_files",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 180
+    },
+    {
+      "method": "read_workspace_file",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 184
+    },
+    {
+      "method": "add_clone",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 191
+    },
+    {
+      "method": "file_read",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 203
+    },
+    {
+      "method": "file_write",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 217
+    },
+    {
+      "method": "get_app_settings",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 232
+    },
+    {
+      "method": "update_app_settings",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 233
+    },
+    {
+      "method": "apply_worktree_changes",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 244
+    },
+    {
+      "method": "open_workspace_in",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 248
+    },
+    {
+      "method": "get_open_app_icon",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 262
+    },
+    {
+      "method": "local_usage_snapshot",
+      "handler": "workspace",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+      "line": 266
+    },
+    {
+      "method": "get_codex_config_path",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 19
+    },
+    {
+      "method": "get_config_model",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 26
+    },
+    {
+      "method": "start_thread",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 33
+    },
+    {
+      "method": "resume_thread",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 40
+    },
+    {
+      "method": "read_thread",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 51
+    },
+    {
+      "method": "thread_live_subscribe",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 62
+    },
+    {
+      "method": "thread_live_unsubscribe",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 73
+    },
+    {
+      "method": "fork_thread",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 84
+    },
+    {
+      "method": "list_threads",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 95
+    },
+    {
+      "method": "list_mcp_server_status",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 109
+    },
+    {
+      "method": "archive_thread",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 122
+    },
+    {
+      "method": "compact_thread",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 133
+    },
+    {
+      "method": "set_thread_name",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 144
+    },
+    {
+      "method": "send_user_message",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 159
+    },
+    {
+      "method": "turn_interrupt",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 197
+    },
+    {
+      "method": "turn_steer",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 212
+    },
+    {
+      "method": "start_review",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 238
+    },
+    {
+      "method": "model_list",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 263
+    },
+    {
+      "method": "experimental_feature_list",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 270
+    },
+    {
+      "method": "collaboration_mode_list",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 283
+    },
+    {
+      "method": "set_codex_feature_flag",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 290
+    },
+    {
+      "method": "get_agents_settings",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 306
+    },
+    {
+      "method": "set_agents_core_settings",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 312
+    },
+    {
+      "method": "create_agent",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 324
+    },
+    {
+      "method": "update_agent",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 336
+    },
+    {
+      "method": "delete_agent",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 348
+    },
+    {
+      "method": "read_agent_config_toml",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 360
+    },
+    {
+      "method": "write_agent_config_toml",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 372
+    },
+    {
+      "method": "account_rate_limits",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 388
+    },
+    {
+      "method": "account_read",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 395
+    },
+    {
+      "method": "codex_login",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 402
+    },
+    {
+      "method": "codex_login_cancel",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 409
+    },
+    {
+      "method": "skills_list",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 416
+    },
+    {
+      "method": "apps_list",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 423
+    },
+    {
+      "method": "respond_to_server_request",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 437
+    },
+    {
+      "method": "remember_approval_rule",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 465
+    },
+    {
+      "method": "codex_doctor",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 476
+    },
+    {
+      "method": "generate_run_metadata",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 481
+    },
+    {
+      "method": "generate_agent_description",
+      "handler": "codex",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+      "line": 492
+    },
+    {
+      "method": "get_git_status",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 45
+    },
+    {
+      "method": "init_git_repo",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 49
+    },
+    {
+      "method": "create_github_repo",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 58
+    },
+    {
+      "method": "list_git_roots",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 72
+    },
+    {
+      "method": "get_git_diffs",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 77
+    },
+    {
+      "method": "get_git_log",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 81
+    },
+    {
+      "method": "get_git_commit_diff",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 86
+    },
+    {
+      "method": "get_git_remote",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 93
+    },
+    {
+      "method": "stage_git_file",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 97
+    },
+    {
+      "method": "stage_git_all",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 101
+    },
+    {
+      "method": "unstage_git_file",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 105
+    },
+    {
+      "method": "revert_git_file",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 109
+    },
+    {
+      "method": "revert_git_all",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 113
+    },
+    {
+      "method": "commit_git",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 117
+    },
+    {
+      "method": "push_git",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 121
+    },
+    {
+      "method": "pull_git",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 125
+    },
+    {
+      "method": "fetch_git",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 129
+    },
+    {
+      "method": "sync_git",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 133
+    },
+    {
+      "method": "get_github_issues",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 137
+    },
+    {
+      "method": "get_github_pull_requests",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 141
+    },
+    {
+      "method": "get_github_pull_request_diff",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 145
+    },
+    {
+      "method": "get_github_pull_request_comments",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 154
+    },
+    {
+      "method": "checkout_github_pull_request",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 163
+    },
+    {
+      "method": "list_git_branches",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 172
+    },
+    {
+      "method": "checkout_git_branch",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 176
+    },
+    {
+      "method": "create_git_branch",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 180
+    },
+    {
+      "method": "generate_commit_message",
+      "handler": "git",
+      "kind": "constant",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+      "line": 184
+    },
+    {
+      "method": "prompts_list",
+      "handler": "prompts",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+      "line": 9
+    },
+    {
+      "method": "prompts_workspace_dir",
+      "handler": "prompts",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+      "line": 20
+    },
+    {
+      "method": "prompts_global_dir",
+      "handler": "prompts",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+      "line": 31
+    },
+    {
+      "method": "prompts_create",
+      "handler": "prompts",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+      "line": 42
+    },
+    {
+      "method": "prompts_update",
+      "handler": "prompts",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+      "line": 77
+    },
+    {
+      "method": "prompts_delete",
+      "handler": "prompts",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+      "line": 112
+    },
+    {
+      "method": "prompts_move",
+      "handler": "prompts",
+      "kind": "literal",
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+      "line": 128
+    }
+  ],
+  "product_runtime_verified": false,
+  "source_semantic_coverage_not_proven_by_schema": true
+}

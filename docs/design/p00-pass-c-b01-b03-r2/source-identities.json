@@ -1,0 +1,163 @@
+[
+  {
+    "path": "packages/seat-runtime/src/index.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "2f66267abb70afcae3a0550f126fbbd2446a62a2",
+    "sha256": "fddf00ceb0d1884ddc8bd7e248eda4002fd34b102e0601671153a7537ec059d9",
+    "bytes": 852
+  },
+  {
+    "path": "packages/seat-runtime/src/seat-runtime.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "220c036e96f3aee911ced48f2f6ea4e09b5681fc",
+    "sha256": "e5e924733d5a3c2ea15402eba1a42918413229562b7da4a608c69323c4acd9c2",
+    "bytes": 50904
+  },
+  {
+    "path": "packages/seat-runtime/src/claude-seat.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "c77a8d587b56ddcb7a58377d3b0e1bd7ba403d51",
+    "sha256": "e6590234d237f548a374c56c32267af1d0b66e2c5e4e3cee39c3de65de9936bb",
+    "bytes": 27825
+  },
+  {
+    "path": "packages/seat-runtime/src/grok-acp-seat.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "198776699f2bec08bd56885c849ad907cd9e608a",
+    "sha256": "b283d0644695f0d527a941adf0f9ba390c4d437f8a248db941e0b448aa3c0479",
+    "bytes": 33750
+  },
+  {
+    "path": "packages/seat-runtime/src/close.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "0c2c1b58aa80549fed849fa8fede35dda6d5d5a4",
+    "sha256": "ac21d2f7f04ad15c73d4cd0759e0ee89a3bf60569c7029b700ae18930b3bee86",
+    "bytes": 9514
+  },
+  {
+    "path": "packages/seat-runtime/src/persistence.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "78023a1a169ba63ec6e3296ced315092f6fd9622",
+    "sha256": "942790f7ad0c834fb29f5cd1ae7a7f68e2ef960a7c82063210e05f471835a4e5",
+    "bytes": 1309
+  },
+  {
+    "path": "packages/seat-runtime/src/seat.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "baac803629e1a7ad2e2ef2ae045d7b02307ae97b",
+    "sha256": "047e5f494d0469c786bbbc8c4e2d6d1e787571ea59e1a787b28c49fd5c3cd36e",
+    "bytes": 10248
+  },
+  {
+    "path": "packages/seat-runtime/src/demo.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "360055f2cda81a3f450ae0e218b2f004d3617910",
+    "sha256": "19e55f67858b4af7687c53d0e9047481c3819d159c05041cd9078d9b71768d76",
+    "bytes": 8873
+  },
+  {
+    "path": "packages/room/src/server.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "0961b392a5a7d6e64fa72a3a6898f1dba5c39259",
+    "sha256": "4f09078bf5c874de2f69277ddc7974582ff1e45d9c320719da834b2cd7295044",
+    "bytes": 251480
+  },
+  {
+    "path": "packages/room/src/instances.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "3133e61ed856225595e9c7888eeb9db4a74ccb56",
+    "sha256": "ab221b24c711819b3d203e6b19de743ac5ff1132f2e4ca793b0610d5d9f47ccf",
+    "bytes": 20975
+  },
+  {
+    "path": "packages/room/src/accounts.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "9fdaa1c4b6d99746d0bb0864553ffcf1250c778f",
+    "sha256": "8cfbfd97da9ba0b81a9a635ffe92e928c748cba748d80075c50113884d489861",
+    "bytes": 53106
+  },
+  {
+    "path": "packages/room/src/proc.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "b7ebc38fbadcd7b0c20d655255c4e8e4ebff1ce6",
+    "sha256": "564ab6d429715eeec2b0070c47e4d0bd9667090f35ac69d75bee3c68f8dc601c",
+    "bytes": 2387
+  },
+  {
+    "path": "packages/room/src/mask.ts",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "0d07ef0a378e2e89eb6c702cd56b014186e6085d",
+    "sha256": "fae245b72fc774b3cb0eeac85789e27443cbd3f6f0ef0cbc2cbc4fcb4a591bee",
+    "bytes": 1156
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/dispatcher.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "781b3d7bbc5f7702874edb156488469872dddbed",
+    "sha256": "726f2093be719b16da99a001273ba032ebf15bab84f404236fe021fed288c946",
+    "bytes": 768
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/daemon.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "e491f0372edda68f96b7e55b8c845d406792f693",
+    "sha256": "b9ef48a565b176ff8d4ae52ea018966abcfadb079ba4f6304f0b4bd80a1e09df",
+    "bytes": 1974
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/workspace.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "3f18527f7bd01bd8ace7c9e6c2c82e4a87a36502",
+    "sha256": "4db93bc57646cb8c35eea26e8909c9446cf02510cbaf51875e8ce68b250d08a0",
+    "bytes": 9963
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/codex.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "cc278938eaf61ce2f3d04a120e996cf088ee04d5",
+    "sha256": "92637f920ff3ace910b1c66e3531286e3b1393843e74c10c7388536034a5baaf",
+    "bytes": 20322
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/git.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "2637b7e0dab99f1ca64fb1ee65486313d96f7c69",
+    "sha256": "33c87d605eb54beda0f67e298e64464fa2685ad9266b2e36d6571e51f2cf171c",
+    "bytes": 8606
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon/rpc/prompts.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "353ea4c17107c545c263910e0d6d74d090dbc121",
+    "sha256": "c9866f22a9f768e1475e67f6a2f94ec5047b5fec1cb6e378f3e2280282395cbe",
+    "bytes": 5628
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/shared/git_rpc.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "652a973fb643b04826b629e93f3cde33a7d36c54",
+    "sha256": "c0ebcde2e8515e47b5d950298604851d6eb696d1a0f0a2f29ee499834eaa949c",
+    "bytes": 4940
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/lib.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "f7b2a5d65d1ad2fe7bf0c9759a207bc4bed034e0",
+    "sha256": "505f5e794031df8124b4248849aeb59761033148d88390915fdf06bf9aaaddef",
+    "bytes": 12768
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/shared/prompts_core.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "a03844b6f4e3b1a481c786e6429375b546e9a436",
+    "sha256": "97d0f08a831a2919efe6cb42a239e5161212456ba048654b1fff38c83a6182dc",
+    "bytes": 16819
+  },
+  {
+    "path": "apps/desktop/src-tauri/src/shared/agents_config_core.rs",
+    "commit": "bc665a852833952b76d9508401193bedd2198436",
+    "git_blob": "3f5b8889e442a9e6ba763b28836deabe27137b25",
+    "sha256": "2fd1588475b6bedf93cb0b7b65db21801515fc6a59293795dc7d908fd02db288",
+    "bytes": 36542
+  }
+]
