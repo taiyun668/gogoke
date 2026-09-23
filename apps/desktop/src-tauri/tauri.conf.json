@@ -58,7 +58,9 @@
     ],
     "resources": [
       "../LICENSE",
-      "../THIRD_PARTY_NOTICES.md"
+      "../THIRD_PARTY_NOTICES.md",
+      "../generated/npm-production-notices.html",
+      "../generated/rust-dependency-notices.html"
     ],
     "macOS": {
       "entitlements": "./Entitlements.plist",
