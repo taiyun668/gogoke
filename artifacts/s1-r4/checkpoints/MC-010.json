@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-010",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "61d0a2d0be249f20f27d5db704f594ad154f9b97",
+  "recorded_utc": "2026-09-23T01:09:23Z",
+  "reason": "Preserve N1 release-build verification intent and in-flight cloud custody before results",
+  "n1_gap": "The build.rs release-object checker is present but the prior native-host workflow ran only cargo test; desktop CI does not build native-host. Prior green runs did not execute the release checker.",
+  "normal_candidate": {
+    "branch": "codex/n1-release-check-r1",
+    "commit": "a76e377c1f3ed5bd0a3cc7adb9edeedd9875ce6c",
+    "change": "Native-host manual Windows workflow now executes cargo build --release --locked; records actual release execution, exit code, release-profile marker and log in machine-result.json; keeps two process axes and fail-closed upload",
+    "source_scan": "24138 committed files, 0 leaks; known-sensitive positive control rejected",
+    "run_id": "35805034252",
+    "state_at_checkpoint": "IN_PROGRESS; release build active; no PASS inferred"
+  },
+  "negative_control": {
+    "branch": "codex/n1-release-hook-negative-r1",
+    "commit": "b62fc32a80e0a3d9a3b4c977b6ceffd769152964",
+    "test_only_mutation": "In the isolated branch alone, build.rs intentionally defines GOGOKE_ROUTE_B_TESTING for release while retaining the release-object checker call; this should insert a test-hook symbol and make release build fail",
+    "run_id": "35805099386",
+    "state_at_checkpoint": "IN_PROGRESS; expected failure is not yet established",
+    "merge": "FORBIDDEN"
+  },
+  "acceptance_boundary": "N1 remains unresolved until normal release build succeeds, the negative control fails for the intended checker assertion with nonzero exit, both machine results are inspected, and evidence is recorded. Neither run changes S1-R4 gate states.",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Wait for the two named runs without duplicate dispatch; download each machine-result artifact, verify release exit code and checker-specific negative failure, then repair ordinary instrumentation issues if needed before closing N1."
+}
