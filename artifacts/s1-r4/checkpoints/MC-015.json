@@ -1,0 +1,45 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-015",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "dedb1f923259282df8dab59860c446309d315f9b",
+  "recorded_utc": "2026-09-23T02:40:02Z",
+  "reason": "Bind completed current-candidate D1/D2 and desktop cloud evidence to draft independent review without integration or gate promotion",
+  "candidate": {
+    "branch": "codex/r4-g1-rework-candidate-r1",
+    "head": "cfcb8a7d3b2d9f7578599b913c343ac6e187a441",
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/3",
+    "review_state": "FRESH_INDEPENDENT_CLAUDE_REVIEW_PENDING",
+    "main_integration": "NOT_DONE",
+    "changed_files": 16,
+    "scope": "B1 negative-zero/frozen constants; B2 minimal-service input snapshot; D1/D2 complete cloud instruments; concentrated Node handshake, Manifest fail-closed, DACL/Job test diagnostic repairs"
+  },
+  "cloud_results": {
+    "native_and_server_run_id": "35810241052",
+    "bound_commit": "cfcb8a7d3b2d9f7578599b913c343ac6e187a441",
+    "server_job": "SUCCESS; 44 selected files, 35 Vite+ with 466/466 and 9 node:test with 66/66, total 532/532, zero failures/skips, exact cloud native-host bound",
+    "native_job": "SUCCESS; release build exit 0, all lib 382/382, three focused DACL/Job probes 3/3, b07_two_process and host_typed_ops each 1/1, zero failed/skipped tests",
+    "desktop_run_id": "35810582248",
+    "desktop_jobs": "Browser build and tests SUCCESS; Unsigned Windows NSIS SUCCESS; release verifier, installer build and smoke executed",
+    "desktop_skip": "Conditional Rust cache-save maintenance step skipped; no required test axis skipped",
+    "source_hygiene": "Candidate committed-source scan: 24142 files, 0 leaks; sensitive positive control rejected; PR #3 hygiene check passed",
+    "review_evidence_comment": "https://github.com/taiyun668/gogoke/pull/3#issuecomment-5788015834",
+    "non_claim": "All evidence is Windows Server construction/CI evidence; not Windows 11 desktop, independent review, due-check PASS or release"
+  },
+  "A_review_status": "14 Claude code-level ACCEPT findings are mapped to candidate run 35810241052 in MC-014. Current cloud execution gap is measured, but each planned due-check remains unpromoted and the latest integrated candidate still requires fresh independent review.",
+  "C_tools_status": "WP01/S1-01-V remain BLOCKED. Public qualification authority rebind is only a proposal at docs/design/gogoke-s1-r4-public-qualification-rebind-proposal.md; no private authorization receipt copied or forged.",
+  "registered_nonblocking": ["m1 decoded.name Shutdown predicate", "m2 ryu-js Rust dependency license notice"],
+  "custody": "Main and all B1/B2/cloud-evidence/native-diagnostic/combined-candidate worktrees are clean; source commits and branches are pushed. Generated dependency and cloud artifact paths remain in an external local custody note, not public Git history.",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Obtain fresh Claude review on exact draft PR #3, repair any findings on a new candidate and rerun exact checks; do not merge or self-accept. Continue independent S1-R4 tasks while public qualification authority binding awaits Owner/GPT decision."
+}
