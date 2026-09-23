@@ -109,8 +109,10 @@ fn stream_integrity(tx:&mut Transaction<'_, '_>,domain:&str,stream:&str,object_t
     } else if heads.len()!=1 || heads[0][0]!=(versions-1).to_string(){return denied()}
     let events=count(tx,"SELECT COUNT(*) FROM main.gogoke_events WHERE domain_id=? AND stream_id=? AND object_type=? AND object_id=?",&[domain,stream,object_type,object_id])?;
     let receipts=count(tx,"SELECT COUNT(*) FROM main.gogoke_receipts r JOIN main.gogoke_events e ON e.domain_id=r.domain_id AND e.event_id=r.event_id WHERE e.domain_id=? AND e.stream_id=? AND r.object_type=? AND r.object_id=?",&[domain,stream,object_type,object_id])?;
+    let all_events=count(tx,"SELECT COUNT(*) FROM main.gogoke_events WHERE domain_id=? AND object_type=? AND object_id=?",&[domain,object_type,object_id])?;
+    let all_receipts=count(tx,"SELECT COUNT(*) FROM main.gogoke_receipts WHERE domain_id=? AND object_type=? AND object_id=?",&[domain,object_type,object_id])?;
     let objects=count(tx,"SELECT COUNT(*) FROM main.gogoke_objects WHERE domain_id=? AND object_type=? AND object_id=?",&[domain,object_type,object_id])?;
-    if events!=versions || receipts!=versions || objects!=versions{return denied()}
+    if events!=versions || receipts!=versions || all_events!=versions || all_receipts!=versions || objects!=versions{return denied()}
     Ok(())
 }
 
@@ -168,14 +170,14 @@ fn load_instance(tx:&mut Transaction<'_, '_>,domain:&str,instance:&str,version:&
     if value.domain_id!=domain || value.instance_id!=instance || value.version!=version || content_hash(&instance_bytes(&value))!=row[9] {return denied()}
     let core=tx.query("SELECT content_hash,canonical_json FROM main.gogoke_objects WHERE domain_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,instance,version],2)?;
     if core.len()!=1 || core[0][0]!=row[9] || core[0][1].as_bytes()!=instance_bytes(&value) {return denied()}
-    let receipt=tx.query("SELECT receipt_id,event_id,recorded_at,canonical_json,content_hash FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&row[10],instance,version],5)?;
+    let receipt=tx.query("SELECT receipt_id,event_id,recorded_at,canonical_json,content_hash,receipt_type FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&row[10],instance,version],6)?;
     if receipt.len()!=1 || receipt[0][0]!=row[11] {return denied()}
-    let events=tx.query("SELECT event_id,occurred_at,canonical_json,content_hash,stream_counter FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&receipt[0][1],instance,version],5)?;
+    let events=tx.query("SELECT event_id,occurred_at,canonical_json,content_hash,stream_counter,event_type FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&receipt[0][1],instance,version],6)?;
     if events.len()!=1 {return denied()}
     let number=checked_version(version)?;
     let previous=if number>1 {Some((number-1).to_string())} else {None};
     let record=instance_record(&AppendRuntimeInstanceIdentity{operation_id:row[10].clone(),snapshot:value.clone(),expected_previous_version:previous,event_id:receipt[0][1].clone(),receipt_id:receipt[0][0].clone(),recorded_at:receipt[0][2].clone()})?;
-    if events[0][1]!=receipt[0][2] || events[0][2].as_bytes()!=record.event_bytes.as_slice() || events[0][3]!=content_hash(&record.event_bytes) || events[0][4]!=record.counter || receipt[0][3].as_bytes()!=record.receipt_bytes.as_slice() || receipt[0][4]!=content_hash(&record.receipt_bytes) {return denied()}
+    if events[0][1]!=receipt[0][2] || events[0][2].as_bytes()!=record.event_bytes.as_slice() || events[0][3]!=content_hash(&record.event_bytes) || events[0][4]!=record.counter || events[0][5]!=record.event_type || receipt[0][3].as_bytes()!=record.receipt_bytes.as_slice() || receipt[0][4]!=content_hash(&record.receipt_bytes) || receipt[0][5]!=record.receipt_type {return denied()}
     if tx.apply_domain_record(record)?.disposition!="RECONCILED"{return denied()}
     Ok(Some(value))
 }
@@ -272,14 +274,14 @@ fn load_binding(tx:&mut Transaction<'_, '_>,identity:&NativeBindingIdentity,curr
     if content_hash(&binding_bytes(&object))!=row[9]{return denied()}
     let core=tx.query("SELECT content_hash,canonical_json FROM main.gogoke_objects WHERE domain_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&row[1],&row[2]],2)?;
     if core.len()!=1 || core[0][0]!=row[9] || core[0][1].as_bytes()!=binding_bytes(&object){return denied()}
-    let receipt=tx.query("SELECT receipt_id,event_id,recorded_at,canonical_json,content_hash FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&row[10],&row[1],&row[2]],5)?;
+    let receipt=tx.query("SELECT receipt_id,event_id,recorded_at,canonical_json,content_hash,receipt_type FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&row[10],&row[1],&row[2]],6)?;
     if receipt.len()!=1 || receipt[0][0]!=row[11]{return denied()}
-    let events=tx.query("SELECT event_id,occurred_at,canonical_json,content_hash,stream_counter FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&receipt[0][1],&row[1],&row[2]],5)?;
+    let events=tx.query("SELECT event_id,occurred_at,canonical_json,content_hash,stream_counter,event_type FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&receipt[0][1],&row[1],&row[2]],6)?;
     if events.len()!=1{return denied()}
     let number=checked_version(&row[2])?;
     let previous=if number>1 {Some((number-1).to_string())} else {None};
     let record=binding_record(&CommitNativeBinding{event_id:receipt[0][1].clone(),receipt_id:receipt[0][0].clone(),recorded_at:receipt[0][2].clone(),expected_previous_generation:previous,..object},&content_hash(&instance_bytes(&value.instance)))?;
-    if events[0][1]!=receipt[0][2] || events[0][2].as_bytes()!=record.event_bytes.as_slice() || events[0][3]!=content_hash(&record.event_bytes) || events[0][4]!=record.counter || receipt[0][3].as_bytes()!=record.receipt_bytes.as_slice() || receipt[0][4]!=content_hash(&record.receipt_bytes){return denied()}
+    if events[0][1]!=receipt[0][2] || events[0][2].as_bytes()!=record.event_bytes.as_slice() || events[0][3]!=content_hash(&record.event_bytes) || events[0][4]!=record.counter || events[0][5]!=record.event_type || receipt[0][3].as_bytes()!=record.receipt_bytes.as_slice() || receipt[0][4]!=content_hash(&record.receipt_bytes) || receipt[0][5]!=record.receipt_type{return denied()}
     if tx.apply_domain_record(record)?.disposition!="RECONCILED"{return denied()}
     Ok(Some(value))
 }

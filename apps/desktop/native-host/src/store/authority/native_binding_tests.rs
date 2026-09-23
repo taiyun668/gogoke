@@ -164,6 +164,61 @@ fn damaged_event_or_receipt_body_cannot_read_or_reconcile(){
 }
 
 #[test]
+fn damaged_event_or_receipt_type_cannot_read_or_replay(){
+    let _guard=route_b_test_guard();
+    for object_type in ["RuntimeInstanceIdentity","NativeBinding"] {
+        for table_column in [("gogoke_events","event_type"),("gogoke_receipts","receipt_type")] {
+            let path=scratch();let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
+            seed_single_binding(&root,&database);
+            let mut raw=open_existing(&root,&database).unwrap();
+            let sql=format!("UPDATE main.{} SET {}='CorruptedAuthorityType' WHERE domain_id='domain-one' AND object_type='{}'",table_column.0,table_column.1,object_type);
+            raw.execute(&sql).unwrap();raw.close_checked().unwrap();
+            let mut product=ProductDatabase::open(&root,&database).unwrap();
+            if object_type=="RuntimeInstanceIdentity" {
+                assert!(product.read_runtime_instance_identity("domain-one","instance-a","1").is_err(),"{}/{} corruption was accepted by read",table_column.0,table_column.1);
+                let value=identity("domain-one","instance-a","account-a");
+                assert!(product.append_runtime_instance_identity(&AppendRuntimeInstanceIdentity{operation_id:"identity-op-domain-one-instance-a".into(),snapshot:value,event_id:"identity-event-domain-one-instance-a".into(),receipt_id:"identity-receipt-domain-one-instance-a".into(),recorded_at:"2026-09-23T12:00:00Z".into(),expected_previous_version:None}).is_err(),"{}/{} corruption was accepted by replay",table_column.0,table_column.1);
+            } else {
+                assert!(product.read_native_binding(&original_binding()).is_err(),"{}/{} corruption was accepted by read",table_column.0,table_column.1);
+                assert!(product.commit_native_binding(&binding_input("domain-one","instance-a","1","binding-one","session-one","native-one")).is_err(),"{}/{} corruption was accepted by replay",table_column.0,table_column.1);
+            }
+            product.close_checked().unwrap();drop(root);cleanup(&path);
+        }
+    }
+}
+
+#[test]
+fn foreign_stream_event_and_receipt_cannot_read_or_replay(){
+    let _guard=route_b_test_guard();
+    for object_type in ["RuntimeInstanceIdentity","NativeBinding"] {
+        let path=scratch();let root=RootLock::acquire(&path);let root=root.unwrap();let database=path.join("state.sqlite");
+        seed_single_binding(&root,&database);
+        let mut raw=open_existing(&root,&database).unwrap();
+        let (object_id,stream_id,event_id,receipt_id,operation_id) = if object_type=="RuntimeInstanceIdentity" {
+            ("instance-a","gogoke.foreign-runtime-instance.v1/instance-a","foreign-instance-event","foreign-instance-receipt","foreign-instance-operation")
+        } else {
+            ("binding-one","gogoke.foreign-native-binding.v1/binding-one","foreign-binding-event","foreign-binding-receipt","foreign-binding-operation")
+        };
+        let head=format!("INSERT INTO main.gogoke_stream_heads(schema_version,domain_id,stream_id,counter) VALUES(1,'domain-one','{}','0')",stream_id);
+        raw.execute(&head).unwrap();
+        let event=format!("INSERT INTO main.gogoke_events(schema_version,domain_id,event_id,stream_id,stream_counter,event_type,occurred_at,object_type,object_id,object_version,canonical_json,content_hash) SELECT schema_version,domain_id,'{}','{}','0',event_type,occurred_at,object_type,object_id,object_version,canonical_json,content_hash FROM main.gogoke_events WHERE domain_id='domain-one' AND object_type='{}' AND object_id='{}'",event_id,stream_id,object_type,object_id);
+        raw.execute(&event).unwrap();
+        let receipt=format!("INSERT INTO main.gogoke_receipts(schema_version,domain_id,receipt_id,operation_id,event_id,object_type,object_id,object_version,receipt_type,recorded_at,operation_fingerprint,canonical_json,content_hash) SELECT schema_version,domain_id,'{}','{}','{}',object_type,object_id,object_version,receipt_type,recorded_at,operation_fingerprint,canonical_json,content_hash FROM main.gogoke_receipts WHERE domain_id='domain-one' AND object_type='{}' AND object_id='{}'",receipt_id,operation_id,event_id,object_type,object_id);
+        raw.execute(&receipt).unwrap();raw.close_checked().unwrap();
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        if object_type=="RuntimeInstanceIdentity" {
+            assert!(product.read_runtime_instance_identity("domain-one","instance-a","1").is_err(),"foreign stream records were accepted by identity read");
+            let value=identity("domain-one","instance-a","account-a");
+            assert!(product.append_runtime_instance_identity(&AppendRuntimeInstanceIdentity{operation_id:"identity-op-domain-one-instance-a".into(),snapshot:value,event_id:"identity-event-domain-one-instance-a".into(),receipt_id:"identity-receipt-domain-one-instance-a".into(),recorded_at:"2026-09-23T12:00:00Z".into(),expected_previous_version:None}).is_err(),"foreign stream records were accepted by identity replay");
+        } else {
+            assert!(product.read_native_binding(&original_binding()).is_err(),"foreign stream records were accepted by binding read");
+            assert!(product.commit_native_binding(&binding_input("domain-one","instance-a","1","binding-one","session-one","native-one")).is_err(),"foreign stream records were accepted by binding replay");
+        }
+        product.close_checked().unwrap();drop(root);cleanup(&path);
+    }
+}
+
+#[test]
 fn stream_counter_rollback_cannot_leave_a_current_binding(){
     let _guard=route_b_test_guard();let path=scratch();let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
     seed_single_binding(&root,&database);
