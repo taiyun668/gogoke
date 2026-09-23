@@ -10,6 +10,7 @@ on:
       - "tools/sign-gogoke-release-manifest.ps1"
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
+      - "tools/gogoke-release/**"
       - ".github/workflows/gogoke-desktop.yml"
   pull_request:
     branches:
@@ -19,6 +20,7 @@ on:
       - "tools/sign-gogoke-release-manifest.ps1"
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
+      - "tools/gogoke-release/**"
       - ".github/workflows/gogoke-desktop.yml"
 
 permissions:
@@ -61,6 +63,65 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  licenses:
+    name: Generate locked dependency notices
+    timeout-minutes: 45
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.13.1"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install exact locked npm tree without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prove npm notice generator rejects missing source material
+        run: node --test ../../tools/gogoke-release/generate-npm-notices.test.mjs
+      - name: Generate npm production SPDX and bundled notice text
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path generated -Force | Out-Null
+          npm sbom --omit=dev --sbom-format=spdx | Set-Content generated/npm-production.spdx.json -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw "npm sbom failed: $LASTEXITCODE" }
+          node ../../tools/gogoke-release/generate-npm-notices.mjs generated/npm-production.spdx.json generated/npm-production-notices.html
+          if ($LASTEXITCODE -ne 0) { throw "npm notice generation failed: $LASTEXITCODE" }
+      - name: Install pinned cargo-about into isolated runner root
+        shell: pwsh
+        run: |
+          $toolRoot = Join-Path $env:RUNNER_TEMP 'cargo-about'
+          cargo install --locked --version 0.8.4 --features cli cargo-about --root $toolRoot
+          if ($LASTEXITCODE -ne 0) { throw "cargo-about install failed: $LASTEXITCODE" }
+          "$(Join-Path $toolRoot 'bin')" >> $env:GITHUB_PATH
+      - name: Generate Rust license and copyright text from locked graph
+        shell: pwsh
+        run: |
+          Push-Location src-tauri
+          try {
+            cargo about generate -o ../generated/rust-dependency-notices.html about.hbs
+            if ($LASTEXITCODE -ne 0) { throw "cargo-about generation failed: $LASTEXITCODE" }
+          } finally { Pop-Location }
+          foreach ($path in @('generated/npm-production-notices.html', 'generated/rust-dependency-notices.html')) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "license notice missing or empty: $path"
+            }
+          }
+      - name: Upload generated license evidence for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-license-notices-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            apps/desktop/generated/npm-production.spdx.json
+            apps/desktop/generated/npm-production-notices.html
+            apps/desktop/generated/rust-dependency-notices.html
+          if-no-files-found: error
+          retention-days: 30
 
   unsigned-windows:
     name: Unsigned Windows NSIS
