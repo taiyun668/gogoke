@@ -47,7 +47,7 @@
   "external_action": "CLOUD_RUN_35915069531_SUCCESS;_NO_NEW_TEST_LEDGER_WRITE",
   "workspace_retained": {
     "owner": "Codex Construction Controller",
-    "paths": ["D:/gogoke-codex-s1-r4", "D:/gogoke-codex-evidence/run-35915069531-server", "D:/gogoke-codex-evidence/run-35915069531-native"],
+    "paths_relative_to_execution_checkout": [".", "../gogoke-codex-evidence/run-35915069531-server", "../gogoke-codex-evidence/run-35915069531-native"],
     "reason": "Active execution checkout and exact cloud machine-evidence copies",
     "cleanup_condition": "After S1-R4 custody ends and the durable GitHub artifacts are confirmed retained or no longer required"
   },
