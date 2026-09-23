@@ -107,7 +107,17 @@ GitHub 等远端写入可能出现 403、422、超时、5xx 或返回状态与�
 
 ## 8a. 复核安排
 
-网页端 GPT 施工窗口没有子 agent，不做逐包 fresh 复核。按 Owner 决定：GPT 连续施工，累积一批成果后，由 Claude 统一做一次跨模型复核，结论写回 GitHub（PR 评论或检查点）。复核通过后才合入 main；在此之前成果留在施工分支。
+网页端 GPT 施工窗口没有子 agent，不做逐包 fresh 复核。按 Owner 决定：GPT 连续施工，累积一批成果后，由 Claude 统一做一次跨模型复核，结论作为一条收件箱条目写入并行收件箱（见 8b）。复核通过后才合入 main；在此之前成果留在施工分支。
+
+## 8b. 并行收件箱
+
+其他席位（复核、平台、调查等）交给施工窗口的结果，不通过聊天打断施工，而是写入并行收件箱：
+
+- 控制分支：`control/gogoke-s1-r4-inbox`；索引：该分支上的 `artifacts/s1-r4/control/PARALLEL_INBOX.json`。报告与发现清单放在同一分支，由条目的路径字段指向。
+- 写入方追加一条条目：`id`、`source_role`、`frozen_against`（被审查或产出时对应的检查点与提交 SHA）、`type`、`priority`、报告路径，以及可选的发现清单路径。已有条目不改写。
+- 施工窗口只在自然检查点边界查看收件箱的 HEAD：HEAD 未变就不加载任何报告；HEAD 变了，只读新增条目和必要证据，并把自己已读到的位置记入 `latest_seen_by_controller`。
+- 冻结时的发现必须对照当前最新字节重新分类：STILL_PRESENT、ALREADY_FIXED、SUPERSEDED、NEEDS_REVIEW、PLATFORM_EVIDENCE_NOW_AVAILABLE。
+- 收件箱不是审批门，不因条目未处理而停工。
 
 ## 9. 当前 S1-R4 v2 施工入口
 
