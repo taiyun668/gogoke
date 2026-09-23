@@ -1,0 +1,248 @@
+{
+  "schema": "gogoke.s1-r4.runner-registry.v2",
+  "description": "Fixed exact commands. Groups may contain multiple commands; every due check is explicitly tagged and must be observed by at least one command. command_metadata is the canonical per-command readiness/evidence overlay.",
+  "command_metadata": {
+    "qualification-unittest": {"readiness": "READY", "readiness_reason": null, "evidence_layer": "PYTHON_HARNESS", "qualification_scope": "runner_harness_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Runner self-check only; does not qualify product behavior or any gate."},
+    "sealing-node-tap": {"readiness": "READY", "readiness_reason": null, "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE", "qualification_scope": "source_diagnostic_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "FakeDependencies and source reads provide source diagnostics only; no Tauri process, native runtime, or Owner-machine qualification."},
+    "sealing-old-vitest": {"readiness": "READY", "readiness_reason": null, "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE", "qualification_scope": "source_diagnostic_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Vitest mocks and raw-source imports provide source diagnostics only; no Tauri process or Owner-machine qualification."},
+    "sealing-old-rust": {"readiness": "READY", "readiness_reason": null, "evidence_layer": "NATIVE_UNIT_TEST", "qualification_scope": "native_unit_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Rust libtest/source include_str evidence is native unit coverage only; it does not prove a running Tauri process or Owner-machine behavior."},
+    "codec-server-contracts": {"readiness": "READY", "readiness_reason": null, "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE", "qualification_scope": "source_diagnostic_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Third-party contract test is source/fixture evidence only and cannot qualify native, controlled-platform, or Owner-machine behavior."},
+    "codec-frontend-public-r4": {"readiness": "READY", "readiness_reason": null, "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE", "qualification_scope": "source_diagnostic_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Desktop Vitest codec evidence is source/fixture coverage only and cannot qualify native, controlled-platform, or Owner-machine behavior."},
+    "boundary-unittest": {"readiness": "READY", "readiness_reason": null, "evidence_layer": "PYTHON_HARNESS", "qualification_scope": "runner_harness_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Boundary and authorization assertions validate the runner harness only; they do not accept product or gate behavior."},
+    "store-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed store fixture target; create or redirect only when the current candidate supplies a real qualification surface.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing fixture is blocked and cannot be represented as a store qualification pass."},
+    "root-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed root fixture target; T55.L/T55.H require controlled Windows process/host evidence.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Missing root fixture cannot qualify the controlled Windows process or integrated host predicates."},
+    "host-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed host fixture target; host/process behavior also needs a controlled platform run before qualification.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Missing host fixture cannot be promoted to controlled-platform or Owner-machine evidence."},
+    "process-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed process fixture target; process behavior needs a controlled platform surface before qualification.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Missing process fixture cannot qualify process containment or any Owner-machine predicate."},
+    "adapters-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed adapters fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing adapter fixture cannot qualify adapter capability behavior."},
+    "capabilities-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed capabilities fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing capabilities fixture cannot qualify advertised capability behavior."},
+    "delivery-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed delivery fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing delivery fixture cannot qualify dispatch or receipt semantics."},
+    "continuation-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed continuation fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing continuation fixture cannot qualify continuation semantics."},
+    "events-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed events fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing events fixture cannot qualify event provenance or delivery behavior."},
+    "policy-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed policy fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing policy fixture cannot qualify policy or privacy behavior."},
+    "context-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed context fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing context fixture cannot qualify Context projection or lineage behavior."},
+    "decision-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed decision fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing decision fixture cannot qualify Decision authority or acceptance semantics."},
+    "evaluation-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed evaluation fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing evaluation fixture cannot qualify evaluation or review semantics."},
+    "dream-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed dream fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing dream fixture cannot qualify Dream authority or persistence behavior."},
+    "vertical-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed vertical fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing vertical fixture cannot qualify cross-surface behavior."},
+    "upgrade-fixture": {"readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed upgrade fixture target; R4-26 needs a real donor/parent patch rehearsal and schema-copy surface.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Missing upgrade fixture cannot qualify donor/parent rehearsal or schema-copy behavior."}
+  },
+  "groups": [
+    {
+      "id": "qualification",
+      "commands": [
+        {
+          "id": "qualification-unittest",
+          "framework": "python_unittest",
+          "cwd": ".",
+          "argv": ["python", "-m", "unittest", "-v", "tools/gogoke-s1-r4/test_qualification.py"],
+          "selector": "tools/gogoke-s1-r4/test_qualification.py",
+          "target": "tools/gogoke-s1-r4/test_qualification.py",
+          "readiness": "READY",
+          "readiness_reason": null,
+          "evidence_layer": "PYTHON_HARNESS",
+          "qualification_scope": "runner_harness_only",
+          "platform_requirement": "host",
+          "candidate_required": true,
+          "anti_overclaim": "Runner self-check only; does not qualify product behavior or any gate.",
+          "check_ids": [],
+          "planned_test_tags": {},
+          "observed_cases": {},
+          "bind_paths": ["tools/gogoke-s1-r4/run_checks.py", "tools/gogoke-s1-r4/registry.json", "tools/gogoke-s1-r4/test_qualification.py"]
+        }
+      ]
+    },
+    {
+      "id": "sealing",
+      "commands": [
+        {
+          "id": "sealing-node-tap",
+          "framework": "node_tap",
+          "cwd": ".",
+          "argv": ["node", "--test", "--test-reporter=tap", "apps/desktop/test-fixtures/s1-r4/sealing/sealing.test.mjs"],
+          "selector": "apps/desktop/test-fixtures/s1-r4/sealing/sealing.test.mjs",
+          "target": "apps/desktop/test-fixtures/s1-r4/sealing/sealing.test.mjs",
+          "readiness": "READY",
+          "readiness_reason": null,
+          "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE",
+          "qualification_scope": "source_diagnostic_only",
+          "platform_requirement": "host",
+          "candidate_required": true,
+          "anti_overclaim": "FakeDependencies and source reads provide source diagnostics only; no Tauri process, native runtime, or Owner-machine qualification.",
+          "check_ids": ["T56.L", "T57.L"],
+          "planned_test_tags": {"T56.L": "gogoke-s1-r4/T56.L", "T57.L": "gogoke-s1-r4/T57.L"},
+          "observed_cases": {"T56.L": ["old remote configuration does not probe during server-section bootstrap"], "T57.L": ["direct voice, Tailscale, and legacy daemon calls guard before side effects"]},
+          "bind_paths": ["apps/desktop/test-fixtures/s1-r4/sealing/harness.mjs", "apps/desktop/test-fixtures/s1-r4/sealing/deep-link.json", "apps/desktop/test-fixtures/s1-r4/sealing/old-remote-config.json", "apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json", "apps/desktop/src/features/app/hooks/useSystemNotificationThreadLinks.ts", "apps/desktop/src/features/settings/hooks/useSettingsServerSection.ts", "apps/desktop/src/features/mobile/hooks/useMobileServerSetup.ts", "apps/desktop/src/features/app/hooks/useDictationController.ts", "apps/desktop/src/features/dictation/hooks/useDictation.ts", "apps/desktop/src/features/dictation/hooks/useDictationModel.ts", "apps/desktop/src/services/tauri.ts", "apps/desktop/src-tauri/src/release_policy.rs", "apps/desktop/src-tauri/src/dictation/real.rs", "apps/desktop/src-tauri/src/dictation/stub.rs", "apps/desktop/src-tauri/src/tailscale/mod.rs", "apps/desktop/src-tauri/src/tailscale/daemon_commands.rs", "apps/desktop/src-tauri/src/lib.rs", "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs", "apps/desktop/src-tauri/src/bin/gogoke_daemonctl.rs"]
+        },
+        {
+          "id": "sealing-old-vitest",
+          "framework": "vitest_json",
+          "cwd": "apps/desktop",
+          "argv": ["npm", "test", "--", "--run", "src/features/s1-harness/tests/sealing.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"],
+          "selector": "src/features/s1-harness/tests/sealing.test.ts",
+          "target": "apps/desktop/src/features/s1-harness/tests/sealing.test.ts",
+          "readiness": "READY",
+          "readiness_reason": null,
+          "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE",
+          "qualification_scope": "source_diagnostic_only",
+          "platform_requirement": "host",
+          "candidate_required": true,
+          "anti_overclaim": "Vitest mocks and raw-source imports provide source diagnostics only; no Tauri process or Owner-machine qualification.",
+          "check_ids": ["T56.L", "T57.L"],
+          "planned_test_tags": {"T56.L": "gogoke-s1-r4/T56.L", "T57.L": "gogoke-s1-r4/T57.L"},
+          "observed_cases": {"T56.L": ["S1 sealed UI surfaces does not auto-probe remote daemon or Tailscale"], "T57.L": ["S1 sealed UI surfaces does not retain microphone or dictation mutation calls"]},
+          "bind_paths": ["apps/desktop/src/features/s1-harness/tests/sealing.test.ts", "apps/desktop/src/features/app/hooks/useDictationController.ts", "apps/desktop/src/features/dictation/hooks/useDictation.ts", "apps/desktop/src/features/dictation/hooks/useDictationModel.ts", "apps/desktop/src/features/settings/hooks/useSettingsServerSection.ts", "apps/desktop/src/features/settings/components/sections/SettingsServerSection.tsx"]
+        },
+        {
+          "id": "sealing-old-rust",
+          "framework": "rust_libtest",
+          "cwd": ".",
+          "argv": ["cargo", "test", "--locked", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--test", "gogoke_s1_sealing"],
+          "selector": "gogoke_s1_sealing",
+          "target": "apps/desktop/src-tauri/tests/gogoke_s1_sealing.rs",
+          "readiness": "READY",
+          "readiness_reason": null,
+          "evidence_layer": "NATIVE_UNIT_TEST",
+          "qualification_scope": "native_unit_only",
+          "platform_requirement": "controlled_platform",
+          "candidate_required": true,
+          "anti_overclaim": "Rust libtest/source include_str evidence is native unit coverage only; it does not prove a running Tauri process or Owner-machine behavior.",
+          "check_ids": ["T56.L", "T57.L"],
+          "planned_test_tags": {"T56.L": "gogoke-s1-r4/T56.L", "T57.L": "gogoke-s1-r4/T57.L"},
+          "observed_cases": {"T56.L": ["authenticated_loopback_is_the_only_legacy_tcp_exception"], "T57.L": ["sealed_features_reject_before_side_effect_calls"]},
+          "bind_paths": ["apps/desktop/src-tauri/src/release_policy.rs", "apps/desktop/src-tauri/src/dictation/real.rs", "apps/desktop/src-tauri/src/tailscale/daemon_commands.rs", "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs", "apps/desktop/src-tauri/src/bin/gogoke_daemonctl.rs"]
+        }
+      ]
+    },
+    {
+      "id": "codec",
+      "commands": [
+        {
+          "id": "codec-server-contracts",
+          "framework": "vitest_json",
+          "cwd": "third_party/t3code",
+          "argv": ["pnpm", "exec", "vp", "test", "run", "apps/server/src/gogoke/contracts/codec.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"],
+          "selector": "apps/server/src/gogoke/contracts/codec.test.ts",
+          "target": "third_party/t3code/apps/server/src/gogoke/contracts/codec.test.ts",
+          "readiness": "READY",
+          "readiness_reason": null,
+          "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE",
+          "qualification_scope": "source_diagnostic_only",
+          "platform_requirement": "host",
+          "candidate_required": true,
+          "anti_overclaim": "Third-party contract test is source/fixture evidence only and cannot qualify native, controlled-platform, or Owner-machine behavior.",
+          "check_ids": ["T05.L"],
+          "planned_test_tags": {"T05.L": "gogoke-s1-r4/T05.L"},
+          "observed_cases": {"T05.L": ["S1-R4 public object byte codec preserves unknown minor fields outside the authority projection"]},
+          "bind_paths": ["third_party/t3code/apps/server/src/gogoke/contracts/codec.ts", "third_party/t3code/apps/server/src/gogoke/contracts/model.ts", "third_party/t3code/apps/server/src/gogoke/contracts/strictJson.ts", "apps/desktop/contracts/s1-r4/object-model.v1.json", "apps/desktop/contracts/s1-r4/field-rules.v1.json", "apps/desktop/contracts/s1-r4/fixtures", "docs/design/gogoke-s1-r4-plan-v1/OBJECT_MODEL.json"]
+        },
+        {
+          "id": "codec-frontend-public-r4",
+          "framework": "vitest_json",
+          "cwd": "apps/desktop",
+          "argv": ["npm", "test", "--", "--run", "src/services/public-r4/codec/codec.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"],
+          "selector": "src/services/public-r4/codec/codec.test.ts",
+          "target": "apps/desktop/src/services/public-r4/codec/codec.test.ts",
+          "readiness": "READY",
+          "readiness_reason": null,
+          "evidence_layer": "SOURCE_DIAGNOSTIC_FAKE",
+          "qualification_scope": "source_diagnostic_only",
+          "platform_requirement": "host",
+          "candidate_required": true,
+          "anti_overclaim": "Desktop Vitest codec evidence is source/fixture coverage only and cannot qualify native, controlled-platform, or Owner-machine behavior.",
+          "check_ids": ["T05.L"],
+          "planned_test_tags": {"T05.L": "gogoke-s1-r4/T05.L"},
+          "observed_cases": {"T05.L": ["S1-R4 public object byte codec preserves unknown minor fields outside the authority projection"]},
+          "bind_paths": ["apps/desktop/src/services/public-r4/codec/codec.ts", "apps/desktop/src/services/public-r4/codec/index.ts", "apps/desktop/src/services/public-r4/codec/model.ts", "apps/desktop/src/services/public-r4/codec/strictJson.ts", "apps/desktop/contracts/s1-r4/object-model.v1.json", "apps/desktop/contracts/s1-r4/field-rules.v1.json", "apps/desktop/contracts/s1-r4/fixtures", "apps/desktop/contracts/s1/fixtures", "docs/design/gogoke-s1-r4-plan-v1/OBJECT_MODEL.json"]
+        }
+      ]
+    },
+    {
+      "id": "boundary",
+      "commands": [
+        {
+          "id": "boundary-unittest",
+          "framework": "python_unittest",
+          "cwd": ".",
+          "argv": ["python", "-m", "unittest", "-v", "tools/gogoke-s1-r4/test_boundary.py"],
+          "selector": "tools/gogoke-s1-r4/test_boundary.py",
+          "target": "tools/gogoke-s1-r4/test_boundary.py",
+          "readiness": "READY",
+          "readiness_reason": null,
+          "evidence_layer": "PYTHON_HARNESS",
+          "qualification_scope": "runner_harness_only",
+          "platform_requirement": "host",
+          "candidate_required": true,
+          "anti_overclaim": "Boundary and authorization assertions validate the runner harness only; they do not accept product or gate behavior.",
+          "check_ids": ["T05.L", "T60.L", "T61.L", "T68.D"],
+          "planned_test_tags": {"T05.L": "gogoke-s1-r4/T05.L", "T60.L": "gogoke-s1-r4/T60.L", "T61.L": "gogoke-s1-r4/T61.L", "T68.D": "gogoke-s1-r4/T68.D"},
+          "observed_cases": {"T05.L": ["test_T05_L_runner_obligation"], "T60.L": ["test_T60_L_source_selector_binding"], "T61.L": ["test_T61_L_negative_runner_instrument"], "T68.D": ["test_T68_D_authorization_anchor"]},
+          "bind_paths": ["tools/gogoke-s1-r4/run_checks.py", "tools/gogoke-s1-r4/registry.json", "tools/gogoke-s1-r4/test_boundary.py"]
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "commands": [{"id": "store-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/store/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/store/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/store/index.test.ts", "readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed store fixture target; create or redirect only when the current candidate supplies a real qualification surface.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing fixture is blocked and cannot be represented as a store qualification pass.", "check_ids": ["T10.L", "T39.L"], "planned_test_tags": {"T10.L": "gogoke-s1-r4/T10.L", "T39.L": "gogoke-s1-r4/T39.L"}, "observed_cases": {"T10.L": ["gogoke-s1-r4/T10.L"], "T39.L": ["gogoke-s1-r4/T39.L"]}}]
+    },
+    {
+      "id": "root",
+      "commands": [{"id": "root-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/root/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/root/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/root/index.test.ts", "readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed root fixture target; T55.L/T55.H require controlled Windows process/host evidence.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Missing root fixture cannot qualify the controlled Windows process or integrated host predicates.", "check_ids": ["T55.L", "T55.H"], "planned_test_tags": {"T55.L": "gogoke-s1-r4/T55.L", "T55.H": "gogoke-s1-r4/T55.H"}, "observed_cases": {"T55.L": ["gogoke-s1-r4/T55.L"], "T55.H": ["gogoke-s1-r4/T55.H"]}}]
+    },
+    {
+      "id": "host",
+      "commands": [{"id": "host-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/host/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/host/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/host/index.test.ts", "readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed host fixture target; host/process behavior also needs a controlled platform run before qualification.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Missing host fixture cannot be promoted to controlled-platform or Owner-machine evidence.", "check_ids": ["T17.L", "T21.L", "T31.L", "T41.L", "T50.L", "T51.L", "T55.H", "T60.L"], "planned_test_tags": {"T17.L": "gogoke-s1-r4/T17.L", "T21.L": "gogoke-s1-r4/T21.L", "T31.L": "gogoke-s1-r4/T31.L", "T41.L": "gogoke-s1-r4/T41.L", "T50.L": "gogoke-s1-r4/T50.L", "T51.L": "gogoke-s1-r4/T51.L", "T55.H": "gogoke-s1-r4/T55.H", "T60.L": "gogoke-s1-r4/T60.L"}, "observed_cases": {"T17.L": ["gogoke-s1-r4/T17.L"], "T21.L": ["gogoke-s1-r4/T21.L"], "T31.L": ["gogoke-s1-r4/T31.L"], "T41.L": ["gogoke-s1-r4/T41.L"], "T50.L": ["gogoke-s1-r4/T50.L"], "T51.L": ["gogoke-s1-r4/T51.L"], "T55.H": ["gogoke-s1-r4/T55.H"], "T60.L": ["gogoke-s1-r4/T60.L"]}}]
+    },
+    {
+      "id": "process",
+      "commands": [{"id": "process-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/process/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/process/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/process/index.test.ts", "readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed process fixture target; process behavior needs a controlled platform surface before qualification.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "controlled_platform", "candidate_required": true, "anti_overclaim": "Missing process fixture cannot qualify process containment or any Owner-machine predicate.", "check_ids": ["T31.L", "T32.L", "T41.L", "T52.L", "T63.L"], "planned_test_tags": {"T31.L": "gogoke-s1-r4/T31.L", "T32.L": "gogoke-s1-r4/T32.L", "T41.L": "gogoke-s1-r4/T41.L", "T52.L": "gogoke-s1-r4/T52.L", "T63.L": "gogoke-s1-r4/T63.L"}, "observed_cases": {"T31.L": ["gogoke-s1-r4/T31.L"], "T32.L": ["gogoke-s1-r4/T32.L"], "T41.L": ["gogoke-s1-r4/T41.L"], "T52.L": ["gogoke-s1-r4/T52.L"], "T63.L": ["gogoke-s1-r4/T63.L"]}}]
+    },
+    {
+      "id": "adapters",
+      "commands": [{"id": "adapters-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/adapters/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/adapters/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/adapters/index.test.ts", "readiness": "NEEDS_CURRENT_CANDIDATE", "readiness_reason": "MC-125 has no committed adapters fixture target; no placeholder fixture is synthesized.", "evidence_layer": "QUALIFICATION_FIXTURE", "qualification_scope": "qualification_fixture_only", "platform_requirement": "host", "candidate_required": true, "anti_overclaim": "Missing adapter fixture cannot qualify adapter capability behavior.", "check_ids": ["R4-01", "R4-02", "R4-04", "R4-05"], "planned_test_tags": {"R4-01": "gogoke-s1-r4/R4-01", "R4-02": "gogoke-s1-r4/R4-02", "R4-04": "gogoke-s1-r4/R4-04", "R4-05": "gogoke-s1-r4/R4-05"}, "observed_cases": {"R4-01": ["gogoke-s1-r4/R4-01"], "R4-02": ["gogoke-s1-r4/R4-02"], "R4-04": ["gogoke-s1-r4/R4-04"], "R4-05": ["gogoke-s1-r4/R4-05"]}}]
+    },
+    {
+      "id": "capabilities",
+      "commands": [{"id": "capabilities-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/capabilities/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/capabilities/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/capabilities/index.test.ts", "check_ids": ["T06.L", "T58.L", "T15.L", "R4-03"], "planned_test_tags": {"T06.L": "gogoke-s1-r4/T06.L", "T58.L": "gogoke-s1-r4/T58.L", "T15.L": "gogoke-s1-r4/T15.L", "R4-03": "gogoke-s1-r4/R4-03"}, "observed_cases": {"T06.L": ["gogoke-s1-r4/T06.L"], "T58.L": ["gogoke-s1-r4/T58.L"], "T15.L": ["gogoke-s1-r4/T15.L"], "R4-03": ["gogoke-s1-r4/R4-03"]}}]
+    },
+    {
+      "id": "delivery",
+      "commands": [{"id": "delivery-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/delivery/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/delivery/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/delivery/index.test.ts", "check_ids": ["T13.L", "T14.L", "T15.L", "T18.L", "T53.L"], "planned_test_tags": {"T13.L": "gogoke-s1-r4/T13.L", "T14.L": "gogoke-s1-r4/T14.L", "T15.L": "gogoke-s1-r4/T15.L", "T18.L": "gogoke-s1-r4/T18.L", "T53.L": "gogoke-s1-r4/T53.L"}, "observed_cases": {"T13.L": ["gogoke-s1-r4/T13.L"], "T14.L": ["gogoke-s1-r4/T14.L"], "T15.L": ["gogoke-s1-r4/T15.L"], "T18.L": ["gogoke-s1-r4/T18.L"], "T53.L": ["gogoke-s1-r4/T53.L"]}}]
+    },
+    {
+      "id": "continuation",
+      "commands": [{"id": "continuation-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/continuation/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/continuation/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/continuation/index.test.ts", "check_ids": ["T17.L", "T19.L", "T20.L"], "planned_test_tags": {"T17.L": "gogoke-s1-r4/T17.L", "T19.L": "gogoke-s1-r4/T19.L", "T20.L": "gogoke-s1-r4/T20.L"}, "observed_cases": {"T17.L": ["gogoke-s1-r4/T17.L"], "T19.L": ["gogoke-s1-r4/T19.L"], "T20.L": ["gogoke-s1-r4/T20.L"]}}]
+    },
+    {
+      "id": "events",
+      "commands": [{"id": "events-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/events/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/events/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/events/index.test.ts", "check_ids": ["T16.L", "T18.L", "T53.L"], "planned_test_tags": {"T16.L": "gogoke-s1-r4/T16.L", "T18.L": "gogoke-s1-r4/T18.L", "T53.L": "gogoke-s1-r4/T53.L"}, "observed_cases": {"T16.L": ["gogoke-s1-r4/T16.L"], "T18.L": ["gogoke-s1-r4/T18.L"], "T53.L": ["gogoke-s1-r4/T53.L"]}}]
+    },
+    {
+      "id": "policy",
+      "commands": [{"id": "policy-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/policy/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/policy/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/policy/index.test.ts", "check_ids": ["T11.L", "T21.L", "T24.L", "T49.L", "T67.L", "R4-09"], "planned_test_tags": {"T11.L": "gogoke-s1-r4/T11.L", "T21.L": "gogoke-s1-r4/T21.L", "T24.L": "gogoke-s1-r4/T24.L", "T49.L": "gogoke-s1-r4/T49.L", "T67.L": "gogoke-s1-r4/T67.L", "R4-09": "gogoke-s1-r4/R4-09"}, "observed_cases": {"T11.L": ["gogoke-s1-r4/T11.L"], "T21.L": ["gogoke-s1-r4/T21.L"], "T24.L": ["gogoke-s1-r4/T24.L"], "T49.L": ["gogoke-s1-r4/T49.L"], "T67.L": ["gogoke-s1-r4/T67.L"], "R4-09": ["gogoke-s1-r4/R4-09"]}}]
+    },
+    {
+      "id": "context",
+      "commands": [{"id": "context-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/context/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/context/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/context/index.test.ts", "check_ids": ["R4-06", "R4-07", "R4-08", "R4-10", "R4-11"], "planned_test_tags": {"R4-06": "gogoke-s1-r4/R4-06", "R4-07": "gogoke-s1-r4/R4-07", "R4-08": "gogoke-s1-r4/R4-08", "R4-10": "gogoke-s1-r4/R4-10", "R4-11": "gogoke-s1-r4/R4-11"}, "observed_cases": {"R4-06": ["gogoke-s1-r4/R4-06"], "R4-07": ["gogoke-s1-r4/R4-07"], "R4-08": ["gogoke-s1-r4/R4-08"], "R4-10": ["gogoke-s1-r4/R4-10"], "R4-11": ["gogoke-s1-r4/R4-11"]}}]
+    },
+    {
+      "id": "decision",
+      "commands": [{"id": "decision-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/decision/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/decision/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/decision/index.test.ts", "check_ids": ["R4-12", "R4-13", "R4-14", "R4-15", "R4-23", "R4-25"], "planned_test_tags": {"R4-12": "gogoke-s1-r4/R4-12", "R4-13": "gogoke-s1-r4/R4-13", "R4-14": "gogoke-s1-r4/R4-14", "R4-15": "gogoke-s1-r4/R4-15", "R4-23": "gogoke-s1-r4/R4-23", "R4-25": "gogoke-s1-r4/R4-25"}, "observed_cases": {"R4-12": ["gogoke-s1-r4/R4-12"], "R4-13": ["gogoke-s1-r4/R4-13"], "R4-14": ["gogoke-s1-r4/R4-14"], "R4-15": ["gogoke-s1-r4/R4-15"], "R4-23": ["gogoke-s1-r4/R4-23"], "R4-25": ["gogoke-s1-r4/R4-25"]}}]
+    },
+    {
+      "id": "evaluation",
+      "commands": [{"id": "evaluation-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/evaluation/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/evaluation/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/evaluation/index.test.ts", "check_ids": ["R4-16", "R4-17", "R4-18", "R4-19"], "planned_test_tags": {"R4-16": "gogoke-s1-r4/R4-16", "R4-17": "gogoke-s1-r4/R4-17", "R4-18": "gogoke-s1-r4/R4-18", "R4-19": "gogoke-s1-r4/R4-19"}, "observed_cases": {"R4-16": ["gogoke-s1-r4/R4-16"], "R4-17": ["gogoke-s1-r4/R4-17"], "R4-18": ["gogoke-s1-r4/R4-18"], "R4-19": ["gogoke-s1-r4/R4-19"]}}]
+    },
+    {
+      "id": "dream",
+      "commands": [{"id": "dream-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/dream/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/dream/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/dream/index.test.ts", "check_ids": ["R4-20", "R4-21", "R4-22"], "planned_test_tags": {"R4-20": "gogoke-s1-r4/R4-20", "R4-21": "gogoke-s1-r4/R4-21", "R4-22": "gogoke-s1-r4/R4-22"}, "observed_cases": {"R4-20": ["gogoke-s1-r4/R4-20"], "R4-21": ["gogoke-s1-r4/R4-21"], "R4-22": ["gogoke-s1-r4/R4-22"]}}]
+    },
+    {
+      "id": "vertical",
+      "commands": [{"id": "vertical-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/vertical/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/vertical/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/vertical/index.test.ts", "check_ids": ["T11.L", "T49.L", "T67.L", "R4-24"], "planned_test_tags": {"T11.L": "gogoke-s1-r4/T11.L", "T49.L": "gogoke-s1-r4/T49.L", "T67.L": "gogoke-s1-r4/T67.L", "R4-24": "gogoke-s1-r4/R4-24"}, "observed_cases": {"T11.L": ["gogoke-s1-r4/T11.L"], "T49.L": ["gogoke-s1-r4/T49.L"], "T67.L": ["gogoke-s1-r4/T67.L"], "R4-24": ["gogoke-s1-r4/R4-24"]}}]
+    },
+    {
+      "id": "upgrade",
+      "commands": [{"id": "upgrade-fixture", "framework": "vitest_json", "cwd": "apps/desktop", "argv": ["npm", "test", "--", "--run", "test-fixtures/s1-r4/upgrade/index.test.ts", "--reporter=json", "--outputFile", "{{OUTPUT}}"], "selector": "test-fixtures/s1-r4/upgrade/index.test.ts", "target": "apps/desktop/test-fixtures/s1-r4/upgrade/index.test.ts", "check_ids": ["R4-26"], "planned_test_tags": {"R4-26": "gogoke-s1-r4/R4-26"}, "observed_cases": {"R4-26": ["gogoke-s1-r4/R4-26"]}}]
+    }
+  ]
+}
