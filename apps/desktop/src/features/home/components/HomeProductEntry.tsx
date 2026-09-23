@@ -84,11 +84,41 @@ export function HomeProductEntry() {
           </div>
         </div>
       </div>
-      {result ? (
+      {result?.controlledTask ? (
+        <>
+          <div className="home-product-entry-result" role="status" aria-atomic="true">
+            Verified test fixture report · not adopted
+          </div>
+          <dl className="home-product-entry-grid home-product-entry-report" aria-label="Verified test report details">
+            <div>
+              <dt className="home-product-entry-label">Model asset</dt>
+              <dd className="home-product-entry-value">{result.controlledTask.modelId}</dd>
+            </div>
+            <div>
+              <dt className="home-product-entry-label">Relative path</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.relativePath}</dd>
+            </div>
+            <div>
+              <dt className="home-product-entry-label">Test source commit</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.sourceCommit}</dd>
+            </div>
+            <div>
+              <dt className="home-product-entry-label">Test source Git blob</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.sourceBlob}</dd>
+            </div>
+            <div>
+              <dt className="home-product-entry-label">Report SHA-256</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.reportSha256}</dd>
+            </div>
+            <div>
+              <dt className="home-product-entry-label">Embedded bytes SHA-256</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.embeddedBytesSha256}</dd>
+            </div>
+          </dl>
+        </>
+      ) : result ? (
         <div className="home-product-entry-result" role="status" aria-atomic="true">
-          {result.controlledTask
-            ? `Test-only report verified from ${result.controlledTask.modelId}; not adopted · ${result.controlledTask.reportSha256.slice(0, 12)}`
-            : `Controller/Seat admitted by native Product Authority · Git blob ${result.ledgerReadback.gitBlob.slice(0, 12)} verified, not adopted · ${result.nativeHost.elapsedMicros}µs`}
+          Controller/Seat admitted by native Product Authority · Git blob {result.ledgerReadback.gitBlob.slice(0, 12)} verified, not adopted · {result.nativeHost.elapsedMicros}µs
         </div>
       ) : null}
       {error ? (

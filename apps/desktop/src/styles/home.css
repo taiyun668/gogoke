@@ -890,6 +890,14 @@
   gap: 12px;
 }
 
+.home-product-entry-report {
+  margin: 0;
+}
+
+.home-product-entry-report dd {
+  margin-left: 0;
+}
+
 .home-product-entry-label {
   font-size: 11px;
   text-transform: uppercase;
