@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 
@@ -71,14 +72,15 @@ class R4BoundaryTests(unittest.TestCase):
 
     def test_T68_D_authorization_anchor(self):
         oid, _ = self.runner.git_oid(self.runner.git_identity()["commit"], self.runner.AUTH_REL)
-        auth, errors = self.runner.auth_from_candidate(self.runner.git_identity())
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": ""}):
+            auth, errors = self.runner.auth_from_candidate(self.runner.git_identity())
         if oid is None:
             self.assertIsNone(auth)
             self.assertTrue(errors)
         else:
-            self.assertFalse(errors, errors)
+            self.assertTrue(any("GITHUB_TOKEN unavailable" in error for error in errors))
             self.assertEqual("taiyun668/gogoke", auth["repository"])
-            self.assertIsNotNone(auth["owner_merge_commit"])
+            self.assertIsNone(auth["owner_merge_commit"])
 
     def test_source_diagnostic_fake_cannot_claim_native_or_owner_evidence(self):
         registry = copy.deepcopy(self.runner.read_registry())
