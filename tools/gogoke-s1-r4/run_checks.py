@@ -214,9 +214,18 @@ def git_identity() -> dict[str, Any]:
 
 
 def load_json_bytes(value: bytes, label: str) -> dict[str, Any]:
+    def unique_pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in items:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = item
+        return result
+
     try:
-        parsed = json.loads(value.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        parsed = json.loads(value.decode("utf-8"), object_pairs_hook=unique_pairs,
+                            parse_constant=lambda item: (_ for _ in ()).throw(ValueError(f"non-finite JSON: {item}")))
+    except (UnicodeError, ValueError) as exc:
         raise RunnerError(f"invalid fixed JSON {label}: {exc}") from exc
     if not isinstance(parsed, dict):
         raise RunnerError(f"fixed JSON root is not an object: {label}")

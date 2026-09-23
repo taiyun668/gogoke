@@ -265,6 +265,7 @@ class RunnerTests(unittest.TestCase):
         forged = copy.deepcopy(auth)
         forged["live_budget"] = 1
         self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
+
         forged = copy.deepcopy(auth)
         forged["repository"] = "attacker/repo"
         self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
@@ -277,6 +278,11 @@ class RunnerTests(unittest.TestCase):
         forged = copy.deepcopy(auth)
         forged["completion_claim"] = True
         self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
+
+    def test_authorization_json_duplicate_key_and_nonfinite_value_fail_closed(self):
+        for raw in (b'{"schema":"one","schema":"two"}', b'{"schema":NaN}'):
+            with self.assertRaises(self.runner.RunnerError):
+                self.runner.load_json_bytes(raw, self.runner.AUTH_REL)
 
     def test_public_authorization_missing_fails_closed(self):
         _auth, binding = self.public_auth_fixture()
