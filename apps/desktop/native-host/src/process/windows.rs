@@ -1485,14 +1485,18 @@ mod tests {
     #[test]
     fn native_host_prepare_and_activate_are_separate_fail_closed_phases() {
         let marker = unique_marker("two-phase");
+        let entry_marker = unique_marker("two-phase-entry");
+        let error_marker = unique_marker("two-phase-error");
         let mut launch = ProcessLaunch::new(powershell());
         launch.arguments = vec![
             "-NoProfile".to_owned(),
             "-NonInteractive".to_owned(),
             "-Command".to_owned(),
             format!(
-                "[IO.File]::WriteAllText('{}','activated')",
-                ps_literal(&marker)
+                "$ErrorActionPreference='Stop'; try {{ [IO.File]::WriteAllText('{}','entered'); [IO.File]::WriteAllText('{}','activated'); exit 0 }} catch {{ [IO.File]::WriteAllText('{}',[string]$_); exit 17 }}",
+                ps_literal(&entry_marker),
+                ps_literal(&marker),
+                ps_literal(&error_marker)
             ),
         ];
         let mut custodian = ProcessCustodian::new().expect("custodian");
@@ -1500,7 +1504,12 @@ mod tests {
             .prepare(&request(launch))
             .expect("prepare suspended child");
         thread::sleep(Duration::from_millis(100));
-        assert!(!marker.exists(), "prepare must not run the child");
+        assert!(
+            !marker.exists(),
+            "prepare must not run the child; entry={:?} error={:?}",
+            entry_marker.exists(),
+            fs::read_to_string(&error_marker).ok()
+        );
 
         let mismatch = PreparedCustody {
             identity: ProcessIdentity {
@@ -1513,14 +1522,37 @@ mod tests {
             custodian.activate(&mismatch),
             Err(ProcessCustodyError::DurableIdentityMismatch(_))
         ));
-        assert!(!marker.exists(), "identity mismatch must remain suspended");
+        assert!(
+            !marker.exists(),
+            "identity mismatch must remain suspended; entry={:?} error={:?}",
+            entry_marker.exists(),
+            fs::read_to_string(&error_marker).ok()
+        );
 
         custodian
             .activate(&prepared)
             .expect("activate exact durable identity");
         let active = custodian.active(&prepared.ticket).expect("active ticket");
-        assert!(active.wait(Duration::from_secs(5)).expect("wait fixture"));
-        assert_eq!(fs::read_to_string(&marker).expect("marker"), "activated");
+        let started = Instant::now();
+        let waited = active.wait(Duration::from_secs(5)).expect("wait fixture");
+        let exit_code = process_exit_code(active.process.raw()).ok().flatten();
+        assert!(
+            waited,
+            "fixture did not finish: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
+            started.elapsed().as_millis(),
+            active.active_job_processes().ok(),
+            entry_marker.exists(),
+            fs::read_to_string(&error_marker).ok()
+        );
+        assert_eq!(
+            fs::read_to_string(&marker).ok().as_deref(),
+            Some("activated"),
+            "fixture activation failed: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
+            started.elapsed().as_millis(),
+            active.active_job_processes().ok(),
+            entry_marker.exists(),
+            fs::read_to_string(&error_marker).ok()
+        );
         let proof = custodian
             .stop(
                 &prepared.ticket,
@@ -1561,6 +1593,8 @@ mod tests {
             Err(ProcessCustodyError::DuplicateTicket(_))
         ));
         let _ = fs::remove_file(marker);
+        let _ = fs::remove_file(entry_marker);
+        let _ = fs::remove_file(error_marker);
     }
 
     #[test]
@@ -1676,16 +1710,22 @@ mod tests {
     #[test]
     fn real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree() {
         let marker = unique_marker("descendant");
+        let entry_marker = unique_marker("descendant-entry");
+        let error_marker = unique_marker("descendant-error");
         let child_command = "Start-Sleep -Seconds 30";
-        let script = "$i=[Diagnostics.ProcessStartInfo]::new();".to_owned()
+        let script = format!(
+            "$ErrorActionPreference='Stop'; try {{ [IO.File]::WriteAllText('{}','parent-started'); $i=[Diagnostics.ProcessStartInfo]::new();",
+            ps_literal(&entry_marker)
+        )
             + "$i.FileName=$PSHOME+'\\powershell.exe';"
             + "$i.Arguments='-NoProfile -NonInteractive -Command \""
             + child_command
             + "\"';$i.UseShellExecute=$false;"
             + "$p=[Diagnostics.Process]::Start($i);"
             + &format!(
-                "[IO.File]::WriteAllText('{}',[string]$p.Id)",
-                ps_literal(&marker)
+                "[IO.File]::WriteAllText('{}',[string]$p.Id); }} catch {{ [IO.File]::WriteAllText('{}',[string]$_); exit 17 }}",
+                ps_literal(&marker),
+                ps_literal(&error_marker)
             );
         let mut launch = ProcessLaunch::new(powershell());
         launch.arguments = vec![
@@ -1704,18 +1744,30 @@ mod tests {
         assert!(process
             .handles_are_non_inheritable()
             .expect("handle policy"));
-        let marker_deadline = Instant::now() + Duration::from_secs(5);
+        let started = Instant::now();
+        let marker_deadline = started + Duration::from_secs(5);
         while !marker.exists() && Instant::now() < marker_deadline {
             thread::sleep(Duration::from_millis(20));
         }
+        assert!(marker.exists(), "controlled parent did not publish child pid: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}", started.elapsed().as_millis(), process_exit_code(process.process.raw()).ok().flatten(), process.active_job_processes().ok(), entry_marker.exists(), fs::read_to_string(&error_marker).ok());
+        let parent_finished = process.wait(Duration::from_secs(5)).expect("wait parent");
         assert!(
-            marker.exists(),
-            "controlled parent did not publish child pid"
+            parent_finished,
+            "controlled parent did not exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
+            started.elapsed().as_millis(),
+            process_exit_code(process.process.raw()).ok().flatten(),
+            process.active_job_processes().ok(),
+            entry_marker.exists(),
+            fs::read_to_string(&error_marker).ok()
         );
-        assert!(process.wait(Duration::from_secs(5)).expect("wait parent"));
         assert!(
             process.active_job_processes().expect("job accounting") >= 1,
-            "descendant must remain in the owned job after parent exit"
+            "descendant must remain in the owned job after parent exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
+            started.elapsed().as_millis(),
+            process_exit_code(process.process.raw()).ok().flatten(),
+            process.active_job_processes().ok(),
+            entry_marker.exists(),
+            fs::read_to_string(&error_marker).ok()
         );
         assert_eq!(
             captured.lock().expect("identity lock").as_ref(),
@@ -1737,6 +1789,8 @@ mod tests {
         assert!(proof.writer_fence_verified);
         assert!(!proof.durable_receipt_saved);
         let _ = fs::remove_file(marker);
+        let _ = fs::remove_file(entry_marker);
+        let _ = fs::remove_file(error_marker);
     }
 
     #[test]
