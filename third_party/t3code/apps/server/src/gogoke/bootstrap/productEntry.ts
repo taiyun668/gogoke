@@ -149,5 +149,6 @@ export async function runGogokeProductProcess(argv: readonly string[]): Promise<
   const input = NodeFS.readFileSync(0);
   const request = decodeProductGoalRequest(input);
   const response = await handleProductGoalRequest(request, paths);
-  // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.\n  NodeFS.writeFileSync(1, `${JSON.stringify(response)}\\n`);
+  // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.
+  NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
 }
