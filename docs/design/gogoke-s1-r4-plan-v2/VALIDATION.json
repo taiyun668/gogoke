@@ -1,0 +1,117 @@
+{
+  "status": "PASS_PLAN_STRUCTURE_ONLY",
+  "errors": [],
+  "tasks": 5,
+  "required_checks": 8,
+  "legacy_due_dispositions": 59,
+  "asset_dispositions": 19,
+  "legacy_task_dispositions": 32,
+  "manifest_git_blob": "17afbba28795338561530927595fda93fd8a2a11",
+  "negative_controls": {
+    "total": 24,
+    "rejected": 24,
+    "cases": [
+      {
+        "case": "untraced_task",
+        "rejected": true
+      },
+      {
+        "case": "unknown_requirement",
+        "rejected": true
+      },
+      {
+        "case": "unknown_check",
+        "rejected": true
+      },
+      {
+        "case": "unknown_dependency",
+        "rejected": true
+      },
+      {
+        "case": "dependency_cycle",
+        "rejected": true
+      },
+      {
+        "case": "duplicate_task",
+        "rejected": true
+      },
+      {
+        "case": "product_pass_claim",
+        "rejected": true
+      },
+      {
+        "case": "server_as_owner_machine",
+        "rejected": true
+      },
+      {
+        "case": "legacy_task_dropped",
+        "rejected": true
+      },
+      {
+        "case": "legacy_check_dropped",
+        "rejected": true
+      },
+      {
+        "case": "legacy_check_promoted",
+        "rejected": true
+      },
+      {
+        "case": "unexplained_disposition",
+        "rejected": true
+      },
+      {
+        "case": "sqlite_fact_authority",
+        "rejected": true
+      },
+      {
+        "case": "code_signing_reintroduced",
+        "rejected": true
+      },
+      {
+        "case": "candidate_only_ci_reintroduced",
+        "rejected": true
+      },
+      {
+        "case": "no_retry_rule_reintroduced",
+        "rejected": true
+      },
+      {
+        "case": "resume_without_owner",
+        "rejected": true
+      },
+      {
+        "case": "auth_not_separate",
+        "rejected": true
+      },
+      {
+        "case": "wrong_auth_schema",
+        "rejected": true
+      },
+      {
+        "case": "manifest_hash",
+        "rejected": true
+      },
+      {
+        "case": "manifest_omission",
+        "rejected": true
+      },
+      {
+        "case": "manifest_traversal",
+        "rejected": true
+      },
+      {
+        "case": "duplicate_json_key",
+        "rejected": true
+      },
+      {
+        "case": "nonfinite_json",
+        "rejected": true
+      }
+    ]
+  },
+  "runtime_verified": false,
+  "owner_machine_verified": false,
+  "independent_review": false,
+  "authorization_granted": false,
+  "github_source_pins": "coordinates recorded from connector reads; not a runtime or whole-repository byte audit"
+}
