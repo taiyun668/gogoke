@@ -235,7 +235,9 @@ fn main() {
     // compiled out there. Debug/test builds define the macro so the same
     // hooks remain available to cargo test.
     let testing_image = std::env::var("PROFILE").unwrap_or_default() != "release";
-    if testing_image {
+    // NEGATIVE CONTROL ONLY: compile test hooks into the release image so the
+    // release-object checker must reject this isolated branch.
+    if true {
         cc.define("GOGOKE_ROUTE_B_TESTING", None);
     }
     println!(
