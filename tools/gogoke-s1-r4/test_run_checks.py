@@ -299,7 +299,7 @@ class RunnerTests(unittest.TestCase):
         common = (
             mock.patch.object(self.runner, "git_oid", return_value=("d" * 40, None)),
             mock.patch.object(self.runner, "git_bytes", return_value=raw),
-            mock.patch.object(self.runner, "authorization_introduction", return_value=("e" * 40, [])),
+            mock.patch.object(self.runner, "authorization_introductions", return_value=(["e" * 40], [])),
         )
         with common[0], common[1], common[2], mock.patch.object(self.runner, "public_binding", return_value=(binding, "a" * 40, [])), mock.patch.object(self.runner, "owner_merged_public_authorization", return_value=(False, "fixture: non-Owner merge")):
             _value, errors = self.runner.auth_from_candidate(candidate)
@@ -317,13 +317,13 @@ class RunnerTests(unittest.TestCase):
         raw = json.dumps(auth).encode("utf-8")
         with mock.patch.object(self.runner, "public_binding", return_value=(binding, "a" * 40, [])), \
              mock.patch.object(self.runner, "git_oid", return_value=("d" * 40, None)), \
-             mock.patch.object(self.runner, "authorization_introduction", return_value=("e" * 40, [])), \
+             mock.patch.object(self.runner, "authorization_introductions", return_value=(["e" * 40], [])), \
              mock.patch.object(self.runner, "owner_merged_public_authorization", return_value=(True, None)), \
              mock.patch.object(self.runner, "git_bytes", side_effect=lambda ref, _path: b'{"changed":true}' if ref == "e" * 40 else raw):
             _value, errors = self.runner.auth_from_candidate({"commit": "c" * 40})
         self.assertTrue(any("differs from Owner merge introduction" in error for error in errors))
 
-    def test_authorization_introduction_uses_real_first_parent_merge(self):
+    def test_authorization_introduction_tracks_owner_merge_across_candidate_merge(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             def git(*args):
@@ -346,18 +346,42 @@ class RunnerTests(unittest.TestCase):
             git("merge", "--no-ff", "--no-edit", "authorization")
             merged = git("rev-parse", "HEAD")
             with mock.patch.object(self.runner, "ROOT", repo):
-                observed, errors = self.runner.authorization_introduction(merged)
+                observed, errors = self.runner.authorization_introductions(merged)
             self.assertEqual([], errors)
-            self.assertEqual(merged, observed)
+            self.assertEqual([merged], observed)
+            git("checkout", "-b", "candidate", base)
+            (repo / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+            git("add", "--", "candidate.txt")
+            git("commit", "-m", "candidate")
+            git("merge", "--no-ff", "--no-edit", "main")
+            candidate = git("rev-parse", "HEAD")
+            with mock.patch.object(self.runner, "ROOT", repo):
+                observed, errors = self.runner.authorization_introductions(candidate)
+            self.assertEqual([], errors)
+            self.assertIn(merged, observed, "Owner main merge must remain discoverable")
+            self.assertIn(candidate, observed, "branch-local merge is separately identified, not trusted")
             git("checkout", "-b", "linear", base)
             receipt.parent.mkdir(parents=True, exist_ok=True)
             receipt.write_text("{}\n", encoding="utf-8")
             git("add", "--", self.runner.AUTH_REL)
             git("commit", "-m", "linear receipt")
             with mock.patch.object(self.runner, "ROOT", repo):
-                observed, errors = self.runner.authorization_introduction(git("rev-parse", "HEAD"))
-            self.assertIsNone(observed)
+                observed, errors = self.runner.authorization_introductions(git("rev-parse", "HEAD"))
+            self.assertEqual([], observed)
             self.assertTrue(any("two-parent merge" in error for error in errors))
+
+    def test_candidate_branch_merge_cannot_replace_owner_merged_authorization(self):
+        auth, binding = self.public_auth_fixture()
+        raw = json.dumps(auth).encode("utf-8")
+        branch_merge, owner_merge = "f" * 40, "e" * 40
+        with mock.patch.object(self.runner, "public_binding", return_value=(binding, "a" * 40, [])), \
+             mock.patch.object(self.runner, "git_oid", return_value=("d" * 40, None)), \
+             mock.patch.object(self.runner, "git_bytes", return_value=raw), \
+             mock.patch.object(self.runner, "authorization_introductions", return_value=([branch_merge, owner_merge], [])), \
+             mock.patch.object(self.runner, "owner_merged_public_authorization", side_effect=lambda sha: (sha == owner_merge, None if sha == owner_merge else "not Owner")):
+            value, errors = self.runner.auth_from_candidate({"commit": "c" * 40})
+        self.assertEqual([], errors)
+        self.assertEqual(owner_merge, value["owner_merge_commit"])
 
     def test_plan_loaded_from_different_public_candidate_fails_closed(self):
         candidate = self.runner.git_identity()

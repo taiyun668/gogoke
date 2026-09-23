@@ -678,21 +678,32 @@ def public_binding(candidate_commit: str) -> tuple[dict[str, Any] | None, str | 
         return None, None, [f"public plan binding unavailable: {exc}"]
 
 
-def authorization_introduction(candidate_commit: str) -> tuple[str | None, list[str]]:
-    process = git_run(["log", "--first-parent", "-m", "--diff-filter=A", "--format=%H", candidate_commit, "--", AUTH_REL])
+def authorization_introductions(candidate_commit: str) -> tuple[list[str], list[str]]:
+    process = git_run(["log", "--full-history", "-m", "--diff-filter=A", "--format=%H", candidate_commit, "--", AUTH_REL])
     if process.returncode != 0:
-        return None, ["authorization introduction history cannot be read"]
-    commits = process.stdout.decode("ascii", "replace").splitlines()
-    if len(commits) != 1 or not re.fullmatch(r"[0-9a-f]{40}", commits[0]):
-        return None, ["authorization must have exactly one first-parent introduction commit"]
-    merge = commits[0]
-    parents = git_run(["rev-list", "--parents", "-n", "1", merge])
-    if parents.returncode != 0 or len(parents.stdout.decode("ascii", "replace").split()) != 3:
-        return None, ["authorization introduction is not an ordinary two-parent merge commit"]
-    ancestor = git_run(["merge-base", "--is-ancestor", merge, candidate_commit])
-    if ancestor.returncode != 0:
-        return None, ["authorization merge is not a candidate ancestor"]
-    return merge, []
+        return [], ["authorization introduction history cannot be read"]
+    commits = list(dict.fromkeys(process.stdout.decode("ascii", "replace").splitlines()))
+    if not commits or any(not re.fullmatch(r"[0-9a-f]{40}", commit) for commit in commits):
+        return [], ["authorization introduction history is missing or malformed"]
+    introductions: list[str] = []
+    for merge in commits:
+        parents = git_run(["rev-list", "--parents", "-n", "1", merge])
+        if parents.returncode != 0:
+            return [], ["authorization merge parent history cannot be read"]
+        row = parents.stdout.decode("ascii", "replace").split()
+        if len(row) != 3:
+            continue
+        if git_run(["merge-base", "--is-ancestor", merge, candidate_commit]).returncode != 0:
+            continue
+        current_oid, current_error = git_oid(merge, AUTH_REL)
+        parent_oid, parent_error = git_oid(row[1], AUTH_REL)
+        if current_error or parent_error:
+            return [], ["authorization introduction blob history cannot be read"]
+        if current_oid and parent_oid is None:
+            introductions.append(merge)
+    if not introductions:
+        return [], ["authorization introduction is not an ordinary two-parent merge commit"]
+    return introductions, []
 
 
 def owner_merged_public_authorization(merge_commit: str) -> tuple[bool, str | None]:
@@ -751,17 +762,25 @@ def auth_from_candidate(candidate: dict[str, Any]) -> tuple[dict[str, Any] | Non
         errors.append(str(exc))
         return None, errors
     errors.extend(validate_auth_value(value, binding, manifest_blob))
-    merge, introduction_errors = authorization_introduction(commit)
+    introductions, introduction_errors = authorization_introductions(commit)
     errors.extend(introduction_errors)
-    try:
-        if merge and git_bytes(merge, AUTH_REL) != git_bytes(commit, AUTH_REL):
-            errors.append("authorization receipt blob differs from Owner merge introduction")
-    except RunnerError as exc:
-        errors.append(f"authorization introduction blob unavailable: {exc}")
-    if merge:
-        owner_merged, github_error = owner_merged_public_authorization(merge)
-        if not owner_merged:
-            errors.append(github_error or "authorization merge not verified as Owner-merged")
+    merge: str | None = None
+    introduction_failures: list[str] = []
+    for introduction in introductions:
+        try:
+            if git_bytes(introduction, AUTH_REL) != git_bytes(commit, AUTH_REL):
+                introduction_failures.append("authorization receipt blob differs from Owner merge introduction")
+                continue
+        except RunnerError:
+            introduction_failures.append("authorization introduction blob unavailable")
+            continue
+        owner_merged, github_error = owner_merged_public_authorization(introduction)
+        if owner_merged:
+            merge = introduction
+            break
+        introduction_failures.append(github_error or "authorization merge not verified as Owner-merged")
+    if introductions and merge is None:
+        errors.extend(introduction_failures)
     value["owner_merge_commit"] = merge
     value["public_plan_manifest_blob"] = manifest_blob
     value["git_blob"] = oid
