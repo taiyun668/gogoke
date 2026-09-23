@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-024",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "5da95c950a5d6e1cb2cf34095dd064cd458a3441",
+  "recorded_utc": "2026-09-23T04:27:53Z",
+  "reason": "Record reviewed candidate merges and the Owner-decided public qualification authorization sequence without promoting gates or checks",
+  "reviewed_merges": {
+    "PR3": {
+      "reviewed_head": "efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b",
+      "claude_decision": "ACCEPT",
+      "merge_commit": "f9273d8937f8e4329dc2e69c5a95ab0d8c659a24",
+      "method": "ordinary non-force merge after required checks passed"
+    },
+    "PR6": {
+      "reviewed_head": "bec6d799ea895c3d00ab40875bf8369bb796a234",
+      "claude_decision": "ACCEPT_NOTICE_INVENTORY_ACCURACY",
+      "merge_commit": "c6ecbb6638aea07f7a21392dcd8184c6b4529a3a",
+      "method": "ordinary non-force merge after required checks passed"
+    },
+    "PR7": "Owner merged Claude review-record PR as 5da95c95 during this checkpoint; Controller did not modify or merge it"
+  },
+  "post_merge_ci": {
+    "public_source_hygiene_run": "35816402161 SUCCESS",
+    "desktop_run": "35816402182 SUCCESS",
+    "manually_dispatched_native_host_run": "35816471863 SUCCESS; detailed machine-result counts still require inspection before check-specific use"
+  },
+  "public_authorization_rebind": {
+    "owner_decision": "Claude drafts the minimal public authorization receipt; GPT is not a prerequisite",
+    "sequence": "public plan binding reviewed and merged; runner rebind reviewed; then single-file authorization PR merged by Owner taiyun668",
+    "plan_candidate": "codex/r4-public-plan-binding-r1@11f824e7; draft PR #8; self-test PASS_PLAN_STRUCTURE_ONLY 1969 checks and 23/23 negative controls; source scan 0 leaks with failing positive control; fresh Claude review pending",
+    "runner_wip": "codex/r4-public-qualification-tools-candidate-r1@54667388; wip: only; no tests, no review, not a candidate for gate or qualification; local diagnostic 54/54 Python unit tests passed before WIP commit",
+    "authorization_receipt": "NOT_CREATED; no Codex or agent merge of that future PR",
+    "WP01_and_S1_01_V": "BLOCKED until Owner merges the public authorization receipt; no qualification execution"
+  },
+  "release_license_prerequisite": "Complete Rust/npm production dependency notices bundled with installer remain open. Cloud trial 35817603158 failed because cargo-about v0.8.4 has no cli feature; corrected candidate d212f3c8 is in cloud trial 35817882906. Trial is not release qualification.",
+  "custody": "Main and named plan, qualification, and license branches are pushed and clean; generated reports and dependencies remain outside committed public source or in ignored build directories. No user data or secrets committed.",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Obtain fresh Claude review of PR #8 before ordinary merge; complete public runner rebind and its fail-closed controls without running qualification before Owner authorization; resolve cloud license-notice trial and bundle actual notices with the installer. Continue other dependency-safe S1-R4 construction."
+}
