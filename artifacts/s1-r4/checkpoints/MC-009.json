@@ -1,0 +1,61 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-009",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "c77e68ed0047e570773afe4206cf0e28d6b9008b",
+  "recorded_utc": "2026-09-23T00:52:18Z",
+  "reason": "Record Owner-relayed Claude WP10A decision, final PR checks, and scoped non-force merge",
+  "independent_review": {
+    "source": "Owner relayed Claude's independent review decision in the current instruction; no separate Claude artifact was supplied in this checkpoint",
+    "candidate": "5702d7035513bc88af9b9fa8ac7b541657ac914a",
+    "decision": "ACCEPT",
+    "scope": "PR #1 WP10A legacy public codec closure only",
+    "basis": "Deleted codec.ts and codec.test.ts correspond to private 660dece9; no residual candidate references; public-r4 codec/strictJson is used; exact workflow_dispatch run 35802709546 passed both jobs without skips; PR frontend and source-hygiene checks passed",
+    "provenance_boundary": "The public SettingsView test was newly rewritten and not byte-identical carryover, as recorded in MC-006; this decision does not transform other candidates into accepted work"
+  },
+  "pr_checks": {
+    "pr": "https://github.com/taiyun668/gogoke/pull/1",
+    "head": "5702d7035513bc88af9b9fa8ac7b541657ac914a",
+    "source_hygiene_run_id": "35803027052",
+    "source_hygiene": "PASS",
+    "desktop_run_id": "35803027055",
+    "browser_build_and_tests": "PASS",
+    "unsigned_windows_nsis": "PASS; 8m9s; no failed or skipped steps",
+    "manual_run_id": "35802709546",
+    "manual_run": "SUCCESS; both jobs succeeded without skips"
+  },
+  "merge": {
+    "method": "ordinary merge commit, no force push or auto-merge",
+    "ready_for_review_before_merge": true,
+    "state": "MERGED",
+    "merged_at_utc": "2026-09-23T00:51:42Z",
+    "merge_commit": "c77e68ed0047e570773afe4206cf0e28d6b9008b",
+    "parents": [
+      "33b414d6d68131979002e8b3aed92a56975ebab1",
+      "5702d7035513bc88af9b9fa8ac7b541657ac914a"
+    ],
+    "result": "Both legacy codec paths absent from merged main; local main fast-forwarded and clean; candidate branch retained"
+  },
+  "post_merge_ci": {
+    "source_hygiene_run_id": "35803871917",
+    "desktop_run_id": "35803871976",
+    "state_at_checkpoint": "IN_PROGRESS; do not infer a result from the PR or manual runs"
+  },
+  "non_claims": [
+    "WP10A code review acceptance is not G1, G2, G3, G4 or G5 acceptance",
+    "Windows Server cloud checks are not Windows 11 desktop validation or signed production availability",
+    "No GN activation, signing, installation or publication occurred",
+    "59 due checks remain unpromoted"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Continue dependency-safe S1-R4 construction on public main/isolated branches; observe post-merge CI to a factual final state, keep N1 pending and require fresh current-candidate review for other migrated scopes."
+}
