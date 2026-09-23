@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, OsStr};
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +17,9 @@ type Handle = *mut c_void;
 
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
+const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
+const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS: i32 = 1;
@@ -66,6 +70,19 @@ struct StartupInfoW {
     std_input: Handle,
     std_output: Handle,
     std_error: Handle,
+}
+
+#[repr(C)]
+struct StartupInfoExW {
+    startup: StartupInfoW,
+    attributes: *mut c_void,
+}
+
+#[repr(C)]
+struct SecurityAttributes {
+    length: u32,
+    descriptor: *mut c_void,
+    inherit: i32,
 }
 
 #[repr(C)]
@@ -139,6 +156,13 @@ extern "system" {
         startup_info: *mut StartupInfoW,
         process_information: *mut ProcessInformation,
     ) -> i32;
+    fn CreatePipe(read: *mut Handle, write: *mut Handle, attributes: *const SecurityAttributes, size: u32) -> i32;
+    fn InitializeProcThreadAttributeList(list: *mut c_void, count: u32, flags: u32, size: *mut usize) -> i32;
+    fn UpdateProcThreadAttribute(list: *mut c_void, flags: u32, attribute: usize, value: *mut c_void,
+        value_size: usize, previous: *mut c_void, return_size: *mut usize) -> i32;
+    fn DeleteProcThreadAttributeList(list: *mut c_void);
+    fn ReadFile(file: Handle, buffer: *mut c_void, length: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
+    fn WriteFile(file: Handle, buffer: *const c_void, length: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
     fn SetInformationJobObject(
         job: Handle,
@@ -195,6 +219,8 @@ pub enum ProcessCustodyError {
     Random(io::Error),
     BinaryDigest(io::Error),
     BindingMismatch(&'static str),
+    ProtocolPipe(io::Error),
+    ProtocolAttribute(io::Error),
 }
 
 impl fmt::Display for ProcessCustodyError {
@@ -222,6 +248,8 @@ impl fmt::Display for ProcessCustodyError {
             Self::Random(source) => write!(f, "PROCESS_RANDOM_FAILED: {source}"),
             Self::BinaryDigest(source) => write!(f, "PROCESS_BINARY_DIGEST_FAILED: {source}"),
             Self::BindingMismatch(field) => write!(f, "PROCESS_BINDING_MISMATCH: {field}"),
+            Self::ProtocolPipe(source) => write!(f, "PROCESS_PROTOCOL_PIPE_FAILED: {source}"),
+            Self::ProtocolAttribute(source) => write!(f, "PROCESS_PROTOCOL_ATTRIBUTE_FAILED: {source}"),
         }
     }
 }
@@ -241,6 +269,7 @@ pub struct ProcessLaunch {
     pub arguments: Vec<String>,
     pub current_directory: Option<PathBuf>,
     pub hide_window: bool,
+    pub protocol_stdio: bool,
 }
 
 impl ProcessLaunch {
@@ -250,6 +279,7 @@ impl ProcessLaunch {
             arguments: Vec::new(),
             current_directory: None,
             hide_window: true,
+            protocol_stdio: false,
         }
     }
 }
@@ -443,18 +473,91 @@ impl Drop for OwnedHandle {
 
 unsafe impl Send for OwnedHandle {}
 
+struct ProtocolPipes {
+    stdin_write: OwnedHandle,
+    stdout_read: OwnedHandle,
+}
+
+struct ChildProtocolHandles {
+    stdin_read: OwnedHandle,
+    stdout_write: OwnedHandle,
+    parent: ProtocolPipes,
+}
+
+impl ChildProtocolHandles {
+    fn open() -> Result<Self, ProcessCustodyError> {
+        let attributes = SecurityAttributes {
+            length: size_of::<SecurityAttributes>() as u32,
+            descriptor: ptr::null_mut(),
+            inherit: 1,
+        };
+        let pipe = || -> Result<(OwnedHandle, OwnedHandle), ProcessCustodyError> {
+            let mut read = ptr::null_mut();
+            let mut write = ptr::null_mut();
+            if unsafe { CreatePipe(&mut read, &mut write, &attributes, 0) } == 0 {
+                return Err(ProcessCustodyError::ProtocolPipe(io::Error::last_os_error()));
+            }
+            Ok((OwnedHandle::new(read).expect("pipe read"),
+                OwnedHandle::new(write).expect("pipe write")))
+        };
+        let (stdin_read, stdin_write) = pipe()?;
+        let (stdout_read, stdout_write) = pipe()?;
+        stdin_write.clear_inherit().map_err(ProcessCustodyError::HandlePolicy)?;
+        stdout_read.clear_inherit().map_err(ProcessCustodyError::HandlePolicy)?;
+        Ok(Self {
+            stdin_read,
+            stdout_write,
+            parent: ProtocolPipes { stdin_write, stdout_read },
+        })
+    }
+}
+
+struct AttributeList {
+    storage: Vec<usize>,
+}
+
+impl AttributeList {
+    fn handles(handles: &mut [Handle]) -> Result<Self, ProcessCustodyError> {
+        let mut size = 0usize;
+        unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size); }
+        if size == 0 {
+            return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
+        }
+        let mut storage = vec![0usize; size.div_ceil(size_of::<usize>())];
+        let list = storage.as_mut_ptr().cast();
+        if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut size) } == 0 {
+            return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
+        }
+        let result = Self { storage };
+        if unsafe {
+            UpdateProcThreadAttribute(result.raw(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                handles.as_mut_ptr().cast(), size_of_val(handles), ptr::null_mut(), ptr::null_mut())
+        } == 0 {
+            return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
+        }
+        Ok(result)
+    }
+
+    fn raw(&self) -> *mut c_void { self.storage.as_ptr().cast_mut().cast() }
+}
+
+impl Drop for AttributeList {
+    fn drop(&mut self) { unsafe { DeleteProcThreadAttributeList(self.raw()); } }
+}
+
 struct PreparedProcess {
     process: OwnedHandle,
     initial_thread: OwnedHandle,
     job: OwnedHandle,
     identity: ProcessIdentity,
+    protocol: Option<ProtocolPipes>,
 }
 
 impl PreparedProcess {
     fn prepare(launch: &ProcessLaunch) -> Result<Self, ProcessCustodyError> {
         validate_launch(launch)?;
         let job = create_kill_on_close_job()?;
-        let (process, initial_thread, pid) = create_suspended(launch)?;
+        let (process, initial_thread, pid, protocol) = create_suspended(launch)?;
         if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
             let source = io::Error::last_os_error();
             // The exact process handle is still suspended, so this cannot hit
@@ -477,6 +580,7 @@ impl PreparedProcess {
             initial_thread,
             job,
             identity,
+            protocol,
         })
     }
 
@@ -502,12 +606,14 @@ impl PreparedProcess {
             initial_thread,
             job,
             identity,
+            protocol,
         } = self;
         drop(initial_thread);
         Ok(ManagedProcess {
             process,
             job,
             identity,
+            protocol,
             stop_attempted: AtomicBool::new(false),
         })
     }
@@ -768,6 +874,7 @@ pub struct ManagedProcess {
     process: OwnedHandle,
     job: OwnedHandle,
     identity: ProcessIdentity,
+    protocol: Option<ProtocolPipes>,
     stop_attempted: AtomicBool,
 }
 
@@ -1009,7 +1116,10 @@ fn create_kill_on_close_job() -> Result<OwnedHandle, ProcessCustodyError> {
 
 fn create_suspended(
     launch: &ProcessLaunch,
-) -> Result<(OwnedHandle, OwnedHandle, u32), ProcessCustodyError> {
+) -> Result<(OwnedHandle, OwnedHandle, u32, Option<ProtocolPipes>), ProcessCustodyError> {
+    if launch.protocol_stdio {
+        return create_suspended_protocol(launch);
+    }
     let application = wide_null(launch.application.as_os_str());
     let mut command_line = wide_null(OsStr::new(&build_command_line(
         launch.application.as_os_str(),
@@ -1053,7 +1163,56 @@ fn create_suspended(
         OwnedHandle::new(info.process).expect("CreateProcessW returned null process handle");
     let initial_thread =
         OwnedHandle::new(info.thread).expect("CreateProcessW returned null thread handle");
-    Ok((process, initial_thread, info.process_id))
+    Ok((process, initial_thread, info.process_id, None))
+}
+
+fn create_suspended_protocol(
+    launch: &ProcessLaunch,
+) -> Result<(OwnedHandle, OwnedHandle, u32, Option<ProtocolPipes>), ProcessCustodyError> {
+    let pipes = ChildProtocolHandles::open()?;
+    let stderr = OpenOptions::new().write(true).open("NUL")
+        .map_err(ProcessCustodyError::ProtocolPipe)?;
+    let stderr_handle = stderr.as_raw_handle().cast();
+    if unsafe { SetHandleInformation(stderr_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+        return Err(ProcessCustodyError::HandlePolicy(io::Error::last_os_error()));
+    }
+    let mut inherited = [pipes.stdin_read.raw(), pipes.stdout_write.raw(), stderr_handle];
+    let attributes = AttributeList::handles(&mut inherited)?;
+    let application = wide_null(launch.application.as_os_str());
+    let mut command_line = wide_null(OsStr::new(&build_command_line(
+        launch.application.as_os_str(), &launch.arguments,
+    )));
+    let current_directory = launch.current_directory.as_ref().map(|path| wide_null(path.as_os_str()));
+    let mut startup: StartupInfoExW = unsafe { zeroed() };
+    startup.startup.cb = size_of::<StartupInfoExW>() as u32;
+    startup.startup.flags = STARTF_USESTDHANDLES;
+    startup.startup.std_input = pipes.stdin_read.raw();
+    startup.startup.std_output = pipes.stdout_write.raw();
+    startup.startup.std_error = stderr_handle;
+    startup.attributes = attributes.raw();
+    let mut info: ProcessInformation = unsafe { zeroed() };
+    let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT
+        | if launch.hide_window { CREATE_NO_WINDOW } else { 0 };
+    let created = unsafe {
+        CreateProcessW(application.as_ptr(), command_line.as_mut_ptr(), ptr::null(), ptr::null(),
+            1, flags, ptr::null(),
+            current_directory.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            &mut startup.startup, &mut info)
+    };
+    let create_error = if created == 0 { Some(io::Error::last_os_error()) } else { None };
+    let cleared = unsafe { SetHandleInformation(stderr_handle, HANDLE_FLAG_INHERIT, 0) };
+    if let Some(error) = create_error { return Err(ProcessCustodyError::CreateProcess(error)); }
+    let process = OwnedHandle::new(info.process).expect("CreateProcessW returned null process handle");
+    let initial_thread = OwnedHandle::new(info.thread).expect("CreateProcessW returned null thread handle");
+    if cleared == 0 {
+        let error = io::Error::last_os_error();
+        unsafe { TerminateProcess(process.raw(), STOP_REFUSED_EXIT_CODE); }
+        return Err(ProcessCustodyError::HandlePolicy(error));
+    }
+    let ChildProtocolHandles { stdin_read, stdout_write, parent } = pipes;
+    drop(stdin_read);
+    drop(stdout_write);
+    Ok((process, initial_thread, info.process_id, Some(parent)))
 }
 
 fn capture_identity(process: Handle, pid: u32) -> io::Result<ProcessIdentity> {
@@ -1429,6 +1588,31 @@ mod tests {
             host_deadline_ms: 30_000,
         }
         .phases_fit_deadline());
+    }
+
+    #[test]
+    fn suspended_job_child_receives_only_explicit_protocol_handles() {
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.protocol_stdio = true;
+        launch.arguments = vec![
+            "-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
+            "$line=[Console]::ReadLine(); [Console]::Out.WriteLine('echo:' + $line)".into(),
+        ];
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("durably activate piped child");
+        let pipes = managed.protocol.as_ref().expect("protocol pipes");
+        assert!(!pipes.stdin_write.is_inheritable().expect("parent stdin handle"));
+        assert!(!pipes.stdout_read.is_inheritable().expect("parent stdout handle"));
+        let input = b"controlled\n";
+        let mut written = 0u32;
+        assert_ne!(unsafe { WriteFile(pipes.stdin_write.raw(), input.as_ptr().cast(),
+            input.len() as u32, &mut written, ptr::null_mut()) }, 0);
+        assert_eq!(written as usize, input.len());
+        assert!(managed.wait(Duration::from_secs(5)).expect("child exit"));
+        let mut output = [0u8; 128];
+        let mut read = 0u32;
+        assert_ne!(unsafe { ReadFile(pipes.stdout_read.raw(), output.as_mut_ptr().cast(),
+            output.len() as u32, &mut read, ptr::null_mut()) }, 0);
+        assert!(String::from_utf8_lossy(&output[..read as usize]).contains("echo:controlled"));
     }
 
     #[test]

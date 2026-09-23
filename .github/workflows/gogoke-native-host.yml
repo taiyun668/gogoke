@@ -151,7 +151,8 @@ jobs:
           $probes = @(
             @{ id = 'ipc-dacl'; filter = 'applies_current_user_only_dacl_and_first_instance_guard' },
             @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
-            @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' }
+            @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
+            @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' }
           )
           $results = @()
           foreach ($probe in $probes) {
@@ -259,7 +260,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    name: Gogoke server 47-file cloud tests
+    name: Gogoke server 49-file cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
     env:
