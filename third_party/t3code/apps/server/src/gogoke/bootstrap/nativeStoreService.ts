@@ -16,6 +16,8 @@ import type {
   NativeGranteeContextReadRequest,
   NativeHostReply,
   NativeProductIdentitySnapshot,
+  NativeControllerCallerContext,
+  NativeControllerAdmissionReceipt,
   NativeExecutionRecipeAppendRequest,
   NativeExecutionRecipeReceipt,
   NativeObjectiveOutcomeRequest, NativeEvaluationRequest, NativeAuthorityRecordReceipt,
@@ -59,6 +61,9 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   getReceipt(commandId: string): Promise<NativeHostReply>;
   /** Native Product Authority identity; the service capability itself is not a grant. */
   readonly readProductIdentity?: () => Promise<NativeProductIdentitySnapshot>;
+  readonly admitControllerCaller?: (
+    input: NativeControllerCallerContext,
+  ) => Promise<NativeControllerAdmissionReceipt>;
   commitContextVersion(input: CommitContextVersionRequest): Promise<ContextCommitReceipt>;
   reserve(input: DurableActionReservation): Promise<ReserveActionResult>;
   begin(reservationId: string, input: DurableActionReservation): Promise<BeginActionResult>;

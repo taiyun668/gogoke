@@ -82,6 +82,73 @@ const decodeProductIdentity = (body: string): NativeProductIdentitySnapshot => {
   });
 };
 
+export interface NativeControllerCallerContext {
+  readonly policyRevision: string;
+  readonly principalId: string;
+  readonly profileId: string;
+  readonly revocationHead: string;
+  readonly role: "controller";
+  readonly seatId: string;
+}
+
+export interface NativeControllerAdmissionReceipt extends NativeControllerCallerContext {
+  readonly admitted: true;
+  readonly elapsedMicros: number;
+}
+
+const canonicalControllerField = (value: unknown, path: string): string => {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    throw new NativeHostClientError("CALLER_ADMISSION", `${path} must be canonical text`);
+  }
+  return value;
+};
+
+const encodeControllerAdmissionFrame = (input: NativeControllerCallerContext): string => {
+  if (input.role !== "controller") {
+    throw new NativeHostClientError("CALLER_ADMISSION", "role must be controller");
+  }
+  return JSON.stringify({
+    operation: "AdmitControllerCaller",
+    policyRevision: canonicalControllerField(input.policyRevision, "policyRevision"),
+    principalId: canonicalControllerField(input.principalId, "principalId"),
+    profileId: canonicalControllerField(input.profileId, "profileId"),
+    revocationHead: canonicalControllerField(input.revocationHead, "revocationHead"),
+    role: input.role,
+    seatId: canonicalControllerField(input.seatId, "seatId"),
+  });
+};
+
+const decodeControllerAdmission = (
+  body: string,
+  input: NativeControllerCallerContext,
+  elapsedMicros: number,
+): NativeControllerAdmissionReceipt => {
+  const value: unknown = JSON.parse(body);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("CALLER_ADMISSION", "admission reply must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = [
+    "admitted",
+    "policyRevision",
+    "principalId",
+    "profileId",
+    "revocationHead",
+    "role",
+    "seatId",
+  ] as const;
+  const ownKeys = Reflect.ownKeys(record);
+  if (
+    ownKeys.length !== keys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key as (typeof keys)[number])) ||
+    record.admitted !== true ||
+    keys.slice(1).some((key) => record[key] !== input[key as keyof NativeControllerCallerContext])
+  ) {
+    throw new NativeHostClientError("CALLER_ADMISSION", "native caller admission mismatch");
+  }
+  return Object.freeze({ ...input, admitted: true as const, elapsedMicros });
+};
+
 export interface NativeDecisionAuthoritySnapshot {
   readonly operationId: string;
   readonly candidateId: string;
@@ -1737,6 +1804,13 @@ export class NativeHostClient {
     return decodeProductIdentity(
       this.request(JSON.stringify({ operation: "ReadProductIdentity" })).body,
     );
+  }
+
+  async admitControllerCaller(
+    input: NativeControllerCallerContext,
+  ): Promise<NativeControllerAdmissionReceipt> {
+    const reply = this.request(encodeControllerAdmissionFrame(input));
+    return decodeControllerAdmission(reply.body, input, reply.elapsedMicros);
   }
 
   async publishDecisionSnapshot(input: NativeDecisionAuthoritySnapshot): Promise<void> {

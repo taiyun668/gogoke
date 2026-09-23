@@ -512,6 +512,17 @@ fn product_identity_body(identity: &authority::ProductIdentitySnapshot) -> Strin
     )
 }
 
+fn controller_admission_body(identity: &authority::ProductIdentitySnapshot) -> String {
+    format!(
+        "{{\"admitted\":true,\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+        json_quote(&identity.policy_revision),
+        json_quote(&identity.principal_id),
+        json_quote(&identity.profile_id),
+        json_quote(&identity.revocation_head),
+        json_quote(&identity.seat_id),
+    )
+}
+
 fn delegation_grant_body(grant: &authority::DelegationGrantSnapshot) -> String {
     let parent = grant.parent.as_ref().map_or_else(
         || "null".to_owned(),
@@ -558,6 +569,23 @@ fn handle_authenticated_line(
             let _fields = action_fields(line, &["operation"])?;
             let identity = authority::read_product_identity(connection, owner)?;
             Ok(product_identity_body(&identity))
+        }
+        "AdmitControllerCaller" => {
+            let fields = action_fields(line, &[
+                "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let identity = authority::admit_owner_controller_caller(
+                connection,
+                owner,
+                required(&fields, "profileId")?,
+                required(&fields, "principalId")?,
+                required(&fields, "seatId")?,
+                required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?,
+                required(&fields, "role")?,
+            )?;
+            Ok(controller_admission_body(&identity))
         }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
@@ -1284,6 +1312,51 @@ mod context_tests {
         assert!(count.step_row().unwrap());
         assert_eq!(count.column_text(0).unwrap(), "0");
         drop(count);
+        connection.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).ok();
+        std::fs::remove_dir(root_path).ok();
+    }
+
+    #[test]
+    fn controller_caller_admission_requires_current_owner_seat_and_revisions() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root_path = std::env::temp_dir().join(format!("gogoke-controller-admission-{nonce}"));
+        std::fs::create_dir(&root_path).unwrap();
+        let root = RootLock::acquire(&root_path).unwrap();
+        let database = root_path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).unwrap();
+        let owner = authority::initialize_profile(&mut connection, &root).unwrap();
+        let identity = authority::read_product_identity(&mut connection, &owner).unwrap();
+        let frame = format!(
+            "{{\"operation\":\"AdmitControllerCaller\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            json_quote(&identity.policy_revision),
+            json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id),
+            json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id),
+        );
+        let body = handle_authenticated_line(&mut connection, &owner, &frame).unwrap();
+        assert!(body.contains("\"admitted\":true"));
+        assert!(body.contains("\"role\":\"controller\""));
+
+        let forged_seat = frame.replace(
+            &json_quote(&identity.seat_id),
+            &json_quote("owner-seat:forged"),
+        );
+        assert!(handle_authenticated_line(&mut connection, &owner, &forged_seat).is_err());
+        let forged_revision = frame.replace(
+            &format!("\"policyRevision\":{}", json_quote(&identity.policy_revision)),
+            "\"policyRevision\":\"999\"",
+        );
+        assert!(handle_authenticated_line(&mut connection, &owner, &forged_revision).is_err());
+        let forged_role = frame.replace(
+            "\"role\":\"controller\"",
+            "\"role\":\"worker\"",
+        );
+        assert!(handle_authenticated_line(&mut connection, &owner, &forged_role).is_err());
+
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();

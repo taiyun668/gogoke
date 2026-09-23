@@ -266,6 +266,39 @@ pub(crate) fn read_product_identity(
     })
 }
 
+pub(crate) fn admit_owner_controller_caller(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    profile_id: &str,
+    principal_id: &str,
+    seat_id: &str,
+    policy_revision: &str,
+    revocation_head: &str,
+    role: &str,
+) -> Result<ProductIdentitySnapshot> {
+    transaction::run(connection, |tx| {
+        let current = profile(tx)?;
+        owner.check(&current)?;
+        if role != "controller"
+            || profile_id != current.profile_id
+            || principal_id != current.principal_id
+            || seat_id != current.seat_id
+            || policy_revision != current.policy_revision
+            || revocation_head != current.revocation_head
+        {
+            return denied();
+        }
+        Ok(ProductIdentitySnapshot {
+            profile_id: current.profile_id,
+            root_identity: current.root_identity,
+            principal_id: current.principal_id,
+            seat_id: current.seat_id,
+            policy_revision: current.policy_revision,
+            revocation_head: current.revocation_head,
+        })
+    })
+}
+
 pub(crate) fn initialize_profile(
     connection: &mut VerifiedDatabaseConnection<'_>,
     root: &RootLock,

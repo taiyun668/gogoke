@@ -18,6 +18,7 @@ const ADMITTED: &[&str] = &[
     "GetReceipt",
     "AuthenticateService",
     "ReadProductIdentity",
+    "AdmitControllerCaller",
     "PublishDecisionSnapshot",
     "CommitDecision",
     "ReadDecisionReplay",

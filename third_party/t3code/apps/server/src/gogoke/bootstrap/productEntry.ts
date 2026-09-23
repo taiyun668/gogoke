@@ -21,7 +21,9 @@ export interface ProductGoalView extends ProductGoalRequest {
     readonly policyRevision: string;
     readonly principalId: string;
     readonly profileId: string;
+    readonly admitted: true;
     readonly revocationHead: string;
+    readonly role: "controller";
     readonly seatId: string;
   };
   readonly nativeHost: { readonly reachable: true; readonly elapsedMicros: number };
@@ -125,18 +127,33 @@ export async function handleProductGoalRequest(
     hostBinary: paths.hostBinary,
   });
   try {
-    const probe = await service.store.readSnapshot(1);
+    if (typeof service.store.admitControllerCaller !== "function") {
+      throw new Error("PRODUCT_CALLER_ADMISSION_UNAVAILABLE");
+    }
+    const admission = await service.store.admitControllerCaller({
+      policyRevision: service.identity.policyRevision,
+      principalId: service.identity.principalId,
+      profileId: service.identity.profileId,
+      revocationHead: service.identity.revocationHead,
+      role: "controller",
+      seatId: service.identity.seatId,
+    });
     return Object.freeze({
       goal: request.goal,
       ledger: request.ledger,
       caller: Object.freeze({
-        policyRevision: service.identity.policyRevision,
-        principalId: service.identity.principalId,
-        profileId: service.identity.profileId,
-        revocationHead: service.identity.revocationHead,
-        seatId: service.identity.seatId,
+        admitted: admission.admitted,
+        policyRevision: admission.policyRevision,
+        principalId: admission.principalId,
+        profileId: admission.profileId,
+        revocationHead: admission.revocationHead,
+        role: admission.role,
+        seatId: admission.seatId,
       }),
-      nativeHost: Object.freeze({ reachable: true as const, elapsedMicros: probe.elapsedMicros }),
+      nativeHost: Object.freeze({
+        reachable: true as const,
+        elapsedMicros: admission.elapsedMicros,
+      }),
       acceptance: "TEST_FIXTURE_NOT_ADOPTED" as const,
     });
   } finally {

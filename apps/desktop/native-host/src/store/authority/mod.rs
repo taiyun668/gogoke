@@ -9,7 +9,10 @@ mod promotion;
 mod promotion_commit;
 mod transaction;
 
-pub(crate) use bootstrap::{initialize_profile, read_product_identity, ProductIdentitySnapshot};
+pub(crate) use bootstrap::{
+    admit_owner_controller_caller, initialize_profile, read_product_identity,
+    ProductIdentitySnapshot,
+};
 
 #[cfg(test)]
 mod promotion_commit_tests;
