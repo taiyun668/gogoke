@@ -1,0 +1,84 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-014",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "76a78eaa00dfd7a7037b16ea04bcf7eae2bcc713",
+  "recorded_utc": "2026-09-23T02:32:45Z",
+  "reason": "Bind Claude A-category code findings to current-candidate D1/D2 cloud execution without claiming due-check or gate acceptance",
+  "candidate": {
+    "branch": "codex/r4-g1-rework-candidate-r1",
+    "commit": "cfcb8a7d3b2d9f7578599b913c343ac6e187a441",
+    "state": "CURRENT_CONSTRUCTION_CANDIDATE_NOT_INDEPENDENTLY_REVIEWED",
+    "scope": "B1/B2 repairs, bounded D1/D2 evidence, Node handshake/Manifest fail-closed repairs, and test-only native diagnostic repairs; no main integration",
+    "committed_source_scan": "24142 files, zero leaks; known-sensitive positive control rejected"
+  },
+  "cloud_evidence": {
+    "run_id": "35810241052",
+    "run_attempt": 1,
+    "bound_commit": "cfcb8a7d3b2d9f7578599b913c343ac6e187a441",
+    "state": "SUCCESS; both jobs completed with no failed or skipped steps",
+    "platform": "Windows Server runner, not Windows 11 desktop",
+    "D1": {
+      "machine_result_artifact": "gogoke-server-evidence-cfcb8a7d3b2d9f7578599b913c343ac6e187a441-35810241052-1/machine-result.json",
+      "selected_files": 44,
+      "vite_files": 35,
+      "vite_executed_passed": "466/466",
+      "node_test_files": 9,
+      "node_executed_passed": "66/66",
+      "total_executed_passed": "532/532",
+      "failed": 0,
+      "skipped": 0,
+      "native_host_bound": true,
+      "state": "PASS"
+    },
+    "D2": {
+      "machine_result_artifact": "native-host-evidence-cfcb8a7d3b2d9f7578599b913c343ac6e187a441-35810241052-1/machine-result.json",
+      "release_build": "executed, exit 0, PASS",
+      "lib_discovered_executed_passed": "382/382/382",
+      "lib_failed": 0,
+      "lib_skipped": 0,
+      "lib_exit": 0,
+      "focused_failure_probes": "3/3 PASS",
+      "b07_two_process": "1/1 PASS",
+      "host_typed_ops": "1/1 PASS",
+      "state": "PASS"
+    }
+  },
+  "A_code_review_to_cloud_mapping": [
+    {"scope":"Route-B core","code_review":"ACCEPT","cloud":"D2 same_open/atomic/session lib, release build, b07_two_process and host_typed_ops"},
+    {"scope":"physical root","code_review":"ACCEPT","cloud":"D2 root::tests physical-identity and held-root assertions"},
+    {"scope":"FilePin","code_review":"ACCEPT","cloud":"D2 root::tests database-pin and replacement-denial assertions"},
+    {"scope":"atomic SQLite","code_review":"ACCEPT","cloud":"D2 store::atomic/product_core and D1 persistence/base/atomicRecord.test.ts"},
+    {"scope":"Route-B supply","code_review":"ACCEPT","cloud":"D2 release build plus store::sqlite_identity and same_open lib assertions"},
+    {"scope":"process wiring","code_review":"ACCEPT","cloud":"D2 process::windows lib, focused Job probes, b07_two_process and host_typed_ops"},
+    {"scope":"Context Assembly","code_review":"ACCEPT","cloud":"D1 context/assembly test files and D2 context-manifest/session lib assertions"},
+    {"scope":"TS delegation","code_review":"ACCEPT","cloud":"D1 policy/policy.test.ts and policy/nativePolicyAuthority.test.ts"},
+    {"scope":"native delegation","code_review":"ACCEPT","cloud":"D2 store::authority::delegation_tests and foreign-key checks"},
+    {"scope":"resolver","code_review":"ACCEPT","cloud":"D1 policy/nativePolicyAuthority.test.ts and persistence/base/nativeHostClient.test.ts"},
+    {"scope":"ATP","code_review":"ACCEPT","cloud":"D1 policy/policy.test.ts, actions/typedAction.test.ts and D2 store::authority/action tests"},
+    {"scope":"durable lineage","code_review":"ACCEPT","cloud":"D1 context/lineage and bootstrap/cognitionVertical tests plus D2 session/authority lineage tests"},
+    {"scope":"ExecutionRecipe","code_review":"ACCEPT","cloud":"D1 recipes/registry.test.ts and D2 store::authority execution-recipe tests"},
+    {"scope":"Action","code_review":"ACCEPT","cloud":"D1 actions/nativeStore and typedAction tests plus D2 store::action and action-transaction tests"}
+  ],
+  "qualification_boundary": "These mappings prove the named candidate ran relevant cloud suites. They do not prove each of the 59 planned due-check semantics or negative controls, do not import fresh B1/B2 review, and do not qualify Windows 11 release availability. A-category code rulings remain content-scoped; no gate is raised.",
+  "B_rework": {
+    "B1": "negative-zero parse/canonical rejection and frozen source tables restored; focused desktop 15/15 and T3 14/14",
+    "B2": "minimalService input snapshot restored; focused 30/30; one mutable test fixture typing correction made without runtime behavior change",
+    "fresh_independent_review": "PENDING",
+    "current_desktop_ci": "run 35810582248 on cfcb8a7d in progress at this checkpoint"
+  },
+  "C_tools": "WP01 and S1-01-V remain BLOCKED on public authorization binding. Proposal at docs/design/gogoke-s1-r4-public-qualification-rebind-proposal.md is not an authorized plan revision; private receipt was not copied or fabricated.",
+  "registered_nonblocking": ["m1 decoded.name Shutdown predicate", "m2 ryu-js Rust dependency license notice"],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 not promoted",
+  "next_action": "Finish exact-candidate desktop CI; send B1/B2 and integrated ancillary fixes to fresh independent Claude review without merging. Keep C blocked pending Owner/GPT public authority decision while continuing safe S1-R4 qualification work."
+}
