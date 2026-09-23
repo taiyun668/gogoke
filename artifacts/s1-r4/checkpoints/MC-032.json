@@ -1,0 +1,39 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-032",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "fea0217dd4305ffe859dcf136bbcfefa643e7c80",
+  "recorded_utc": "2026-09-23T06:53:24Z",
+  "reason": "Register the bounded NativeBinding/T10.L implementation route and recoverable shared wiring",
+  "native_binding": {
+    "finding": "No current typed Route-B Product Authority NativeBinding write/read path was found. The donor Node SQLite native identity tests, a core table declaration, and SessionLineage tests do not satisfy T10.L.",
+    "contract_resolution": "S1 schemaVersion=1 NativeBinding has 11 required fields; S1-R4 has a distinct eight-field wire object. The versioned contracts can coexist without changing either. Runtime account is a separate reference; current TS catalog membership is not a durable native authority fact.",
+    "minimal_construction": "One Product Authority database gains an immutable runtime instance/account/profile identity snapshot and exact NativeBinding version tied to that snapshot, current lineage, domain, generation and source epoch. Same native ID must remain distinct across instance, account history and domain. The old three-axis table is not used as an acceptance substitute.",
+    "isolated_branch": "codex/r4-native-binding-authority-r1",
+    "wip_commit": "d5c1d99a1610280673f8fbaa027791ba2f2dbaa4",
+    "wip_state": "no tests, no review, not a candidate; commit only records Controller shared module/ProductDatabase wiring while a scoped Sol/high worker writes the new authority module and tests",
+    "worker_scope": "Only apps/desktop/native-host/src/store/authority/native_binding.rs and native_binding_tests.rs. Controller owns mod.rs, product_database.rs, session.rs, protocol.rs and TS client integration. Worker cannot commit, push or self-accept.",
+    "validation": "Static code inspection only. Native compile, behavior tests, Windows process qualification and T10.L due check NOT_RUN."
+  },
+  "pending_reviews": {
+    "PR4": "43624d9ca285a99125ee8fbad2e2c2bb569e5a6f; Windows runner instrumentation self-test and source hygiene PASS; Claude fresh review pending, runner not merged",
+    "PR10": "d32260e1a418a1cf98fa0101ffaf4b0836abea42; cloud desktop jobs and source hygiene PASS; Claude fresh review pending",
+    "cleanup": "MC-030 dry-run awaits Claude review. No worktree or generated directory was removed."
+  },
+  "local_workspace_hygiene": {
+    "new_directories_this_checkpoint": [
+      {"path":"%GOGOKE_WORK_ROOT%/branches/native-binding-authority","logical_bytes_at_measurement":274127557,"reason":"active isolated NativeBinding authority construction; shared wiring WIP pushed","cleanup_when":"after current candidate review, integration and handoff"},
+      {"path":"%LOCALAPPDATA%/gogoke-agent-tmp/mc032-controller","logical_bytes_at_measurement":320021,"reason":"current checkpoint source-hygiene report and bounded Controller diagnostics","cleanup_when":"after current task checkpoint and source verification are no longer needed"}
+    ],
+    "cleaned_directories_this_checkpoint": [],
+    "retained_directories": "MC-031 retains the active main, runner, notices, lineage and native-close worktrees plus its task temp root. MC-030 lists all other proposed cleanup targets and sizes; their status is unchanged pending Claude.",
+    "pnpm_store_before_after": "Effective pnpm store remains on the same D volume as worktrees; no store location changed."
+  },
+  "gate_state": {
+    "G0":"PASS","G1":"IN_PROGRESS_NOT_ACCEPTED","G2":"NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3":"IN_PROGRESS_NOT_ACCEPTED","G4":"IN_PROGRESS_NOT_ACCEPTED","G5":"NOT_RUN","GN":"NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Finish the scoped native authority module and shared typed ingress, then run cloud native-host tests and fresh independent code review on the latest candidate. Resolve ordinary failures within Codex. Keep PR #4/#10 and cleanup review boundaries intact; no local native compile or qualification pass inferred from WIP."
+}
