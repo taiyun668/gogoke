@@ -273,8 +273,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
-          cache: pnpm
-          cache-dependency-path: third_party/t3code/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@1.85.1
       - name: Install locked server dependencies without lifecycle scripts
         working-directory: third_party/t3code
