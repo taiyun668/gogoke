@@ -666,10 +666,72 @@ fn run_controlled_fixture_probe(
     }
 }
 
+fn native_json_text(value: &NativeJson) -> Option<String> {
+    match value {
+        NativeJson::String(text) => text.to_well_formed_string(),
+        _ => None,
+    }
+}
+
+fn validate_controlled_action_frame(
+    index: usize,
+    body: &str,
+    expected_ack: &str,
+    message_identity: &mut Option<String>,
+) -> Result<(), OrchestrationError> {
+    let invalid = || OrchestrationError::Invalid("controlled Action protocol sequence");
+    if index == 0 || index == 1 || index == 4 {
+        let expected = match index {
+            0 => expected_ack,
+            1 => "{\"type\":\"agent_start\"}",
+            _ => "{\"type\":\"agent_settled\"}",
+        };
+        return if body == expected { Ok(()) } else { Err(invalid()) };
+    }
+    let NativeJson::Object(root) = NativeJsonParser::parse(body).map_err(|_| invalid())? else {
+        return Err(invalid());
+    };
+    let field = |key: &str| root.get(&NativeJsonString::from_str(key));
+    if index == 2 {
+        if root.len() != 2 || field("type").and_then(native_json_text).as_deref() != Some("message_end") {
+            return Err(invalid());
+        }
+        let Some(NativeJson::Object(message)) = field("message") else { return Err(invalid()); };
+        let message_field = |key: &str| message.get(&NativeJsonString::from_str(key));
+        if message.len() != 7 || message_field("role").and_then(native_json_text).as_deref() != Some("assistant") ||
+            message_field("api").and_then(native_json_text).as_deref() != Some("gogoke-test-protocol") ||
+            message_field("provider").and_then(native_json_text).as_deref() != Some("gogoke-test-only") ||
+            message_field("model").and_then(native_json_text).as_deref() != Some("deterministic-fixture") ||
+            message_field("stopReason").and_then(native_json_text).as_deref() != Some("stop") ||
+            !matches!(message_field("timestamp"), Some(NativeJson::Number(_))) {
+            return Err(invalid());
+        }
+        let Some(NativeJson::Array(content)) = message_field("content") else { return Err(invalid()); };
+        let Some(NativeJson::Object(text)) = content.first() else { return Err(invalid()); };
+        if content.len() != 1 || text.len() != 2 ||
+            text.get(&NativeJsonString::from_str("type")).and_then(native_json_text).as_deref() != Some("text") ||
+            !text.get(&NativeJsonString::from_str("text")).and_then(native_json_text)
+                .is_some_and(|report| matches!(NativeJsonParser::parse(&report), Ok(NativeJson::Object(_)))) {
+            return Err(invalid());
+        }
+        *message_identity = Some(field("message").expect("checked message").canonical());
+        return Ok(());
+    }
+    let Some(NativeJson::Array(messages)) = field("messages") else { return Err(invalid()); };
+    let end_message = messages.first().map(NativeJson::canonical);
+    if index != 3 || root.len() != 3 ||
+        field("type").and_then(native_json_text).as_deref() != Some("agent_end") ||
+        !matches!(field("willRetry"), Some(NativeJson::Bool(false))) || messages.len() != 1 ||
+        message_identity.as_deref() != end_message.as_deref() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 /// Executes only an Action already reserved by Product Authority. This entry
 /// cannot issue a grant or prepare a package; the native currentness checks
 /// and one-way begin fence precede the sole protocol write.
-fn run_controlled_fixture_action(
+pub(crate) fn run_controlled_fixture_action(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
     custodian: &mut ProcessCustodian,
@@ -699,6 +761,21 @@ fn run_controlled_fixture_action(
         operation_id: required(&fields, "operationId")?.to_owned(),
         reservation_id: required(&fields, "reservationId")?.to_owned(),
     };
+    let action = authority::BeginCommittedAction {
+        domain_id: references.domain_id.clone(),
+        operation_id: references.operation_id.clone(),
+        reservation_id: references.reservation_id.clone(),
+    };
+    // A prior native receipt may have committed before its separate Action
+    // projection. Reconcile that durable evidence without another process or
+    // protocol write. A reserved Action has no completion to reconcile.
+    if let Ok(completion) = authority::complete_action_from_native_receipt(connection, &action) {
+        if completion.disposition == "completed" {
+            return Ok(format!("{{\"state\":\"ACTION_COMPLETION_RECONCILED_NOT_RESULT\",\"actionCompletionRef\":{}}}",
+                json_quote(&completion.receipt_id)));
+        }
+        return Err(OrchestrationError::CommitUnknown);
+    }
     let selected = authority::read_native_action_fixture_selection(connection, &references)?;
     if selected.profile_id != identity.profile_id || selected.payload.as_slice() != prompt.as_bytes() {
         return Err(OrchestrationError::AccessDenied);
@@ -719,11 +796,6 @@ fn run_controlled_fixture_action(
         let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
         return Err(OrchestrationError::CommitUnknown);
     }
-    let action = authority::BeginCommittedAction {
-        domain_id: references.domain_id.clone(),
-        operation_id: references.operation_id.clone(),
-        reservation_id: references.reservation_id.clone(),
-    };
     let mut granted: Option<(String, String)> = None;
     let execution = (|| -> Result<Vec<String>, OrchestrationError> {
         let process = custodian.active(&prepared.ticket)
@@ -749,6 +821,7 @@ fn run_controlled_fixture_action(
         let started = Instant::now();
         let mut frames = Vec::new();
         let mut total = 0usize;
+        let mut message_identity = None;
         for index in 0..5 {
             let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
             if remaining.is_zero() {
@@ -763,16 +836,7 @@ fn run_controlled_fixture_action(
             let text = std::str::from_utf8(&frame)
                 .map_err(|_| OrchestrationError::Invalid("controlled Action protocol utf8"))?;
             let body = text.trim_end_matches(['\r', '\n']);
-            let valid = match index {
-                0 => body == expected_ack,
-                1 => body == "{\"type\":\"agent_start\"}",
-                2 => body.starts_with("{\"type\":\"message_end\",\"message\":"),
-                3 => body.starts_with("{\"type\":\"agent_end\",\"messages\":"),
-                _ => body == "{\"type\":\"agent_settled\"}",
-            };
-            if !valid {
-                return Err(OrchestrationError::Invalid("controlled Action protocol sequence"));
-            }
+            validate_controlled_action_frame(index, body, &expected_ack, &mut message_identity)?;
             frames.push(text.to_owned());
         }
         if !process.wait(Duration::from_secs(2)).map_err(|error|
@@ -1687,6 +1751,24 @@ mod context_tests {
         drop(root);
         std::fs::remove_file(database).ok();
         std::fs::remove_dir(root_path).ok();
+    }
+
+    #[test]
+    fn controlled_action_requires_complete_matching_protocol_frames() {
+        let ack = "{\"type\":\"response\",\"id\":\"gogoke-pi-1\",\"command\":\"prompt\",\"success\":true}";
+        let message = "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"api\":\"gogoke-test-protocol\",\"provider\":\"gogoke-test-only\",\"model\":\"deterministic-fixture\",\"stopReason\":\"stop\",\"timestamp\":1}";
+        let end = format!("{{\"type\":\"message_end\",\"message\":{message}}}");
+        let agent_end = format!("{{\"type\":\"agent_end\",\"messages\":[{message}],\"willRetry\":false}}");
+        let mut identity = None;
+        validate_controlled_action_frame(0, ack, ack, &mut identity).unwrap();
+        validate_controlled_action_frame(1, "{\"type\":\"agent_start\"}", ack, &mut identity).unwrap();
+        validate_controlled_action_frame(2, &end, ack, &mut identity).unwrap();
+        validate_controlled_action_frame(3, &agent_end, ack, &mut identity).unwrap();
+        validate_controlled_action_frame(4, "{\"type\":\"agent_settled\"}", ack, &mut identity).unwrap();
+        assert!(validate_controlled_action_frame(2, "{\"type\":\"message_end\",\"message\":", ack, &mut None).is_err());
+        assert!(validate_controlled_action_frame(3, "{\"type\":\"agent_end\",\"messages\":", ack, &mut identity).is_err());
+        let mismatched = agent_end.replace("\\\"ok\\\":true", "\\\"ok\\\":false");
+        assert!(validate_controlled_action_frame(3, &mismatched, ack, &mut identity).is_err());
     }
 
     #[test]

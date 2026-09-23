@@ -27,7 +27,8 @@ const cloudOnly = process.platform === "win32" && Boolean(process.env.GOGOKE_NAT
 cloudOnly("runs the fixed public fixture through native custody and Pi protocol without adoption", { timeout: 40_000 }, async () => {
   const builtHost = process.env.GOGOKE_NATIVE_HOST;
   if (builtHost === undefined) throw new Error("GOGOKE_NATIVE_HOST missing");
-  const source = await readGitHubFact(sourceCoordinate, sourceCoordinate.repository);
+  const source = await readGitHubFact(
+    sourceCoordinate, sourceCoordinate.repository, fetch, process.env.GH_TOKEN);
   const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "gogoke-r2-controlled-"));
   const resourceDir = Path.join(root, "resources");
   const productRoot = Path.join(root, "product-root");

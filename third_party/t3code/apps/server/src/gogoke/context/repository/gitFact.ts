@@ -52,13 +52,18 @@ export async function readGitHubFact(
   coordinate: GitFactCoordinate,
   authorizedRepository: string,
   fetcher: typeof fetch = fetch,
+  authorizationToken?: string,
 ): Promise<GitFactReadback> {
   const exact = validate(coordinate, authorizedRepository);
+  if (authorizationToken !== undefined &&
+      (authorizationToken.length < 20 || authorizationToken.includes("\n") ||
+       authorizationToken.includes("\r"))) return reject("GIT_FACT_CREDENTIAL_INVALID");
   const [owner, repo] = exact.repository.split("/");
   const path = exact.path.split("/").map(encodeURIComponent).join("/");
   const url = `https://api.github.com/repos/${encodeURIComponent(owner!)}/${encodeURIComponent(repo!)}/contents/${path}?ref=${exact.commit}`;
   const response = await fetcher(url, {
-    headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
+    headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+      ...(authorizationToken === undefined ? {} : { Authorization: `Bearer ${authorizationToken}` }) },
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });

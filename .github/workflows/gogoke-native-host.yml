@@ -19,6 +19,15 @@ jobs:
       RUSTUP_TOOLCHAIN: 1.85.1
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - name: Bind native-host build to controlled Node runtime
+        shell: pwsh
+        run: |
+          $node = (Get-Command node.exe -CommandType Application).Source
+          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
       - uses: dtolnay/rust-toolchain@1.85.1
       - name: Build native-host release image and check test-hook exclusion
         id: release-build
@@ -267,6 +276,7 @@ jobs:
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -276,6 +286,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
+      - name: Bind native-host fixture build to controlled Node runtime
+        shell: pwsh
+        run: |
+          $node = (Get-Command node.exe -CommandType Application).Source
+          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
       - uses: dtolnay/rust-toolchain@1.85.1
       - name: Install locked server dependencies without lifecycle scripts
         working-directory: third_party/t3code

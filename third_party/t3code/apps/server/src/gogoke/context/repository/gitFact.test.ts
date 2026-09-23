@@ -57,4 +57,20 @@ describe("R2-02 Git fact readback", () => {
       repository, fake(response).fetcher))
       .rejects.toMatchObject({ code: "GIT_FACT_HASH_MISMATCH" });
   });
+
+  it("uses the supplied GitHub credential only for the pinned API request", async () => {
+    const seen: Array<{ url: string; token: string | null; redirect: string | undefined }> = [];
+    const fetcher: typeof fetch = async (url, init) => {
+      seen.push({ url: String(url), token: new Headers(init?.headers).get("authorization"),
+        redirect: init?.redirect });
+      return new Response(JSON.stringify({ type: "file", path, sha: blob, size: bytes.length,
+        encoding: "base64", content: bytes.toString("base64") }), { status: 200 });
+    };
+    await readGitHubFact(coordinate, repository, fetcher, "synthetic-token-with-enough-length");
+    expect(seen).toEqual([{ url: `https://api.github.com/repos/taiyun668/gogoke/contents/${path}?ref=${commit}`,
+      token: "Bearer synthetic-token-with-enough-length", redirect: "error" }]);
+    await expect(readGitHubFact(coordinate, repository, fetcher, "bad\nheader"))
+      .rejects.toMatchObject({ code: "GIT_FACT_CREDENTIAL_INVALID" });
+    expect(seen).toHaveLength(1);
+  });
 });

@@ -5,6 +5,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { constructGogokeService } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
+import { currentGhToken } from "../context/repository/ghCredential.ts";
 import { PiManagedSession } from "../adapters/pi/session.ts";
 import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
 
@@ -173,13 +174,16 @@ export async function handleProductGoalRequest(
     });
     // This construction Goal is test-only. The repository scope comes from
     // Owner's R2-02 authorization, not from the caller's ledger field.
-    const ledgerReadback = await readGitHubFact(request.ledger, R2_02_TEST_LEDGER_REPOSITORY);
+    const gitReadToken = currentGhToken();
+    const ledgerReadback = await readGitHubFact(
+      request.ledger, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
     let controlledTask: ProductGoalView["controlledTask"];
     if (request.runControlledTask === true) {
       if (typeof service.store.runControlledFixtureProbe !== "function") {
         throw new Error("CONTROLLED_PRODUCT_TASK_UNAVAILABLE");
       }
-      const source = await readGitHubFact(R2_02_SOURCE, R2_02_TEST_LEDGER_REPOSITORY);
+      const source = await readGitHubFact(
+        R2_02_SOURCE, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
       const caller = {
         policyRevision: service.identity.policyRevision,
         principalId: service.identity.principalId,

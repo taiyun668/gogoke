@@ -314,13 +314,17 @@ pub fn controlled_fixture_request(
     if file_sha256(&script)? != CONTROLLED_FIXTURE_SHA256 {
         return Err(ProcessCustodyError::BindingMismatch("controlledFixtureDigest"));
     }
+    let node_digest = file_sha256(&node)?;
+    if node_digest != env!("GOGOKE_CONTROLLED_NODE_SHA256") {
+        return Err(ProcessCustodyError::BindingMismatch("controlledNodeDigest"));
+    }
     let mut launch = ProcessLaunch::new(node.clone());
     launch.arguments = vec![script.to_string_lossy().into_owned()];
     launch.current_directory = script.parent().map(PathBuf::from);
     launch.protocol_stdio = true;
     Ok(PrepareRequest {
         binding: NativeBinding {
-            binary_digest_sha256: file_sha256(&node)?,
+            binary_digest_sha256: node_digest,
             profile_id: profile_id.to_owned(),
             domain_id: domain_id.to_owned(),
             generation: generation.to_owned(),

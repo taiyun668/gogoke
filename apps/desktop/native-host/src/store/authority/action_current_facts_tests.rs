@@ -6,6 +6,7 @@ const ACTION_OPERATION_ID: &str = "opr_11111111111111111111111111111111";
 fn prepare_authorized_action(
     db: &mut VerifiedDatabaseConnection<'_>,
     owner: &super::super::super::OwnerIssuer,
+    instruction: &str,
 ) -> (PrepareActionAuthority, PreparedActionAuthority, u64) {
     super::super::super::initialize_task_context_schema(db).unwrap();
     super::super::super::initialize_authorized_task_package_schema(db).unwrap();
@@ -104,7 +105,7 @@ fn prepare_authorized_action(
                 },
                 target_binding_kind: "existing".into(),
                 sink: "task-package".into(),
-                instruction: "bounded instruction".into(),
+                instruction: instruction.into(),
             },
             material_refs: vec![],
         },
@@ -166,7 +167,7 @@ fn prepare_authorized_action(
         reservation_id: "action-reservation".into(),
         action_kind: "queue".into(),
         lane: "work".into(),
-        payload: b"bounded instruction".to_vec(),
+        payload: instruction.as_bytes().to_vec(),
     };
     let (action_digest, policy_revision) = super::super::super::transaction::run(db, |tx| {
         let (resolved, task, _, recipe, profile) = current_selection(tx, &request)?;
@@ -250,7 +251,7 @@ fn prepare_authorized_action(
 #[test]
 fn derives_current_facts_from_authority_and_exact_active_process_identity() {
     fixture(|_, db, owner| {
-        let (action, _, admission_expiry) = prepare_authorized_action(db, owner);
+        let (action, _, admission_expiry) = prepare_authorized_action(db, owner, "bounded instruction");
         let product = super::super::super::read_product_identity(db, owner).unwrap();
         let references = NativeActionCurrentFactsRefs {
             domain_id: action.domain_id.clone(),
@@ -352,5 +353,70 @@ fn derives_current_facts_from_authority_and_exact_active_process_identity() {
             operation_id: action.action_operation_id,
             reservation_id: action.reservation_id,
         }).is_err(), "a committed Action is not another fixture launch permission");
+    });
+}
+
+#[test]
+fn preauthorized_action_runs_exact_fixture_once_and_records_native_completion() {
+    fixture(|_, db, owner| {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let source = std::fs::read_to_string(root.join("../test-fixtures/s1-r4/sealing/model-asset.json")).unwrap();
+        let source_hash = crate::store::digest::content_hash(source.as_bytes());
+        let material = format!(
+            "{{\"repository\":\"taiyun668/gogoke\",\"commit\":\"{}\",\"path\":\"apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json\",\"sha256\":\"{}\",\"content\":{}}}",
+            "a".repeat(40), &source_hash[7..], quote(&source),
+        );
+        let message = format!(
+            "{{\"schema\":\"gogoke.s1-r4.r2-02.fixture-task.v1\",\"testOnly\":true,\"source\":{material}}}"
+        );
+        let prompt = format!(
+            "{{\"type\":\"prompt\",\"message\":{},\"id\":\"gogoke-pi-1\"}}",
+            quote(&message),
+        );
+        let (action, _, _) = prepare_authorized_action(db, owner, &prompt);
+        super::super::super::initialize_process_custody_schema(db).unwrap();
+        let identity = super::super::super::read_product_identity(db, owner).unwrap();
+        let native_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let resources = native_dir.join("gogoke-service");
+        let runtime_dir = resources.join("runtime");
+        let fixture_dir = resources.join("fixtures");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::create_dir_all(&fixture_dir).unwrap();
+        let node_location = std::process::Command::new("where.exe").arg("node.exe").output().unwrap();
+        assert!(node_location.status.success(), "cloud native test requires Node runtime");
+        let node_output = String::from_utf8(node_location.stdout).unwrap();
+        let node_path = node_output.lines().next().unwrap().trim();
+        let node_copy = runtime_dir.join("node.exe");
+        let fixture_copy = fixture_dir.join("controlled-pi.mjs");
+        std::fs::copy(node_path, &node_copy).unwrap();
+        std::fs::copy(root.join("../test-fixtures/s1-r4/ledger/controlled-pi.mjs"), &fixture_copy).unwrap();
+        std::fs::write(&node_copy, b"substituted runtime").unwrap();
+        assert!(matches!(
+            crate::process::controlled_fixture_request(&identity.profile_id, "domain-one", "7"),
+            Err(crate::process::ProcessCustodyError::BindingMismatch("controlledNodeDigest")),
+        ));
+        std::fs::copy(node_path, &node_copy).unwrap();
+        let frame = format!(
+            "{{\"domainId\":\"domain-one\",\"operation\":\"RunControlledFixtureAction\",\"operationId\":{},\"reservationId\":{},\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{},\"promptJson\":{}}}",
+            quote(&action.action_operation_id), quote(&action.reservation_id),
+            quote(&identity.policy_revision), quote(&identity.principal_id),
+            quote(&identity.profile_id), quote(&identity.revocation_head),
+            quote(&identity.seat_id), quote(&prompt),
+        );
+        let mut custodian = ProcessCustodian::new().unwrap();
+        let body = crate::store::session::run_controlled_fixture_action(db, owner, &mut custodian, &frame).unwrap();
+        assert!(body.contains("ACTION_TRANSPORT_COMPLETED_NOT_RESULT"));
+        assert!(body.contains("\"actionCompletionRef\":\""));
+        let replay = crate::store::session::run_controlled_fixture_action(db, owner, &mut custodian, &frame).unwrap();
+        assert!(replay.contains("ACTION_COMPLETION_RECONCILED_NOT_RESULT"));
+        assert!(!replay.contains("\"frames\""), "recovery must not invent another Result");
+        assert_eq!(count(db, "SELECT state FROM main.gogoke_action_reservations"), "completed");
+        assert_eq!(count(db, "SELECT state FROM main.gogoke_coordination_process_custody"), "STOPPED");
+        drop(custodian);
+        std::fs::remove_file(fixture_copy).unwrap();
+        std::fs::remove_file(node_copy).unwrap();
+        std::fs::remove_dir(fixture_dir).unwrap();
+        std::fs::remove_dir(runtime_dir).unwrap();
+        std::fs::remove_dir(resources).unwrap();
     });
 }

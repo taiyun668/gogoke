@@ -19,6 +19,15 @@ const runGh: GhRunner = (args) => {
   return result.stdout.trim();
 };
 
+/** Read-only public GitHub fetches may use the current gh credential for rate limits. */
+export function currentGhToken(runner: GhRunner = runGh): string {
+  const token = runner(["auth", "token", "--hostname", "github.com"]);
+  if (token.length < 20 || token.includes("\n") || token.includes("\r")) {
+    throw new GhCredentialError("GH_AUTH_UNAVAILABLE");
+  }
+  return token;
+}
+
 /** Uses the existing local gh login. Credentials never enter argv or logs. */
 export function createR2GhCredentialAccess(
   currentNativeAdmission: () => Promise<void>,
@@ -31,11 +40,7 @@ export function createR2GhCredentialAccess(
       if (login !== "taiyun668") throw new GhCredentialError("GH_OWNER_IDENTITY_MISMATCH");
     },
     async credential() {
-      const token = runner(["auth", "token", "--hostname", "github.com"]);
-      if (token.length < 20 || token.includes("\n") || token.includes("\r")) {
-        throw new GhCredentialError("GH_AUTH_UNAVAILABLE");
-      }
-      return token;
+      return currentGhToken(runner);
     },
   });
 }
