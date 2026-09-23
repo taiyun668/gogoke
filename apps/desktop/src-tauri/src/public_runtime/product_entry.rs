@@ -29,6 +29,8 @@ pub(crate) struct LedgerRef {
 pub(crate) struct ProductGoalRequest {
     goal: GoalRef,
     ledger: LedgerRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_controlled_task: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -62,10 +64,26 @@ pub(crate) struct LedgerReadbackView {
 pub(crate) struct ProductGoalView {
     goal: GoalRef,
     ledger: LedgerRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_controlled_task: Option<bool>,
     caller: ProductCallerView,
     native_host: NativeHostView,
     ledger_readback: LedgerReadbackView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    controlled_task: Option<ControlledTaskView>,
     acceptance: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ControlledTaskView {
+    state: String,
+    source_commit: String,
+    source_blob: String,
+    report_sha256: String,
+    model_id: String,
+    relative_path: String,
+    embedded_bytes_sha256: String,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +158,17 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
     {
         return Err("GOGOKE_PRODUCT_RESPONSE_NOT_ADMITTED".to_string());
     }
+    if let Some(task) = &response.controlled_task {
+        if response.run_controlled_task != Some(true)
+            || task.state != "VALIDATED_TEST_RESULT_NOT_ADOPTED"
+            || task.source_commit.len() != 40
+            || task.source_blob.len() != 40
+            || task.report_sha256.len() != 64
+            || task.embedded_bytes_sha256.len() != 64
+        {
+            return Err("GOGOKE_CONTROLLED_TASK_NOT_VALIDATED".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -208,6 +237,8 @@ async fn run_product_process(
         || response.ledger.commit != request.ledger.commit
         || response.ledger.path != request.ledger.path
         || response.ledger.content_hash != request.ledger.content_hash
+        || response.run_controlled_task != request.run_controlled_task
+        || (request.run_controlled_task == Some(true)) != response.controlled_task.is_some()
     {
         return Err("GOGOKE_PRODUCT_RESPONSE_IDENTITY_MISMATCH".to_string());
     }
@@ -240,10 +271,12 @@ mod tests {
                 path: "goals/r2-01.json".into(),
                 content_hash: format!("sha256:{}", "a".repeat(64)),
             },
+            run_controlled_task: None,
         };
         let valid = ProductGoalView {
             goal: request.goal.clone(),
             ledger: request.ledger.clone(),
+            run_controlled_task: None,
             caller: ProductCallerView {
                 admitted: true,
                 policy_revision: "1".into(),
@@ -261,6 +294,7 @@ mod tests {
                 state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED".into(),
                 git_blob: "a".repeat(40),
             },
+            controlled_task: None,
             acceptance: "TEST_FIXTURE_NOT_ADOPTED".into(),
         };
         assert!(validate_product_response(&valid).is_ok());

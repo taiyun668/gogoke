@@ -39,6 +39,13 @@ it("admits a strict immutable test Goal ledger reference", () => {
   });
 });
 
+it("admits only an explicit true controlled test-task request", () => {
+  expect(decodeProductGoalRequest(Buffer.from(valid.slice(0, -1) + ',"runControlledTask":true}'))
+    .runControlledTask).toBe(true);
+  expect(() => decodeProductGoalRequest(Buffer.from(
+    valid.slice(0, -1) + ',"runControlledTask":false}'))).toThrow("INVALID_PRODUCT_ENTRY");
+});
+
 it("rejects mutable or path-escaping ledger coordinates before construction", () => {
   for (const value of [
     valid.replace("6765d4e11ace61c47b9aeb123e0ef4770ab072c0", "main"),

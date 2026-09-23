@@ -11,6 +11,7 @@ import { PiManagedSession } from "../adapters/pi/session.ts";
 import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
 import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
+import { handleProductGoalRequest } from "./productEntry.ts";
 
 const sourceCoordinate = Object.freeze({
   repository: "taiyun668/gogoke",
@@ -87,6 +88,20 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       Assert.equal(result.sourceBlob, source.gitBlob);
     }
     Assert.equal(proofs.size, 2, "separate operations retain separate native custody");
+    await client.close();
+    client = undefined;
+    const product = await handleProductGoalRequest({
+      goal: { id: "goal-r2-02", title: "Controlled public fixture task" },
+      ledger: {
+        repository: "taiyun668/gogoke",
+        commit: "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+        path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json",
+        contentHash: "sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08",
+      },
+      runControlledTask: true,
+    }, { root: productRoot, hostBinary: hosted });
+    Assert.equal(product.controlledTask?.state, "VALIDATED_TEST_RESULT_NOT_ADOPTED");
+    Assert.equal(product.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
   } finally {
     await client?.close();
     await FS.rm(root, { recursive: true, force: true });

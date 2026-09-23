@@ -70,6 +70,8 @@ describe("Home", () => {
       screen.getByText("Verify the Gogoke product entry reaches native Product Authority"),
     ).toBeTruthy();
     expect(screen.getByText("taiyun668/gogoke")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Verify local path" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run controlled test task" })).toBeTruthy();
     expect(screen.getByText("Construction fixture · not adopted")).toBeTruthy();
     expect(screen.getByText("No agent activity yet")).toBeTruthy();
     expect(

@@ -21,39 +21,52 @@ export const R2_GOAL_FIXTURE: GogokeProductGoalRequest = Object.freeze({
 export function HomeProductEntry() {
   const [result, setResult] = useState<GogokeProductGoalView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState<"verify" | "task" | null>(null);
 
-  const run = async () => {
-    if (running) return;
-    setRunning(true);
+  const run = async (mode: "verify" | "task") => {
+    if (running !== null) return;
+    setRunning(mode);
     setError(null);
     try {
-      const next = await runGogokeR2GoalProbe(R2_GOAL_FIXTURE);
+      const next = await runGogokeR2GoalProbe(mode === "task"
+        ? { ...R2_GOAL_FIXTURE, runControlledTask: true }
+        : R2_GOAL_FIXTURE);
       setResult(next);
     } catch (cause) {
       setResult(null);
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setRunning(false);
+      setRunning(null);
     }
   };
 
   return (
-    <section className="home-product-entry" aria-label="Gogoke product path">
+    <section className="home-product-entry" aria-label="Gogoke product path" aria-busy={running !== null}>
       <div className="home-section-header">
         <div>
           <div className="home-section-title">Product path</div>
           <div className="home-product-entry-state">Construction fixture · not adopted</div>
         </div>
-        <button
-          className="home-product-entry-button"
-          data-tauri-drag-region="false"
-          disabled={running}
-          onClick={() => void run()}
-          type="button"
-        >
-          {running ? "Verifying…" : "Verify local path"}
-        </button>
+        <div className="home-product-entry-actions">
+          <button
+            className="home-product-entry-button"
+            data-tauri-drag-region="false"
+            disabled={running !== null}
+            onClick={() => void run("verify")}
+            type="button"
+          >
+            {running === "verify" ? "Verifying…" : "Verify local path"}
+          </button>
+          <button
+            className="home-product-entry-button"
+            data-tauri-drag-region="false"
+            disabled={running !== null}
+            onClick={() => void run("task")}
+            type="button"
+          >
+            {running === "task" ? "Running test task…" : "Run controlled test task"}
+          </button>
+        </div>
       </div>
       <div className="home-product-entry-grid">
         <div>
@@ -72,8 +85,10 @@ export function HomeProductEntry() {
         </div>
       </div>
       {result ? (
-        <div className="home-product-entry-result" role="status">
-          Controller/Seat admitted by native Product Authority · Git blob {result.ledgerReadback.gitBlob.slice(0, 12)} verified, not adopted · {result.nativeHost.elapsedMicros}µs
+        <div className="home-product-entry-result" role="status" aria-atomic="true">
+          {result.controlledTask
+            ? `Test-only report verified from ${result.controlledTask.modelId}; not adopted · ${result.controlledTask.reportSha256.slice(0, 12)}`
+            : `Controller/Seat admitted by native Product Authority · Git blob ${result.ledgerReadback.gitBlob.slice(0, 12)} verified, not adopted · ${result.nativeHost.elapsedMicros}µs`}
         </div>
       ) : null}
       {error ? (

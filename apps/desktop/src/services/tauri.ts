@@ -1223,6 +1223,7 @@ export async function sendNotification(
 
 export type GogokeProductGoalRequest = {
   goal: { id: string; title: string };
+  runControlledTask?: true;
   ledger: {
     repository: string;
     commit: string;
@@ -1248,6 +1249,15 @@ export type GogokeProductGoalView = GogokeProductGoalRequest & {
   ledgerReadback: {
     state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED";
     gitBlob: string;
+  };
+  controlledTask?: {
+    state: "VALIDATED_TEST_RESULT_NOT_ADOPTED";
+    sourceCommit: string;
+    sourceBlob: string;
+    reportSha256: string;
+    modelId: string;
+    relativePath: string;
+    embeddedBytesSha256: string;
   };
   acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 };

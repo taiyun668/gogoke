@@ -1,11 +1,20 @@
 // @effect-diagnostics nodeBuiltinImport:off - executable product boundary owns stdin/stdout.
 import * as NodeFS from "node:fs";
+import { randomUUID, createHash } from "node:crypto";
 
 import { constructGogokeService } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
+import { PiManagedSession } from "../adapters/pi/session.ts";
+import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
 
 const R2_02_TEST_LEDGER_REPOSITORY = "taiyun668/gogoke";
+const R2_02_SOURCE = Object.freeze({
+  repository: "taiyun668/gogoke",
+  commit: "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+  path: "apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json",
+  contentHash: "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e",
+});
 
 export interface ProductLedgerReference {
   readonly repository: string;
@@ -17,6 +26,7 @@ export interface ProductLedgerReference {
 export interface ProductGoalRequest {
   readonly goal: { readonly id: string; readonly title: string };
   readonly ledger: ProductLedgerReference;
+  readonly runControlledTask?: true;
 }
 
 export interface ProductGoalView extends ProductGoalRequest {
@@ -33,6 +43,15 @@ export interface ProductGoalView extends ProductGoalRequest {
   readonly ledgerReadback: {
     readonly state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED";
     readonly gitBlob: string;
+  };
+  readonly controlledTask?: {
+    readonly state: "VALIDATED_TEST_RESULT_NOT_ADOPTED";
+    readonly sourceCommit: string;
+    readonly sourceBlob: string;
+    readonly reportSha256: string;
+    readonly modelId: string;
+    readonly relativePath: string;
+    readonly embeddedBytesSha256: string;
   };
   readonly acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 }
@@ -74,7 +93,13 @@ const text = (value: unknown, path: string): string => {
 };
 
 export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest {
-  const root = exactRecord(parseStrictJsonBytes(bytes), "request", ["goal", "ledger"]);
+  const parsed = parseStrictJsonBytes(bytes);
+  const hasTask = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, "runControlledTask");
+  const root = exactRecord(parsed, "request", hasTask ? ["goal", "ledger", "runControlledTask"] : ["goal", "ledger"]);
+  if (hasTask && root.runControlledTask !== true) {
+    return invalid("request.runControlledTask", "must be true when present");
+  }
   const goal = exactRecord(root.goal, "request.goal", ["id", "title"]);
   const ledger = exactRecord(root.ledger, "request.ledger", [
     "repository",
@@ -105,6 +130,7 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
       title: text(goal.title, "request.goal.title"),
     }),
     ledger: Object.freeze({ repository, commit, path, contentHash }),
+    ...(hasTask ? { runControlledTask: true as const } : {}),
   });
 }
 
@@ -148,9 +174,46 @@ export async function handleProductGoalRequest(
     // This construction Goal is test-only. The repository scope comes from
     // Owner's R2-02 authorization, not from the caller's ledger field.
     const ledgerReadback = await readGitHubFact(request.ledger, R2_02_TEST_LEDGER_REPOSITORY);
+    let controlledTask: ProductGoalView["controlledTask"];
+    if (request.runControlledTask === true) {
+      if (typeof service.store.runControlledFixtureProbe !== "function") {
+        throw new Error("CONTROLLED_PRODUCT_TASK_UNAVAILABLE");
+      }
+      const source = await readGitHubFact(R2_02_SOURCE, R2_02_TEST_LEDGER_REPOSITORY);
+      const caller = {
+        policyRevision: service.identity.policyRevision,
+        principalId: service.identity.principalId,
+        profileId: service.identity.profileId,
+        revocationHead: service.identity.revocationHead,
+        role: "controller" as const,
+        seatId: service.identity.seatId,
+      };
+      const operationId = `r2-02-${randomUUID()}`;
+      let session!: PiManagedSession;
+      session = new PiManagedSession({
+        admission: { mode: "ordinary", protocolQualified: true,
+          protectedDomainQualified: false, contextExposure: "UNKNOWN" },
+        sink: { async write(chunk) {
+          const promptJson = Buffer.from(chunk).toString("utf8").trimEnd();
+          const evidence = await service.store.runControlledFixtureProbe!({ caller, operationId, promptJson });
+          for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
+        } },
+      });
+      const message = JSON.stringify({
+        schema: "gogoke.s1-r4.r2-02.fixture-task.v1",
+        testOnly: true,
+        source: { repository: source.coordinate.repository, commit: source.coordinate.commit,
+          path: source.coordinate.path,
+          sha256: createHash("sha256").update(source.bytes).digest("hex"),
+          content: Buffer.from(source.bytes).toString("utf8") },
+      });
+      controlledTask = validateControlledFixtureResult(
+        source, await session.promptAndObserveSettlement(message, 30_000));
+    }
     return Object.freeze({
       goal: request.goal,
       ledger: request.ledger,
+      ...(request.runControlledTask === true ? { runControlledTask: true as const } : {}),
       caller: Object.freeze({
         admitted: admission.admitted,
         policyRevision: admission.policyRevision,
@@ -165,6 +228,7 @@ export async function handleProductGoalRequest(
         elapsedMicros: admission.elapsedMicros,
       }),
       ledgerReadback: Object.freeze({ state: ledgerReadback.state, gitBlob: ledgerReadback.gitBlob }),
+      ...(controlledTask === undefined ? {} : { controlledTask }),
       acceptance: "TEST_FIXTURE_NOT_ADOPTED" as const,
     });
   } finally {
