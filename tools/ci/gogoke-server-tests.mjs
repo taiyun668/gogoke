@@ -33,7 +33,7 @@ export function parseVitestReport(report, expectedFiles, exitCode) {
   const failedFiles = actualFiles.filter((entry) => entry.status !== "passed").map((entry) => entry.name);
   const filesMatch = actualFiles.length === expectedFiles.length && expected.size === actual.size &&
     [...expected].every((path) => actual.has(path));
-  const instrumentOk = filesMatch && tests !== null && passed !== null && failed !== null &&
+  const instrumentOk = Number.isSafeInteger(exitCode) && filesMatch && tests !== null && passed !== null && failed !== null &&
     pending !== null && todo !== null && tests > 0 && passed + failed + pending + todo <= tests;
   const skipped = pending === null || todo === null ? null : pending + todo;
   return {
@@ -62,7 +62,7 @@ export function parseNodeTap(text, fileCount, exitCode) {
   const skipped = lastSummary(text, "skipped");
   const cancelled = lastSummary(text, "cancelled");
   const todo = lastSummary(text, "todo");
-  const instrumentOk = fileCount > 0 && [discovered, passed, failed, skipped, cancelled, todo]
+  const instrumentOk = Number.isSafeInteger(exitCode) && fileCount > 0 && [discovered, passed, failed, skipped, cancelled, todo]
     .every((value) => count(value) !== null) && discovered > 0 &&
     passed + failed + skipped + cancelled + todo === discovered;
   return {
@@ -79,9 +79,12 @@ export function parseNodeTap(text, fileCount, exitCode) {
 }
 
 function run(args, cwd, logPath, env = process.env) {
-  const result = spawnSync(process.execPath, args, { cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const timeoutMs = 120_000;
+  const result = spawnSync(process.execPath, args, { cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    timeout: timeoutMs });
   writeFileSync(logPath, `${result.stdout ?? ""}${result.stderr ?? ""}`, "utf8");
-  return { exitCode: result.status, error: result.error?.message ?? null };
+  return { exitCode: result.status, error: result.error?.message ?? null,
+    timedOut: result.error?.code === "ETIMEDOUT", timeoutMs };
 }
 
 function main() {
@@ -106,6 +109,8 @@ function main() {
   }
   vite.command = "node vite-plus/bin/vp test run <all Vite test files> --reporter=json";
   vite.log = "vitest.log";
+  vite.timeout_ms = viteRun.timeoutMs;
+  vite.timed_out = viteRun.timedOut;
   if (viteRun.error) vite.spawn_error = viteRun.error;
 
   const nodeLog = join(evidenceRoot, "node-tap.log");
@@ -115,6 +120,8 @@ function main() {
   const node = parseNodeTap(readFileSync(nodeLog, "utf8"), nodeFiles.length, nodeRun.exitCode);
   node.command = "node --experimental-strip-types --experimental-sqlite --test --test-reporter=tap <all node:test files>";
   node.log = "node-tap.log";
+  node.timeout_ms = nodeRun.timeoutMs;
+  node.timed_out = nodeRun.timedOut;
   node.native_host_bound = host.length > 0 && existsSync(host);
   if (nodeRun.error) node.spawn_error = nodeRun.error;
   if (!node.native_host_bound) node.state = "FAIL_INSTRUMENT";
