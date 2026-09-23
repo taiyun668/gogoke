@@ -165,6 +165,7 @@ export class PiManagedSession {
   #priorAgentRun = false;
   #settlement: {
     started: boolean;
+    untrustedFinalText: string | null;
     resolve: () => void;
     reject: (error: PiManagedSessionError) => void;
   } | undefined;
@@ -225,7 +226,8 @@ export class PiManagedSession {
       settle = resolve;
       rejectSettlement = reject;
     });
-    this.#settlement = { started: false, resolve: settle, reject: rejectSettlement };
+    this.#settlement = { started: false, untrustedFinalText: null, resolve: settle, reject: rejectSettlement };
+    const activeSettlement = this.#settlement;
     const accepted = this.#accepted("prompt", { type: "prompt", message });
     this.#exclusiveTaskUsed = true;
     const timer = setTimeout(() => {
@@ -234,7 +236,11 @@ export class PiManagedSession {
     }, timeoutMs);
     try {
       const [command] = await Promise.all([accepted, observed]);
-      return Object.freeze({ status: "protocol-settled-not-result" as const, accepted: command });
+      return Object.freeze({
+        status: "protocol-settled-not-result" as const,
+        accepted: command,
+        untrustedFinalText: activeSettlement.untrustedFinalText,
+      });
     } finally {
       clearTimeout(timer);
       this.#settlement = undefined;
@@ -395,6 +401,17 @@ export class PiManagedSession {
       }
       if (frozen.type === "agent_start") {
         if (this.#settlement !== undefined) this.#settlement.started = true;
+      } else if (frozen.type === "message_end" && this.#settlement?.started === true) {
+        const message = frozen.message;
+        if (isRecord(message) && message.role === "assistant" &&
+            message.stopReason === "stop" && Array.isArray(message.content)) {
+          const text = message.content.filter((part) => isRecord(part) && part.type === "text")
+            .map((part) => typeof (part as JsonRecord).text === "string" ? (part as JsonRecord).text as string : "")
+            .join("");
+          if (text.length > 0 && Buffer.byteLength(text, "utf8") <= 32 * 1024) {
+            this.#settlement.untrustedFinalText = text;
+          }
+        }
       } else if (frozen.type === "agent_settled" && this.#settlement?.started === true) {
         this.#settlement.resolve();
         this.#settlement = undefined;

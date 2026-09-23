@@ -69,7 +69,7 @@ describe("Home", () => {
     expect(
       screen.getByText("Verify the Gogoke product entry reaches native Product Authority"),
     ).toBeTruthy();
-    expect(screen.getByText("fixture/gogoke-r2-01")).toBeTruthy();
+    expect(screen.getByText("taiyun668/gogoke")).toBeTruthy();
     expect(screen.getByText("Construction fixture · not adopted")).toBeTruthy();
     expect(screen.getByText("No agent activity yet")).toBeTruthy();
     expect(

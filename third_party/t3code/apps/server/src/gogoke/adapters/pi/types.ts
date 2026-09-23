@@ -41,6 +41,7 @@ export interface PiSettledObservation {
   /** Protocol settlement is not a validated task Result or Outcome. */
   readonly status: "protocol-settled-not-result";
   readonly accepted: PiAcceptedCommand;
+  readonly untrustedFinalText: string | null;
 }
 
 export interface PiPauseResult {

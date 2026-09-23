@@ -259,7 +259,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    name: Gogoke server 46-file cloud tests
+    name: Gogoke server 47-file cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
     env:

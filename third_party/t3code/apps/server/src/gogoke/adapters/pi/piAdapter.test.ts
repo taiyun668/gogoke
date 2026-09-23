@@ -134,6 +134,8 @@ describe("R4-O-PI managed ACK and binding semantics", () => {
     stream.handler = (command) => {
       stream.respond(command);
       stream.feed({ type: "agent_start" });
+      stream.feed({ type: "message_end", message: { role: "assistant", stopReason: "stop",
+        content: [{ type: "text", text: "untrusted fixture report" }] } });
       stream.feed({ type: "agent_end", willRetry: false, messages: [] });
     };
     let settled = false;
@@ -145,6 +147,7 @@ describe("R4-O-PI managed ACK and binding semantics", () => {
     assert.deepEqual(await observation, {
       status: "protocol-settled-not-result",
       accepted: { status: "accepted", requestId: "gogoke-pi-1", command: "prompt" },
+      untrustedFinalText: "untrusted fixture report",
     });
     await NodeAssert.rejects(session.prompt("second task"), (error: unknown) =>
       error instanceof PiManagedSessionError && error.code === "DISPATCH_PAUSED");
@@ -171,6 +174,8 @@ describe("R4-O-PI managed ACK and binding semantics", () => {
       else {
         stream.respond(command);
         stream.feed({ type: "agent_start" });
+        stream.feed({ type: "message_end", message: { role: "assistant", stopReason: "stop",
+          content: [{ type: "text", text: "bounded" }] } });
         stream.feed({ type: "agent_settled" });
       }
     };
@@ -178,6 +183,7 @@ describe("R4-O-PI managed ACK and binding semantics", () => {
     assert.deepEqual(await session.promptAndObserveSettlement("task", 1_000), {
       status: "protocol-settled-not-result",
       accepted: { status: "accepted", requestId: "gogoke-pi-3", command: "prompt" },
+      untrustedFinalText: "bounded",
     });
 
     const prior = fixture();
