@@ -95,7 +95,7 @@ jobs:
         shell: pwsh
         run: |
           $toolRoot = Join-Path $env:RUNNER_TEMP 'cargo-about'
-          cargo install --locked --version 0.8.4 --features cli cargo-about --root $toolRoot
+          cargo install --locked --version 0.8.4 cargo-about --root $toolRoot
           if ($LASTEXITCODE -ne 0) { throw "cargo-about install failed: $LASTEXITCODE" }
           "$(Join-Path $toolRoot 'bin')" >> $env:GITHUB_PATH
       - name: Generate Rust license and copyright text from locked graph
