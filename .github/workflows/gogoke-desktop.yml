@@ -281,7 +281,7 @@ jobs:
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $releaseInstaller = Join-Path "desktop-artifacts" "gogoke-$version-windows-x64-unsigned-setup.exe"
-          & ../../tools/smoke-gogoke-update.ps1 -Installer $releaseInstaller -Version $version
+          & ../../tools/smoke-gogoke-update.ps1 -Installer $releaseInstaller -Version $version -ExpectedNoticeDirectory generated
           if ($LASTEXITCODE -ne 0) {
             throw "gogoke update smoke failed with exit code $LASTEXITCODE"
           }

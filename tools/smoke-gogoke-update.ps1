@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Installer,
-    [Parameter(Mandatory = $true)][string]$Version
+    [Parameter(Mandatory = $true)][string]$Version,
+    [string]$ExpectedNoticeDirectory
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +55,20 @@ try {
     $targetExe = Join-Path $target "gogoke.exe"
     if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) { throw "updated executable is missing" }
     if (Test-Path -LiteralPath $ready) { throw "coordinator did not consume the readiness receipt" }
+    if ($ExpectedNoticeDirectory) {
+        $noticeRoot = (Resolve-Path -LiteralPath $ExpectedNoticeDirectory).Path
+        foreach ($name in @("npm-production-notices.html", "rust-dependency-notices.html")) {
+            $source = Join-Path $noticeRoot $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "generated notice missing: $name" }
+            $installed = @(Get-ChildItem -LiteralPath $target -Recurse -File -Filter $name)
+            if ($installed.Count -ne 1) { throw "expected one installed $name, found $($installed.Count)" }
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $installed[0].FullName -Algorithm SHA256).Hash) {
+                throw "installed notice differs from generated source: $name"
+            }
+            Write-Output "PASS installed notice byte identity: $name"
+        }
+    }
     Stop-TargetProcess
 
     $marker = Join-Path $target "rollback-marker.txt"
