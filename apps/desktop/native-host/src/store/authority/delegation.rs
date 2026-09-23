@@ -14,6 +14,12 @@ use super::transaction::{self, Result, Transaction};
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const R2_V2_MANIFEST_BLOB: &str = "17afbba28795338561530927595fda93fd8a2a11";
+
+pub(crate) fn r2_test_grant_id(operation_id: &str) -> Result<String> {
+    identifier(operation_id)?;
+    let digest = content_hash(format!("r2-02-test-grant:{R2_V2_MANIFEST_BLOB}:{operation_id}").as_bytes());
+    Ok(format!("grant:r2-02:{}", &digest[7..]))
+}
 const CEILING_AXES: [&str; 7] = [
     "allowed_actions",
     "allowed_target_principal_ids",
@@ -445,9 +451,8 @@ pub(crate) fn issue_r2_test_owner_delegation_once(
     {
         return denied();
     }
-    let digest = content_hash(format!("r2-02-test-grant:{R2_V2_MANIFEST_BLOB}:{operation_id}").as_bytes());
     let identity = DelegationGrantIdentity {
-        grant_id: format!("grant:r2-02:{}", &digest[7..]),
+        grant_id: r2_test_grant_id(operation_id)?,
         revision: "1".into(),
     };
     transaction::run(connection, |tx| {

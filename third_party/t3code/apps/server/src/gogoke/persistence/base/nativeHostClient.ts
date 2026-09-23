@@ -104,6 +104,32 @@ export interface NativeR2TestDelegationReceipt {
   readonly expiresAtEpochMs: string;
 }
 
+export interface NativeR2TestPackageReceipt {
+  readonly state: "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "REPLAYED";
+  readonly packageOperationId: "r2-02-package";
+  readonly packageDigest: string;
+}
+
+export function decodeR2TestPackageReceipt(body: string): NativeR2TestPackageReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid native package reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid native package reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 4 ||
+      record.state !== "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "REPLAYED"].includes(String(record.disposition)) ||
+      record.packageOperationId !== "r2-02-package" ||
+      typeof record.packageDigest !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.packageDigest)) {
+    throw new NativeHostClientError("R2_TEST_PACKAGE", "native package identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestPackageReceipt);
+}
+
 export function decodeR2TestDelegationReceipt(body: string): NativeR2TestDelegationReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
@@ -1904,6 +1930,38 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
     return decodeR2TestDelegationReceipt(body);
+  }
+
+  async prepareR2TestPackage(
+    caller: NativeControllerCallerContext,
+    promptJson: string,
+  ): Promise<NativeR2TestPackageReceipt> {
+    if (Buffer.byteLength(promptJson, "utf8") > 32 * 1024 ||
+        promptJson.includes("\n") || promptJson.includes("\r")) {
+      throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid prompt frame");
+    }
+    let prompt: unknown;
+    try { prompt = JSON.parse(promptJson); }
+    catch { throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid prompt JSON"); }
+    if (typeof prompt !== "object" || prompt === null || Array.isArray(prompt) ||
+        Reflect.ownKeys(prompt).length !== 3 ||
+        (prompt as Record<string, unknown>).type !== "prompt" ||
+        typeof (prompt as Record<string, unknown>).id !== "string" ||
+        typeof (prompt as Record<string, unknown>).message !== "string") {
+      throw new NativeHostClientError("R2_TEST_PACKAGE", "prompt identity mismatch");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestPackage",
+      operationId: "r2-02-package",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      promptJson,
+    })).body;
+    return decodeR2TestPackageReceipt(body);
   }
 
   async runControlledFixtureProbe(input: {

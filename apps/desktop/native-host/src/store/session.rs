@@ -673,6 +673,65 @@ fn native_json_text(value: &NativeJson) -> Option<String> {
     }
 }
 
+fn validate_r2_test_prompt(prompt: &str) -> Result<String, OrchestrationError> {
+    if prompt.len() > 32 * 1024 || prompt.contains('\n') || prompt.contains('\r') {
+        return Err(OrchestrationError::Invalid("R2 test prompt frame"));
+    }
+    let command = decode_flat_string_object(prompt.as_bytes()).map_err(protocol_error)?;
+    if command.len() != 3 || command.get("type").map(String::as_str) != Some("prompt") ||
+        !command.get("id").is_some_and(|id| id.starts_with("gogoke-pi-") && id.len() <= 128) {
+        return Err(OrchestrationError::Invalid("R2 test prompt identity"));
+    }
+    let message = command.get("message").ok_or(OrchestrationError::Invalid("R2 test message"))?;
+    let NativeJson::Object(root) = NativeJsonParser::parse(message)
+        .map_err(|_| OrchestrationError::Invalid("R2 test message JSON"))? else {
+        return Err(OrchestrationError::Invalid("R2 test message JSON"));
+    };
+    let field = |key: &str| root.get(&NativeJsonString::from_str(key));
+    if root.len() != 3 || field("schema").and_then(native_json_text).as_deref() !=
+        Some("gogoke.s1-r4.r2-02.fixture-task.v1") ||
+        !matches!(field("testOnly"), Some(NativeJson::Bool(true))) {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let Some(NativeJson::Object(source)) = field("source") else {
+        return Err(OrchestrationError::AccessDenied);
+    };
+    let source_field = |key: &str| source.get(&NativeJsonString::from_str(key));
+    let content = source_field("content").and_then(native_json_text)
+        .ok_or(OrchestrationError::AccessDenied)?;
+    if source.len() != 5 ||
+        source_field("repository").and_then(native_json_text).as_deref() != Some("taiyun668/gogoke") ||
+        source_field("commit").and_then(native_json_text).as_deref() != Some("f6a820dda05a3eac5c29be48c4149bff7e1c9598") ||
+        source_field("path").and_then(native_json_text).as_deref() != Some("apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json") ||
+        source_field("sha256").and_then(native_json_text).as_deref() != Some("268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e") ||
+        super::digest::content_hash(content.as_bytes()) !=
+            "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e" {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(command.get("id").expect("checked prompt id").clone())
+}
+
+fn r2_test_package_recorded_at(
+    connection: &VerifiedDatabaseConnection<'_>,
+) -> Result<String, OrchestrationError> {
+    let mut prior = Statement::prepare(connection.as_ptr(),
+        "SELECT recorded_at FROM main.gogoke_authorized_task_packages WHERE domain_id='domain-r2-02-test' AND operation_id='r2-02-package'")?;
+    if prior.step_row()? {
+        let recorded_at = prior.column_text(0)?;
+        if prior.step_row()? {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        return Ok(recorded_at);
+    }
+    drop(prior);
+    let mut now = Statement::prepare(connection.as_ptr(),
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")?;
+    if !now.step_row()? {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(now.column_text(0)?)
+}
+
 fn validate_controlled_action_frame(
     index: usize,
     body: &str,
@@ -742,16 +801,7 @@ pub(crate) fn run_controlled_fixture_action(
         "principalId", "profileId", "revocationHead", "role", "seatId", "promptJson",
     ])?;
     let prompt = required(&fields, "promptJson")?;
-    if prompt.len() > 32 * 1024 || prompt.contains('\n') || prompt.contains('\r') {
-        return Err(OrchestrationError::Invalid("controlled Action prompt frame"));
-    }
-    let command = decode_flat_string_object(prompt.as_bytes()).map_err(protocol_error)?;
-    if command.len() != 3 || command.get("type").map(String::as_str) != Some("prompt") ||
-        !command.get("id").is_some_and(|id| id.starts_with("gogoke-pi-") && id.len() <= 128) ||
-        !command.contains_key("message") {
-        return Err(OrchestrationError::Invalid("controlled Action prompt identity"));
-    }
-    let prompt_id = command.get("id").expect("checked prompt id");
+    let prompt_id = validate_r2_test_prompt(prompt)?;
     let identity = authority::admit_owner_controller_caller(connection, owner,
         required(&fields, "profileId")?, required(&fields, "principalId")?,
         required(&fields, "seatId")?, required(&fields, "policyRevision")?,
@@ -816,7 +866,7 @@ pub(crate) fn run_controlled_fixture_action(
             OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
         let expected_ack = format!(
             "{{\"type\":\"response\",\"id\":{},\"command\":\"prompt\",\"success\":true}}",
-            json_quote(prompt_id),
+            json_quote(&prompt_id),
         );
         let started = Instant::now();
         let mut frames = Vec::new();
@@ -899,7 +949,7 @@ pub(crate) fn run_controlled_fixture_action(
         generation: selected.generation,
         source_epoch: selected.source_epoch,
         runtime_instance_id: selected.runtime_instance_id,
-        native_request_id: prompt_id.clone(),
+        native_request_id: prompt_id,
         native_session_id: selected.native_session_id,
         trusted_receipt_ref,
         evidence_hash,
@@ -1016,6 +1066,81 @@ fn handle_authenticated_line_with_process(
                 json_quote(&grant.reference.grant_id), json_quote(&grant.reference.revision),
                 json_quote(&grant.reference.revocation_head),
                 json_quote(&grant.expires_at_epoch_ms.to_string())))
+        }
+        "PrepareR2TestPackage" => {
+            let fields = action_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId", "promptJson",
+            ])?;
+            if required(&fields, "operationId")? != "r2-02-package" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let prompt = required(&fields, "promptJson")?;
+            validate_r2_test_prompt(prompt)?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant_id = authority::r2_test_grant_id("r2-02-controlled-task")?;
+            let grant = authority::read_current_delegation(connection, &grant_id)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.principal.project_id != "project-r2-02-test"
+                || grant.principal.domain_id != "domain-r2-02-test"
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_package_recorded_at(connection)?;
+            let prepared = authority::prepare_authorized_task_package(connection,
+                &authority::PrepareAuthorizedTaskPackage {
+                    operation_id: "r2-02-package".into(),
+                    domain_id: "domain-r2-02-test".into(),
+                    event_id: "r2-02-package-event".into(),
+                    receipt_id: "r2-02-package-receipt".into(),
+                    recorded_at,
+                    package: authority::AuthorizedTaskPackageDraft {
+                        parent_grant_ref: grant.reference.grant_id,
+                        parent_grant_revision: grant.reference.revision,
+                        parent_grant_revocation_head: grant.reference.revocation_head,
+                        parent_policy_revision: grant.policy_revision,
+                        parent_seat_id: grant.principal.seat_id,
+                        child_ceiling: grant.ceiling,
+                        action: "delegate".into(),
+                        route: "controller-worker".into(),
+                        source: authority::TaskPackagePrincipal {
+                            principal_id: admitted.principal_id,
+                            project_id: "project-r2-02-test".into(),
+                            domain_id: "domain-r2-02-test".into(),
+                            role: "controller".into(),
+                        },
+                        target: authority::TaskPackagePrincipal {
+                            principal_id: "principal-r2-02-worker".into(),
+                            project_id: "project-r2-02-test".into(),
+                            domain_id: "domain-r2-02-test".into(),
+                            role: "worker".into(),
+                        },
+                        source_binding: authority::TaskPackageBinding {
+                            session_id: grant.binding.session_id,
+                            execution_id: grant.binding.execution_id,
+                            generation: grant.binding.generation,
+                        },
+                        target_binding: authority::TaskPackageBinding {
+                            session_id: "session-r2-02-worker".into(),
+                            execution_id: "execution-r2-02-worker".into(),
+                            generation: "1".into(),
+                        },
+                        target_binding_kind: "existing".into(),
+                        sink: "task-package".into(),
+                        instruction: prompt.to_owned(),
+                    },
+                    material_refs: vec![],
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION\",\"disposition\":{},\"packageOperationId\":{},\"packageDigest\":{}}}",
+                json_quote(prepared.disposition), json_quote(&prepared.operation_id),
+                json_quote(&prepared.package_digest)))
         }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;

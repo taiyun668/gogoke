@@ -75,6 +75,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         content: Buffer.from(source.bytes).toString("utf8") },
     });
     const proofs = new Set<string>();
+    let packageDigest: string | undefined;
     for (let task = 0; task < 2; task += 1) {
       let session!: PiManagedSession;
       let stopProofHash = "";
@@ -84,6 +85,15 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
           protectedDomainQualified: false, contextExposure: "UNKNOWN" },
         sink: { async write(chunk) {
           const promptJson = Buffer.from(chunk).toString("utf8").trimEnd();
+          const packageReceipt = await client!.prepareR2TestPackage(caller, promptJson);
+          Assert.equal(packageReceipt.state, "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION");
+          if (packageDigest === undefined) {
+            Assert.equal(packageReceipt.disposition, "COMMITTED");
+            packageDigest = packageReceipt.packageDigest;
+          } else {
+            Assert.equal(packageReceipt.disposition, "REPLAYED");
+            Assert.equal(packageReceipt.packageDigest, packageDigest);
+          }
           const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
           stopProofHash = evidence.stopProofHash;
           for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
