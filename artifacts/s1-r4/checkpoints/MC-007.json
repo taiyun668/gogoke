@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-007",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "79377c0bafcdbba83b3fbb364e0454ff6a2ecb19",
+  "recorded_utc": "2026-09-23T00:43:27Z",
+  "reason": "Bind WP10A independent-review entry and exact in-flight CI state after MC-006",
+  "wp10a_review_entry": {
+    "draft_pr": "https://github.com/taiyun668/gogoke/pull/1",
+    "candidate_commit": "5702d7035513bc88af9b9fa8ac7b541657ac914a",
+    "reviewer_role": "Claude independent review; no reviewer finding received yet",
+    "request_scope": "Legacy codec deletion, private 660dece9 content mapping, newly rewritten SettingsView test provenance, and post-deletion build graph evidence",
+    "merge": "FORBIDDEN_PENDING_INDEPENDENT_REVIEW_AND_CONTROLLER_GATE_DECISION"
+  },
+  "candidate_ci": {
+    "manual_run_id": "35802709546",
+    "manual_browser_job": "SUCCESS; typecheck, npm test and frontend build executed",
+    "manual_unsigned_nsis": "IN_PROGRESS at installer build",
+    "pr_hygiene_run_id": "35803027052",
+    "pr_hygiene": "SUCCESS; positive control and committed-source scan executed",
+    "pr_desktop_run_id": "35803027055",
+    "pr_browser_job": "SUCCESS",
+    "pr_unsigned_nsis": "IN_PROGRESS",
+    "non_claim": "No full-run or installer PASS inferred from in-progress jobs; CI does not replace independent review"
+  },
+  "generated_custody": "The D-drive candidate worktree retains ignored node_modules and dist output; exact local paths are held in the external local custody note, not published in repository history",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Record exact final states for both candidate installer jobs; obtain Claude's fresh finding on the draft PR before any WP10A acceptance or main integration. Continue dependency-safe S1-R4 work."
+}
