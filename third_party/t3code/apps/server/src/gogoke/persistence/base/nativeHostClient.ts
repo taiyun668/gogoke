@@ -120,6 +120,34 @@ export interface NativeR2TestLineageReceipt {
   readonly sourceEpoch: "1";
 }
 
+export interface NativeR2TestTaskReceipt {
+  readonly state: "TEST_ONLY_TASK_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "RECONCILED";
+  readonly taskId: "task-r2-02-test";
+  readonly taskRevision: string;
+  readonly contentHash: string;
+}
+
+export function decodeR2TestTaskReceipt(body: string): NativeR2TestTaskReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_TASK", "invalid native Task reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_TASK", "invalid native Task reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 5 ||
+      record.state !== "TEST_ONLY_TASK_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
+      record.taskId !== "task-r2-02-test" ||
+      typeof record.taskRevision !== "string" || !/^[1-9][0-9]*$/.test(record.taskRevision) ||
+      typeof record.contentHash !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.contentHash)) {
+    throw new NativeHostClientError("R2_TEST_TASK", "native Task identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestTaskReceipt);
+}
+
 export function decodeR2TestLineageReceipt(body: string): NativeR2TestLineageReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
@@ -2006,6 +2034,22 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
     return decodeR2TestLineageReceipt(body);
+  }
+
+  async prepareR2TestTask(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestTaskReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestTask",
+      operationId: "r2-02-task-context",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestTaskReceipt(body);
   }
 
   async runControlledFixtureProbe(input: {

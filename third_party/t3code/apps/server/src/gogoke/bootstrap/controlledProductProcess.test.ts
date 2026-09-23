@@ -68,6 +68,15 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.deepEqual(grant.ceiling.allowedActions, ["delegate"]);
     Assert.deepEqual(grant.ceiling.allowedTargetPrincipalIds, ["principal-r2-02-worker"]);
     Assert.deepEqual(grant.ceiling.explicitPrivateMaterialIds, []);
+    const task = await client.prepareR2TestTask(caller);
+    Assert.equal(task.disposition, "COMMITTED");
+    Assert.equal((await client.prepareR2TestTask(caller)).disposition, "RECONCILED");
+    Assert.deepEqual(await client.readTaskContextRequirements({
+      domainId: "domain-r2-02-test", taskId: "task-r2-02-test",
+    }), {
+      domainId: "domain-r2-02-test", taskId: task.taskId, taskRevision: task.taskRevision,
+      contentHash: task.contentHash, mandatoryRefs: [],
+    });
     const message = JSON.stringify({
       schema: "gogoke.s1-r4.r2-02.fixture-task.v1", testOnly: true,
       source: { repository: sourceCoordinate.repository, commit: sourceCoordinate.commit,

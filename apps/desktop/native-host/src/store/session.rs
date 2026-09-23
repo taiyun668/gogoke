@@ -732,11 +732,14 @@ fn r2_test_package_recorded_at(
     Ok(now.column_text(0)?)
 }
 
-fn r2_test_lineage_recorded_at(
+fn r2_test_recorded_at(
     connection: &VerifiedDatabaseConnection<'_>,
+    operation_id: &str,
 ) -> Result<String, OrchestrationError> {
     let mut prior = Statement::prepare(connection.as_ptr(),
-        "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id='domain-r2-02-test' AND operation_id='r2-02-lineage'")?;
+        "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=?")?;
+    prior.bind_text(1, "domain-r2-02-test")?;
+    prior.bind_text(2, operation_id)?;
     if prior.step_row()? {
         let recorded_at = prior.column_text(0)?;
         if prior.step_row()? {
@@ -1088,6 +1091,45 @@ fn handle_authenticated_line_with_process(
                 json_quote(&grant.reference.revocation_head),
                 json_quote(&grant.expires_at_epoch_ms.to_string())))
         }
+        "PrepareR2TestTask" => {
+            let fields = action_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            if required(&fields, "operationId")? != "r2-02-task-context" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_recorded_at(connection, "r2-02-task-context")?;
+            let receipt = authority::commit_task_context_requirements(connection,
+                &CommitTaskContextRequirements {
+                    operation_id: "r2-02-task-context".into(),
+                    domain_id: "domain-r2-02-test".into(),
+                    task_id: "task-r2-02-test".into(),
+                    expected_previous_revision: None,
+                    mandatory_refs: vec![],
+                    event_id: "r2-02-task-event".into(),
+                    receipt_id: "r2-02-task-receipt".into(),
+                    recorded_at,
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_TASK_PREPARED_NOT_ACTION\",\"disposition\":{},\"taskId\":{},\"taskRevision\":{},\"contentHash\":{}}}",
+                json_quote(receipt.disposition), json_quote(&receipt.current.task_id),
+                json_quote(&receipt.current.task_revision),
+                json_quote(&receipt.current.content_hash)))
+        }
         "PrepareR2TestPackage" => {
             let fields = action_fields(line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
@@ -1188,7 +1230,7 @@ fn handle_authenticated_line_with_process(
                 || package.operation_id != "r2-02-package" {
                 return Err(OrchestrationError::AccessDenied);
             }
-            let recorded_at = r2_test_lineage_recorded_at(connection)?;
+            let recorded_at = r2_test_recorded_at(connection, "r2-02-lineage")?;
             let receipt = authority::apply_session_lineage_command(connection,
                 &authority::SessionLineageCommand {
                     operation_id: "r2-02-lineage".into(),
