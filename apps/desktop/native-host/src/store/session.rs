@@ -732,6 +732,27 @@ fn r2_test_package_recorded_at(
     Ok(now.column_text(0)?)
 }
 
+fn r2_test_lineage_recorded_at(
+    connection: &VerifiedDatabaseConnection<'_>,
+) -> Result<String, OrchestrationError> {
+    let mut prior = Statement::prepare(connection.as_ptr(),
+        "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id='domain-r2-02-test' AND operation_id='r2-02-lineage'")?;
+    if prior.step_row()? {
+        let recorded_at = prior.column_text(0)?;
+        if prior.step_row()? {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        return Ok(recorded_at);
+    }
+    drop(prior);
+    let mut now = Statement::prepare(connection.as_ptr(),
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")?;
+    if !now.step_row()? {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(now.column_text(0)?)
+}
+
 fn validate_controlled_action_frame(
     index: usize,
     body: &str,
@@ -1141,6 +1162,59 @@ fn handle_authenticated_line_with_process(
             Ok(format!("{{\"state\":\"TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION\",\"disposition\":{},\"packageOperationId\":{},\"packageDigest\":{}}}",
                 json_quote(prepared.disposition), json_quote(&prepared.operation_id),
                 json_quote(&prepared.package_digest)))
+        }
+        "PrepareR2TestLineage" => {
+            let fields = action_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            if required(&fields, "operationId")? != "r2-02-lineage" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            let package = authority::read_authorized_task_package(
+                connection, "domain-r2-02-test", "r2-02-package")?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head
+                || package.operation_id != "r2-02-package" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_lineage_recorded_at(connection)?;
+            let receipt = authority::apply_session_lineage_command(connection,
+                &authority::SessionLineageCommand {
+                    operation_id: "r2-02-lineage".into(),
+                    domain_id: "domain-r2-02-test".into(),
+                    event_id: "r2-02-lineage-event".into(),
+                    receipt_id: "r2-02-lineage-receipt".into(),
+                    recorded_at,
+                    operation: authority::SessionLineageOperation::NewClean {
+                        session_id: "session-r2-02-worker".into(),
+                        native: authority::NativeSessionIdentity {
+                            native_session_id: "native-r2-02-worker".into(),
+                            binding_id: "binding-r2-02-worker".into(),
+                            generation: "1".into(),
+                            source_epoch: "1".into(),
+                            domain_id: "domain-r2-02-test".into(),
+                        },
+                    },
+                })?;
+            if receipt.snapshot.lifecycle != "ACTIVE" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            Ok(format!("{{\"state\":\"TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION\",\"disposition\":{},\"sessionId\":{},\"bindingId\":{},\"generation\":{},\"sourceEpoch\":{}}}",
+                json_quote(receipt.disposition), json_quote(&receipt.snapshot.session_id),
+                json_quote(&receipt.snapshot.native.binding_id),
+                json_quote(&receipt.snapshot.native.generation),
+                json_quote(&receipt.snapshot.native.source_epoch)))
         }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;

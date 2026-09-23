@@ -111,6 +111,34 @@ export interface NativeR2TestPackageReceipt {
   readonly packageDigest: string;
 }
 
+export interface NativeR2TestLineageReceipt {
+  readonly state: "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "REPLAYED";
+  readonly sessionId: "session-r2-02-worker";
+  readonly bindingId: "binding-r2-02-worker";
+  readonly generation: "1";
+  readonly sourceEpoch: "1";
+}
+
+export function decodeR2TestLineageReceipt(body: string): NativeR2TestLineageReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_LINEAGE", "invalid native lineage reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_LINEAGE", "invalid native lineage reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 6 ||
+      record.state !== "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "REPLAYED"].includes(String(record.disposition)) ||
+      record.sessionId !== "session-r2-02-worker" ||
+      record.bindingId !== "binding-r2-02-worker" ||
+      record.generation !== "1" || record.sourceEpoch !== "1") {
+    throw new NativeHostClientError("R2_TEST_LINEAGE", "native lineage identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestLineageReceipt);
+}
+
 export function decodeR2TestPackageReceipt(body: string): NativeR2TestPackageReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
@@ -1962,6 +1990,22 @@ export class NativeHostClient {
       promptJson,
     })).body;
     return decodeR2TestPackageReceipt(body);
+  }
+
+  async prepareR2TestLineage(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestLineageReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestLineage",
+      operationId: "r2-02-lineage",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestLineageReceipt(body);
   }
 
   async runControlledFixtureProbe(input: {
