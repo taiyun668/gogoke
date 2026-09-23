@@ -97,6 +97,23 @@ fn checked_id(value: &str) -> Result<()> { identifier(value) }
 fn checked_version(value: &str) -> Result<u64> { let number=revision(value)?; if number==0 { return denied(); } Ok(number) }
 fn account_json(value: &AccountRefSnapshot) -> String { match value { AccountRefSnapshot::Present(v) => json_string(v), _ => "null".into() } }
 
+fn count(tx:&mut Transaction<'_, '_>,sql:&str,args:&[&str])->Result<u64>{
+    let rows=tx.query(sql,args,1)?;
+    if rows.len()!=1{return denied()}
+    rows[0][0].parse::<u64>().map_err(|_|OrchestrationError::AccessDenied)
+}
+fn stream_integrity(tx:&mut Transaction<'_, '_>,domain:&str,stream:&str,object_type:&str,object_id:&str,versions:u64)->Result<()> {
+    let heads=tx.query("SELECT counter FROM main.gogoke_stream_heads WHERE domain_id=? AND stream_id=?",&[domain,stream],1)?;
+    if versions==0 {
+        if !heads.is_empty(){return denied()}
+    } else if heads.len()!=1 || heads[0][0]!=(versions-1).to_string(){return denied()}
+    let events=count(tx,"SELECT COUNT(*) FROM main.gogoke_events WHERE domain_id=? AND stream_id=? AND object_type=? AND object_id=?",&[domain,stream,object_type,object_id])?;
+    let receipts=count(tx,"SELECT COUNT(*) FROM main.gogoke_receipts r JOIN main.gogoke_events e ON e.domain_id=r.domain_id AND e.event_id=r.event_id WHERE e.domain_id=? AND e.stream_id=? AND r.object_type=? AND r.object_id=?",&[domain,stream,object_type,object_id])?;
+    let objects=count(tx,"SELECT COUNT(*) FROM main.gogoke_objects WHERE domain_id=? AND object_type=? AND object_id=?",&[domain,object_type,object_id])?;
+    if events!=versions || receipts!=versions || objects!=versions{return denied()}
+    Ok(())
+}
+
 fn instance_bytes(value: &RuntimeInstanceIdentitySnapshot) -> Vec<u8> {
     let (state, _) = value.account_ref.columns();
     format!("{{\"accountRef\":{},\"accountState\":{},\"authRevision\":{},\"domainId\":{},\"driverId\":{},\"instanceId\":{},\"profileRef\":{},\"profileRevision\":{},\"version\":{}}}", account_json(&value.account_ref),json_string(state),json_string(&value.auth_revision),json_string(&value.domain_id),json_string(&value.driver_id),json_string(&value.instance_id),json_string(&value.profile_ref),json_string(&value.profile_revision),json_string(&value.version)).into_bytes()
@@ -113,6 +130,7 @@ fn ensure_schema(tx: &mut Transaction<'_, '_>) -> Result<()> {
         if !tx.query("SELECT name FROM main.sqlite_schema WHERE name=?",&[name],1)?.is_empty(){present+=1;}
     }
     if present!=0 && present!=family.len(){return denied()}
+    if present==0 && count(tx,"SELECT COUNT(*) FROM main.gogoke_objects WHERE object_type IN ('RuntimeInstanceIdentity','NativeBinding')",&[])?!=0{return denied()}
     for (name, schema) in family {
         let rows=tx.query("SELECT type,sql FROM main.sqlite_schema WHERE name=?",&[name],2)?;
         if rows.is_empty() { tx.write(schema,&[])?; }
@@ -167,9 +185,11 @@ fn current_instance(tx:&mut Transaction<'_, '_>,domain:&str,instance:&str)->Resu
     let versions=tx.query("SELECT COUNT(*) FROM main.gogoke_runtime_instance_identity_versions WHERE domain_id=? AND instance_id=?",&[domain,instance],1)?;
     if versions.len()!=1{return denied()}
     let count=versions[0][0].parse::<u64>().map_err(|_|OrchestrationError::AccessDenied)?;
+    stream_integrity(tx,domain,&format!("gogoke.runtime-instance-identity.v1/{instance}"),INSTANCE_TYPE,instance,count)?;
     if rows.is_empty(){if count!=0{return denied()}return Ok(None)}
     if rows.len()!=1{return denied()}
     if checked_version(&rows[0][0])?!=count{return denied()}
+    for number in 1..=count {if load_instance(tx,domain,instance,&number.to_string())?.is_none(){return denied()}}
     let value=load_instance(tx,domain,instance,&rows[0][0])?.ok_or(OrchestrationError::AccessDenied)?;
     if content_hash(&instance_bytes(&value))!=rows[0][1]{return denied()}
     Ok(Some(value))
@@ -269,9 +289,17 @@ fn current_binding(tx:&mut Transaction<'_, '_>,domain:&str,binding:&str,currentn
     let versions=tx.query("SELECT COUNT(*) FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=?",&[domain,binding],1)?;
     if versions.len()!=1{return denied()}
     let count=versions[0][0].parse::<u64>().map_err(|_|OrchestrationError::AccessDenied)?;
+    stream_integrity(tx,domain,&format!("gogoke.native-binding.v1/{binding}"),BINDING_TYPE,binding,count)?;
     if rows.is_empty(){if count!=0{return denied()}return Ok(None)}
     if rows.len()!=1{return denied()}
     if checked_version(&rows[0][0])?!=count{return denied()}
+    for number in 1..=count {
+        let version=number.to_string();
+        let projection=tx.query("SELECT source_epoch,instance_id,instance_version FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=? AND generation=?",&[domain,binding,&version],3)?;
+        if projection.len()!=1{return denied()}
+        let history=NativeBindingIdentity{domain_id:domain.into(),binding_id:binding.into(),generation:version,source_epoch:projection[0][0].clone(),instance_id:projection[0][1].clone(),instance_version:projection[0][2].clone()};
+        if load_binding(tx,&history,false)?.is_none(){return denied()}
+    }
     let projection=tx.query("SELECT instance_id,instance_version FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=? AND generation=?",&[domain,binding,&rows[0][0]],2)?;
     if projection.len()!=1{return denied()}
     let identity=NativeBindingIdentity{domain_id:domain.into(),binding_id:binding.into(),generation:rows[0][0].clone(),source_epoch:rows[0][1].clone(),instance_id:projection[0][0].clone(),instance_version:projection[0][1].clone()};

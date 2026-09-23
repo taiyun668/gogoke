@@ -88,6 +88,12 @@ fn binding_generation_can_replace_an_obsolete_account_and_lineage(){
     let current=NativeBindingIdentity{domain_id:"domain-one".into(),binding_id:"binding-stable".into(),generation:"2".into(),source_epoch:"2".into(),instance_id:"instance-a".into(),instance_version:"2".into()};
     assert_eq!(product.read_native_binding(&current).unwrap().unwrap().instance.account_ref,AccountRefSnapshot::Present("account-b".into()));
     assert!(product.read_native_binding(&NativeBindingIdentity{generation:"1".into(),source_epoch:"1".into(),instance_version:"1".into(),..current}).is_err());
+    product.close_checked().unwrap();
+    let mut raw=open_existing(&root,&database).unwrap();
+    raw.execute("UPDATE main.gogoke_events SET canonical_json=x'7b7d' WHERE domain_id='domain-one' AND object_type='NativeBinding' AND object_id='binding-stable' AND object_version='1'").unwrap();
+    raw.close_checked().unwrap();
+    let mut product=ProductDatabase::open(&root,&database).unwrap();
+    assert!(product.read_native_binding(&NativeBindingIdentity{domain_id:"domain-one".into(),binding_id:"binding-stable".into(),generation:"2".into(),source_epoch:"2".into(),instance_id:"instance-a".into(),instance_version:"2".into()}).is_err(),"corrupt historical event must poison current binding");
     product.close_checked().unwrap();drop(root);cleanup(&path);
 }
 
@@ -155,6 +161,18 @@ fn damaged_event_or_receipt_body_cannot_read_or_reconcile(){
             product.close_checked().unwrap();drop(root);cleanup(&path);
         }
     }
+}
+
+#[test]
+fn stream_counter_rollback_cannot_leave_a_current_binding(){
+    let _guard=route_b_test_guard();let path=scratch();let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
+    seed_single_binding(&root,&database);
+    let mut raw=open_existing(&root,&database).unwrap();
+    raw.execute("UPDATE main.gogoke_stream_heads SET counter='1' WHERE domain_id='domain-one' AND stream_id='gogoke.native-binding.v1/binding-one'").unwrap();
+    raw.close_checked().unwrap();
+    let mut product=ProductDatabase::open(&root,&database).unwrap();
+    assert!(product.read_native_binding(&original_binding()).is_err(),"stream head was changed without an event");
+    product.close_checked().unwrap();drop(root);cleanup(&path);
 }
 
 #[test]
