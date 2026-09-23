@@ -3,6 +3,9 @@ import * as NodeFS from "node:fs";
 
 import { constructGogokeService } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
+import { readGitHubFact } from "../context/repository/gitFact.ts";
+
+const R2_02_TEST_LEDGER_REPOSITORY = "taiyun668/gogoke";
 
 export interface ProductLedgerReference {
   readonly repository: string;
@@ -27,6 +30,10 @@ export interface ProductGoalView extends ProductGoalRequest {
     readonly seatId: string;
   };
   readonly nativeHost: { readonly reachable: true; readonly elapsedMicros: number };
+  readonly ledgerReadback: {
+    readonly state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED";
+    readonly gitBlob: string;
+  };
   readonly acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 }
 
@@ -138,6 +145,9 @@ export async function handleProductGoalRequest(
       role: "controller",
       seatId: service.identity.seatId,
     });
+    // This construction Goal is test-only. The repository scope comes from
+    // Owner's R2-02 authorization, not from the caller's ledger field.
+    const ledgerReadback = await readGitHubFact(request.ledger, R2_02_TEST_LEDGER_REPOSITORY);
     return Object.freeze({
       goal: request.goal,
       ledger: request.ledger,
@@ -154,6 +164,7 @@ export async function handleProductGoalRequest(
         reachable: true as const,
         elapsedMicros: admission.elapsedMicros,
       }),
+      ledgerReadback: Object.freeze({ state: ledgerReadback.state, gitBlob: ledgerReadback.gitBlob }),
       acceptance: "TEST_FIXTURE_NOT_ADOPTED" as const,
     });
   } finally {

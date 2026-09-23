@@ -11,10 +11,10 @@ export const R2_GOAL_FIXTURE: GogokeProductGoalRequest = Object.freeze({
     title: "Verify the Gogoke product entry reaches native Product Authority",
   }),
   ledger: Object.freeze({
-    repository: "fixture/gogoke-r2-01",
-    commit: "0123456789abcdef0123456789abcdef01234567",
-    path: "goals/r2-01.json",
-    contentHash: "sha256:" + "a".repeat(64),
+    repository: "taiyun668/gogoke",
+    commit: "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+    path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json",
+    contentHash: "sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08",
   }),
 });
 
@@ -73,7 +73,7 @@ export function HomeProductEntry() {
       </div>
       {result ? (
         <div className="home-product-entry-result" role="status">
-          Controller/Seat admitted by native Product Authority · {result.nativeHost.elapsedMicros}µs
+          Controller/Seat admitted by native Product Authority · Git blob {result.ledgerReadback.gitBlob.slice(0, 12)} verified, not adopted · {result.nativeHost.elapsedMicros}µs
         </div>
       ) : null}
       {error ? (

@@ -52,11 +52,19 @@ pub(crate) struct NativeHostView {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LedgerReadbackView {
+    state: String,
+    git_blob: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProductGoalView {
     goal: GoalRef,
     ledger: LedgerRef,
     caller: ProductCallerView,
     native_host: NativeHostView,
+    ledger_readback: LedgerReadbackView,
     acceptance: String,
 }
 
@@ -126,6 +134,9 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
         || !response.caller.admitted
         || response.caller.role != "controller"
         || !response.native_host.reachable
+        || response.ledger_readback.state != "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED"
+        || response.ledger_readback.git_blob.len() != 40
+        || !response.ledger_readback.git_blob.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         return Err("GOGOKE_PRODUCT_RESPONSE_NOT_ADMITTED".to_string());
     }
@@ -246,6 +257,10 @@ mod tests {
                 reachable: true,
                 elapsed_micros: 1,
             },
+            ledger_readback: LedgerReadbackView {
+                state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED".into(),
+                git_blob: "a".repeat(40),
+            },
             acceptance: "TEST_FIXTURE_NOT_ADOPTED".into(),
         };
         assert!(validate_product_response(&valid).is_ok());
@@ -254,6 +269,9 @@ mod tests {
         assert!(validate_product_response(&invalid).is_err());
         let mut invalid = valid.clone();
         invalid.acceptance = "ADOPTED".into();
+        assert!(validate_product_response(&invalid).is_err());
+        let mut invalid = valid.clone();
+        invalid.ledger_readback.state = "ADOPTED".into();
         assert!(validate_product_response(&invalid).is_err());
     }
 }

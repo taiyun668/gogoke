@@ -1245,6 +1245,10 @@ export type GogokeProductGoalView = GogokeProductGoalRequest & {
     reachable: true;
     elapsedMicros: number;
   };
+  ledgerReadback: {
+    state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED";
+    gitBlob: string;
+  };
   acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 };
 

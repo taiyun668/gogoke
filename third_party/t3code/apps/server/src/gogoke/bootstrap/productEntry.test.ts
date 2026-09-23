@@ -17,10 +17,10 @@ const valid = JSON.stringify({
     title: "Reach the native Product Authority from the Gogoke product entry",
   },
   ledger: {
-    repository: "fixture/authorized-project",
-    commit: "a".repeat(40),
-    path: "goals/r2-01.json",
-    contentHash: "sha256:" + "b".repeat(64),
+    repository: "taiyun668/gogoke",
+    commit: "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+    path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json",
+    contentHash: "sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08",
   },
 });
 
@@ -31,19 +31,19 @@ it("admits a strict immutable test Goal ledger reference", () => {
       title: "Reach the native Product Authority from the Gogoke product entry",
     },
     ledger: {
-      repository: "fixture/authorized-project",
-      commit: "a".repeat(40),
-      path: "goals/r2-01.json",
-      contentHash: "sha256:" + "b".repeat(64),
+      repository: "taiyun668/gogoke",
+      commit: "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+      path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json",
+      contentHash: "sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08",
     },
   });
 });
 
 it("rejects mutable or path-escaping ledger coordinates before construction", () => {
   for (const value of [
-    valid.replace("a".repeat(40), "main"),
-    valid.replace("goals/r2-01.json", "../r2-01.json"),
-    valid.replace("sha256:" + "b".repeat(64), "unknown"),
+    valid.replace("6765d4e11ace61c47b9aeb123e0ef4770ab072c0", "main"),
+    valid.replace("apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json", "../r2-01.json"),
+    valid.replace("sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08", "unknown"),
   ]) {
     expect(() => decodeProductGoalRequest(Buffer.from(value))).toThrow("INVALID_PRODUCT_ENTRY");
   }
@@ -83,10 +83,12 @@ nativeIntegrationTest(
         hostBinary,
       });
       expect(response.goal.id).toBe("goal-r2-01");
-      expect(response.ledger.repository).toBe("fixture/authorized-project");
+      expect(response.ledger.repository).toBe("taiyun668/gogoke");
       expect(response.caller.admitted).toBe(true);
       expect(response.caller.role).toBe("controller");
       expect(response.nativeHost.reachable).toBe(true);
+      expect(response.ledgerReadback.state).toBe("COMMITTED_BYTES_VERIFIED_NOT_ADOPTED");
+      expect(response.ledgerReadback.gitBlob).toBe("a20115fdd5acf9e7e5025c3b3ca50696001badac");
       expect(response.acceptance).toBe("TEST_FIXTURE_NOT_ADOPTED");
 
       const inspector = await NativeHostClient.attach({ root, hostBinary });
