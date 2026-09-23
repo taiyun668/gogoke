@@ -1,0 +1,48 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-005",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "788ba27c36259bd004b92c3e9daf808ea5a47911",
+  "recorded_utc": "2026-09-23T00:22:21Z",
+  "reason": "Preserve post-export non-native lineage WIP and active cloud build custody",
+  "lineage_wip": {
+    "private_source": "codex/r4-ts-lineage-mutation-r1@6057ccf435720eed6e2174f34043dce2ffd638b0",
+    "public_branch": "codex/gogoke-s1-r4-lineage-r1",
+    "public_head": "3aaf07276a3da325d20a4e929b2e022696b9935d",
+    "changed_file_blobs_equal": "2/2",
+    "scope": "typed SessionLineage exposure-frame duplicate-source and inheritance-binding rejection, plus focused negative test",
+    "focused_test": "1 discovered, 1 executed, 1 passed, 0 failed, 0 skipped; exit 0",
+    "whole_test_file": "9 discovered, 7 passed, 2 failed because GOGOKE_NATIVE_HOST was not bound to an exact cloud-built native-host; not qualification evidence",
+    "source_scan": "0 leaks in both changed files",
+    "state": "wip: no review, not a candidate, no gate acceptance"
+  },
+  "cloud_ci_custody": {
+    "desktop_run_id": "35800598752",
+    "bound_commit": "0ba04988c89f61e8ddd381737452a1753ad60e32",
+    "browser_job": "SUCCESS",
+    "unsigned_windows_job": "IN_PROGRESS at Build unsigned gogoke installer",
+    "duplicate_dispatch": false,
+    "non_claim": "No installer or smoke result inferred while the job is running"
+  },
+  "source_hygiene": {
+    "current_main_run_id": "35801327835",
+    "state": "PASS; committed-source scan and positive control executed"
+  },
+  "unresolved": [
+    "N1 release-object checker requires fresh independent review and release-object qualification despite source-level repair",
+    "Unsigned Windows NSIS job has no final result yet",
+    "Lineage WIP is not an integrated candidate and its two native-host-dependent tests lack valid platform instrumentation",
+    "59 due checks remain unpromoted; Windows Server process evidence is not Windows 11 desktop evidence"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Obtain the active unsigned Windows job's final exit, failures and skips; continue typed lineage and Action authority integration on dependency-safe branches, then form a current candidate only after instrumented tests and fresh review."
+}
