@@ -23,7 +23,10 @@ export interface GitFactReadback {
 export class GitFactReadbackError extends Error {
   override readonly name = "GitFactReadbackError";
   readonly code: string;
-  constructor(code: string) { super(code); this.code = code; }
+  constructor(code: string, detail?: string) {
+    super(detail === undefined ? code : `${code}: ${detail}`);
+    this.code = code;
+  }
 }
 
 function reject(code: string): never { throw new GitFactReadbackError(code); }
@@ -59,7 +62,10 @@ export async function readGitHubFact(
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
-  if (!response.ok) return reject("GIT_FACT_READ_FAILED");
+  if (!response.ok) {
+    throw new GitFactReadbackError("GIT_FACT_READ_FAILED",
+      `http=${response.status} remaining=${response.headers.get("x-ratelimit-remaining") ?? "unknown"}`);
+  }
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
     return reject("GIT_FACT_RESPONSE_TOO_LARGE");
