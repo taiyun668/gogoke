@@ -285,6 +285,22 @@ class RunnerTests(unittest.TestCase):
         self.assertIsNone(value)
         self.assertTrue(any("not a committed blob" in error for error in errors))
 
+    def test_candidate_authorization_rejects_non_owner_merge_and_changed_plan(self):
+        auth, binding = self.public_auth_fixture()
+        raw = json.dumps(auth).encode("utf-8")
+        candidate = {"commit": "c" * 40}
+        common = (
+            mock.patch.object(self.runner, "git_oid", return_value=("d" * 40, None)),
+            mock.patch.object(self.runner, "git_bytes", return_value=raw),
+            mock.patch.object(self.runner, "authorization_introduction", return_value=("e" * 40, [])),
+        )
+        with common[0], common[1], common[2], mock.patch.object(self.runner, "public_binding", return_value=(binding, "a" * 40, [])), mock.patch.object(self.runner, "owner_merged_public_authorization", return_value=(False, "fixture: non-Owner merge")):
+            _value, errors = self.runner.auth_from_candidate(candidate)
+        self.assertTrue(any("non-Owner merge" in error for error in errors))
+        with common[0], common[1], common[2], mock.patch.object(self.runner, "public_binding", return_value=(binding, "b" * 40, [])), mock.patch.object(self.runner, "owner_merged_public_authorization", return_value=(True, None)):
+            _value, errors = self.runner.auth_from_candidate(candidate)
+        self.assertTrue(any("authorization plan differs" in error for error in errors))
+
     def test_plan_loaded_from_different_public_candidate_fails_closed(self):
         candidate = self.runner.git_identity()
         stale = copy.deepcopy(self.plan)
