@@ -257,7 +257,10 @@ function snapshotAdmissionRequest(value: unknown): NativeStoreAdmissionRequest {
   const enabledRuntimeDriverIds = record.enabledRuntimeDriverIds === undefined
     ? undefined
     : canonicalStringArray(record.enabledRuntimeDriverIds, "input.request.enabledRuntimeDriverIds");
-  validateMinimalReleaseRequest({ requestedCapabilities, enabledRuntimeDriverIds });
+  validateMinimalReleaseRequest({
+    ...(requestedCapabilities === undefined ? {} : { requestedCapabilities }),
+    ...(enabledRuntimeDriverIds === undefined ? {} : { enabledRuntimeDriverIds }),
+  });
   return Object.freeze({
     authority,
     ...(rootIdentity === undefined ? {} : { rootIdentity }),
