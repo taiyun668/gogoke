@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-034",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "c4daf974c2a4fc7ee7859a8046a5c8f33bced677",
+  "recorded_utc": "2026-09-23T08:23:33Z",
+  "reason": "Preserve exact-head NativeBinding risk finding and pushed repair custody without promoting WIP",
+  "native_binding": {
+    "branch": "codex/r4-native-binding-authority-r1",
+    "reviewed_candidate": "135468d269bb14ff26049b6850d84011204b04c2",
+    "draft_pr": 13,
+    "cloud_run": "35835308516 at 135468d2: native lib 391/391, b07_two_process 1/1, host_typed_ops 1/1, server 536/536; zero failed/skipped, release build exit 0. Windows Server real run, not Windows 11 desktop verification.",
+    "independent_review": "Fresh Astra/xhigh eight-axis review of 135468d2 returned REQUEST_CHANGES_CODE_ONLY. NB-F1: event_type/receipt_type columns were not validated on read/replay. NB-F2: extra same-object event/receipt in another stream escaped expected-stream-only counts. Review used controlled actual-DDL SQLite observability probes, not native mutation execution or gate acceptance.",
+    "repair_wip": "df2a3845d327de830d8d5ff5f93a52ff15d9d1de pushed; no tests, no review, not a candidate. Only native_binding.rs and native_binding_tests.rs changed: compare both discriminator columns, count all object event/receipt rows as well as expected stream, and add four discriminator / two foreign-stream negative variants with read/replay rejection.",
+    "repair_diagnostics": "git diff --check exit 0; local public-source scanner --self-test --worktree --quiet exit 0, 24172 files, 0 leaks, known-sensitive positive control rejected. No local native build/test.",
+    "pending_run": "Cloud workflow_dispatch 35836789926 is running on exact WIP SHA df2a3845; this is diagnostic only and cannot qualify WIP as a candidate.",
+    "production_boundary": "Private typed ProductDatabase methods only. Authenticated pipe capability does not establish Owner/Controller product permission; session/TS production ingress is absent. No T10.L qualification or G1 acceptance claim."
+  },
+  "other_custody": {
+    "PR4": "43624d9ca285a99125ee8fbad2e2c2bb569e5a6f remains draft and awaits external Claude fresh review; no qualification group run.",
+    "PR10": "d32260e1a418a1cf98fa0101ffaf4b0836abea42 remains draft and awaits external Claude fresh review.",
+    "cleanup": "MC-030 dry-run remains pending Claude review; no local worktree, generated directory or link was removed."
+  },
+  "local_workspace_hygiene": {
+    "new_directories_this_checkpoint": ["%LOCALAPPDATA%/gogoke-agent-tmp/mc032-controller/native-ci-35835308516"],
+    "cleaned_directories_this_checkpoint": [],
+    "retained": [
+      {"path":"%GOGOKE_WORK_ROOT%/branches/native-binding-authority","reason":"active pushed NativeBinding WIP and exact-head cloud repair","cleanup_when":"after candidate review, integration and handoff"},
+      {"path":"%LOCALAPPDATA%/gogoke-agent-tmp/mc032-controller","logical_bytes_at_measurement":3722997,"reason":"bounded scanner output and exact cloud machine reports for active repair","cleanup_when":"after repair/review, subject to exact target and reparse check"}
+    ],
+    "unchanged_retention": "Other active worktrees and pending cleanup candidates remain enumerated in MC-030/MC-031; pnpm store remains on the worktree volume."
+  },
+  "gate_state": {"G0":"PASS","G1":"IN_PROGRESS_NOT_ACCEPTED","G2":"NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY","G3":"IN_PROGRESS_NOT_ACCEPTED","G4":"IN_PROGRESS_NOT_ACCEPTED","G5":"NOT_RUN","GN":"NOT_AUTHORIZED"},
+  "due_checks": "59 unpromoted",
+  "next_action": "Read diagnostic WIP cloud exit/counts. If repaired, cut a non-WIP exact-tree candidate, run fresh exact-SHA cloud validation and fresh focused plus risk review; if failed, concentrate repair first. Then proceed to correctly authorized typed production ingress without promoting pipe transport authentication into product permission. Continue PR #4/#10 review and await cleanup verdict."
+}
