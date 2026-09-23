@@ -1,0 +1,70 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-011",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "9422573ad7fb4f0161cf0abb0410dd1ad66b1a53",
+  "recorded_utc": "2026-09-23T01:15:35Z",
+  "reason": "Close narrow N1 release-object checker execution gap with exact positive, negative and integrated-main cloud evidence",
+  "n1": {
+    "finding": "The existing build.rs release-object test-hook checker had no cloud release build execution; cargo test alone did not run the PROFILE=release path",
+    "resolution": "CLOSED_FOR_THIS_CHECKER_EXECUTION_GAP",
+    "scope": "The native-host manual Windows workflow runs cargo build --release --locked, records executed/exit/state in machine-result.json, and fails closed on build or instrument failure",
+    "main_workflow_commit": "9422573ad7fb4f0161cf0abb0410dd1ad66b1a53",
+    "workflow_blob_equal_to_positive_candidate": true,
+    "negative_mutation_in_main": false,
+    "closure_boundary": "Owner requested a real release run plus a failing hook-injection negative control; this closes only N1 instrumentation. It is not independent whole-candidate acceptance or a gate change."
+  },
+  "normal_candidate": {
+    "commit": "a76e377c1f3ed5bd0a3cc7adb9edeedd9875ce6c",
+    "run_id": "35805034252",
+    "run_attempt": 1,
+    "workflow_job": "SUCCESS",
+    "machine_result_artifact": "native-host-evidence-a76e377c1f3ed5bd0a3cc7adb9edeedd9875ce6c-35805034252-1/machine-result.json",
+    "release_build": {"executed": true, "exit_code": 0, "finished_release_profile": true, "state": "PASS"},
+    "b07_two_process": "1 discovered, 1 executed, 1 passed, 0 failed, 0 skipped, exit 0",
+    "host_typed_ops": "1 discovered, 1 executed, 1 passed, 0 failed, 0 skipped, exit 0"
+  },
+  "negative_control": {
+    "commit": "b62fc32a80e0a3d9a3b4c977b6ceffd769152964",
+    "branch": "codex/n1-release-hook-negative-r1",
+    "test_only_change": "Only isolated build.rs defines GOGOKE_ROUTE_B_TESTING in release; the release checker still runs; never merge this branch",
+    "run_id": "35805099386",
+    "run_attempt": 1,
+    "workflow_job": "FAILURE_AS_EXPECTED",
+    "machine_result_artifact": "native-host-evidence-b62fc32a80e0a3d9a3b4c977b6ceffd769152964-35805099386-1/machine-result.json",
+    "release_build": {"executed": true, "exit_code": 101, "finished_release_profile": false, "state": "FAIL"},
+    "checker_log": "build.rs:277: release SQLite image still contains test hook sqlite3_gogoke_test_enable_full_pathname_reentry",
+    "b07_two_process": "1 discovered, 1 executed, 1 passed, 0 failed, 0 skipped, exit 0",
+    "host_typed_ops": "1 discovered, 1 executed, 1 passed, 0 failed, 0 skipped, exit 0",
+    "non_claim": "This deliberately failed branch is a control, never a product candidate"
+  },
+  "integrated_main": {
+    "commit": "9422573ad7fb4f0161cf0abb0410dd1ad66b1a53",
+    "source_hygiene_run_id": "35805370967",
+    "source_hygiene": "SUCCESS; positive leak control and committed-source scan executed",
+    "native_run_id": "35805375774",
+    "native_run_attempt": 1,
+    "native_workflow_job": "SUCCESS",
+    "machine_result_artifact": "native-host-evidence-9422573ad7fb4f0161cf0abb0410dd1ad66b1a53-35805375774-1/machine-result.json",
+    "release_build": {"executed": true, "exit_code": 0, "finished_release_profile": true, "state": "PASS"},
+    "b07_two_process": "1 discovered, 1 executed, 1 passed, 0 failed, 0 skipped, exit 0",
+    "host_typed_ops": "1 discovered, 1 executed, 1 passed, 0 failed, 0 skipped, exit 0"
+  },
+  "custody": "All three downloaded cloud artifacts and scanner reports are retained outside the public repository; exact local paths are in the external local custody note. Candidate and negative-control branches remain pushed and clean; neither is merged.",
+  "non_claims": [
+    "Windows Server cloud evidence is not Windows 11 desktop validation or Smart App Control release availability",
+    "No signing, publication, installation, system-policy change, real model or external egress occurred",
+    "59 due checks and G1-G5 remain at their previous states; GN remains not authorized"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Continue dependency-safe S1-R4 construction; retain the negative branch only as test-only evidence and do not merge it. Fresh current-candidate review and due-check semantics remain separate from N1 closure."
+}
