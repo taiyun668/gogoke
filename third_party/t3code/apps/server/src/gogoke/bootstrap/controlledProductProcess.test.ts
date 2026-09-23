@@ -86,6 +86,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     const proofs = new Set<string>();
     let packageDigest: string | undefined;
     let lineageBinding: string | undefined;
+    let recipeHash: string | undefined;
     for (let task = 0; task < 2; task += 1) {
       let session!: PiManagedSession;
       let stopProofHash = "";
@@ -112,6 +113,15 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
           } else {
             Assert.equal(lineage.disposition, "REPLAYED");
             Assert.equal(lineage.bindingId, lineageBinding);
+          }
+          const recipe = await client!.prepareR2TestRecipe(caller);
+          Assert.equal(recipe.state, "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION");
+          if (recipeHash === undefined) {
+            Assert.equal(recipe.disposition, "COMMITTED");
+            recipeHash = recipe.contentHash;
+          } else {
+            Assert.equal(recipe.disposition, "RECONCILED");
+            Assert.equal(recipe.contentHash, recipeHash);
           }
           const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
           stopProofHash = evidence.stopProofHash;

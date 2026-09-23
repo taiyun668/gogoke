@@ -1258,6 +1258,66 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.snapshot.native.generation),
                 json_quote(&receipt.snapshot.native.source_epoch)))
         }
+        "PrepareR2TestRecipe" => {
+            let fields = action_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            if required(&fields, "operationId")? != "r2-02-recipe" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            let task = authority::read_task_context_requirements(
+                connection, "domain-r2-02-test", "task-r2-02-test")?;
+            let package = authority::read_authorized_task_package(
+                connection, "domain-r2-02-test", "r2-02-package")?;
+            let lineage = authority::read_session_lineage(
+                connection, "domain-r2-02-test", "session-r2-02-worker")?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head
+                || task.task_revision != "1"
+                || package.operation_id != "r2-02-package"
+                || lineage.lifecycle != "ACTIVE"
+                || lineage.native.binding_id != "binding-r2-02-worker"
+                || lineage.native.generation != "1" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_recorded_at(connection, "r2-02-recipe")?;
+            let mut model_ref = BTreeMap::new();
+            model_ref.insert("kind".into(), RecipeJsonValue::String("TEST_FIXTURE".into()));
+            model_ref.insert("modelId".into(), RecipeJsonValue::String("deterministic-fixture".into()));
+            let receipt = authority::append_owner_execution_recipe(connection, owner,
+                &AppendExecutionRecipe {
+                    operation_id: "r2-02-recipe".into(),
+                    domain_id: "domain-r2-02-test".into(),
+                    expected_previous_revision: None,
+                    recipe_id: "recipe-r2-02-test".into(),
+                    seat_id: "seat-r2-02-worker".into(),
+                    runtime_instance_id: "runtime-r2-02-fixture".into(),
+                    model_ref,
+                    tool_profile: RecipeJsonValue::Null,
+                    isolation_profile: RecipeJsonValue::Null,
+                    context_manifest_id: "manifest-r2-02-test".into(),
+                    budget_policy: RecipeJsonValue::Null,
+                    admission_ref: grant.reference.grant_id,
+                    event_id: "r2-02-recipe-event".into(),
+                    receipt_id: "r2-02-recipe-receipt".into(),
+                    recorded_at,
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_RECIPE_PREPARED_NOT_ACTION\",\"disposition\":{},\"recipeId\":{},\"revision\":{},\"contentHash\":{}}}",
+                json_quote(receipt.disposition), json_quote(&receipt.version.recipe.recipe_id),
+                json_quote(&receipt.version.recipe.revision),
+                json_quote(&receipt.version.content_hash)))
+        }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
             let expected = required(&fields,"expectedPreviousTaskRevision")?;

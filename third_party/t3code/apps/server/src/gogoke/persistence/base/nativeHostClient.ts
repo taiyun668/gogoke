@@ -128,6 +128,34 @@ export interface NativeR2TestTaskReceipt {
   readonly contentHash: string;
 }
 
+export interface NativeR2TestRecipeReceipt {
+  readonly state: "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "RECONCILED";
+  readonly recipeId: "recipe-r2-02-test";
+  readonly revision: string;
+  readonly contentHash: string;
+}
+
+export function decodeR2TestRecipeReceipt(body: string): NativeR2TestRecipeReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_RECIPE", "invalid native Recipe reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_RECIPE", "invalid native Recipe reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 5 ||
+      record.state !== "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
+      record.recipeId !== "recipe-r2-02-test" ||
+      typeof record.revision !== "string" || !/^[1-9][0-9]*$/.test(record.revision) ||
+      typeof record.contentHash !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.contentHash)) {
+    throw new NativeHostClientError("R2_TEST_RECIPE", "native Recipe identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestRecipeReceipt);
+}
+
 export function decodeR2TestTaskReceipt(body: string): NativeR2TestTaskReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
@@ -2050,6 +2078,22 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
     return decodeR2TestTaskReceipt(body);
+  }
+
+  async prepareR2TestRecipe(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestRecipeReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestRecipe",
+      operationId: "r2-02-recipe",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestRecipeReceipt(body);
   }
 
   async runControlledFixtureProbe(input: {
