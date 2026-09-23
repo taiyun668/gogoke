@@ -70,6 +70,39 @@ GitHub 等远端写入可能出现 403、422、超时、5xx 或返回状态与�
 
 同一问题不要反复原样重试。重试前应有代码、环境、远端状态或假设变化。
 
+## 5a. 持续推进：非硬阻塞不得停工
+
+获得有效施工授权后，Construction Controller 默认职责是**持续、dependency-safe 推进**，不是遇到普通失败就停下来等 Owner / Master Control。
+
+只有以下情况才构成整体施工停点：
+
+- Owner 明确下达 hard stop；
+- 当前授权失效、范围不再明确或继续会越权；
+- 当前所有可继续的 dependency-safe 路径都被真实平台 / 外部权限 / 安全条件阻断；
+- 当前证据满足 architecture escalation 条件，继续施工会改变冻结产品合同；
+- consequential external action 处于无法判定且继续会造成重复副作用的状态。
+
+以下事项本身**不构成整体停工理由**：
+
+- 普通实现 bug；
+- 单项 test / CI failure；
+- 某个 workflow、provider、平台轴暂时不可用；
+- 一个 review finding；
+- 一个工具接口、网络或远端写入暂时失败；
+- 某一条证据轴尚未达到更高层级；
+- 某个独立任务被 BLOCKED，但仍有其他已授权、依赖安全的工作可做。
+
+正确处理是：
+
+1. 先在当前合同内修复或重试；
+2. 当前轴确实暂时不可执行时，如实记 `BLOCKED` / `NOT_RUN` / `IN_PROGRESS`，不得伪造 PASS；
+3. 只要还有不依赖该阻塞、仍属于当前授权包的有价值工作，就继续推进；
+4. 到达真实依赖边界后再等待阻塞解除，不能为“保持忙碌”越过依赖、扩大 scope 或制造旁支工作。
+
+云端原生证据不可用时，仍禁止用本机原生构建顶替；应继续不依赖该原生证据的已授权工作，并按 `AGENTS.md` 对云端故障重试和定位。
+
+“持续推进”不是无限施工：到达授权施工包边界、真正 hard blocker 或 Owner hard stop 时必须停；除此之外不要把普通困难变成人工暂停点。
+
 ## 6. 控制过度工程
 
 优先完整满足任务的最小连贯改动。
@@ -111,13 +144,14 @@ GitHub 等远端写入可能出现 403、422、超时、5xx 或返回状态与�
 
 ## 8b. 并行收件箱
 
-其他席位（复核、平台、调查等）交给施工窗口的结果，不通过聊天打断施工，而是写入并行收件箱：
+GPT 施工窗口在一个活跃回合中**不能依赖聊天中途插话来接收控制更新**。普通复核、平台、调查或主控 finding 不应通过 hard stop 打断正在运行的施工；并行收件箱是这些异步控制信息的 durable 投递面。只有 Owner 明确要求立即停止时才 hard stop，之后由新窗口从 durable state 恢复。
 
 - 控制分支：`control/gogoke-s1-r4-inbox`；索引：该分支上的 `artifacts/s1-r4/control/PARALLEL_INBOX.json`。报告与发现清单放在同一分支，由条目的路径字段指向。
 - 写入方追加一条条目：`id`、`source_role`、`frozen_against`（被审查或产出时对应的检查点与提交 SHA）、`type`、`priority`、报告路径，以及可选的发现清单路径。已有条目不改写。
-- 施工窗口只在自然检查点边界查看收件箱的 HEAD：HEAD 未变就不加载任何报告；HEAD 变了，只读新增条目和必要证据，并把自己已读到的位置记入 `latest_seen_by_controller`。
+- **每一个 durable recovery checkpoint 前都必须先读取一次 inbox HEAD。** 与上一个施工 checkpoint 记录的 observed inbox HEAD 比较：HEAD 未变就不加载报告；HEAD 变了，只读新增 entry 和必要证据。
+- Construction Controller 的权威“已看到哪个 inbox HEAD”位置记录在自己的 execution checkpoint 中；**不要仅为了 ack 去改 control inbox 分支**，避免 ack 自己推动 HEAD 再触发一次伪增量。`PARALLEL_INBOX.json.latest_seen_by_controller` 若由其他控制流程维护，只作辅助信息，不替代 execution checkpoint 的 observed HEAD。
 - 冻结时的发现必须对照当前最新字节重新分类：STILL_PRESENT、ALREADY_FIXED、SUPERSEDED、NEEDS_REVIEW、PLATFORM_EVIDENCE_NOW_AVAILABLE。
-- 收件箱不是审批门，不因条目未处理而停工。
+- 收件箱不是审批门，不因条目未处理而停工。普通 finding 在当前合同内自行收敛；只有真正 hard blocker / architecture escalation 才改变连续推进状态。
 
 ## 9. 当前 S1-R4 v2 施工入口
 
