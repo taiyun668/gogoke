@@ -1,0 +1,12 @@
+{
+  "schema": "gogoke.s1-r4.public-execution-binding.v1",
+  "repository": "taiyun668/gogoke",
+  "provenance_plan_commit": "cbdc6ad592947370941024a87dbb9168a5b59055",
+  "source_archive_repository": "taiyun668/gogo-party",
+  "source_archive_head": "b976e8f29f8d41adffa9ee60d3fe464a2fc3505e",
+  "public_content_import_commit": "f3136b0a84086d7b5f77abb1f87e854648cd54e3",
+  "public_carryover_checkpoint": "MC-001",
+  "candidate_ref": "checked-out public repository HEAD at qualification time",
+  "authorization_receipt_path": "artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+  "authorization_receipt_schema": "gogoke.s1-r4.public-authorization.v1"
+}
