@@ -1,0 +1,31 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-029",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "0c6f7d3e7d13a4081347633d26ddf5234ec9d829",
+  "recorded_utc": "2026-09-23T05:54:32Z",
+  "reason": "Register the actual Route-B NativeBinding qualification seam before selecting any T10.L test target",
+  "T10_L_investigation": {
+    "required_behavior": "The same native ID must not collide across distinct synthetic instance/account/domain contexts, with later real integration validation; official status remains NOT_RUN.",
+    "observed_legacy_path": "third_party/t3code/apps/server/src/gogoke/persistence/base/atomicRecord.test.ts has composite native identity cases, but these exercise the donor Node SQLite path, not the admitted Route-B Product Authority writer.",
+    "observed_native_store": "apps/desktop/native-host/src/store/atomic.rs declares gogoke_native_identities, yet prepare rejects every non-null DomainRecordInput.native_identity and the atomic transaction shown here does not insert into that table.",
+    "observed_protocol": "apps/desktop/native-host/src/store/session.rs returns operation-not-admitted for CommitDomainRecord; protocol name inclusion is not execution authority.",
+    "different_typed_path": "apps/desktop/native-host/src/store/authority/session_lineage.rs persists a composite native session tuple in gogoke_session_lineage_heads; that typed SessionLineage behavior is not, by itself, proof of the NativeBinding object/instance/account requirement.",
+    "finding": "No current Route-B NativeBinding write and qualification evidence was established in the inspected paths. Do not redirect T10.L to the easier donor test or declare G1/WP02 accepted from table existence or unrelated lineage tests.",
+    "next_repair_scope": "Trace the intended typed NativeBinding authority from the frozen object contract through native Product Authority and service ingress; implement only the missing contract-bound path and real controlled tests if absent, or supply exact counterevidence before selecting T10.L. Ordinary construction, not a new product decision."
+  },
+  "public_authorization": "PR #11 remains a draft single-file Owner-only merge; WP01/S1-01-V BLOCKED and no qualification group executed.",
+  "reviews": "PR #4 at 5caf0058 and PR #10 at d32260e1 await fresh Claude verdicts; PR #11 awaits content review and Owner's personal merge.",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Continue independent reviews/normal repairs on PR #4/#10 and Owner-only authorization PR #11; trace and close the typed Route-B NativeBinding/T10.L path without borrowing donor Node SQLite or SessionLineage evidence. Do not promote any gate or due check from this investigation."
+}
