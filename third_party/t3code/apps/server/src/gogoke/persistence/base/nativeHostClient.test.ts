@@ -7,6 +7,7 @@ import * as NodeStream from "node:stream";
 import * as NodeTest from "node:test";
 
 import {
+  decodeNativeControlledFixtureAction,
   decodeCurrentDelegationGrantReply,
   encodeCurrentDelegationGrantFrame,
   decodeExecutionRecipeReceipt,
@@ -23,6 +24,26 @@ import {
 
 const assert: typeof NodeAssert = NodeAssert;
 const test: typeof NodeTest.test = NodeTest.test;
+
+test("native Action transport codec keeps completion distinct from Result and replay", () => {
+  const actionCompletionRef = "receipt-action-one";
+  const stopProofHash = `sha256:${"a".repeat(64)}`;
+  const frames = ["ack", "start", "message", "end", "settled"];
+  const completed = decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT", frames, actionCompletionRef, stopProofHash,
+  }));
+  assert.equal(completed.state, "ACTION_TRANSPORT_COMPLETED_NOT_RESULT");
+  const reconciled = decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef,
+  }));
+  assert.deepEqual(reconciled, { state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef });
+  assert.throws(() => decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT", frames: [], actionCompletionRef, stopProofHash,
+  })), NativeHostClientError);
+  assert.throws(() => decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef, frames,
+  })), NativeHostClientError);
+});
 
 test("startup handshake retains all three lines emitted in one pipe chunk", async () => {
   const pipe = new NodeStream.PassThrough();

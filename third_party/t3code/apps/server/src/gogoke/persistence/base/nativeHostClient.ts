@@ -102,6 +102,49 @@ export interface NativeControlledFixtureProbe {
   readonly stopProofHash: string;
 }
 
+export interface NativeControlledFixtureActionInput {
+  readonly caller: NativeControllerCallerContext;
+  readonly domainId: string;
+  readonly operationId: string;
+  readonly reservationId: string;
+  readonly promptJson: string;
+}
+
+export type NativeControlledFixtureAction =
+  | { readonly state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT";
+      readonly frames: readonly string[]; readonly actionCompletionRef: string;
+      readonly stopProofHash: string }
+  | { readonly state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT";
+      readonly actionCompletionRef: string };
+
+export function decodeNativeControlledFixtureAction(body: string): NativeControlledFixtureAction {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("CONTROLLED_ACTION", "invalid native action reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("CONTROLLED_ACTION", "invalid native action reply");
+  }
+  const record = value as Record<string, unknown>;
+  const ref = record.actionCompletionRef;
+  if (typeof ref !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(ref)) {
+    throw new NativeHostClientError("CONTROLLED_ACTION", "invalid Action completion reference");
+  }
+  if (record.state === "ACTION_COMPLETION_RECONCILED_NOT_RESULT" &&
+      Reflect.ownKeys(record).length === 2) {
+    return Object.freeze({ state: record.state, actionCompletionRef: ref });
+  }
+  if (record.state !== "ACTION_TRANSPORT_COMPLETED_NOT_RESULT" ||
+      Reflect.ownKeys(record).length !== 4 || !Array.isArray(record.frames) ||
+      record.frames.length !== 5 || !record.frames.every((frame) => typeof frame === "string") ||
+      typeof record.stopProofHash !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.stopProofHash)) {
+    throw new NativeHostClientError("CONTROLLED_ACTION", "invalid native Action transport evidence");
+  }
+  return Object.freeze({ state: record.state,
+    frames: Object.freeze([...record.frames] as string[]), actionCompletionRef: ref,
+    stopProofHash: record.stopProofHash });
+}
+
 const canonicalControllerField = (value: unknown, path: string): string => {
   if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
     throw new NativeHostClientError("CALLER_ADMISSION", `${path} must be canonical text`);
@@ -1867,6 +1910,43 @@ export class NativeHostClient {
       frames: Object.freeze([...record.frames] as string[]),
       stopProofHash: record.stopProofHash,
     });
+  }
+
+  async runControlledFixtureAction(
+    input: NativeControlledFixtureActionInput,
+  ): Promise<NativeControlledFixtureAction> {
+    const identifier = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
+    if (!identifier.test(input.domainId) || !identifier.test(input.operationId) ||
+        !identifier.test(input.reservationId) ||
+        Buffer.byteLength(input.promptJson, "utf8") > 32 * 1024 ||
+        input.promptJson.includes("\n") || input.promptJson.includes("\r")) {
+      throw new NativeHostClientError("CONTROLLED_ACTION", "invalid Action references or prompt frame");
+    }
+    let command: unknown;
+    try { command = JSON.parse(input.promptJson); }
+    catch { throw new NativeHostClientError("CONTROLLED_ACTION", "invalid prompt JSON"); }
+    if (typeof command !== "object" || command === null || Array.isArray(command) ||
+        Reflect.ownKeys(command).length !== 3 ||
+        (command as Record<string, unknown>).type !== "prompt" ||
+        typeof (command as Record<string, unknown>).message !== "string" ||
+        typeof (command as Record<string, unknown>).id !== "string" ||
+        !/^gogoke-pi-[A-Za-z0-9_-]{1,118}$/u.test((command as Record<string, string>).id)) {
+      throw new NativeHostClientError("CONTROLLED_ACTION", "prompt identity mismatch");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RunControlledFixtureAction",
+      domainId: input.domainId,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      policyRevision: canonicalControllerField(input.caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(input.caller.principalId, "principalId"),
+      profileId: canonicalControllerField(input.caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(input.caller.revocationHead, "revocationHead"),
+      role: input.caller.role,
+      seatId: canonicalControllerField(input.caller.seatId, "seatId"),
+      promptJson: input.promptJson,
+    })).body;
+    return decodeNativeControlledFixtureAction(body);
   }
 
   async publishDecisionSnapshot(input: NativeDecisionAuthoritySnapshot): Promise<void> {

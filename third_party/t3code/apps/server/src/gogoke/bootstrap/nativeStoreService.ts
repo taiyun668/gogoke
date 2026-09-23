@@ -19,6 +19,8 @@ import type {
   NativeControllerCallerContext,
   NativeControllerAdmissionReceipt,
   NativeControlledFixtureProbe,
+  NativeControlledFixtureAction,
+  NativeControlledFixtureActionInput,
   NativeExecutionRecipeAppendRequest,
   NativeExecutionRecipeReceipt,
   NativeObjectiveOutcomeRequest, NativeEvaluationRequest, NativeAuthorityRecordReceipt,
@@ -70,6 +72,9 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
     readonly operationId: string;
     readonly promptJson: string;
   }) => Promise<NativeControlledFixtureProbe>;
+  readonly runControlledFixtureAction?: (
+    input: NativeControlledFixtureActionInput,
+  ) => Promise<NativeControlledFixtureAction>;
   commitContextVersion(input: CommitContextVersionRequest): Promise<ContextCommitReceipt>;
   reserve(input: DurableActionReservation): Promise<ReserveActionResult>;
   begin(reservationId: string, input: DurableActionReservation): Promise<BeginActionResult>;
