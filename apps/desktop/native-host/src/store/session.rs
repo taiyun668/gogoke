@@ -666,6 +666,194 @@ fn run_controlled_fixture_probe(
     }
 }
 
+/// Executes only an Action already reserved by Product Authority. This entry
+/// cannot issue a grant or prepare a package; the native currentness checks
+/// and one-way begin fence precede the sole protocol write.
+fn run_controlled_fixture_action(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    custodian: &mut ProcessCustodian,
+    line: &str,
+) -> Result<String, OrchestrationError> {
+    let fields = action_fields(line, &[
+        "domainId", "operation", "operationId", "reservationId", "policyRevision",
+        "principalId", "profileId", "revocationHead", "role", "seatId", "promptJson",
+    ])?;
+    let prompt = required(&fields, "promptJson")?;
+    if prompt.len() > 32 * 1024 || prompt.contains('\n') || prompt.contains('\r') {
+        return Err(OrchestrationError::Invalid("controlled Action prompt frame"));
+    }
+    let command = decode_flat_string_object(prompt.as_bytes()).map_err(protocol_error)?;
+    if command.len() != 3 || command.get("type").map(String::as_str) != Some("prompt") ||
+        !command.get("id").is_some_and(|id| id.starts_with("gogoke-pi-") && id.len() <= 128) ||
+        !command.contains_key("message") {
+        return Err(OrchestrationError::Invalid("controlled Action prompt identity"));
+    }
+    let prompt_id = command.get("id").expect("checked prompt id");
+    let identity = authority::admit_owner_controller_caller(connection, owner,
+        required(&fields, "profileId")?, required(&fields, "principalId")?,
+        required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+        required(&fields, "revocationHead")?, required(&fields, "role")?)?;
+    let references = authority::NativeActionCurrentFactsRefs {
+        domain_id: required(&fields, "domainId")?.to_owned(),
+        operation_id: required(&fields, "operationId")?.to_owned(),
+        reservation_id: required(&fields, "reservationId")?.to_owned(),
+    };
+    let selected = authority::read_native_action_fixture_selection(connection, &references)?;
+    if selected.profile_id != identity.profile_id || selected.payload.as_slice() != prompt.as_bytes() {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let launch = controlled_fixture_request(
+        &selected.profile_id, &selected.target_domain_id, &selected.generation)?;
+    let prepared = custodian.prepare(&launch)?;
+    if let Err(error) = authority::record_prepared_process(connection, &references.operation_id, &prepared) {
+        let _ = custodian.abort_prepared(&prepared);
+        return Err(error);
+    }
+    if let Err(error) = custodian.activate(&prepared) {
+        let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+        return Err(error.into());
+    }
+    if authority::mark_process_active(connection, &references.operation_id, &prepared).is_err() {
+        let _ = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()));
+        let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let action = authority::BeginCommittedAction {
+        domain_id: references.domain_id.clone(),
+        operation_id: references.operation_id.clone(),
+        reservation_id: references.reservation_id.clone(),
+    };
+    let mut granted: Option<(String, String)> = None;
+    let execution = (|| -> Result<Vec<String>, OrchestrationError> {
+        let process = custodian.active(&prepared.ticket)
+            .ok_or(OrchestrationError::Invalid("controlled Action process absent"))?;
+        authority::derive_native_action_current_facts(
+            connection, &references, &prepared, process.identity())?;
+        let mut bytes = selected.payload.clone();
+        bytes.push(b'\n');
+        match authority::begin_committed_action(connection, &action)? {
+            authority::BeginCommittedDisposition::Granted { attempt_id, send_authority } => {
+                granted = Some((attempt_id, send_authority));
+            }
+            _ => return Err(OrchestrationError::AccessDenied),
+        }
+        // No fallible preparation or authority callback belongs between begin
+        // and this one write attempt. A partial WriteFile error is unknown.
+        process.write_protocol(&bytes).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+        let expected_ack = format!(
+            "{{\"type\":\"response\",\"id\":{},\"command\":\"prompt\",\"success\":true}}",
+            json_quote(prompt_id),
+        );
+        let started = Instant::now();
+        let mut frames = Vec::new();
+        let mut total = 0usize;
+        for index in 0..5 {
+            let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(OrchestrationError::Invalid("controlled Action protocol deadline"));
+            }
+            let frame = process.read_protocol_frame(remaining).map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+            total += frame.len();
+            if total > 64 * 1024 {
+                return Err(OrchestrationError::Invalid("controlled Action protocol aggregate"));
+            }
+            let text = std::str::from_utf8(&frame)
+                .map_err(|_| OrchestrationError::Invalid("controlled Action protocol utf8"))?;
+            let body = text.trim_end_matches(['\r', '\n']);
+            let valid = match index {
+                0 => body == expected_ack,
+                1 => body == "{\"type\":\"agent_start\"}",
+                2 => body.starts_with("{\"type\":\"message_end\",\"message\":"),
+                3 => body.starts_with("{\"type\":\"agent_end\",\"messages\":"),
+                _ => body == "{\"type\":\"agent_settled\"}",
+            };
+            if !valid {
+                return Err(OrchestrationError::Invalid("controlled Action protocol sequence"));
+            }
+            frames.push(text.to_owned());
+        }
+        if !process.wait(Duration::from_secs(2)).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? ||
+            process.exit_code().map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? != Some(0) {
+            return Err(OrchestrationError::Invalid("controlled Action process exit"));
+        }
+        Ok(frames)
+    })();
+    let proof = match custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(())) {
+        Ok(proof) => proof,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+            if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+            return Err(error.into());
+        }
+    };
+    let revision = match authority::mark_process_stopped(connection, &references.operation_id, &proof) {
+        Ok(revision) => revision,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+            if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+            return Err(error);
+        }
+    };
+    if let Err(error) = custodian.confirm_stop_durable(&DurableStopConfirmation {
+        ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+        identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
+        durable_revision: revision,
+    }) {
+        if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+        return Err(error.into());
+    }
+    let frames = match execution {
+        Ok(frames) => frames,
+        Err(error) => {
+            if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+            return Err(error);
+        }
+    };
+    let (attempt_id, send_authority) = granted.expect("successful execution requires begin");
+    let evidence = format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        references.operation_id, attempt_id, send_authority, prompt_id,
+        prepared.identity.pid, prepared.identity.creation_time_100ns,
+        prepared.binding.binary_digest_sha256, selected.semantic_digest,
+        proof.proof_hash(), selected.native_session_id,
+        frames.iter().map(|frame| format!("{}:{frame}", frame.len())).collect::<String>(),
+    );
+    let evidence_hash = super::digest::content_hash(evidence.as_bytes());
+    let trusted_receipt_ref = format!("native-receipt-{}", &evidence_hash[7..]);
+    let native = authority::TrustedActionCompletionEvidence {
+        domain_id: references.domain_id.clone(),
+        operation_id: references.operation_id.clone(),
+        reservation_id: references.reservation_id.clone(),
+        semantic_digest: selected.semantic_digest,
+        attempt_id, send_authority,
+        binding_id: selected.binding_id,
+        generation: selected.generation,
+        source_epoch: selected.source_epoch,
+        runtime_instance_id: selected.runtime_instance_id,
+        native_request_id: prompt_id.clone(),
+        native_session_id: selected.native_session_id,
+        trusted_receipt_ref,
+        evidence_hash,
+        disposition: authority::ActionCompletionDisposition::Completed,
+    };
+    if let Err(error) = authority::record_trusted_native_action_receipt(connection, &native) {
+        let _ = authority::complete_action_from_native_receipt(connection, &action);
+        return Err(error);
+    }
+    let completion = authority::complete_action_from_native_receipt(connection, &action)?;
+    if completion.disposition != "completed" {
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let encoded = frames.iter().map(|frame| json_quote(frame)).collect::<Vec<_>>().join(",");
+    Ok(format!("{{\"state\":\"ACTION_TRANSPORT_COMPLETED_NOT_RESULT\",\"frames\":[{encoded}],\"actionCompletionRef\":{},\"stopProofHash\":{}}}",
+        json_quote(&completion.receipt_id), json_quote(&proof.proof_hash())))
+}
+
 #[cfg(test)]
 fn handle_authenticated_line(
     connection: &mut VerifiedDatabaseConnection<'_>,
@@ -686,6 +874,10 @@ fn handle_authenticated_line_with_process(
         "RunControlledFixtureProbe" => {
             let custodian = process_custodian.ok_or(OrchestrationError::AccessDenied)?;
             run_controlled_fixture_probe(connection, owner, custodian, line)
+        }
+        "RunControlledFixtureAction" => {
+            let custodian = process_custodian.ok_or(OrchestrationError::AccessDenied)?;
+            run_controlled_fixture_action(connection, owner, custodian, line)
         }
         "ReadProductIdentity" => {
             let _fields = action_fields(line, &["operation"])?;
@@ -1478,6 +1670,18 @@ mod context_tests {
             "\"role\":\"worker\"",
         );
         assert!(handle_authenticated_line(&mut connection, &owner, &forged_role).is_err());
+
+        let prompt = r#"{"type":"prompt","message":"test","id":"gogoke-pi-1"}"#;
+        let action = format!(
+            "{{\"domainId\":\"domain-one\",\"operation\":\"RunControlledFixtureAction\",\"operationId\":\"missing-action\",\"reservationId\":\"missing-reservation\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{},\"promptJson\":{}}}",
+            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id), json_quote(prompt),
+        );
+        let mut custodian = ProcessCustodian::new().unwrap();
+        assert!(handle_authenticated_line_with_process(
+            &mut connection, &owner, Some(&mut custodian), &action,
+        ).is_err(), "current profile fields alone cannot create Action authority");
 
         connection.close_checked().unwrap();
         drop(root);

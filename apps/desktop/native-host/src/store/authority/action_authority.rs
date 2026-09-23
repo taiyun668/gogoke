@@ -415,6 +415,11 @@ pub(crate) fn read_native_action_fixture_selection(
             profile_id: profile.profile_id,
             target_domain_id: package.target.domain_id,
             generation: lineage.native.generation,
+            binding_id: lineage.native.binding_id,
+            source_epoch: lineage.native.source_epoch,
+            native_session_id: lineage.native.native_session_id,
+            runtime_instance_id: recipe.recipe.runtime_instance_id,
+            semantic_digest: actions[0][0].clone(),
             payload: selection.payload,
         })
     })
@@ -942,7 +947,7 @@ fn load_validated_completion(
 /// Trusted native-host receipt ingress. There is intentionally no equivalent
 /// session/IPC operation; the host calls this only after validating its native
 /// request/session receipt and exact process binding.
-pub(super) fn record_trusted_native_action_receipt(
+pub(crate) fn record_trusted_native_action_receipt(
     connection: &mut VerifiedDatabaseConnection<'_>,
     evidence: &TrustedActionCompletionEvidence,
 ) -> Result<String> {
@@ -1449,6 +1454,11 @@ pub(crate) struct NativeActionFixtureSelection {
     pub profile_id: String,
     pub target_domain_id: String,
     pub generation: String,
+    pub binding_id: String,
+    pub source_epoch: String,
+    pub native_session_id: String,
+    pub runtime_instance_id: String,
+    pub semantic_digest: String,
     pub payload: Vec<u8>,
 }
 
