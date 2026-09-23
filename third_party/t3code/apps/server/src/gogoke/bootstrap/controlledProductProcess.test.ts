@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { PiManagedSession } from "../adapters/pi/session.ts";
 import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
+import { prepareR2ControlledManifest } from "../context/assembly/r2ControlledManifest.ts";
 import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
 import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
@@ -90,6 +91,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     let recipeHash: string | undefined;
     let actionDigest: string | undefined;
     let decisionReceiptId: string | undefined;
+    let manifestHash: string | undefined;
     const decisionRecordedAt = new Date().toISOString();
     const promptJson = JSON.stringify({ type: "prompt", message, id: "gogoke-pi-1" });
     for (let task = 0; task < 2; task += 1) {
@@ -147,6 +149,13 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         expectedPackageDigest: packageReceipt.packageDigest,
       });
       Assert.equal(preparedAction.kind, task === 0 ? "reserved" : "replay");
+      const manifest = await prepareR2ControlledManifest({
+        store: client, basis, grant: preparedGrant, recordedAt: decisionRecordedAt,
+      });
+      Assert.equal(manifest.manifestId, "manifest-r2-02-test");
+      Assert.deepEqual(manifest.includedVersions, []);
+      if (manifestHash === undefined) manifestHash = manifest.manifestHash;
+      else Assert.equal(manifest.manifestHash, manifestHash);
       session = new PiManagedSession({
         admission: { mode: "ordinary", protocolQualified: true,
           protectedDomainQualified: false, contextExposure: "UNKNOWN" },
