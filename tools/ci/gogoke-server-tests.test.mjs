@@ -17,6 +17,7 @@ const tap = (tests, passed, failed) =>
 test("Vitest result requires exact files and framework-owned nonzero assertions", () => {
   assert.equal(parseVitestReport(viteReport(), [target], 0).state, "PASS");
   assert.equal(parseVitestReport(viteReport(), [], 0).state, "FAIL_INSTRUMENT");
+  assert.equal(parseVitestReport(viteReport(), [target], null).state, "FAIL_INSTRUMENT");
   assert.equal(parseVitestReport({ ...viteReport(), numTotalTests: 0 }, [target], 0).state, "FAIL_INSTRUMENT");
   assert.equal(parseVitestReport(viteReport("failed"), [target], 0).state, "FAIL");
 });
@@ -24,6 +25,7 @@ test("Vitest result requires exact files and framework-owned nonzero assertions"
 test("Node TAP result rejects missing summaries, zero tests and real failure", () => {
   assert.equal(parseNodeTap(tap(2, 2, 0), 1, 0).state, "PASS");
   assert.equal(parseNodeTap("", 1, 0).state, "FAIL_INSTRUMENT");
+  assert.equal(parseNodeTap(tap(2, 2, 0), 1, null).state, "FAIL_INSTRUMENT");
   assert.equal(parseNodeTap(tap(0, 0, 0), 1, 0).state, "FAIL_INSTRUMENT");
   assert.equal(parseNodeTap(tap(2, 1, 1), 1, 1).state, "FAIL");
 });
