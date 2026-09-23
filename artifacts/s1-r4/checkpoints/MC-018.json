@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-018",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "cdbff122cf68a2d84647d53db298e9f196231113",
+  "recorded_utc": "2026-09-23T03:18:00Z",
+  "reason": "Record Owner-relayed Claude verdict on PR #3/#4/#5, exact B2 rework, and scoped m1 merge",
+  "independent_review": {
+    "source": "Owner relayed Claude's fresh review of candidate cfcb8a7d and PR #3/#4/#5 in the current conversation",
+    "D1_D2": "35810241052 machine results verified: 44 server files (35 Vite+ and 9 node:test), 532/532 executed/pass, skipped 0; native-host lib 382/382, release build and both process axes PASS; runner file-set and zero/skip fail-closed semantics accepted",
+    "PR3": "REWORK B2 TEST COVERAGE ONLY; B1, buffered nativeHostClient handshake, DACL binary snapshot test, process diagnostics, cognitionService typed error, CI runner/workflow ACCEPT at the reviewed cfcb8a7d content",
+    "PR4": "REVIEW_ACCEPTED_AS_DISABLED_SOURCE_ONLY; must remain draft/unmerged until GPT public authorization anchor and Owner merge, then runner rebind and fresh review",
+    "PR5": "ACCEPT; normal merge authorized only after all PR checks succeeded",
+    "non_claim": "No ruling independently promotes G1-G5, GN, or any of 59 due checks"
+  },
+  "B2_rework": {
+    "private_reference": "5014096ff1366354ed08d0642d8b2b31de0db354",
+    "combined_candidate": "efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b",
+    "B2_branch": "codex/r4-b2-rework-r1@23ab33a5d4e005a0ef1bbfdae02c2b4bce97d0f6",
+    "restored_coverage": "Existing tests retained; 21 top-level cases and 53 expect calls. Added explicit sparse/duplicate/non-string array rejection, null-prototype input and request acceptance, optional capability accessor non-execution, custom-prototype request rejection, and ownership-before-construction rejection.",
+    "focused_result": "minimalService.test.ts 34/34 pass; T3 server typecheck exit 0; current file source scan 0 leaks",
+    "full_cloud_run_id": "35813586330",
+    "full_cloud_state_at_checkpoint": "D1 and D2 IN_PROGRESS; no current-head PASS inferred",
+    "PR3": "Draft; updated to latest efa1a6fd and fresh review pending"
+  },
+  "PR5_merge": {
+    "pr": "https://github.com/taiyun668/gogoke/pull/5",
+    "source_head": "dc6867fb65eaf345238f7f0e53e00e0c8ea4999d",
+    "pre_merge_checks": "Browser build/test, public source hygiene, Unsigned Windows NSIS all PASS",
+    "cloud_content_run": "35812254747@5929dfe3, same session.rs blob; D1 532/532 and D2 full lib 383/383 with the Shutdown negative test",
+    "method": "ordinary non-force merge commit; no auto-merge or branch deletion",
+    "merge_commit": "cdbff122cf68a2d84647d53db298e9f196231113",
+    "merged_at_utc": "2026-09-23T03:16:50Z",
+    "result": "main contains the decoded successful-Shutdown predicate; local main fast-forwarded and clean"
+  },
+  "C_authority": "PR #4 remains draft and unmerged; the six copied tools are not enabled. GPT must draft a public authorization anchor, Codex may prepare only its file/PR, Owner taiyun668 must merge it, and the runner must verify merged_by/currentness before any qualification. WP01/S1-01-V remain BLOCKED.",
+  "nonblocking_m2": "Rust dependency license notice, including ryu-js, remains REGISTERED_NOT_FIXED",
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Read exact efa1a6fd D1/D2 machine results; repair any real failure without reducing 5014096f coverage. Request fresh Claude review of the new PR #3 head. Keep PR #4 disabled pending GPT/Owner authorization and do not merge it."
+}
