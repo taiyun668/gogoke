@@ -96,6 +96,34 @@ export interface NativeControllerAdmissionReceipt extends NativeControllerCaller
   readonly elapsedMicros: number;
 }
 
+export interface NativeR2TestDelegationReceipt {
+  readonly state: "TEST_ONLY_GRANT_PREPARED_NOT_ACTION";
+  readonly grantRef: string;
+  readonly revision: string;
+  readonly revocationHead: string;
+  readonly expiresAtEpochMs: string;
+}
+
+export function decodeR2TestDelegationReceipt(body: string): NativeR2TestDelegationReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_GRANT", "invalid native grant reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_GRANT", "invalid native grant reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 5 ||
+      record.state !== "TEST_ONLY_GRANT_PREPARED_NOT_ACTION" ||
+      typeof record.grantRef !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.grantRef) ||
+      typeof record.revision !== "string" || !/^[1-9][0-9]*$/.test(record.revision) ||
+      typeof record.revocationHead !== "string" || !/^(0|[1-9][0-9]*)$/.test(record.revocationHead) ||
+      typeof record.expiresAtEpochMs !== "string" || !/^[1-9][0-9]*$/.test(record.expiresAtEpochMs)) {
+    throw new NativeHostClientError("R2_TEST_GRANT", "native grant identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestDelegationReceipt);
+}
+
 export interface NativeControlledFixtureProbe {
   readonly state: "TEST_PROTOCOL_SETTLED_NOT_RESULT";
   readonly frames: readonly string[];
@@ -1860,6 +1888,22 @@ export class NativeHostClient {
   ): Promise<NativeControllerAdmissionReceipt> {
     const reply = this.request(encodeControllerAdmissionFrame(input));
     return decodeControllerAdmission(reply.body, input, reply.elapsedMicros);
+  }
+
+  async prepareR2TestDelegation(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestDelegationReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestDelegation",
+      operationId: "r2-02-controlled-task",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestDelegationReceipt(body);
   }
 
   async runControlledFixtureProbe(input: {

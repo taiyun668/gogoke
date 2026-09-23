@@ -60,6 +60,14 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       role: "controller" as const,
       seatId: identity.seatId,
     };
+    const preparedGrant = await client.prepareR2TestDelegation(caller);
+    Assert.equal(preparedGrant.state, "TEST_ONLY_GRANT_PREPARED_NOT_ACTION");
+    Assert.deepEqual(await client.prepareR2TestDelegation(caller), preparedGrant,
+      "a repeated fixed test operation must return the same grant");
+    const grant = await client.readCurrentDelegationGrant(preparedGrant.grantRef);
+    Assert.deepEqual(grant.ceiling.allowedActions, ["delegate"]);
+    Assert.deepEqual(grant.ceiling.allowedTargetPrincipalIds, ["principal-r2-02-worker"]);
+    Assert.deepEqual(grant.ceiling.explicitPrivateMaterialIds, []);
     const message = JSON.stringify({
       schema: "gogoke.s1-r4.r2-02.fixture-task.v1", testOnly: true,
       source: { repository: sourceCoordinate.repository, commit: sourceCoordinate.commit,
