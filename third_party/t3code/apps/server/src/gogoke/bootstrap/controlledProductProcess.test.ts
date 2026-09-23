@@ -158,36 +158,25 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         expectedPackageDigest: packageReceipt.packageDigest,
       });
       Assert.equal(preparedAction.kind, task === 0 ? "reserved" : "replay");
-      const assemblyIdentity = {
-        operationId: "r2-02-context-assembly", principalId: "principal-r2-02-worker",
-        seatId: "seat-r2-02-worker", taskId: "task-r2-02-test",
-        sessionId: "session-r2-02-worker", domainId: "domain-r2-02-test",
-        bindingId: basis.bindingId, bindingGeneration: basis.bindingGeneration,
-        sourceEpoch: "1", runtimeInstanceId: "runtime-r2-02-fixture",
-      };
-      await client.publishContextAssemblySnapshot({
-        ...assemblyIdentity, taskRevision: basis.taskRevision,
-        policyRevision: basis.policyRevision, authRevision: basis.policyRevision,
-        revocationHead: preparedGrant.revocationHead,
-        selectionDecisionId: "decision-r2-02-test", manifestId: "manifest-r2-02-test",
-        admissionActionOperationId: "opr_22222222222222222222222222222222",
-        admissionDigest: basis.actionDigest, maxContentBytes: source.bytes.length,
-        maxCandidates: 1, partitionBindings: [{
-          sourceDomainId: "domain-r2-02-source", destinationScope: "PROJECT",
-          promotionKind: "PROJECT_ONLY", grant: { grantId: contextGrant.grantRef,
-            revision: contextGrant.revision, revocationHead: contextGrant.revocationHead },
-        }],
-      });
-      const assemblyBasis = await client.readContextAssemblyBasis(assemblyIdentity);
-      Assert.equal(assemblyBasis.mandatoryRefs.length, 1);
-      const manifest = await prepareR2ControlledManifest({
-        store: client, basis, grant: preparedGrant, contextGrant, source,
-        recordedAt: decisionRecordedAt,
-      });
-      Assert.equal(manifest.manifestId, "manifest-r2-02-test");
-      Assert.equal(manifest.includedVersions.length, 1);
-      if (manifestHash === undefined) manifestHash = manifest.manifestHash;
-      else Assert.equal(manifest.manifestHash, manifestHash);
+      if (task === 0) {
+        const manifest = await prepareR2ControlledManifest({
+          store: client, basis, grant: preparedGrant, contextGrant, source,
+          recordedAt: decisionRecordedAt,
+        });
+        Assert.equal(manifest.manifestId, "manifest-r2-02-test");
+        Assert.equal(manifest.includedVersions.length, 1);
+        manifestHash = manifest.manifestHash;
+      } else {
+        const replay = await client.readContextManifest({
+          operationId: "r2-02-context-assembly", principalId: "principal-r2-02-worker",
+          seatId: "seat-r2-02-worker", taskId: "task-r2-02-test",
+          sessionId: "session-r2-02-worker", domainId: "domain-r2-02-test",
+          bindingId: basis.bindingId, bindingGeneration: basis.bindingGeneration,
+          sourceEpoch: "1", runtimeInstanceId: "runtime-r2-02-fixture",
+        });
+        Assert.equal(replay.disposition, "REPLAYED");
+        Assert.equal(replay.manifestHash, manifestHash);
+      }
       session = new PiManagedSession({
         admission: { mode: "ordinary", protocolQualified: true,
           protectedDomainQualified: false, contextExposure: "UNKNOWN" },
