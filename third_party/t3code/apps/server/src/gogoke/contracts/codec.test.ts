@@ -20,7 +20,7 @@ import {
   type FieldRule,
   type JsonValue,
 } from "./model.ts";
-import { ContractCodecError } from "./strictJson.ts";
+import { canonicalJson, ContractCodecError } from "./strictJson.ts";
 
 const fixtures = new URL(
   "../../../../../../../apps/desktop/contracts/s1-r4/fixtures/",
@@ -132,6 +132,22 @@ describe("S1-R4 public object byte codec", () => {
     );
     NodeAssert.throws(
       () => decodePublicObject(bytes),
+      (error: unknown) =>
+        error instanceof ContractCodecError && error.code === "UNSAFE_JSON_NUMBER",
+    );
+  });
+
+  it("rejects negative zero before canonical encoding can change the validated fact", () => {
+    const bytes = new TextEncoder().encode(
+      '{"schema":"gogoke.s1-r4.objects.v1","objectType":"RuntimeDriver","unsafe":-0,"object":{"driverId":"driver","adapterVersion":"1","artifactDigest":"sha256:fixture","configSchemaRef":"schema","requiredHostServices":["host"],"admissionRef":"admission"}}',
+    );
+    NodeAssert.throws(
+      () => decodePublicObject(bytes),
+      (error: unknown) =>
+        error instanceof ContractCodecError && error.code === "UNSAFE_JSON_NUMBER",
+    );
+    NodeAssert.throws(
+      () => canonicalJson(-0),
       (error: unknown) =>
         error instanceof ContractCodecError && error.code === "UNSAFE_JSON_NUMBER",
     );

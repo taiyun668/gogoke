@@ -108,10 +108,10 @@ export const PUBLIC_OBJECT_TYPES = Object.freeze(
   Object.keys(CHECKED_IN_OBJECT_MODEL.objects),
 ) as readonly PublicObjectType[];
 
-export const PUBLIC_CONTRACT_SOURCES = {
+export const PUBLIC_CONTRACT_SOURCES = Object.freeze({
   objectModel: CHECKED_IN_OBJECT_MODEL,
   fieldRules: CHECKED_IN_FIELD_RULES,
-} as const;
+} as const);
 
 export type U64String = string & { readonly U64String: unique symbol };
 export type RuntimeDriverId = string & { readonly RuntimeDriverId: unique symbol };
