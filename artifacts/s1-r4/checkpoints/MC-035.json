@@ -1,0 +1,59 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-035",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "be7e817d7dce9de2442ecf57fbeabf73572e15ef",
+  "recorded_utc": "2026-09-23T08:40:38Z",
+  "reason": "OWNER_STOP_PENDING_REVISED_S1_R4_PLAN",
+  "owner_decision": {
+    "source": "docs/governance/gogoke-ledger-decision.md, Owner-merged PR #14 at be7e817d7dce9de2442ecf57fbeabf73572e15ef",
+    "effect": "Git/GitHub remain the accepted fact ledger; local database is for active coordination. Existing S1-R4 plan is to be revised by design. Do not continue implementation, qualification or review under the old plan.",
+    "authorization_currentness": "The current public authorization is bound to the existing plan MANIFEST. A revised MANIFEST will make that authorization stale and requires a new Owner-merged authorization receipt before resumed qualification."
+  },
+  "stopped_work": {
+    "pr": 13,
+    "state": "OPEN_DRAFT_NOT_MERGED",
+    "branch": "codex/r4-native-binding-authority-r1",
+    "branch_head": "b874914c17564ba2709d01bd6856660db524a694",
+    "remote_head": "b874914c17564ba2709d01bd6856660db524a694",
+    "head_kind": "empty wip: freeze marker, pushed after Owner stop; no tests, no review, not a candidate",
+    "last_source_candidate": "02fc7c11c18cca522fe556d1f9b952eb670709f2; current PR branch has the same source tree under a WIP head, so no current acceptance candidate is claimed",
+    "cloud_evidence": "Run 35837746845 bound to 02fc7c11: server 536/536, native lib 393/393, b07_two_process 1/1, host_typed_ops 1/1, release build exit 0; all reported zero failed/skipped. Windows Server real run, not Windows 11 desktop verification. Test green does not override independent findings.",
+    "preceding_failure": "Run 35836789926 at df2a3845: native lib 392/393, exit 101; foreign-stream test proved historical identity read bypassed stream_integrity. Server 536/536 and both process axes 1/1. Repair at 02fc7c11 then cloud-tested, but not independently accepted.",
+    "focused_review": "Fresh exact-02fc7c11 Sol/high review returned FAIL_REPAIR_REQUIRED: NB-F1 remains open when an earlier RuntimeInstanceIdentity revision's event_type or receipt_type is damaged and a later revision is read. Existing negative control covers only one revision. NB-F2 same-object foreign-stream class and preceding cloud failure were judged repaired in focused scope, not gate acceptance.",
+    "risk_review": "Fresh exact-02fc7c11 Astra/xhigh full-axis review was INTERRUPTED_BY_OWNER_PARTIAL_NO_ACCEPTANCE. Provisional NB-F3: a different object's event/receipt added to the same canonical stream at an unused counter escapes the object-filtered membership counts. Source-derived SQLite DDL/SQL probe reproduced the blind spot; actual Rust read/replay negative test was not run.",
+    "production_gap": "Typed NativeBinding/RuntimeInstance methods remain private in ProductDatabase. Session/TS production ingress and independently admitted Controller/Seat caller context are absent; pipe service capability and grantRef alone are not product permission. T10.L remains NOT_RUN.",
+    "review_and_qualification_nonclaim": "No latest-head fresh full-axis acceptance, no external Claude acceptance, no due-check qualification, no G1/T10.L promotion. WIP and test runs are not candidate acceptance."
+  },
+  "other_open_work": {
+    "PR4": "Draft runner 43624d9ca285a99125ee8fbad2e2c2bb569e5a6f, pushed and clean, awaits fresh external Claude review; no qualification group run.",
+    "PR10": "Draft notice candidate d32260e1a418a1cf98fa0101ffaf4b0836abea42, pushed and clean, awaits fresh external Claude review.",
+    "WP01_S1_01_V": "Not qualified; 59 due checks remain unpromoted. Revised plan and renewed authorization are required before resumption.",
+    "cleanup": "MC-030 dry-run awaits independent cleanup decision; no worktrees, generated directories or links removed during this stop."
+  },
+  "local_workspace_hygiene": {
+    "size_method": "Read-only recursive logical file lengths; reparse points excluded. These are not physical reclaim estimates.",
+    "new_directories_since_MC034": [
+      "%LOCALAPPDATA%/gogoke-agent-tmp/mc032-controller/native-ci-35836789926",
+      "%LOCALAPPDATA%/gogoke-agent-tmp/mc032-controller/native-ci-35837746845"
+    ],
+    "cleaned_directories_since_MC034": [],
+    "retained_worktrees": [
+      {"path":"%GOGOKE_WORK_ROOT%/gogoke-public-export","logical_bytes":446176577,"reason":"main integration and stop checkpoint","cleanup_when":"after revised-plan handoff or project closure"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/native-binding-authority","logical_bytes":274187195,"reason":"PR #13 pushed WIP custody and exact-source repair evidence","cleanup_when":"after revised plan disposition and PR #13 review/retirement"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/tools-candidate","logical_bytes":274371974,"reason":"PR #4 draft review custody","cleanup_when":"after PR #4 disposition"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/notice-followups","logical_bytes":274101816,"reason":"PR #10 draft review custody","cleanup_when":"after PR #10 disposition"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/lineage","logical_bytes":273687866,"reason":"pushed lineage WIP not integrated","cleanup_when":"after revised plan maps or retires WIP"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/native-close","logical_bytes":273670782,"reason":"pushed native-close WIP not integrated","cleanup_when":"after revised plan maps or retires WIP"}
+    ],
+    "retained_task_temp": {"path":"%LOCALAPPDATA%/gogoke-agent-tmp/mc032-controller","logical_bytes":4515257,"children":"native-ci-35830855475, 35831382430, 35832652681, 35833523727, 35834148591, 35835308516, 35836789926, 35837746845; server-ci-35832652681 and attempt2, plus scanner reports","reason":"active stop handoff custody for exact cloud reports; run IDs and hashes remain authoritative, not these copies","cleanup_when":"after revised-plan handoff and exact target/reparse check"},
+    "unchanged_pending_cleanup": "MC-030 individually inventories 14 other clean worktrees and 40 generated/probe/cache directories with sizes; their cleanup dry-run still awaits Claude review. They were not created, removed or reclassified in this stop.",
+    "pnpm_store": "Effective store remains on the worktree D volume; no setting changed."
+  },
+  "process_custody": "Cloud run 35837746845 completed. No task-owned local cargo/rustc/python/node process matched the construction or task-temp roots at stop inspection; five unrelated node processes were not attributed or touched. No process was killed or restarted.",
+  "git_custody": "main and PR #13 worktrees clean; branch HEADs pushed and matched remote at stop inspection. PR #13 remains draft, not merged. No reset, clean, force-push or deletion.",
+  "gate_state": {"G0":"PASS","G1":"IN_PROGRESS_NOT_ACCEPTED","G2":"NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY","G3":"IN_PROGRESS_NOT_ACCEPTED","G4":"IN_PROGRESS_NOT_ACCEPTED","G5":"NOT_RUN","GN":"NOT_AUTHORIZED"},
+  "due_checks": "59 unpromoted",
+  "next_action": "STOP. Await revised S1-R4 plan and its MANIFEST, then verify any renewed Owner authorization before resuming. Reassess existing local DB work against Git/GitHub fact-ledger decision; preserve PR #13 and NB-F1/NB-F3 findings without repairing or merging them under the superseded plan."
+}
