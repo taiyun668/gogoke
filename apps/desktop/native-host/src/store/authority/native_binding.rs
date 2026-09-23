@@ -107,7 +107,13 @@ fn binding_bytes(value: &CommitNativeBinding) -> Vec<u8> {
 
 fn ensure_schema(tx: &mut Transaction<'_, '_>) -> Result<()> {
     tx.validate_product_core_schema()?;
-    for (name, schema) in [("gogoke_runtime_instance_identity_versions",INSTANCE_SCHEMA),("gogoke_runtime_instance_identity_heads",INSTANCE_HEAD_SCHEMA),("gogoke_native_binding_versions",BINDING_SCHEMA),("gogoke_native_binding_heads",BINDING_HEAD_SCHEMA)] {
+    let family=[("gogoke_runtime_instance_identity_versions",INSTANCE_SCHEMA),("gogoke_runtime_instance_identity_heads",INSTANCE_HEAD_SCHEMA),("gogoke_native_binding_versions",BINDING_SCHEMA),("gogoke_native_binding_heads",BINDING_HEAD_SCHEMA)];
+    let mut present=0;
+    for &(name,_) in &family {
+        if !tx.query("SELECT name FROM main.sqlite_schema WHERE name=?",&[name],1)?.is_empty(){present+=1;}
+    }
+    if present!=0 && present!=family.len(){return denied()}
+    for (name, schema) in family {
         let rows=tx.query("SELECT type,sql FROM main.sqlite_schema WHERE name=?",&[name],2)?;
         if rows.is_empty() { tx.write(schema,&[])?; }
         else if rows.len()!=1 || rows[0][0]!="table" || rows[0][1]!=schema { return denied(); }
@@ -144,17 +150,26 @@ fn load_instance(tx:&mut Transaction<'_, '_>,domain:&str,instance:&str,version:&
     if value.domain_id!=domain || value.instance_id!=instance || value.version!=version || content_hash(&instance_bytes(&value))!=row[9] {return denied()}
     let core=tx.query("SELECT content_hash,canonical_json FROM main.gogoke_objects WHERE domain_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,instance,version],2)?;
     if core.len()!=1 || core[0][0]!=row[9] || core[0][1].as_bytes()!=instance_bytes(&value) {return denied()}
-    let receipt=tx.query("SELECT receipt_id,event_id FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&row[10],instance,version],2)?;
+    let receipt=tx.query("SELECT receipt_id,event_id,recorded_at,canonical_json,content_hash FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&row[10],instance,version],5)?;
     if receipt.len()!=1 || receipt[0][0]!=row[11] {return denied()}
-    let events=tx.query("SELECT event_id FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&receipt[0][1],instance,version],1)?;
+    let events=tx.query("SELECT event_id,occurred_at,canonical_json,content_hash,stream_counter FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='RuntimeInstanceIdentity' AND object_id=? AND object_version=?",&[domain,&receipt[0][1],instance,version],5)?;
     if events.len()!=1 {return denied()}
+    let number=checked_version(version)?;
+    let previous=if number>1 {Some((number-1).to_string())} else {None};
+    let record=instance_record(&AppendRuntimeInstanceIdentity{operation_id:row[10].clone(),snapshot:value.clone(),expected_previous_version:previous,event_id:receipt[0][1].clone(),receipt_id:receipt[0][0].clone(),recorded_at:receipt[0][2].clone()})?;
+    if events[0][1]!=receipt[0][2] || events[0][2].as_bytes()!=record.event_bytes.as_slice() || events[0][3]!=content_hash(&record.event_bytes) || events[0][4]!=record.counter || receipt[0][3].as_bytes()!=record.receipt_bytes.as_slice() || receipt[0][4]!=content_hash(&record.receipt_bytes) {return denied()}
+    if tx.apply_domain_record(record)?.disposition!="RECONCILED"{return denied()}
     Ok(Some(value))
 }
 
 fn current_instance(tx:&mut Transaction<'_, '_>,domain:&str,instance:&str)->Result<Option<RuntimeInstanceIdentitySnapshot>> {
     let rows=tx.query("SELECT identity_version,content_hash FROM main.gogoke_runtime_instance_identity_heads WHERE domain_id=? AND instance_id=?",&[domain,instance],2)?;
-    if rows.is_empty(){return Ok(None)}
+    let versions=tx.query("SELECT COUNT(*) FROM main.gogoke_runtime_instance_identity_versions WHERE domain_id=? AND instance_id=?",&[domain,instance],1)?;
+    if versions.len()!=1{return denied()}
+    let count=versions[0][0].parse::<u64>().map_err(|_|OrchestrationError::AccessDenied)?;
+    if rows.is_empty(){if count!=0{return denied()}return Ok(None)}
     if rows.len()!=1{return denied()}
+    if checked_version(&rows[0][0])?!=count{return denied()}
     let value=load_instance(tx,domain,instance,&rows[0][0])?.ok_or(OrchestrationError::AccessDenied)?;
     if content_hash(&instance_bytes(&value))!=rows[0][1]{return denied()}
     Ok(Some(value))
@@ -217,7 +232,7 @@ fn check_lineage(tx:&mut Transaction<'_, '_>,domain:&str,binding:&str,generation
     Ok(())
 }
 
-fn load_binding(tx:&mut Transaction<'_, '_>,identity:&NativeBindingIdentity)->Result<Option<NativeBindingVersion>> {
+fn load_binding(tx:&mut Transaction<'_, '_>,identity:&NativeBindingIdentity,currentness:bool)->Result<Option<NativeBindingVersion>> {
     ensure_schema(tx)?;
     let rows=tx.query("SELECT domain_id,binding_id,generation,source_epoch,instance_id,instance_version,native_identity,lineage_ref,custody_ref,content_hash,operation_id,receipt_id FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=? AND generation=?",&[&identity.domain_id,&identity.binding_id,&identity.generation],12)?;
     if rows.is_empty(){return Ok(None)}
@@ -225,29 +240,42 @@ fn load_binding(tx:&mut Transaction<'_, '_>,identity:&NativeBindingIdentity)->Re
     let row=&rows[0];
     if row[0]!=identity.domain_id || row[1]!=identity.binding_id || row[2]!=identity.generation || row[3]!=identity.source_epoch || row[4]!=identity.instance_id || row[5]!=identity.instance_version {return denied()}
     let instance=load_instance(tx,&row[0],&row[4],&row[5])?.ok_or(OrchestrationError::AccessDenied)?;
-    let current=current_instance(tx,&row[0],&row[4])?.ok_or(OrchestrationError::AccessDenied)?;
-    if current!=instance || instance.account_ref==AccountRefSnapshot::Unknown {return denied()}
-    check_lineage(tx,&row[0],&row[1],&row[2],&row[3],&row[6],&row[7])?;
+    let lineage=read_session_lineage_in_transaction(tx,&row[0],&row[7])?;
+    if lineage.domain_id!=row[0] || lineage.session_id!=row[7] {return denied()}
+    if currentness {
+        let current=current_instance(tx,&row[0],&row[4])?.ok_or(OrchestrationError::AccessDenied)?;
+        if current!=instance || instance.account_ref==AccountRefSnapshot::Unknown {return denied()}
+        check_lineage(tx,&row[0],&row[1],&row[2],&row[3],&row[6],&row[7])?;
+    }
     let value=NativeBindingVersion{domain_id:row[0].clone(),binding_id:row[1].clone(),generation:row[2].clone(),source_epoch:row[3].clone(),instance,native_identity:row[6].clone(),lineage_ref:row[7].clone(),custody_ref:row[8].clone(),content_hash:row[9].clone()};
     let object=CommitNativeBinding{operation_id:row[10].clone(),domain_id:row[0].clone(),binding_id:row[1].clone(),generation:row[2].clone(),expected_previous_generation:None,source_epoch:row[3].clone(),instance_id:row[4].clone(),instance_version:row[5].clone(),native_identity:row[6].clone(),lineage_ref:row[7].clone(),custody_ref:row[8].clone(),event_id:String::new(),receipt_id:row[11].clone(),recorded_at:String::new()};
     if content_hash(&binding_bytes(&object))!=row[9]{return denied()}
     let core=tx.query("SELECT content_hash,canonical_json FROM main.gogoke_objects WHERE domain_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&row[1],&row[2]],2)?;
     if core.len()!=1 || core[0][0]!=row[9] || core[0][1].as_bytes()!=binding_bytes(&object){return denied()}
-    let receipt=tx.query("SELECT receipt_id,event_id FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&row[10],&row[1],&row[2]],2)?;
+    let receipt=tx.query("SELECT receipt_id,event_id,recorded_at,canonical_json,content_hash FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&row[10],&row[1],&row[2]],5)?;
     if receipt.len()!=1 || receipt[0][0]!=row[11]{return denied()}
-    let events=tx.query("SELECT event_id FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&receipt[0][1],&row[1],&row[2]],1)?;
+    let events=tx.query("SELECT event_id,occurred_at,canonical_json,content_hash,stream_counter FROM main.gogoke_events WHERE domain_id=? AND event_id=? AND object_type='NativeBinding' AND object_id=? AND object_version=?",&[&row[0],&receipt[0][1],&row[1],&row[2]],5)?;
     if events.len()!=1{return denied()}
+    let number=checked_version(&row[2])?;
+    let previous=if number>1 {Some((number-1).to_string())} else {None};
+    let record=binding_record(&CommitNativeBinding{event_id:receipt[0][1].clone(),receipt_id:receipt[0][0].clone(),recorded_at:receipt[0][2].clone(),expected_previous_generation:previous,..object},&content_hash(&instance_bytes(&value.instance)))?;
+    if events[0][1]!=receipt[0][2] || events[0][2].as_bytes()!=record.event_bytes.as_slice() || events[0][3]!=content_hash(&record.event_bytes) || events[0][4]!=record.counter || receipt[0][3].as_bytes()!=record.receipt_bytes.as_slice() || receipt[0][4]!=content_hash(&record.receipt_bytes){return denied()}
+    if tx.apply_domain_record(record)?.disposition!="RECONCILED"{return denied()}
     Ok(Some(value))
 }
 
-fn current_binding(tx:&mut Transaction<'_, '_>,domain:&str,binding:&str)->Result<Option<NativeBindingVersion>> {
+fn current_binding(tx:&mut Transaction<'_, '_>,domain:&str,binding:&str,currentness:bool)->Result<Option<NativeBindingVersion>> {
     let rows=tx.query("SELECT generation,source_epoch,content_hash FROM main.gogoke_native_binding_heads WHERE domain_id=? AND binding_id=?",&[domain,binding],3)?;
-    if rows.is_empty(){return Ok(None)}
+    let versions=tx.query("SELECT COUNT(*) FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=?",&[domain,binding],1)?;
+    if versions.len()!=1{return denied()}
+    let count=versions[0][0].parse::<u64>().map_err(|_|OrchestrationError::AccessDenied)?;
+    if rows.is_empty(){if count!=0{return denied()}return Ok(None)}
     if rows.len()!=1{return denied()}
+    if checked_version(&rows[0][0])?!=count{return denied()}
     let projection=tx.query("SELECT instance_id,instance_version FROM main.gogoke_native_binding_versions WHERE domain_id=? AND binding_id=? AND generation=?",&[domain,binding,&rows[0][0]],2)?;
     if projection.len()!=1{return denied()}
     let identity=NativeBindingIdentity{domain_id:domain.into(),binding_id:binding.into(),generation:rows[0][0].clone(),source_epoch:rows[0][1].clone(),instance_id:projection[0][0].clone(),instance_version:projection[0][1].clone()};
-    let version=load_binding(tx,&identity)?.ok_or(OrchestrationError::AccessDenied)?;
+    let version=load_binding(tx,&identity,currentness)?.ok_or(OrchestrationError::AccessDenied)?;
     if version.content_hash!=rows[0][2]{return denied()}
     Ok(Some(version))
 }
@@ -260,12 +288,12 @@ pub(crate) fn commit_native_binding(connection:&mut VerifiedDatabaseConnection<'
         if instance.version!=input.instance_version || instance.account_ref==AccountRefSnapshot::Unknown{return denied()}
         check_lineage(tx,&input.domain_id,&input.binding_id,&input.generation,&input.source_epoch,&input.native_identity,&input.lineage_ref)?;
         let record=binding_record(input,&content_hash(&instance_bytes(&instance)))?;
-        let current=current_binding(tx,&input.domain_id,&input.binding_id)?;
+        let current=current_binding(tx,&input.domain_id,&input.binding_id,false)?;
         let operation=tx.query("SELECT receipt_id FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=?",&[&input.domain_id,&input.operation_id],1)?;
         if !operation.is_empty(){
             if operation.len()!=1 || operation[0][0]!=input.receipt_id{return Err(OrchestrationError::OperationConflict)}
             let identity=NativeBindingIdentity{domain_id:input.domain_id.clone(),binding_id:input.binding_id.clone(),generation:input.generation.clone(),source_epoch:input.source_epoch.clone(),instance_id:input.instance_id.clone(),instance_version:input.instance_version.clone()};
-            let stored=load_binding(tx,&identity)?.ok_or(OrchestrationError::OperationConflict)?;
+            let stored=load_binding(tx,&identity,true)?.ok_or(OrchestrationError::OperationConflict)?;
             if current.as_ref()!=Some(&stored) || stored.native_identity!=input.native_identity || stored.lineage_ref!=input.lineage_ref || stored.custody_ref!=input.custody_ref{return Err(OrchestrationError::OperationConflict)}
             let storage=tx.apply_domain_record(record)?;
             if storage.disposition!="RECONCILED"{return denied()}
@@ -279,7 +307,7 @@ pub(crate) fn commit_native_binding(connection:&mut VerifiedDatabaseConnection<'
         tx.write("INSERT INTO gogoke_native_binding_versions(domain_id,binding_id,generation,object_type,source_epoch,instance_id,instance_version,native_identity,lineage_ref,custody_ref,content_hash,operation_id,receipt_id) VALUES(?,?,?,'NativeBinding',?,?,?,?,?,?,?,?,?)",&[&input.domain_id,&input.binding_id,&input.generation,&input.source_epoch,&input.instance_id,&input.instance_version,&input.native_identity,&input.lineage_ref,&input.custody_ref,&storage.object_hash,&input.operation_id,&input.receipt_id])?;
         if let Some(previous)=&input.expected_previous_generation {tx.write("UPDATE gogoke_native_binding_heads SET generation=?,source_epoch=?,content_hash=? WHERE domain_id=? AND binding_id=? AND generation=?",&[&input.generation,&input.source_epoch,&storage.object_hash,&input.domain_id,&input.binding_id,previous])?;}
         else {tx.write("INSERT INTO gogoke_native_binding_heads(domain_id,binding_id,generation,source_epoch,content_hash) VALUES(?,?,?,?,?)",&[&input.domain_id,&input.binding_id,&input.generation,&input.source_epoch,&storage.object_hash])?;}
-        let stored=current_binding(tx,&input.domain_id,&input.binding_id)?.ok_or(OrchestrationError::AccessDenied)?;
+        let stored=current_binding(tx,&input.domain_id,&input.binding_id,true)?.ok_or(OrchestrationError::AccessDenied)?;
         if stored.binding_id!=input.binding_id || stored.generation!=input.generation || stored.native_identity!=input.native_identity || stored.instance!=instance{return denied()}
         Ok(NativeBindingReceipt{disposition:"COMMITTED",operation_id:input.operation_id.clone(),version:stored})
     })
@@ -288,5 +316,5 @@ pub(crate) fn commit_native_binding(connection:&mut VerifiedDatabaseConnection<'
 pub(crate) fn read_native_binding(connection:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,identity:&NativeBindingIdentity)->Result<Option<NativeBindingVersion>>{
     for field in [&identity.domain_id,&identity.binding_id,&identity.instance_id] {checked_id(field)?;}
     checked_version(&identity.generation)?;checked_version(&identity.instance_version)?;revision(&identity.source_epoch)?;
-    transaction::run(connection,|tx|{owner.check(&current_profile(tx)?)?;let current=current_binding(tx,&identity.domain_id,&identity.binding_id)?;if let Some(version)=&current {if version.generation!=identity.generation || version.source_epoch!=identity.source_epoch || version.instance.instance_id!=identity.instance_id || version.instance.version!=identity.instance_version{return denied()}}Ok(current)})
+    transaction::run(connection,|tx|{owner.check(&current_profile(tx)?)?;ensure_schema(tx)?;let current=current_binding(tx,&identity.domain_id,&identity.binding_id,true)?;if let Some(version)=&current {if version.generation!=identity.generation || version.source_epoch!=identity.source_epoch || version.instance.instance_id!=identity.instance_id || version.instance.version!=identity.instance_version{return denied()}}Ok(current)})
 }
