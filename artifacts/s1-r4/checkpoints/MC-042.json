@@ -1,0 +1,39 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-042",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "7faf39d4ed2df3ef0247a0bf2a9a71dc3cabc7c8",
+  "reason": "R2-02_EXACT_SEAM_INTAKE",
+  "current_main": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+  "authorization": "CURRENT_MANIFEST_17AFBBA28795338561530927595FDA93FD8A2A11_RECEIPT_E30C62097FC363B71F304807620FB1716FE0AD35",
+  "package": "R2-02_WIP_INTAKE_NO_PRODUCT_CODE_CHANGE_YET",
+  "current_findings": [
+    "The production product entry currently reaches the admitted native Product Authority for a non-adopted Goal fixture, but does not execute the R2-02 controlled task.",
+    "cognitionVertical.test.ts exercises ContextManifest, Decision and Action on one controlled store. The dispatcher result is an accepted command receipt; the tested vertical explicitly has no Outcome writer or reader.",
+    "PiManagedSession observes JSONL events and distinguishes a prompt ACK from completion. The pinned Pi RPC protocol supplies agent_settled after retry and queued continuation, while agent_end alone can be followed by more work. A settled event still needs result and process-custody validation before Outcome.",
+    "Native process custody exists in native-host process/windows.rs, but the current NativeHostClient and store session protocol do not expose a product task process operation. R2-02 must connect a bounded typed operation to the existing custody rather than spawn an unmanaged second authority.",
+    "Existing native appendObjectiveOutcome, appendEvaluation and appendDreamProposal methods target local authority records. They cannot be used as proof of Git/GitHub adoption under the current ledger decision.",
+    "The plan requires an Owner-selected test project repository and authorized work branch for real Git/GitHub writes. No exact repository and branch scope was found in the v2 plan or current checkpoints; the Owner was asked for these coordinates. This blocks only remote-write execution, not in-contract implementation and local controlled tests."
+  ],
+  "falsifiable_next_measurements": [
+    "Run one cloud-built native-custodied controlled protocol process through the product path and observe ACK, agent_settled, validated result, and no duplicate process owner.",
+    "Write a public fixture only to the designated test branch, read back exact repository/commit/path/hash, and verify any claimed adoption against actual GitHub review and merge identity."
+  ],
+  "evidence": {
+    "r2_01_native_server_cloud": "PASS_AT_41cce97d4a251264dfba2eeeba56e22b4064d2f1_RUN_35889725090",
+    "r2_02_controlled_product_task": "NOT_RUN",
+    "r2_02_git_fact_readback": "NOT_RUN",
+    "r2_02_adoption": "NOT_RUN",
+    "desktop_ci_at_7faf39d4": "PASS_RUN_35890381626",
+    "source_hygiene_at_7faf39d4": "PASS_RUN_35890381911"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate": "NOT_CUT",
+  "architecture_blocker": "NO",
+  "next_action": "Implement and cloud-test the smallest typed native-custodied protocol process seam from the current product entry. Bind protocol settlement to validated result before Outcome; keep Git fact projection separate from local active coordination. Use the Owner-selected test repository/branch when provided for remote write and readback."
+}
