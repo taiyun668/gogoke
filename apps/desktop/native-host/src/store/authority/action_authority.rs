@@ -11,8 +11,11 @@ use super::super::orchestration::OrchestrationError;
 use super::super::same_open::VerifiedDatabaseConnection;
 use super::bootstrap::Profile;
 use super::catalog::current_profile;
-use super::model::{denied, identifier, next_revision, revision};
+use super::model::{denied, identifier};
+#[cfg(test)]
+use super::model::{next_revision, revision};
 use super::transaction::{self, Result, Transaction};
+use crate::process::{PreparedCustody, ProcessIdentity};
 
 pub(crate) const ACTION_AUTHORITY_STATUS: &str = "PREPARATORY_CURRENT_FACTS_REQUIRED";
 pub(crate) const COMPLETION_AUTHORITY_STATUS: &str = "PREPARATORY_TRUSTED_NATIVE_RECEIPT_REQUIRED";
@@ -344,8 +347,9 @@ pub(crate) fn prepare_action_authority(
     })
 }
 
-/// Trusted native-host ingress. It is intentionally not a protocol operation;
-/// it records facts resolved by the native host, not values from Begin IPC.
+#[cfg(test)]
+/// Legacy test seam retained only for the pre-existing authority tests. Product
+/// code derives these values in `derive_native_action_current_facts`.
 pub(super) fn record_trusted_native_action_facts(
     connection: &mut VerifiedDatabaseConnection<'_>,
     facts: &TrustedNativeActionFacts,
@@ -471,6 +475,229 @@ pub(super) fn record_trusted_native_action_facts(
             facts.expires_at_epoch_ms.to_string(),
         ];
         if check.len()!=1 || check[0]!=expected || package.package_digest!=tx.query("SELECT package_digest FROM main.gogoke_action_authority_intents WHERE domain_id=? AND operation_id=?", &[&facts.domain_id,&facts.operation_id],1)?[0][0] || task.task_revision.is_empty() { return Err(OrchestrationError::OperationConflict); }
+        Ok(next)
+    })
+}
+
+fn verify_active_process_custody(
+    tx: &mut Transaction<'_, '_>,
+    operation_id: &str,
+    prepared: &PreparedCustody,
+    active_identity: &ProcessIdentity,
+) -> Result<()> {
+    if &prepared.identity != active_identity {
+        return denied();
+    }
+    let rows = tx.query(
+        "SELECT ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state FROM main.gogoke_coordination_process_custody WHERE operation_id=?",
+        &[operation_id],
+        10,
+    )?;
+    let expected = vec![
+        prepared.ticket.opaque().to_owned(),
+        prepared.custodian_nonce.clone(),
+        prepared.identity.pid.to_string(),
+        prepared.identity.creation_time_100ns.to_string(),
+        prepared.identity.image_path.to_string_lossy().into_owned(),
+        prepared.binding.binary_digest_sha256.clone(),
+        prepared.binding.profile_id.clone(),
+        prepared.binding.domain_id.clone(),
+        prepared.binding.generation.clone(),
+        "ACTIVE".to_owned(),
+    ];
+    if rows.len() != 1 || rows[0] != expected {
+        return denied();
+    }
+    Ok(())
+}
+
+/// Private native producer for the current facts consumed by
+/// `begin_committed_action`. Callers identify an already prepared Action; all
+/// mutable authority values are resolved inside this transaction. The exact
+/// in-memory active process identity must match its durable ACTIVE custody row.
+pub(crate) fn derive_native_action_current_facts(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    references: &NativeActionCurrentFactsRefs,
+    prepared: &PreparedCustody,
+    active_identity: &ProcessIdentity,
+) -> Result<String> {
+    for value in [
+        &references.domain_id,
+        &references.operation_id,
+        &references.reservation_id,
+    ] {
+        identifier(value)?;
+    }
+    transaction::run(connection, |tx| {
+        ensure_schema(tx)?;
+        verify_active_process_custody(tx, &references.operation_id, prepared, active_identity)?;
+        let intent = tx.query(
+            "SELECT package_operation_id,parent_grant_ref,task_id,recipe_id,session_id,context_manifest_id,action_kind,lane,task_revision,package_digest,binding_id,generation,source_epoch,runtime_instance_id,auth_revision,target_domain_id,payload_digest FROM main.gogoke_action_authority_intents WHERE domain_id=? AND operation_id=?",
+            &[&references.domain_id, &references.operation_id],
+            17,
+        )?;
+        let action = tx.query(
+            "SELECT semantic_digest,reservation_id,binding_id,session_id,execution_id,runtime_instance_id,profile_id,auth_revision,generation,lane,action_kind,payload_hex,commitment_record,state FROM main.gogoke_action_reservations WHERE operation_id=?",
+            &[&references.operation_id],
+            14,
+        )?;
+        if intent.len() != 1
+            || action.len() != 1
+            || action[0][1] != references.reservation_id
+            || action[0][13] != "reserved"
+            || action[0][2] != intent[0][10]
+            || action[0][3] != intent[0][4]
+            || action[0][5] != intent[0][13]
+            || action[0][7] != intent[0][14]
+            || action[0][8] != intent[0][11]
+            || action[0][9] != intent[0][7]
+            || action[0][10] != intent[0][6]
+        {
+            return denied();
+        }
+        let payload = decode_hex(&action[0][11])?;
+        let selection = PrepareActionAuthority {
+            domain_id: references.domain_id.clone(),
+            parent_grant_ref: intent[0][1].clone(),
+            package_operation_id: intent[0][0].clone(),
+            task_id: intent[0][2].clone(),
+            recipe_id: intent[0][3].clone(),
+            session_id: intent[0][4].clone(),
+            context_manifest_id: intent[0][5].clone(),
+            action_operation_id: references.operation_id.clone(),
+            reservation_id: references.reservation_id.clone(),
+            action_kind: intent[0][6].clone(),
+            lane: intent[0][7].clone(),
+            payload,
+        };
+        let (package, task, lineage, recipe, profile) = current_selection(tx, &selection)?;
+        let payload_digest = content_hash(&selection.payload);
+        let semantic_digest = intent_digest(
+            &selection,
+            &package.package_digest,
+            &task.task_revision,
+            &recipe.recipe.revision,
+            &recipe.content_hash,
+            &profile.policy_revision,
+            &payload_digest,
+        );
+        let commitment = package_commitment(&package);
+        let manifest_hash = current_manifest_hash_in_transaction(
+            tx,
+            &references.domain_id,
+            &recipe.recipe.context_manifest_id,
+        )?;
+        let admission =
+            current_admission_in_transaction(tx, &profile, &recipe.recipe.admission_ref)?;
+        let leases = tx.query(
+            "SELECT operation_id,candidate_id,resource_ref,resource_revision,resource_reservation_ref FROM main.gogoke_decision_capacity_leases WHERE action_operation_id=?",
+            &[&references.operation_id],
+            5,
+        )?;
+        if leases.len() != 1 {
+            return denied();
+        }
+        let decision = super::decision_replay::read_in_transaction(
+            tx,
+            &references.domain_id,
+            &leases[0][0],
+        )?;
+        let snapshot = tx.query(
+            "SELECT capability_revision,binding_id,binding_generation,policy_revision,task_revision,action_digest,resource_ref,resource_revision,auth_revision FROM main.gogoke_decision_authority_snapshots WHERE operation_id=? AND candidate_id=?",
+            &[&leases[0][0], &leases[0][1]],
+            9,
+        )?;
+        let pool = tx.query(
+            "SELECT revision FROM main.gogoke_decision_capacity_pools WHERE resource_ref=?",
+            &[&leases[0][2]],
+            1,
+        )?;
+        if selection.payload.as_slice() != package.instruction.as_bytes()
+            || intent[0][8] != task.task_revision
+            || intent[0][9] != package.package_digest
+            || intent[0][10] != lineage.native.binding_id
+            || intent[0][11] != lineage.native.generation
+            || intent[0][12] != lineage.native.source_epoch
+            || intent[0][13] != recipe.recipe.runtime_instance_id
+            || intent[0][14] != profile.policy_revision
+            || intent[0][15] != package.target.domain_id
+            || intent[0][16] != payload_digest
+            || action[0][0] != semantic_digest
+            || action[0][4] != package.target_binding.execution_id
+            || action[0][6] != profile.profile_id
+            || action[0][12] != super::super::action::commitment_record(&commitment)
+            || package.parent_grant_ref != admission.reference.grant_id
+            || recipe.recipe.context_manifest_id != selection.context_manifest_id
+            || prepared.binding.profile_id != profile.profile_id
+            || prepared.binding.domain_id != package.target.domain_id
+            || prepared.binding.generation != lineage.native.generation
+            || decision.action_intent_ref != references.operation_id
+            || decision.record.choice != leases[0][1]
+            || decision.record.task_revision != task.task_revision
+            || decision.record.policy_revision != profile.policy_revision
+            || decision.record.binding_generation != lineage.native.generation
+            || decision.resource_reservation_ref != leases[0][4]
+            || snapshot.len() != 1
+            || snapshot[0][0] != decision.record.capability_revision
+            || snapshot[0][1] != lineage.native.binding_id
+            || snapshot[0][2] != lineage.native.generation
+            || snapshot[0][3] != profile.policy_revision
+            || snapshot[0][4] != task.task_revision
+            || snapshot[0][5] != semantic_digest
+            || snapshot[0][6] != leases[0][2]
+            || snapshot[0][7] != leases[0][3]
+            || snapshot[0][8] != profile.policy_revision
+            || pool.len() != 1
+            || pool[0][0] != leases[0][3]
+        {
+            return denied();
+        }
+        let model_ref_digest = super::execution_recipe::model_ref_digest(&recipe.recipe)?;
+        let expires_at_epoch_ms = admission.expires_at_epoch_ms;
+        if expires_at_epoch_ms <= now_epoch_ms()? {
+            return denied();
+        }
+        let derived = vec![
+            profile.policy_revision.clone(),
+            profile.revocation_head.clone(),
+            lineage.native.binding_id.clone(),
+            lineage.native.generation.clone(),
+            lineage.native.source_epoch.clone(),
+            recipe.recipe.runtime_instance_id.clone(),
+            model_ref_digest,
+            decision.record.capability_revision.clone(),
+            recipe.recipe.context_manifest_id.clone(),
+            manifest_hash,
+            admission.reference.grant_id.clone(),
+            admission.reference.revision.clone(),
+            expires_at_epoch_ms.to_string(),
+        ];
+        let current = tx.query(
+            "SELECT facts_revision,policy_revision,revocation_head,binding_id,generation,source_epoch,runtime_instance_id,model_ref_digest,capability_revision,context_manifest_id,context_manifest_hash,admission_ref,admission_revision,expires_at_epoch_ms FROM main.gogoke_action_current_facts WHERE domain_id=? AND operation_id=?",
+            &[&references.domain_id, &references.operation_id],
+            14,
+        )?;
+        let next = if current.is_empty() {
+            tx.write(
+                "INSERT INTO main.gogoke_action_current_facts(domain_id,operation_id,facts_revision,policy_revision,revocation_head,binding_id,generation,source_epoch,runtime_instance_id,model_ref_digest,capability_revision,context_manifest_id,context_manifest_hash,admission_ref,admission_revision,expires_at_epoch_ms) VALUES(?,?,'1',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                &[&references.domain_id, &references.operation_id, &derived[0], &derived[1], &derived[2], &derived[3], &derived[4], &derived[5], &derived[6], &derived[7], &derived[8], &derived[9], &derived[10], &derived[11], &derived[12]],
+            )?;
+            "1".to_owned()
+        } else if current.len() == 1 && current[0][1..] == derived {
+            current[0][0].clone()
+        } else {
+            return Err(OrchestrationError::OperationConflict);
+        };
+        let check = tx.query(
+            "SELECT facts_revision,policy_revision,revocation_head,binding_id,generation,source_epoch,runtime_instance_id,model_ref_digest,capability_revision,context_manifest_id,context_manifest_hash,admission_ref,admission_revision,expires_at_epoch_ms FROM main.gogoke_action_current_facts WHERE domain_id=? AND operation_id=?",
+            &[&references.domain_id, &references.operation_id],
+            14,
+        )?;
+        let mut expected = vec![next.clone()];
+        expected.extend(derived);
+        if check.len() != 1 || check[0] != expected {
+            return Err(OrchestrationError::OperationConflict);
+        }
         Ok(next)
     })
 }
@@ -1071,8 +1298,13 @@ fn decode_hex(value: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[path = "action_authority_tests.rs"]
-pub(super) mod tests;
+pub(super) mod tests {
+    include!("action_authority_tests.rs");
+
+    mod native_current_facts {
+        include!("action_current_facts_tests.rs");
+    }
+}
 
 /// Only durable references and Action identity cross the Product Authority
 /// boundary. Grant, Task, Decision, capacity, lineage, and recipe values are
@@ -1114,6 +1346,7 @@ pub(crate) struct BeginCommittedAction {
 /// Constructed only by trusted native-host code after it has resolved current
 /// runtime/model/capability/manifest/admission facts. Never accepted from IPC.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) struct TrustedNativeActionFacts {
     pub domain_id: String,
     pub operation_id: String,
@@ -1130,6 +1363,13 @@ pub(crate) struct TrustedNativeActionFacts {
     pub admission_ref: String,
     pub admission_revision: String,
     pub expires_at_epoch_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeActionCurrentFactsRefs {
+    pub domain_id: String,
+    pub operation_id: String,
+    pub reservation_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
