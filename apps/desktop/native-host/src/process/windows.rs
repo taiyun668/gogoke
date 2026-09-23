@@ -1702,6 +1702,12 @@ mod tests {
             .join("powershell.exe")
     }
 
+    fn system_cmd() -> PathBuf {
+        PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32")
+            .join("cmd.exe")
+    }
+
     fn unique_marker(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "gogoke-process-{name}-{}-{}",
@@ -1891,17 +1897,13 @@ mod tests {
     fn native_host_prepare_and_activate_are_separate_fail_closed_phases() {
         let marker = unique_marker("two-phase");
         let entry_marker = unique_marker("two-phase-entry");
-        let error_marker = unique_marker("two-phase-error");
-        let mut launch = ProcessLaunch::new(powershell());
+        let mut launch = ProcessLaunch::new(system_cmd());
         launch.arguments = vec![
-            "-NoProfile".to_owned(),
-            "-NonInteractive".to_owned(),
-            "-Command".to_owned(),
+            "/D".to_owned(),
+            "/C".to_owned(),
             format!(
-                "$ErrorActionPreference='Stop'; try {{ [IO.File]::WriteAllText('{}','entered'); [IO.File]::WriteAllText('{}','activated'); exit 0 }} catch {{ [IO.File]::WriteAllText('{}',[string]$_); exit 17 }}",
-                ps_literal(&entry_marker),
-                ps_literal(&marker),
-                ps_literal(&error_marker)
+                "echo entered>\"{}\" && echo activated>\"{}\"",
+                entry_marker.display(), marker.display()
             ),
         ];
         let mut custodian = ProcessCustodian::new().expect("custodian");
@@ -1911,9 +1913,8 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
         assert!(
             !marker.exists(),
-            "prepare must not run the child; entry={:?} error={:?}",
-            entry_marker.exists(),
-            fs::read_to_string(&error_marker).ok()
+            "prepare must not run the child; entry={:?}",
+            entry_marker.exists()
         );
 
         let mismatch = PreparedCustody {
@@ -1929,9 +1930,8 @@ mod tests {
         ));
         assert!(
             !marker.exists(),
-            "identity mismatch must remain suspended; entry={:?} error={:?}",
-            entry_marker.exists(),
-            fs::read_to_string(&error_marker).ok()
+            "identity mismatch must remain suspended; entry={:?}",
+            entry_marker.exists()
         );
 
         custodian
@@ -1943,20 +1943,18 @@ mod tests {
         let exit_code = process_exit_code(active.process.raw()).ok().flatten();
         assert!(
             waited,
-            "fixture did not finish: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
+            "fixture did not finish: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={}",
             started.elapsed().as_millis(),
             active.active_job_processes().ok(),
-            entry_marker.exists(),
-            fs::read_to_string(&error_marker).ok()
+            entry_marker.exists()
         );
         assert_eq!(
-            fs::read_to_string(&marker).ok().as_deref(),
-            Some("activated"),
-            "fixture activation failed: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
+            fs::read_to_string(&marker).ok().map(|value| value.trim().to_owned()),
+            Some("activated".to_owned()),
+            "fixture activation failed: elapsed_ms={} process_exit_code={exit_code:?} active_job_processes={:?} entry_marker={}",
             started.elapsed().as_millis(),
             active.active_job_processes().ok(),
-            entry_marker.exists(),
-            fs::read_to_string(&error_marker).ok()
+            entry_marker.exists()
         );
         let proof = custodian
             .stop(
@@ -2001,7 +1999,6 @@ mod tests {
         ));
         let _ = fs::remove_file(marker);
         let _ = fs::remove_file(entry_marker);
-        let _ = fs::remove_file(error_marker);
     }
 
     #[test]
