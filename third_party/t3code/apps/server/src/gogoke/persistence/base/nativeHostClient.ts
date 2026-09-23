@@ -104,6 +104,32 @@ export interface NativeR2TestDelegationReceipt {
   readonly expiresAtEpochMs: string;
 }
 
+export interface NativeR2TestContextGrantReceipt {
+  readonly state: "TEST_ONLY_CONTEXT_GRANT_PREPARED";
+  readonly grantRef: string;
+  readonly revision: string;
+  readonly revocationHead: string;
+}
+
+export function decodeR2TestContextGrantReceipt(body: string): NativeR2TestContextGrantReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_CONTEXT", "invalid native Context grant reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_CONTEXT", "invalid native Context grant reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 4 ||
+      record.state !== "TEST_ONLY_CONTEXT_GRANT_PREPARED" ||
+      typeof record.grantRef !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.grantRef) ||
+      typeof record.revision !== "string" || !/^[1-9][0-9]*$/.test(record.revision) ||
+      typeof record.revocationHead !== "string" || !/^(0|[1-9][0-9]*)$/.test(record.revocationHead)) {
+    throw new NativeHostClientError("R2_TEST_CONTEXT", "native Context grant identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestContextGrantReceipt);
+}
+
 export interface NativeR2TestPackageReceipt {
   readonly state: "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION";
   readonly disposition: "COMMITTED" | "REPLAYED";
@@ -2074,6 +2100,21 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
     return decodeR2TestDelegationReceipt(body);
+  }
+
+  async prepareR2TestContextGrant(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestContextGrantReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestContextGrant",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestContextGrantReceipt(body);
   }
 
   async prepareR2TestPackage(

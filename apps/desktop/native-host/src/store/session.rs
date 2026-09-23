@@ -1091,6 +1091,22 @@ fn handle_authenticated_line_with_process(
                 json_quote(&grant.reference.revocation_head),
                 json_quote(&grant.expires_at_epoch_ms.to_string())))
         }
+        "PrepareR2TestContextGrant" => {
+            let fields = action_fields(line, &[
+                "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::issue_r2_public_context_grant_once(connection, owner, &admitted)?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_CONTEXT_GRANT_PREPARED\",\"grantRef\":{},\"revision\":{},\"revocationHead\":{}}}",
+                json_quote(&grant.grant_id), json_quote(&grant.revision),
+                json_quote(&grant.revocation_head)))
+        }
         "PrepareR2TestTask" => {
             let fields = action_fields(line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",

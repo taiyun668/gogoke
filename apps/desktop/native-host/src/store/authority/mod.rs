@@ -1,6 +1,7 @@
 //! Native Product Authority, in the product's existing Route-B SQLite domain.
 //! No model/adapter/Node caller can construct an OwnerIssuer or issue grants.
 //! Grant validation is transaction-scoped, not a second Context-side authority.
+pub(crate) const PUBLIC_R2_MANIFEST_BLOB: &str = "17afbba28795338561530927595fda93fd8a2a11";
 mod bootstrap;
 mod catalog;
 mod delegation;
@@ -104,7 +105,8 @@ pub(crate) use execution_recipe::{
 
 pub(crate) use bootstrap::OwnerIssuer;
 pub(crate) use catalog::{
-    delegate_owner_grant, issue_owner_grant, revise_owner_grant, revoke_owner_grant,
+    delegate_owner_grant, issue_owner_grant, issue_r2_public_context_grant_once,
+    revise_owner_grant, revoke_owner_grant,
 };
 pub(crate) use context_read::{
     read_grantee_context, read_owner_context, AuthorizedContextReadSnapshot, ContextReadRequest,

@@ -19,6 +19,7 @@ import type {
   NativeControllerCallerContext,
   NativeControllerAdmissionReceipt,
   NativeR2TestDelegationReceipt,
+  NativeR2TestContextGrantReceipt,
   NativeR2TestPackageReceipt,
   NativeR2TestLineageReceipt,
   NativeR2TestTaskReceipt,
@@ -77,6 +78,9 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   readonly prepareR2TestDelegation?: (
     caller: NativeControllerCallerContext,
   ) => Promise<NativeR2TestDelegationReceipt>;
+  readonly prepareR2TestContextGrant?: (
+    caller: NativeControllerCallerContext,
+  ) => Promise<NativeR2TestContextGrantReceipt>;
   readonly prepareR2TestPackage?: (
     caller: NativeControllerCallerContext,
     promptJson: string,

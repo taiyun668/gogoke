@@ -92,6 +92,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     let actionDigest: string | undefined;
     let decisionReceiptId: string | undefined;
     let manifestHash: string | undefined;
+    let nativeActionCompletionRef: string | undefined;
     const decisionRecordedAt = new Date().toISOString();
     const promptJson = JSON.stringify({ type: "prompt", message, id: "gogoke-pi-1" });
     for (let task = 0; task < 2; task += 1) {
@@ -161,9 +162,24 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
           protectedDomainQualified: false, contextExposure: "UNKNOWN" },
         sink: { async write(chunk) {
           Assert.equal(Buffer.from(chunk).toString("utf8"), `${promptJson}\n`);
-          const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
-          stopProofHash = evidence.stopProofHash;
-          for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
+          if (task === 0) {
+            const evidence = await client!.runControlledFixtureAction({
+              caller, domainId: "domain-r2-02-test",
+              operationId: "opr_22222222222222222222222222222222",
+              reservationId: "reservation-r2-02-controlled", promptJson,
+            });
+            Assert.equal(evidence.state, "ACTION_TRANSPORT_COMPLETED_NOT_RESULT");
+            if (evidence.state !== "ACTION_TRANSPORT_COMPLETED_NOT_RESULT") {
+              throw new Error("Action did not produce fresh transport evidence");
+            }
+            nativeActionCompletionRef = evidence.actionCompletionRef;
+            stopProofHash = evidence.stopProofHash;
+            for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
+          } else {
+            const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
+            stopProofHash = evidence.stopProofHash;
+            for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
+          }
         } },
       });
       const observation = await session.promptAndObserveSettlement(message, 30_000);
@@ -173,6 +189,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       Assert.equal(result.state, "VALIDATED_TEST_RESULT_NOT_ADOPTED");
       Assert.equal(result.sourceBlob, source.gitBlob);
     }
+    Assert.match(nativeActionCompletionRef ?? "", /^[A-Za-z0-9][A-Za-z0-9._:/-]+$/);
     Assert.equal(proofs.size, 2, "separate operations retain separate native custody");
     await client.close();
     client = undefined;

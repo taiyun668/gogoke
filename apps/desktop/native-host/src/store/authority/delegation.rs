@@ -13,11 +13,9 @@ use super::model::{denied, identifier, next_revision, revision, GrantRef};
 use super::transaction::{self, Result, Transaction};
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const R2_V2_MANIFEST_BLOB: &str = "17afbba28795338561530927595fda93fd8a2a11";
-
 pub(crate) fn r2_test_grant_id(operation_id: &str) -> Result<String> {
     identifier(operation_id)?;
-    let digest = content_hash(format!("r2-02-test-grant:{R2_V2_MANIFEST_BLOB}:{operation_id}").as_bytes());
+    let digest = content_hash(format!("r2-02-test-grant:{}:{operation_id}", super::PUBLIC_R2_MANIFEST_BLOB).as_bytes());
     Ok(format!("grant:r2-02:{}", &digest[7..]))
 }
 const CEILING_AXES: [&str; 7] = [
