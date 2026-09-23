@@ -140,8 +140,8 @@ Owner-facing interaction plane 和 product kernel plane 是同一产品的两个
 ```text
 Owner ↔ Project Controller
 Project Controller → 自主启用/调用 Worker
-Owner ↔ Worker 侧边对话
-Owner ↔ Project Auditor 私聊
+Owner ↔ Project Auditor / Secretary-General 侧边聊天（不打断 Controller 推进，用于了解、讨论、总结情况）
+侧边聊天中形成的调整 → 由 Owner 选定后递交 Project Controller
 Secretary-General ↔ 多 Project → 向 Owner 汇报全局
 ```
 
