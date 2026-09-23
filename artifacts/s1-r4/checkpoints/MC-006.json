@@ -1,0 +1,64 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-006",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "f6fc93b91b3d3f4a4f6bf31cbcef8016982f2a77",
+  "recorded_utc": "2026-09-23T00:38:39Z",
+  "reason": "Resolve WP10A migration scope, distinguish new test provenance, and bind the completed installer run and fresh candidate evidence",
+  "prior_desktop_ci": {
+    "run_id": "35800598752",
+    "bound_commit": "0ba04988c89f61e8ddd381737452a1753ad60e32",
+    "final_state": "SUCCESS",
+    "browser_job": "SUCCESS; typecheck, vitest run, and frontend build executed",
+    "unsigned_windows_nsis_job": "SUCCESS; no failed or skipped steps",
+    "non_claim": "Unsigned cloud build is not signing, publication, installation on Windows 11, or S1-R4 gate acceptance"
+  },
+  "wp10a_scope_decision": {
+    "conclusion": "IN_SCOPE_COMPLETE_AS_CANDIDATE",
+    "basis": "Owner's earlier two-path authorization and private WP10A scope-closure commit 660dece9 bind the legacy codec deletion to the preserved-disabled mobile hook; carrying only the hook left the similarly named mutable legacy codec available for a future wrong import",
+    "private_source": "codex/r4-scope-closure-r1@660dece9",
+    "public_candidate_branch": "codex/gogoke-wp10a-scope-closure-r1",
+    "public_candidate_commit": "5702d7035513bc88af9b9fa8ac7b541657ac914a",
+    "legacy_codec_action": "Deleted apps/desktop/src/services/public/codec.ts and codec.test.ts; no other source path changed on this candidate branch",
+    "mobile_hook": "apps/desktop/src/features/mobile/hooks/useMobileServerSetup.ts blob 0df84e2d39e2285c13aef9e2e4c118093f203d75 equals private 660dece9",
+    "settings_test_provenance": "apps/desktop/src/features/settings/components/SettingsView.test.tsx was newly rewritten in public main at 0ba04988; it is not byte-identical migration from private 660dece9 and requires fresh review",
+    "non_claim": "This is a construction candidate, not independent acceptance or WP10A gate completion"
+  },
+  "candidate_checks": {
+    "local_typecheck": "npm run typecheck exit 0 after deletion",
+    "local_production_build": "npm run build exit 0 after deletion; 2968 modules transformed",
+    "source_map_build": "npx vite build --sourcemap exit 0; 305 source maps generated",
+    "bundle_and_map_scan": "0 matches for services/public/codec; positive control found useMobileServerSetup.ts in a generated map; original production build emitted no maps",
+    "source_scan": "24134 committed files, 0 leaks; known-sensitive positive control rejected",
+    "cloud_run_id": "35802709546",
+    "cloud_bound_commit": "5702d7035513bc88af9b9fa8ac7b541657ac914a",
+    "cloud_browser_job_id": "106996449058",
+    "cloud_browser_job": "SUCCESS; typecheck, npm test, and frontend build all executed",
+    "cloud_unsigned_nsis_job_id": "106996961429",
+    "cloud_unsigned_nsis_at_checkpoint": "IN_PROGRESS; no final result inferred"
+  },
+  "review_route": {
+    "reviewer": "Claude, independent of construction",
+    "binding": "Review public candidate 5702d7035513bc88af9b9fa8ac7b541657ac914a against private 660dece9 and public main parent f6fc93b9, including the new SettingsView test provenance and post-deletion build graph evidence",
+    "state": "REQUEST_READY_NOT_YET_INDEPENDENTLY_REVIEWED",
+    "no_self_acceptance": true
+  },
+  "generated_custody": "Ignored dependency and build outputs remain in the D-drive candidate worktree; exact absolute paths are recorded in the external local custody note, not in this public checkpoint and not in Git",
+  "unresolved": [
+    "WP10A candidate requires fresh Claude review before any acceptance or main integration",
+    "Candidate unsigned Windows NSIS job has no final result at this checkpoint",
+    "N1 release-object checker lacks fresh independent review/current-candidate qualification",
+    "59 due checks remain unpromoted; no gate state changes"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Take the candidate's final cloud run result; obtain fresh Claude review of exact commit 5702d703 before integrating WP10A to main. Continue dependency-safe S1-R4 work without treating candidate or CI as gate acceptance."
+}
