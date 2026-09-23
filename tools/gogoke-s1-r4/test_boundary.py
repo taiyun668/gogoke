@@ -70,11 +70,15 @@ class R4BoundaryTests(unittest.TestCase):
         self.assertIn("enumerable", error or "")
 
     def test_T68_D_authorization_anchor(self):
+        oid, _ = self.runner.git_oid(self.runner.git_identity()["commit"], self.runner.AUTH_REL)
         auth, errors = self.runner.auth_from_candidate(self.runner.git_identity())
-        self.assertFalse(errors, errors)
-        self.assertIsNotNone(auth)
-        self.assertEqual("MANUAL_SEND_OF_FIXED_S1_R4_START", auth["owner_instruction"])
-        self.assertFalse(auth["completion_claim"])
+        if oid is None:
+            self.assertIsNone(auth)
+            self.assertTrue(errors)
+        else:
+            self.assertFalse(errors, errors)
+            self.assertEqual("taiyun668/gogoke", auth["repository"])
+            self.assertIsNotNone(auth["owner_merge_commit"])
 
     def test_source_diagnostic_fake_cannot_claim_native_or_owner_evidence(self):
         registry = copy.deepcopy(self.runner.read_registry())

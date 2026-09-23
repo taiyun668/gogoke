@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -98,7 +99,7 @@ class RunnerTests(unittest.TestCase):
         def fake_command(entry, _candidate, _temp):
             blocked = entry["id"] == registry["codec"][0]["id"]
             return {"id": entry["id"], "group": "codec", "check_ids": ["T05.L"], "planned_test_tags": {"T05.L": "gogoke-s1-r4/T05.L"}, "observed_cases": entry["observed_cases"], "selector": entry["selector"], "status": "BLOCKED" if blocked else "PASS", "reason": "simulated", "observed_names": [] if blocked else ["pass-marker"]}
-        with mock.patch.object(self.runner, "git_identity", return_value=clean), mock.patch.object(self.runner, "bind_registry", return_value={"errors": [], "ok": True}), mock.patch.object(self.runner, "read_registry", return_value=registry), mock.patch.object(self.runner, "run_command", side_effect=fake_command):
+        with mock.patch.object(self.runner, "git_identity", return_value=clean), mock.patch.object(self.runner, "bind_registry", return_value={"errors": [], "ok": True}), mock.patch.object(self.runner, "read_registry", return_value=registry), mock.patch.object(self.runner, "run_command", side_effect=fake_command), mock.patch.object(self.runner, "auth_and_plan_identity", return_value=({"authorization": {"fixture": True}}, [])):
             report = self.runner.build_report(self.plan, "codec", registry, invoked_argv=["runner"])
         self.assertEqual("BLOCKED", report["status"])
         self.assertFalse(any("case marker" in error for error in report["instrument_errors"]))
@@ -229,25 +230,84 @@ class RunnerTests(unittest.TestCase):
             status, _ = self.runner.command_status(counts, exit_code=0, target_committed=True, tool="node", error=error, timed_out=False)
             self.assertEqual("FAIL_EXECUTION", status)
 
-    def test_forged_auth_and_nonzero_budget_fail(self):
-        auth, errors = self.runner.auth_from_candidate(self.runner.git_identity())
-        self.assertFalse(errors, errors)
-        self.assertIsNotNone(auth)
+    def public_auth_fixture(self):
+        binding = {"authorization_receipt_schema": "gogoke.s1-r4.public-authorization.v1"}
+        auth = {
+            "schema": binding["authorization_receipt_schema"],
+            "owner_instruction": self.runner.AUTH_OWNER_INSTRUCTION,
+            "validity": {
+                "path": self.runner.AUTH_REL,
+                "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
+                "missing_stale_or_inconsistent": "FAIL_CLOSED",
+            },
+            "repository": "taiyun668/gogoke",
+            "plan": {
+                "provenance_plan_commit": self.runner.PLAN_COMMIT,
+                "public_plan_path": f"{self.runner.PLAN_REL}/",
+                "public_plan_manifest_blob": "a" * 40,
+                "stale_when": "the public plan MANIFEST.json blob differs from the value above",
+            },
+            "carryover": {
+                "source_archive_repository": "taiyun668/gogo-party",
+                "source_archive_head": "b976e8f29f8d41adffa9ee60d3fe464a2fc3505e",
+                "public_content_import_commit": "f3136b0a84086d7b5f77abb1f87e854648cd54e3",
+                "public_carryover_checkpoint": "MC-001",
+            },
+            "authorized_gates": ["G0", "G1", "G2", "G3", "G4", "G5"],
+            "continuous_after_gate_pass": True,
+            "completion_claim": False,
+        }
+        return auth, binding
+
+    def test_public_authorization_draft_rejects_extra_fields_and_stale_plan(self):
+        auth, binding = self.public_auth_fixture()
+        self.assertEqual([], self.runner.validate_auth_value(auth, binding, "a" * 40))
         forged = copy.deepcopy(auth)
         forged["live_budget"] = 1
-        self.assertTrue(self.runner.validate_auth_value(forged))
+        self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
         forged = copy.deepcopy(auth)
         forged["repository"] = "attacker/repo"
-        self.assertTrue(self.runner.validate_auth_value(forged))
+        self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
         forged = copy.deepcopy(auth)
         forged["owner_instruction"] = "arbitrary-string"
-        self.assertTrue(self.runner.validate_auth_value(forged))
+        self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
         forged = copy.deepcopy(auth)
-        forged["execution_branch"] = "attacker-branch"
-        self.assertTrue(self.runner.validate_auth_value(forged))
+        forged["plan"]["public_plan_manifest_blob"] = "b" * 40
+        self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
         forged = copy.deepcopy(auth)
         forged["completion_claim"] = True
-        self.assertTrue(self.runner.validate_auth_value(forged))
+        self.assertTrue(self.runner.validate_auth_value(forged, binding, "a" * 40))
+
+    def test_public_authorization_missing_fails_closed(self):
+        _auth, binding = self.public_auth_fixture()
+        with mock.patch.object(self.runner, "public_binding", return_value=(binding, "a" * 40, [])), mock.patch.object(self.runner, "git_oid", return_value=(None, None)):
+            value, errors = self.runner.auth_from_candidate({"commit": "a" * 40})
+        self.assertIsNone(value)
+        self.assertTrue(any("not a committed blob" in error for error in errors))
+
+    def test_github_owner_merge_lookup_fails_closed_on_non_owner_and_api_error(self):
+        merge = "a" * 40
+        associated = [{"merge_commit_sha": merge, "base": {"ref": "main", "repo": {"full_name": "taiyun668/gogoke"}}, "number": 17}]
+        detail = {"merge_commit_sha": merge, "merged_at": "2026-09-22T00:00:00Z", "merged_by": {"login": "other"}, "base": {"ref": "main", "repo": {"full_name": "taiyun668/gogoke"}}}
+        responses = [io.BytesIO(json.dumps(item).encode()) for item in (associated, detail)]
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "fixture-only"}), mock.patch.object(self.runner.urllib.request, "urlopen", side_effect=responses):
+            accepted, error = self.runner.owner_merged_public_authorization(merge)
+        self.assertFalse(accepted)
+        self.assertIn("no matching", error or "")
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "fixture-only"}), mock.patch.object(self.runner.urllib.request, "urlopen", side_effect=OSError("offline")):
+            accepted, error = self.runner.owner_merged_public_authorization(merge)
+        self.assertFalse(accepted)
+        self.assertIn("failed closed", error or "")
+
+    def test_github_owner_merge_lookup_accepts_only_matching_main_merge(self):
+        merge = "a" * 40
+        associated = [{"merge_commit_sha": merge, "base": {"ref": "main", "repo": {"full_name": "taiyun668/gogoke"}}, "number": 17}]
+        detail = {"merge_commit_sha": merge, "merged_at": "2026-09-22T00:00:00Z", "merged_by": {"login": "taiyun668"}, "base": {"ref": "main", "repo": {"full_name": "taiyun668/gogoke"}}}
+        responses = [io.BytesIO(json.dumps(item).encode()) for item in (associated, detail)]
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "fixture-only"}), mock.patch.object(self.runner.urllib.request, "urlopen", side_effect=responses):
+            accepted, error = self.runner.owner_merged_public_authorization(merge)
+        self.assertTrue(accepted)
+        self.assertIsNone(error)
 
     def test_fixed_git_plan_ignores_worktree_crlf_drift(self):
         self.assertFalse(self.plan["errors"], self.plan["errors"])

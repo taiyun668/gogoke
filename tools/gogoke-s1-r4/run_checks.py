@@ -8,8 +8,9 @@ when its selector and target are committed in the candidate, its framework
 machine output is present and valid, and every check binding carries the exact
 planned tag from the fixed R4 plan.
 
-This runner does not accept a worktree plan as authority.  Plan bytes are read
-from the fixed PLAN_COMMIT Git object, which avoids Windows CRLF/charmap drift.
+This runner does not accept a worktree plan as authority. Public plan bytes are
+read from the candidate Git object and locked by the Owner-merged authorization
+MANIFEST blob; PLAN_COMMIT remains the private provenance identity.
 Successful test execution is evidence for independent review, never product
 or gate acceptance.  Registry readiness and evidence-layer metadata are
 mechanically bound to each command; a missing target must carry an explicit
@@ -30,6 +31,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +45,11 @@ REGISTRY_PATH = ROOT / REGISTRY_REL
 PLAN_REL = "docs/design/gogoke-s1-r4-plan-v1"
 PLAN_COMMIT = "cbdc6ad592947370941024a87dbb9168a5b59055"
 SOURCE_HEAD = "88ef8e7dfbf5ba5aef58743dc45fa660f946276e"
-AUTH_REL = "artifacts/s1-r4/intake/AUTHORIZATION_RECEIPT.json"
-AUTH_ANCHOR_COMMIT = "22bc544fef3bf3f156bd3a80c7f69d24f386e22e"
-AUTH_OWNER_INSTRUCTION = "MANUAL_SEND_OF_FIXED_S1_R4_START"
-AUTH_EXECUTION_BRANCH = "codex/gogoke-s1-r4-execution-r1"
+PUBLIC_BINDING_REL = f"{PLAN_REL}/PUBLIC_EXECUTION_BINDING.json"
+PUBLIC_MANIFEST_REL = f"{PLAN_REL}/MANIFEST.json"
+AUTH_REL = "artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json"
+AUTH_OWNER_INSTRUCTION = "OWNER_MERGED_PUBLIC_S1_R4_AUTHORIZATION"
+PUBLIC_REPOSITORY = "taiyun668/gogoke"
 TOOLCHAIN_RECEIPT_REL = "artifacts/s1-r4/intake/CONTROLLER_TOOLCHAIN_RECEIPT.json"
 TOOLCHAIN_RECEIPT_SCHEMA = "gogoke.s1-r4.controller-toolchain-receipt.v1"
 BLOCKED_UNQUALIFIED_REASONS = {"RUST_CLOSURE_NOT_QUALIFIED", "TOOLCHAIN_NOT_QUALIFIED", "DEPENDENCY_CLOSURE_NOT_QUALIFIED"}
@@ -233,10 +237,13 @@ def fixed_plan_root(value: str) -> Path:
 
 
 def load_fixed_plan(plan_root: Path) -> dict[str, Any]:
-    manifest = load_json_bytes(git_bytes(PLAN_COMMIT, f"{PLAN_REL}/MANIFEST.json"), "MANIFEST.json")
+    public_commit = git_identity().get("commit")
+    if not public_commit:
+        raise RunnerError("public candidate HEAD is unavailable")
+    manifest = load_json_bytes(git_bytes(public_commit, PUBLIC_MANIFEST_REL), "MANIFEST.json")
     expected = manifest.get("sha256")
     if not isinstance(expected, dict) or not expected:
-        raise RunnerError("fixed plan manifest has no sha256 map")
+        raise RunnerError("public candidate plan manifest has no sha256 map")
     files: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
     for relative, expected_sha in expected.items():
@@ -245,14 +252,14 @@ def load_fixed_plan(plan_root: Path) -> dict[str, Any]:
             continue
         object_path = f"{PLAN_REL}/{relative}"
         try:
-            data = git_bytes(PLAN_COMMIT, object_path)
-            oid, oid_error = git_oid(PLAN_COMMIT, object_path)
+            data = git_bytes(public_commit, object_path)
+            oid, oid_error = git_oid(public_commit, object_path)
             observed = sha256_bytes(data)
             files[relative] = {"sha256": observed, "bytes": len(data), "git_blob": oid}
             if observed != expected_sha.upper():
-                errors.append(f"fixed plan hash mismatch: {relative}")
+                errors.append(f"public candidate plan hash mismatch: {relative}")
             if oid_error:
-                errors.append(f"fixed plan blob error: {relative}: {oid_error}")
+                errors.append(f"public candidate plan blob error: {relative}: {oid_error}")
         except RunnerError as exc:
             errors.append(str(exc))
     required = {
@@ -261,21 +268,22 @@ def load_fixed_plan(plan_root: Path) -> dict[str, Any]:
         "inputs/LEGACY_TASKS.json", "inputs/LEGACY_TEST_MATRIX.json", "inputs/CAPABILITIES.tsv",
     }
     if not required.issubset(set(expected)):
-        errors.append("fixed plan manifest is missing required files")
+        errors.append("public candidate plan manifest is missing required files")
     if errors:
         # Keep all facts in a structured report while preventing execution.
         plan_error = "; ".join(errors)
     else:
         plan_error = None
     def fixed_json(relative: str) -> dict[str, Any]:
-        return load_json_bytes(git_bytes(PLAN_COMMIT, f"{PLAN_REL}/{relative}"), relative)
+        return load_json_bytes(git_bytes(public_commit, f"{PLAN_REL}/{relative}"), relative)
 
     return {
         "root": plan_root,
         "commit": PLAN_COMMIT,
+        "public_commit": public_commit,
         "source_head": SOURCE_HEAD,
         "manifest": manifest,
-        "manifest_sha256": sha256_bytes(git_bytes(PLAN_COMMIT, f"{PLAN_REL}/MANIFEST.json")),
+        "manifest_sha256": sha256_bytes(git_bytes(public_commit, PUBLIC_MANIFEST_REL)),
         "files": files,
         "errors": errors,
         "checks": fixed_json("CHECKS.json"),
@@ -285,7 +293,7 @@ def load_fixed_plan(plan_root: Path) -> dict[str, Any]:
         "inputs": fixed_json("INPUTS.json"),
         "legacy_tasks": fixed_json("inputs/LEGACY_TASKS.json"),
         "legacy_matrix": fixed_json("inputs/LEGACY_TEST_MATRIX.json"),
-        "capabilities_tsv": git_text(PLAN_COMMIT, f"{PLAN_REL}/inputs/CAPABILITIES.tsv"),
+        "capabilities_tsv": git_text(public_commit, f"{PLAN_REL}/inputs/CAPABILITIES.tsv"),
         "fixed_plan_error": plan_error,
     }
 
@@ -598,58 +606,156 @@ def bind_registry(candidate: dict[str, Any], supplied: dict[str, list[dict[str, 
     return {"supplied_digest": supplied_digest, "worktree_digest": worktree_digest, "candidate_digest": candidate_digest, "errors": errors, "ok": not errors}
 
 
-def validate_auth_value(value: dict[str, Any]) -> list[str]:
+def validate_auth_value(value: dict[str, Any], binding: dict[str, Any], manifest_blob: str) -> list[str]:
     errors: list[str] = []
     required = {
-        "schema": "gogoke.s1-r4.authorization-receipt.v1",
+        "schema": binding["authorization_receipt_schema"],
         "owner_instruction": AUTH_OWNER_INSTRUCTION,
-        "repository": "taiyun668/gogo-party",
-        "plan_commit": PLAN_COMMIT,
-        "source_head": SOURCE_HEAD,
-        "execution_branch": AUTH_EXECUTION_BRANCH,
-        "live_gn_authorized": False,
-        "live_egress_authorized": False,
-        "live_budget": 0,
-        "merge_authorized": False,
-        "force_push_authorized": False,
-        "real_accounts_authorized": False,
-        "user_data_migration_authorized": False,
-        "external_listener_authorized": False,
-        "live_daemon_authorized": False,
-        "microphone_or_model_download_authorized": False,
-        "install_publish_authorized": False,
+        "repository": PUBLIC_REPOSITORY,
+        "continuous_after_gate_pass": True,
         "completion_claim": False,
     }
     for key, expected in required.items():
-        if value.get(key) != expected:
+        if type(value.get(key)) is not type(expected) or value.get(key) != expected:
             errors.append(f"authorization {key} expected {expected!r}, observed {value.get(key)!r}")
-    if not isinstance(value.get("authorized_gates"), list) or set(value["authorized_gates"]) != {"G0", "G1", "G2", "G3", "G4", "G5"}:
-        errors.append("authorization authorized_gates is not exactly G0-G5")
+    expected_validity = {
+        "path": AUTH_REL,
+        "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
+        "missing_stale_or_inconsistent": "FAIL_CLOSED",
+    }
+    expected_plan = {
+        "provenance_plan_commit": PLAN_COMMIT,
+        "public_plan_path": f"{PLAN_REL}/",
+        "public_plan_manifest_blob": manifest_blob,
+        "stale_when": "the public plan MANIFEST.json blob differs from the value above",
+    }
+    expected_carryover = {
+        "source_archive_repository": "taiyun668/gogo-party",
+        "source_archive_head": "b976e8f29f8d41adffa9ee60d3fe464a2fc3505e",
+        "public_content_import_commit": "f3136b0a84086d7b5f77abb1f87e854648cd54e3",
+        "public_carryover_checkpoint": "MC-001",
+    }
+    for key, expected in (("validity", expected_validity), ("plan", expected_plan), ("carryover", expected_carryover)):
+        if value.get(key) != expected:
+            errors.append(f"authorization {key} differs from the public binding")
+    if value.get("authorized_gates") != ["G0", "G1", "G2", "G3", "G4", "G5"]:
+        errors.append("authorization authorized_gates is not exactly ordered G0-G5")
+    if set(value) != set(required) | {"validity", "plan", "carryover", "authorized_gates"}:
+        errors.append("authorization field set differs from the Owner draft")
     return errors
+
+
+def public_binding(candidate_commit: str) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+    errors: list[str] = []
+    try:
+        binding_bytes = git_bytes(candidate_commit, PUBLIC_BINDING_REL)
+        manifest_bytes = git_bytes(candidate_commit, PUBLIC_MANIFEST_REL)
+        binding = load_json_bytes(binding_bytes, PUBLIC_BINDING_REL)
+        manifest = load_json_bytes(manifest_bytes, PUBLIC_MANIFEST_REL)
+        if binding.get("schema") != "gogoke.s1-r4.public-execution-binding.v1" or binding.get("repository") != PUBLIC_REPOSITORY:
+            errors.append("public execution binding repository/schema mismatch")
+        if binding.get("provenance_plan_commit") != PLAN_COMMIT or binding.get("authorization_receipt_path") != AUTH_REL or binding.get("authorization_receipt_schema") != "gogoke.s1-r4.public-authorization.v1":
+            errors.append("public execution binding provenance/authorization mismatch")
+        expected_hash = manifest.get("sha256", {}).get("PUBLIC_EXECUTION_BINDING.json")
+        if expected_hash != hashlib.sha256(binding_bytes).hexdigest():
+            errors.append("public execution binding does not match current plan manifest")
+        oid, oid_error = git_oid(candidate_commit, PUBLIC_MANIFEST_REL)
+        if oid_error or not oid:
+            errors.append(f"current public plan manifest is not a committed blob: {oid_error}")
+        return binding, oid, errors
+    except (RunnerError, TypeError, AttributeError) as exc:
+        return None, None, [f"public plan binding unavailable: {exc}"]
+
+
+def authorization_introduction(candidate_commit: str) -> tuple[str | None, list[str]]:
+    process = git_run(["log", "--first-parent", "-m", "--diff-filter=A", "--format=%H", candidate_commit, "--", AUTH_REL])
+    if process.returncode != 0:
+        return None, ["authorization introduction history cannot be read"]
+    commits = process.stdout.decode("ascii", "replace").splitlines()
+    if len(commits) != 1 or not re.fullmatch(r"[0-9a-f]{40}", commits[0]):
+        return None, ["authorization must have exactly one first-parent introduction commit"]
+    merge = commits[0]
+    parents = git_run(["rev-list", "--parents", "-n", "1", merge])
+    if parents.returncode != 0 or len(parents.stdout.decode("ascii", "replace").split()) != 3:
+        return None, ["authorization introduction is not an ordinary two-parent merge commit"]
+    ancestor = git_run(["merge-base", "--is-ancestor", merge, candidate_commit])
+    if ancestor.returncode != 0:
+        return None, ["authorization merge is not a candidate ancestor"]
+    return merge, []
+
+
+def owner_merged_public_authorization(merge_commit: str) -> tuple[bool, str | None]:
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return False, "read-only GITHUB_TOKEN unavailable"
+    url = f"https://api.github.com/repos/{PUBLIC_REPOSITORY}/commits/{merge_commit}/pulls"
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            pulls = json.load(response)
+        if not isinstance(pulls, list):
+            return False, "GitHub associated-PR response is not a list"
+        for item in pulls:
+            if item.get("merge_commit_sha") != merge_commit or item.get("base", {}).get("ref") != "main":
+                continue
+            if item.get("base", {}).get("repo", {}).get("full_name") != PUBLIC_REPOSITORY:
+                continue
+            number = item.get("number")
+            if type(number) is not int:
+                continue
+            detail_request = urllib.request.Request(
+                f"https://api.github.com/repos/{PUBLIC_REPOSITORY}/pulls/{number}",
+                headers=request.headers,
+            )
+            with urllib.request.urlopen(detail_request, timeout=15) as response:
+                detail = json.load(response)
+            if (detail.get("merge_commit_sha") == merge_commit and detail.get("merged_at")
+                    and detail.get("merged_by", {}).get("login") == "taiyun668"
+                    and detail.get("base", {}).get("ref") == "main"
+                    and detail.get("base", {}).get("repo", {}).get("full_name") == PUBLIC_REPOSITORY):
+                return True, None
+        return False, "GitHub has no matching main PR merged_by taiyun668"
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        return False, f"GitHub authorization lookup failed closed: {type(exc).__name__}"
 
 
 def auth_from_candidate(candidate: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
-    oid, oid_error = git_oid(candidate.get("commit") or "HEAD", AUTH_REL)
+    commit = candidate.get("commit") or "HEAD"
+    binding, manifest_blob, binding_errors = public_binding(commit)
+    errors.extend(binding_errors)
+    if binding is None or manifest_blob is None or errors:
+        return None, errors
+    oid, oid_error = git_oid(commit, AUTH_REL)
     if oid_error or not oid:
         errors.append(f"authorization receipt is not a committed blob: {oid_error or AUTH_REL}")
         return None, errors
     try:
-        value = load_json_bytes(git_bytes(candidate["commit"], AUTH_REL), AUTH_REL)
+        value = load_json_bytes(git_bytes(commit, AUTH_REL), AUTH_REL)
     except RunnerError as exc:
         errors.append(str(exc))
         return None, errors
-    errors.extend(validate_auth_value(value))
+    errors.extend(validate_auth_value(value, binding, manifest_blob))
+    merge, introduction_errors = authorization_introduction(commit)
+    errors.extend(introduction_errors)
     try:
-        anchor_bytes = git_bytes(AUTH_ANCHOR_COMMIT, AUTH_REL)
-        current_bytes = git_bytes(candidate["commit"], AUTH_REL)
-        if current_bytes != anchor_bytes:
-            errors.append("authorization receipt does not match the fixed authorization anchor")
+        if merge and git_bytes(merge, AUTH_REL) != git_bytes(commit, AUTH_REL):
+            errors.append("authorization receipt blob differs from Owner merge introduction")
     except RunnerError as exc:
-        errors.append(f"authorization anchor unavailable: {exc}")
+        errors.append(f"authorization introduction blob unavailable: {exc}")
+    if merge:
+        owner_merged, github_error = owner_merged_public_authorization(merge)
+        if not owner_merged:
+            errors.append(github_error or "authorization merge not verified as Owner-merged")
+    value["owner_merge_commit"] = merge
+    value["public_plan_manifest_blob"] = manifest_blob
     value["git_blob"] = oid
     value["path"] = AUTH_REL
-    value["sha256"] = sha256_bytes(git_bytes(candidate["commit"], AUTH_REL))
+    value["sha256"] = sha256_bytes(git_bytes(commit, AUTH_REL))
     return value, errors
 
 
@@ -1569,7 +1675,7 @@ def build_report(plan: dict[str, Any], group: str, registry: dict[str, list[dict
         "execution_temp_root": str(temp_root),
         "instrument_errors": preflight_errors,
         "observations": [
-            "Plan bytes and plan hashes were read from the fixed PLAN_COMMIT Git objects.",
+            "Plan bytes and plan hashes were read from the public candidate Git objects; PLAN_COMMIT is provenance only.",
             "Candidate source/fixture/build identities are candidate Git blobs; generated machine output is evidence-temp output.",
             "Only framework-owned machine results are accepted; prose, exit code, or a status field cannot create a pass.",
             "Network status is instruction-policy-only because this runner has no runtime sandbox proof.",
