@@ -1,0 +1,68 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-052",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "aee035e4c2ea4d7d064da17b1fa40803a17b63a5",
+  "reason": "OWNER_REQUESTED_WRAP_UP_WITH_R2_02_CONTEXT_WIP",
+  "current_main": "165f4b234654711c45d05ecd80e9b6553dd93ceb",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-02_WIP_NOT_DELIVERED",
+  "increment": [
+    "The T3/native fixed test path now prepares one bounded delegation, TaskContext, AuthorizedTaskPackage, SessionLineage and ExecutionRecipe; native derives the current Decision basis and the T3 Decision commit port uses the existing native capacity lease. The Action reservation is test-wired but not yet a Product Goal completion.",
+    "An empty ContextManifest attempt was rejected by the existing authority adapter's required nonempty partition rule. The rule was not weakened. Current WIP adds only a fixed public context.read grant and a first Action process test; ContextVersion, mandatory Task ref and authorized source load remain to be integrated.",
+    "The Owner-authorized ledger test branch still holds only a separate diagnostic CAS fact, not a Product Result or adoption."
+  ],
+  "evidence": {
+    "last_full_cloud_pass": {
+      "run": 35926941258,
+      "sha": "82adfc5d1837ea82c3ed00c39eb68fa27216b1dd",
+      "server": "565_PASS_0_FAIL_0_SKIP",
+      "native": "391_PASS_0_FAIL_0_SKIP_2_REAL_PROCESS_AXES_6_FOCUSED"
+    },
+    "latest_failed_run": {
+      "run": 35931446627,
+      "sha": "464f252539d3f59a4191e48fa86645f603ccf5ff",
+      "server": "FAIL_1_OF_565_EMPTY_PARTITION_REJECTED_BY_NATIVE_CONTEXT_ADAPTER",
+      "native": "FAIL_1_OF_391_TEST_FIXTURE_PROMPT_COMMIT_DOES_NOT_MATCH_FIXED_PUBLIC_SOURCE_COMMIT"
+    },
+    "current_head_native_cloud": "NOT_RUN",
+    "current_head_server_cloud": "NOT_RUN",
+    "current_head_source_hygiene": "RUN_35932230693_IN_PROGRESS_AT_CHECKPOINT",
+    "current_head_desktop": "RUN_35932230692_PENDING_AT_CHECKPOINT",
+    "local_wip_check": "GIT_DIFF_CHECK_PASS_TS_MODULE_IMPORT_PASS_NATIVE_BUILD_NOT_RUN_LOCALLY",
+    "product_goal_action_chain": "NOT_RUN",
+    "product_outcome_evaluation_dream": "NOT_RUN",
+    "product_git_fact_write_readback": "NOT_RUN",
+    "owner_win11_installed_product": "NOT_RUN"
+  },
+  "test_ledger_branch": {
+    "head": "1ee82a2758f74c5c6e6507e1729c809523372d1b",
+    "state": "DIAGNOSTIC_CAS_FACT_NOT_PRODUCT_RESULT_NOT_ADOPTED"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "review": {
+    "fresh_gpt6_sol_high_focused": "NOT_RUN_COLLABORATION_THREAD_LIMIT",
+    "older_fixed_auditor": "GPT_5_6_SOL_HIGH_PROBLEM_LEADS_ONLY",
+    "candidate": "NOT_CUT"
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "architecture_blocker": "NO",
+  "overall_stop": "OWNER_REQUESTED_WRAP_UP",
+  "external_action": "NO_NEW_TEST_LEDGER_WRITE_NO_MAIN_MERGE_NO_RELEASE",
+  "workspace_retained": {
+    "owner": "Codex Construction Controller",
+    "paths_relative_to_execution_checkout": [".", "../gogoke-codex-evidence/run-35931446627-server", "../gogoke-codex-evidence/run-35931446627-native", "../gogoke-codex-evidence/r2-02-ledger-write-diagnostic.mjs"],
+    "reason": "Execution checkout, exact failure artifacts and prior test-ledger reconciliation script",
+    "cleanup_condition": "After custody ends and durable GitHub artifacts are confirmed retained or no longer required",
+    "older_failed_run_copies": "RETAINED_AFTER_RECURSIVE_LOCAL_CLEANUP_WAS_REJECTED_BY_AUTOMATIC_POLICY"
+  },
+  "next_action": "On Owner resume, first reconcile current remote HEAD and runs. Fix the native positive-test prompt to use the fixed public source commit; replace the invalid empty ContextManifest with a real public PROJECT ContextVersion, current context.read grant, mandatory Task ref and one authorized partition, then rerun exact-head cloud tests. Continue Action completion through the Product Goal only after that dependency is proven. Keep PR #27 Draft and do not merge or release."
+}
