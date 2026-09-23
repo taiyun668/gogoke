@@ -26,7 +26,50 @@ fn lineage(product:&mut ProductDatabase<'_>,domain:&str,session:&str,binding:&st
     product.apply_session_lineage(&SessionLineageCommand{operation_id:format!("lineage-op-{domain}-{session}"),domain_id:domain.into(),event_id:format!("lineage-event-{domain}-{session}"),receipt_id:format!("lineage-receipt-{domain}-{session}"),recorded_at:"2026-09-23T12:00:00Z".into(),operation:SessionLineageOperation::NewClean{session_id:session.into(),native:NativeSessionIdentity{native_session_id:native.into(),binding_id:binding.into(),generation:"1".into(),source_epoch:"1".into(),domain_id:domain.into()}}}).unwrap();
 }
 fn bind(product:&mut ProductDatabase<'_>,domain:&str,instance:&str,binding:&str,session:&str,native:&str)->Result<(),String>{
-    product.commit_native_binding(&CommitNativeBinding{operation_id:format!("binding-op-{domain}-{binding}"),domain_id:domain.into(),binding_id:binding.into(),generation:"1".into(),expected_previous_generation:None,source_epoch:"1".into(),instance_id:instance.into(),instance_version:"1".into(),native_identity:native.into(),lineage_ref:session.into(),custody_ref:"custody-one".into(),event_id:format!("binding-event-{domain}-{binding}"),receipt_id:format!("binding-receipt-{domain}-{binding}"),recorded_at:"2026-09-23T12:00:00Z".into()}).map(|_|()).map_err(|error|format!("{error:?}"))
+    bind_version(product,domain,instance,"1",binding,session,native)
+}
+fn binding_input(domain:&str,instance:&str,version:&str,binding:&str,session:&str,native:&str)->CommitNativeBinding{
+    CommitNativeBinding{operation_id:format!("binding-op-{domain}-{binding}"),domain_id:domain.into(),binding_id:binding.into(),generation:"1".into(),expected_previous_generation:None,source_epoch:"1".into(),instance_id:instance.into(),instance_version:version.into(),native_identity:native.into(),lineage_ref:session.into(),custody_ref:"custody-one".into(),event_id:format!("binding-event-{domain}-{binding}"),receipt_id:format!("binding-receipt-{domain}-{binding}"),recorded_at:"2026-09-23T12:00:00Z".into()}
+}
+fn bind_version(product:&mut ProductDatabase<'_>,domain:&str,instance:&str,version:&str,binding:&str,session:&str,native:&str)->Result<(),String>{
+    product.commit_native_binding(&binding_input(domain,instance,version,binding,session,native)).map(|_|()).map_err(|error|format!("{error:?}"))
+}
+
+#[test]
+fn account_revision_and_domain_namespace_are_distinct_and_conflicts_leave_no_binding(){
+    let _guard=route_b_test_guard();let path=scratch();let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
+    let mut product=ProductDatabase::open(&root,&database).unwrap();
+    append(&mut product,identity("domain-one","instance-a","account-a"));
+    lineage(&mut product,"domain-one","session-old","binding-old","native-shared");
+    bind(&mut product,"domain-one","instance-a","binding-old","session-old","native-shared").unwrap();
+
+    let mut updated=identity("domain-one","instance-a","account-b");updated.version="2".into();
+    product.append_runtime_instance_identity(&AppendRuntimeInstanceIdentity{operation_id:"identity-op-new-account".into(),snapshot:updated,event_id:"identity-event-new-account".into(),receipt_id:"identity-receipt-new-account".into(),recorded_at:"2026-09-23T12:00:00Z".into(),expected_previous_version:Some("1".into())}).unwrap();
+    assert_eq!(product.read_runtime_instance_identity("domain-one","instance-a","1").unwrap().unwrap().account_ref,AccountRefSnapshot::Present("account-a".into()));
+    let old=NativeBindingIdentity{domain_id:"domain-one".into(),binding_id:"binding-old".into(),generation:"1".into(),source_epoch:"1".into(),instance_id:"instance-a".into(),instance_version:"1".into()};
+    assert!(product.read_native_binding(&old).is_err(),"old account binding must not stay current");
+
+    lineage(&mut product,"domain-one","session-new","binding-new","native-shared");
+    bind_version(&mut product,"domain-one","instance-a","2","binding-new","session-new","native-shared").unwrap();
+    let current=NativeBindingIdentity{binding_id:"binding-new".into(),instance_version:"2".into(),..old.clone()};
+    assert_eq!(product.read_native_binding(&current).unwrap().unwrap().instance.account_ref,AccountRefSnapshot::Present("account-b".into()));
+
+    append(&mut product,identity("domain-two","instance-a","account-a"));
+    lineage(&mut product,"domain-two","session-domain","binding-domain","native-shared");
+    bind(&mut product,"domain-two","instance-a","binding-domain","session-domain","native-shared").unwrap();
+    let different_domain=NativeBindingIdentity{domain_id:"domain-two".into(),binding_id:"binding-domain".into(),instance_version:"1".into(),..current.clone()};
+    assert_eq!(product.read_native_binding(&different_domain).unwrap().unwrap().native_identity,"native-shared");
+    assert!(product.read_native_binding(&NativeBindingIdentity{source_epoch:"2".into(),..current.clone()}).is_err());
+
+    lineage(&mut product,"domain-one","session-duplicate","binding-duplicate","native-shared");
+    assert!(bind_version(&mut product,"domain-one","instance-a","2","binding-duplicate","session-duplicate","native-shared").is_err());
+    let duplicate=NativeBindingIdentity{binding_id:"binding-duplicate".into(),..current.clone()};
+    assert!(product.read_native_binding(&duplicate).unwrap().is_none(),"failed identity collision must not leave projection");
+    let mut changed=binding_input("domain-one","instance-a","2","binding-new","session-new","native-shared");
+    changed.custody_ref="custody-different".into();
+    assert!(product.commit_native_binding(&changed).is_err(),"same operation with different bytes must conflict");
+
+    product.close_checked().unwrap();drop(root);cleanup(&path);
 }
 
 #[test]
