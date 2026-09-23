@@ -770,7 +770,7 @@ pub(crate) fn run_controlled_fixture_action(
     // projection. Reconcile that durable evidence without another process or
     // protocol write. A reserved Action has no completion to reconcile.
     if let Ok(completion) = authority::complete_action_from_native_receipt(connection, &action) {
-        if completion.disposition == "completed" {
+        if completion.terminal_state == "completed" {
             return Ok(format!("{{\"state\":\"ACTION_COMPLETION_RECONCILED_NOT_RESULT\",\"actionCompletionRef\":{}}}",
                 json_quote(&completion.receipt_id)));
         }

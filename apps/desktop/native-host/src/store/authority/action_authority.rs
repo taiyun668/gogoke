@@ -1093,6 +1093,7 @@ pub(crate) fn complete_action_from_native_receipt(
             tx.write("UPDATE main.gogoke_action_reservations SET state='outcome-unknown',outcome_kind='outcome-unknown' WHERE operation_id=? AND reservation_id=? AND state IN ('dispatching','outcome-unknown')", &[&request.operation_id,&request.reservation_id])?;
             return Ok(ActionCompletionReceipt {
                 disposition: "ACCEPTANCE_UNKNOWN",
+                terminal_state: "outcome-unknown",
                 authority_status: COMPLETION_AUTHORITY_STATUS,
                 operation_id: request.operation_id.clone(),
                 receipt_id: String::new(),
@@ -1122,6 +1123,7 @@ pub(crate) fn complete_action_from_native_receipt(
             }
             return Ok(ActionCompletionReceipt {
                 disposition: "REPLAYED",
+                terminal_state: terminal,
                 authority_status: COMPLETION_AUTHORITY_STATUS,
                 operation_id: request.operation_id.clone(),
                 receipt_id: existing[13].clone(),
@@ -1166,6 +1168,7 @@ pub(crate) fn complete_action_from_native_receipt(
         }
         Ok(ActionCompletionReceipt {
             disposition: terminal,
+            terminal_state: terminal,
             authority_status: COMPLETION_AUTHORITY_STATUS,
             operation_id: request.operation_id.clone(),
             receipt_id: storage.receipt_id,
@@ -1507,6 +1510,7 @@ pub(crate) struct TrustedActionCompletionEvidence {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ActionCompletionReceipt {
     pub disposition: &'static str,
+    pub terminal_state: &'static str,
     pub authority_status: &'static str,
     pub operation_id: String,
     pub receipt_id: String,
