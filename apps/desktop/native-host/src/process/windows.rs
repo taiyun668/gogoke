@@ -299,7 +299,11 @@ impl ProcessLaunch {
 /// Only the installer-controlled sibling resources can back the R2-02 test
 /// process. R2-04 must bundle this exact script and a Node runtime; there is
 /// no PATH, caller path, cwd, or source-worktree fallback.
-pub fn controlled_fixture_request(profile_id: &str) -> Result<PrepareRequest, ProcessCustodyError> {
+pub fn controlled_fixture_request(
+    profile_id: &str,
+    domain_id: &str,
+    generation: &str,
+) -> Result<PrepareRequest, ProcessCustodyError> {
     let native_host = std::env::current_exe().map_err(ProcessCustodyError::BinaryDigest)?;
     let resource_dir = native_host.parent().ok_or(ProcessCustodyError::InvalidLaunch("native host has no resource directory"))?;
     let node = resource_dir.join("gogoke-service").join("runtime").join("node.exe");
@@ -318,8 +322,8 @@ pub fn controlled_fixture_request(profile_id: &str) -> Result<PrepareRequest, Pr
         binding: NativeBinding {
             binary_digest_sha256: file_sha256(&node)?,
             profile_id: profile_id.to_owned(),
-            domain_id: "domain-r2-02-test".to_owned(),
-            generation: "1".to_owned(),
+            domain_id: domain_id.to_owned(),
+            generation: generation.to_owned(),
         },
         launch,
     })

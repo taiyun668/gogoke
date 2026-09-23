@@ -586,7 +586,7 @@ fn run_controlled_fixture_probe(
             required(&fields, "revocationHead")?, required(&fields, "role")?)
     };
     let identity = admit(connection)?;
-    let launch = controlled_fixture_request(&identity.profile_id)?;
+    let launch = controlled_fixture_request(&identity.profile_id, "domain-r2-02-test", "1")?;
     let prepared = custodian.prepare(&launch)?;
     if let Err(error) = authority::record_prepared_process(connection, operation_id, &prepared) {
         let _ = custodian.abort_prepared(&prepared);

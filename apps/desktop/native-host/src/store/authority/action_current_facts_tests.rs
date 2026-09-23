@@ -252,6 +252,20 @@ fn derives_current_facts_from_authority_and_exact_active_process_identity() {
     fixture(|_, db, owner| {
         let (action, _, admission_expiry) = prepare_authorized_action(db, owner);
         let product = super::super::super::read_product_identity(db, owner).unwrap();
+        let references = NativeActionCurrentFactsRefs {
+            domain_id: action.domain_id.clone(),
+            operation_id: action.action_operation_id.clone(),
+            reservation_id: action.reservation_id.clone(),
+        };
+        let selection = read_native_action_fixture_selection(db, &references).unwrap();
+        assert_eq!(selection.profile_id, product.profile_id);
+        assert_eq!(selection.target_domain_id, "domain-one");
+        assert_eq!(selection.generation, "7");
+        assert_eq!(selection.payload, b"bounded instruction");
+        assert!(read_native_action_fixture_selection(db, &NativeActionCurrentFactsRefs {
+            reservation_id: "wrong-reservation".into(),
+            ..references.clone()
+        }).is_err());
         super::super::super::initialize_process_custody_schema(db).unwrap();
 
         let windows = std::env::var_os("WINDIR")
@@ -273,11 +287,6 @@ fn derives_current_facts_from_authority_and_exact_active_process_identity() {
         let mut custodian = ProcessCustodian::new().unwrap();
         let prepared = custodian.prepare(&request).unwrap();
         super::super::super::record_prepared_process(db, ACTION_OPERATION_ID, &prepared).unwrap();
-        let references = NativeActionCurrentFactsRefs {
-            domain_id: action.domain_id.clone(),
-            operation_id: action.action_operation_id.clone(),
-            reservation_id: action.reservation_id.clone(),
-        };
         assert!(
             derive_native_action_current_facts(db, &references, &prepared, &prepared.identity,)
                 .is_err()
@@ -338,5 +347,10 @@ fn derives_current_facts_from_authority_and_exact_active_process_identity() {
             .unwrap(),
             BeginCommittedDisposition::Granted { .. }
         ));
+        assert!(read_native_action_fixture_selection(db, &NativeActionCurrentFactsRefs {
+            domain_id: action.domain_id,
+            operation_id: action.action_operation_id,
+            reservation_id: action.reservation_id,
+        }).is_err(), "a committed Action is not another fixture launch permission");
     });
 }

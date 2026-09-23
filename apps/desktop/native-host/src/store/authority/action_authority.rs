@@ -347,6 +347,79 @@ pub(crate) fn prepare_action_authority(
     })
 }
 
+/// Resolves the already reserved Action's fixture launch coordinates inside
+/// Product Authority. This is a pre-commit read: begin still rechecks every
+/// current fact immediately before the sole protocol write.
+pub(crate) fn read_native_action_fixture_selection(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    references: &NativeActionCurrentFactsRefs,
+) -> Result<NativeActionFixtureSelection> {
+    for value in [
+        &references.domain_id,
+        &references.operation_id,
+        &references.reservation_id,
+    ] {
+        identifier(value)?;
+    }
+    transaction::run(connection, |tx| {
+        ensure_schema(tx)?;
+        let intents = tx.query(
+            "SELECT package_operation_id,parent_grant_ref,task_id,recipe_id,session_id,context_manifest_id,action_kind,lane,payload_digest FROM main.gogoke_action_authority_intents WHERE domain_id=? AND operation_id=?",
+            &[&references.domain_id, &references.operation_id],
+            9,
+        )?;
+        let actions = tx.query(
+            "SELECT semantic_digest,reservation_id,profile_id,generation,payload_hex,state,action_kind,lane,session_id FROM main.gogoke_action_reservations WHERE operation_id=?",
+            &[&references.operation_id],
+            9,
+        )?;
+        if intents.len() != 1 || actions.len() != 1
+            || actions[0][1] != references.reservation_id
+            || actions[0][5] != "reserved"
+            || actions[0][6] != intents[0][6]
+            || actions[0][7] != intents[0][7]
+            || actions[0][8] != intents[0][4]
+        {
+            return denied();
+        }
+        let payload = decode_hex(&actions[0][4])?;
+        let selection = PrepareActionAuthority {
+            domain_id: references.domain_id.clone(),
+            parent_grant_ref: intents[0][1].clone(),
+            package_operation_id: intents[0][0].clone(),
+            task_id: intents[0][2].clone(),
+            recipe_id: intents[0][3].clone(),
+            session_id: intents[0][4].clone(),
+            context_manifest_id: intents[0][5].clone(),
+            action_operation_id: references.operation_id.clone(),
+            reservation_id: references.reservation_id.clone(),
+            action_kind: intents[0][6].clone(),
+            lane: intents[0][7].clone(),
+            payload,
+        };
+        let (package, task, lineage, recipe, profile) = current_selection(tx, &selection)?;
+        let payload_digest = content_hash(&selection.payload);
+        if selection.payload.as_slice() != package.instruction.as_bytes()
+            || intents[0][8] != payload_digest
+            || actions[0][2] != profile.profile_id
+            || actions[0][3] != lineage.native.generation
+            || actions[0][0] != intent_digest(
+                &selection, &package.package_digest, &task.task_revision,
+                &recipe.recipe.revision, &recipe.content_hash,
+                &profile.policy_revision, &payload_digest,
+            )
+        {
+            return denied();
+        }
+        Ok(NativeActionFixtureSelection {
+            profile_id: profile.profile_id,
+            target_domain_id: package.target.domain_id,
+            generation: lineage.native.generation,
+            payload: selection.payload,
+        })
+    })
+}
+
 #[cfg(test)]
 /// Legacy test seam retained only for the pre-existing authority tests. Product
 /// code derives these values in `derive_native_action_current_facts`.
@@ -1369,6 +1442,14 @@ pub(crate) struct NativeActionCurrentFactsRefs {
     pub domain_id: String,
     pub operation_id: String,
     pub reservation_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeActionFixtureSelection {
+    pub profile_id: String,
+    pub target_domain_id: String,
+    pub generation: String,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
