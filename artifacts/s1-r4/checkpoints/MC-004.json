@@ -1,0 +1,53 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-004",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "0ba04988c89f61e8ddd381737452a1753ad60e32",
+  "recorded_utc": "2026-09-23T00:15:50Z",
+  "reason": "Record exact desktop CI failure, remote-preservation repair, and current cloud qualification custody",
+  "desktop_failure": {
+    "commit": "0d9d443ad818291342e9c602be78d1b4e244f36d",
+    "run_id": "35800024898",
+    "state": "FAIL",
+    "passed_test_files": 144,
+    "failed_test_files": 2,
+    "first_failure": "S1 sealing test found public mobile setup hook still capable of remote probe and settings save; expected sealed status, received a non-string status path",
+    "second_failure": "Legacy SettingsView test expected Connect & add, but the preserved-disabled UI now offers Save remote without connecting",
+    "skipped_downstream": "Unsigned Windows NSIS",
+    "non_claim": "The failed run is not a qualification PASS"
+  },
+  "repair": {
+    "commit": "0ba04988c89f61e8ddd381737452a1753ad60e32",
+    "mobile_hook": "Brought the preserved-disabled implementation into public main with exact blob equality to the private construction source; no probe, connect, or save from the setup hook",
+    "test": "Retained the multi-remote preservation test, now asserts one configuration save and zero connection probes instead of expecting an active connection",
+    "scope": "Two named files only; no remote entry point or production activation enabled",
+    "local_source_scan": "24134 committed files, 0 leaks; known-sensitive positive control rejected"
+  },
+  "current_ci": {
+    "commit": "0ba04988c89f61e8ddd381737452a1753ad60e32",
+    "source_hygiene_run_id": "35800598735",
+    "source_hygiene": "PASS; positive control and committed-source scan steps executed",
+    "desktop_run_id": "35800598752",
+    "browser_job_id": "106989816558",
+    "browser_job": "PASS; npm ci, identity, release trust boundary, typecheck, vitest run, and build steps succeeded",
+    "unsigned_windows_job_id": "106990393593",
+    "unsigned_windows_job_at_checkpoint": "IN_PROGRESS at Test the gogoke release verifier; no final run claim"
+  },
+  "unresolved": [
+    "N1 release-object test-hook checker has a source-level fail-closed implementation but no fresh independent review or current-candidate release-object qualification; keep unresolved",
+    "Unsigned Windows NSIS job has not completed at this checkpoint",
+    "No Windows 11 desktop or signed native-host release availability evidence",
+    "59 due checks remain unpromoted; no gate is raised by the CI runs"
+  ],
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "next_action": "Observe the active unsigned Windows job to a final state; record actual exit and skipped steps, then continue scoped S1-R4 current-candidate qualification without promoting checks from partial CI evidence."
+}
