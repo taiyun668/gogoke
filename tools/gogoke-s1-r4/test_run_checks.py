@@ -285,6 +285,13 @@ class RunnerTests(unittest.TestCase):
         self.assertIsNone(value)
         self.assertTrue(any("not a committed blob" in error for error in errors))
 
+    def test_plan_loaded_from_different_public_candidate_fails_closed(self):
+        candidate = self.runner.git_identity()
+        stale = copy.deepcopy(self.plan)
+        stale["public_commit"] = "a" * 40
+        _identity, errors = self.runner.auth_and_plan_identity(stale, candidate)
+        self.assertTrue(any("different candidate HEAD" in error for error in errors))
+
     def test_github_owner_merge_lookup_fails_closed_on_non_owner_and_api_error(self):
         merge = "a" * 40
         associated = [{"merge_commit_sha": merge, "base": {"ref": "main", "repo": {"full_name": "taiyun668/gogoke"}}, "number": 17}]

@@ -1526,6 +1526,13 @@ def auth_and_plan_identity(plan: dict[str, Any], candidate: dict[str, Any]) -> t
         "authorization": auth,
     }
     errors = list(plan["errors"]) + auth_errors
+    if plan.get("public_commit") != candidate.get("commit"):
+        errors.append("public plan was read from a different candidate HEAD")
+    try:
+        if sha256_bytes(git_bytes(candidate["commit"], PUBLIC_MANIFEST_REL)) != plan["manifest_sha256"]:
+            errors.append("public plan manifest changed between plan load and candidate preflight")
+    except (RunnerError, KeyError, TypeError) as exc:
+        errors.append(f"public plan manifest cannot be rebound at preflight: {exc}")
     return identity, errors
 
 
