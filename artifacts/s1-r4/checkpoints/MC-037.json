@@ -1,0 +1,104 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-037",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "b2a6fb5b557183f8ef23d8a523a0ab9a50ddd374",
+  "recorded_utc": "2026-09-23T11:14:25Z",
+  "reason": "R2_01_PRODUCT_ENTRY_WIRED_CI_IN_PROGRESS",
+  "current_main": {
+    "head": "d954170264f9b0fa549a9af360fdf90ea089913e",
+    "drift_from_intake": "PR #25 changed only docs/governance/gpt-construction-window-rules.md; current production write domains are untouched.",
+    "governance_blob": "5cd4b3297b89612e7ccdb5831ff546572a31f8ce"
+  },
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_pr": 21,
+    "authorization_path": "artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11",
+    "current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "construction": {
+    "package": "R2-01",
+    "state": "IMPLEMENTATION_WIRED_TESTING",
+    "durable_source_head": "b2a6fb5b557183f8ef23d8a523a0ab9a50ddd374",
+    "draft_pr": 27,
+    "observable_increment": [
+      "third_party/t3code/apps/server/src/bin.ts executable path enters the Gogoke-only local product process; donor start/serve arguments are rejected before construction.",
+      "canonical constructGogokeService attaches the authenticated native-host and reads Product Authority identity rather than treating service-pipe identity as product permission.",
+      "native Product Authority transaction-validates an Owner-backed controller caller using current profile/principal/Seat/policy/revocation; caller-provided mismatch is denied.",
+      "Tauri registers gogoke_r2_goal_probe, invokes the fixed local service process, and Home presents a construction Goal plus Git ledger reference.",
+      "The UI/service response is explicitly TEST_FIXTURE_NOT_ADOPTED; no accepted-fact write or Goal Acceptance is created by this path."
+    ],
+    "exact_write_domains": [
+      "apps/desktop/native-host/src/store/authority/bootstrap.rs",
+      "apps/desktop/native-host/src/store/authority/mod.rs",
+      "apps/desktop/native-host/src/store/protocol.rs",
+      "apps/desktop/native-host/src/store/session.rs",
+      "third_party/t3code/apps/server/src/gogoke/persistence/base/nativeHostClient.ts",
+      "third_party/t3code/apps/server/src/gogoke/bootstrap/nativeStoreService.ts",
+      "third_party/t3code/apps/server/src/gogoke/bootstrap/productEntry.ts",
+      "third_party/t3code/apps/server/src/gogoke/bootstrap/productEntry.test.ts",
+      "third_party/t3code/apps/server/src/bin.ts",
+      "apps/desktop/src-tauri/src/public_runtime/product_entry.rs",
+      "apps/desktop/src-tauri/src/public_runtime/mod.rs",
+      "apps/desktop/src-tauri/src/lib.rs",
+      "apps/desktop/src/services/tauri.ts",
+      "apps/desktop/src/features/home/components/HomeProductEntry.tsx",
+      "apps/desktop/src/features/home/components/Home.tsx",
+      "apps/desktop/src/features/home/components/Home.test.tsx",
+      "apps/desktop/src/styles/home.css"
+    ]
+  },
+  "evidence": {
+    "source_hygiene": {
+      "workflow_run": 35853484910,
+      "state": "PASS",
+      "exact_head": "b2a6fb5b557183f8ef23d8a523a0ab9a50ddd374"
+    },
+    "desktop_ci": {
+      "workflow_run": 35853484788,
+      "state": "IN_PROGRESS",
+      "exact_head": "b2a6fb5b557183f8ef23d8a523a0ab9a50ddd374",
+      "note": "Browser build/tests and installer chain have started; no PASS claim until completed jobs and exact failure/success are read."
+    },
+    "native_host_and_server_cloud": {
+      "state": "NOT_RUN",
+      "note": "Existing gogoke-native-host.yml is workflow_dispatch only; the current GitHub connector exposes no workflow-dispatch mutation. Test source is wired for its GOGOKE_NATIVE_HOST cloud fixture, but existence is not execution evidence."
+    }
+  },
+  "pr13_current_byte_disposition": {
+    "historical_pr": 13,
+    "NB-F1": {
+      "classification": "SUPERSEDED",
+      "reason": "Current execution authority directory has no native_binding.rs and the PR #13 NativeBinding candidate was never merged into this v2 execution line. The historical finding remains attached to PR #13 bytes; it is not claimed fixed by current code."
+    },
+    "provisional_NB-F3": {
+      "classification": "SUPERSEDED",
+      "reason": "The current execution line contains none of PR #13's NativeBinding event/receipt stream implementation to which the provisional membership-count finding applied. History is preserved; no adoption/acceptance is inferred."
+    }
+  },
+  "parallel_inbox": {
+    "observed_head": "32384a8ba20c5695acf837c104b59df5dbf50ab5",
+    "entries_seen": 0,
+    "classification_work": "NONE",
+    "latest_seen_ack_commit": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1"
+  },
+  "v2_checks": {
+    "V01": "IN_PROGRESS_NO_PASS_CLAIM",
+    "V02": "IN_PROGRESS_NO_PASS_CLAIM",
+    "V03": "IN_PROGRESS_NO_PASS_CLAIM",
+    "V04": "NOT_RUN",
+    "V05": "NOT_RUN",
+    "V06": "NOT_RUN_R2_04_OWNS_PACKAGING",
+    "V07": "NOT_RUN",
+    "V08": "NOT_RUN"
+  },
+  "architecture_blocker": "NONE",
+  "known_boundary": [
+    "R2-04 still owns staging/package delivery of service dist, signed Node runtime, and cloud-built native-host into the formal installer. R2-01 does not claim installed Owner-machine reachability.",
+    "No Git/GitHub accepted-fact mutation is introduced by the R2-01 fixture path."
+  ],
+  "next_action": "Read PR #27 exact CI results. Fix the first real failure against current bytes without redesign. If desktop CI is clean, preserve that evidence, then complete R2-01 evidence/checkpoint closure while keeping native-host/server dispatch as NOT_RUN until a supported cloud dispatch channel actually executes it."
+}
