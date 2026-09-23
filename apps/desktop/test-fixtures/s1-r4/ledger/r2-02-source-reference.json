@@ -1,0 +1,16 @@
+{
+  "schema": "gogoke.s1-r4.ledger-test-source.v1",
+  "testOnly": true,
+  "package": "R2-02",
+  "state": "SOURCE_REFERENCE_DIAGNOSTIC_NOT_TASK_RESULT_NOT_ADOPTED",
+  "ledgerBranch": "s1-r4-ledger-test/r2-02",
+  "executionEvidenceSha": "f0b25acfb7b3aa34952526691649a647074bae8c",
+  "authorizationManifestBlob": "17afbba28795338561530927595fda93fd8a2a11",
+  "source": {
+    "repository": "taiyun668/gogoke",
+    "commit": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+    "path": "apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json",
+    "gitBlob": "0670d5d49247df2fc520740f7044babe579b60c4",
+    "sha256": "268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e"
+  }
+}
