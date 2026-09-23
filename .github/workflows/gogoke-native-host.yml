@@ -20,14 +20,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Build native-host release image and check test-hook exclusion
+        id: release-build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $log = Join-Path $evidenceRoot 'release-build.log'
+          $output = & cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath $log | Write-Host
+          $finishedRelease = [regex]::IsMatch(($output -join "`n"), 'Finished.*release.*profile')
+          $state = if ($null -eq $exitCode -or ($exitCode -eq 0 -and -not $finishedRelease)) {
+            'FAIL_INSTRUMENT'
+          } elseif ($exitCode -ne 0) {
+            'FAIL'
+          } else {
+            'PASS'
+          }
+          [ordered]@{
+            command = 'cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml'
+            executed = $true
+            exit_code = $exitCode
+            finished_release_profile = $finishedRelease
+            state = $state
+            log = 'release-build.log'
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'release-build-result.json') -Encoding utf8NoBOM
+          if ($state -ne 'PASS') { throw "Native-host release build failed or lacked a release-profile completion marker: $state (exit $exitCode)" }
       - name: Build and run required native-host process axes
         id: native-axes
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $manifest = 'apps/desktop/native-host/Cargo.toml'
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $releaseResultPath = Join-Path $evidenceRoot 'release-build-result.json'
+          $releaseResult = if (Test-Path -LiteralPath $releaseResultPath -PathType Leaf) {
+            Get-Content -LiteralPath $releaseResultPath -Raw | ConvertFrom-Json
+          } else {
+            [ordered]@{
+              command = 'cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml'
+              executed = $false
+              exit_code = $null
+              finished_release_profile = $false
+              state = 'FAIL_INSTRUMENT'
+              reason = 'RELEASE_BUILD_RESULT_MISSING'
+              log = 'release-build.log'
+            }
+          }
           $axes = @(
             @{ id = 'b07_two_process'; target = 'apps/desktop/native-host/tests/b07_two_process.rs' },
             @{ id = 'host_typed_ops'; target = 'apps/desktop/native-host/tests/host_typed_ops.rs' }
@@ -91,10 +135,11 @@ jobs:
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
             evidence_scope = 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP'
+            release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           "machine_result=$machineResult" >> $env:GITHUB_OUTPUT
-          if ($failed) { throw 'One or more required native-host axes failed or did not execute.' }
+          if ($failed -or $releaseResult.state -ne 'PASS') { throw 'Release build or one or more required native-host axes failed or did not execute.' }
       - name: Upload native-host machine evidence
         if: always()
         uses: actions/upload-artifact@v4
