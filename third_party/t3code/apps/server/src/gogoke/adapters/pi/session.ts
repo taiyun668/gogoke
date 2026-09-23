@@ -161,6 +161,8 @@ export class PiManagedSession {
   #pauseFlight: Promise<PiPauseResult> | undefined;
   #pauseComplete = false;
   #exclusiveTaskUsed = false;
+  #priorPromptCommand = false;
+  #priorAgentRun = false;
   #settlement: {
     started: boolean;
     resolve: () => void;
@@ -208,11 +210,11 @@ export class PiManagedSession {
     return this.#accepted("prompt", command);
   }
 
-  /** One fresh session per controlled task because Pi events have no request id. */
+  /** One agent run per controlled task because Pi events have no request id. */
   async promptAndObserveSettlement(message: string, timeoutMs: number): Promise<PiSettledObservation> {
     this.#requireDispatch();
-    if (this.#exclusiveTaskUsed || this.#nextRequest !== 0 || this.#pending.size !== 0) {
-      throw new PiManagedSessionError("INVALID_ADMISSION", "settlement requires a fresh exclusive session");
+    if (this.#exclusiveTaskUsed || this.#priorPromptCommand || this.#priorAgentRun || this.#pending.size !== 0) {
+      throw new PiManagedSessionError("INVALID_ADMISSION", "settlement requires a session without prior agent work");
     }
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
       throw new PiManagedSessionError("INVALID_ADMISSION", "settlement timeout must be positive");
@@ -359,6 +361,9 @@ export class PiManagedSession {
         new PiManagedSessionError("INVALID_RESPONSE", "outgoing command type is required"),
       );
     }
+    if (type === "prompt" || type === "steer" || type === "follow_up") {
+      this.#priorPromptCommand = true;
+    }
     const id = `gogoke-pi-${++this.#nextRequest}`;
     const bytes = new TextEncoder().encode(`${JSON.stringify({ ...command, id })}\n`);
     const response = new Promise<Readonly<JsonRecord>>((resolve, reject) => {
@@ -385,8 +390,11 @@ export class PiManagedSession {
     }
     const frozen = deepFreeze(value);
     if (frozen.type !== "response") {
-      if (frozen.type === "agent_start" && this.#settlement !== undefined) {
-        this.#settlement.started = true;
+      if (frozen.type === "agent_start" || frozen.type === "agent_end" || frozen.type === "agent_settled") {
+        this.#priorAgentRun = true;
+      }
+      if (frozen.type === "agent_start") {
+        if (this.#settlement !== undefined) this.#settlement.started = true;
       } else if (frozen.type === "agent_settled" && this.#settlement?.started === true) {
         this.#settlement.resolve();
         this.#settlement = undefined;

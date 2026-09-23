@@ -163,6 +163,30 @@ describe("R4-O-PI managed ACK and binding semantics", () => {
       error instanceof PiManagedSessionError && error.code === "SESSION_CLOSED");
   });
 
+  it("permits session binding before the first exclusive task and rejects prior prompts", async () => {
+    const { stream, session } = fixture();
+    stream.handler = (command) => {
+      if (command.type === "new_session") stream.respond(command, { cancelled: false });
+      else if (command.type === "get_state") stream.respond(command, { sessionId: "bound-session" });
+      else {
+        stream.respond(command);
+        stream.feed({ type: "agent_start" });
+        stream.feed({ type: "agent_settled" });
+      }
+    };
+    assert.deepEqual(await session.newSession(), { status: "candidate", sessionId: "bound-session" });
+    assert.deepEqual(await session.promptAndObserveSettlement("task", 1_000), {
+      status: "protocol-settled-not-result",
+      accepted: { status: "accepted", requestId: "gogoke-pi-3", command: "prompt" },
+    });
+
+    const prior = fixture();
+    prior.stream.handler = (command) => prior.stream.respond(command);
+    await prior.session.prompt("previous task");
+    await NodeAssert.rejects(prior.session.promptAndObserveSettlement("new task", 1_000),
+      (error: unknown) => error instanceof PiManagedSessionError && error.code === "INVALID_ADMISSION");
+  });
+
   it("never creates a binding when new_session is cancelled", async () => {
     const { stream, session } = fixture();
     stream.handler = (command) => {
