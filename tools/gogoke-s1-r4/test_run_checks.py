@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -321,6 +322,42 @@ class RunnerTests(unittest.TestCase):
              mock.patch.object(self.runner, "git_bytes", side_effect=lambda ref, _path: b'{"changed":true}' if ref == "e" * 40 else raw):
             _value, errors = self.runner.auth_from_candidate({"commit": "c" * 40})
         self.assertTrue(any("differs from Owner merge introduction" in error for error in errors))
+
+    def test_authorization_introduction_uses_real_first_parent_merge(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "--initial-branch=main")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            git("config", "commit.gpgsign", "false")
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            git("add", "--", "README.md")
+            git("commit", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            git("checkout", "-b", "authorization")
+            receipt = repo / self.runner.AUTH_REL
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text("{}\n", encoding="utf-8")
+            git("add", "--", self.runner.AUTH_REL)
+            git("commit", "-m", "receipt")
+            git("checkout", "main")
+            git("merge", "--no-ff", "--no-edit", "authorization")
+            merged = git("rev-parse", "HEAD")
+            with mock.patch.object(self.runner, "ROOT", repo):
+                observed, errors = self.runner.authorization_introduction(merged)
+            self.assertEqual([], errors)
+            self.assertEqual(merged, observed)
+            git("checkout", "-b", "linear", base)
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text("{}\n", encoding="utf-8")
+            git("add", "--", self.runner.AUTH_REL)
+            git("commit", "-m", "linear receipt")
+            with mock.patch.object(self.runner, "ROOT", repo):
+                observed, errors = self.runner.authorization_introduction(git("rev-parse", "HEAD"))
+            self.assertIsNone(observed)
+            self.assertTrue(any("two-parent merge" in error for error in errors))
 
     def test_plan_loaded_from_different_public_candidate_fails_closed(self):
         candidate = self.runner.git_identity()
