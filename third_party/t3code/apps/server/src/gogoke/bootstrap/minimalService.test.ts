@@ -431,7 +431,7 @@ it("passes frozen request and array snapshots to ownership", () => {
       return super.acquire(value);
     }
   }
-  const requestedCapabilities = [LOCAL_NON_MODEL_CAPABILITY];
+  const requestedCapabilities: string[] = [LOCAL_NON_MODEL_CAPABILITY];
   const enabledRuntimeDriverIds: string[] = [];
   const constructed = constructMinimalService({
     request: {
