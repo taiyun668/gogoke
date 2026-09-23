@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-020",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "2d9934f2e8432c73019b1f494c0412c3f407b6fc",
+  "recorded_utc": "2026-09-23T03:26:50Z",
+  "reason": "Close current PR #3 CI observation while keeping fresh B2 review and authorization boundaries open",
+  "PR3": {
+    "url": "https://github.com/taiyun668/gogoke/pull/3",
+    "head": "efa1a6fd3c6ca04d38cb97e85067e8a4b3336d0b",
+    "state": "DRAFT_FRESH_CLAUDE_REVIEW_PENDING_NOT_MERGED",
+    "B2_coverage": "21 top-level cases and 53 expect calls; focused Vitest 34/34 and server typecheck exit 0",
+    "D1_D2": "run 35813586330 SUCCESS: 44 server test files 536/536, native full lib 382/382, release build, focused DACL/Job probes, b07_two_process and host_typed_ops all PASS with no required-test skip",
+    "PR_source_hygiene": "run 35813581921 PASS",
+    "PR_desktop": "run 35813581943 SUCCESS: Browser build/tests and Unsigned Windows NSIS, including release verifier and update/readiness/rollback smoke",
+    "skipped": "Only conditional Rust cache-save maintenance; no required test or smoke axis skipped",
+    "evidence_comment": "https://github.com/taiyun668/gogoke/pull/3#issuecomment-5788454826",
+    "non_claim": "Cloud CI passing is not the fresh Claude verdict, due-check acceptance, Windows 11 desktop validation, or merge authorization"
+  },
+  "other_state": {
+    "PR4": "Six qualification-tool files remain draft and disabled; no Owner-merged public authorization anchor, WP01/S1-01-V BLOCKED",
+    "PR5": "Claude ACCEPT; merged by ordinary commit cdbff122, recorded in MC-018",
+    "m2": "Rust dependency license notice remains REGISTERED_NOT_FIXED"
+  },
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Await Claude's fresh review of efa1a6fd on draft PR #3; repair any finding on a new exact-head candidate before integration. Keep PR #4 disabled until GPT draft and Owner-only authorization merge. Continue dependency-safe S1-R4 work."
+}
