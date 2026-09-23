@@ -1,0 +1,49 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-031",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "e7aec4e9a45a87d2321d9c60ba2fcf35ba6491bd",
+  "recorded_utc": "2026-09-23T06:32:29Z",
+  "reason": "Repair the runner's real Owner-merge ancestry lookup and preserve local hygiene custody without promoting qualification",
+  "public_authorization": {
+    "owner_merge": "PR #11 b90ddbab7324799252943f9fbaef1403f86b95c9; GitHub merged_by=taiyun668",
+    "receipt_blob": "86737e250b7919c9fadf72eb2b47688a19e5f908",
+    "plan_manifest_blob": "c9efd380bb9b52a1be18b96bfc3cac4c5f5ff84b",
+    "non_claim": "Owner merge provides the public authorization anchor. It does not merge or accept the runner, run WP01/S1-01-V qualification, or promote any due check."
+  },
+  "runner_candidate": {
+    "draft_pr": "PR #4",
+    "head": "43624d9ca285a99125ee8fbad2e2c2bb569e5a6f",
+    "finding": "A candidate branch merging Owner-updated main creates a second apparent receipt introduction; the former first-parent search selected that branch-local merge instead of the Owner main merge. A real temporary Git graph reproduced the failure before repair.",
+    "repair": "Search full candidate ancestry for two-parent receipt additions; require unchanged candidate bytes and GitHub API proof that a matching main PR was merged_by taiyun668. Candidate branch merge is not itself trusted. The instrumentation checkout now fetches full history; no permission rule or authorization receipt was widened.",
+    "actual_git_evidence": "At the candidate merge, history contains both branch-local 87e27fb6 and Owner main b90ddbab; both expose receipt blob 86737e25. GitHub associates the branch-local commit with open PR #4 rather than an Owner merge, while PR #11 has merge_commit_sha=b90ddbab and merged_by=taiyun668.",
+    "cloud_failure_and_repair": "Runs 35826537735 and 35826765439 each failed T68.D while the test/checkout did not have the required valid history; current exact-head Windows run 35827011659 succeeded after fetch-depth: 0, with 60 Python tests executed and no skips. The separate self-check retained 59 NOT_RUN IDs and 23 commands; source hygiene 35827011694 passed.",
+    "state": "CURRENT_CODE_CANDIDATE_PENDING_FRESH_CLAUDE_REVIEW; draft not merged; no run_checks.py --group invocation"
+  },
+  "other_candidates": {
+    "PR10": "d32260e1 notice hardening remains draft with exact-head cloud tests green, awaiting Claude review",
+    "cleanup": "MC-030 e7aec4e9 contains the complete dry-run: 14 proposed worktree removals and 40 non-worktree directory candidates. It was submitted on PR #12 for Claude review; no cleanup command has executed."
+  },
+  "local_workspace_hygiene": {
+    "new_directories_this_checkpoint": [
+      {"path":"%LOCALAPPDATA%/gogoke-agent-tmp/mc031-runner","logical_bytes_at_measurement":640268,"reason":"bounded local Python Git-graph diagnostics and source-scan output; later scan reports may increase this size","cleanup_when":"after current PR #4 review or when no further local diagnostic is needed; verify exact target and no reparse point before removal"}
+    ],
+    "cleaned_directories_this_checkpoint": [],
+    "retained_active_worktrees": [
+      {"path":"%GOGOKE_WORK_ROOT%/gogoke-public-export","logical_bytes_at_MC030":442113374,"reason":"active main checkout","cleanup_when":"project handoff or closure"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/tools-candidate","logical_bytes_at_MC030":274348548,"reason":"PR #4 current candidate awaiting review","cleanup_when":"after review and merge/retirement"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/notice-followups","logical_bytes_at_MC030":274101816,"reason":"PR #10 current candidate awaiting review","cleanup_when":"after review and merge/retirement"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/lineage","logical_bytes_at_MC030":273687866,"reason":"pushed unreviewed lineage WIP","cleanup_when":"after content integration or explicit retirement"},
+      {"path":"%GOGOKE_WORK_ROOT%/branches/native-close","logical_bytes_at_MC030":273670782,"reason":"pushed unreviewed native-close WIP","cleanup_when":"after content integration or explicit retirement"}
+    ],
+    "pending_cleanup_inventory": "All 14 proposed worktrees and 40 generated/probe/cache directories are listed individually with sizes in MC-030; their status is unchanged and none has been removed. The shared effective pnpm store remains on the same D volume before and after; no store configuration changed.",
+    "non_claim": "A posted dry-run is not Claude's cleanup approval. No recursive delete, git worktree remove, junction action or process kill occurred."
+  },
+  "gate_state": {
+    "G0":"PASS","G1":"IN_PROGRESS_NOT_ACCEPTED","G2":"NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3":"IN_PROGRESS_NOT_ACCEPTED","G4":"IN_PROGRESS_NOT_ACCEPTED","G5":"NOT_RUN","GN":"NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "next_action": "Obtain fresh Claude review of PR #4 current head and PR #10; repair findings, then merge normally only when accepted and green. Do not run qualification groups until the runner is merged with valid current authorization and toolchain receipts. Await Claude cleanup verdict before executing MC-030 removals; continue the NativeBinding/T10.L authority investigation without borrowing donor Node SQLite evidence."
+}
