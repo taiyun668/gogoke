@@ -176,6 +176,26 @@ fn stream_counter_rollback_cannot_leave_a_current_binding(){
 }
 
 #[test]
+fn unknown_account_never_becomes_an_absent_account_binding(){
+    let _guard=route_b_test_guard();let path=scratch();let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
+    let mut product=ProductDatabase::open(&root,&database).unwrap();
+    let mut unknown=identity("domain-one","instance-unknown","unused");
+    unknown.account_ref=AccountRefSnapshot::Unknown;
+    append(&mut product,unknown);
+    lineage(&mut product,"domain-one","session-unknown","binding-unknown","native-one");
+    assert!(bind(&mut product,"domain-one","instance-unknown","binding-unknown","session-unknown","native-one").is_err());
+    assert!(product.read_native_binding(&NativeBindingIdentity{domain_id:"domain-one".into(),binding_id:"binding-unknown".into(),generation:"1".into(),source_epoch:"1".into(),instance_id:"instance-unknown".into(),instance_version:"1".into()}).unwrap().is_none());
+    let mut absent=identity("domain-one","instance-absent","unused");
+    absent.account_ref=AccountRefSnapshot::Absent;
+    append(&mut product,absent);
+    lineage(&mut product,"domain-one","session-absent","binding-absent","native-one");
+    bind(&mut product,"domain-one","instance-absent","binding-absent","session-absent","native-one").unwrap();
+    let version=product.read_native_binding(&NativeBindingIdentity{domain_id:"domain-one".into(),binding_id:"binding-absent".into(),generation:"1".into(),source_epoch:"1".into(),instance_id:"instance-absent".into(),instance_version:"1".into()}).unwrap().unwrap();
+    assert_eq!(version.instance.account_ref,AccountRefSnapshot::Absent);
+    product.close_checked().unwrap();drop(root);cleanup(&path);
+}
+
+#[test]
 fn typed_binding_and_identity_survive_reopen_without_cross_instance_collision(){
     let _guard=route_b_test_guard();let path=scratch();let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
     let mut product=ProductDatabase::open(&root,&database).unwrap();
