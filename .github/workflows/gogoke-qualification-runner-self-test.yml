@@ -1,0 +1,55 @@
+name: gogoke qualification runner self-test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/gogoke-s1-r4/**"
+      - "docs/design/gogoke-s1-r4-plan-v1/**"
+      - ".github/workflows/gogoke-qualification-runner-self-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runner-self-test:
+    name: Runner instrumentation only
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.13.1"
+      - name: Require nonzero unskipped runner unit tests
+        shell: pwsh
+        run: |
+          $lines = @(& python -B -m unittest discover -s tools/gogoke-s1-r4 -p 'test_*.py' -v 2>&1)
+          $exit = $LASTEXITCODE
+          $lines | ForEach-Object { Write-Output $_ }
+          if ($exit -ne 0) { throw "runner self-tests failed: $exit" }
+          $summary = @($lines | Where-Object { $_ -match '^Ran ([1-9][0-9]*) tests? in ' })
+          if ($summary.Count -ne 1) { throw "runner self-tests have no unambiguous nonzero count" }
+          if (@($lines | Where-Object { $_ -match '^(OK \(skipped=|.*\.\.\. skipped )' }).Count -ne 0) {
+            throw "runner self-tests skipped a case"
+          }
+      - name: Require unchanged 59-check plan mapping
+        shell: pwsh
+        run: |
+          $raw = & python -B tools/gogoke-s1-r4/build_qualification_manifest.py --self-check
+          if ($LASTEXITCODE -ne 0) { throw "qualification manifest self-check failed: $LASTEXITCODE" }
+          $result = $raw | ConvertFrom-Json
+          if ($result.self_check -ne 'PASS' -or $result.check_count -ne 59 -or
+              $result.unique_check_count -ne 59 -or $result.registry_command_count -ne 23 -or
+              $result.official_due_status_counts.NOT_RUN -ne 59) {
+            throw "runner self-check did not retain 59 NOT_RUN due checks and 23 commands"
+          }
+          Write-Output "PASS instrumentation-only: 59 NOT_RUN checks mapped to 23 commands"
