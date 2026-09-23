@@ -6,6 +6,7 @@ use std::io::{self, Read};
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
+use std::os::windows::thread::JoinHandleExt;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +19,7 @@ type Handle = *mut c_void;
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
+const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
 const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
@@ -30,6 +32,7 @@ const WAIT_TIMEOUT: u32 = 258;
 const WAIT_FAILED: u32 = 0xffff_ffff;
 const INFINITE: u32 = 0xffff_ffff;
 const RESUME_FAILED: u32 = 0xffff_ffff;
+const DUPLICATE_SAME_ACCESS: u32 = 0x0000_0002;
 
 pub const STOP_GRACE_MS: u32 = 10_000;
 pub const STOP_TERMINATE_MS: u32 = 5_000;
@@ -37,6 +40,7 @@ pub const STOP_OBSERVE_MS: u32 = 5_000;
 pub const HOST_STOP_DEADLINE_MS: u32 = 30_000;
 pub const STOP_TIMEOUT_EXIT_CODE: u32 = 124;
 pub const STOP_REFUSED_EXIT_CODE: u32 = 125;
+const CONTROLLED_FIXTURE_SHA256: &str = "sha256:2e66dac4ee497e023fd8d860178c77ef5b82e01b7bcd23dc868e9db80637f85c";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -165,6 +169,11 @@ extern "system" {
     fn WriteFile(file: Handle, buffer: *const c_void, length: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
     fn PeekNamedPipe(file: Handle, buffer: *mut c_void, buffer_size: u32, read: *mut u32,
         available: *mut u32, bytes_left: *mut u32) -> i32;
+    fn GetCurrentProcess() -> Handle;
+    fn DuplicateHandle(source_process: Handle, source: Handle, target_process: Handle,
+        target: *mut Handle, access: u32, inherit: i32, options: u32) -> i32;
+    fn CancelSynchronousIo(thread: Handle) -> i32;
+    fn GetWindowsDirectoryW(buffer: *mut u16, size: u32) -> u32;
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
     fn SetInformationJobObject(
         job: Handle,
@@ -223,6 +232,7 @@ pub enum ProcessCustodyError {
     BindingMismatch(&'static str),
     ProtocolPipe(io::Error),
     ProtocolAttribute(io::Error),
+    ProtocolEnvironment(io::Error),
 }
 
 impl fmt::Display for ProcessCustodyError {
@@ -252,6 +262,7 @@ impl fmt::Display for ProcessCustodyError {
             Self::BindingMismatch(field) => write!(f, "PROCESS_BINDING_MISMATCH: {field}"),
             Self::ProtocolPipe(source) => write!(f, "PROCESS_PROTOCOL_PIPE_FAILED: {source}"),
             Self::ProtocolAttribute(source) => write!(f, "PROCESS_PROTOCOL_ATTRIBUTE_FAILED: {source}"),
+            Self::ProtocolEnvironment(source) => write!(f, "PROCESS_PROTOCOL_ENVIRONMENT_FAILED: {source}"),
         }
     }
 }
@@ -284,6 +295,35 @@ impl ProcessLaunch {
             protocol_stdio: false,
         }
     }
+}
+
+/// Only the installer-controlled sibling resources can back the R2-02 test
+/// process. R2-04 must bundle this exact script and a Node runtime; there is
+/// no PATH, caller path, cwd, or source-worktree fallback.
+pub fn controlled_fixture_request(profile_id: &str) -> Result<PrepareRequest, ProcessCustodyError> {
+    let native_host = std::env::current_exe().map_err(ProcessCustodyError::BinaryDigest)?;
+    let resource_dir = native_host.parent().ok_or(ProcessCustodyError::InvalidLaunch("native host has no resource directory"))?;
+    let node = resource_dir.join("gogoke-service").join("runtime").join("node.exe");
+    let script = resource_dir.join("gogoke-service").join("fixtures").join("controlled-pi.mjs");
+    if !node.is_file() || !script.is_file() {
+        return Err(ProcessCustodyError::InvalidLaunch("controlled product resources missing"));
+    }
+    if file_sha256(&script)? != CONTROLLED_FIXTURE_SHA256 {
+        return Err(ProcessCustodyError::BindingMismatch("controlledFixtureDigest"));
+    }
+    let mut launch = ProcessLaunch::new(node.clone());
+    launch.arguments = vec![script.to_string_lossy().into_owned()];
+    launch.current_directory = script.parent().map(PathBuf::from);
+    launch.protocol_stdio = true;
+    Ok(PrepareRequest {
+        binding: NativeBinding {
+            binary_digest_sha256: file_sha256(&node)?,
+            profile_id: profile_id.to_owned(),
+            domain_id: "domain-r2-02-test".to_owned(),
+            generation: "1".to_owned(),
+        },
+        launch,
+    })
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -617,6 +657,7 @@ impl PreparedProcess {
             identity,
             protocol,
             stop_attempted: AtomicBool::new(false),
+            protocol_write_attempted: AtomicBool::new(false),
         })
     }
 }
@@ -878,6 +919,7 @@ pub struct ManagedProcess {
     identity: ProcessIdentity,
     protocol: Option<ProtocolPipes>,
     stop_attempted: AtomicBool,
+    protocol_write_attempted: AtomicBool,
 }
 
 impl ManagedProcess {
@@ -898,15 +940,43 @@ impl ManagedProcess {
         if bytes.is_empty() || bytes.len() > 64 * 1024 || bytes.last() != Some(&b'\n') {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "protocol command must be one bounded JSONL frame"));
         }
-        let mut written = 0u32;
-        if unsafe { WriteFile(protocol.stdin_write.raw(), bytes.as_ptr().cast(),
-            bytes.len() as u32, &mut written, ptr::null_mut()) } == 0 {
+        if self.protocol_write_attempted.swap(true, Ordering::AcqRel) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "protocol send is single attempt"));
+        }
+        let mut duplicate = ptr::null_mut();
+        let current = unsafe { GetCurrentProcess() };
+        if unsafe { DuplicateHandle(current, protocol.stdin_write.raw(), current, &mut duplicate,
+            0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        if written as usize != bytes.len() {
-            return Err(io::Error::new(io::ErrorKind::WriteZero, "partial protocol command"));
+        let write_handle = OwnedHandle::new(duplicate).expect("duplicated protocol handle");
+        let payload = bytes.to_vec();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut written = 0u32;
+            let result = if unsafe { WriteFile(write_handle.raw(), payload.as_ptr().cast(),
+                payload.len() as u32, &mut written, ptr::null_mut()) } == 0 {
+                Err(io::Error::last_os_error())
+            } else if written as usize != payload.len() {
+                Err(io::Error::new(io::ErrorKind::WriteZero, "partial protocol command"))
+            } else { Ok(()) };
+            let _ = sender.send(result);
+        });
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => { let _ = worker.join(); result }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                unsafe { CancelSynchronousIo(worker.as_raw_handle().cast()); }
+                let _ = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE);
+                // The worker owns its duplicate handle and payload until it
+                // finishes. Never join without a bounded completion signal.
+                if receiver.recv_timeout(Duration::from_secs(2)).is_ok() { let _ = worker.join(); }
+                Err(io::Error::new(io::ErrorKind::TimedOut, "protocol write deadline"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = worker.join();
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "protocol writer disconnected"))
+            }
         }
-        Ok(())
     }
 
     /// Reads one LF frame with an explicit deadline and byte bound. EOF or
@@ -954,6 +1024,10 @@ impl ManagedProcess {
 
     pub fn wait(&self, timeout: Duration) -> io::Result<bool> {
         wait_handle(self.process.raw(), duration_ms(timeout))
+    }
+
+    pub fn exit_code(&self) -> io::Result<Option<u32>> {
+        process_exit_code(self.process.raw())
     }
 
     pub fn active_job_processes(&self) -> io::Result<u32> {
@@ -1255,12 +1329,13 @@ fn create_suspended_protocol(
     startup.startup.std_output = pipes.stdout_write.raw();
     startup.startup.std_error = stderr_handle;
     startup.attributes = attributes.raw();
+    let environment = controlled_environment()?;
     let mut info: ProcessInformation = unsafe { zeroed() };
-    let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT
+    let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT
         | if launch.hide_window { CREATE_NO_WINDOW } else { 0 };
     let created = unsafe {
         CreateProcessW(application.as_ptr(), command_line.as_mut_ptr(), ptr::null(), ptr::null(),
-            1, flags, ptr::null(),
+            1, flags, environment.as_ptr().cast(),
             current_directory.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
             &mut startup.startup, &mut info)
     };
@@ -1278,6 +1353,20 @@ fn create_suspended_protocol(
     drop(stdin_read);
     drop(stdout_write);
     Ok((process, initial_thread, info.process_id, Some(parent)))
+}
+
+fn controlled_environment() -> Result<Vec<u16>, ProcessCustodyError> {
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 || length as usize >= buffer.len() {
+        return Err(ProcessCustodyError::ProtocolEnvironment(io::Error::last_os_error()));
+    }
+    let directory = String::from_utf16(&buffer[..length as usize])
+        .map_err(|_| ProcessCustodyError::ProtocolEnvironment(
+            io::Error::new(io::ErrorKind::InvalidData, "Windows directory UTF-16")))?;
+    // Do not inherit NODE_OPTIONS, PATH, credentials, provider config or
+    // attacker-controlled preload/search paths from the service process.
+    Ok(format!("SystemRoot={directory}\0WINDIR={directory}\0\0").encode_utf16().collect())
 }
 
 fn capture_identity(process: Handle, pid: u32) -> io::Result<ProcessIdentity> {
@@ -1676,10 +1765,29 @@ mod tests {
     }
 
     #[test]
+    fn protocol_write_deadline_stops_non_reader_job() {
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.protocol_stdio = true;
+        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+            "-Command".into(), "Start-Sleep -Seconds 30".into()];
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("durably activate non-reader");
+        let mut frame = vec![b'x'; 64 * 1024];
+        *frame.last_mut().expect("nonempty frame") = b'\n';
+        let started = Instant::now();
+        let error = managed.write_protocol(&frame).expect_err("non-reader must not complete write");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10), "write deadline was not bounded");
+        assert!(managed.wait(Duration::from_secs(2)).expect("exact process stopped"));
+        assert_eq!(managed.exit_code().expect("exit code"), Some(STOP_TIMEOUT_EXIT_CODE));
+        assert_eq!(managed.write_protocol(b"second\n").expect_err("single attempt").kind(),
+            io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
     fn prepared_process_identity_is_durable_before_activation() {
         use crate::root::RootLock;
         use crate::store::authority::{initialize_process_custody_schema, mark_process_active,
-            mark_process_unknown, record_prepared_process};
+            mark_process_stopped, mark_process_unknown, record_prepared_process};
         use crate::store::same_open::route_b_test_guard;
         use crate::store::session::open_product_database;
 
@@ -1700,10 +1808,28 @@ mod tests {
         custodian.activate(&prepared).expect("activate exact prepared identity");
         mark_process_active(&mut connection, "r2-02-test", &prepared).expect("durable ACTIVE");
         assert!(mark_process_active(&mut connection, "r2-02-test", &prepared).is_err());
-        mark_process_unknown(&mut connection, "r2-02-test", &prepared).expect("unknown on unresolved outcome");
+        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()))
+            .expect("native stop proof");
+        let revision = mark_process_stopped(&mut connection, "r2-02-test", &proof)
+            .expect("durable stop proof");
+        custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+            identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
+            durable_revision: revision,
+        }).expect("release only after durable stop");
+        assert!(mark_process_unknown(&mut connection, "r2-02-test", &prepared).is_err());
         assert!(mark_process_active(&mut connection, "r2-02-test", &prepared).is_err());
+        let mut unresolved_launch = ProcessLaunch::new(powershell());
+        unresolved_launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+            "-Command".into(), "Start-Sleep -Seconds 1".into()];
+        let unresolved = custodian.prepare(&request(unresolved_launch)).expect("second suspended process");
+        record_prepared_process(&mut connection, "r2-02-unresolved", &unresolved).expect("durable unresolved intent");
         drop(custodian);
         connection.close_checked().expect("close checked");
+        let mut reopened = open_product_database(&root, &database).expect("reopen coordination");
+        initialize_process_custody_schema(&mut reopened).expect("recovery downgrade");
+        assert!(mark_process_active(&mut reopened, "r2-02-unresolved", &unresolved).is_err());
+        reopened.close_checked().expect("close recovered coordination");
         drop(root);
         fs::remove_file(&database).ok();
         fs::remove_file(format!("{}-wal", database.display())).ok();

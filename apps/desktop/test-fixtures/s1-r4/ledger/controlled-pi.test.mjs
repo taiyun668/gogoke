@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -51,4 +51,25 @@ test("source hash mismatch rejects before agent work", () => {
   assert.equal(status, 1);
   assert.deepEqual(frames.map((frame) => frame.type), ["response"]);
   assert.equal(frames[0].success, false);
+});
+
+test("rejected task exits with stdin still open", async () => {
+  const child = spawn(process.execPath, [fileURLToPath(processUrl)], { stdio: ["pipe", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk) => { output += chunk; });
+  const exited = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code));
+  });
+  child.stdin.write(`${JSON.stringify({ id: "bad", type: "prompt", message: JSON.stringify({
+    ...task, source: { ...task.source, sha256: "0".repeat(64) },
+  }) })}\n`);
+  const timer = setTimeout(() => child.kill(), 2_000);
+  try {
+    assert.equal(await exited, 1);
+    assert.equal(JSON.parse(output.trim()).success, false);
+  } finally {
+    clearTimeout(timer);
+    child.stdin.destroy();
+  }
 });

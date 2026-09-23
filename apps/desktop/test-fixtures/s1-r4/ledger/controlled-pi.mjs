@@ -39,12 +39,14 @@ function handle(line) {
     send({ type: "message_end", message });
     send({ type: "agent_end", messages: [message], willRetry: false });
     send({ type: "agent_settled" });
+    process.stdin.destroy();
   } catch {
     if (command?.id && typeof command.id === "string") {
       send({ type: "response", id: command.id, command: "prompt", success: false,
         error: "INVALID_TEST_ONLY_TASK" });
     }
     process.exitCode = 1;
+    process.stdin.destroy();
   }
 }
 

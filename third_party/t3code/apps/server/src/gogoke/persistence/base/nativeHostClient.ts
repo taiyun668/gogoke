@@ -96,6 +96,12 @@ export interface NativeControllerAdmissionReceipt extends NativeControllerCaller
   readonly elapsedMicros: number;
 }
 
+export interface NativeControlledFixtureProbe {
+  readonly state: "TEST_PROTOCOL_SETTLED_NOT_RESULT";
+  readonly frames: readonly string[];
+  readonly stopProofHash: string;
+}
+
 const canonicalControllerField = (value: unknown, path: string): string => {
   if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
     throw new NativeHostClientError("CALLER_ADMISSION", `${path} must be canonical text`);
@@ -1811,6 +1817,56 @@ export class NativeHostClient {
   ): Promise<NativeControllerAdmissionReceipt> {
     const reply = this.request(encodeControllerAdmissionFrame(input));
     return decodeControllerAdmission(reply.body, input, reply.elapsedMicros);
+  }
+
+  async runControlledFixtureProbe(input: {
+    readonly caller: NativeControllerCallerContext;
+    readonly operationId: string;
+    readonly promptJson: string;
+  }): Promise<NativeControlledFixtureProbe> {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.operationId) ||
+        Buffer.byteLength(input.promptJson, "utf8") > 32 * 1024 ||
+        input.promptJson.includes("\n") || input.promptJson.includes("\r")) {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "invalid controlled protocol frame");
+    }
+    const command: unknown = JSON.parse(input.promptJson);
+    if (typeof command !== "object" || command === null || Array.isArray(command) ||
+        Reflect.ownKeys(command).length !== 3 ||
+        typeof (command as Record<string, unknown>).id !== "string" ||
+        !((command as Record<string, unknown>).id as string).startsWith("gogoke-pi-") ||
+        (command as Record<string, unknown>).type !== "prompt" ||
+        typeof (command as Record<string, unknown>).message !== "string") {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "prompt identity mismatch");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RunControlledFixtureProbe",
+      operationId: input.operationId,
+      policyRevision: canonicalControllerField(input.caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(input.caller.principalId, "principalId"),
+      profileId: canonicalControllerField(input.caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(input.caller.revocationHead, "revocationHead"),
+      role: input.caller.role,
+      seatId: canonicalControllerField(input.caller.seatId, "seatId"),
+      promptJson: input.promptJson,
+    })).body;
+    const response: unknown = JSON.parse(body);
+    if (typeof response !== "object" || response === null || Array.isArray(response)) {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "invalid native probe reply");
+    }
+    const record = response as Record<string, unknown>;
+    if (Reflect.ownKeys(record).length !== 3 ||
+        record.state !== "TEST_PROTOCOL_SETTLED_NOT_RESULT" ||
+        !Array.isArray(record.frames) || record.frames.length < 2 || record.frames.length > 8 ||
+        !record.frames.every((frame) => typeof frame === "string") ||
+        typeof record.stopProofHash !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/.test(record.stopProofHash)) {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "native protocol evidence invalid");
+    }
+    return Object.freeze({
+      state: "TEST_PROTOCOL_SETTLED_NOT_RESULT" as const,
+      frames: Object.freeze([...record.frames] as string[]),
+      stopProofHash: record.stopProofHash,
+    });
   }
 
   async publishDecisionSnapshot(input: NativeDecisionAuthoritySnapshot): Promise<void> {

@@ -27,11 +27,12 @@ use super::authority::{
 use super::atomic::{Json as NativeJson, JsonString as NativeJsonString, Parser as NativeJsonParser};
 use super::same_open::{create_new, open_existing, VerifiedDatabaseConnection};
 use crate::ipc::PrivatePipeConnection;
+use crate::process::{controlled_fixture_request, DurableStopConfirmation, ProcessCustodian, StopBudgets};
 use crate::root::RootLock;
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub fn open_product_database<'root>(
     root: &'root RootLock,
@@ -559,6 +560,112 @@ const ACTION_PREPARE_FIELDS: [&str; 13] = [
     "packageOperationId", "parentGrantRef", "payload", "recipeId", "reservationId", "sessionId", "taskId",
 ];
 
+fn run_controlled_fixture_probe(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    custodian: &mut ProcessCustodian,
+    line: &str,
+) -> Result<String, OrchestrationError> {
+    let fields = action_fields(line, &["operation", "operationId", "policyRevision",
+        "principalId", "profileId", "revocationHead", "role", "seatId", "promptJson"])?;
+    let operation_id = required(&fields, "operationId")?;
+    let prompt = required(&fields, "promptJson")?;
+    if prompt.len() > 32 * 1024 || prompt.contains('\n') || prompt.contains('\r') {
+        return Err(OrchestrationError::Invalid("controlled prompt frame"));
+    }
+    let command = decode_flat_string_object(prompt.as_bytes()).map_err(protocol_error)?;
+    if command.len() != 3 || command.get("type").map(String::as_str) != Some("prompt") ||
+        !command.get("id").is_some_and(|id| id.starts_with("gogoke-pi-") && id.len() <= 128) ||
+        !command.contains_key("message") {
+        return Err(OrchestrationError::Invalid("controlled prompt identity"));
+    }
+    let admit = |connection: &mut VerifiedDatabaseConnection<'_>| {
+        authority::admit_owner_controller_caller(connection, owner,
+            required(&fields, "profileId")?, required(&fields, "principalId")?,
+            required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+            required(&fields, "revocationHead")?, required(&fields, "role")?)
+    };
+    let identity = admit(connection)?;
+    let launch = controlled_fixture_request(&identity.profile_id)?;
+    let prepared = custodian.prepare(&launch)?;
+    if let Err(error) = authority::record_prepared_process(connection, operation_id, &prepared) {
+        let _ = custodian.abort_prepared(&prepared);
+        return Err(error);
+    }
+    if let Err(error) = custodian.activate(&prepared) {
+        let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+        return Err(error.into());
+    }
+    if authority::mark_process_active(connection, operation_id, &prepared).is_err() {
+        let _ = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()));
+        let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let execution = (|| -> Result<Vec<String>, OrchestrationError> {
+        admit(connection)?;
+        let process = custodian.active(&prepared.ticket)
+            .ok_or(OrchestrationError::Invalid("controlled process absent"))?;
+        let mut bytes = prompt.as_bytes().to_vec();
+        bytes.push(b'\n');
+        process.write_protocol(&bytes).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+        let started = Instant::now();
+        let mut frames = Vec::new();
+        let mut total = 0usize;
+        loop {
+            let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+            if remaining.is_zero() || frames.len() >= 8 {
+                return Err(OrchestrationError::Invalid("controlled protocol did not settle"));
+            }
+            let frame = process.read_protocol_frame(remaining).map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+            total += frame.len();
+            if total > 64 * 1024 {
+                return Err(OrchestrationError::Invalid("controlled protocol aggregate too large"));
+            }
+            let text = std::str::from_utf8(&frame)
+                .map_err(|_| OrchestrationError::Invalid("controlled protocol utf8"))?;
+            let settled = text.trim_end_matches(['\r', '\n']) == "{\"type\":\"agent_settled\"}";
+            frames.push(text.to_owned());
+            if settled { break; }
+        }
+        if !process.wait(Duration::from_secs(2)).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? ||
+            process.exit_code().map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? != Some(0) {
+            return Err(OrchestrationError::Invalid("controlled process did not exit cleanly"));
+        }
+        Ok(frames)
+    })();
+    let proof = match custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(())) {
+        Ok(proof) => proof,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+            return Err(error.into());
+        }
+    };
+    let revision = match authority::mark_process_stopped(connection, operation_id, &proof) {
+        Ok(revision) => revision,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+            return Err(error);
+        }
+    };
+    custodian.confirm_stop_durable(&DurableStopConfirmation {
+        ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+        identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
+        durable_revision: revision,
+    })?;
+    match execution {
+        Ok(frames) => {
+            let encoded = frames.iter().map(|frame| json_quote(frame)).collect::<Vec<_>>().join(",");
+            Ok(format!("{{\"state\":\"TEST_PROTOCOL_SETTLED_NOT_RESULT\",\"frames\":[{encoded}],\"stopProofHash\":{}}}",
+                json_quote(&proof.proof_hash())))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 fn handle_authenticated_line(
     connection: &mut VerifiedDatabaseConnection<'_>,
@@ -571,11 +678,15 @@ fn handle_authenticated_line(
 fn handle_authenticated_line_with_process(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
-    _process_custodian: Option<&mut crate::process::ProcessCustodian>,
+    process_custodian: Option<&mut crate::process::ProcessCustodian>,
     line: &str,
 ) -> Result<String, OrchestrationError> {
     let decoded = decode_operation_frame(line.as_bytes()).map_err(protocol_error)?;
     match decoded.name {
+        "RunControlledFixtureProbe" => {
+            let custodian = process_custodian.ok_or(OrchestrationError::AccessDenied)?;
+            run_controlled_fixture_probe(connection, owner, custodian, line)
+        }
         "ReadProductIdentity" => {
             let _fields = action_fields(line, &["operation"])?;
             let identity = authority::read_product_identity(connection, owner)?;

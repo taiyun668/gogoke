@@ -153,7 +153,8 @@ jobs:
             @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
             @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
-            @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' }
+            @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
+            @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' }
           )
           $results = @()
           foreach ($probe in $probes) {
@@ -261,7 +262,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    name: Gogoke server 49-file cloud tests
+    name: Gogoke server 50-file cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
     env:

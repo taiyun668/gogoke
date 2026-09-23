@@ -2,7 +2,7 @@
 use super::super::orchestration::OrchestrationError;
 use super::super::same_open::VerifiedDatabaseConnection;
 use super::transaction;
-use crate::process::PreparedCustody;
+use crate::process::{NativeStopProof, PreparedCustody};
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS gogoke_coordination_process_custody (operation_id TEXT PRIMARY KEY, ticket TEXT NOT NULL UNIQUE, custodian_nonce TEXT NOT NULL, pid TEXT NOT NULL, creation_time_100ns TEXT NOT NULL, image_path TEXT NOT NULL, binary_digest_sha256 TEXT NOT NULL, profile_id TEXT NOT NULL, domain_id TEXT NOT NULL, generation TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('PREPARED','ACTIVE','STOPPED','UNKNOWN')), stop_proof_hash TEXT) STRICT";
 
@@ -57,6 +57,34 @@ pub(crate) fn mark_unknown(
     transaction::run(connection, |tx| {
         tx.write("UPDATE gogoke_coordination_process_custody SET state='UNKNOWN' WHERE operation_id=? AND ticket=? AND custodian_nonce=? AND state IN ('PREPARED','ACTIVE')",
             &[operation_id, prepared.ticket.opaque(), &prepared.custodian_nonce])?;
+        let rows = tx.query("SELECT changes()", &[], 1)?;
+        if rows.len() != 1 || rows[0][0] != "1" {
+            return Err(OrchestrationError::OperationConflict);
+        }
         Ok(())
+    })
+}
+
+pub(crate) fn mark_stopped(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    operation_id: &str,
+    proof: &NativeStopProof,
+) -> Result<u64, OrchestrationError> {
+    if !proof.errors.is_empty() || !proof.parent_exited || !proof.writer_fence_verified ||
+        proof.active_job_processes != Some(0) {
+        return Err(OrchestrationError::Invalid("process stop proof incomplete"));
+    }
+    let hash = proof.proof_hash();
+    transaction::run(connection, |tx| {
+        tx.write("UPDATE gogoke_coordination_process_custody SET state='STOPPED', stop_proof_hash=? WHERE operation_id=? AND ticket=? AND custodian_nonce=? AND state='ACTIVE'",
+            &[&hash, operation_id, proof.ticket.opaque(), &proof.custodian_nonce])?;
+        let rows = tx.query("SELECT changes()", &[], 1)?;
+        if rows.len() != 1 || rows[0][0] != "1" {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let revision = tx.query("SELECT rowid FROM gogoke_coordination_process_custody WHERE operation_id=? AND stop_proof_hash=?",
+            &[operation_id, &hash], 1)?;
+        if revision.len() != 1 { return Err(OrchestrationError::OperationConflict); }
+        revision[0][0].parse::<u64>().map_err(|_| OrchestrationError::Invalid("process custody revision"))
     })
 }

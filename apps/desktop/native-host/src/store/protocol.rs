@@ -19,6 +19,7 @@ const ADMITTED: &[&str] = &[
     "AuthenticateService",
     "ReadProductIdentity",
     "AdmitControllerCaller",
+    "RunControlledFixtureProbe",
     "PublishDecisionSnapshot",
     "CommitDecision",
     "ReadDecisionReplay",

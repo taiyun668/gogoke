@@ -1,0 +1,94 @@
+// @effect-diagnostics nodeBuiltinImport:off - Windows cloud process integration.
+import * as Assert from "node:assert/strict";
+import * as Crypto from "node:crypto";
+import * as FS from "node:fs/promises";
+import * as OS from "node:os";
+import * as Path from "node:path";
+import { it } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { PiManagedSession } from "../adapters/pi/session.ts";
+import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
+import { readGitHubFact } from "../context/repository/gitFact.ts";
+import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
+
+const sourceCoordinate = Object.freeze({
+  repository: "taiyun668/gogoke",
+  commit: "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+  path: "apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json",
+  contentHash: "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e",
+});
+const sha256 = (bytes: Uint8Array) => Crypto.createHash("sha256").update(bytes).digest("hex");
+const fixturePath = fileURLToPath(new URL("../../../../../../../apps/desktop/test-fixtures/s1-r4/ledger/controlled-pi.mjs", import.meta.url));
+
+const cloudOnly = process.platform === "win32" && Boolean(process.env.GOGOKE_NATIVE_HOST) ? it : it.skip;
+
+cloudOnly("runs the fixed public fixture through native custody and Pi protocol without adoption", { timeout: 40_000 }, async () => {
+  const builtHost = process.env.GOGOKE_NATIVE_HOST;
+  if (builtHost === undefined) throw new Error("GOGOKE_NATIVE_HOST missing");
+  const source = await readGitHubFact(sourceCoordinate, sourceCoordinate.repository);
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "gogoke-r2-controlled-"));
+  const resourceDir = Path.join(root, "resources");
+  const productRoot = Path.join(root, "product-root");
+  const hosted = Path.join(resourceDir, "gogoke-native-host.exe");
+  const runtime = Path.join(resourceDir, "gogoke-service", "runtime", "node.exe");
+  const script = Path.join(resourceDir, "gogoke-service", "fixtures", "controlled-pi.mjs");
+  let client: NativeHostClient | undefined;
+  try {
+    await FS.mkdir(Path.dirname(runtime), { recursive: true });
+    await FS.mkdir(Path.dirname(script), { recursive: true });
+    await FS.mkdir(productRoot, { recursive: true });
+    await FS.copyFile(builtHost, hosted);
+    await FS.copyFile(process.execPath, runtime);
+    await FS.copyFile(fixturePath, script);
+    const previousNodeOptions = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = "--import=data:text/javascript,process.exit(42)";
+    try {
+      client = await NativeHostClient.attach({ root: productRoot, hostBinary: hosted });
+    } finally {
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousNodeOptions;
+    }
+    const identity = await client.readProductIdentity();
+    const caller = {
+      policyRevision: identity.policyRevision,
+      principalId: identity.principalId,
+      profileId: identity.profileId,
+      revocationHead: identity.revocationHead,
+      role: "controller" as const,
+      seatId: identity.seatId,
+    };
+    const message = JSON.stringify({
+      schema: "gogoke.s1-r4.r2-02.fixture-task.v1", testOnly: true,
+      source: { repository: sourceCoordinate.repository, commit: sourceCoordinate.commit,
+        path: sourceCoordinate.path, sha256: sha256(source.bytes),
+        content: Buffer.from(source.bytes).toString("utf8") },
+    });
+    const proofs = new Set<string>();
+    for (let task = 0; task < 2; task += 1) {
+      let session!: PiManagedSession;
+      let stopProofHash = "";
+      const operationId = `r2-02-${Crypto.randomUUID()}`;
+      session = new PiManagedSession({
+        admission: { mode: "ordinary", protocolQualified: true,
+          protectedDomainQualified: false, contextExposure: "UNKNOWN" },
+        sink: { async write(chunk) {
+          const promptJson = Buffer.from(chunk).toString("utf8").trimEnd();
+          const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
+          stopProofHash = evidence.stopProofHash;
+          for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
+        } },
+      });
+      const observation = await session.promptAndObserveSettlement(message, 30_000);
+      Assert.match(stopProofHash, /^sha256:[0-9a-f]{64}$/);
+      proofs.add(stopProofHash);
+      const result = validateControlledFixtureResult(source, observation);
+      Assert.equal(result.state, "VALIDATED_TEST_RESULT_NOT_ADOPTED");
+      Assert.equal(result.sourceBlob, source.gitBlob);
+    }
+    Assert.equal(proofs.size, 2, "separate operations retain separate native custody");
+  } finally {
+    await client?.close();
+    await FS.rm(root, { recursive: true, force: true });
+  }
+});

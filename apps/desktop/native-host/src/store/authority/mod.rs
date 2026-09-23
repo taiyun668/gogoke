@@ -13,6 +13,7 @@ mod process_custody;
 pub(crate) use process_custody::{
     initialize as initialize_process_custody_schema,
     mark_active as mark_process_active,
+    mark_stopped as mark_process_stopped,
     mark_unknown as mark_process_unknown,
     record_prepared as record_prepared_process,
 };
