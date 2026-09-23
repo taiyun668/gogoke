@@ -59,6 +59,7 @@ describe("R2-02 Git fact readback", () => {
   });
 
   it("uses the supplied GitHub credential only for the pinned API request", async () => {
+    const fixtureCredential = "test-only-value".repeat(3);
     const seen: Array<{ url: string; token: string | null; redirect: string | undefined }> = [];
     const fetcher: typeof fetch = async (url, init) => {
       seen.push({ url: String(url), token: new Headers(init?.headers).get("authorization"),
@@ -66,9 +67,9 @@ describe("R2-02 Git fact readback", () => {
       return new Response(JSON.stringify({ type: "file", path, sha: blob, size: bytes.length,
         encoding: "base64", content: bytes.toString("base64") }), { status: 200 });
     };
-    await readGitHubFact(coordinate, repository, fetcher, "synthetic-token-with-enough-length");
+    await readGitHubFact(coordinate, repository, fetcher, fixtureCredential);
     expect(seen).toEqual([{ url: `https://api.github.com/repos/taiyun668/gogoke/contents/${path}?ref=${commit}`,
-      token: "Bearer synthetic-token-with-enough-length", redirect: "error" }]);
+      token: `Bearer ${fixtureCredential}`, redirect: "error" }]);
     await expect(readGitHubFact(coordinate, repository, fetcher, "bad\nheader"))
       .rejects.toMatchObject({ code: "GIT_FACT_CREDENTIAL_INVALID" });
     expect(seen).toHaveLength(1);
