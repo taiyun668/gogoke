@@ -33,8 +33,8 @@ export async function commitR2ControlledDecision(input: {
   }
   const record: DecisionRecord = Object.freeze({
     operationId: OPERATION,
-    scenarioId: "DF02",
-    family: "RESOURCE_SELECTION",
+    scenarioId: "DF10",
+    family: "CONTEXT_SELECTION",
     state: "COMMITTED",
     stateViewHash: basis.stateViewHash,
     candidateHash,
