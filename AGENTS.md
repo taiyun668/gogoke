@@ -25,3 +25,7 @@ Owner 的机器开着强制模式的智能应用控制，会不可预测地拦�
 ## 事实账本
 
 gogoke 的事实账本沿用 Git 与 GitHub，本机数据库只负责活跃协调。已接受的成果、事实、决定与证据以仓库和 PR 合并为准；数据库记录是工作状态，不是事实。完整决定见 [docs/governance/gogoke-ledger-decision.md](docs/governance/gogoke-ledger-decision.md)。
+
+## 远端写入
+
+向 GitHub 等远端写入（建分支、推送、提交文件、开 PR、写评论）可能暂时失败，例如 `403 Resource not accessible by integration`、超时或 5xx。遇到时不能一次失败就停下交还：先重新读取远端，确认这次写入是否其实已经生效；未生效就间隔递增地重试。只有反复重试仍失败，才如实上报，并附上可以直接续接的提交内容。若确认是持续的权限不足而不是暂时故障，报告 Owner 处理授权，不用重试掩盖。
