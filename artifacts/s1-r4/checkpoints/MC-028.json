@@ -1,0 +1,53 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-028",
+  "repository": "taiyun668/gogoke",
+  "branch": "main",
+  "head_before_checkpoint": "c2a502f34abfa2215b78635503abc9001f2b1b98",
+  "recorded_utc": "2026-09-23T05:47:38Z",
+  "reason": "Preserve exact candidate and Owner-only authorization custody while independent reviews remain open",
+  "public_runner": {
+    "draft_pr": "PR #4",
+    "head": "5caf0058974f312c4723c4ece0d24f0db73c70fc",
+    "status": "CODE_CANDIDATE_PENDING_FRESH_CLAUDE_REVIEW_NOT_MERGED",
+    "evidence": "59/59 local Python diagnostic tests; traceability self-check maps 59 due IDs to 23 commands with official due statuses NOT_RUN; public-source hygiene PASS with rejected sensitive positive control",
+    "focused_negative": "Actual temporary Git graph recognizes a first-parent ordinary merge introducing a receipt and rejects a linear commit; missing/non-Owner/stale/changed/ambiguous authorization controls also reject",
+    "non_claim": "No qualification group ran and no public authorization is effective; local diagnostics are not independent acceptance or due-check PASS."
+  },
+  "public_authorization": {
+    "draft_pr": "PR #11",
+    "head": "0b90dc5a46294e921ad57c5bda90f24f17c5e3a3",
+    "file_count": 1,
+    "only_path": "artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+    "plan_manifest_blob": "c9efd380bb9b52a1be18b96bfc3cac4c5f5ff84b",
+    "field_validation": "Exact Owner-draft schema and authorized fields compared with candidate runner validator: zero errors; no private false flags or duplicate restrictions",
+    "source_hygiene": "PR run 35823798273 PASS",
+    "state": "DRAFT_NOT_AUTHORIZED_NOT_MERGED; Owner taiyun668 alone may merge after review and checks",
+    "blocked": "WP01/S1-01-V remain BLOCKED; no qualification execution"
+  },
+  "notice_followups": {
+    "draft_pr": "PR #10",
+    "head": "d32260e1a418a1cf98fa0101ffaf4b0836abea42",
+    "run_id": "35822377156",
+    "jobs": "Browser build/tests, locked notice generation, and Unsigned Windows NSIS all SUCCESS; public-source hygiene PASS",
+    "facts": "npm 124 production packages/125 text sources; Rust 398 Windows dependency identities covered; actual generated notice copy with adler2 entry removed was rejected; MPL notice contains crates.io version source link; cloud installer smoke verified both installed notice hashes and update/rollback",
+    "portable_notice_sha256": {
+      "npm": "ee9b17721431351b688d56aafa4daae4f054634b733865cf7c82a8a80a3b8ae9",
+      "rust": "d96a62be35e885f5b3775fe8236a5872cd2bace17e15e9e6fa46dedd84548b01"
+    },
+    "status": "CURRENT_CANDIDATE_FRESH_CLAUDE_REVIEW_PENDING_NOT_MERGED",
+    "non_claim": "Cloud Windows Server construction/distribution evidence is not legal compliance, signing, publication, Windows 11 desktop validation, or S1 gate acceptance."
+  },
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "due_checks": "59 unpromoted",
+  "custody": "Main and PR #4/#10/#11 source branches are pushed with clean worktrees; generated reports and downloaded unsigned artifacts remain outside public Git. No local native build used as gate evidence.",
+  "next_action": "Obtain fresh Claude decisions on PR #4, PR #10 and the single-file PR #11. Repair findings; merge PR #4/#10 normally only after ACCEPT and green checks. Codex must never merge PR #11; wait for Owner's personal merge before any WP01/S1-01-V qualification run. Continue dependency-safe S1-R4 construction without promoting gates or due checks."
+}
