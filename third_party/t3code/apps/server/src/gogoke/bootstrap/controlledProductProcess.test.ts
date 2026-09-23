@@ -91,59 +91,67 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     let actionDigest: string | undefined;
     let decisionReceiptId: string | undefined;
     const decisionRecordedAt = new Date().toISOString();
+    const promptJson = JSON.stringify({ type: "prompt", message, id: "gogoke-pi-1" });
     for (let task = 0; task < 2; task += 1) {
       let session!: PiManagedSession;
       let stopProofHash = "";
       const operationId = `r2-02-${Crypto.randomUUID()}`;
+      const packageReceipt = await client.prepareR2TestPackage(caller, promptJson);
+      Assert.equal(packageReceipt.state, "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION");
+      if (packageDigest === undefined) {
+        Assert.equal(packageReceipt.disposition, "COMMITTED");
+        packageDigest = packageReceipt.packageDigest;
+      } else {
+        Assert.equal(packageReceipt.disposition, "REPLAYED");
+        Assert.equal(packageReceipt.packageDigest, packageDigest);
+      }
+      const lineage = await client.prepareR2TestLineage(caller);
+      Assert.equal(lineage.state, "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION");
+      if (lineageBinding === undefined) {
+        Assert.equal(lineage.disposition, "COMMITTED");
+        lineageBinding = lineage.bindingId;
+      } else {
+        Assert.equal(lineage.disposition, "REPLAYED");
+        Assert.equal(lineage.bindingId, lineageBinding);
+      }
+      const recipe = await client.prepareR2TestRecipe(caller);
+      Assert.equal(recipe.state, "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION");
+      if (recipeHash === undefined) {
+        Assert.equal(recipe.disposition, "COMMITTED");
+        recipeHash = recipe.contentHash;
+      } else {
+        Assert.equal(recipe.disposition, "RECONCILED");
+        Assert.equal(recipe.contentHash, recipeHash);
+      }
+      const basis = await client.readR2TestActionDecisionBasis(caller, promptJson);
+      Assert.equal(basis.state, "TEST_ONLY_DECISION_BASIS_NOT_ACTION");
+      Assert.match(basis.actionDigest, /^sha256:[0-9a-f]{64}$/);
+      if (actionDigest === undefined) actionDigest = basis.actionDigest;
+      else Assert.equal(basis.actionDigest, actionDigest);
+      const decision = await commitR2ControlledDecision({
+        store: client, basis, grant: preparedGrant, recordedAt: decisionRecordedAt,
+      });
+      if (decisionReceiptId === undefined) {
+        Assert.equal(decision.kind, "committed");
+        if (decision.kind !== "committed") throw new Error("Decision did not commit");
+        decisionReceiptId = decision.decisionReceiptId;
+      } else {
+        Assert.equal(decision.kind, "replayed");
+        if (decision.kind !== "replayed") throw new Error("Decision did not replay");
+        Assert.equal(decision.decisionReceiptId, decisionReceiptId);
+      }
+      const preparedAction = await client.prepareR2TestAction({
+        grantRef: preparedGrant.grantRef,
+        promptJson,
+        expectedActionDigest: basis.actionDigest,
+        expectedPackageDigest: packageReceipt.packageDigest,
+      });
+      Assert.equal(preparedAction.kind, task === 0 ? "reserved" : "replay");
       session = new PiManagedSession({
         admission: { mode: "ordinary", protocolQualified: true,
           protectedDomainQualified: false, contextExposure: "UNKNOWN" },
         sink: { async write(chunk) {
-          const promptJson = Buffer.from(chunk).toString("utf8").trimEnd();
-          const packageReceipt = await client!.prepareR2TestPackage(caller, promptJson);
-          Assert.equal(packageReceipt.state, "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION");
-          if (packageDigest === undefined) {
-            Assert.equal(packageReceipt.disposition, "COMMITTED");
-            packageDigest = packageReceipt.packageDigest;
-          } else {
-            Assert.equal(packageReceipt.disposition, "REPLAYED");
-            Assert.equal(packageReceipt.packageDigest, packageDigest);
-          }
-          const lineage = await client!.prepareR2TestLineage(caller);
-          Assert.equal(lineage.state, "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION");
-          if (lineageBinding === undefined) {
-            Assert.equal(lineage.disposition, "COMMITTED");
-            lineageBinding = lineage.bindingId;
-          } else {
-            Assert.equal(lineage.disposition, "REPLAYED");
-            Assert.equal(lineage.bindingId, lineageBinding);
-          }
-          const recipe = await client!.prepareR2TestRecipe(caller);
-          Assert.equal(recipe.state, "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION");
-          if (recipeHash === undefined) {
-            Assert.equal(recipe.disposition, "COMMITTED");
-            recipeHash = recipe.contentHash;
-          } else {
-            Assert.equal(recipe.disposition, "RECONCILED");
-            Assert.equal(recipe.contentHash, recipeHash);
-          }
-          const basis = await client!.readR2TestActionDecisionBasis(caller, promptJson);
-          Assert.equal(basis.state, "TEST_ONLY_DECISION_BASIS_NOT_ACTION");
-          Assert.match(basis.actionDigest, /^sha256:[0-9a-f]{64}$/);
-          if (actionDigest === undefined) actionDigest = basis.actionDigest;
-          else Assert.equal(basis.actionDigest, actionDigest);
-          const decision = await commitR2ControlledDecision({
-            store: client!, basis, grant: preparedGrant, recordedAt: decisionRecordedAt,
-          });
-          if (decisionReceiptId === undefined) {
-            Assert.equal(decision.kind, "committed");
-            if (decision.kind !== "committed") throw new Error("Decision did not commit");
-            decisionReceiptId = decision.decisionReceiptId;
-          } else {
-            Assert.equal(decision.kind, "replayed");
-            if (decision.kind !== "replayed") throw new Error("Decision did not replay");
-            Assert.equal(decision.decisionReceiptId, decisionReceiptId);
-          }
+          Assert.equal(Buffer.from(chunk).toString("utf8"), `${promptJson}\n`);
           const evidence = await client!.runControlledFixtureProbe({ caller, operationId, promptJson });
           stopProofHash = evidence.stopProofHash;
           for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));

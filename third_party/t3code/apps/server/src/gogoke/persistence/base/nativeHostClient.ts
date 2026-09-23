@@ -146,6 +146,35 @@ export interface NativeR2ActionDecisionBasis {
   readonly bindingGeneration: string;
 }
 
+export interface NativeR2TestActionPreparation {
+  readonly kind: "reserved" | "replay";
+  readonly operationId: "opr_22222222222222222222222222222222";
+  readonly semanticDigest: string;
+  readonly reservationId: "reservation-r2-02-controlled";
+  readonly packageDigest: string;
+  readonly authorityStatus: "PREPARATORY_CURRENT_FACTS_REQUIRED";
+}
+
+export function decodeR2TestActionPreparation(body: string): NativeR2TestActionPreparation {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_ACTION", "invalid native Action preparation"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_ACTION", "invalid native Action preparation");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 6 ||
+      !["reserved", "replay"].includes(String(record.kind)) ||
+      record.operationId !== "opr_22222222222222222222222222222222" ||
+      typeof record.semanticDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.semanticDigest) ||
+      record.reservationId !== "reservation-r2-02-controlled" ||
+      typeof record.packageDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.packageDigest) ||
+      record.authorityStatus !== "PREPARATORY_CURRENT_FACTS_REQUIRED") {
+    throw new NativeHostClientError("R2_TEST_ACTION", "native Action identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestActionPreparation);
+}
+
 export function decodeR2ActionDecisionBasis(body: string): NativeR2ActionDecisionBasis {
   let value: unknown;
   try { value = JSON.parse(body); }
@@ -2146,6 +2175,42 @@ export class NativeHostClient {
       promptJson,
     })).body;
     return decodeR2ActionDecisionBasis(body);
+  }
+
+  async prepareR2TestAction(input: {
+    readonly grantRef: string;
+    readonly promptJson: string;
+    readonly expectedActionDigest: string;
+    readonly expectedPackageDigest: string;
+  }): Promise<NativeR2TestActionPreparation> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(input.grantRef) ||
+        Buffer.byteLength(input.promptJson, "utf8") > 32 * 1024 ||
+        input.promptJson.includes("\n") || input.promptJson.includes("\r") ||
+        !/^sha256:[0-9a-f]{64}$/.test(input.expectedActionDigest) ||
+        !/^sha256:[0-9a-f]{64}$/.test(input.expectedPackageDigest)) {
+      throw new NativeHostClientError("R2_TEST_ACTION", "invalid Action preparation input");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReserveAction",
+      actionKind: "queue",
+      actionOperationId: "opr_22222222222222222222222222222222",
+      contextManifestId: "manifest-r2-02-test",
+      domainId: "domain-r2-02-test",
+      lane: "work",
+      packageOperationId: "r2-02-package",
+      parentGrantRef: input.grantRef,
+      payload: input.promptJson,
+      recipeId: "recipe-r2-02-test",
+      reservationId: "reservation-r2-02-controlled",
+      sessionId: "session-r2-02-worker",
+      taskId: "task-r2-02-test",
+    })).body;
+    const prepared = decodeR2TestActionPreparation(body);
+    if (prepared.semanticDigest !== input.expectedActionDigest ||
+        prepared.packageDigest !== input.expectedPackageDigest) {
+      throw new NativeHostClientError("R2_TEST_ACTION", "Action does not match current Decision or package");
+    }
+    return prepared;
   }
 
   async runControlledFixtureProbe(input: {
