@@ -1897,9 +1897,11 @@ mod tests {
     fn native_host_prepare_and_activate_are_separate_fail_closed_phases() {
         let marker = unique_marker("two-phase");
         let marker_text = marker.to_string_lossy();
-        assert!(marker_text.chars().all(|ch| ch.is_ascii_alphanumeric()
-            || matches!(ch, ':' | '\\' | '/' | '-' | '_' | '.')),
-            "cmd marker fixture requires a path without shell metacharacters");
+        let invalid_path_char = marker_text.chars().find(|ch| !ch.is_ascii_alphanumeric()
+            && !matches!(ch, ':' | '\\' | '/' | '-' | '_' | '.'));
+        assert!(invalid_path_char.is_none(),
+            "cmd marker fixture has unsupported character U+{:04X}",
+            invalid_path_char.unwrap_or('\0') as u32);
         let mut launch = ProcessLaunch::new(system_cmd());
         launch.arguments = vec![
             "/D".to_owned(),
