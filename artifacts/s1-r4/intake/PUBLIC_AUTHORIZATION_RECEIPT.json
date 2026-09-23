@@ -9,8 +9,8 @@
   "repository": "taiyun668/gogoke",
   "plan": {
     "provenance_plan_commit": "cbdc6ad592947370941024a87dbb9168a5b59055",
-    "public_plan_path": "docs/design/gogoke-s1-r4-plan-v1/",
-    "public_plan_manifest_blob": "c9efd380bb9b52a1be18b96bfc3cac4c5f5ff84b",
+    "public_plan_path": "docs/design/gogoke-s1-r4-plan-v2/",
+    "public_plan_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11",
     "stale_when": "the public plan MANIFEST.json blob differs from the value above"
   },
   "carryover": {
