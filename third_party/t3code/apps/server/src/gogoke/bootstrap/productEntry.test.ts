@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { expect, it } from "@effect/vitest";
+import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
 import {
   decodeProductGoalRequest,
   handleProductGoalRequest,
@@ -67,7 +68,10 @@ it("seals donor server commands at the executable argument boundary", () => {
 });
 
 
-it.runIf(process.platform === "win32" && Boolean(process.env.GOGOKE_NATIVE_HOST))(
+const nativeIntegrationTest =
+  process.platform === "win32" && Boolean(process.env.GOGOKE_NATIVE_HOST) ? it : it.skip;
+
+nativeIntegrationTest(
   "reaches the cloud-built native Product Authority through admitted Controller/Seat context",
   async () => {
     const hostBinary = process.env.GOGOKE_NATIVE_HOST;
@@ -84,6 +88,14 @@ it.runIf(process.platform === "win32" && Boolean(process.env.GOGOKE_NATIVE_HOST)
       expect(response.caller.role).toBe("controller");
       expect(response.nativeHost.reachable).toBe(true);
       expect(response.acceptance).toBe("TEST_FIXTURE_NOT_ADOPTED");
+
+      const inspector = await NativeHostClient.attach({ root, hostBinary });
+      try {
+        const snapshot = await inspector.readSnapshot(1);
+        expect(snapshot.body).toBe('{"count":0}');
+      } finally {
+        await inspector.close();
+      }
     } finally {
       await NodeFS.rm(root, { force: true, recursive: true });
     }
