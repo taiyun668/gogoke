@@ -1,0 +1,50 @@
+use super::native_binding::{AccountRefSnapshot, AppendRuntimeInstanceIdentity, CommitNativeBinding, NativeBindingIdentity, RuntimeInstanceIdentitySnapshot};
+use super::session_lineage::{NativeSessionIdentity, SessionLineageCommand, SessionLineageOperation};
+use crate::root::RootLock;
+use crate::store::product_database::ProductDatabase;
+use crate::store::same_open::route_b_test_guard;
+use std::path::{Path,PathBuf};
+use std::time::{SystemTime,UNIX_EPOCH};
+
+fn scratch() -> PathBuf {
+    let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("gogoke-native-binding-{}-{nonce}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();path
+}
+fn cleanup(root:&Path) {
+    for name in ["state.sqlite","state.sqlite-wal","state.sqlite-shm"] {let _=std::fs::remove_file(root.join(name));}
+    if let Err(error)=std::fs::remove_dir(root){eprintln!("owned native binding test root retained: {error}");}
+}
+fn identity(domain:&str,instance:&str,account:&str)->RuntimeInstanceIdentitySnapshot {
+    RuntimeInstanceIdentitySnapshot{domain_id:domain.into(),instance_id:instance.into(),version:"1".into(),driver_id:"driver-one".into(),profile_ref:"profile-one".into(),profile_revision:"1".into(),account_ref:AccountRefSnapshot::Present(account.into()),auth_revision:"1".into()}
+}
+fn append(product:&mut ProductDatabase<'_>,value:RuntimeInstanceIdentitySnapshot){
+    let tag=format!("{}-{}",value.domain_id,value.instance_id);
+    product.append_runtime_instance_identity(&AppendRuntimeInstanceIdentity{operation_id:format!("identity-op-{tag}"),snapshot:value,event_id:format!("identity-event-{tag}"),receipt_id:format!("identity-receipt-{tag}"),recorded_at:"2026-09-23T12:00:00Z".into(),expected_previous_version:None}).unwrap();
+}
+fn lineage(product:&mut ProductDatabase<'_>,domain:&str,session:&str,binding:&str,native:&str){
+    product.apply_session_lineage(&SessionLineageCommand{operation_id:format!("lineage-op-{domain}-{session}"),domain_id:domain.into(),event_id:format!("lineage-event-{domain}-{session}"),receipt_id:format!("lineage-receipt-{domain}-{session}"),recorded_at:"2026-09-23T12:00:00Z".into(),operation:SessionLineageOperation::NewClean{session_id:session.into(),native:NativeSessionIdentity{native_session_id:native.into(),binding_id:binding.into(),generation:"1".into(),source_epoch:"1".into(),domain_id:domain.into()}}}).unwrap();
+}
+fn bind(product:&mut ProductDatabase<'_>,domain:&str,instance:&str,binding:&str,session:&str,native:&str)->Result<(),String>{
+    product.commit_native_binding(&CommitNativeBinding{operation_id:format!("binding-op-{domain}-{binding}"),domain_id:domain.into(),binding_id:binding.into(),generation:"1".into(),expected_previous_generation:None,source_epoch:"1".into(),instance_id:instance.into(),instance_version:"1".into(),native_identity:native.into(),lineage_ref:session.into(),custody_ref:"custody-one".into(),event_id:format!("binding-event-{domain}-{binding}"),receipt_id:format!("binding-receipt-{domain}-{binding}"),recorded_at:"2026-09-23T12:00:00Z".into()}).map(|_|()).map_err(|error|format!("{error:?}"))
+}
+
+#[test]
+fn typed_binding_and_identity_survive_reopen_without_cross_instance_collision(){
+    let _guard=route_b_test_guard();let path=scratch();let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
+    let mut product=ProductDatabase::open(&root,&database).unwrap();
+    append(&mut product,identity("domain-one","instance-a","account-a"));
+    append(&mut product,identity("domain-one","instance-b","account-b"));
+    lineage(&mut product,"domain-one","session-a","binding-a","native-shared");
+    lineage(&mut product,"domain-one","session-b","binding-b","native-shared");
+    bind(&mut product,"domain-one","instance-a","binding-a","session-a","native-shared").unwrap();
+    bind(&mut product,"domain-one","instance-b","binding-b","session-b","native-shared").unwrap();
+    product.close_checked().unwrap();
+    let mut product=ProductDatabase::open(&root,&database).unwrap();
+    for (instance,binding,account) in [("instance-a","binding-a","account-a"),("instance-b","binding-b","account-b")] {
+        let found=product.read_native_binding(&NativeBindingIdentity{domain_id:"domain-one".into(),binding_id:binding.into(),generation:"1".into(),source_epoch:"1".into(),instance_id:instance.into(),instance_version:"1".into()}).unwrap().unwrap();
+        assert_eq!(found.native_identity,"native-shared");
+        assert_eq!(found.instance.account_ref,AccountRefSnapshot::Present(account.into()));
+    }
+    product.close_checked().unwrap();drop(root);cleanup(&path);
+}
