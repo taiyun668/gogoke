@@ -160,6 +160,13 @@ class StrictJsonParser {
     if (!Number.isFinite(value)) {
       throw new ContractCodecError("UNSAFE_JSON_NUMBER", "JSON number is not finite", start);
     }
+    if (Object.is(value, -0)) {
+      throw new ContractCodecError(
+        "UNSAFE_JSON_NUMBER",
+        "Negative zero is not preserved by canonical JSON and must be rejected",
+        start,
+      );
+    }
     if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
       throw new ContractCodecError(
         "UNSAFE_JSON_NUMBER",
@@ -194,7 +201,11 @@ export function canonicalJson(value: JsonValue): string {
     return JSON.stringify(value);
   }
   if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+    if (
+      !Number.isFinite(value) ||
+      Object.is(value, -0) ||
+      (Number.isInteger(value) && !Number.isSafeInteger(value))
+    ) {
       throw new ContractCodecError(
         "UNSAFE_JSON_NUMBER",
         "Canonical JSON cannot contain a non-finite or unsafe integer",
