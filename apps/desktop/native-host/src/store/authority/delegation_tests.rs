@@ -82,6 +82,59 @@ fn future() -> u64 {
 }
 
 #[test]
+fn fixed_r2_test_grant_replays_once_without_broadening_or_reissuing() {
+    fixture(|connection, owner| {
+        let request = || DelegationGrantInput {
+            principal: DelegationPrincipal {
+                principal_id: owner.principal_id().into(),
+                project_id: "project-r2-02-test".into(),
+                domain_id: "domain-r2-02-test".into(),
+                role: "controller".into(),
+                seat_id: owner.seat_id().into(),
+            },
+            binding: DelegationBinding {
+                session_id: "session-r2-02-source".into(),
+                execution_id: "execution-r2-02-source".into(),
+                generation: "1".into(),
+            },
+            expires_at_epoch_ms: future(),
+            ceiling: AuthorityCeiling {
+                allowed_actions: vec!["delegate".into()],
+                allowed_target_principal_ids: vec!["principal-r2-02-worker".into()],
+                allowed_target_domain_ids: vec!["domain-r2-02-test".into()],
+                allowed_sinks: vec!["task-package".into()],
+                allowed_material_classes: vec![],
+                explicit_private_material_ids: vec![],
+                allowed_continuation_responses: vec![],
+                max_material_items: 0,
+                max_material_bytes: 0,
+                max_response_bytes: 32 * 1024,
+            },
+        };
+        let first = issue_r2_test_owner_delegation_once(
+            connection, owner, "r2-test-operation-one", request()).unwrap();
+        let replay = issue_r2_test_owner_delegation_once(
+            connection, owner, "r2-test-operation-one", request()).unwrap();
+        assert_eq!(first, replay);
+        assert_eq!(transaction::run(connection, |tx| tx.query(
+            "SELECT count(*) FROM main.gogoke_authority_grant_heads", &[], 1)).unwrap()[0][0], "1");
+        assert_eq!(transaction::run(connection, |tx| tx.query(
+            "SELECT count(*) FROM main.gogoke_authority_events WHERE event_kind='ISSUE'", &[], 1)).unwrap()[0][0], "1");
+        let mut broader = request();
+        broader.ceiling.max_response_bytes += 1;
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, "r2-test-operation-one", broader).is_err());
+        revoke_owner_delegation(connection, owner, &DelegationGrantIdentity {
+            grant_id: first.reference.grant_id,
+            revision: first.reference.revision,
+        }).unwrap();
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, "r2-test-operation-one", request()).is_err(),
+            "revocation cannot be bypassed by replaying the operation");
+    });
+}
+
+#[test]
 fn typed_delegation_issue_read_delegate_revision_and_revoke_share_the_authority_core() {
     fixture(|connection, owner| {
         let root = issue_owner_delegation(connection, owner, input(owner, future())).unwrap();

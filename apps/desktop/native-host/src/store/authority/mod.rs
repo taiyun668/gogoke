@@ -114,7 +114,8 @@ pub(crate) use context_read_set::{
     read_grantee_context_set, read_owner_context_set, AuthorizedContextReadSet, ContextReadSet,
 };
 pub(crate) use delegation::{
-    delegate_owner_delegation, issue_owner_delegation, read_current_delegation,
+    delegate_owner_delegation, issue_owner_delegation, issue_r2_test_owner_delegation_once,
+    read_current_delegation,
     revise_owner_delegation, revoke_owner_delegation, AuthorityCeiling, DelegationBinding,
     DelegationGrantIdentity, DelegationGrantInput, DelegationGrantSnapshot, DelegationPrincipal,
 };
