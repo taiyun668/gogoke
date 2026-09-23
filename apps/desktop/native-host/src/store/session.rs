@@ -1755,13 +1755,14 @@ fn handle_line(
                 },
             )?;
             Ok(format!(
-                "{{\"kind\":\"{}\",\"operationId\":\"{}\",\"semanticDigest\":\"{}\",\"reservationId\":\"{}\",\"packageDigest\":\"{}\",\"authorityStatus\":\"{}\"}}",
+                "{{\"kind\":\"{}\",\"operationId\":\"{}\",\"semanticDigest\":\"{}\",\"reservationId\":\"{}\",\"packageDigest\":\"{}\",\"authorityStatus\":\"{}\",\"reservationState\":\"{}\"}}",
                 if result.disposition == "COMMITTED" { "reserved" } else { "replay" },
                 result.operation_id,
                 result.semantic_digest,
                 result.reservation_id,
                 result.package_digest,
                 result.authority_status,
+                result.reservation_state,
             ))
         }
         "BeginActionCommitment" => {

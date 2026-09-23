@@ -1,0 +1,189 @@
+import { createHash } from "node:crypto";
+
+import { PiManagedSession } from "../adapters/pi/session.ts";
+import {
+  validateControlledFixtureResult,
+  type ValidatedControlledFixtureResult,
+} from "../actions/controlledFixtureResult.ts";
+import {
+  prepareR2ControlledManifest,
+  prepareR2PublicContext,
+} from "../context/assembly/r2ControlledManifest.ts";
+import type { GitFactReadback } from "../context/repository/gitFact.ts";
+import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
+import type { NativeProductIdentitySnapshot } from "../persistence/base/nativeHostClient.ts";
+import type { NativeStoreSession } from "./nativeStoreService.ts";
+
+export type R2ControlledProductTaskResult =
+  | {
+      readonly state: "VALIDATED_TEST_RESULT_NOT_ADOPTED";
+      readonly result: ValidatedControlledFixtureResult;
+      readonly actionCompletionRef: string;
+      readonly manifestHash: string;
+      readonly decisionReceiptId: string;
+    }
+  | {
+      readonly state: "ACTION_REPLAY_NO_NEW_RESULT";
+      readonly reservationState: "dispatching" | "not-sent" | "dispatched" |
+        "rejected" | "outcome-unknown" | "completed";
+      readonly actionCompletionRef?: string;
+      readonly decisionReceiptId: string;
+    };
+
+/** One fixed public R2-02 task, using native custody for its only Action. */
+export async function runR2ControlledProductTask(input: {
+  readonly store: NativeStoreSession;
+  readonly identity: NativeProductIdentitySnapshot;
+  readonly source: GitFactReadback;
+}): Promise<R2ControlledProductTaskResult> {
+  const { store, identity, source } = input;
+  const sourceHash = createHash("sha256").update(source.bytes).digest("hex");
+  const sourceBlob = createHash("sha1")
+    .update(`blob ${source.bytes.length}\0`).update(source.bytes).digest("hex");
+  if (source.state !== "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED" ||
+      source.coordinate.contentHash !== `sha256:${sourceHash}` ||
+      source.gitBlob !== sourceBlob) throw new Error("R2_PUBLIC_SOURCE_BYTES_MISMATCH");
+  const required = [
+    "admitControllerCaller", "prepareR2TestDelegation", "prepareR2TestContextGrant",
+    "prepareR2TestTask", "prepareR2TestPackage", "prepareR2TestLineage",
+    "prepareR2TestRecipe", "readR2TestActionDecisionBasis", "prepareR2TestAction",
+    "runControlledFixtureAction",
+  ] as const;
+  for (const name of required) {
+    if (typeof store[name] !== "function") throw new Error(`R2_CONTROLLED_TASK_UNAVAILABLE: ${name}`);
+  }
+  const caller = {
+    policyRevision: identity.policyRevision,
+    principalId: identity.principalId,
+    profileId: identity.profileId,
+    revocationHead: identity.revocationHead,
+    role: "controller" as const,
+    seatId: identity.seatId,
+  };
+  const admission = await store.admitControllerCaller!(caller);
+  if (admission.admitted !== true || admission.principalId !== caller.principalId ||
+      admission.seatId !== caller.seatId || admission.profileId !== caller.profileId ||
+      admission.policyRevision !== caller.policyRevision ||
+      admission.revocationHead !== caller.revocationHead) {
+    throw new Error("R2_CONTROLLER_ADMISSION_MISMATCH");
+  }
+
+  const grant = await store.prepareR2TestDelegation!(caller);
+  const contextGrant = await store.prepareR2TestContextGrant!(caller);
+  await prepareR2PublicContext({
+    store, source, grant: contextGrant, policyRevision: identity.policyRevision,
+  });
+  const task = await store.prepareR2TestTask!(caller);
+  if (task.state !== "TEST_ONLY_TASK_PREPARED_NOT_ACTION" ||
+      task.taskId !== "task-r2-02-test") throw new Error("R2_TEST_TASK_MISMATCH");
+  const message = JSON.stringify({
+    schema: "gogoke.s1-r4.r2-02.fixture-task.v1", testOnly: true,
+    source: {
+      repository: source.coordinate.repository,
+      commit: source.coordinate.commit,
+      path: source.coordinate.path,
+      sha256: sourceHash,
+      content: Buffer.from(source.bytes).toString("utf8"),
+    },
+  });
+  const promptJson = JSON.stringify({ type: "prompt", message, id: "gogoke-pi-1" });
+  const packageReceipt = await store.prepareR2TestPackage!(caller, promptJson);
+  const lineage = await store.prepareR2TestLineage!(caller);
+  const recipe = await store.prepareR2TestRecipe!(caller);
+  if (packageReceipt.state !== "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION" ||
+      lineage.state !== "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION" ||
+      recipe.state !== "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION") {
+    throw new Error("R2_TEST_PREPARATION_MISMATCH");
+  }
+  const basis = await store.readR2TestActionDecisionBasis!(caller, promptJson);
+  if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
+      basis.taskRevision !== task.taskRevision ||
+      basis.bindingId !== lineage.bindingId ||
+      basis.bindingGeneration !== lineage.generation ||
+      basis.policyRevision !== identity.policyRevision) {
+    throw new Error("R2_TEST_DECISION_BASIS_MISMATCH");
+  }
+  // This one test-only operation uses a fixed record identity across process
+  // restarts, including a lost reply after the manifest was committed.
+  const recordedAt = "2026-09-23T00:00:00.000Z";
+  const decision = await commitR2ControlledDecision({ store, basis, grant, recordedAt });
+  if (decision.kind !== "committed" && decision.kind !== "replayed") {
+    throw new Error("R2_TEST_DECISION_NOT_COMMITTED");
+  }
+  const action = await store.prepareR2TestAction!({
+    grantRef: grant.grantRef,
+    promptJson,
+    expectedActionDigest: basis.actionDigest,
+    expectedPackageDigest: packageReceipt.packageDigest,
+  });
+  if (action.packageDigest !== packageReceipt.packageDigest ||
+      action.semanticDigest !== basis.actionDigest) {
+    throw new Error("R2_TEST_ACTION_RESERVATION_MISMATCH");
+  }
+  if (action.reservationState === "completed") {
+    // Native reads its trusted completion receipt before any process or protocol write.
+    const completion = await store.runControlledFixtureAction!({
+      caller,
+      domainId: "domain-r2-02-test",
+      operationId: action.operationId,
+      reservationId: action.reservationId,
+      promptJson,
+    });
+    if (completion.state !== "ACTION_COMPLETION_RECONCILED_NOT_RESULT") {
+      throw new Error("R2_TEST_COMPLETION_RECONCILIATION_MISMATCH");
+    }
+    return Object.freeze({
+      state: "ACTION_REPLAY_NO_NEW_RESULT" as const,
+      reservationState: "completed" as const,
+      actionCompletionRef: completion.actionCompletionRef,
+      decisionReceiptId: decision.decisionReceiptId,
+    });
+  }
+  if (action.reservationState !== "reserved") {
+    return Object.freeze({
+      state: "ACTION_REPLAY_NO_NEW_RESULT" as const,
+      reservationState: action.reservationState,
+      decisionReceiptId: decision.decisionReceiptId,
+    });
+  }
+  const manifest = await prepareR2ControlledManifest({
+    store, basis, grant, contextGrant, source, recordedAt,
+  });
+  if (manifest.manifestId !== "manifest-r2-02-test" || manifest.includedVersions.length !== 1) {
+    throw new Error("R2_TEST_MANIFEST_MISMATCH");
+  }
+
+  let session!: PiManagedSession;
+  let actionCompletionRef: string | undefined;
+  session = new PiManagedSession({
+    admission: { mode: "ordinary", protocolQualified: true,
+      protectedDomainQualified: false, contextExposure: "UNKNOWN" },
+    sink: { async write(chunk) {
+      if (Buffer.from(chunk).toString("utf8") !== `${promptJson}\n`) {
+        throw new Error("R2_TEST_PROMPT_BYTES_MISMATCH");
+      }
+      const evidence = await store.runControlledFixtureAction!({
+        caller,
+        domainId: "domain-r2-02-test",
+        operationId: action.operationId,
+        reservationId: action.reservationId,
+        promptJson,
+      });
+      if (evidence.state !== "ACTION_TRANSPORT_COMPLETED_NOT_RESULT") {
+        throw new Error("R2_TEST_ACTION_NO_FRESH_FRAMES");
+      }
+      actionCompletionRef = evidence.actionCompletionRef;
+      for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
+    } },
+  });
+  const observation = await session.promptAndObserveSettlement(message, 30_000);
+  if (actionCompletionRef === undefined) throw new Error("R2_TEST_ACTION_COMPLETION_MISSING");
+  const result = validateControlledFixtureResult(source, observation);
+  return Object.freeze({
+    state: "VALIDATED_TEST_RESULT_NOT_ADOPTED" as const,
+    result,
+    actionCompletionRef,
+    manifestHash: manifest.manifestHash,
+    decisionReceiptId: decision.decisionReceiptId,
+  });
+}

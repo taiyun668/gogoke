@@ -1,13 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off - executable product boundary owns stdin/stdout.
 import * as NodeFS from "node:fs";
-import { randomUUID, createHash } from "node:crypto";
 
 import { constructGogokeService } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
 import { currentGhToken } from "../context/repository/ghCredential.ts";
-import { PiManagedSession } from "../adapters/pi/session.ts";
-import { validateControlledFixtureResult } from "../actions/controlledFixtureResult.ts";
+import { runR2ControlledProductTask } from "./r2ControlledProductTask.ts";
 
 const R2_02_TEST_LEDGER_REPOSITORY = "taiyun668/gogoke";
 const R2_02_SOURCE = Object.freeze({
@@ -53,6 +51,9 @@ export interface ProductGoalView extends ProductGoalRequest {
     readonly modelId: string;
     readonly relativePath: string;
     readonly embeddedBytesSha256: string;
+    readonly actionCompletionRef: string;
+    readonly manifestHash: string;
+    readonly decisionReceiptId: string;
   };
   readonly acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 }
@@ -179,40 +180,20 @@ export async function handleProductGoalRequest(
       request.ledger, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
     let controlledTask: ProductGoalView["controlledTask"];
     if (request.runControlledTask === true) {
-      if (typeof service.store.runControlledFixtureProbe !== "function") {
-        throw new Error("CONTROLLED_PRODUCT_TASK_UNAVAILABLE");
-      }
       const source = await readGitHubFact(
         R2_02_SOURCE, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
-      const caller = {
-        policyRevision: service.identity.policyRevision,
-        principalId: service.identity.principalId,
-        profileId: service.identity.profileId,
-        revocationHead: service.identity.revocationHead,
-        role: "controller" as const,
-        seatId: service.identity.seatId,
-      };
-      const operationId = `r2-02-${randomUUID()}`;
-      let session!: PiManagedSession;
-      session = new PiManagedSession({
-        admission: { mode: "ordinary", protocolQualified: true,
-          protectedDomainQualified: false, contextExposure: "UNKNOWN" },
-        sink: { async write(chunk) {
-          const promptJson = Buffer.from(chunk).toString("utf8").trimEnd();
-          const evidence = await service.store.runControlledFixtureProbe!({ caller, operationId, promptJson });
-          for (const frame of evidence.frames) session.acceptStdout(Buffer.from(frame));
-        } },
+      const task = await runR2ControlledProductTask({
+        store: service.store, identity: service.identity, source,
       });
-      const message = JSON.stringify({
-        schema: "gogoke.s1-r4.r2-02.fixture-task.v1",
-        testOnly: true,
-        source: { repository: source.coordinate.repository, commit: source.coordinate.commit,
-          path: source.coordinate.path,
-          sha256: createHash("sha256").update(source.bytes).digest("hex"),
-          content: Buffer.from(source.bytes).toString("utf8") },
+      if (task.state === "ACTION_REPLAY_NO_NEW_RESULT") {
+        throw new Error("R2_ACTION_REPLAY_NO_NEW_RESULT");
+      }
+      controlledTask = Object.freeze({
+        ...task.result,
+        actionCompletionRef: task.actionCompletionRef,
+        manifestHash: task.manifestHash,
+        decisionReceiptId: task.decisionReceiptId,
       });
-      controlledTask = validateControlledFixtureResult(
-        source, await session.promptAndObserveSettlement(message, 30_000));
     }
     return Object.freeze({
       goal: request.goal,

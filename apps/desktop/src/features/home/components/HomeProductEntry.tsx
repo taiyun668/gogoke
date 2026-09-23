@@ -114,6 +114,18 @@ export function HomeProductEntry() {
               <dt className="home-product-entry-label">Embedded bytes SHA-256</dt>
               <dd className="home-product-entry-code">{result.controlledTask.embeddedBytesSha256}</dd>
             </div>
+            <div>
+              <dt className="home-product-entry-label">Native Action completion</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.actionCompletionRef}</dd>
+            </div>
+            <div>
+              <dt className="home-product-entry-label">Context manifest</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.manifestHash}</dd>
+            </div>
+            <div>
+              <dt className="home-product-entry-label">Decision receipt</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.decisionReceiptId}</dd>
+            </div>
           </dl>
         </>
       ) : result ? (

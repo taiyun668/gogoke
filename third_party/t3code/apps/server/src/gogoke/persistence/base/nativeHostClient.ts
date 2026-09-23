@@ -174,6 +174,7 @@ export interface NativeR2ActionDecisionBasis {
 
 export interface NativeR2TestActionPreparation {
   readonly kind: "reserved" | "replay";
+  readonly reservationState: "reserved" | "dispatching" | "not-sent" | "dispatched" | "rejected" | "outcome-unknown" | "completed";
   readonly operationId: "opr_22222222222222222222222222222222";
   readonly semanticDigest: string;
   readonly reservationId: "reservation-r2-02-controlled";
@@ -189,8 +190,10 @@ export function decodeR2TestActionPreparation(body: string): NativeR2TestActionP
     throw new NativeHostClientError("R2_TEST_ACTION", "invalid native Action preparation");
   }
   const record = value as Record<string, unknown>;
-  if (Reflect.ownKeys(record).length !== 6 ||
+  if (Reflect.ownKeys(record).length !== 7 ||
       !["reserved", "replay"].includes(String(record.kind)) ||
+      !["reserved", "dispatching", "not-sent", "dispatched", "rejected", "outcome-unknown", "completed"].includes(String(record.reservationState)) ||
+      (record.kind === "reserved" && record.reservationState !== "reserved") ||
       record.operationId !== "opr_22222222222222222222222222222222" ||
       typeof record.semanticDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.semanticDigest) ||
       record.reservationId !== "reservation-r2-02-controlled" ||
@@ -2322,7 +2325,7 @@ export class NativeHostClient {
         (command as Record<string, unknown>).type !== "prompt" ||
         typeof (command as Record<string, unknown>).message !== "string" ||
         typeof (command as Record<string, unknown>).id !== "string" ||
-        !/^gogoke-pi-[A-Za-z0-9_-]{1,118}$/u.test((command as Record<string, string>).id)) {
+        !/^gogoke-pi-[A-Za-z0-9_-]{1,118}$/u.test((command as Record<string, string>).id!)) {
       throw new NativeHostClientError("CONTROLLED_ACTION", "prompt identity mismatch");
     }
     const body = this.request(JSON.stringify({

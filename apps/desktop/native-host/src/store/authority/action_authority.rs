@@ -367,12 +367,14 @@ pub(crate) fn prepare_action_authority(
         {
             return Err(OrchestrationError::OperationConflict);
         }
+        let (disposition, reservation_state) = match storage {
+            ReserveDisposition::Reserved => ("COMMITTED", "reserved".to_owned()),
+            ReserveDisposition::Replay { state } => ("REPLAYED", state),
+            ReserveDisposition::Conflict { .. } => return Err(OrchestrationError::OperationConflict),
+        };
         Ok(PreparedActionAuthority {
-            disposition: if matches!(storage, ReserveDisposition::Reserved) {
-                "COMMITTED"
-            } else {
-                "REPLAYED"
-            },
+            disposition,
+            reservation_state,
             authority_status: ACTION_AUTHORITY_STATUS,
             operation_id: request.action_operation_id.clone(),
             reservation_id: request.reservation_id.clone(),
@@ -1444,6 +1446,7 @@ pub(crate) struct PrepareActionAuthority {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PreparedActionAuthority {
     pub disposition: &'static str,
+    pub reservation_state: String,
     pub authority_status: &'static str,
     pub operation_id: String,
     pub reservation_id: String,

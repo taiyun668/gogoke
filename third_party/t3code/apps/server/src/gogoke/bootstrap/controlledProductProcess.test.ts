@@ -12,7 +12,7 @@ import { validateControlledFixtureResult } from "../actions/controlledFixtureRes
 import { prepareR2ControlledManifest, prepareR2PublicContext } from "../context/assembly/r2ControlledManifest.ts";
 import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
-import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
+import { NativeHostClient, type NativeContextManifestReceipt, type NativeR2ActionDecisionBasis, type NativeR2TestActionPreparation, type NativeR2TestLineageReceipt, type NativeR2TestPackageReceipt, type NativeR2TestRecipeReceipt } from "../persistence/base/nativeHostClient.ts";
 import { handleProductGoalRequest } from "./productEntry.ts";
 
 const sourceCoordinate = Object.freeze({
@@ -107,7 +107,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       let session!: PiManagedSession;
       let stopProofHash = "";
       const operationId = `r2-02-${Crypto.randomUUID()}`;
-      const packageReceipt = await client.prepareR2TestPackage(caller, promptJson);
+      const packageReceipt: NativeR2TestPackageReceipt = await client.prepareR2TestPackage(caller, promptJson);
       Assert.equal(packageReceipt.state, "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION");
       if (packageDigest === undefined) {
         Assert.equal(packageReceipt.disposition, "COMMITTED");
@@ -116,7 +116,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         Assert.equal(packageReceipt.disposition, "REPLAYED");
         Assert.equal(packageReceipt.packageDigest, packageDigest);
       }
-      const lineage = await client.prepareR2TestLineage(caller);
+      const lineage: NativeR2TestLineageReceipt = await client.prepareR2TestLineage(caller);
       Assert.equal(lineage.state, "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION");
       if (lineageBinding === undefined) {
         Assert.equal(lineage.disposition, "COMMITTED");
@@ -125,7 +125,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         Assert.equal(lineage.disposition, "REPLAYED");
         Assert.equal(lineage.bindingId, lineageBinding);
       }
-      const recipe = await client.prepareR2TestRecipe(caller);
+      const recipe: NativeR2TestRecipeReceipt = await client.prepareR2TestRecipe(caller);
       Assert.equal(recipe.state, "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION");
       if (recipeHash === undefined) {
         Assert.equal(recipe.disposition, "COMMITTED");
@@ -134,7 +134,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         Assert.equal(recipe.disposition, "RECONCILED");
         Assert.equal(recipe.contentHash, recipeHash);
       }
-      const basis = await client.readR2TestActionDecisionBasis(caller, promptJson);
+      const basis: NativeR2ActionDecisionBasis = await client.readR2TestActionDecisionBasis(caller, promptJson);
       Assert.equal(basis.state, "TEST_ONLY_DECISION_BASIS_NOT_ACTION");
       Assert.match(basis.actionDigest, /^sha256:[0-9a-f]{64}$/);
       if (actionDigest === undefined) actionDigest = basis.actionDigest;
@@ -151,13 +151,14 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         if (decision.kind !== "replayed") throw new Error("Decision did not replay");
         Assert.equal(decision.decisionReceiptId, decisionReceiptId);
       }
-      const preparedAction = await client.prepareR2TestAction({
+      const preparedAction: NativeR2TestActionPreparation = await client.prepareR2TestAction({
         grantRef: preparedGrant.grantRef,
         promptJson,
         expectedActionDigest: basis.actionDigest,
         expectedPackageDigest: packageReceipt.packageDigest,
       });
       Assert.equal(preparedAction.kind, task === 0 ? "reserved" : "replay");
+      Assert.equal(preparedAction.reservationState, task === 0 ? "reserved" : "completed");
       if (task === 0) {
         const manifest = await prepareR2ControlledManifest({
           store: client, basis, grant: preparedGrant, contextGrant, source,
@@ -167,7 +168,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         Assert.equal(manifest.includedVersions.length, 1);
         manifestHash = manifest.manifestHash;
       } else {
-        const replay = await client.readContextManifest({
+        const replay: NativeContextManifestReceipt = await client.readContextManifest({
           operationId: "r2-02-context-assembly", principalId: "principal-r2-02-worker",
           seatId: "seat-r2-02-worker", taskId: "task-r2-02-test",
           sessionId: "session-r2-02-worker", domainId: "domain-r2-02-test",
@@ -213,7 +214,9 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.equal(proofs.size, 2, "separate operations retain separate native custody");
     await client.close();
     client = undefined;
-    const product = await handleProductGoalRequest({
+    const entryRoot = Path.join(root, "product-entry-root");
+    await FS.mkdir(entryRoot);
+    const productRequest = {
       goal: { id: "goal-r2-02", title: "Controlled public fixture task" },
       ledger: {
         repository: "taiyun668/gogoke",
@@ -221,10 +224,18 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json",
         contentHash: "sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08",
       },
-      runControlledTask: true,
-    }, { root: productRoot, hostBinary: hosted });
+      runControlledTask: true as const,
+    };
+    const product = await handleProductGoalRequest(productRequest, { root: entryRoot, hostBinary: hosted });
     Assert.equal(product.controlledTask?.state, "VALIDATED_TEST_RESULT_NOT_ADOPTED");
+    Assert.match(product.controlledTask?.actionCompletionRef ?? "", /^[A-Za-z0-9][A-Za-z0-9._:/-]+$/);
+    Assert.match(product.controlledTask?.manifestHash ?? "", /^sha256:[0-9a-f]{64}$/);
     Assert.equal(product.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
+    await Assert.rejects(
+      handleProductGoalRequest(productRequest, { root: entryRoot, hostBinary: hosted }),
+      /R2_ACTION_REPLAY_NO_NEW_RESULT/,
+      "a repeated product request may read completion but cannot resend or invent a new Result",
+    );
   } finally {
     await client?.close();
     await FS.rm(root, { recursive: true, force: true });
