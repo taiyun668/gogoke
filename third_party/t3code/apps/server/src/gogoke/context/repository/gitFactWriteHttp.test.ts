@@ -19,6 +19,9 @@ function fixture() {
     const path = new URL(String(url)).pathname;
     const value = method === "GET" && path.includes("/git/ref/") ? { object: { sha: commit } }
       : method === "GET" && path.includes("/git/commits/") ? { tree: { sha: tree } }
+      : method === "GET" && path.includes("/compare/") ? {
+        status: "ahead", base_commit: { sha: commit }, merge_base_commit: { sha: commit },
+      }
       : method === "PATCH" ? { object: { sha: next } }
       : { sha: next };
     return new Response(JSON.stringify(value), { status: 200 });
@@ -57,5 +60,13 @@ describe("R2-02 pinned GitHub write transport", () => {
     });
     await expect(port.readHead()).rejects.toBeInstanceOf(GitFactHttpError);
     expect(requested).toBe(false);
+  });
+
+  it("checks ancestry with GitHub compare using exact commit SHAs", async () => {
+    const port = fixture();
+    expect(await port.isAncestor(commit, next)).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ method: "GET",
+      url: `https://api.github.com/repos/taiyun668/gogoke/compare/${commit}...${next}?per_page=1&page=1` });
   });
 });

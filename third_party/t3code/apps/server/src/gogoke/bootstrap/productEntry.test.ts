@@ -46,6 +46,17 @@ it("admits only an explicit true controlled test-task request", () => {
     valid.slice(0, -1) + ',"runControlledTask":false}'))).toThrow("INVALID_PRODUCT_ENTRY");
 });
 
+it("admits a positive read-only PR merge query without changing Goal acceptance", () => {
+  expect(decodeProductGoalRequest(Buffer.from(
+    valid.slice(0, -1) + ',"ledgerMergePullNumber":32}',
+  )).ledgerMergePullNumber).toBe(32);
+  for (const value of [0, -1, 1.5, "32", null]) {
+    expect(() => decodeProductGoalRequest(Buffer.from(
+      valid.slice(0, -1) + `,"ledgerMergePullNumber":${JSON.stringify(value)}}`,
+    ))).toThrow("INVALID_PRODUCT_ENTRY");
+  }
+});
+
 it("requires the controlled task for a test ledger draft", () => {
   expect(decodeProductGoalRequest(Buffer.from(
     valid.slice(0, -1) + ',"runControlledTask":true,"publishTestDraft":true}',

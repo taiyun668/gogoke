@@ -29,8 +29,7 @@ fn verbatim_path(path: &Path) -> Option<PathBuf> {
     if text.starts_with("\\\\?\\") {
         return None;
     }
-    (text.as_bytes().get(1) == Some(&b':'))
-        .then(|| PathBuf::from(format!("\\\\?\\{text}")))
+    (text.as_bytes().get(1) == Some(&b':')).then(|| PathBuf::from(format!("\\\\?\\{text}")))
 }
 
 fn second_host_is_refused(root: &Path) -> bool {
@@ -63,11 +62,16 @@ fn second_host_is_refused(root: &Path) -> bool {
         Ok(output) => output,
         Err(_) => return false,
     };
+    let stderr = String::from_utf8_lossy(&output.stderr);
     exited
         && !output.status.success()
+        && stderr.contains("ROOT_ALREADY_LOCKED:")
         && !output.stdout.windows(7).any(|bytes| bytes == b"LOCKED\t")
         && !output.stdout.windows(5).any(|bytes| bytes == b"PIPE\t")
-        && !output.stdout.windows(11).any(|bytes| bytes == b"CAPABILITY\t")
+        && !output
+            .stdout
+            .windows(11)
+            .any(|bytes| bytes == b"CAPABILITY\t")
 }
 
 fn legacy_action_frame(operation:&str,digest:&str,reservation:&str,session:&str)->String{
@@ -161,7 +165,10 @@ fn authenticated_service_uses_typed_host_without_sql_transport() {
     let _ = read_frame(&mut client);
     let _ = child.wait();
     std::fs::remove_dir_all(&root).ok();
-    assert!(same_spelling_refused, "second host acquired or served the same root");
+    assert!(
+        same_spelling_refused,
+        "second host acquired or served the same root"
+    );
     if verbatim_root.is_some() {
         assert!(
             verbatim_spelling_refused,

@@ -990,6 +990,108 @@ pub(super) fn load_validated_completion(
     Ok(Some(row.clone()))
 }
 
+fn transport_matches_receipt(
+    evidence: &TrustedActionCompletionEvidence,
+    transport: &TrustedActionTransportEvidence,
+) -> bool {
+    if transport.frames.len() != 5 || transport.frames.iter().map(String::len).sum::<usize>() > 64 * 1024
+        || transport.frames.iter().any(|frame| frame.is_empty())
+        || !transport.stop_proof_hash.starts_with("sha256:")
+        || transport.stop_proof_hash.len() != 71
+        || !transport.stop_proof_hash[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !transport.pid.bytes().all(|byte| byte.is_ascii_digit())
+        || !transport.creation_time_100ns.bytes().all(|byte| byte.is_ascii_digit())
+        || !transport.binary_digest_sha256.starts_with("sha256:")
+        || transport.binary_digest_sha256.len() != 71
+    { return false; }
+    let material = format!("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        evidence.operation_id, evidence.attempt_id, evidence.send_authority,
+        evidence.native_request_id, transport.pid, transport.creation_time_100ns,
+        transport.binary_digest_sha256, evidence.semantic_digest,
+        transport.stop_proof_hash, evidence.native_session_id,
+        transport.frames.iter().map(|frame| format!("{}:{frame}", frame.len())).collect::<String>());
+    content_hash(material.as_bytes()) == evidence.evidence_hash
+        && evidence.trusted_receipt_ref == format!("native-receipt-{}", &evidence.evidence_hash[7..])
+}
+
+fn transport_row(tx: &mut Transaction<'_, '_>, domain_id: &str, operation_id: &str) -> Result<Option<Vec<String>>> {
+    let rows = tx.query("SELECT receipt_ref,evidence_hash,stop_proof_hash,pid,creation_time_100ns,binary_digest_sha256,frame0,frame1,frame2,frame3,frame4 FROM main.gogoke_action_transport_evidence WHERE domain_id=? AND operation_id=?", &[domain_id,operation_id], 11)?;
+    if rows.len() > 1 { return denied(); }
+    Ok(rows.into_iter().next())
+}
+
+fn verify_transport_row(tx: &mut Transaction<'_, '_>, evidence: &TrustedActionCompletionEvidence,
+    transport: &TrustedActionTransportEvidence) -> Result<()> {
+    let row = transport_row(tx, &evidence.domain_id, &evidence.operation_id)?.ok_or(OrchestrationError::CommitUnknown)?;
+    if row[0] != evidence.trusted_receipt_ref || row[1] != evidence.evidence_hash
+        || row[2] != transport.stop_proof_hash || row[3] != transport.pid
+        || row[4] != transport.creation_time_100ns || row[5] != transport.binary_digest_sha256
+        || row[6..] != transport.frames[..] { return denied(); }
+    Ok(())
+}
+
+/// Reads only previously committed native evidence. Missing legacy transport
+/// rows remain unknown; this operation never grants a second send.
+pub(crate) fn read_reconciled_action_transport(
+    connection: &mut VerifiedDatabaseConnection<'_>, request: &BeginCommittedAction,
+    prompt: &str, completion_ref: &str,
+) -> Result<TrustedActionTransportEvidence> {
+    identifier(&request.domain_id)?;
+    identifier(&request.operation_id)?;
+    identifier(&request.reservation_id)?;
+    transaction::run(connection, |tx| {
+        ensure_schema(tx)?;
+        let native = load_validated_native_receipt(tx, &request.domain_id, &request.operation_id)?
+            .ok_or(OrchestrationError::CommitUnknown)?;
+        let completion = load_validated_completion(tx, &request.domain_id, &request.operation_id)?
+            .ok_or(OrchestrationError::CommitUnknown)?;
+        let action = tx.query("SELECT reservation_id,semantic_digest,payload_hex,state,COALESCE(send_authority,'') FROM main.gogoke_action_reservations WHERE operation_id=?", &[&request.operation_id], 5)?;
+        let intent = tx.query("SELECT payload_digest,attempt_id,send_authority,binding_id,generation,source_epoch,runtime_instance_id,target_domain_id FROM main.gogoke_action_authority_intents WHERE domain_id=? AND operation_id=?", &[&request.domain_id,&request.operation_id], 8)?;
+        if action.len()!=1 || intent.len()!=1 || action[0][0]!=request.reservation_id
+            || action[0][3]!="completed" || decode_hex(&action[0][2])?.as_slice()!=prompt.as_bytes()
+            || intent[0][0]!=content_hash(prompt.as_bytes())
+            || completion[13]!=completion_ref || completion[12]!="COMPLETED"
+            || completion[0]!=request.reservation_id || completion[1]!=action[0][1]
+            || completion[2]!=native[3] || completion[3]!=native[4]
+            || completion[4]!=native[5] || completion[5]!=native[6]
+            || completion[6]!=native[7] || completion[7]!=native[8]
+            || completion[8]!=native[9] || completion[9]!=native[10]
+            || completion[10]!=native[0] || completion[11]!=native[11]
+            || native[1]!=request.reservation_id || native[2]!=action[0][1]
+            || native[3]!=intent[0][1] || native[4]!=intent[0][2]
+            || native[4]!=action[0][4] || native[5]!=intent[0][3]
+            || native[6]!=intent[0][4] || native[7]!=intent[0][5]
+            || native[8]!=intent[0][6] || native[12]!="COMPLETED" { return denied(); }
+        let row = transport_row(tx, &request.domain_id, &request.operation_id)?
+            .ok_or(OrchestrationError::CommitUnknown)?;
+        let transport = TrustedActionTransportEvidence {
+            stop_proof_hash: row[2].clone(), pid: row[3].clone(),
+            creation_time_100ns: row[4].clone(), binary_digest_sha256: row[5].clone(),
+            frames: row[6..].to_vec(),
+        };
+        let evidence = TrustedActionCompletionEvidence {
+            domain_id: request.domain_id.clone(), operation_id: request.operation_id.clone(),
+            reservation_id: request.reservation_id.clone(), semantic_digest: native[2].clone(),
+            attempt_id: native[3].clone(), send_authority: native[4].clone(),
+            binding_id: native[5].clone(), generation: native[6].clone(),
+            source_epoch: native[7].clone(), runtime_instance_id: native[8].clone(),
+            native_request_id: native[9].clone(), native_session_id: native[10].clone(),
+            trusted_receipt_ref: native[0].clone(), evidence_hash: native[11].clone(),
+            disposition: ActionCompletionDisposition::Completed,
+        };
+        if row[0]!=evidence.trusted_receipt_ref || row[1]!=evidence.evidence_hash
+            || !transport_matches_receipt(&evidence, &transport) { return denied(); }
+        let custody = tx.query("SELECT state,stop_proof_hash,pid,creation_time_100ns,binary_digest_sha256,domain_id,generation FROM main.gogoke_coordination_process_custody WHERE operation_id=?", &[&request.operation_id], 7)?;
+        if custody.len()!=1 || custody[0][0]!="STOPPED"
+            || custody[0][1]!=transport.stop_proof_hash || custody[0][2]!=transport.pid
+            || custody[0][3]!=transport.creation_time_100ns
+            || custody[0][4]!=transport.binary_digest_sha256
+            || custody[0][5]!=intent[0][7]
+            || custody[0][6]!=evidence.generation { return denied(); }
+        Ok(transport)
+    })
+}
+
 /// Trusted native-host receipt ingress. There is intentionally no equivalent
 /// session/IPC operation; the host calls this only after validating its native
 /// request/session receipt and exact process binding.
@@ -1131,6 +1233,13 @@ fn record_trusted_native_action_receipt_inner(
             return Err(OrchestrationError::OperationConflict);
         }
         if let Some(transport) = transport {
+            let custody = tx.query("SELECT state,stop_proof_hash,pid,creation_time_100ns,binary_digest_sha256,domain_id,generation FROM main.gogoke_coordination_process_custody WHERE operation_id=?", &[&evidence.operation_id], 7)?;
+            if custody.len()!=1 || custody[0][0]!="STOPPED"
+                || custody[0][1]!=transport.stop_proof_hash || custody[0][2]!=transport.pid
+                || custody[0][3]!=transport.creation_time_100ns
+                || custody[0][4]!=transport.binary_digest_sha256
+                || custody[0][5]!=intent[0][7]
+                || custody[0][6]!=evidence.generation { return denied(); }
             let frames = &transport.frames;
             tx.write("INSERT INTO main.gogoke_action_transport_evidence(domain_id,operation_id,receipt_ref,evidence_hash,stop_proof_hash,pid,creation_time_100ns,binary_digest_sha256,frame0,frame1,frame2,frame3,frame4) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", &[&evidence.domain_id,&evidence.operation_id,&evidence.trusted_receipt_ref,&evidence.evidence_hash,&transport.stop_proof_hash,&transport.pid,&transport.creation_time_100ns,&transport.binary_digest_sha256,&frames[0],&frames[1],&frames[2],&frames[3],&frames[4]])?;
         }
@@ -1593,6 +1702,15 @@ pub(crate) struct TrustedActionCompletionEvidence {
     pub trusted_receipt_ref: String,
     pub evidence_hash: String,
     pub disposition: ActionCompletionDisposition,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TrustedActionTransportEvidence {
+    pub stop_proof_hash: String,
+    pub pid: String,
+    pub creation_time_100ns: String,
+    pub binary_digest_sha256: String,
+    pub frames: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

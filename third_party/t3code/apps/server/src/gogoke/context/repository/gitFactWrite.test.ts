@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vite-plus/test";
 
 import { GitFactWriteError, R2_TEST_LEDGER, writeR2TestFact } from "./gitFactWrite.ts";
-import type { GitFactWritePort } from "./gitFactWrite.ts";
+import type { GitFactWritePort, R2TestFactJournal, R2TestFactJournalEntry } from "./gitFactWrite.ts";
 
 const source = {
   operationId: "r2-02-controlled-test",
@@ -18,10 +18,27 @@ const blob = createHash("sha1").update(`blob ${source.bytes.length}\0`).update(s
 const path = `${R2_TEST_LEDGER.pathRoot}/${source.operationId}.json`;
 
 function fixture(options: { updateThrows?: boolean; landed?: boolean; changedAuthority?: boolean;
-  readbackFailed?: boolean } = {}) {
+  readbackFailed?: boolean; descendant?: boolean; unrelated?: boolean; headReadFails?: boolean } = {}) {
   let head = initial;
+  const child = "e".repeat(40);
   const calls: string[] = [];
   let authorityCalls = 0;
+  let saved: R2TestFactJournalEntry | null = null;
+  const journal: R2TestFactJournal = {
+    async begin(intent) {
+      calls.push("journal:begin");
+      if (saved === null) saved = { ...intent, baseHead: null, targetCommit: null };
+      return saved;
+    },
+    async bindTarget(intent, baseHead, targetCommit) {
+      calls.push("journal:bind");
+      if (saved === null || saved.operationId !== intent.operationId ||
+          (saved.targetCommit !== null && (saved.targetCommit !== targetCommit ||
+            saved.baseHead !== baseHead))) throw new Error("journal conflict");
+      saved = { ...intent, baseHead, targetCommit };
+      return saved;
+    },
+  };
   const port: GitFactWritePort = {
     repository: R2_TEST_LEDGER.repository,
     branch: R2_TEST_LEDGER.branch,
@@ -30,8 +47,17 @@ function fixture(options: { updateThrows?: boolean; landed?: boolean; changedAut
       authorityCalls += 1;
       if (options.changedAuthority && authorityCalls === 2) throw new Error("revoked");
     },
-    async readHead() { calls.push("head"); return { commit: head, tree }; },
+    async readHead() {
+      calls.push("head");
+      if (options.headReadFails && saved?.targetCommit) throw new Error("ref unavailable");
+      return { commit: head, tree };
+    },
     async readPath(_commit, value) { calls.push(`path:${value}`); return null; },
+    async isAncestor(ancestor, descendant) {
+      calls.push("ancestor");
+      expect(ancestor).toBe(candidate);
+      return options.descendant === true && descendant === child;
+    },
     async createBlob(bytes) { calls.push("blob"); expect(Buffer.from(bytes)).toEqual(source.bytes); return blob; },
     async createTree(base, value, valueBlob) {
       calls.push("tree"); expect([base, value, valueBlob]).toEqual([tree, path, blob]); return nextTree;
@@ -41,7 +67,8 @@ function fixture(options: { updateThrows?: boolean; landed?: boolean; changedAut
     },
     async updateRef(value) {
       calls.push("update"); expect(value).toBe(candidate);
-      if (!options.updateThrows || options.landed) head = candidate;
+      if (!options.updateThrows || options.landed) head = options.descendant ? child : candidate;
+      if (options.unrelated) head = child;
       if (options.updateThrows) throw new Error("remote response lost");
     },
   };
@@ -52,38 +79,106 @@ function fixture(options: { updateThrows?: boolean; landed?: boolean; changedAut
       size: source.bytes.length, encoding: "base64", content: source.bytes.toString("base64") }),
       { status: 200 });
   };
-  return { calls, port, fetcher };
+  return { calls, port, fetcher, journal,
+    setHead(value: string) { head = value; } };
 }
 
 describe("R2-02 test Git fact write discipline", () => {
   it("writes only a scoped draft and verifies exact committed bytes", async () => {
     const current = fixture();
-    const result = await writeR2TestFact(source, current.port, current.fetcher);
+    const result = await writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal);
     expect(result.state).toBe("DRAFT_COMMITTED_NOT_ADOPTED");
     expect(result.commit).toBe(candidate);
     expect(result.readback.gitBlob).toBe(blob);
-    expect(current.calls).toEqual(["authority", "head", `path:${path}`, "blob", "tree",
-      "commit", "authority", "update", "readback"]);
+    expect(current.calls).toEqual(["authority", "journal:begin", "head", `path:${path}`,
+      "blob", "tree", "commit", "journal:bind", "authority", "update", "head", "readback"]);
   });
 
   it("reconciles a lost update response only after reading the exact remote head", async () => {
     const current = fixture({ updateThrows: true, landed: true });
-    expect((await writeR2TestFact(source, current.port, current.fetcher)).state)
+    expect((await writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal)).state)
       .toBe("DRAFT_COMMITTED_NOT_ADOPTED");
     expect(current.calls.slice(-3)).toEqual(["update", "head", "readback"]);
   });
 
+  it("retries a lost readback using the bound target without another Git write", async () => {
+    const current = fixture({ readbackFailed: true });
+    await expect(writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal))
+      .rejects.toMatchObject({ code: "TEST_FACT_COMMITTED_READBACK_UNVERIFIED",
+        commit: candidate, path });
+    current.calls.length = 0;
+    const recovered = fixture();
+    const result = await writeR2TestFact(source, current.port, recovered.fetcher,
+      undefined, current.journal);
+    expect(result.commit).toBe(candidate);
+    expect(current.calls).toEqual(["authority", "journal:begin", "head"]);
+    expect(recovered.calls).toEqual(["readback"]);
+  });
+
   it("does not resend when the remote update outcome is unknown", async () => {
     const current = fixture({ updateThrows: true });
-    await expect(writeR2TestFact(source, current.port, current.fetcher))
-      .rejects.toMatchObject({ code: "TEST_FACT_WRITE_OUTCOME_UNKNOWN" });
+    await expect(writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal))
+      .rejects.toMatchObject({ code: "TEST_FACT_WRITE_OUTCOME_UNKNOWN",
+        commit: candidate, path });
     expect(current.calls.filter((call) => call === "update")).toHaveLength(1);
     expect(current.calls).not.toContain("readback");
+    current.calls.length = 0;
+    await expect(writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal))
+      .rejects.toMatchObject({ code: "TEST_FACT_WRITE_OUTCOME_UNKNOWN",
+        commit: candidate, path });
+    expect(current.calls).toEqual(["authority", "journal:begin", "head", "ancestor"]);
+  });
+
+  it("rejects changed bytes for the same operation before any Git read or write", async () => {
+    const current = fixture({ updateThrows: true });
+    await expect(writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal))
+      .rejects.toMatchObject({ code: "TEST_FACT_WRITE_OUTCOME_UNKNOWN" });
+    current.calls.length = 0;
+    const changed = { ...source, bytes: Buffer.from(JSON.stringify({ testOnly: true,
+      executionEvidenceSha: source.executionEvidenceSha, reportSha256: "3".repeat(64) })) };
+    await expect(writeR2TestFact(changed, current.port, current.fetcher, undefined, current.journal))
+      .rejects.toMatchObject({ code: "TEST_FACT_OPERATION_CONFLICT" });
+    expect(current.calls).toEqual(["authority", "journal:begin"]);
+  });
+
+  it("accepts a descendant ref only after exact target readback", async () => {
+    const current = fixture({ updateThrows: true, landed: true, descendant: true });
+    const result = await writeR2TestFact(source, current.port, current.fetcher,
+      undefined, current.journal);
+    expect(result.commit).toBe(candidate);
+    expect(result.readback.coordinate.commit).toBe(candidate);
+    expect(current.calls.slice(-3)).toEqual(["head", "ancestor", "readback"]);
+    current.calls.length = 0;
+    await writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal);
+    expect(current.calls).toEqual(["authority", "journal:begin", "head", "ancestor", "readback"]);
+  });
+
+  it("rejects unrelated head even when the target bytes can be read", async () => {
+    const current = fixture({ updateThrows: true, unrelated: true });
+    await expect(writeR2TestFact(source, current.port, current.fetcher,
+      undefined, current.journal)).rejects.toMatchObject({
+        code: "TEST_FACT_WRITE_OUTCOME_UNKNOWN", commit: candidate, path,
+      });
+    expect(current.calls).not.toContain("readback");
+  });
+
+  it("keeps a ref query failure unknown and never retries the update", async () => {
+    const current = fixture({ updateThrows: true, headReadFails: true });
+    await expect(writeR2TestFact(source, current.port, current.fetcher,
+      undefined, current.journal)).rejects.toMatchObject({
+        code: "TEST_FACT_WRITE_OUTCOME_UNKNOWN", commit: candidate, path,
+      });
+    current.calls.length = 0;
+    await expect(writeR2TestFact(source, current.port, current.fetcher,
+      undefined, current.journal)).rejects.toMatchObject({
+        code: "TEST_FACT_WRITE_OUTCOME_UNKNOWN", commit: candidate, path,
+      });
+    expect(current.calls).toEqual(["authority", "journal:begin", "head"]);
   });
 
   it("reports committed bytes as unverified when readback fails after the write", async () => {
     const current = fixture({ readbackFailed: true });
-    await expect(writeR2TestFact(source, current.port, current.fetcher))
+    await expect(writeR2TestFact(source, current.port, current.fetcher, undefined, current.journal))
       .rejects.toMatchObject({ code: "TEST_FACT_COMMITTED_READBACK_UNVERIFIED",
         commit: candidate, path });
     expect(current.calls.filter((call) => call === "update")).toHaveLength(1);
@@ -91,10 +186,12 @@ describe("R2-02 test Git fact write discipline", () => {
 
   it("rechecks authority before the ref update and rejects a different branch", async () => {
     const revoked = fixture({ changedAuthority: true });
-    await expect(writeR2TestFact(source, revoked.port, revoked.fetcher)).rejects.toThrow("revoked");
+    await expect(writeR2TestFact(source, revoked.port, revoked.fetcher, undefined, revoked.journal))
+      .rejects.toThrow("revoked");
     expect(revoked.calls).not.toContain("update");
     const wrong = fixture();
-    await expect(writeR2TestFact(source, { ...wrong.port, branch: "main" }, wrong.fetcher))
+    await expect(writeR2TestFact(source, { ...wrong.port, branch: "main" }, wrong.fetcher,
+      undefined, wrong.journal))
       .rejects.toBeInstanceOf(GitFactWriteError);
     expect(wrong.calls).toHaveLength(0);
   });

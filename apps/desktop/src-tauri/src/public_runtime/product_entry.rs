@@ -39,6 +39,8 @@ pub(crate) struct ProductGoalRequest {
     publish_test_draft: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fixture_driver_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ledger_merge_pull_number: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -69,6 +71,15 @@ pub(crate) struct LedgerReadbackView {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LedgerMergeView {
+    state: String,
+    pull_number: u64,
+    merge_commit: String,
+    merged_by: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProductGoalView {
     goal: GoalRef,
     ledger: LedgerRef,
@@ -78,9 +89,13 @@ pub(crate) struct ProductGoalView {
     publish_test_draft: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fixture_driver_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ledger_merge_pull_number: Option<u64>,
     caller: ProductCallerView,
     native_host: NativeHostView,
     ledger_readback: LedgerReadbackView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ledger_merge: Option<LedgerMergeView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controlled_task: Option<ControlledTaskView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,6 +291,15 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
             }
         }
     }
+    if let Some(merge) = &response.ledger_merge {
+        if merge.state != "PR_MERGE_ACCEPTED_FACT_VERIFIED"
+            || merge.pull_number == 0
+            || merge.merge_commit != response.ledger.commit
+            || merge.merged_by != "taiyun668"
+        {
+            return Err("GOGOKE_LEDGER_MERGE_NOT_VERIFIED".to_string());
+        }
+    }
     if let Some(draft) = &response.test_ledger_draft {
         if response.publish_test_draft != Some(true)
             || draft.state != "DRAFT_COMMITTED_NOT_ADOPTED"
@@ -399,6 +423,10 @@ async fn run_product_process(
         || response.run_controlled_task != request.run_controlled_task
         || response.publish_test_draft != request.publish_test_draft
         || response.fixture_driver_id != request.fixture_driver_id
+        || response.ledger_merge_pull_number != request.ledger_merge_pull_number
+        || (request.ledger_merge_pull_number.is_some()) != response.ledger_merge.is_some()
+        || response.ledger_merge.as_ref().is_some_and(|merge|
+            Some(merge.pull_number) != request.ledger_merge_pull_number)
         || (request.run_controlled_task == Some(true)) != response.controlled_task.is_some()
         || (request.publish_test_draft == Some(true)) != response.test_ledger_draft.is_some()
     {
@@ -436,6 +464,7 @@ mod tests {
             run_controlled_task: None,
             publish_test_draft: None,
             fixture_driver_id: None,
+            ledger_merge_pull_number: None,
         };
         let valid = ProductGoalView {
             goal: request.goal.clone(),
@@ -443,6 +472,7 @@ mod tests {
             run_controlled_task: None,
             publish_test_draft: None,
             fixture_driver_id: None,
+            ledger_merge_pull_number: None,
             caller: ProductCallerView {
                 admitted: true,
                 policy_revision: "1".into(),
@@ -460,6 +490,7 @@ mod tests {
                 state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED".into(),
                 git_blob: "a".repeat(40),
             },
+            ledger_merge: None,
             controlled_task: None,
             test_ledger_draft: None,
             acceptance: "TEST_FIXTURE_NOT_ADOPTED".into(),

@@ -7,6 +7,9 @@ import type {
   ContextCommitReceipt,
 } from "../../context/repository/repository.ts";
 import type {
+  R2TestFactJournalIntent, R2TestFactJournalEntry,
+} from "../../context/repository/gitFactWrite.ts";
+import type {
   BeginActionResult,
   DurableActionReservation,
   DurableDispatchOutcome,
@@ -460,6 +463,9 @@ export type NativeControlledFixtureAction =
   | { readonly state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT";
       readonly frames: readonly string[]; readonly actionCompletionRef: string;
       readonly stopProofHash: string }
+  | { readonly state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT";
+      readonly frames: readonly string[]; readonly actionCompletionRef: string;
+      readonly stopProofHash: string }
   | { readonly state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT";
       readonly actionCompletionRef: string };
 
@@ -479,9 +485,11 @@ export function decodeNativeControlledFixtureAction(body: string): NativeControl
       Reflect.ownKeys(record).length === 2) {
     return Object.freeze({ state: record.state, actionCompletionRef: ref });
   }
-  if (record.state !== "ACTION_TRANSPORT_COMPLETED_NOT_RESULT" ||
+  if ((record.state !== "ACTION_TRANSPORT_COMPLETED_NOT_RESULT" &&
+       record.state !== "ACTION_TRANSPORT_RECONCILED_NOT_RESULT") ||
       Reflect.ownKeys(record).length !== 4 || !Array.isArray(record.frames) ||
-      record.frames.length !== 5 || !record.frames.every((frame) => typeof frame === "string") ||
+      record.frames.length !== 5 || !record.frames.every((frame) => typeof frame === "string" && frame.length > 0) ||
+      record.frames.reduce<number>((size, frame) => size + Buffer.byteLength(frame as string, "utf8"), 0) > 64 * 1024 ||
       typeof record.stopProofHash !== "string" ||
       !/^sha256:[0-9a-f]{64}$/.test(record.stopProofHash)) {
     throw new NativeHostClientError("CONTROLLED_ACTION", "invalid native Action transport evidence");
@@ -489,6 +497,48 @@ export function decodeNativeControlledFixtureAction(body: string): NativeControl
   return Object.freeze({ state: record.state,
     frames: Object.freeze([...record.frames] as string[]), actionCompletionRef: ref,
     stopProofHash: record.stopProofHash });
+}
+
+const R2_FACT_OPERATION = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const R2_FACT_SHA = /^[0-9a-f]{40}$/u;
+const R2_FACT_HASH = /^sha256:[0-9a-f]{64}$/u;
+const R2_FACT_REPOSITORY = "taiyun668/gogoke";
+const R2_FACT_BRANCH = "s1-r4-ledger-test/r2-02";
+const R2_FACT_PATH_ROOT = "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results";
+
+const validateR2FactIntent = (intent: R2TestFactJournalIntent): void => {
+  if (!R2_FACT_OPERATION.test(intent.operationId) ||
+      !R2_FACT_SHA.test(intent.executionEvidenceSha) ||
+      !R2_FACT_HASH.test(intent.bytesHash) ||
+      intent.repository !== R2_FACT_REPOSITORY || intent.branch !== R2_FACT_BRANCH ||
+      intent.path !== `${R2_FACT_PATH_ROOT}/${intent.operationId}.json`) {
+    throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid fixed test ledger intent");
+  }
+};
+
+export function decodeR2TestFactJournalEntry(
+  body: string, intent: R2TestFactJournalIntent,
+): R2TestFactJournalEntry {
+  validateR2FactIntent(intent);
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid native journal reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid native journal reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 8 ||
+      record.operationId !== intent.operationId ||
+      record.executionEvidenceSha !== intent.executionEvidenceSha ||
+      record.bytesHash !== intent.bytesHash ||
+      record.repository !== intent.repository || record.branch !== intent.branch ||
+      record.path !== intent.path ||
+      !((record.baseHead === null && record.targetCommit === null) ||
+        (typeof record.baseHead === "string" && R2_FACT_SHA.test(record.baseHead) &&
+         typeof record.targetCommit === "string" && R2_FACT_SHA.test(record.targetCommit)))) {
+    throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "native journal identity mismatch");
+  }
+  return Object.freeze(record as unknown as R2TestFactJournalEntry);
 }
 
 const canonicalControllerField = (value: unknown, path: string): string => {
@@ -2541,6 +2591,52 @@ export class NativeHostClient {
       promptJson: input.promptJson,
     })).body;
     return decodeNativeControlledFixtureAction(body);
+  }
+
+  async beginR2TestFactWrite(
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+  ): Promise<R2TestFactJournalEntry> {
+    validateR2FactIntent(intent);
+    const body = this.request(JSON.stringify({
+      operation: "BeginR2TestFactWrite",
+      domainId: "domain-r2-02-test",
+      operationId: intent.operationId, executionEvidenceSha: intent.executionEvidenceSha,
+      bytesHash: intent.bytesHash, repository: intent.repository, branch: intent.branch,
+      path: intent.path,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role, seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestFactJournalEntry(body, intent);
+  }
+
+  async bindR2TestFactWrite(
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+    baseHead: string, targetCommit: string,
+  ): Promise<R2TestFactJournalEntry> {
+    validateR2FactIntent(intent);
+    if (!R2_FACT_SHA.test(baseHead) || !R2_FACT_SHA.test(targetCommit)) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid target binding");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "BindR2TestFactWrite",
+      domainId: "domain-r2-02-test",
+      operationId: intent.operationId, executionEvidenceSha: intent.executionEvidenceSha,
+      bytesHash: intent.bytesHash, repository: intent.repository, branch: intent.branch,
+      path: intent.path, baseHead, targetCommit,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role, seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    const entry = decodeR2TestFactJournalEntry(body, intent);
+    if (entry.baseHead !== baseHead || entry.targetCommit !== targetCommit) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "native target binding mismatch");
+    }
+    return entry;
   }
 
   async publishDecisionSnapshot(input: NativeDecisionAuthoritySnapshot): Promise<void> {

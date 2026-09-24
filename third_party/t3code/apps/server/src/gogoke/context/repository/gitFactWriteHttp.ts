@@ -72,6 +72,25 @@ export function createR2TestGitHubWritePort(input: {
       const value = await request("GET", `/contents/${encoded}?ref=${commit}`);
       return value === null ? null : sha(value.sha);
     },
+    async isAncestor(ancestor, descendant) {
+      if (!SHA.test(ancestor) || !SHA.test(descendant)) return fail("GIT_FACT_HTTP_SHA_INVALID");
+      const value = await request("GET", `/compare/${ancestor}...${descendant}?per_page=1&page=1`);
+      if (value === null) return fail("GIT_FACT_COMPARE_INVALID");
+      const base = value?.base_commit;
+      const mergeBase = value?.merge_base_commit;
+      if (typeof base !== "object" || base === null || Array.isArray(base) ||
+          typeof mergeBase !== "object" || mergeBase === null || Array.isArray(mergeBase)) {
+        return fail("GIT_FACT_COMPARE_INVALID");
+      }
+      if (sha((base as Record<string, unknown>).sha) !== ancestor) {
+        return fail("GIT_FACT_COMPARE_INVALID");
+      }
+      const shared = sha((mergeBase as Record<string, unknown>).sha);
+      if (!["ahead", "behind", "diverged", "identical"].includes(String(value.status))) {
+        return fail("GIT_FACT_COMPARE_INVALID");
+      }
+      return value.status === "ahead" && shared === ancestor;
+    },
     async createBlob(bytes) {
       const value = await request("POST", "/git/blobs", {
         content: Buffer.from(bytes).toString("base64"), encoding: "base64",

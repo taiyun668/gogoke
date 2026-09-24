@@ -11,6 +11,11 @@ mod promotion_commit;
 mod transaction;
 mod process_custody;
 mod r2_fixture_driver;
+mod r2_fact_journal;
+pub(crate) use r2_fact_journal::{
+    begin as begin_r2_test_fact_write, bind as bind_r2_test_fact_write,
+    R2TestFactIntent, R2TestFactJournalEntry,
+};
 pub(crate) use r2_fixture_driver::{
     register as register_r2_test_fixture_driver,
     resolve as resolve_r2_test_fixture_driver,
@@ -203,9 +208,10 @@ mod action_authority;
 pub(crate) use action_authority::{
     begin_committed_action, derive_action_decision_basis, derive_native_action_current_facts,
     prepare_action_authority,
-    read_native_action_fixture_selection, record_trusted_native_action_receipt,
+    read_native_action_fixture_selection, read_reconciled_action_transport,
+    record_trusted_native_action_receipt, record_trusted_native_action_transport_receipt,
     complete_action_from_native_receipt, ActionCompletionDisposition, ActionDecisionBasis, BeginCommittedAction,
     BeginCommittedDisposition, NativeActionCurrentFactsRefs, NativeActionFixtureSelection,
-    TrustedActionCompletionEvidence,
+    TrustedActionCompletionEvidence, TrustedActionTransportEvidence,
     PrepareActionAuthority, PreparedActionAuthority,
 };

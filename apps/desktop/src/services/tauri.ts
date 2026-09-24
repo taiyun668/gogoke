@@ -1226,6 +1226,7 @@ export type GogokeProductGoalRequest = {
   runControlledTask?: true;
   publishTestDraft?: true;
   fixtureDriverId?: string;
+  ledgerMergePullNumber?: number;
   ledger: {
     repository: string;
     commit: string;
@@ -1251,6 +1252,12 @@ export type GogokeProductGoalView = GogokeProductGoalRequest & {
   ledgerReadback: {
     state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED";
     gitBlob: string;
+  };
+  ledgerMerge?: {
+    state: "PR_MERGE_ACCEPTED_FACT_VERIFIED";
+    pullNumber: number;
+    mergeCommit: string;
+    mergedBy: string;
   };
   controlledTask?: {
     state: "VALIDATED_TEST_RESULT_NOT_ADOPTED";

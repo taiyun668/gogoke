@@ -156,29 +156,30 @@ export async function runR2ControlledProductTask(input: {
       action.semanticDigest !== basis.actionDigest) {
     throw new Error("R2_TEST_ACTION_RESERVATION_MISMATCH");
   }
-  if (action.reservationState === "completed") {
-    // Native reads its trusted completion receipt before any process or protocol write.
-    const completion = await store.runControlledFixtureAction!({
-      caller,
-      domainId: "domain-r2-02-test",
-      operationId: action.operationId,
-      reservationId: action.reservationId,
-      promptJson,
-    });
-    if (completion.state !== "ACTION_COMPLETION_RECONCILED_NOT_RESULT") {
-      throw new Error("R2_TEST_COMPLETION_RECONCILIATION_MISMATCH");
-    }
-    return Object.freeze({
-      state: "ACTION_REPLAY_NO_NEW_RESULT" as const,
-      reservationState: "completed" as const,
-      actionCompletionRef: completion.actionCompletionRef,
-      decisionReceiptId: decision.decisionReceiptId,
-    });
-  }
-  if (action.reservationState !== "reserved") {
+  const replay = action.reservationState !== "reserved";
+  if (action.reservationState === "not-sent" ||
+      action.reservationState === "dispatched" ||
+      action.reservationState === "rejected") {
     return Object.freeze({
       state: "ACTION_REPLAY_NO_NEW_RESULT" as const,
       reservationState: action.reservationState,
+      decisionReceiptId: decision.decisionReceiptId,
+    });
+  }
+  // On replay, the native host may return only its original, verified transport
+  // frames. It must never prepare a second process or regain send authority.
+  const recovered = replay ? await store.runControlledFixtureAction!({
+    caller,
+    domainId: "domain-r2-02-test",
+    operationId: action.operationId,
+    reservationId: action.reservationId,
+    promptJson,
+  }) : undefined;
+  if (recovered !== undefined && recovered.state !== "ACTION_TRANSPORT_RECONCILED_NOT_RESULT") {
+    return Object.freeze({
+      state: "ACTION_REPLAY_NO_NEW_RESULT" as const,
+      reservationState: action.reservationState as "completed" | "dispatching" | "outcome-unknown",
+      actionCompletionRef: recovered.actionCompletionRef,
       decisionReceiptId: decision.decisionReceiptId,
     });
   }
@@ -191,13 +192,19 @@ export async function runR2ControlledProductTask(input: {
   }
 
   let session!: PiManagedSession;
-  let actionCompletionRef: string | undefined;
+  let actionCompletionRef: string | undefined = recovered?.actionCompletionRef;
   session = new PiManagedSession({
     admission: { mode: "ordinary", protocolQualified: true,
       protectedDomainQualified: false, contextExposure: "UNKNOWN" },
     sink: { async write(chunk) {
       if (Buffer.from(chunk).toString("utf8") !== `${promptJson}\n`) {
         throw new Error("R2_TEST_PROMPT_BYTES_MISMATCH");
+      }
+      if (recovered !== undefined) {
+        // Re-feed the native-retained transport into the existing Pi parser.
+        // This sink has no process I/O on replay.
+        for (const frame of recovered.frames) session.acceptStdout(Buffer.from(frame));
+        return;
       }
       const evidence = await store.runControlledFixtureAction!({
         caller,
@@ -231,7 +238,7 @@ export async function runR2ControlledProductTask(input: {
   }
   const completedMs = Date.parse(refs.actionCompletedAt);
   if (!Number.isFinite(completedMs)) throw new Error("R2_TEST_COMPLETION_TIME_INVALID");
-  const observedAt = new Date(Math.max(Date.now(), completedMs + 1)).toISOString();
+  const observedAt = new Date(completedMs + 1).toISOString();
   const outcome = await store.appendObjectiveOutcome!({
     domainId: "domain-r2-02-test",
     outcomeId: "outcome-r2-02-test",
@@ -261,7 +268,7 @@ export async function runR2ControlledProductTask(input: {
   const outcomeReadback = await store.readObjectiveOutcome!(
     "domain-r2-02-test", "outcome-r2-02-test", "1",
   );
-  if (outcome.disposition !== "COMMITTED" ||
+  if (!["COMMITTED", "REPLAYED"].includes(outcome.disposition) ||
       outcomeReadback.contentHash !== outcome.contentHash) {
     throw new Error("R2_TEST_OBJECTIVE_OUTCOME_READBACK_MISMATCH");
   }
@@ -302,13 +309,13 @@ export async function runR2ControlledProductTask(input: {
   const evaluationReadback = await store.readEvaluation!(
     "domain-r2-02-test", "evaluation-r2-02-test", "1",
   );
-  if (evaluation.disposition !== "COMMITTED" ||
+  if (!["COMMITTED", "REPLAYED"].includes(evaluation.disposition) ||
       evaluationReadback.contentHash !== evaluation.contentHash) {
     throw new Error("R2_TEST_EVALUATION_READBACK_MISMATCH");
   }
   const rollback = await store.prepareR2TestRollbackPlan!(caller);
   if (rollback.state !== "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED" ||
-      rollback.disposition !== "COMMITTED") {
+      !["COMMITTED", "RECONCILED"].includes(rollback.disposition)) {
     throw new Error("R2_TEST_ROLLBACK_PLAN_NOT_PREPARED");
   }
   const dreamRun = await store.appendDreamRun!({
@@ -337,7 +344,7 @@ export async function runR2ControlledProductTask(input: {
   const dreamRunReadback = await store.readDreamRun!(
     "domain-r2-02-test", "dream-run-r2-02-test", "1",
   );
-  if (dreamRun.disposition !== "COMMITTED" ||
+  if (!["COMMITTED", "REPLAYED"].includes(dreamRun.disposition) ||
       dreamRunReadback.contentHash !== dreamRun.contentHash) {
     throw new Error("R2_TEST_DREAM_RUN_READBACK_MISMATCH");
   }
@@ -369,7 +376,7 @@ export async function runR2ControlledProductTask(input: {
   const proposalReadback = await store.readDreamProposal!(
     "domain-r2-02-test", "dream-proposal-r2-02-test", "1",
   );
-  if (proposal.disposition !== "COMMITTED" ||
+  if (!["COMMITTED", "REPLAYED"].includes(proposal.disposition) ||
       proposalReadback.contentHash !== proposal.contentHash) {
     throw new Error("R2_TEST_DREAM_PROPOSAL_READBACK_MISMATCH");
   }

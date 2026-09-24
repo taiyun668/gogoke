@@ -48,6 +48,9 @@ import type {
   ContextCommitReceipt,
 } from "../context/repository/repository.ts";
 import type {
+  R2TestFactJournalIntent, R2TestFactJournalEntry,
+} from "../context/repository/gitFactWrite.ts";
+import type {
   BeginActionResult,
   DurableActionReservation,
   DurableDispatchOutcome,
@@ -132,6 +135,13 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   readonly runControlledFixtureAction?: (
     input: NativeControlledFixtureActionInput,
   ) => Promise<NativeControlledFixtureAction>;
+  readonly beginR2TestFactWrite?: (
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+  ) => Promise<R2TestFactJournalEntry>;
+  readonly bindR2TestFactWrite?: (
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+    baseHead: string, targetCommit: string,
+  ) => Promise<R2TestFactJournalEntry>;
   commitContextVersion(input: CommitContextVersionRequest): Promise<ContextCommitReceipt>;
   reserve(input: DurableActionReservation): Promise<ReserveActionResult>;
   begin(reservationId: string, input: DurableActionReservation): Promise<BeginActionResult>;

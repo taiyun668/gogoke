@@ -525,6 +525,15 @@ fn controller_admission_body(identity: &authority::ProductIdentitySnapshot) -> S
     )
 }
 
+fn r2_test_fact_journal_body(entry: &authority::R2TestFactJournalEntry) -> String {
+    let base = entry.base_head.as_deref().map(json_quote).unwrap_or_else(|| "null".into());
+    let target = entry.target_commit.as_deref().map(json_quote).unwrap_or_else(|| "null".into());
+    format!("{{\"operationId\":{},\"executionEvidenceSha\":{},\"bytesHash\":{},\"repository\":{},\"branch\":{},\"path\":{},\"baseHead\":{base},\"targetCommit\":{target}}}",
+        json_quote(&entry.intent.operation_id), json_quote(&entry.intent.execution_evidence_sha),
+        json_quote(&entry.intent.bytes_hash), json_quote(&entry.intent.repository),
+        json_quote(&entry.intent.branch), json_quote(&entry.intent.path))
+}
+
 fn delegation_grant_body(grant: &authority::DelegationGrantSnapshot) -> String {
     let parent = grant.parent.as_ref().map_or_else(
         || "null".to_owned(),
@@ -811,6 +820,20 @@ fn validate_controlled_action_frame(
     Ok(())
 }
 
+fn validate_reconciled_action_frames(frames: &[String], prompt_id: &str) -> Result<(), OrchestrationError> {
+    if frames.len() != 5 || frames.iter().map(String::len).sum::<usize>() > 64 * 1024 {
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let expected_ack = format!("{{\"type\":\"response\",\"id\":{},\"command\":\"prompt\",\"success\":true}}",
+        json_quote(prompt_id));
+    let mut message_identity = None;
+    for (index, frame) in frames.iter().enumerate() {
+        validate_controlled_action_frame(index, frame.trim_end_matches(['\r','\n']),
+            &expected_ack, &mut message_identity)?;
+    }
+    Ok(())
+}
+
 /// Executes only an Action already reserved by Product Authority. This entry
 /// cannot issue a grant or prepare a package; the native currentness checks
 /// and one-way begin fence precede the sole protocol write.
@@ -845,8 +868,12 @@ pub(crate) fn run_controlled_fixture_action(
     // protocol write. A reserved Action has no completion to reconcile.
     if let Ok(completion) = authority::complete_action_from_native_receipt(connection, &action) {
         if completion.terminal_state == "completed" {
-            return Ok(format!("{{\"state\":\"ACTION_COMPLETION_RECONCILED_NOT_RESULT\",\"actionCompletionRef\":{}}}",
-                json_quote(&completion.receipt_id)));
+            let transport = authority::read_reconciled_action_transport(
+                connection, &action, prompt, &completion.receipt_id)?;
+            validate_reconciled_action_frames(&transport.frames, &prompt_id)?;
+            let encoded = transport.frames.iter().map(|frame| json_quote(frame)).collect::<Vec<_>>().join(",");
+            return Ok(format!("{{\"state\":\"ACTION_TRANSPORT_RECONCILED_NOT_RESULT\",\"frames\":[{encoded}],\"actionCompletionRef\":{},\"stopProofHash\":{}}}",
+                json_quote(&completion.receipt_id), json_quote(&transport.stop_proof_hash)));
         }
         return Err(OrchestrationError::CommitUnknown);
     }
@@ -989,7 +1016,14 @@ pub(crate) fn run_controlled_fixture_action(
         evidence_hash,
         disposition: authority::ActionCompletionDisposition::Completed,
     };
-    if let Err(error) = authority::record_trusted_native_action_receipt(connection, &native) {
+    let transport = authority::TrustedActionTransportEvidence {
+        stop_proof_hash: proof.proof_hash(),
+        pid: prepared.identity.pid.to_string(),
+        creation_time_100ns: prepared.identity.creation_time_100ns.to_string(),
+        binary_digest_sha256: prepared.binding.binary_digest_sha256.clone(),
+        frames: frames.clone(),
+    };
+    if let Err(error) = authority::record_trusted_native_action_transport_receipt(connection, &native, &transport) {
         let _ = authority::complete_action_from_native_receipt(connection, &action);
         return Err(error);
     }
@@ -1026,6 +1060,41 @@ fn handle_authenticated_line_with_process(
         "RunControlledFixtureAction" => {
             let custodian = process_custodian.ok_or(OrchestrationError::AccessDenied)?;
             run_controlled_fixture_action(connection, owner, custodian, line)
+        }
+        "BeginR2TestFactWrite" | "BindR2TestFactWrite" => {
+            let binding = decoded.name == "BindR2TestFactWrite";
+            let expected = if binding {
+                &["baseHead","branch","bytesHash","domainId","executionEvidenceSha","operation","operationId",
+                  "path","policyRevision","principalId","profileId","repository","revocationHead",
+                  "role","seatId","targetCommit"][..]
+            } else {
+                &["branch","bytesHash","domainId","executionEvidenceSha","operation","operationId",
+                  "path","policyRevision","principalId","profileId","repository","revocationHead",
+                  "role","seatId"][..]
+            };
+            let fields = action_fields(line, expected)?;
+            if required(&fields,"domainId")? != "domain-r2-02-test" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            authority::admit_owner_controller_caller(connection, owner,
+                required(&fields,"profileId")?, required(&fields,"principalId")?,
+                required(&fields,"seatId")?, required(&fields,"policyRevision")?,
+                required(&fields,"revocationHead")?, required(&fields,"role")?)?;
+            let intent = authority::R2TestFactIntent {
+                operation_id: required(&fields,"operationId")?.into(),
+                execution_evidence_sha: required(&fields,"executionEvidenceSha")?.into(),
+                bytes_hash: required(&fields,"bytesHash")?.into(),
+                repository: required(&fields,"repository")?.into(),
+                branch: required(&fields,"branch")?.into(),
+                path: required(&fields,"path")?.into(),
+            };
+            let entry = if binding {
+                authority::bind_r2_test_fact_write(connection, &intent,
+                    required(&fields,"baseHead")?, required(&fields,"targetCommit")?)?
+            } else {
+                authority::begin_r2_test_fact_write(connection, &intent)?
+            };
+            Ok(r2_test_fact_journal_body(&entry))
         }
         "ReadProductIdentity" => {
             let _fields = action_fields(line, &["operation"])?;
@@ -2370,6 +2439,36 @@ mod context_tests {
     }
 
     #[test]
+    fn r2_test_fact_journal_requires_native_controller_and_fixed_ledger() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root_path = std::env::temp_dir().join(format!("gogoke-fact-journal-frame-{nonce}"));
+        std::fs::create_dir(&root_path).unwrap();
+        let root = RootLock::acquire(&root_path).unwrap();
+        let database = root_path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).unwrap();
+        let owner = authority::initialize_profile(&mut connection, &root).unwrap();
+        let identity = authority::read_product_identity(&mut connection, &owner).unwrap();
+        let frame = format!("{{\"branch\":\"s1-r4-ledger-test/r2-02\",\"bytesHash\":\"sha256:{}\",\"domainId\":\"domain-r2-02-test\",\"executionEvidenceSha\":\"{}\",\"operation\":\"BeginR2TestFactWrite\",\"operationId\":\"r2-02-one\",\"path\":\"apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-one.json\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"repository\":\"taiyun668/gogoke\",\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            "b".repeat(64), "a".repeat(40), json_quote(&identity.policy_revision),
+            json_quote(&identity.principal_id), json_quote(&identity.profile_id),
+            json_quote(&identity.revocation_head), json_quote(&identity.seat_id));
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &frame.replace("\"role\":\"controller\"", "\"role\":\"worker\"")).is_err());
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &frame.replace("taiyun668/gogoke", "other/repo")).is_err());
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &frame.replace("domain-r2-02-test", "domain-other")).is_err());
+        let first = handle_authenticated_line(&mut connection, &owner, &frame).unwrap();
+        assert!(first.contains("\"baseHead\":null"));
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &frame).unwrap(), first);
+        connection.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).unwrap();
+        std::fs::remove_dir(root_path).unwrap();
+    }
+
+    #[test]
     fn controlled_action_requires_complete_matching_protocol_frames() {
         let ack = "{\"type\":\"response\",\"id\":\"gogoke-pi-1\",\"command\":\"prompt\",\"success\":true}";
         let message = "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"api\":\"gogoke-test-protocol\",\"provider\":\"gogoke-test-only\",\"model\":\"deterministic-fixture\",\"stopReason\":\"stop\",\"timestamp\":1}";
@@ -2381,6 +2480,12 @@ mod context_tests {
         validate_controlled_action_frame(2, &end, ack, &mut identity).unwrap();
         validate_controlled_action_frame(3, &agent_end, ack, &mut identity).unwrap();
         validate_controlled_action_frame(4, "{\"type\":\"agent_settled\"}", ack, &mut identity).unwrap();
+        let frames = vec![ack.into(), "{\"type\":\"agent_start\"}".into(), end.clone(),
+            agent_end.clone(), "{\"type\":\"agent_settled\"}".into()];
+        validate_reconciled_action_frames(&frames, "gogoke-pi-1").unwrap();
+        let mut altered = frames.clone();
+        altered[3] = altered[3].replace("\\\"ok\\\":true", "\\\"ok\\\":false");
+        assert!(validate_reconciled_action_frames(&altered, "gogoke-pi-1").is_err());
         assert!(validate_controlled_action_frame(2, "{\"type\":\"message_end\",\"message\":", ack, &mut None).is_err());
         assert!(validate_controlled_action_frame(3, "{\"type\":\"agent_end\",\"messages\":", ack, &mut identity).is_err());
         let mismatched = agent_end.replace("\\\"ok\\\":true", "\\\"ok\\\":false");

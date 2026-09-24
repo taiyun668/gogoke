@@ -32,6 +32,8 @@ const ADMITTED: &[&str] = &[
     "PrepareR2TestRollbackPlan",
     "RunControlledFixtureProbe",
     "RunControlledFixtureAction",
+    "BeginR2TestFactWrite",
+    "BindR2TestFactWrite",
     "PublishDecisionSnapshot",
     "CommitDecision",
     "ReadDecisionReplay",
@@ -450,6 +452,16 @@ mod tests {
             let frame = format!("{{\"operation\":\"{operation}\"}}");
             assert_eq!(decode_operation_frame(frame.as_bytes()).unwrap().name, operation);
         }
+    }
+
+    #[test]
+    fn r2_test_fact_journal_operations_are_typed_and_closed() {
+        for operation in ["BeginR2TestFactWrite", "BindR2TestFactWrite"] {
+            let frame = format!("{{\"operation\":\"{operation}\"}}");
+            assert_eq!(decode_operation_frame(frame.as_bytes()).unwrap().name, operation);
+        }
+        assert!(matches!(decode_operation_frame(br#"{"operation":"UpdateGitRef"}"#),
+            Err(ProtocolError::UnknownOperation(value)) if value == "UpdateGitRef"));
     }
 
     #[test]

@@ -4,15 +4,18 @@ import { createHash } from "node:crypto";
 
 import { constructGogokeService } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
-import { readGitHubFact } from "../context/repository/gitFact.ts";
+import { readAcceptedGitHubFact, readGitHubFact } from "../context/repository/gitFact.ts";
 import { createR2GhCredentialAccess, currentGhToken } from "../context/repository/ghCredential.ts";
 import { R2_TEST_LEDGER, writeR2TestFact } from "../context/repository/gitFactWrite.ts";
-import type { GitFactWritePort } from "../context/repository/gitFactWrite.ts";
+import type { GitFactWritePort, R2TestFactJournal } from "../context/repository/gitFactWrite.ts";
 import { createR2TestGitHubWritePort } from "../context/repository/gitFactWriteHttp.ts";
 import { runNovelDriverConformance } from "../adapters/conformance/novel.ts";
 import { runR2ControlledProductTask } from "./r2ControlledProductTask.ts";
 
 const R2_02_TEST_LEDGER_REPOSITORY = "taiyun668/gogoke";
+const R2_02_MERGE_POLICY = Object.freeze({
+  repository: R2_02_TEST_LEDGER_REPOSITORY, targetBranch: "main", mergeActor: "taiyun668",
+});
 const R2_02_SOURCE = Object.freeze({
   repository: "taiyun668/gogoke",
   commit: "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
@@ -33,6 +36,8 @@ export interface ProductGoalRequest {
   readonly runControlledTask?: true;
   readonly publishTestDraft?: true;
   readonly fixtureDriverId?: string;
+  /** Read-only verification of a merge that changed this exact ledger coordinate. */
+  readonly ledgerMergePullNumber?: number;
 }
 
 export interface ProductGoalView extends ProductGoalRequest {
@@ -49,6 +54,12 @@ export interface ProductGoalView extends ProductGoalRequest {
   readonly ledgerReadback: {
     readonly state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED";
     readonly gitBlob: string;
+  };
+  readonly ledgerMerge?: {
+    readonly state: "PR_MERGE_ACCEPTED_FACT_VERIFIED";
+    readonly pullNumber: number;
+    readonly mergeCommit: string;
+    readonly mergedBy: string;
   };
   readonly controlledTask?: {
     readonly state: "VALIDATED_TEST_RESULT_NOT_ADOPTED";
@@ -132,9 +143,12 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
     Object.hasOwn(parsed, "publishTestDraft");
   const hasDriver = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
     Object.hasOwn(parsed, "fixtureDriverId");
+  const hasMerge = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, "ledgerMergePullNumber");
   const root = exactRecord(parsed, "request", ["goal", "ledger",
     ...(hasTask ? ["runControlledTask"] : []), ...(hasDraft ? ["publishTestDraft"] : []),
-    ...(hasDriver ? ["fixtureDriverId"] : [])]);
+    ...(hasDriver ? ["fixtureDriverId"] : []),
+    ...(hasMerge ? ["ledgerMergePullNumber"] : [])]);
   if (hasTask && root.runControlledTask !== true) {
     return invalid("request.runControlledTask", "must be true when present");
   }
@@ -144,6 +158,10 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
   if (hasDriver && (!hasDraft || typeof root.fixtureDriverId !== "string" ||
       !/^mock_novel_[0-9a-f]{16}$/u.test(root.fixtureDriverId))) {
     return invalid("request.fixtureDriverId", "requires a test draft and a post-build novel ID");
+  }
+  if (hasMerge && (!Number.isSafeInteger(root.ledgerMergePullNumber) ||
+      (root.ledgerMergePullNumber as number) <= 0)) {
+    return invalid("request.ledgerMergePullNumber", "must be a positive PR number");
   }
   const goal = exactRecord(root.goal, "request.goal", ["id", "title"]);
   const ledger = exactRecord(root.ledger, "request.ledger", [
@@ -178,6 +196,7 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
     ...(hasTask ? { runControlledTask: true as const } : {}),
     ...(hasDraft ? { publishTestDraft: true as const } : {}),
     ...(hasDriver ? { fixtureDriverId: root.fixtureDriverId as string } : {}),
+    ...(hasMerge ? { ledgerMergePullNumber: root.ledgerMergePullNumber as number } : {}),
   });
 }
 
@@ -244,22 +263,27 @@ export async function handleProductGoalRequest(
     // This construction Goal is test-only. The repository scope comes from
     // Owner's R2-02 authorization, not from the caller's ledger field.
     const gitReadToken = currentGhToken();
-    const ledgerReadback = await readGitHubFact(
+    const ledgerMerge = request.ledgerMergePullNumber === undefined ? undefined :
+      await readAcceptedGitHubFact(request.ledger, request.ledgerMergePullNumber,
+        R2_02_MERGE_POLICY, fetch, gitReadToken);
+    const ledgerReadback = ledgerMerge?.fact ?? await readGitHubFact(
       request.ledger, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
     let controlledTask: ProductGoalView["controlledTask"];
     let testLedgerDraft: ProductGoalView["testLedgerDraft"];
     let writePort: GitFactWritePort | undefined;
+    let writeJournal: R2TestFactJournal | undefined;
     let draftToken: string | undefined;
     if (request.publishTestDraft === true) {
+      const caller = {
+        policyRevision: service.identity.policyRevision,
+        principalId: service.identity.principalId,
+        profileId: service.identity.profileId,
+        revocationHead: service.identity.revocationHead,
+        role: "controller" as const,
+        seatId: service.identity.seatId,
+      };
       const currentNativeAdmission = async () => {
-        const current = await service.store.admitControllerCaller!({
-          policyRevision: service.identity.policyRevision,
-          principalId: service.identity.principalId,
-          profileId: service.identity.profileId,
-          revocationHead: service.identity.revocationHead,
-          role: "controller",
-          seatId: service.identity.seatId,
-        });
+        const current = await service.store.admitControllerCaller!(caller);
         if (current.admitted !== true || current.principalId !== service.identity.principalId ||
             current.seatId !== service.identity.seatId ||
             current.policyRevision !== service.identity.policyRevision ||
@@ -280,6 +304,22 @@ export async function handleProductGoalRequest(
         writePort = paths.testWritePort;
         await writePort.assertCurrentAuthority();
       }
+      writeJournal = {
+        async begin(intent) {
+          await currentNativeAdmission();
+          if (typeof service.store.beginR2TestFactWrite !== "function") {
+            throw new Error("R2_TEST_DRAFT_NATIVE_JOURNAL_UNAVAILABLE");
+          }
+          return service.store.beginR2TestFactWrite(caller, intent);
+        },
+        async bindTarget(intent, baseHead, targetCommit) {
+          await currentNativeAdmission();
+          if (typeof service.store.bindR2TestFactWrite !== "function") {
+            throw new Error("R2_TEST_DRAFT_NATIVE_JOURNAL_UNAVAILABLE");
+          }
+          return service.store.bindR2TestFactWrite(caller, intent, baseHead, targetCommit);
+        },
+      };
     }
     if (request.runControlledTask === true) {
       const source = await readGitHubFact(
@@ -309,7 +349,7 @@ export async function handleProductGoalRequest(
         }),
       });
       if (request.publishTestDraft === true) {
-        if (writePort === undefined || executionEvidenceSha === undefined ||
+        if (writePort === undefined || writeJournal === undefined || executionEvidenceSha === undefined ||
             serviceEntrySha256 === undefined) {
           throw new Error("R2_TEST_DRAFT_PORT_UNAVAILABLE");
         }
@@ -345,7 +385,7 @@ export async function handleProductGoalRequest(
           acceptance: "TEST_FIXTURE_NOT_ADOPTED",
         }));
         const draft = await writeR2TestFact({ operationId, executionEvidenceSha, bytes },
-          writePort, paths.testFetcher ?? fetch, draftToken);
+          writePort, paths.testFetcher ?? fetch, draftToken, writeJournal);
         testLedgerDraft = Object.freeze({
           state: draft.state,
           repository: R2_TEST_LEDGER.repository,
@@ -363,6 +403,9 @@ export async function handleProductGoalRequest(
       ...(request.runControlledTask === true ? { runControlledTask: true as const } : {}),
       ...(request.publishTestDraft === true ? { publishTestDraft: true as const } : {}),
       ...(request.fixtureDriverId === undefined ? {} : { fixtureDriverId: request.fixtureDriverId }),
+      ...(request.ledgerMergePullNumber === undefined ? {} : {
+        ledgerMergePullNumber: request.ledgerMergePullNumber,
+      }),
       caller: Object.freeze({
         admitted: admission.admitted,
         policyRevision: admission.policyRevision,
@@ -377,6 +420,10 @@ export async function handleProductGoalRequest(
         elapsedMicros: admission.elapsedMicros,
       }),
       ledgerReadback: Object.freeze({ state: ledgerReadback.state, gitBlob: ledgerReadback.gitBlob }),
+      ...(ledgerMerge === undefined ? {} : { ledgerMerge: Object.freeze({
+        state: ledgerMerge.state, pullNumber: ledgerMerge.pullNumber,
+        mergeCommit: ledgerMerge.mergeCommit, mergedBy: ledgerMerge.mergedBy,
+      }) }),
       ...(controlledTask === undefined ? {} : { controlledTask }),
       ...(testLedgerDraft === undefined ? {} : { testLedgerDraft }),
       acceptance: "TEST_FIXTURE_NOT_ADOPTED" as const,

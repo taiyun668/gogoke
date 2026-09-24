@@ -8,6 +8,7 @@ import * as NodeTest from "node:test";
 
 import {
   decodeNativeControlledFixtureAction,
+  decodeR2TestFactJournalEntry,
   decodeR2ObjectiveFactRefs,
   decodeR2TestRollbackPlan,
   decodeR2TestFixtureDriverRegistration,
@@ -83,6 +84,12 @@ test("native Action transport codec keeps completion distinct from Result and re
     state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT", frames, actionCompletionRef, stopProofHash,
   }));
   assert.equal(completed.state, "ACTION_TRANSPORT_COMPLETED_NOT_RESULT");
+  const recovered = decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT", frames, actionCompletionRef, stopProofHash,
+  }));
+  assert.deepEqual(recovered, {
+    state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT", frames, actionCompletionRef, stopProofHash,
+  });
   const reconciled = decodeNativeControlledFixtureAction(JSON.stringify({
     state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef,
   }));
@@ -93,6 +100,31 @@ test("native Action transport codec keeps completion distinct from Result and re
   assert.throws(() => decodeNativeControlledFixtureAction(JSON.stringify({
     state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef, frames,
   })), NativeHostClientError);
+  assert.throws(() => decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT", frames: [], actionCompletionRef, stopProofHash,
+  })), NativeHostClientError);
+});
+
+test("R2 test fact journal codec requires exact intent and all-or-none target binding", () => {
+  const intent = {
+    operationId: "r2-02-one", executionEvidenceSha: "a".repeat(40),
+    bytesHash: `sha256:${"b".repeat(64)}`, repository: "taiyun668/gogoke",
+    branch: "s1-r4-ledger-test/r2-02",
+    path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-one.json",
+  };
+  const pending = { ...intent, baseHead: null, targetCommit: null };
+  assert.deepEqual(decodeR2TestFactJournalEntry(JSON.stringify(pending), intent), pending);
+  const bound = { ...intent, baseHead: "c".repeat(40), targetCommit: "d".repeat(40) };
+  assert.deepEqual(decodeR2TestFactJournalEntry(JSON.stringify(bound), intent), bound);
+  assert.throws(() => decodeR2TestFactJournalEntry(JSON.stringify({
+    ...pending, bytesHash: `sha256:${"f".repeat(64)}`,
+  }), intent), NativeHostClientError);
+  assert.throws(() => decodeR2TestFactJournalEntry(JSON.stringify({
+    ...bound, targetCommit: null,
+  }), intent), NativeHostClientError);
+  assert.throws(() => decodeR2TestFactJournalEntry(JSON.stringify({
+    ...pending, accepted: true,
+  }), intent), NativeHostClientError);
 });
 
 test("startup handshake retains all three lines emitted in one pipe chunk", async () => {

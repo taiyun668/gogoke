@@ -281,11 +281,35 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.match(product.controlledTask?.dreamProposalContentHash ?? "", /^sha256:[0-9a-f]{64}$/);
     Assert.equal(product.controlledTask?.dreamProposalState, "DRAFT_TEST_ONLY_NOT_ACTIVATED");
     Assert.equal(product.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
-    await Assert.rejects(
-      handleProductGoalRequest(productRequest, { root: entryRoot, hostBinary: hosted }),
-      /R2_ACTION_REPLAY_NO_NEW_RESULT/,
-      "a repeated product request may read completion but cannot resend or invent a new Result",
+    const mergedFact = await handleProductGoalRequest({
+      goal: productRequest.goal,
+      ledger: {
+        repository: "taiyun668/gogoke",
+        commit: "165f4b234654711c45d05ecd80e9b6553dd93ceb",
+        path: "AGENTS.md",
+        contentHash: "sha256:fbd1d01da0667456d20daed4662dd59a2653f065d30362141e45b10f5f3d6604",
+      },
+      ledgerMergePullNumber: 32,
+    }, { root: entryRoot, hostBinary: hosted });
+    Assert.deepEqual(mergedFact.ledgerMerge, {
+      state: "PR_MERGE_ACCEPTED_FACT_VERIFIED", pullNumber: 32,
+      mergeCommit: "165f4b234654711c45d05ecd80e9b6553dd93ceb",
+      mergedBy: "taiyun668",
+    });
+    Assert.equal(mergedFact.acceptance, "TEST_FIXTURE_NOT_ADOPTED",
+      "a merged governance fact does not adopt the construction Goal");
+    const repeatedProduct = await handleProductGoalRequest(
+      productRequest, { root: entryRoot, hostBinary: hosted },
     );
+    Assert.equal(repeatedProduct.controlledTask?.actionCompletionRef,
+      product.controlledTask?.actionCompletionRef,
+      "a repeated product request recovers the same native completion without another send");
+    Assert.equal(repeatedProduct.controlledTask?.reportSha256,
+      product.controlledTask?.reportSha256,
+      "the recovered transport must validate to the original Result");
+    Assert.equal(repeatedProduct.controlledTask?.objectiveOutcomeContentHash,
+      product.controlledTask?.objectiveOutcomeContentHash,
+      "Outcome replay must retain exact canonical bytes");
     const writeRoot = Path.join(root, "product-entry-write-root");
     await FS.mkdir(writeRoot);
     const privateCanary = Crypto.randomBytes(32).toString("hex");
@@ -324,6 +348,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       async assertCurrentAuthority() { Assert.equal(testHead.length, 40); },
       async readHead() { return { commit: testHead, tree: testTree }; },
       async readPath() { return null; },
+      async isAncestor() { return false; },
       async createBlob(bytes) { writtenBytes = Buffer.from(bytes); return writtenBlob(); },
       async createTree(_base, path, blob) {
         Assert.equal(blob, writtenBlob());
@@ -362,6 +387,11 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.equal(writtenProduct.testLedgerDraft?.commit, testCommit);
     Assert.equal(writtenProduct.testLedgerDraft?.gitBlob, writtenBlob());
     Assert.equal(writtenProduct.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
+    const repeatedWrittenProduct = await handleProductGoalRequest(
+      writeRequest, { ...writeIdentity, testWritePort },
+    );
+    Assert.equal(repeatedWrittenProduct.testLedgerDraft?.commit, testCommit,
+      "the same native Action and bound Git commit must reconcile without a new write");
     const writtenFact = JSON.parse(Buffer.from(writtenBytes ?? new Uint8Array()).toString("utf8")) as Record<string, unknown>;
     Assert.equal(writtenFact.testOnly, true);
     Assert.ok(!Buffer.from(writtenBytes ?? new Uint8Array()).includes(privateCanary),
@@ -456,8 +486,8 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.equal(unknownUpdates, 1);
     Assert.ok(unknownBytes !== undefined);
     await Assert.rejects(handleProductGoalRequest(writeRequest, unknownRequest),
-      /R2_ACTION_REPLAY_NO_NEW_RESULT/,
-      "unknown Git update cannot cause a second native Action or resend");
+      /TEST_FACT_WRITE_OUTCOME_UNKNOWN/,
+      "unknown Git update must read the bound ref without another Action or ref mutation");
     Assert.equal(unknownUpdates, 1, "unknown update cannot be blindly repeated");
     const lostRoot = Path.join(root, "product-entry-readback-lost-root");
     await FS.mkdir(lostRoot);
@@ -485,9 +515,21 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.equal(lostHead, lostCommit, "remote draft exists despite lost readback");
     Assert.equal(lostUpdates, 1);
     Assert.ok(lostBytes !== undefined && lostPath !== undefined);
-    await Assert.rejects(handleProductGoalRequest(writeRequest, {
+    const recoveredBytes = lostBytes;
+    const recoveredPath = lostPath;
+    if (recoveredBytes === undefined || recoveredPath === undefined) {
+      throw new Error("lost draft bytes unavailable for readback recovery");
+    }
+    const lostFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      type: "file", path: recoveredPath, sha: Crypto.createHash("sha1")
+        .update(`blob ${recoveredBytes.length}\0`).update(recoveredBytes).digest("hex"),
+      size: recoveredBytes.length, encoding: "base64", content: recoveredBytes.toString("base64"),
+    }), { status: 200 });
+    const recoveredLostDraft = await handleProductGoalRequest(writeRequest, {
       ...writeIdentity, root: lostRoot, testWritePort: lostPort,
-    }), /R2_ACTION_REPLAY_NO_NEW_RESULT/);
+      testFetcher: lostFetcher,
+    });
+    Assert.equal(recoveredLostDraft.testLedgerDraft?.commit, lostCommit);
     Assert.equal(lostUpdates, 1, "readback loss cannot resend the draft or Action");
     const rebuiltRoot = Path.join(root, "rebuilt-coordination-root");
     await FS.mkdir(rebuiltRoot);
