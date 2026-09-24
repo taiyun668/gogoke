@@ -448,6 +448,12 @@ pub(crate) fn read_native_action_fixture_selection(
         {
             return denied();
         }
+        let launch_digest_sha256 = if recipe.recipe.recipe_id == "recipe-r2-02-test"
+            && recipe.recipe.runtime_instance_id != super::r2_fixture_driver::FIXED_RUNTIME_INSTANCE_ID {
+            super::r2_fixture_driver::resolve_in_transaction(tx, &recipe.recipe.runtime_instance_id)?.launch_digest_sha256
+        } else {
+            super::r2_fixture_driver::LAUNCH_DIGEST_SHA256.to_owned()
+        };
         Ok(NativeActionFixtureSelection {
             profile_id: profile.profile_id,
             target_domain_id: package.target.domain_id,
@@ -456,6 +462,7 @@ pub(crate) fn read_native_action_fixture_selection(
             source_epoch: lineage.native.source_epoch,
             native_session_id: lineage.native.native_session_id,
             runtime_instance_id: recipe.recipe.runtime_instance_id,
+            launch_digest_sha256,
             semantic_digest: actions[0][0].clone(),
             payload: selection.payload,
         })
@@ -939,7 +946,7 @@ fn reconcile_existing_action_domain_record(
     tx.apply_domain_record(record)
 }
 
-fn load_validated_native_receipt(
+pub(super) fn load_validated_native_receipt(
     tx: &mut Transaction<'_, '_>,
     domain_id: &str,
     operation_id: &str,
@@ -960,7 +967,7 @@ fn load_validated_native_receipt(
     Ok(Some(row.clone()))
 }
 
-fn load_validated_completion(
+pub(super) fn load_validated_completion(
     tx: &mut Transaction<'_, '_>,
     domain_id: &str,
     operation_id: &str,
@@ -1277,6 +1284,10 @@ pub(crate) fn begin_committed_action(
             payload,
         };
         let (package, task, lineage, recipe, current_profile) = current_selection(tx, &selected)?;
+        if recipe.recipe.recipe_id == "recipe-r2-02-test"
+            && recipe.recipe.runtime_instance_id != super::r2_fixture_driver::FIXED_RUNTIME_INSTANCE_ID {
+            super::r2_fixture_driver::resolve_in_transaction(tx, &recipe.recipe.runtime_instance_id)?;
+        }
         let payload_digest = content_hash(&selected.payload);
         let expected_semantic_digest = intent_digest(
             &selected,
@@ -1499,6 +1510,7 @@ pub(crate) struct NativeActionFixtureSelection {
     pub source_epoch: String,
     pub native_session_id: String,
     pub runtime_instance_id: String,
+    pub launch_digest_sha256: String,
     pub semantic_digest: String,
     pub payload: Vec<u8>,
 }

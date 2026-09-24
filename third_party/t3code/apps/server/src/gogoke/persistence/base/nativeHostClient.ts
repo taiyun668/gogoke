@@ -162,6 +162,65 @@ export interface NativeR2TestRecipeReceipt {
   readonly contentHash: string;
 }
 
+export interface NativeR2TestFixtureDriverRegistration {
+  readonly state: "TEST_ONLY_FIXTURE_DRIVER_REGISTERED";
+  readonly driverId: string;
+  readonly adapterVersion: "1.0.0";
+  readonly runtimeInstanceId: string;
+  readonly contentHash: string;
+}
+
+export interface NativeR2TestFixtureActionBinding {
+  readonly state: "TEST_ONLY_ACTION_BINDING";
+  readonly driverId: string;
+  readonly adapterVersion: "1.0.0";
+  readonly runtimeInstanceId: string;
+  readonly launchDigestSha256: string;
+}
+
+const novelDriver = /^mock_novel_[0-9a-f]{16}$/u;
+
+export function decodeR2TestFixtureDriverRegistration(body: string): NativeR2TestFixtureDriverRegistration {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native registration reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native registration reply");
+  }
+  const r = value as Record<string, unknown>;
+  if (Reflect.ownKeys(r).length !== 5 || r.state !== "TEST_ONLY_FIXTURE_DRIVER_REGISTERED" ||
+      typeof r.driverId !== "string" || !novelDriver.test(r.driverId) ||
+      r.adapterVersion !== "1.0.0" ||
+      typeof r.runtimeInstanceId !== "string" ||
+      !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(r.runtimeInstanceId) ||
+      !r.runtimeInstanceId.startsWith(`runtime-r2-03-${r.driverId.slice(11)}-`) ||
+      typeof r.contentHash !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(r.contentHash)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "native registration identity mismatch");
+  }
+  return Object.freeze(r as unknown as NativeR2TestFixtureDriverRegistration);
+}
+
+export function decodeR2TestFixtureActionBinding(body: string): NativeR2TestFixtureActionBinding {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native Action binding reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native Action binding reply");
+  }
+  const r = value as Record<string, unknown>;
+  if (Reflect.ownKeys(r).length !== 5 || r.state !== "TEST_ONLY_ACTION_BINDING" ||
+      typeof r.driverId !== "string" || !novelDriver.test(r.driverId) ||
+      r.adapterVersion !== "1.0.0" ||
+      typeof r.runtimeInstanceId !== "string" ||
+      !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(r.runtimeInstanceId) ||
+      !r.runtimeInstanceId.startsWith(`runtime-r2-03-${r.driverId.slice(11)}-`) ||
+      typeof r.launchDigestSha256 !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(r.launchDigestSha256)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "native Action binding mismatch");
+  }
+  return Object.freeze(r as unknown as NativeR2TestFixtureActionBinding);
+}
+
 export interface NativeR2ActionDecisionBasis {
   readonly state: "TEST_ONLY_DECISION_BASIS_NOT_ACTION";
   readonly actionDigest: string;
@@ -2246,10 +2305,16 @@ export class NativeHostClient {
 
   async prepareR2TestRecipe(
     caller: NativeControllerCallerContext,
+    runtimeInstanceId?: string,
   ): Promise<NativeR2TestRecipeReceipt> {
+    if (runtimeInstanceId !== undefined &&
+        !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(runtimeInstanceId)) {
+      throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid fixture runtime identity");
+    }
     const body = this.request(JSON.stringify({
       operation: "PrepareR2TestRecipe",
       operationId: "r2-02-recipe",
+      ...(runtimeInstanceId === undefined ? {} : { runtimeInstanceId }),
       policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
       principalId: canonicalControllerField(caller.principalId, "principalId"),
       profileId: canonicalControllerField(caller.profileId, "profileId"),
@@ -2258,6 +2323,44 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
     return decodeR2TestRecipeReceipt(body);
+  }
+
+  async registerR2TestFixtureDriver(
+    caller: NativeControllerCallerContext,
+    driverId: string,
+  ): Promise<NativeR2TestFixtureDriverRegistration> {
+    if (!novelDriver.test(driverId)) {
+      throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid fixture driver identity");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RegisterR2TestFixtureDriver", driverId,
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+    })).body;
+    return decodeR2TestFixtureDriverRegistration(body);
+  }
+
+  async readR2TestFixtureActionBinding(
+    caller: NativeControllerCallerContext,
+    actionCompletionRef: string,
+  ): Promise<NativeR2TestFixtureActionBinding> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(actionCompletionRef)) {
+      throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid completion identity");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReadR2TestFixtureActionBinding", actionCompletionRef,
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+    })).body;
+    return decodeR2TestFixtureActionBinding(body);
   }
 
   async readR2TestActionDecisionBasis(

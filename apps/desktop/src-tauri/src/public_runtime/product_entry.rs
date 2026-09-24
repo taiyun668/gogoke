@@ -37,6 +37,8 @@ pub(crate) struct ProductGoalRequest {
     run_controlled_task: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publish_test_draft: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture_driver_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -74,6 +76,8 @@ pub(crate) struct ProductGoalView {
     run_controlled_task: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publish_test_draft: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture_driver_id: Option<String>,
     caller: ProductCallerView,
     native_host: NativeHostView,
     ledger_readback: LedgerReadbackView,
@@ -105,6 +109,17 @@ pub(crate) struct ControlledTaskView {
     dream_run_content_hash: String,
     dream_proposal_content_hash: String,
     dream_proposal_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture_driver_binding: Option<FixtureDriverBindingView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FixtureDriverBindingView {
+    driver_id: String,
+    adapter_version: String,
+    runtime_instance_id: String,
+    launch_digest_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -218,6 +233,16 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
         {
             return Err("GOGOKE_CONTROLLED_TASK_NOT_VALIDATED".to_string());
         }
+        if let Some(binding) = &task.fixture_driver_binding {
+            if response.fixture_driver_id.as_deref() != Some(binding.driver_id.as_str())
+                || binding.adapter_version != "1.0.0"
+                || !binding.runtime_instance_id.starts_with("runtime-r2-03-")
+                || !binding.launch_digest_sha256.starts_with("sha256:")
+                || binding.launch_digest_sha256.len() != 71
+            {
+                return Err("GOGOKE_NOVEL_FIXTURE_BINDING_NOT_VALIDATED".to_string());
+            }
+        }
     }
     if let Some(draft) = &response.test_ledger_draft {
         if response.publish_test_draft != Some(true)
@@ -265,6 +290,15 @@ async fn run_product_process(
     } else {
         None
     };
+    if let Some(driver_id) = &request.fixture_driver_id {
+        if request.publish_test_draft != Some(true)
+            || driver_id.len() != 27
+            || !driver_id.starts_with("mock_novel_")
+            || !driver_id[11..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("GOGOKE_NOVEL_FIXTURE_DRIVER_ID_INVALID".to_string());
+        }
+    }
 
     let mut command = Command::new(&paths.node_runtime);
     if let Some((sha, entry_hash)) = &draft_identity {
@@ -332,6 +366,7 @@ async fn run_product_process(
         || response.ledger.content_hash != request.ledger.content_hash
         || response.run_controlled_task != request.run_controlled_task
         || response.publish_test_draft != request.publish_test_draft
+        || response.fixture_driver_id != request.fixture_driver_id
         || (request.run_controlled_task == Some(true)) != response.controlled_task.is_some()
         || (request.publish_test_draft == Some(true)) != response.test_ledger_draft.is_some()
     {
@@ -368,12 +403,14 @@ mod tests {
             },
             run_controlled_task: None,
             publish_test_draft: None,
+            fixture_driver_id: None,
         };
         let valid = ProductGoalView {
             goal: request.goal.clone(),
             ledger: request.ledger.clone(),
             run_controlled_task: None,
             publish_test_draft: None,
+            fixture_driver_id: None,
             caller: ProductCallerView {
                 admitted: true,
                 policy_revision: "1".into(),

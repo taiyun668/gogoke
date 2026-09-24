@@ -10,6 +10,13 @@ mod promotion;
 mod promotion_commit;
 mod transaction;
 mod process_custody;
+mod r2_fixture_driver;
+pub(crate) use r2_fixture_driver::{
+    register as register_r2_test_fixture_driver,
+    resolve as resolve_r2_test_fixture_driver,
+    read_action_binding as read_r2_test_fixture_action_binding,
+    FIXED_RUNTIME_INSTANCE_ID,
+};
 
 pub(crate) use process_custody::{
     initialize as initialize_process_custody_schema,

@@ -72,6 +72,7 @@ describe("Home", () => {
     expect(screen.getByText("taiyun668/gogoke")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Verify local path" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Run test and save draft" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run open fixture driver" })).toBeTruthy();
     expect(screen.getByText("Construction fixture · not adopted")).toBeTruthy();
     expect(screen.getByText("No agent activity yet")).toBeTruthy();
     expect(

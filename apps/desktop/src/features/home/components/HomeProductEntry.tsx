@@ -21,16 +21,19 @@ export const R2_GOAL_FIXTURE: GogokeProductGoalRequest = Object.freeze({
 export function HomeProductEntry() {
   const [result, setResult] = useState<GogokeProductGoalView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState<"verify" | "task" | null>(null);
+  const [running, setRunning] = useState<"verify" | "task" | "novel" | null>(null);
 
-  const run = async (mode: "verify" | "task") => {
+  const run = async (mode: "verify" | "task" | "novel") => {
     if (running !== null) return;
     setRunning(mode);
     setError(null);
     try {
-      const next = await runGogokeR2GoalProbe(mode === "task"
-        ? { ...R2_GOAL_FIXTURE, runControlledTask: true, publishTestDraft: true }
-        : R2_GOAL_FIXTURE);
+      const next = await runGogokeR2GoalProbe(mode === "verify" ? R2_GOAL_FIXTURE : {
+        ...R2_GOAL_FIXTURE, runControlledTask: true, publishTestDraft: true,
+        ...(mode === "novel" ? { fixtureDriverId: `mock_novel_${Array.from(
+          crypto.getRandomValues(new Uint8Array(8)), (byte) => byte.toString(16).padStart(2, "0"),
+        ).join("")}` } : {}),
+      });
       setResult(next);
     } catch (cause) {
       setResult(null);
@@ -65,6 +68,15 @@ export function HomeProductEntry() {
             type="button"
           >
             {running === "task" ? "Running test task…" : "Run test and save draft"}
+          </button>
+          <button
+            className="home-product-entry-button"
+            data-tauri-drag-region="false"
+            disabled={running !== null}
+            onClick={() => void run("novel")}
+            type="button"
+          >
+            {running === "novel" ? "Running open fixture…" : "Run open fixture driver"}
           </button>
         </div>
       </div>
@@ -138,6 +150,14 @@ export function HomeProductEntry() {
               <dt className="home-product-entry-label">Dream proposal (draft, not activated)</dt>
               <dd className="home-product-entry-code">{result.controlledTask.dreamProposalContentHash}</dd>
             </div>
+            {result.controlledTask.fixtureDriverBinding ? (
+              <div>
+                <dt className="home-product-entry-label">Open fixture driver (native bound)</dt>
+                <dd className="home-product-entry-code">
+                  {result.controlledTask.fixtureDriverBinding.driverId} · {result.controlledTask.fixtureDriverBinding.runtimeInstanceId}
+                </dd>
+              </div>
+            ) : null}
           </dl>
         </>
       ) : result ? (

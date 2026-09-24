@@ -58,6 +58,15 @@ it("requires the controlled task for a test ledger draft", () => {
   ))).toThrow("INVALID_PRODUCT_ENTRY");
 });
 
+it("admits one post-build open fixture ID only on the test-draft path", () => {
+  const suffix = ',"runControlledTask":true,"publishTestDraft":true,"fixtureDriverId":"mock_novel_0123456789abcdef"}';
+  expect(decodeProductGoalRequest(Buffer.from(valid.slice(0, -1) + suffix)).fixtureDriverId)
+    .toBe("mock_novel_0123456789abcdef");
+  expect(() => decodeProductGoalRequest(Buffer.from(
+    valid.slice(0, -1) + ',"runControlledTask":true,"fixtureDriverId":"mock_novel_0123456789abcdef"}',
+  ))).toThrow("INVALID_PRODUCT_ENTRY");
+});
+
 it("rejects a test draft without a running build identity before native construction", async () => {
   const request = decodeProductGoalRequest(Buffer.from(
     valid.slice(0, -1) + ',"runControlledTask":true,"publishTestDraft":true}',

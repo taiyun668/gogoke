@@ -9,6 +9,7 @@ import { createR2GhCredentialAccess, currentGhToken } from "../context/repositor
 import { R2_TEST_LEDGER, writeR2TestFact } from "../context/repository/gitFactWrite.ts";
 import type { GitFactWritePort } from "../context/repository/gitFactWrite.ts";
 import { createR2TestGitHubWritePort } from "../context/repository/gitFactWriteHttp.ts";
+import { runNovelDriverConformance } from "../adapters/conformance/novel.ts";
 import { runR2ControlledProductTask } from "./r2ControlledProductTask.ts";
 
 const R2_02_TEST_LEDGER_REPOSITORY = "taiyun668/gogoke";
@@ -31,6 +32,7 @@ export interface ProductGoalRequest {
   readonly ledger: ProductLedgerReference;
   readonly runControlledTask?: true;
   readonly publishTestDraft?: true;
+  readonly fixtureDriverId?: string;
 }
 
 export interface ProductGoalView extends ProductGoalRequest {
@@ -67,6 +69,12 @@ export interface ProductGoalView extends ProductGoalRequest {
     readonly dreamRunContentHash: string;
     readonly dreamProposalContentHash: string;
     readonly dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
+    readonly fixtureDriverBinding?: {
+      readonly driverId: string;
+      readonly adapterVersion: "1.0.0";
+      readonly runtimeInstanceId: string;
+      readonly launchDigestSha256: string;
+    };
   };
   readonly testLedgerDraft?: {
     readonly state: "DRAFT_COMMITTED_NOT_ADOPTED";
@@ -122,13 +130,20 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
     Object.hasOwn(parsed, "runControlledTask");
   const hasDraft = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
     Object.hasOwn(parsed, "publishTestDraft");
+  const hasDriver = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, "fixtureDriverId");
   const root = exactRecord(parsed, "request", ["goal", "ledger",
-    ...(hasTask ? ["runControlledTask"] : []), ...(hasDraft ? ["publishTestDraft"] : [])]);
+    ...(hasTask ? ["runControlledTask"] : []), ...(hasDraft ? ["publishTestDraft"] : []),
+    ...(hasDriver ? ["fixtureDriverId"] : [])]);
   if (hasTask && root.runControlledTask !== true) {
     return invalid("request.runControlledTask", "must be true when present");
   }
   if (hasDraft && (!hasTask || root.publishTestDraft !== true)) {
     return invalid("request.publishTestDraft", "requires the controlled task and true");
+  }
+  if (hasDriver && (!hasDraft || typeof root.fixtureDriverId !== "string" ||
+      !/^mock_novel_[0-9a-f]{16}$/u.test(root.fixtureDriverId))) {
+    return invalid("request.fixtureDriverId", "requires a test draft and a post-build novel ID");
   }
   const goal = exactRecord(root.goal, "request.goal", ["id", "title"]);
   const ledger = exactRecord(root.ledger, "request.ledger", [
@@ -162,6 +177,7 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
     ledger: Object.freeze({ repository, commit, path, contentHash }),
     ...(hasTask ? { runControlledTask: true as const } : {}),
     ...(hasDraft ? { publishTestDraft: true as const } : {}),
+    ...(hasDriver ? { fixtureDriverId: root.fixtureDriverId as string } : {}),
   });
 }
 
@@ -197,6 +213,12 @@ export async function handleProductGoalRequest(
           .digest("hex")}` !== serviceEntrySha256) {
       throw new Error("R2_TEST_DRAFT_LOADED_SERVICE_MISMATCH");
     }
+  }
+  const novel = request.fixtureDriverId === undefined ? undefined : runNovelDriverConformance(
+    serviceEntrySha256!, () => Buffer.from(request.fixtureDriverId!.slice("mock_novel_".length), "hex"),
+  );
+  if (novel !== undefined && novel.driverId !== request.fixtureDriverId) {
+    throw new Error("R2_NOVEL_FIXTURE_DRIVER_IDENTITY_MISMATCH");
   }
   const service = await constructGogokeService({
     request: {
@@ -264,6 +286,7 @@ export async function handleProductGoalRequest(
         R2_02_SOURCE, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
       const task = await runR2ControlledProductTask({
         store: service.store, identity: service.identity, source,
+        ...(novel === undefined ? {} : { fixtureDriverId: novel.driverId }),
       });
       if (task.state === "ACTION_REPLAY_NO_NEW_RESULT") {
         throw new Error("R2_ACTION_REPLAY_NO_NEW_RESULT");
@@ -281,6 +304,9 @@ export async function handleProductGoalRequest(
         dreamRunContentHash: task.dreamRunContentHash,
         dreamProposalContentHash: task.dreamProposalContentHash,
         dreamProposalState: task.dreamProposalState,
+        ...(task.fixtureDriverBinding === undefined ? {} : {
+          fixtureDriverBinding: task.fixtureDriverBinding,
+        }),
       });
       if (request.publishTestDraft === true) {
         if (writePort === undefined || executionEvidenceSha === undefined ||
@@ -313,6 +339,9 @@ export async function handleProductGoalRequest(
           dreamRunContentHash: task.dreamRunContentHash,
           dreamProposalContentHash: task.dreamProposalContentHash,
           dreamProposalState: task.dreamProposalState,
+          ...(task.fixtureDriverBinding === undefined ? {} : {
+            fixtureDriverBinding: task.fixtureDriverBinding,
+          }),
           acceptance: "TEST_FIXTURE_NOT_ADOPTED",
         }));
         const draft = await writeR2TestFact({ operationId, executionEvidenceSha, bytes },
@@ -333,6 +362,7 @@ export async function handleProductGoalRequest(
       ledger: request.ledger,
       ...(request.runControlledTask === true ? { runControlledTask: true as const } : {}),
       ...(request.publishTestDraft === true ? { publishTestDraft: true as const } : {}),
+      ...(request.fixtureDriverId === undefined ? {} : { fixtureDriverId: request.fixtureDriverId }),
       caller: Object.freeze({
         admitted: admission.admitted,
         policyRevision: admission.policyRevision,

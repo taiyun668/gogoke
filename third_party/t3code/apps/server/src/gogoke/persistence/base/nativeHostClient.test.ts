@@ -10,6 +10,8 @@ import {
   decodeNativeControlledFixtureAction,
   decodeR2ObjectiveFactRefs,
   decodeR2TestRollbackPlan,
+  decodeR2TestFixtureDriverRegistration,
+  decodeR2TestFixtureActionBinding,
   decodeCurrentDelegationGrantReply,
   encodeCurrentDelegationGrantFrame,
   decodeExecutionRecipeReceipt,
@@ -26,6 +28,20 @@ import {
 
 const assert: typeof NodeAssert = NodeAssert;
 const test: typeof NodeTest.test = NodeTest.test;
+
+test("novel fixture registration and Action binding keep native identity exact", () => {
+  const driverId = "mock_novel_0123456789abcdef";
+  const runtimeInstanceId = "runtime-r2-03-0123456789abcdef-fedcba9876543210";
+  const registration = { state: "TEST_ONLY_FIXTURE_DRIVER_REGISTERED", driverId,
+    adapterVersion: "1.0.0", runtimeInstanceId, contentHash: `sha256:${"a".repeat(64)}` };
+  const binding = { state: "TEST_ONLY_ACTION_BINDING", driverId,
+    adapterVersion: "1.0.0", runtimeInstanceId, launchDigestSha256: `sha256:${"b".repeat(64)}` };
+  assert.deepEqual(decodeR2TestFixtureDriverRegistration(JSON.stringify(registration)), registration);
+  assert.deepEqual(decodeR2TestFixtureActionBinding(JSON.stringify(binding)), binding);
+  assert.throws(() => decodeR2TestFixtureActionBinding(JSON.stringify({
+    ...binding, runtimeInstanceId: "runtime-r2-02-fixture",
+  })), /native Action binding mismatch/);
+});
 
 test("R2 Objective refs require exact native hashes", () => {
   const valid = {

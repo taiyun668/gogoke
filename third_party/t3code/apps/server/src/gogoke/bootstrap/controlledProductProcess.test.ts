@@ -368,6 +368,49 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       "private SESSION canary must not enter the test Git draft");
     Assert.equal(writtenFact.serviceEntrySha256, entryHash);
     Assert.equal(writtenFact.dreamProposalState, "DRAFT_TEST_ONLY_NOT_ACTIVATED");
+    const novelRoot = Path.join(root, "product-entry-novel-root");
+    await FS.mkdir(novelRoot);
+    const novelDriverId = `mock_novel_${Crypto.randomBytes(8).toString("hex")}`;
+    let novelBytes: Buffer | undefined;
+    let novelPath: string | undefined;
+    let novelHead = "1".repeat(40);
+    const novelCommit = "2".repeat(40);
+    const novelBlob = () => {
+      if (novelBytes === undefined) throw new Error("novel draft bytes absent");
+      return Crypto.createHash("sha1").update(`blob ${novelBytes.length}\0`)
+        .update(novelBytes).digest("hex");
+    };
+    const novelPort: GitFactWritePort = {
+      ...testWritePort,
+      async readHead() { return { commit: novelHead, tree: testTree }; },
+      async createBlob(bytes) { novelBytes = Buffer.from(bytes); return novelBlob(); },
+      async createTree(_base, path, blob) {
+        Assert.equal(blob, novelBlob()); novelPath = path; return "3".repeat(40);
+      },
+      async createCommit(parent) { Assert.equal(parent, novelHead); return novelCommit; },
+      async updateRef(commit) { Assert.equal(commit, novelCommit); novelHead = commit; },
+    };
+    const novelFetcher: typeof fetch = async () => {
+      if (novelBytes === undefined || novelPath === undefined) throw new Error("novel draft absent");
+      return new Response(JSON.stringify({ type: "file", path: novelPath,
+        sha: novelBlob(), size: novelBytes.length, encoding: "base64",
+        content: novelBytes.toString("base64") }), { status: 200 });
+    };
+    const novelProduct = await handleProductGoalRequest(
+      { ...writeRequest, fixtureDriverId: novelDriverId },
+      { ...writeIdentity, root: novelRoot, testWritePort: novelPort, testFetcher: novelFetcher },
+    );
+    Assert.equal(novelProduct.fixtureDriverId, novelDriverId);
+    Assert.equal(novelProduct.controlledTask?.fixtureDriverBinding?.driverId, novelDriverId);
+    Assert.equal(novelProduct.controlledTask?.fixtureDriverBinding?.adapterVersion, "1.0.0");
+    Assert.match(novelProduct.controlledTask?.fixtureDriverBinding?.runtimeInstanceId ?? "",
+      /^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/);
+    Assert.match(novelProduct.controlledTask?.fixtureDriverBinding?.launchDigestSha256 ?? "",
+      /^sha256:[0-9a-f]{64}$/);
+    Assert.equal(novelProduct.testLedgerDraft?.state, "DRAFT_COMMITTED_NOT_ADOPTED");
+    const novelFact = JSON.parse(Buffer.from(novelBytes ?? new Uint8Array()).toString("utf8")) as Record<string, unknown>;
+    Assert.deepEqual(novelFact.fixtureDriverBinding, novelProduct.controlledTask?.fixtureDriverBinding);
+    Assert.equal(novelFact.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
     const unknownRoot = Path.join(root, "product-entry-unknown-root");
     await FS.mkdir(unknownRoot);
     let unknownBytes: Buffer | undefined;

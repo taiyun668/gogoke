@@ -1225,6 +1225,7 @@ export type GogokeProductGoalRequest = {
   goal: { id: string; title: string };
   runControlledTask?: true;
   publishTestDraft?: true;
+  fixtureDriverId?: string;
   ledger: {
     repository: string;
     commit: string;
@@ -1270,6 +1271,12 @@ export type GogokeProductGoalView = GogokeProductGoalRequest & {
     dreamRunContentHash: string;
     dreamProposalContentHash: string;
     dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
+    fixtureDriverBinding?: {
+      driverId: string;
+      adapterVersion: "1.0.0";
+      runtimeInstanceId: string;
+      launchDigestSha256: string;
+    };
   };
   testLedgerDraft?: {
     state: "DRAFT_COMMITTED_NOT_ADOPTED";

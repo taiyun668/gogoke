@@ -24,6 +24,8 @@ import type {
   NativeR2TestLineageReceipt,
   NativeR2TestTaskReceipt,
   NativeR2TestRecipeReceipt,
+  NativeR2TestFixtureDriverRegistration,
+  NativeR2TestFixtureActionBinding,
   NativeR2ActionDecisionBasis,
   NativeR2ObjectiveFactRefs,
   NativeR2TestRollbackPlan,
@@ -95,7 +97,16 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   ) => Promise<NativeR2TestTaskReceipt>;
   readonly prepareR2TestRecipe?: (
     caller: NativeControllerCallerContext,
+    runtimeInstanceId?: string,
   ) => Promise<NativeR2TestRecipeReceipt>;
+  readonly registerR2TestFixtureDriver?: (
+    caller: NativeControllerCallerContext,
+    driverId: string,
+  ) => Promise<NativeR2TestFixtureDriverRegistration>;
+  readonly readR2TestFixtureActionBinding?: (
+    caller: NativeControllerCallerContext,
+    actionCompletionRef: string,
+  ) => Promise<NativeR2TestFixtureActionBinding>;
   readonly readR2TestActionDecisionBasis?: (
     caller: NativeControllerCallerContext,
     promptJson: string,

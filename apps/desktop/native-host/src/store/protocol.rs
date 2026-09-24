@@ -25,6 +25,8 @@ const ADMITTED: &[&str] = &[
     "PrepareR2TestLineage",
     "PrepareR2TestTask",
     "PrepareR2TestRecipe",
+    "RegisterR2TestFixtureDriver",
+    "ReadR2TestFixtureActionBinding",
     "ReadR2TestActionDecisionBasis",
     "ReadR2ObjectiveFactRefs",
     "PrepareR2TestRollbackPlan",
@@ -440,6 +442,14 @@ mod tests {
             decode_operation_frame(br#"{"operation":"RecordActionOutcome"}"#),
             Err(ProtocolError::UnknownOperation(value)) if value == "RecordActionOutcome"
         ));
+    }
+
+    #[test]
+    fn r2_test_fixture_driver_operations_are_closed_and_admitted() {
+        for operation in ["RegisterR2TestFixtureDriver", "ReadR2TestFixtureActionBinding"] {
+            let frame = format!("{{\"operation\":\"{operation}\"}}");
+            assert_eq!(decode_operation_frame(frame.as_bytes()).unwrap().name, operation);
+        }
     }
 
     #[test]

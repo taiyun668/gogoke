@@ -37,7 +37,7 @@ export async function prepareR2PublicContext(input: {
     operationId: "r2-02-public-context",
     object: {
       contextId: CONTEXT_ID,
-      version: "1",
+      version: "1" as ContextObject["version"],
       scope: "PROJECT",
       domainId: SOURCE_DOMAIN,
       kind: "fact",
@@ -45,8 +45,8 @@ export async function prepareR2PublicContext(input: {
       sourceRef: { ref: SOURCE_REF, hash: SOURCE_HASH },
       sourceAuthority: { kind: "repository", ref: AUTHORITY_REF },
       derivedFrom: [], validity: "ACTIVE", supersedes: [],
-      accessPolicyRevision: policyRevision,
-    } as ContextObject,
+      accessPolicyRevision: policyRevision as ContextObject["accessPolicyRevision"],
+    },
     access: { visibility: "DOMAIN_GRANTED", readGrantRefs: [grant.grantRef] },
   });
   if (receipt.contextId !== CONTEXT_ID || receipt.version !== "1" ||
@@ -63,8 +63,10 @@ export async function prepareR2ControlledManifest(input: {
   readonly contextGrant: NativeR2TestContextGrantReceipt;
   readonly source: GitFactReadback;
   readonly recordedAt: string;
+  readonly runtimeInstanceId?: string;
 }): Promise<ContextManifest> {
   const { store, basis, grant, contextGrant, source, recordedAt } = input;
+  const runtimeInstanceId = input.runtimeInstanceId ?? "runtime-r2-02-fixture";
   if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
       basis.bindingId !== "binding-r2-02-worker" || basis.bindingGeneration !== "1" ||
       grant.state !== "TEST_ONLY_GRANT_PREPARED_NOT_ACTION" ||
@@ -84,7 +86,7 @@ export async function prepareR2ControlledManifest(input: {
     bindingId: basis.bindingId,
     bindingGeneration: basis.bindingGeneration,
     sourceEpoch: "1",
-    runtimeInstanceId: "runtime-r2-02-fixture",
+    runtimeInstanceId,
     taskRevision: basis.taskRevision,
     policyRevision: basis.policyRevision,
     authRevision: basis.policyRevision,
@@ -129,13 +131,13 @@ export async function prepareR2ControlledManifest(input: {
             read.state !== "ACTIVE") throw new Error("R2_CONTEXT_READ_NOT_AUTHORIZED");
         return [{
           object: {
-            contextId: CONTEXT_ID, version: "1", scope: "PROJECT", domainId: SOURCE_DOMAIN,
+            contextId: CONTEXT_ID, version: "1" as ContextObject["version"], scope: "PROJECT", domainId: SOURCE_DOMAIN,
             kind: "fact", contentHash: SOURCE_HASH,
             sourceRef: { ref: SOURCE_REF, hash: SOURCE_HASH },
             sourceAuthority: { kind: "repository", ref: AUTHORITY_REF },
             derivedFrom: [], validity: "ACTIVE", supersedes: [],
-            accessPolicyRevision: row.accessPolicyRevision,
-          } as ContextObject,
+            accessPolicyRevision: row.accessPolicyRevision as ContextObject["accessPolicyRevision"],
+          },
           content: Buffer.from(source.bytes).toString("utf8"),
           state: "ACTIVE" as const,
           stateRevision: read.stateRevision,

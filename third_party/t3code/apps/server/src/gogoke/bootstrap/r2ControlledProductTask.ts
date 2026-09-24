@@ -29,6 +29,12 @@ export type R2ControlledProductTaskResult =
       readonly dreamRunContentHash: string;
       readonly dreamProposalContentHash: string;
       readonly dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
+      readonly fixtureDriverBinding?: {
+        readonly driverId: string;
+        readonly adapterVersion: "1.0.0";
+        readonly runtimeInstanceId: string;
+        readonly launchDigestSha256: string;
+      };
     }
   | {
       readonly state: "ACTION_REPLAY_NO_NEW_RESULT";
@@ -43,8 +49,9 @@ export async function runR2ControlledProductTask(input: {
   readonly store: NativeStoreSession;
   readonly identity: NativeProductIdentitySnapshot;
   readonly source: GitFactReadback;
+  readonly fixtureDriverId?: string;
 }): Promise<R2ControlledProductTaskResult> {
-  const { store, identity, source } = input;
+  const { store, identity, source, fixtureDriverId } = input;
   const sourceHash = createHash("sha256").update(source.bytes).digest("hex");
   const sourceBlob = createHash("sha1")
     .update(`blob ${source.bytes.length}\0`).update(source.bytes).digest("hex");
@@ -81,6 +88,23 @@ export async function runR2ControlledProductTask(input: {
   }
 
   const grant = await store.prepareR2TestDelegation!(caller);
+  let fixtureDriverRuntimeId: string | undefined;
+  if (fixtureDriverId !== undefined) {
+    if (!/^mock_novel_[0-9a-f]{16}$/u.test(fixtureDriverId) ||
+        typeof store.registerR2TestFixtureDriver !== "function" ||
+        typeof store.readR2TestFixtureActionBinding !== "function") {
+      throw new Error("R2_NOVEL_FIXTURE_DRIVER_UNAVAILABLE");
+    }
+    const registration = await store.registerR2TestFixtureDriver(caller, fixtureDriverId);
+    if (registration.state !== "TEST_ONLY_FIXTURE_DRIVER_REGISTERED" ||
+        registration.driverId !== fixtureDriverId ||
+        registration.adapterVersion !== "1.0.0" ||
+        !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(registration.runtimeInstanceId) ||
+        !registration.runtimeInstanceId.startsWith(`runtime-r2-03-${fixtureDriverId.slice(11)}-`)) {
+      throw new Error("R2_NOVEL_FIXTURE_REGISTRATION_MISMATCH");
+    }
+    fixtureDriverRuntimeId = registration.runtimeInstanceId;
+  }
   const contextGrant = await store.prepareR2TestContextGrant!(caller);
   await prepareR2PublicContext({
     store, source, grant: contextGrant, policyRevision: identity.policyRevision,
@@ -101,7 +125,7 @@ export async function runR2ControlledProductTask(input: {
   const promptJson = JSON.stringify({ type: "prompt", message, id: "gogoke-pi-1" });
   const packageReceipt = await store.prepareR2TestPackage!(caller, promptJson);
   const lineage = await store.prepareR2TestLineage!(caller);
-  const recipe = await store.prepareR2TestRecipe!(caller);
+  const recipe = await store.prepareR2TestRecipe!(caller, fixtureDriverRuntimeId);
   if (packageReceipt.state !== "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION" ||
       lineage.state !== "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION" ||
       recipe.state !== "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION") {
@@ -160,6 +184,7 @@ export async function runR2ControlledProductTask(input: {
   }
   const manifest = await prepareR2ControlledManifest({
     store, basis, grant, contextGrant, source, recordedAt,
+    ...(fixtureDriverRuntimeId === undefined ? {} : { runtimeInstanceId: fixtureDriverRuntimeId }),
   });
   if (manifest.manifestId !== "manifest-r2-02-test" || manifest.includedVersions.length !== 1) {
     throw new Error("R2_TEST_MANIFEST_MISMATCH");
@@ -191,6 +216,15 @@ export async function runR2ControlledProductTask(input: {
   const observation = await session.promptAndObserveSettlement(message, 30_000);
   if (actionCompletionRef === undefined) throw new Error("R2_TEST_ACTION_COMPLETION_MISSING");
   const result = validateControlledFixtureResult(source, observation);
+  const fixtureDriverBinding = fixtureDriverId === undefined ? undefined :
+    await store.readR2TestFixtureActionBinding!(caller, actionCompletionRef);
+  if (fixtureDriverBinding !== undefined &&
+      (fixtureDriverBinding.state !== "TEST_ONLY_ACTION_BINDING" ||
+       fixtureDriverBinding.driverId !== fixtureDriverId ||
+       fixtureDriverBinding.adapterVersion !== "1.0.0" ||
+       fixtureDriverBinding.runtimeInstanceId !== fixtureDriverRuntimeId)) {
+    throw new Error("R2_NOVEL_FIXTURE_ACTION_BINDING_MISMATCH");
+  }
   const refs = await store.readR2ObjectiveFactRefs!(caller, actionCompletionRef);
   if (refs.manifestHash !== manifest.manifestHash) {
     throw new Error("R2_TEST_OBJECTIVE_MANIFEST_MISMATCH");
@@ -353,5 +387,11 @@ export async function runR2ControlledProductTask(input: {
     dreamRunContentHash: dreamRun.contentHash,
     dreamProposalContentHash: proposal.contentHash,
     dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED" as const,
+    ...(fixtureDriverBinding === undefined ? {} : { fixtureDriverBinding: Object.freeze({
+      driverId: fixtureDriverBinding.driverId,
+      adapterVersion: fixtureDriverBinding.adapterVersion,
+      runtimeInstanceId: fixtureDriverBinding.runtimeInstanceId,
+      launchDigestSha256: fixtureDriverBinding.launchDigestSha256,
+    }) }),
   });
 }

@@ -854,8 +854,17 @@ pub(crate) fn run_controlled_fixture_action(
     if selected.profile_id != identity.profile_id || selected.payload.as_slice() != prompt.as_bytes() {
         return Err(OrchestrationError::AccessDenied);
     }
+    if selected.runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
+        authority::resolve_r2_test_fixture_driver(connection, &selected.runtime_instance_id)?;
+    }
     let launch = controlled_fixture_request(
         &selected.profile_id, &selected.target_domain_id, &selected.generation)?;
+    let script = launch.launch.arguments.first().ok_or(OrchestrationError::AccessDenied)?;
+    if launch.launch.arguments.len() != 1 ||
+        super::digest::content_hash(&std::fs::read(script).map_err(|_| OrchestrationError::AccessDenied)?)
+            != selected.launch_digest_sha256 {
+        return Err(OrchestrationError::AccessDenied);
+    }
     let prepared = custodian.prepare(&launch)?;
     if let Err(error) = authority::record_prepared_process(connection, &references.operation_id, &prepared) {
         let _ = custodian.abort_prepared(&prepared);
@@ -1038,6 +1047,42 @@ fn handle_authenticated_line_with_process(
                 required(&fields, "role")?,
             )?;
             Ok(controller_admission_body(&identity))
+        }
+        "RegisterR2TestFixtureDriver" => {
+            let fields = action_fields(line, &[
+                "driverId", "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let binding = authority::register_r2_test_fixture_driver(
+                connection, &admitted.profile_id, required(&fields, "driverId")?,
+            )?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_FIXTURE_DRIVER_REGISTERED\",\"driverId\":{},\"adapterVersion\":{},\"runtimeInstanceId\":{},\"contentHash\":{}}}",
+                json_quote(&binding.driver_id), json_quote(&binding.adapter_version),
+                json_quote(&binding.runtime_instance_id), json_quote(&binding.content_hash)))
+        }
+        "ReadR2TestFixtureActionBinding" => {
+            let fields = action_fields(line, &[
+                "actionCompletionRef", "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let binding = authority::read_r2_test_fixture_action_binding(
+                connection, required(&fields, "actionCompletionRef")?,
+            )?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_ACTION_BINDING\",\"driverId\":{},\"adapterVersion\":{},\"runtimeInstanceId\":{},\"launchDigestSha256\":{}}}",
+                json_quote(&binding.driver_id), json_quote(&binding.adapter_version),
+                json_quote(&binding.runtime_instance_id), json_quote(&binding.launch_digest_sha256)))
         }
         "PrepareR2TestDelegation" => {
             let fields = action_fields(line, &[
@@ -1305,10 +1350,16 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.snapshot.native.source_epoch)))
         }
         "PrepareR2TestRecipe" => {
-            let fields = action_fields(line, &[
+            let required_fields = [
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId",
-            ])?;
+            ];
+            let fields = authority_fields(line)?;
+            if fields.len() != required_fields.len() + (if fields.contains_key("runtimeInstanceId") { 1 } else { 0 })
+                || fields.keys().any(|key| !required_fields.contains(&key.as_str()) && key != "runtimeInstanceId")
+                || required_fields.iter().any(|key| !fields.contains_key(*key)) {
+                return Err(OrchestrationError::Invalid("action frame fields"));
+            }
             if required(&fields, "operationId")? != "r2-02-recipe" {
                 return Err(OrchestrationError::AccessDenied);
             }
@@ -1318,6 +1369,11 @@ fn handle_authenticated_line_with_process(
                 required(&fields, "seatId")?, required(&fields, "policyRevision")?,
                 required(&fields, "revocationHead")?, required(&fields, "role")?,
             )?;
+            let runtime_instance_id = fields.get("runtimeInstanceId")
+                .map(String::as_str).unwrap_or(authority::FIXED_RUNTIME_INSTANCE_ID);
+            if runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
+                authority::resolve_r2_test_fixture_driver(connection, runtime_instance_id)?;
+            }
             let grant = authority::read_current_delegation(connection,
                 &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
             let task = authority::read_task_context_requirements(
@@ -1348,7 +1404,7 @@ fn handle_authenticated_line_with_process(
                     expected_previous_revision: None,
                     recipe_id: "recipe-r2-02-test".into(),
                     seat_id: "seat-r2-02-worker".into(),
-                    runtime_instance_id: "runtime-r2-02-fixture".into(),
+                    runtime_instance_id: runtime_instance_id.into(),
                     model_ref,
                     tool_profile: RecipeJsonValue::Null,
                     isolation_profile: RecipeJsonValue::Null,
@@ -2114,6 +2170,51 @@ mod context_tests {
     use crate::root::RootLock;
     use crate::store::same_open::route_b_test_guard;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn novel_fixture_driver_registration_replays_and_tampering_fails_closed() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root_path = std::env::temp_dir().join(format!("gogoke-r2-driver-{nonce}"));
+        std::fs::create_dir(&root_path).unwrap();
+        let root = RootLock::acquire(&root_path).unwrap();
+        let database = root_path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).unwrap();
+        let owner = authority::initialize_profile(&mut connection, &root).unwrap();
+        let identity = authority::read_product_identity(&mut connection, &owner).unwrap();
+        let frame = format!(
+            "{{\"driverId\":\"mock_novel_0123456789abcdef\",\"operation\":\"RegisterR2TestFixtureDriver\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id),
+        );
+        let first = handle_authenticated_line(&mut connection, &owner, &frame).unwrap();
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &frame).unwrap(), first);
+        assert!(first.contains("\"adapterVersion\":\"1.0.0\""));
+        assert!(first.contains("\"contentHash\":\"sha256:"));
+        let registered = authority::register_r2_test_fixture_driver(
+            &mut connection, &identity.profile_id, "mock_novel_0123456789abcdef").unwrap();
+        let recipe_frame = |runtime_instance_id: &str| format!(
+            "{{\"operation\":\"PrepareR2TestRecipe\",\"operationId\":\"r2-02-recipe\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"runtimeInstanceId\":{},\"seatId\":{}}}",
+            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
+            json_quote(runtime_instance_id), json_quote(&identity.seat_id),
+        );
+        assert!(matches!(handle_authenticated_line(&mut connection, &owner,
+            &recipe_frame("runtime-r2-03-unregistered")), Err(OrchestrationError::AccessDenied)));
+        assert_eq!(authority::resolve_r2_test_fixture_driver(
+            &mut connection, &registered.runtime_instance_id).unwrap(), registered);
+        assert!(authority::resolve_r2_test_fixture_driver(
+            &mut connection, "runtime-r2-03-unregistered").is_err());
+        connection.execute("UPDATE main.gogoke_r2_test_fixture_drivers SET launch_digest_sha256='sha256:0000000000000000000000000000000000000000000000000000000000000000'").unwrap();
+        assert!(handle_authenticated_line(&mut connection, &owner, &frame).is_err());
+        assert!(matches!(handle_authenticated_line(&mut connection, &owner,
+            &recipe_frame(&registered.runtime_instance_id)), Err(OrchestrationError::AccessDenied)));
+        connection.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).ok();
+        std::fs::remove_dir(root_path).ok();
+    }
 
     #[test]
     fn cognition_codec_rejects_missing_typed_revision_fields() {
