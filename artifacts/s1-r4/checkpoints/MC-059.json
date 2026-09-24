@@ -1,0 +1,84 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-059",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "df58fd83549aeb9b9fb17fd0873ae40ea41f439e",
+  "recorded_utc": "2026-09-24T05:46:53Z",
+  "reason": "R2_04_CLOUD_REPAIR_RECOVERY_BOUNDARY",
+  "previous_checkpoint": "MC-058",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "owner_scope": {
+    "package": "R2-04",
+    "state": "WIP_CLOUD_VERIFICATION_IN_PROGRESS",
+    "stop_after": "R2-04 closure and durable handoff checkpoint",
+    "R2-05": "Reserved for Codex; not entered",
+    "pr": 27,
+    "pr_state": "OPEN_DRAFT_WIP",
+    "pr_head_at_read": "df58fd83549aeb9b9fb17fd0873ae40ea41f439e",
+    "candidate_acceptance_or_main_merge": false
+  },
+  "commits_after_mc058": [
+    {
+      "sha": "149c6626874d22ebafb5b65bf147b3e131a12e3d",
+      "change": "Wait for the actual NSIS process ExitCode; pin the missing opencode SDK license to a verified immutable upstream source; aggregate missing-license failures."
+    },
+    {
+      "sha": "df58fd83549aeb9b9fb17fd0873ae40ea41f439e",
+      "change": "Normalize GitHub git and ssh repository metadata without relaxing immutable gitHead or repository/path checks; add format regression assertions."
+    }
+  ],
+  "cloud_evidence": {
+    "previous_failure": {
+      "run": 35959671122,
+      "source_head": "149c6626874d22ebafb5b65bf147b3e131a12e3d",
+      "tested_merge": "c7cbef6be6277b8ae1c357be6ad6149b6b22b59d",
+      "state": "FAIL",
+      "browser_job": {"id": 107505341928, "state": "PASS"},
+      "notices_job": {"id": 107505341768, "state": "PASS"},
+      "nsis_job": {"id": 107506937597, "state": "FAIL", "step": 18},
+      "first_failure": "upstream license hydration failed: unsupported upstream license repository for redis@6.2.1, its five @redis packages, and four @yuuang/ffi-rs platform packages@1.3.2",
+      "failure_observed_utc": "2026-09-24T05:34:44.7475674Z",
+      "command": "node ../../tools/ci/gogoke-package-service.mjs seal",
+      "exit": 1,
+      "passed_before_failure": ["T3 bundle/deploy", "controlled Node staging", "native-host release cloud build"],
+      "not_executed": ["NSIS construction on these bytes", "installed byte verification", "installed product ingress smoke"],
+      "inventory_artifact": 10791714870,
+      "inventory_zip_sha256": "d3001437dfcdb1510395861c0adac4926d131d409f40274b71cdffbf7fbafce9",
+      "evidence": "https://github.com/taiyun668/gogoke/actions/runs/35959671122/job/107506937597",
+      "current_byte_disposition": "Source repair present at df58fd83; configured Windows execution is still pending, not a PASS."
+    },
+    "current_run": {
+      "run": 35960814180,
+      "source_head": "df58fd83549aeb9b9fb17fd0873ae40ea41f439e",
+      "state_at_last_read": "IN_PROGRESS",
+      "browser_job": {"id": 107508786103, "state": "PASS"},
+      "notices_job": {"id": 107508786280, "state_at_last_read": "IN_PROGRESS", "step_at_last_read": 9},
+      "installed_axis": "NOT_YET_OBSERVED",
+      "source_hygiene_run": 35960814162,
+      "source_hygiene_state": "PASS",
+      "nonclaim": "No installed package PASS, Owner Win11 result, candidate acceptance or gate acceptance."
+    },
+    "nsis_exit_receipt_fix": "Present in workflow from 149c6626; the repaired install step has not yet executed because the earlier package seal blocked it.",
+    "native_build_location": "GitHub-hosted Windows runner only; no local native build performed"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "custody": {
+    "source_wip": "All current source changes are committed through df58fd83549aeb9b9fb17fd0873ae40ea41f439e; no uncommitted production change was introduced in this recovery checkpoint.",
+    "write_domains": [".github/workflows/gogoke-desktop.yml", "tools/ci/gogoke-package-service.mjs", "tools/gogoke-release/generate-npm-notices.test.mjs"],
+    "checkpoint_ci": "Documentation-only checkpoint uses skip-ci to avoid replacing the active source-bound run. Checkpoint CI is NOT_RUN, never PASS; existing evidence remains bound to its recorded source and tested merge."
+  },
+  "V06": "PARTIAL_CONFIGURED_CLOUD_EVIDENCE_NOT_PASS",
+  "architecture_blocker": "NO",
+  "next_action": "Read run 35960814180's exact Windows result. If it fails, expand only the first failing step/annotation and repair that concrete R2-04 failure. Require installed resource hashes, complete source notices and the real installed Tauri/service/native-host path before cloud packaging closure. Then record exact build source, tested merge, runs and artifact hashes in the handoff checkpoint and STOP; do not enter R2-05 or merge main."
+}
