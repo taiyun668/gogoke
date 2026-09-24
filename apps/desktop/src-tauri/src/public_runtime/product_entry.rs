@@ -350,9 +350,36 @@ async fn run_product_process(
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())?
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())?;
     if !output.status.success() {
+        // Surface only known product failure codes from the service's stderr.
+        // Raw stderr may contain paths or credentials and must not cross IPC.
+        const SAFE_FAILURE_CODES: &[&str] = &[
+            "GH_AUTH_UNAVAILABLE",
+            "GIT_FACT_READ_FAILED",
+            "GIT_FACT_CREDENTIAL_INVALID",
+            "GIT_FACT_HASH_MISMATCH",
+            "GIT_FACT_BLOB_MISMATCH",
+            "PRODUCT_CALLER_ADMISSION_UNAVAILABLE",
+            "R2_ACTION_REPLAY_NO_NEW_RESULT",
+            "ROOT_PROFILE_ALREADY_OWNED",
+            "INVALID_ROOT_PROFILE_IDENTITY",
+            "HOST_LOCK",
+            "HOST_PIPE",
+            "HOST_EOF",
+            "HOST_OPERATION",
+            "EACCES",
+            "EPERM",
+            "ENOENT",
+        ];
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let code = SAFE_FAILURE_CODES
+            .iter()
+            .copied()
+            .find(|code| stderr.contains(code))
+            .unwrap_or("UNCLASSIFIED");
         return Err(format!(
-            "GOGOKE_PRODUCT_SERVICE_FAILED:{}",
-            output.status.code().unwrap_or(-1)
+            "GOGOKE_PRODUCT_SERVICE_FAILED:{}:{}",
+            output.status.code().unwrap_or(-1),
+            code
         ));
     }
     let response: ProductGoalView = serde_json::from_slice(&output.stdout)
