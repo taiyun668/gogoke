@@ -70,6 +70,51 @@ pub(crate) struct ObjectiveOutcomeVersion {
     pub canonical_outcome: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct R2ObjectiveFactRefs {
+    pub manifest_hash: String,
+    pub manifest_content_hash: String,
+    pub decision_content_hash: String,
+    pub action_completion_hash: String,
+}
+
+/// Reads the current, same-domain test facts needed by Objective Outcome.
+/// Every hash is derived from native durable records; the service cannot
+/// substitute a report hash, stale Decision or a bare transport ACK.
+pub(crate) fn read_r2_objective_fact_refs(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    action_completion_ref: &str,
+) -> Result<R2ObjectiveFactRefs> {
+    identifier(action_completion_ref)?;
+    transaction::run(connection, |tx| {
+        let domain = "domain-r2-02-test";
+        let manifest_id = "manifest-r2-02-test";
+        let action_id = "opr_22222222222222222222222222222222";
+        let manifest_hash = super::context_manifest::resolve_current_manifest_in_transaction(
+            tx, domain, manifest_id)?;
+        let (manifest_content_hash, _) = validate_manifest(
+            tx, domain, manifest_id, "1", &manifest_hash)?;
+        let decision = read_in_transaction(tx, domain, "decision-r2-02-test")?;
+        if decision.decision_id != "decision-r2-02-test" ||
+            decision.object_version != "1" ||
+            decision.action_intent_ref != action_id ||
+            decision.record.family != "CONTEXT_SELECTION" {
+            return denied();
+        }
+        let (state, action_completion_hash, _) = completion(
+            tx, domain, action_id, action_completion_ref)?;
+        if state != "COMPLETED" {
+            return denied();
+        }
+        Ok(R2ObjectiveFactRefs {
+            manifest_hash,
+            manifest_content_hash,
+            decision_content_hash: decision.decision_content_hash,
+            action_completion_hash,
+        })
+    })
+}
+
 fn hash(value: &str) -> Result<()> {
     if value.len() != 71
         || !value.starts_with("sha256:")

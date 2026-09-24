@@ -1405,6 +1405,31 @@ fn handle_authenticated_line_with_process(
                 json_quote(&basis.task_revision), json_quote(&basis.policy_revision),
                 json_quote(&basis.binding_id), json_quote(&basis.generation)))
         }
+        "ReadR2ObjectiveFactRefs" => {
+            let fields = action_fields(line, &[
+                "actionCompletionRef", "operation", "policyRevision", "principalId",
+                "profileId", "revocationHead", "role", "seatId",
+            ])?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant_ref = authority::r2_test_grant_id("r2-02-controlled-task")?;
+            let grant = authority::read_current_delegation(connection, &grant_ref)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let refs: authority::R2ObjectiveFactRefs = authority::read_r2_objective_fact_refs(
+                connection, required(&fields, "actionCompletionRef")?)?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_NATIVE_OBJECTIVE_REFS\",\"manifestHash\":{},\"manifestContentHash\":{},\"decisionContentHash\":{},\"actionCompletionHash\":{}}}",
+                json_quote(&refs.manifest_hash), json_quote(&refs.manifest_content_hash),
+                json_quote(&refs.decision_content_hash), json_quote(&refs.action_completion_hash)))
+        }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
             let expected = required(&fields,"expectedPreviousTaskRevision")?;

@@ -172,6 +172,31 @@ export interface NativeR2ActionDecisionBasis {
   readonly bindingGeneration: string;
 }
 
+export interface NativeR2ObjectiveFactRefs {
+  readonly state: "TEST_ONLY_NATIVE_OBJECTIVE_REFS";
+  readonly manifestHash: string;
+  readonly manifestContentHash: string;
+  readonly decisionContentHash: string;
+  readonly actionCompletionHash: string;
+}
+
+export function decodeR2ObjectiveFactRefs(body: string): NativeR2ObjectiveFactRefs {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_OBJECTIVE_REFS", "invalid native refs reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_OBJECTIVE_REFS", "invalid native refs reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 5 ||
+      record.state !== "TEST_ONLY_NATIVE_OBJECTIVE_REFS" ||
+      !["manifestHash", "manifestContentHash", "decisionContentHash", "actionCompletionHash"]
+        .every((key) => typeof record[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(record[key] as string))) {
+    throw new NativeHostClientError("R2_OBJECTIVE_REFS", "native refs identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2ObjectiveFactRefs);
+}
+
 export interface NativeR2TestActionPreparation {
   readonly kind: "reserved" | "replay";
   readonly reservationState: "reserved" | "dispatching" | "not-sent" | "dispatched" | "rejected" | "outcome-unknown" | "completed";
@@ -2219,6 +2244,26 @@ export class NativeHostClient {
       promptJson,
     })).body;
     return decodeR2ActionDecisionBasis(body);
+  }
+
+  async readR2ObjectiveFactRefs(
+    caller: NativeControllerCallerContext,
+    actionCompletionRef: string,
+  ): Promise<NativeR2ObjectiveFactRefs> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(actionCompletionRef)) {
+      throw new NativeHostClientError("R2_OBJECTIVE_REFS", "invalid completion identity");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReadR2ObjectiveFactRefs",
+      actionCompletionRef,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2ObjectiveFactRefs(body);
   }
 
   async prepareR2TestAction(input: {

@@ -26,6 +26,7 @@ const ADMITTED: &[&str] = &[
     "PrepareR2TestTask",
     "PrepareR2TestRecipe",
     "ReadR2TestActionDecisionBasis",
+    "ReadR2ObjectiveFactRefs",
     "RunControlledFixtureProbe",
     "RunControlledFixtureAction",
     "PublishDecisionSnapshot",

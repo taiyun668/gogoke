@@ -141,7 +141,7 @@ mod objective_outcome;
 pub(crate) use objective_outcome::{
     append_objective_outcome, read_objective_outcome, AppendObjectiveOutcome,
     ObjectiveEvidenceRef, ObjectiveObservationWindow, ObjectiveOutcomeVersion,
-    ObjectiveVersionRef,
+    ObjectiveVersionRef, R2ObjectiveFactRefs, read_r2_objective_fact_refs,
 };
 #[cfg(test)]
 #[path = "objective_outcome_tests.rs"]

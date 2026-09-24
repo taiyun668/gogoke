@@ -25,6 +25,7 @@ import type {
   NativeR2TestTaskReceipt,
   NativeR2TestRecipeReceipt,
   NativeR2ActionDecisionBasis,
+  NativeR2ObjectiveFactRefs,
   NativeR2TestActionPreparation,
   NativeControlledFixtureProbe,
   NativeControlledFixtureAction,
@@ -98,6 +99,10 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
     caller: NativeControllerCallerContext,
     promptJson: string,
   ) => Promise<NativeR2ActionDecisionBasis>;
+  readonly readR2ObjectiveFactRefs?: (
+    caller: NativeControllerCallerContext,
+    actionCompletionRef: string,
+  ) => Promise<NativeR2ObjectiveFactRefs>;
   readonly prepareR2TestAction?: (input: {
     readonly grantRef: string;
     readonly promptJson: string;

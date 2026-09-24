@@ -1966,12 +1966,7 @@ mod tests {
         let proof = custodian
             .stop(
                 &prepared.ticket,
-                StopBudgets {
-                    grace_ms: 10,
-                    terminate_ms: 10,
-                    observe_ms: 100,
-                    host_deadline_ms: 500,
-                },
+                StopBudgets::production(),
                 || Ok(()),
             )
             .expect("native stop proof");
