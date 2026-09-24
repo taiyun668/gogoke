@@ -2,6 +2,7 @@
 // Cloud construction evidence for every Gogoke server test file, not a due-check runner.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +10,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const donorRoot = join(repoRoot, "third_party/t3code");
 const serverRoot = join(donorRoot, "apps/server");
 const testRoot = join(serverRoot, "src/gogoke");
+const productTest = join(testRoot, "bootstrap/controlledProductProcess.test.ts");
+const productTestHash = () => `sha256:${createHash("sha256").update(readFileSync(productTest)).digest("hex")}`;
 
 function testFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -126,7 +129,8 @@ function main() {
   if (nodeRun.error) node.spawn_error = nodeRun.error;
   if (!node.native_host_bound) node.state = "FAIL_INSTRUMENT";
 
-  const selectionOk = files.length === 51 && nodeFiles.length === 10 && viteFiles.length === 41;
+  const selectionOk = files.length === 51 && nodeFiles.length === 10 && viteFiles.length === 41 &&
+    nodeFiles.includes(productTest);
   const categories = [vite, node];
   const result = {
     schema: "gogoke.server-cloud-tests.v1",
@@ -138,6 +142,8 @@ function main() {
     node_version: process.version,
     selected_files: { total: files.length, vite: viteFiles.length, node: nodeFiles.length,
       paths: files.map((path) => relative(repoRoot, path).replaceAll("\\", "/")) },
+    product_test_file: relative(repoRoot, productTest).replaceAll("\\", "/"),
+    product_test_sha256: productTestHash(),
     vite,
     node,
     totals: {
