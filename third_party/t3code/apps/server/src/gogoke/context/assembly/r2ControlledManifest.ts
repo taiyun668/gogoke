@@ -64,6 +64,7 @@ export async function prepareR2ControlledManifest(input: {
   readonly source: GitFactReadback;
   readonly recordedAt: string;
   readonly runtimeInstanceId?: string;
+  readonly replay?: true;
 }): Promise<ContextManifest> {
   const { store, basis, grant, contextGrant, source, recordedAt } = input;
   const runtimeInstanceId = input.runtimeInstanceId ?? "runtime-r2-02-fixture";
@@ -153,11 +154,8 @@ export async function prepareR2ControlledManifest(input: {
     commitManifest: native.commitManifest.bind(native),
     readCurrentManifest: native.readCurrentManifest.bind(native),
   }));
-  return assembler.assemble({
+  const identity = {
     operationId: snapshot.operationId,
-    manifestId: snapshot.manifestId,
-    query: "",
-    maxContentBytes: source.bytes.length,
     principalId: snapshot.principalId,
     seatId: snapshot.seatId,
     taskId: snapshot.taskId,
@@ -167,5 +165,13 @@ export async function prepareR2ControlledManifest(input: {
     bindingGeneration: snapshot.bindingGeneration,
     sourceEpoch: snapshot.sourceEpoch,
     runtimeInstanceId: snapshot.runtimeInstanceId,
+  };
+  if (input.replay === true) {
+    // A completed Action cannot publish another assembly snapshot. The native
+    // replay read validates the committed manifest without reopening admission.
+    return assembler.replay(identity);
+  }
+  return assembler.assemble({ ...identity,
+    manifestId: snapshot.manifestId, query: "", maxContentBytes: source.bytes.length,
   });
 }

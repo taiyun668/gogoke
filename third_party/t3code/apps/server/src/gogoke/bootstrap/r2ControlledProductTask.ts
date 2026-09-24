@@ -186,6 +186,7 @@ export async function runR2ControlledProductTask(input: {
   const manifest = await prepareR2ControlledManifest({
     store, basis, grant, contextGrant, source, recordedAt,
     ...(fixtureDriverRuntimeId === undefined ? {} : { runtimeInstanceId: fixtureDriverRuntimeId }),
+    ...(replay ? { replay: true as const } : {}),
   });
   if (manifest.manifestId !== "manifest-r2-02-test" || manifest.includedVersions.length !== 1) {
     throw new Error("R2_TEST_MANIFEST_MISMATCH");
