@@ -489,6 +489,20 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       ...writeIdentity, root: lostRoot, testWritePort: lostPort,
     }), /R2_ACTION_REPLAY_NO_NEW_RESULT/);
     Assert.equal(lostUpdates, 1, "readback loss cannot resend the draft or Action");
+    const rebuiltRoot = Path.join(root, "rebuilt-coordination-root");
+    await FS.mkdir(rebuiltRoot);
+    const retainedDraft = await handleProductGoalRequest({
+      goal: { id: "goal-r2-03-readback", title: "Read test draft after coordination rebuild" },
+      ledger: {
+        repository: "taiyun668/gogoke",
+        commit: "e1df87873a1ad2fcdf54cf2d9d0799f09255cef2",
+        path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-result-35939662195-1.json",
+        contentHash: "sha256:a704eee6bb9f98009376e5036e1cbc3d0b5cdd6a8693acdc4a4144e6c1911697",
+      },
+    }, { root: rebuiltRoot, hostBinary: hosted });
+    Assert.equal(retainedDraft.ledgerReadback.state, "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED");
+    Assert.equal(retainedDraft.ledgerReadback.gitBlob, "0edd13fd51649303c5c6f6e1c253e37258bd6d22");
+    Assert.equal(retainedDraft.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
     const evidenceRoot = process.env.GOGOKE_SERVER_EVIDENCE_ROOT;
     if (evidenceRoot !== undefined) {
       const executionEvidenceSha = process.env.GITHUB_SHA;
