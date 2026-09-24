@@ -406,11 +406,12 @@ async function smokeTauri(installed, request) {
   await new Promise((resolve) => listener.close(resolve));
   // Microsoft WebView2 documented per-process diagnostic flags. No registry,
   // product configuration, security policy, or Owner-machine setting is changed.
+  const tauriEnv = { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
+    WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` };
   const child = spawn(ensure(path.join(installed, 'gogoke.exe')), [], {
     cwd: temp, stdio: 'ignore', windowsHide: false,
-    env: { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
-      WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` },
+    env: tauriEnv,
   });
   let spawnError, exited = false, socket;
   child.once('error', (error) => { spawnError = error; });
@@ -466,7 +467,10 @@ async function smokeTauri(installed, request) {
     try {
       response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
     } catch (error) {
-      if (error instanceof Error) error.installedProductInvokeFailure = true;
+      try { diagnoseInstalledProductService(installed, request, tauriEnv); }
+      catch (diagnosticError) {
+        console.error('R2-04 direct service diagnosis failed: ' + redactRunnerTokens(String(diagnosticError?.message ?? diagnosticError)));
+      }
       throw error;
     }
     assertSmokeResponse(response, request);
@@ -528,7 +532,7 @@ function redactRunnerTokens(value) {
   return redacted;
 }
 
-function diagnoseInstalledProductService(installed, request) {
+function diagnoseInstalledProductService(installed, request, tauriEnv) {
   const node = ensure(path.join(installed, 'gogoke-service/runtime/node.exe'));
   const entry = ensure(path.join(installed, 'gogoke-service/dist/bin.mjs'));
   const host = ensure(path.join(installed, 'gogoke-native-host.exe'));
@@ -539,7 +543,7 @@ function diagnoseInstalledProductService(installed, request) {
     for (const [label, targetRoot] of [['tauri-root', productRoot], ['fresh-root', freshRoot]]) {
       const result = spawnSync(node, [entry, '--root', targetRoot, '--native-host', host], {
         cwd: serviceRoot, input: JSON.stringify(request), encoding: 'utf8', timeout: 180000,
-        maxBuffer: 1024 * 1024, windowsHide: true,
+        maxBuffer: 1024 * 1024, windowsHide: true, env: tauriEnv,
       });
       console.error(`R2-04 direct service ${label}: exit=${result.status ?? 'unavailable'} spawnError=${redactRunnerTokens(result.error?.message ?? 'none')}`);
       console.error(`R2-04 direct service ${label} stderr begin`);
@@ -568,18 +572,7 @@ async function smoke(destination) {
     if (result.error || result.status !== 0) throw new Error(`installed service failed: ${result.error?.message ?? result.status}; ${result.stderr?.slice(-3000)}`);
     const response = JSON.parse(result.stdout);
     assertSmokeResponse(response, request);
-    let installedSmoke;
-    try {
-      installedSmoke = await smokeTauri(installed, request);
-    } catch (error) {
-      if (error?.installedProductInvokeFailure === true) {
-        try { diagnoseInstalledProductService(installed, request); }
-        catch (diagnosticError) {
-          console.error('R2-04 direct service diagnosis failed: ' + redactRunnerTokens(String(diagnosticError?.message ?? diagnosticError)));
-        }
-      }
-      throw error;
-    }
+    const installedSmoke = await smokeTauri(installed, request);
     console.log('PASS installed service native admission, read-only Git fact, and controlled Result/Outcome/Evaluation/Dream without adoption');
     return installedSmoke;
   } finally {
