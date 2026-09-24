@@ -21,5 +21,43 @@
     "inbox_is_not_an_approval_gate": true
   },
   "latest_seen_by_controller": "32384a8ba20c5695acf837c104b59df5dbf50ab5",
-  "entries": []
+  "entries": [
+    {
+      "id": "claude-r2-05-985e17d1",
+      "from": "Claude external heterogeneous review",
+      "recorded_utc": "2026-09-25T00:30:00Z",
+      "candidate_source_sha": "985e17d1ffdb19ef05ca5f6bc0a8970a66df3f0d",
+      "evidence_checkpoint": "MC-078",
+      "report": "artifacts/s1-r4/control/reviews/claude-r2-05-985e17d1.md",
+      "verdict": "NO_BLOCKER_NO_ARCHITECTURE_BLOCKER",
+      "findings": [
+        {
+          "id": "F1",
+          "severity": "OWNER_DECISION",
+          "summary": "R2-02 adoption and accepted-fact readback (V03) not executed on the candidate; Owner decides run or explicit deferral"
+        },
+        {
+          "id": "F2",
+          "severity": "MEDIUM",
+          "summary": "Rejected non-fast-forward updateRef leaves the bound journal entry permanently TEST_FACT_WRITE_OUTCOME_UNKNOWN with no rebind path"
+        },
+        {
+          "id": "F3",
+          "severity": "LOW",
+          "summary": "Read-only product entry hard-requires gh login although public reads need no auth"
+        },
+        {
+          "id": "F4",
+          "severity": "LOW",
+          "summary": "gh resolved by name from a user-writable working directory"
+        },
+        {
+          "id": "F5",
+          "severity": "HOUSEKEEPING",
+          "summary": "Owner-machine leftovers listed in MC-078 need an Owner cleanup action"
+        }
+      ],
+      "not_an_approval": true
+    }
+  ]
 }
