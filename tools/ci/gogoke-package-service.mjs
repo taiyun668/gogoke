@@ -19,6 +19,14 @@ const sidecar = path.join(desktop, 'src-tauri/binaries/gogoke-native-host-x86_64
 const manifestPath = path.join(desktop, 'generated/gogoke-package-hashes.json');
 const required = ['dist/bin.mjs', 'runtime/node.exe', 'runtime/LICENSE', 'fixtures/controlled-pi.mjs', 'T3-LICENSE', 'T3-runtime-notices.html', 'native-host-notices.html'];
 
+const pinnedUpstreamLicenseRevisions = new Map([
+  ['@opencode-ai/sdk@1.18.32', {
+    repository: 'anomalyco/opencode',
+    commit: '0027387dc5c59793c12dfc531abc78f825ed6868',
+    directory: 'packages/sdk/js',
+  }],
+]);
+
 function ensure(file) {
   if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error(`required file missing: ${file}`);
   return file;
@@ -113,8 +121,14 @@ export function licenses(serviceRoot = service, requireText = true) {
 // npm's exact-version gitHead is the only upstream fallback. Mutable tags,
 // guessed copyright holders and SPDX template text are never substitutes.
 export function upstreamLicenseBasis(pkg, metadata) {
-  if (metadata.name !== pkg.name || metadata.version !== pkg.version ||
-      !/^[0-9a-f]{40}$/.test(metadata.gitHead ?? '')) throw new Error(`immutable upstream license revision missing: ${pkg.name}@${pkg.version}`);
+  if (metadata.name !== pkg.name || metadata.version !== pkg.version) {
+    throw new Error(`exact upstream package metadata mismatch: ${pkg.name}@${pkg.version}`);
+  }
+  const pinned = pinnedUpstreamLicenseRevisions.get(`${pkg.name}@${pkg.version}`);
+  if (pinned) return { ...pinned };
+  if (!/^[0-9a-f]{40}$/.test(metadata.gitHead ?? '')) {
+    throw new Error(`immutable upstream license revision missing: ${pkg.name}@${pkg.version}`);
+  }
   const repository = typeof metadata.repository === 'string' ? metadata.repository : metadata.repository?.url;
   const match = /^(?:git\+)?https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(repository ?? '');
   if (!match) throw new Error(`unsupported upstream license repository: ${pkg.name}@${pkg.version}`);
@@ -122,6 +136,7 @@ export function upstreamLicenseBasis(pkg, metadata) {
   if (directory && (!/^[A-Za-z0-9_./-]+$/.test(directory) || directory.startsWith('/') || directory.split('/').some((v) => !v || v === '.' || v === '..'))) throw new Error('unsafe upstream license directory');
   return { repository: `${match[1]}/${match[2]}`, commit: metadata.gitHead, directory };
 }
+
 async function boundedSource(url, optional = false) {
   const response = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (optional && response.status === 404) return null;
@@ -138,38 +153,45 @@ async function boundedSource(url, optional = false) {
 }
 async function hydrateRuntimeNotices() {
   const cache = new Map();
-  for (const item of licenses(service, false).filter((item) => item.files.length === 0)) {
-    const dir = path.join(service, item.packagePath);
-    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-    const registry = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${encodeURIComponent(pkg.version)}`;
-    const metadata = JSON.parse(await boundedSource(registry));
-    const basis = upstreamLicenseBasis(pkg, metadata);
-    const directories = [];
-    let directory = basis.directory;
-    for (;;) {
-      directories.push(directory);
-      if (!directory) break;
-      directory = directory.includes('/') ? directory.slice(0, directory.lastIndexOf('/')) : '';
-    }
-    let source;
-    for (const parent of directories) {
-      for (const name of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENSE-MIT', 'LICENCE', 'COPYING']) {
-        const sourcePath = [parent, name].filter(Boolean).join('/');
-        const url = `https://raw.githubusercontent.com/${basis.repository}/${basis.commit}/${sourcePath}`;
-        if (!cache.has(url)) cache.set(url, await boundedSource(url, true));
-        const text = cache.get(url);
-        if (text) { source = { url, path: sourcePath, text }; break; }
+  const failures = [];
+  const missing = licenses(service, false).filter((item) => item.files.length === 0);
+  for (const item of missing) {
+    try {
+      const dir = path.join(service, item.packagePath);
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      const registry = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${encodeURIComponent(pkg.version)}`;
+      const metadata = JSON.parse(await boundedSource(registry));
+      const basis = upstreamLicenseBasis(pkg, metadata);
+      const directories = [];
+      let directory = basis.directory;
+      for (;;) {
+        directories.push(directory);
+        if (!directory) break;
+        directory = directory.includes('/') ? directory.slice(0, directory.lastIndexOf('/')) : '';
       }
-      if (source) break;
+      let source;
+      for (const parent of directories) {
+        for (const name of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENSE-MIT', 'LICENCE', 'COPYING']) {
+          const sourcePath = [parent, name].filter(Boolean).join('/');
+          const url = `https://raw.githubusercontent.com/${basis.repository}/${basis.commit}/${sourcePath}`;
+          if (!cache.has(url)) cache.set(url, await boundedSource(url, true));
+          const text = cache.get(url);
+          if (text) { source = { url, path: sourcePath, text }; break; }
+        }
+        if (source) break;
+      }
+      if (!source) throw new Error(`pinned upstream license text missing: ${item.id}`);
+      const sha256 = createHash('sha256').update(source.text).digest('hex');
+      fs.writeFileSync(path.join(dir, 'LICENSE.gogoke-upstream.txt'), source.text);
+      fs.writeFileSync(path.join(dir, 'UPSTREAM-LICENSE-PROVENANCE.json'), JSON.stringify({
+        package: item.id, registry, repository: basis.repository, commit: basis.commit,
+        path: source.path, source: source.url, sha256, claim: 'EXACT_UPSTREAM_SOURCE_NOT_LEGAL_ACCEPTANCE',
+      }, null, 2) + '\n');
+    } catch (error) {
+      failures.push(`${item.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (!source) throw new Error(`pinned upstream license text missing: ${item.id}`);
-    const sha256 = createHash('sha256').update(source.text).digest('hex');
-    fs.writeFileSync(path.join(dir, 'LICENSE.gogoke-upstream.txt'), source.text);
-    fs.writeFileSync(path.join(dir, 'UPSTREAM-LICENSE-PROVENANCE.json'), JSON.stringify({
-      package: item.id, registry, repository: basis.repository, commit: basis.commit,
-      path: source.path, source: source.url, sha256, claim: 'EXACT_UPSTREAM_SOURCE_NOT_LEGAL_ACCEPTANCE',
-    }, null, 2) + '\n');
   }
+  if (failures.length) throw new Error(`upstream license hydration failed: ${failures.join('; ')}`);
 }
 
 function escapeHtml(text) {

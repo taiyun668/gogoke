@@ -348,8 +348,9 @@ jobs:
           $installer = (Resolve-Path -LiteralPath "desktop-artifacts/gogoke-$version-windows-x64-unsigned-setup.exe").Path
           $install = Join-Path $env:RUNNER_TEMP 'gogoke-r2-package-smoke'
           try {
-            & $installer /S "/D=$install"
-            if ($LASTEXITCODE -ne 0) { throw "NSIS test install failed: $LASTEXITCODE" }
+            $installProcess = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$install") -Wait -PassThru
+            if ($null -eq $installProcess.ExitCode) { throw "NSIS test install exit code unavailable" }
+            if ($installProcess.ExitCode -ne 0) { throw "NSIS test install failed: $($installProcess.ExitCode)" }
             node ../../tools/ci/gogoke-package-service.mjs verify $install generated/gogoke-package-hashes.json
             if ($LASTEXITCODE -ne 0) { throw "installed byte verification failed: $LASTEXITCODE" }
             node ../../tools/ci/gogoke-package-service.mjs smoke $install
@@ -357,8 +358,9 @@ jobs:
           } finally {
             $uninstaller = Join-Path $install 'uninstall.exe'
             if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
-              & $uninstaller /S
-              if ($LASTEXITCODE -ne 0) { Write-Warning "Test uninstaller exited $LASTEXITCODE" }
+              $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+              if ($null -eq $uninstallProcess.ExitCode) { Write-Warning "Test uninstaller exit code unavailable" }
+              elseif ($uninstallProcess.ExitCode -ne 0) { Write-Warning "Test uninstaller exited $($uninstallProcess.ExitCode)" }
             }
           }
       - name: Upload exact service package inventory
