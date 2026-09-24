@@ -17,6 +17,14 @@
     ]
   },
   "bundle": {
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "externalBin": ["binaries/gogoke-native-host"],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../generated/npm-production-notices.html": "npm-production-notices.html",
+      "../generated/rust-dependency-notices.html": "rust-dependency-notices.html",
+      "resources/gogoke-service/": "gogoke-service/"
+    }
   }
 }

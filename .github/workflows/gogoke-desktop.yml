@@ -11,6 +11,8 @@ on:
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
       - "tools/gogoke-release/**"
+      - "tools/ci/gogoke-package-service.mjs"
+      - "third_party/t3code/**"
       - ".github/workflows/gogoke-desktop.yml"
   pull_request:
     branches:
@@ -21,6 +23,8 @@ on:
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
       - "tools/gogoke-release/**"
+      - "tools/ci/gogoke-package-service.mjs"
+      - "third_party/t3code/**"
       - ".github/workflows/gogoke-desktop.yml"
 
 permissions:
@@ -152,10 +156,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.13.1"
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
       - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dtolnay/rust-toolchain@1.85.1
       - name: Download notices from this exact workflow run
         uses: actions/download-artifact@v4
         with:
@@ -200,6 +208,46 @@ jobs:
           "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       - run: npm ci
       - run: npm run prepare:gogoke-icons
+      - name: Build and deploy actual T3 server from pinned lockfile
+        shell: pwsh
+        working-directory: third_party/t3code
+        run: |
+          pnpm install --filter 't3...' --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw "T3 locked install failed: $LASTEXITCODE" }
+          pnpm --filter t3 run build:bundle
+          if ($LASTEXITCODE -ne 0) { throw "T3 server bundle failed: $LASTEXITCODE" }
+          $service = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/src-tauri/resources/gogoke-service'
+          pnpm --config.node-linker=hoisted --filter t3 deploy $service --prod --legacy
+          if ($LASTEXITCODE -ne 0) { throw "T3 server production deployment failed: $LASTEXITCODE" }
+      - name: Stage exact signed Node runtime and controlled fixture
+        shell: pwsh
+        run: |
+          $license = Join-Path $env:RUNNER_TEMP 'gogoke-node-v24.13.1-LICENSE'
+          Invoke-WebRequest -Uri 'https://nodejs.org/dist/v24.13.1/LICENSE' -OutFile $license
+          if ((Get-Item -LiteralPath $license).Length -lt 1000) { throw 'Pinned Node LICENSE is unexpectedly short' }
+          $service = 'src-tauri/resources/gogoke-service'
+          node ../../tools/ci/gogoke-package-service.mjs stage $service $license
+          if ($LASTEXITCODE -ne 0) { throw "service staging failed: $LASTEXITCODE" }
+          $node = (Resolve-Path -LiteralPath "$service/runtime/node.exe").Path
+          if ((Get-AuthenticodeSignature -LiteralPath $node).Status -ne 'Valid') { throw 'Staged Node runtime is not Authenticode-valid' }
+          "GOGOKE_CONTROLLED_NODE_PATH=$node" >> $env:GITHUB_ENV
+          Write-Output "Controlled Node SHA256: $((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant())"
+      - name: Build native host for exact staged Node
+        shell: pwsh
+        run: |
+          $node = (Resolve-Path -LiteralPath 'src-tauri/resources/gogoke-service/runtime/node.exe').Path
+          if ($env:GOGOKE_CONTROLLED_NODE_PATH -cne $node) { throw 'Native build Node binding differs from staged runtime' }
+          cargo +1.85.1 build --locked --manifest-path native-host/Cargo.toml --bin gogoke-native-host --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "native host build failed: $LASTEXITCODE" }
+          New-Item -ItemType Directory -Force 'src-tauri/binaries' | Out-Null
+          Copy-Item -LiteralPath 'native-host/target/x86_64-pc-windows-msvc/release/gogoke-native-host.exe' -Destination 'src-tauri/binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe' -Force
+      - name: Seal exact staged package hashes and dependency license inventory
+        shell: pwsh
+        run: |
+          node ../../tools/ci/gogoke-package-service.mjs seal
+          if ($LASTEXITCODE -ne 0) { throw "package seal failed: $LASTEXITCODE" }
+          node ../../tools/ci/gogoke-package-service.mjs verify src-tauri/resources generated/gogoke-package-hashes.json
+          if ($LASTEXITCODE -ne 0) { throw "staged resources failed byte check: $LASTEXITCODE" }
       - name: Test the gogoke release verifier
         run: cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
       - name: Build unsigned gogoke installer
@@ -262,6 +310,10 @@ jobs:
           Copy-Item THIRD_PARTY_NOTICES.md "$portable/THIRD_PARTY_NOTICES.md"
           Copy-Item generated/npm-production-notices.html "$portable/npm-production-notices.html"
           Copy-Item generated/rust-dependency-notices.html "$portable/rust-dependency-notices.html"
+          Copy-Item src-tauri/binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe "$portable/gogoke-native-host.exe"
+          Copy-Item src-tauri/resources/gogoke-service "$portable/gogoke-service" -Recurse
+          node ../../tools/ci/gogoke-package-service.mjs verify $portable generated/gogoke-package-hashes.json
+          if ($LASTEXITCODE -ne 0) { throw "portable package failed byte check: $LASTEXITCODE" }
           foreach ($file in @($releaseInstaller, "$portable/gogoke.exe")) {
             $status = (Get-AuthenticodeSignature $file).Status
             if ($status -ne "NotSigned") {
@@ -285,6 +337,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "gogoke update smoke failed with exit code $LASTEXITCODE"
           }
+      - name: Verify installed resource identity and read-only product entry
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installer = (Resolve-Path -LiteralPath "desktop-artifacts/gogoke-$version-windows-x64-unsigned-setup.exe").Path
+          $install = Join-Path $env:RUNNER_TEMP 'gogoke-r2-package-smoke'
+          try {
+            & $installer /S "/D=$install"
+            if ($LASTEXITCODE -ne 0) { throw "NSIS test install failed: $LASTEXITCODE" }
+            node ../../tools/ci/gogoke-package-service.mjs verify $install generated/gogoke-package-hashes.json
+            if ($LASTEXITCODE -ne 0) { throw "installed byte verification failed: $LASTEXITCODE" }
+            node ../../tools/ci/gogoke-package-service.mjs smoke $install
+            if ($LASTEXITCODE -ne 0) { throw "installed product entry failed: $LASTEXITCODE" }
+          } finally {
+            $uninstaller = Join-Path $install 'uninstall.exe'
+            if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
+              & $uninstaller /S
+              if ($LASTEXITCODE -ne 0) { Write-Warning "Test uninstaller exited $LASTEXITCODE" }
+            }
+          }
+      - name: Upload exact service package inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-windows-package-inventory-${{ github.sha }}-${{ github.run_id }}
+          path: apps/desktop/generated/gogoke-package-hashes.json
+          if-no-files-found: warn
       - name: Upload smoke-verified unsigned release artifacts
         uses: actions/upload-artifact@v4
         with:
