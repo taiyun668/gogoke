@@ -1431,6 +1431,38 @@ fn handle_authenticated_line_with_process(
                 json_quote(&refs.decision_content_hash), json_quote(&refs.action_completion_hash),
                 json_quote(&refs.action_completed_at)))
         }
+        "PrepareR2TestRollbackPlan" => {
+            let fields = action_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId",
+                "profileId", "revocationHead", "role", "seatId",
+            ])?;
+            if required(&fields, "operationId")? != "r2-02-rollback" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let _evaluation = authority::read_evaluation(
+                connection, "domain-r2-02-test", "evaluation-r2-02-test", "1")?;
+            let recorded_at = r2_test_recorded_at(connection, "r2-02-rollback")?;
+            let plan: authority::R2TestRollbackPlan = authority::prepare_r2_test_rollback_plan(
+                connection, &recorded_at)?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED\",\"disposition\":{},\"domainId\":\"domain-r2-02-test\",\"planId\":{},\"revision\":{},\"contentHash\":{},\"beforeHash\":{},\"afterHash\":{}}}",
+                json_quote(plan.disposition), json_quote(&plan.reference.object_id),
+                json_quote(&plan.reference.revision), json_quote(&plan.reference.content_hash),
+                json_quote(&plan.before_hash), json_quote(&plan.after_hash)))
+        }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
             let expected = required(&fields,"expectedPreviousTaskRevision")?;

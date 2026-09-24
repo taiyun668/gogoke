@@ -1266,6 +1266,9 @@ export type GogokeProductGoalView = GogokeProductGoalRequest & {
     evaluationContentHash: string;
     evaluationReceiptId: string;
     metricsHash: string;
+    dreamRunContentHash: string;
+    dreamProposalContentHash: string;
+    dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
   };
   acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 };

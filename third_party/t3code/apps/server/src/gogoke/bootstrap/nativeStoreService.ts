@@ -26,6 +26,7 @@ import type {
   NativeR2TestRecipeReceipt,
   NativeR2ActionDecisionBasis,
   NativeR2ObjectiveFactRefs,
+  NativeR2TestRollbackPlan,
   NativeR2TestActionPreparation,
   NativeControlledFixtureProbe,
   NativeControlledFixtureAction,
@@ -103,6 +104,9 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
     caller: NativeControllerCallerContext,
     actionCompletionRef: string,
   ) => Promise<NativeR2ObjectiveFactRefs>;
+  readonly prepareR2TestRollbackPlan?: (
+    caller: NativeControllerCallerContext,
+  ) => Promise<NativeR2TestRollbackPlan>;
   readonly prepareR2TestAction?: (input: {
     readonly grantRef: string;
     readonly promptJson: string;

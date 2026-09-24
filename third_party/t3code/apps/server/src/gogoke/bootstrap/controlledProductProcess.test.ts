@@ -275,6 +275,9 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.match(product.controlledTask?.evaluationContentHash ?? "", /^sha256:[0-9a-f]{64}$/);
     Assert.equal(product.controlledTask?.evaluationReceiptId, "evaluation-receipt-r2-02-test");
     Assert.match(product.controlledTask?.metricsHash ?? "", /^sha256:[0-9a-f]{64}$/);
+    Assert.match(product.controlledTask?.dreamRunContentHash ?? "", /^sha256:[0-9a-f]{64}$/);
+    Assert.match(product.controlledTask?.dreamProposalContentHash ?? "", /^sha256:[0-9a-f]{64}$/);
+    Assert.equal(product.controlledTask?.dreamProposalState, "DRAFT_TEST_ONLY_NOT_ACTIVATED");
     Assert.equal(product.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
     await Assert.rejects(
       handleProductGoalRequest(productRequest, { root: entryRoot, hostBinary: hosted }),

@@ -134,6 +134,10 @@ export function HomeProductEntry() {
               <dt className="home-product-entry-label">Evaluation (review required)</dt>
               <dd className="home-product-entry-code">{result.controlledTask.evaluationContentHash}</dd>
             </div>
+            <div>
+              <dt className="home-product-entry-label">Dream proposal (draft, not activated)</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.dreamProposalContentHash}</dd>
+            </div>
           </dl>
         </>
       ) : result ? (

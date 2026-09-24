@@ -9,6 +9,7 @@ import * as NodeTest from "node:test";
 import {
   decodeNativeControlledFixtureAction,
   decodeR2ObjectiveFactRefs,
+  decodeR2TestRollbackPlan,
   decodeCurrentDelegationGrantReply,
   encodeCurrentDelegationGrantFrame,
   decodeExecutionRecipeReceipt,
@@ -39,6 +40,23 @@ test("R2 Objective refs require exact native hashes", () => {
   assert.throws(() => decodeR2ObjectiveFactRefs(JSON.stringify({
     ...valid, actionCompletionHash: "sha256:caller-assertion",
   })), /native refs identity mismatch/);
+});
+
+test("R2 rollback plan reply remains test-only and unactivated", () => {
+  const plan = {
+    state: "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED",
+    disposition: "COMMITTED",
+    domainId: "domain-r2-02-test",
+    planId: "rollback-r2-02-test",
+    revision: "1",
+    contentHash: `sha256:${"a".repeat(64)}`,
+    beforeHash: `sha256:${"b".repeat(64)}`,
+    afterHash: `sha256:${"c".repeat(64)}`,
+  };
+  assert.deepEqual(decodeR2TestRollbackPlan(JSON.stringify(plan)), plan);
+  assert.throws(() => decodeR2TestRollbackPlan(JSON.stringify({
+    ...plan, state: "ACTIVATED",
+  })), /native rollback identity mismatch/);
 });
 
 test("native Action transport codec keeps completion distinct from Result and replay", () => {

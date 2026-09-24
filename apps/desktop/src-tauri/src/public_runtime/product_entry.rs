@@ -92,6 +92,9 @@ pub(crate) struct ControlledTaskView {
     evaluation_content_hash: String,
     evaluation_receipt_id: String,
     metrics_hash: String,
+    dream_run_content_hash: String,
+    dream_proposal_content_hash: String,
+    dream_proposal_state: String,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +188,11 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
             || task.evaluation_receipt_id.is_empty()
             || !task.metrics_hash.starts_with("sha256:")
             || task.metrics_hash.len() != 71
+            || !task.dream_run_content_hash.starts_with("sha256:")
+            || task.dream_run_content_hash.len() != 71
+            || !task.dream_proposal_content_hash.starts_with("sha256:")
+            || task.dream_proposal_content_hash.len() != 71
+            || task.dream_proposal_state != "DRAFT_TEST_ONLY_NOT_ACTIVATED"
         {
             return Err("GOGOKE_CONTROLLED_TASK_NOT_VALIDATED".to_string());
         }

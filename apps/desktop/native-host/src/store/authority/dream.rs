@@ -34,6 +34,43 @@ pub(crate) struct AppendDreamProposal {
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub(crate) struct DreamReceipt { pub domain_id:String,pub object_id:String,pub revision:String,pub content_hash:String,pub canonical_record:Vec<u8> }
 
+#[derive(Clone, Debug)]
+pub(crate) struct R2TestRollbackPlan {
+    pub disposition: &'static str,
+    pub reference: DreamObjectRef,
+    pub before_hash: String,
+    pub after_hash: String,
+}
+
+/// Fixed public-fixture rollback reference for the R2 test candidate. It
+/// records a proposal reversal only; no production parameter is changed.
+pub(crate) fn prepare_r2_test_rollback_plan(
+    c:&mut VerifiedDatabaseConnection<'_>, recorded_at:&str,
+)->Result<R2TestRollbackPlan>{
+    let domain="domain-r2-02-test";
+    let id="rollback-r2-02-test";
+    let before_hash=content_hash(b"gogoke.r2-02.fixture.parameter.temperature=0");
+    let after_hash=content_hash(b"gogoke.r2-02.fixture.parameter.temperature=0.1");
+    let bytes=obj(vec![
+        ("afterHash".into(),q(&after_hash)),
+        ("beforeHash".into(),q(&before_hash)),
+        ("changeKey".into(),q("candidate.parameter.temperature")),
+        ("domainId".into(),q(domain)),
+        ("labelSource".into(),q("TEST_ONLY_ROLLBACK_PLAN")),
+        ("planId".into(),q(id)),
+        ("revision".into(),q("1")),
+        ("rollbackAction".into(),q("RESTORE_BEFORE")),
+        ("testOnly".into(),"true".into()),
+    ]).into_bytes();
+    let receipt=transaction::run(c,|tx| tx.apply_domain_record(DomainRecordInput{
+        domain_id:domain.into(),object_type:"RollbackPlan".into(),object_id:id.into(),object_version:"1".into(),object_bytes:bytes,native_identity:None,
+        event_id:"r2-02-rollback-event".into(),stream_id:"gogoke.r2-02.rollback-plan.v1/rollback-r2-02-test".into(),expected_previous_counter:None,counter:"0".into(),
+        event_type:"RollbackPlanRecorded".into(),occurred_at:recorded_at.into(),event_bytes:obj(vec![("planId".into(),q(id)),("testOnly".into(),"true".into())]).into_bytes(),
+        receipt_id:"r2-02-rollback-receipt".into(),operation_id:"r2-02-rollback".into(),receipt_type:"RollbackPlanRecorded".into(),recorded_at:recorded_at.into(),receipt_bytes:obj(vec![("planId".into(),q(id)),("schema".into(),q("gogoke.r2-02.rollback-plan.v1"))]).into_bytes(),
+    }))?;
+    Ok(R2TestRollbackPlan{disposition:receipt.disposition,reference:DreamObjectRef{object_type:"RollbackPlan".into(),object_id:id.into(),revision:"1".into(),content_hash:receipt.object_hash},before_hash,after_hash})
+}
+
 fn hash(v:&str)->Result<()>{if v.len()!=71||!v.starts_with("sha256:")||!v.as_bytes()[7..].iter().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(b)){return denied();}Ok(())}
 fn q(v:&str)->String{let mut o=String::from("\"");for c in v.chars(){match c{'"'=>o.push_str("\\\""),'\\'=>o.push_str("\\\\"),'\n'=>o.push_str("\\n"),'\r'=>o.push_str("\\r"),'\t'=>o.push_str("\\t"),c if (c as u32)<0x20=>o.push_str(&format!("\\u{:04x}",c as u32)),c=>o.push(c)}}o.push('"');o}
 fn obj(mut fs:Vec<(String,String)>)->String{fs.sort_by(|a,b|a.0.encode_utf16().cmp(b.0.encode_utf16()));let body=fs.into_iter().map(|(k,v)|format!("{}:{v}",q(&k))).collect::<Vec<_>>().join(",");format!("{{{body}}}")}
@@ -77,8 +114,9 @@ fn validate_evals(tx:&mut Transaction<'_,'_>,domain:&str,refs:&[DreamEvaluationR
             let source=DreamObjectRef{object_type:"OutcomeRecord".into(),object_id:outcome[0].clone(),revision:outcome[1].clone(),content_hash:outcome[2].clone()};
             let outcome_json=verify_record(tx,domain,&source,"ObjectiveOutcomeAppended")?;
             if jt(tx,&outcome_json,"$.labelSource")?!="OBJECTIVE"||jt(tx,&outcome_json,"$.domainId")?!=domain
-                ||jt(tx,&outcome_json,"$.manifestId")?!=snapshot.object_id||jt(tx,&outcome_json,"$.manifestVersion")?!=snapshot.revision
-                ||jt(tx,&outcome_json,"$.manifestHash")?!=snapshot.content_hash{return denied();}
+                ||jt(tx,&outcome_json,"$.manifestId")?!=snapshot.object_id||jt(tx,&outcome_json,"$.manifestVersion")?!=snapshot.revision{return denied();}
+            let manifest_hash=jt(tx,&outcome_json,"$.manifestHash")?;
+            if super::objective_outcome::validate_manifest(tx,domain,&snapshot.object_id,&snapshot.revision,&manifest_hash)?.0!=snapshot.content_hash{return denied();}
         }
     }
     // Evaluation v1 has no datasetSplitHash field. The Dream request carries

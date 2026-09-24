@@ -156,6 +156,7 @@ pub(crate) use dream::{
     append_dream_proposal, append_dream_run, read_dream_proposal, read_dream_run,
     AppendDreamProposal, AppendDreamRun, DreamAllowedChange, DreamBudgetLease,
     DreamEvaluationRef, DreamObjectRef, DreamReceipt, DreamVersionRef,
+    R2TestRollbackPlan, prepare_r2_test_rollback_plan,
 };
 #[cfg(test)]
 #[path = "dream_tests.rs"]

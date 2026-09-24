@@ -26,6 +26,9 @@ export type R2ControlledProductTaskResult =
       readonly evaluationContentHash: string;
       readonly evaluationReceiptId: string;
       readonly metricsHash: string;
+      readonly dreamRunContentHash: string;
+      readonly dreamProposalContentHash: string;
+      readonly dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
     }
   | {
       readonly state: "ACTION_REPLAY_NO_NEW_RESULT";
@@ -55,6 +58,8 @@ export async function runR2ControlledProductTask(input: {
     "runControlledFixtureAction", "readR2ObjectiveFactRefs",
     "appendObjectiveOutcome", "readObjectiveOutcome",
     "appendEvaluation", "readEvaluation",
+    "prepareR2TestRollbackPlan", "appendDreamRun", "readDreamRun",
+    "appendDreamProposal", "readDreamProposal",
   ] as const;
   for (const name of required) {
     if (typeof store[name] !== "function") throw new Error(`R2_CONTROLLED_TASK_UNAVAILABLE: ${name}`);
@@ -267,6 +272,73 @@ export async function runR2ControlledProductTask(input: {
       evaluationReadback.contentHash !== evaluation.contentHash) {
     throw new Error("R2_TEST_EVALUATION_READBACK_MISMATCH");
   }
+  const rollback = await store.prepareR2TestRollbackPlan!(caller);
+  if (rollback.state !== "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED" ||
+      rollback.disposition !== "COMMITTED") {
+    throw new Error("R2_TEST_ROLLBACK_PLAN_NOT_PREPARED");
+  }
+  const dreamRun = await store.appendDreamRun!({
+    domainId: "domain-r2-02-test",
+    runId: "dream-run-r2-02-test",
+    revision: "1",
+    expectedPreviousRevision: null,
+    expectedPreviousContentHash: null,
+    operationId: "dream-run-op-r2-02-test",
+    eventId: "dream-run-event-r2-02-test",
+    receiptId: "dream-run-receipt-r2-02-test",
+    recordedAt: observedAt,
+    sourceIdentity: "deterministic-public-fixture",
+    inputSnapshot: { objectType: "ContextManifest", objectId: manifest.manifestId,
+      revision: "1", contentHash: refs.manifestContentHash },
+    datasetNamespace: "test/s1-r4/r2-02",
+    datasetSplit: "controlled-public-fixture",
+    datasetSplitHash: source.coordinate.contentHash,
+    recipeRef: { objectType: "ExecutionRecipe", objectId: recipe.recipeId,
+      revision: recipe.revision, contentHash: recipe.contentHash },
+    budgetLease: { leaseRef: "capacity-lease-r2-02", operationId: "decision-r2-02-test",
+      resourceRef: "capacity-r2-02-fixture", resourceRevision: "1", units: "1" },
+    evaluationRefs: [{ objectType: "EvaluationRecord", objectId: evaluation.objectId,
+      revision: evaluation.revision, contentHash: evaluation.contentHash }],
+  });
+  const dreamRunReadback = await store.readDreamRun!(
+    "domain-r2-02-test", "dream-run-r2-02-test", "1",
+  );
+  if (dreamRun.disposition !== "COMMITTED" ||
+      dreamRunReadback.contentHash !== dreamRun.contentHash) {
+    throw new Error("R2_TEST_DREAM_RUN_READBACK_MISMATCH");
+  }
+  const proposal = await store.appendDreamProposal!({
+    domainId: "domain-r2-02-test",
+    proposalId: "dream-proposal-r2-02-test",
+    revision: "1",
+    expectedPreviousRevision: null,
+    expectedPreviousContentHash: null,
+    operationId: "dream-proposal-op-r2-02-test",
+    eventId: "dream-proposal-event-r2-02-test",
+    receiptId: "dream-proposal-receipt-r2-02-test",
+    recordedAt: observedAt,
+    sourceIdentity: "deterministic-public-fixture",
+    runRef: { objectType: "DreamRun", objectId: dreamRun.objectId,
+      revision: dreamRun.revision, contentHash: dreamRun.contentHash },
+    candidateKind: "PARAMETER_TUNING",
+    beforeHash: rollback.beforeHash,
+    afterHash: rollback.afterHash,
+    allowedChangeSet: [{ key: "candidate.parameter.temperature",
+      beforeHash: rollback.beforeHash, afterHash: rollback.afterHash }],
+    heldoutReceipt: null,
+    rollbackRef: { objectType: "RollbackPlan", objectId: rollback.planId,
+      revision: rollback.revision, contentHash: rollback.contentHash },
+    basePolicyRevision: identity.policyRevision,
+    namespace: "test/s1-r4/r2-02",
+    testOnly: true,
+  });
+  const proposalReadback = await store.readDreamProposal!(
+    "domain-r2-02-test", "dream-proposal-r2-02-test", "1",
+  );
+  if (proposal.disposition !== "COMMITTED" ||
+      proposalReadback.contentHash !== proposal.contentHash) {
+    throw new Error("R2_TEST_DREAM_PROPOSAL_READBACK_MISMATCH");
+  }
   return Object.freeze({
     state: "VALIDATED_TEST_RESULT_NOT_ADOPTED" as const,
     result,
@@ -278,5 +350,8 @@ export async function runR2ControlledProductTask(input: {
     evaluationContentHash: evaluation.contentHash,
     evaluationReceiptId: evaluation.receiptId,
     metricsHash,
+    dreamRunContentHash: dreamRun.contentHash,
+    dreamProposalContentHash: proposal.contentHash,
+    dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED" as const,
   });
 }

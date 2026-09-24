@@ -181,6 +181,38 @@ export interface NativeR2ObjectiveFactRefs {
   readonly actionCompletedAt: string;
 }
 
+export interface NativeR2TestRollbackPlan {
+  readonly state: "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED";
+  readonly disposition: "COMMITTED" | "RECONCILED";
+  readonly domainId: "domain-r2-02-test";
+  readonly planId: "rollback-r2-02-test";
+  readonly revision: "1";
+  readonly contentHash: string;
+  readonly beforeHash: string;
+  readonly afterHash: string;
+}
+
+export function decodeR2TestRollbackPlan(body: string): NativeR2TestRollbackPlan {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_ROLLBACK_PLAN", "invalid native rollback reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_ROLLBACK_PLAN", "invalid native rollback reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 8 ||
+      record.state !== "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED" ||
+      !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
+      record.domainId !== "domain-r2-02-test" ||
+      record.planId !== "rollback-r2-02-test" || record.revision !== "1" ||
+      !["contentHash", "beforeHash", "afterHash"].every(
+        (key) => typeof record[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(record[key] as string),
+      ) || record.beforeHash === record.afterHash) {
+    throw new NativeHostClientError("R2_ROLLBACK_PLAN", "native rollback identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestRollbackPlan);
+}
+
 export function decodeR2ObjectiveFactRefs(body: string): NativeR2ObjectiveFactRefs {
   let value: unknown;
   try { value = JSON.parse(body); }
@@ -2267,6 +2299,22 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
     return decodeR2ObjectiveFactRefs(body);
+  }
+
+  async prepareR2TestRollbackPlan(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestRollbackPlan> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestRollbackPlan",
+      operationId: "r2-02-rollback",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestRollbackPlan(body);
   }
 
   async prepareR2TestAction(input: {
