@@ -12,6 +12,7 @@ on:
       - "tools/smoke-gogoke-update.ps1"
       - "tools/gogoke-release/**"
       - "tools/ci/gogoke-package-service.mjs"
+      - "tools/ci/gogoke-installed-smoke.ps1"
       - "third_party/t3code/**"
       - ".github/workflows/gogoke-desktop.yml"
   pull_request:
@@ -24,6 +25,7 @@ on:
       - "tools/smoke-gogoke-update.ps1"
       - "tools/gogoke-release/**"
       - "tools/ci/gogoke-package-service.mjs"
+      - "tools/ci/gogoke-installed-smoke.ps1"
       - "third_party/t3code/**"
       - ".github/workflows/gogoke-desktop.yml"
 
@@ -353,7 +355,7 @@ jobs:
             if ($installProcess.ExitCode -ne 0) { throw "NSIS test install failed: $($installProcess.ExitCode)" }
             node ../../tools/ci/gogoke-package-service.mjs verify $install generated/gogoke-package-hashes.json
             if ($LASTEXITCODE -ne 0) { throw "installed byte verification failed: $LASTEXITCODE" }
-            node ../../tools/ci/gogoke-package-service.mjs smoke $install
+            pwsh -NoProfile -File ../../tools/ci/gogoke-installed-smoke.ps1 -InstallDirectory $install
             if ($LASTEXITCODE -ne 0) { throw "installed product entry failed: $LASTEXITCODE" }
           } finally {
             $uninstaller = Join-Path $install 'uninstall.exe'
