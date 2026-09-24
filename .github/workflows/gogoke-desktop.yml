@@ -224,7 +224,7 @@ jobs:
         shell: pwsh
         run: |
           $license = Join-Path $env:RUNNER_TEMP 'gogoke-node-v24.13.1-LICENSE'
-          Invoke-WebRequest -Uri 'https://nodejs.org/dist/v24.13.1/LICENSE' -OutFile $license
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nodejs/node/v24.13.1/LICENSE' -OutFile $license
           if ((Get-Item -LiteralPath $license).Length -lt 1000) { throw 'Pinned Node LICENSE is unexpectedly short' }
           $service = 'src-tauri/resources/gogoke-service'
           node ../../tools/ci/gogoke-package-service.mjs stage $service $license
