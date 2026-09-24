@@ -1847,6 +1847,7 @@ mod tests {
         fs::remove_file(&database).ok();
         fs::remove_file(format!("{}-wal", database.display())).ok();
         fs::remove_file(format!("{}-shm", database.display())).ok();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).ok();
         fs::remove_dir(&path).ok();
     }
 

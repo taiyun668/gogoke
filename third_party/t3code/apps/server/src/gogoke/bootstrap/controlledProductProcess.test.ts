@@ -563,6 +563,26 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.equal(retainedDraft.ledgerReadback.state, "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED");
     Assert.equal(retainedDraft.ledgerReadback.gitBlob, "0edd13fd51649303c5c6f6e1c253e37258bd6d22");
     Assert.equal(retainedDraft.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
+    const lostDatabase = Path.join(writeRoot, "state.sqlite");
+    await FS.rename(lostDatabase, `${lostDatabase}.r205-held`);
+    for (const suffix of ["-wal", "-shm"]) {
+      const sidecar = `${lostDatabase}${suffix}`;
+      try { await FS.rename(sidecar, `${sidecar}.r205-held`); }
+      catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      }
+    }
+    const headBeforeLostRootRetry = testHead;
+    await Assert.rejects(handleProductGoalRequest(writeRequest,
+      { ...writeIdentity, testWritePort }), /native-host closed stdout before handshake/,
+    "a committed Action cannot relaunch when its original coordination DB is lost");
+    await Assert.rejects(FS.stat(lostDatabase), { code: "ENOENT" },
+      "the old root must not silently create a new Product Authority DB");
+    Assert.equal(testHead, headBeforeLostRootRetry, "lost coordination cannot repeat the test Git write");
+    const independentSourceReadback = await readGitHubFact(
+      sourceCoordinate, sourceCoordinate.repository, fetch, process.env.GH_TOKEN);
+    Assert.equal(independentSourceReadback.gitBlob, source.gitBlob,
+      "Git bytes stay independently readable after native coordination refuses the old root");
     const evidenceRoot = process.env.GOGOKE_SERVER_EVIDENCE_ROOT;
     if (evidenceRoot !== undefined) {
       const executionEvidenceSha = process.env.GITHUB_SHA;
@@ -602,6 +622,13 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       };
       await FS.writeFile(Path.join(evidenceRoot, "product-r2-02-test-result.json"),
         `${JSON.stringify(fact)}\n`, "utf8");
+      await FS.writeFile(Path.join(evidenceRoot, "r2-05-root-loss.json"),
+        `${JSON.stringify({ schema: "gogoke.s1-r4.r2-05.root-loss.v1", testOnly: true,
+          executionEvidenceSha, cloudRunId: runId, originalActionCompletionRef: writtenProduct.controlledTask?.actionCompletionRef,
+          originalGitCommit: writtenProduct.testLedgerDraft?.commit, noReplacementDatabase: true,
+          noRepeatedGitWrite: testHead === headBeforeLostRootRetry,
+          independentGitReadback: independentSourceReadback.gitBlob === source.gitBlob,
+          acceptance: "TEST_FIXTURE_NOT_ADOPTED" })}\n`, "utf8");
     }
   } finally {
     await client?.close();

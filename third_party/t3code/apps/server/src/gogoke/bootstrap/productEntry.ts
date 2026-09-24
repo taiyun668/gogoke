@@ -99,6 +99,18 @@ export interface ProductGoalView extends ProductGoalRequest {
   readonly acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 }
 
+export interface ProductReadinessView {
+  readonly state: "PRODUCT_SERVICE_NATIVE_CONTROLLER_ADMITTED";
+  readonly caller: {
+    readonly admitted: true;
+    readonly role: "controller";
+    readonly principalId: string;
+    readonly seatId: string;
+    readonly policyRevision: string;
+    readonly revocationHead: string;
+  };
+}
+
 const invalid = (path: string, detail: string): never => {
   throw new Error(`INVALID_PRODUCT_ENTRY: ${path} ${detail}`);
 };
@@ -436,8 +448,59 @@ export async function handleProductGoalRequest(
 export async function runGogokeProductProcess(argv: readonly string[]): Promise<void> {
   const paths = parseProductProcessArgs(argv);
   const input = NodeFS.readFileSync(0);
+  if (input.equals(Buffer.from('{"operation":"readiness"}'))) {
+    const response = await handleProductReadiness(paths);
+    NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+    return;
+  }
   const request = decodeProductGoalRequest(input);
   const response = await handleProductGoalRequest(request, paths);
   // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.
   NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+}
+
+
+export async function handleProductReadiness(
+  paths: { readonly root: string; readonly hostBinary: string },
+): Promise<ProductReadinessView> {
+  const service = await constructGogokeService({
+    request: {
+      authority: "public",
+      requestedCapabilities: ["local-non-model"],
+      enabledRuntimeDriverIds: [],
+    },
+    root: paths.root,
+    hostBinary: paths.hostBinary,
+  });
+  try {
+    if (typeof service.store.admitControllerCaller !== "function") {
+      throw new Error("PRODUCT_CALLER_ADMISSION_UNAVAILABLE");
+    }
+    const admission = await service.store.admitControllerCaller({
+      policyRevision: service.identity.policyRevision,
+      principalId: service.identity.principalId,
+      profileId: service.identity.profileId,
+      revocationHead: service.identity.revocationHead,
+      role: "controller",
+      seatId: service.identity.seatId,
+    });
+    if (admission.admitted !== true || admission.role !== "controller" ||
+        admission.principalId !== service.identity.principalId ||
+        admission.profileId !== service.identity.profileId ||
+        admission.seatId !== service.identity.seatId ||
+        admission.policyRevision !== service.identity.policyRevision ||
+        admission.revocationHead !== service.identity.revocationHead) {
+      throw new Error("PRODUCT_READINESS_NATIVE_ADMISSION_MISMATCH");
+    }
+    return Object.freeze({
+      state: "PRODUCT_SERVICE_NATIVE_CONTROLLER_ADMITTED",
+      caller: Object.freeze({
+        admitted: true, role: "controller", principalId: admission.principalId,
+        seatId: admission.seatId, policyRevision: admission.policyRevision,
+        revocationHead: admission.revocationHead,
+      }),
+    });
+  } finally {
+    await service.close();
+  }
 }

@@ -28,6 +28,7 @@ fn cleanup(path: &Path, database: &Path) {
     let _ = std::fs::remove_file(database);
     let _ = std::fs::remove_file(database.with_extension("sqlite-wal"));
     let _ = std::fs::remove_file(database.with_extension("sqlite-shm"));
+    let _ = std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1"));
     if let Err(error) = std::fs::remove_dir(path) {
         eprintln!("owned recipe test root retained: {error}");
     }

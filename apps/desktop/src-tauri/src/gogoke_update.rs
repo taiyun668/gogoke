@@ -392,10 +392,11 @@ where
     result
 }
 
-pub fn signal_update_ready(app: &AppHandle) -> Result<(), String> {
+pub async fn signal_update_ready(app: &AppHandle) -> Result<(), String> {
     let Some(path) = ready_path_from_args()? else {
         return Ok(());
     };
+    crate::public_runtime::product_entry::verify_product_startup(app).await?;
     publish_update_ready(&path, env!("CARGO_PKG_VERSION").as_bytes())?;
     let state_path = update_state_path(app)?;
     if let Ok(payload) = std::fs::read(&state_path) {
@@ -409,8 +410,8 @@ pub fn signal_update_ready(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn gogoke_update_signal_ready(app: AppHandle) -> Result<(), String> {
-    signal_update_ready(&app)
+pub async fn gogoke_update_signal_ready(app: AppHandle) -> Result<(), String> {
+    signal_update_ready(&app).await
 }
 
 #[tauri::command]

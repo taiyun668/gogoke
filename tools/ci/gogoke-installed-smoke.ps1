@@ -6,7 +6,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallDirectory,
     [switch]$MediumChild,
-    [switch]$NegativeOnly
+    [switch]$NegativeOnly,
+    [ValidateSet('node', 'native-host', 'service')][string]$NegativeComponent = 'node'
 )
 
 Set-StrictMode -Version Latest
@@ -17,7 +18,7 @@ if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true') {
 $installed = (Resolve-Path -LiteralPath $InstallDirectory).Path
 $smoke = Join-Path $PSScriptRoot 'gogoke-package-service.mjs'
 $receipt = $null
-$negativeReceipt = $null
+$negativeReceipts = @()
 
 if ($MediumChild) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -29,7 +30,8 @@ if ($MediumChild) {
     } finally { $identity.Dispose() }
     Write-Output 'R2-04 installed UI smoke: non-administrator cloud process'
     $mode = if ($NegativeOnly) { 'smoke-negative' } else { 'smoke' }
-    & node $smoke $mode $installed
+    if ($NegativeOnly) { & node $smoke $mode $installed $NegativeComponent }
+    else { & node $smoke $mode $installed }
     if ($null -eq $LASTEXITCODE) { throw 'Installed smoke exit status unavailable; do not resend' }
     exit $LASTEXITCODE
 }
@@ -67,34 +69,60 @@ try {
         throw "Non-administrator installed smoke failed: $positiveExit"
     }
 
-    # The installed package is read by the Medium product process. Move the
-    # mandatory executable only after that process has exited, using the same
-    # elevated token that installed it; the negative invoke stays Medium.
-    $node = Join-Path $installed 'gogoke-service/runtime/node.exe'
-    $held = "$node.r204-held"
-    if (Test-Path -LiteralPath $held) { throw 'Installed Node hold path already exists' }
-    Move-Item -LiteralPath $node -Destination $held
-    try {
-        $negativeReceipt = Join-Path $env:RUNNER_TEMP ('gogoke-r2-smoke-receipt-' + [Guid]::NewGuid().ToString('N') + '.json')
-        if (Test-Path -LiteralPath $negativeReceipt) { throw 'Fresh negative smoke receipt path already exists' }
-        $env:GOGOKE_R2_SMOKE_RECEIPT = $negativeReceipt
-        & $launcher --integrity Medium --direct $shell -NoProfile -File $PSCommandPath -InstallDirectory $installed -MediumChild -NegativeOnly
-        $negativeExit = $LASTEXITCODE
-    } finally {
-        Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
-        Move-Item -LiteralPath $held -Destination $node
+    # Hold one installed component at a time after the preceding Medium process exits.
+    $cases = @(
+        @{ Name = 'node'; Relative = 'gogoke-service/runtime/node.exe' },
+        @{ Name = 'native-host'; Relative = 'gogoke-native-host.exe' },
+        @{ Name = 'service'; Relative = 'gogoke-service/dist/bin.mjs' }
+    )
+    foreach ($case in $cases) {
+        $component = [IO.Path]::GetFullPath((Join-Path $installed $case.Relative))
+        if (-not $component.StartsWith($installed + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Installed negative component escaped installation directory'
+        }
+        $held = "$component.r205-held"
+        if (-not (Test-Path -LiteralPath $component -PathType Leaf) -or (Test-Path -LiteralPath $held)) {
+            throw "Installed negative component ownership invalid: $($case.Name)"
+        }
+        $originalHash = (Get-FileHash -LiteralPath $component -Algorithm SHA256).Hash
+        Move-Item -LiteralPath $component -Destination $held
+        try {
+            if ($case.Name -eq 'service') {
+                Set-Content -LiteralPath $component -NoNewline -Value 'throw new Error("EXPECTED_R205_SERVICE_START_FAILURE")'
+            }
+            $negativeReceipt = Join-Path $env:RUNNER_TEMP ('gogoke-r2-smoke-receipt-' + [Guid]::NewGuid().ToString('N') + '.json')
+            if (Test-Path -LiteralPath $negativeReceipt) { throw 'Fresh negative smoke receipt path already exists' }
+            $env:GOGOKE_R2_SMOKE_RECEIPT = $negativeReceipt
+            & $launcher --integrity Medium --direct $shell -NoProfile -File $PSCommandPath -InstallDirectory $installed -MediumChild -NegativeOnly -NegativeComponent $case.Name
+            $negativeExit = $LASTEXITCODE
+        } finally {
+            Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
+            if ($case.Name -eq 'service' -and (Test-Path -LiteralPath $component -PathType Leaf)) {
+                Remove-Item -LiteralPath $component -Force
+            }
+            Move-Item -LiteralPath $held -Destination $component
+        }
+        if ((Get-FileHash -LiteralPath $component -Algorithm SHA256).Hash -cne $originalHash) {
+            throw "Installed negative component bytes changed after restore: $($case.Name)"
+        }
+        if ($null -eq $negativeExit) { throw 'Cloud negative smoke child exit status unavailable; do not resend' }
+        if (-not (Test-Path -LiteralPath $negativeReceipt -PathType Leaf)) {
+            throw "Non-administrator negative smoke produced no receipt; exit $negativeExit"
+        }
+        $negativeReceipts += $negativeReceipt
+        if ($negativeExit -ne 0) {
+            & node $smoke record-smoke $receipt @negativeReceipts
+            throw "Non-administrator negative smoke failed: $negativeExit"
+        }
     }
-    if ($null -eq $negativeExit) { throw 'Cloud negative smoke child exit status unavailable; do not resend' }
-    if (-not (Test-Path -LiteralPath $negativeReceipt -PathType Leaf)) {
-        throw "Non-administrator negative smoke produced no receipt; exit $negativeExit"
-    }
-    & node $smoke record-smoke $receipt $negativeReceipt
+    & node $smoke record-smoke $receipt @negativeReceipts
     if ($null -eq $LASTEXITCODE) { throw 'Installed smoke receipt recording status unavailable' }
     if ($LASTEXITCODE -ne 0) { throw "Installed smoke receipt recording failed: $LASTEXITCODE" }
-    if ($negativeExit -ne 0) { throw "Non-administrator negative smoke failed: $negativeExit" }
 } finally {
     Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
     if ($receipt -and (Test-Path -LiteralPath $receipt -PathType Leaf)) { Remove-Item -LiteralPath $receipt -Force }
-    if ($negativeReceipt -and (Test-Path -LiteralPath $negativeReceipt -PathType Leaf)) { Remove-Item -LiteralPath $negativeReceipt -Force }
+    foreach ($negativeReceipt in $negativeReceipts) {
+        if (Test-Path -LiteralPath $negativeReceipt -PathType Leaf) { Remove-Item -LiteralPath $negativeReceipt -Force }
+    }
     Remove-Item -LiteralPath $tools -Recurse -Force
 }

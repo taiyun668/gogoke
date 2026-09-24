@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Cloud-only staging and byte-identity check for the installed Windows service.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -362,6 +362,10 @@ function validateInstalledSmoke(value) {
       value.entry !== 'installed gogoke.exe Home -> gogoke_r2_goal_probe -> installed dist/bin.mjs -> native-host' ||
       value.controlledTask !== 'VALIDATED_TEST_RESULT_NOT_ADOPTED' ||
       value.missingNode !== 'REJECTED_AT_TAURI_INGRESS' ||
+      value.missingNativeHost !== 'REJECTED_AT_TAURI_INGRESS' ||
+      value.failedService !== 'NO_UPDATE_READY_RECEIPT' ||
+      value.updateReadiness !== 'INSTALLED_SERVICE_NATIVE_CONTROLLER_ADMITTED' ||
+      value.nodeOptionsCanary !== 'NOT_EXECUTED' ||
       !/^[0-9a-f]{64}$/.test(value.appSha256 ?? '') ||
       value.adoption !== false || value.release !== false) {
     throw new Error('installed smoke success receipt is invalid');
@@ -378,21 +382,32 @@ function readSmokeReceipt(receiptFile) {
   return receipt;
 }
 
-function recordSmokeReceipt(receiptFile, negativeReceiptFile) {
+function recordSmokeReceipt(receiptFile, negativeReceiptFiles) {
   const receipt = readSmokeReceipt(receiptFile);
-  const negative = negativeReceiptFile ? readSmokeReceipt(negativeReceiptFile) : null;
+  const negatives = negativeReceiptFiles.map(readSmokeReceipt);
   const record = JSON.parse(fs.readFileSync(ensure(manifestPath), 'utf8'));
-  const failure = receipt.state === 'FAIL' ? receipt.failure : negative?.failure;
-  if (receipt.state === 'PASS' && negative?.state === 'PASS') {
-    if (negative.negativeSmoke?.state !== 'PASS' ||
-        negative.negativeSmoke.platform !== 'WINDOWS_CLOUD_NOT_OWNER_WIN11' ||
-        negative.negativeSmoke.runId !== process.env.GITHUB_RUN_ID ||
-        negative.negativeSmoke.sourceSha !== process.env.GITHUB_SHA ||
-        negative.negativeSmoke.appSha256 !== receipt.installedSmoke?.appSha256 ||
-        negative.negativeSmoke.missingNode !== 'REJECTED_AT_TAURI_INGRESS') {
-      throw new Error('installed missing-Node receipt is invalid');
+  const failure = receipt.state === 'FAIL' ? receipt.failure : negatives.find((item) => item.state === 'FAIL')?.failure;
+  if (receipt.state === 'PASS' && negatives.length === 3 && negatives.every((item) => item.state === 'PASS')) {
+    const expected = new Map([
+      ['node', 'GOGOKE_PRODUCT_COMPONENT_MISSING:node-runtime'],
+      ['native-host', 'GOGOKE_PRODUCT_COMPONENT_MISSING:native-host'],
+      ['service', 'GOGOKE_PRODUCT_SERVICE_FAILED:1'],
+    ]);
+    for (const negative of negatives) {
+      const value = negative.negativeSmoke;
+      if (value?.state !== 'PASS' || value.platform !== 'WINDOWS_CLOUD_NOT_OWNER_WIN11' ||
+          value.runId !== process.env.GITHUB_RUN_ID || value.sourceSha !== process.env.GITHUB_SHA ||
+          value.appSha256 !== receipt.installedSmoke?.appSha256 ||
+          !expected.has(value.component) || value.rejection !== expected.get(value.component) ||
+          value.updateReceipt !== 'ABSENT' || value.nodeOptionsCanary !== 'NOT_EXECUTED') {
+        throw new Error('installed negative readiness receipt is invalid');
+      }
+      expected.delete(value.component);
     }
-    receipt.installedSmoke.missingNode = negative.negativeSmoke.missingNode;
+    if (expected.size !== 0) throw new Error('installed negative readiness axis missing');
+    receipt.installedSmoke.missingNode = 'REJECTED_AT_TAURI_INGRESS';
+    receipt.installedSmoke.missingNativeHost = 'REJECTED_AT_TAURI_INGRESS';
+    receipt.installedSmoke.failedService = 'NO_UPDATE_READY_RECEIPT';
     validateInstalledSmoke(receipt.installedSmoke);
     if (record.installedSmoke !== undefined || record.packageOperationFailure !== undefined) {
       throw new Error('installed smoke evidence already exists');
@@ -419,18 +434,36 @@ const smokeRequest = {
   runControlledTask: true,
 };
 
-async function smokeTauri(installed, request, missingNodeExpected = false) {
+async function smokeTauri(installed, request, negativeComponent = null) {
   if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true') throw new Error('installed Tauri smoke is cloud Windows only');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'gogoke-ui-smoke-'));
+  const updateReceipt = path.join(os.tmpdir(), `gogoke-update-${randomUUID().replaceAll('-', '')}.ready`);
+  const canary = path.join(temp, 'node-options-canary.cjs');
+  const canaryMarker = path.join(temp, 'node-options-executed');
+  fs.writeFileSync(canary, `require('node:fs').writeFileSync(${JSON.stringify(canaryMarker)}, 'executed');\n`);
+  const nodeOptions = `--require=${JSON.stringify(canary.replaceAll('\\', '/'))}`;
+  const instrument = spawnSync(process.execPath, ['-e', ''], {
+    cwd: temp, env: { ...process.env, NODE_OPTIONS: nodeOptions },
+    encoding: 'utf8', timeout: 10000, windowsHide: true,
+  });
+  if (instrument.error || instrument.status !== 0 || !fs.existsSync(canaryMarker)) {
+    const resolved = fs.realpathSync(temp);
+    if (within(fs.realpathSync(os.tmpdir()), resolved) && path.basename(resolved).startsWith('gogoke-ui-smoke-')) {
+      fs.rmSync(resolved, { recursive: true, force: true });
+    }
+    throw new Error('NODE_OPTIONS canary instrument did not execute in a control Node process');
+  }
+  fs.rmSync(canaryMarker);
   const listener = createServer();
   await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
   const port = listener.address().port;
   await new Promise((resolve) => listener.close(resolve));
   // Microsoft WebView2 documented per-process diagnostic flags. No registry,
   // product configuration, security policy, or Owner-machine setting is changed.
-  const child = spawn(ensure(path.join(installed, 'gogoke.exe')), [], {
+  const child = spawn(ensure(path.join(installed, 'gogoke.exe')), [`--gogoke-update-ready=${updateReceipt}`], {
     cwd: temp, stdio: 'ignore', windowsHide: false,
     env: { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
+      NODE_OPTIONS: nodeOptions, NODE_PATH: temp,
       WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` },
   });
@@ -484,20 +517,36 @@ async function smokeTauri(installed, request, missingNodeExpected = false) {
       if (!ready) await delay(250);
     }
     if (!ready) throw new Error('installed Home product entry did not render');
-    if (missingNodeExpected) {
+    if (negativeComponent) {
+      const expected = negativeComponent === 'node' ? 'GOGOKE_PRODUCT_COMPONENT_MISSING:node-runtime'
+        : negativeComponent === 'native-host' ? 'GOGOKE_PRODUCT_COMPONENT_MISSING:native-host'
+        : 'GOGOKE_PRODUCT_SERVICE_FAILED:1';
+      const readinessRejection = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_update_signal_ready').then(() => 'UNEXPECTED_SUCCESS', error => String(error))`);
+      if (readinessRejection !== expected) throw new Error(`broken installed ${negativeComponent} unexpectedly signaled update readiness: ${readinessRejection}`);
       const rejected = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}}).then(() => 'UNEXPECTED_SUCCESS', error => String(error))`);
-      if (rejected !== 'GOGOKE_PRODUCT_COMPONENT_MISSING:node-runtime') throw new Error('missing installed Node was not rejected by Tauri');
-      console.log('PASS missing installed Node rejected at Tauri product ingress');
+      if (rejected !== expected) throw new Error(`broken installed ${negativeComponent} was not rejected by Tauri`);
+      if (fs.existsSync(updateReceipt) || fs.existsSync(canaryMarker)) throw new Error(`broken installed ${negativeComponent} published readiness or ran NODE_OPTIONS canary`);
+      console.log(`PASS broken installed ${negativeComponent} did not publish update readiness`);
       return { state: 'PASS', platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11',
         runId: process.env.GITHUB_RUN_ID, sourceSha: process.env.GITHUB_SHA,
-        missingNode: 'REJECTED_AT_TAURI_INGRESS', appSha256: digest(path.join(installed, 'gogoke.exe')) };
+        component: negativeComponent, rejection: expected, updateReceipt: 'ABSENT',
+        nodeOptionsCanary: 'NOT_EXECUTED', appSha256: digest(path.join(installed, 'gogoke.exe')) };
     }
+    const readyDeadline = Date.now() + 30000;
+    while (!fs.existsSync(updateReceipt) && Date.now() < readyDeadline) await delay(100);
+    const expectedVersion = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8')).version;
+    if (!fs.existsSync(updateReceipt) || fs.readFileSync(updateReceipt, 'utf8') !== expectedVersion) {
+      throw new Error('installed product did not publish version-bound readiness after native Controller admission');
+    }
+    if (fs.existsSync(canaryMarker)) throw new Error('Tauri-launched Node executed injected NODE_OPTIONS preload');
     const response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
     assertSmokeResponse(response, request);
+    if (fs.existsSync(canaryMarker)) throw new Error('installed product request executed injected NODE_OPTIONS preload');
     const installedSmoke = { state: 'PASS', platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11',
       runId: process.env.GITHUB_RUN_ID, sourceSha: process.env.GITHUB_SHA,
       entry: 'installed gogoke.exe Home -> gogoke_r2_goal_probe -> installed dist/bin.mjs -> native-host',
       controlledTask: 'VALIDATED_TEST_RESULT_NOT_ADOPTED',
+      updateReadiness: 'INSTALLED_SERVICE_NATIVE_CONTROLLER_ADMITTED', nodeOptionsCanary: 'NOT_EXECUTED',
       appSha256: digest(path.join(installed, 'gogoke.exe')), adoption: false, release: false };
     console.log('PASS installed Tauri Home and product invoke');
     return installedSmoke;
@@ -509,6 +558,7 @@ async function smokeTauri(installed, request, missingNodeExpected = false) {
       for (let i = 0; i < 20 && !exited; i += 1) await delay(250);
     }
     if (!exited && !spawnError) throw new Error('owned cloud smoke process exit unconfirmed; temp retained');
+    if (fs.existsSync(updateReceipt)) fs.rmSync(updateReceipt);
     const resolved = fs.realpathSync(temp);
     if (!within(fs.realpathSync(os.tmpdir()), resolved) || !path.basename(resolved).startsWith('gogoke-ui-smoke-')) throw new Error('unsafe cloud smoke temp cleanup');
     fs.rmSync(resolved, { recursive: true, force: true });
@@ -566,10 +616,11 @@ if (mode === 'stage') {
   }
 } else if (mode === 'smoke-negative') {
   if (!configuredSmokeReceiptPath()) throw new Error('installed negative smoke requires a cloud receipt');
-  const negativeSmoke = await smokeTauri(ensureDir(root), smokeRequest, true);
+  if (!['node', 'native-host', 'service'].includes(other)) throw new Error('installed negative smoke component is invalid');
+  const negativeSmoke = await smokeTauri(ensureDir(root), smokeRequest, other);
   writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'PASS', negativeSmoke });
 } else if (mode === 'record-smoke') {
-  recordSmokeReceipt(ensure(root), other ? ensure(other) : null);
+  recordSmokeReceipt(ensure(root), process.argv.slice(4).map(ensure));
  } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | smoke-negative <installed-dir> | record-smoke <positive-receipt> [negative-receipt]');
 } catch (error) {
   let message = String(error?.message ?? error);

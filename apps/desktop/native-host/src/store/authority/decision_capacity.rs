@@ -49,8 +49,9 @@ fn ensure_schema(tx:&mut Transaction<'_, '_>)->Result<()>{
   ("gogoke_coordination_r2_capacity_releases",R2_RELEASE_SCHEMA)]{
    if !schema(tx,name,ddl)?{exec(tx,ddl)?;}
  }
- let triggers=tx.query("SELECT name FROM sqlite_schema WHERE type='trigger' AND tbl_name GLOB 'gogoke_decision_*' LIMIT 1",&[],1)?;
- if !triggers.is_empty(){return denied();} Ok(())
+ let main_triggers=tx.query("SELECT name FROM main.sqlite_schema WHERE type='trigger' AND (tbl_name GLOB 'gogoke_decision_*' OR tbl_name='gogoke_coordination_r2_capacity_releases') LIMIT 1",&[],1)?;
+ let temp_triggers=tx.query("SELECT name FROM temp.sqlite_schema WHERE type='trigger' AND (tbl_name GLOB 'gogoke_decision_*' OR tbl_name='gogoke_coordination_r2_capacity_releases') LIMIT 1",&[],1)?;
+ if !main_triggers.is_empty()||!temp_triggers.is_empty(){return denied();} Ok(())
 }
 pub(crate) fn initialize_decision_capacity_schema(connection:&mut VerifiedDatabaseConnection<'_>)->Result<()>{
  transaction::run(connection,ensure_schema)
@@ -175,5 +176,7 @@ pub(super) fn settle_r2_test_capacity_after_completion(
  let changed=tx.query("SELECT changes()",&[],1)?;
  if changed.len()!=1||changed[0][0]!="1" { return Err(OrchestrationError::OperationConflict); }
  tx.write("INSERT INTO main.gogoke_coordination_r2_capacity_releases(lease_ref,action_operation_id,receipt_ref,evidence_hash,stop_proof_hash) VALUES(?,?,?,?,?)",&[lease_ref,action_id,receipt_ref,evidence_hash,&transport[0][2]])?;
+ let settled=tx.query("SELECT CAST(reserved_units AS TEXT) FROM main.gogoke_decision_capacity_pools WHERE resource_ref='capacity-r2-02-fixture'",&[],1)?;
+ if settled.len()!=1||settled[0][0]!="0" { return Err(OrchestrationError::OperationConflict); }
  Ok(())
 }

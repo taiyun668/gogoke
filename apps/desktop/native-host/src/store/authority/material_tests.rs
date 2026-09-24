@@ -29,6 +29,7 @@ fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) 
     std::fs::remove_file(&database).ok();
     std::fs::remove_file(format!("{}-wal", database.display())).ok();
     std::fs::remove_file(format!("{}-shm", database.display())).ok();
+    std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).ok();
     std::fs::remove_dir(path).ok();
 }
 
@@ -486,6 +487,7 @@ fn audit_reopen_preserves_material_revisions_and_replay() {
     std::fs::remove_file(&database).ok();
     std::fs::remove_file(format!("{}-wal", database.display())).ok();
     std::fs::remove_file(format!("{}-shm", database.display())).ok();
+    std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).ok();
     std::fs::remove_dir(path).ok();
 }
 
@@ -518,6 +520,7 @@ fn audit_wrong_root_owner_capability_rejected() {
         std::fs::remove_file(&database).ok();
         std::fs::remove_file(format!("{}-wal", database.display())).ok();
         std::fs::remove_file(format!("{}-shm", database.display())).ok();
+        std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(path).ok();
     });
 }

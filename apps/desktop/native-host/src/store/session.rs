@@ -30,6 +30,7 @@ use crate::ipc::PrivatePipeConnection;
 use crate::process::{controlled_fixture_request, DurableStopConfirmation, ProcessCustodian, StopBudgets};
 use crate::root::RootLock;
 use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -38,16 +39,88 @@ pub fn open_product_database<'root>(
     root: &'root RootLock,
     database: &Path,
 ) -> Result<VerifiedDatabaseConnection<'root>, OrchestrationError> {
-    let mut connection = if database.exists() {
+    let marker = product_root_custody_marker(root, database)?;
+    let expected = format!(
+        "gogoke-root-custody-v1\n{}\n{}\n",
+        root.canonical_root().identity.opaque(),
+        database.file_name().and_then(|name| name.to_str()).ok_or(OrchestrationError::AccessDenied)?.to_ascii_lowercase(),
+    );
+    let marker_exists = match fs::symlink_metadata(&marker) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+            && metadata.len() == expected.len() as u64 => {
+            if fs::read(&marker).map_err(|_| OrchestrationError::AccessDenied)?.as_slice() != expected.as_bytes() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            true
+        }
+        Ok(_) => return Err(OrchestrationError::AccessDenied),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err(OrchestrationError::AccessDenied),
+    };
+    let database_exists = database.exists();
+    if marker_exists && !database_exists {
+        // The root has already hosted this product DB. Its lost coordination
+        // journal cannot be silently recreated into a fresh Product Authority.
+        return Err(OrchestrationError::AccessDenied);
+    }
+    if !marker_exists && !database_exists {
+        write_product_root_custody_marker(&marker, expected.as_bytes())?;
+    }
+    let mut connection = if database_exists {
         open_existing(root, database).map_err(|error| OrchestrationError::Atomic(error.into()))?
     } else {
         create_new(root, database).map_err(|error| OrchestrationError::Atomic(error.into()))?
     };
+    if database_exists {
+        // An existing file is never permission to mint a replacement Owner.
+        // In particular, an empty replacement DB must not take the bootstrap
+        // path even when the root marker has survived.
+        let mut profile = Statement::prepare(connection.as_ptr(),
+            "SELECT name FROM main.sqlite_schema WHERE type='table' AND name='gogoke_authority_profile'")?;
+        if !profile.step_row()? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+    }
     apply_orchestration_slice_schema(&mut connection)?;
     apply_context_schema(&mut connection)?;
     apply_action_schema(&mut connection)?;
     let _owner_issuer = super::authority::initialize_profile(&mut connection, root)?;
+    if !marker_exists && database_exists {
+        // An established DB without a marker predates this custody signal.
+        // Only a successfully validated authority profile can migrate it.
+        write_product_root_custody_marker(&marker, expected.as_bytes())?;
+    }
     Ok(connection)
+}
+
+fn product_root_custody_marker(root: &RootLock, database: &Path) -> Result<std::path::PathBuf, OrchestrationError> {
+    let parent = database.parent().ok_or(OrchestrationError::AccessDenied)?;
+    let observed = crate::root::inspect_root(parent).map_err(|_| OrchestrationError::AccessDenied)?;
+    if observed.identity != root.canonical_root().identity {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let name = database.file_name().and_then(|name| name.to_str()).ok_or(OrchestrationError::AccessDenied)?;
+    if name.is_empty() || name.starts_with('.') || name.ends_with('.') || name.ends_with(' ')
+        || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let device_stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    if matches!(device_stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (device_stem.len() == 4
+            && (device_stem.starts_with("COM") || device_stem.starts_with("LPT"))
+            && matches!(device_stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(root.canonical_root().canonical_path.join(format!(".gogoke-{}.custody-v1", name.to_ascii_lowercase())))
+}
+
+fn write_product_root_custody_marker(path: &Path, contents: &[u8]) -> Result<(), OrchestrationError> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)
+        .map_err(|_| OrchestrationError::AccessDenied)?;
+    file.write_all(contents).map_err(|_| OrchestrationError::AccessDenied)?;
+    file.sync_all().map_err(|_| OrchestrationError::AccessDenied)
 }
 
 fn successful_shutdown(line: &str, handled: &Result<String, OrchestrationError>) -> bool {
@@ -2319,6 +2392,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 
@@ -2368,6 +2442,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 
@@ -2399,6 +2474,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 
@@ -2471,6 +2547,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 
@@ -2501,6 +2578,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).unwrap();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
         std::fs::remove_dir(root_path).unwrap();
     }
 
@@ -2585,6 +2663,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 
@@ -2719,6 +2798,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 }

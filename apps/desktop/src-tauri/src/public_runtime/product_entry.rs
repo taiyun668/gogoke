@@ -321,47 +321,23 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
     Ok(())
 }
 
-async fn run_product_process(
+async fn run_product_service(
     paths: ProductRuntimePaths,
-    request: &ProductGoalRequest,
-) -> Result<ProductGoalView, String> {
+    request_bytes: &[u8],
+    timeout: Duration,
+    draft_identity: Option<(&str, &str)>,
+) -> Result<Vec<u8>, String> {
     tokio::fs::create_dir_all(&paths.product_root)
         .await
         .map_err(|_| "GOGOKE_PRODUCT_ROOT_UNAVAILABLE".to_string())?;
-    let request_bytes =
-        serde_json::to_vec(request).map_err(|_| "GOGOKE_PRODUCT_REQUEST_ENCODE_FAILED".to_string())?;
-
-    let draft_identity = if request.publish_test_draft == Some(true) {
-        if request.run_controlled_task != Some(true) {
-            return Err("GOGOKE_TEST_DRAFT_REQUIRES_CONTROLLED_TASK".to_string());
-        }
-        let sha = option_env!("GITHUB_SHA")
-            .ok_or_else(|| "GOGOKE_TEST_DRAFT_BUILD_SHA_UNAVAILABLE".to_string())?;
-        if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err("GOGOKE_TEST_DRAFT_BUILD_SHA_INVALID".to_string());
-        }
-        let entry = tokio::fs::read(&paths.service_entry).await
-            .map_err(|_| "GOGOKE_TEST_DRAFT_SERVICE_HASH_UNAVAILABLE".to_string())?;
-        Some((sha.to_owned(), format!("sha256:{:x}", Sha256::digest(&entry))))
-    } else {
-        None
-    };
-    if let Some(driver_id) = &request.fixture_driver_id {
-        if request.publish_test_draft != Some(true)
-            || driver_id.len() != 27
-            || !driver_id.starts_with("mock_novel_")
-            || !driver_id[11..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err("GOGOKE_NOVEL_FIXTURE_DRIVER_ID_INVALID".to_string());
-        }
-    }
-
     let mut command = Command::new(&paths.node_runtime);
-    if let Some((sha, entry_hash)) = &draft_identity {
+    if let Some((sha, entry_hash)) = draft_identity {
         command.env("GOGOKE_EXECUTION_EVIDENCE_SHA", sha)
             .env("GOGOKE_SERVICE_ENTRY_SHA256", entry_hash);
     }
     command
+        .env_remove("NODE_OPTIONS")
+        .env_remove("NODE_PATH")
         .arg(&paths.service_entry)
         .arg("--root")
         .arg(&paths.product_root)
@@ -387,7 +363,7 @@ async fn run_product_process(
         .take()
         .ok_or_else(|| "GOGOKE_PRODUCT_SERVICE_STDIN_UNAVAILABLE".to_string())?;
     stdin
-        .write_all(&request_bytes)
+        .write_all(request_bytes)
         .await
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string())?;
     stdin
@@ -396,11 +372,6 @@ async fn run_product_process(
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_CLOSE_FAILED".to_string())?;
     drop(stdin);
 
-    let timeout = if request.publish_test_draft == Some(true) {
-        DRAFT_SERVICE_TIMEOUT
-    } else {
-        SERVICE_TIMEOUT
-    };
     let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())?
@@ -411,7 +382,43 @@ async fn run_product_process(
             output.status.code().unwrap_or(-1)
         ));
     }
-    let response: ProductGoalView = serde_json::from_slice(&output.stdout)
+    Ok(output.stdout)
+}
+
+async fn run_product_process(
+    paths: ProductRuntimePaths,
+    request: &ProductGoalRequest,
+) -> Result<ProductGoalView, String> {
+    let request_bytes =
+        serde_json::to_vec(request).map_err(|_| "GOGOKE_PRODUCT_REQUEST_ENCODE_FAILED".to_string())?;
+    let draft_identity = if request.publish_test_draft == Some(true) {
+        if request.run_controlled_task != Some(true) {
+            return Err("GOGOKE_TEST_DRAFT_REQUIRES_CONTROLLED_TASK".to_string());
+        }
+        let sha = option_env!("GITHUB_SHA")
+            .ok_or_else(|| "GOGOKE_TEST_DRAFT_BUILD_SHA_UNAVAILABLE".to_string())?;
+        if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("GOGOKE_TEST_DRAFT_BUILD_SHA_INVALID".to_string());
+        }
+        let entry = tokio::fs::read(&paths.service_entry).await
+            .map_err(|_| "GOGOKE_TEST_DRAFT_SERVICE_HASH_UNAVAILABLE".to_string())?;
+        Some((sha.to_owned(), format!("sha256:{:x}", Sha256::digest(&entry))))
+    } else {
+        None
+    };
+    if let Some(driver_id) = &request.fixture_driver_id {
+        if request.publish_test_draft != Some(true)
+            || driver_id.len() != 27
+            || !driver_id.starts_with("mock_novel_")
+            || !driver_id[11..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("GOGOKE_NOVEL_FIXTURE_DRIVER_ID_INVALID".to_string());
+        }
+    }
+    let timeout = if draft_identity.is_some() { DRAFT_SERVICE_TIMEOUT } else { SERVICE_TIMEOUT };
+    let output = run_product_service(paths, &request_bytes, timeout,
+        draft_identity.as_ref().map(|(sha, hash)| (sha.as_str(), hash.as_str()))).await?;
+    let response: ProductGoalView = serde_json::from_slice(&output)
         .map_err(|_| "GOGOKE_PRODUCT_RESPONSE_DECODE_FAILED".to_string())?;
     validate_product_response(&response)?;
     if response.goal.id != request.goal.id
@@ -433,6 +440,42 @@ async fn run_product_process(
         return Err("GOGOKE_PRODUCT_RESPONSE_IDENTITY_MISMATCH".to_string());
     }
     Ok(response)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductReadinessCaller {
+    admitted: bool,
+    role: String,
+    principal_id: String,
+    seat_id: String,
+    policy_revision: String,
+    revocation_head: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductReadinessView {
+    state: String,
+    caller: ProductReadinessCaller,
+}
+
+pub(crate) async fn verify_product_startup(app: &tauri::AppHandle) -> Result<(), String> {
+    let paths = resolve_runtime_paths(app)?;
+    let output = run_product_service(paths, b"{\"operation\":\"readiness\"}", SERVICE_TIMEOUT, None).await?;
+    let response: ProductReadinessView = serde_json::from_slice(&output)
+        .map_err(|_| "GOGOKE_PRODUCT_READINESS_DECODE_FAILED".to_string())?;
+    if response.state != "PRODUCT_SERVICE_NATIVE_CONTROLLER_ADMITTED"
+        || !response.caller.admitted
+        || response.caller.role != "controller"
+        || response.caller.principal_id.is_empty()
+        || response.caller.seat_id.is_empty()
+        || response.caller.policy_revision.is_empty()
+        || response.caller.revocation_head.is_empty()
+    {
+        return Err("GOGOKE_PRODUCT_READINESS_NOT_ADMITTED".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]

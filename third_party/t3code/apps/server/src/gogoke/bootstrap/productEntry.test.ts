@@ -8,6 +8,7 @@ import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
 import {
   decodeProductGoalRequest,
   handleProductGoalRequest,
+  handleProductReadiness,
   parseProductProcessArgs,
 } from "./productEntry.ts";
 
@@ -119,6 +120,26 @@ it("seals donor server commands at the executable argument boundary", () => {
 
 const nativeIntegrationTest =
   process.platform === "win32" && Boolean(process.env.GOGOKE_NATIVE_HOST) ? it : it.skip;
+
+nativeIntegrationTest("installed service readiness reaches native Controller admission without Git or action", async () => {
+  const hostBinary = process.env.GOGOKE_NATIVE_HOST;
+  if (hostBinary === undefined) throw new Error("GOGOKE_NATIVE_HOST missing");
+  const root = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "gogoke-r2-ready-"));
+  try {
+    const ready = await handleProductReadiness({ root, hostBinary });
+    expect(ready.state).toBe("PRODUCT_SERVICE_NATIVE_CONTROLLER_ADMITTED");
+    expect(ready.caller.admitted).toBe(true);
+    expect(ready.caller.role).toBe("controller");
+    const inspector = await NativeHostClient.attach({ root, hostBinary });
+    try {
+      expect((await inspector.readSnapshot(1)).body).toBe('{"count":0}');
+    } finally {
+      await inspector.close();
+    }
+  } finally {
+    await NodeFS.rm(root, { force: true, recursive: true });
+  }
+});
 
 nativeIntegrationTest(
   "reaches the cloud-built native Product Authority through admitted Controller/Seat context",
