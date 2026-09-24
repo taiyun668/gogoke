@@ -196,3 +196,124 @@ gogoke 要让 Owner 不在环内：日常判断由系统完成，Owner 只定边
 - [取用驱动的记忆再巩固](https://arxiv.org/pdf/2609.16053)
 
 模型层参照：DeepSeek V4.1 Flash、小米 MiMo V3、Qwen 3.8 Next Flash、GLM 5.3 Flash 的长上下文高效架构对比（YOCO 与 3:1 混合注意力两条路线）。
+
+## 附录 A：检索清单与对应关系
+
+评级沿用雷达三档：**可考虑依赖**（仍须源码级核查）、**只借思路**、**市场参照**（了解格局，不借具体机制）。以下全部**未做源码级核查**，结论来自项目说明、文档、论文摘要或二手报道。
+
+### A1. 跨家会话与交接
+
+| 项目 | 开源 | 是什么 | 对应部件 | 借什么 | 评级 |
+| --- | --- | --- | --- | --- | --- |
+| [CASR](https://github.com/Dicklesworthstone/cross_agent_session_resumer) | MIT，约 120 星 | 17 家 CLI 会话经通用中间格式互转，目标端原生续接 | 继承度"跨家转录" | 中间格式与转换器 | 可考虑依赖 |
+| [Sessport](https://github.com/lanternsmith/sessport) | MIT，约 1 星 | 同类工具，覆盖 Claude Code / Codex / Gemini；每周用最新 CLI 自动验证；丢弃思考过程与图片，清除密钥 | 跨家转录 | 每周兼容性自检；丢弃与清洗规则 | 只借思路 |
+| [AgentBridge](https://github.com/raysonmeng/agent-bridge) | MIT，约 360 星 | Claude Code 与 Codex 常驻对等协作，可中途插话；额度守卫查询 5 小时与每周额度，到边界暂停、刷新后续接；不正式支持 Windows | 健康监测；额度到边界流程 | 额度查询与"本轮结束再停" | 可考虑依赖（Windows 需自补） |
+| [agent-chorus](https://github.com/cote-star/agent-chorus) | 开源 | 读取、比较、交接四家会话，支持检查点与跨 agent 递话 | 会话登记簿；交接包 | 跨家读会话与比较 | 只借思路 |
+| [agentOS](https://github.com/Sokori-Inc/agentos) | 开源 | 经 ACP 管理会话，跨 agent 通用记录格式，agent 跑在隔离 Linux 虚拟机 | 会话登记簿；远期云端沙箱 | 通用记录格式；ACP 会话管理 | 只借思路 |
+| [handoff](https://github.com/TStansel/handoff) | 开源 | 读本机会话文件，把交接内容写成仓库内 Markdown，不上传记录 | 交接包工厂 | 交接内容落仓库而非聊天 | 只借思路 |
+
+### A2. 交接、压缩与切换时机
+
+| 项目 | 开源 | 是什么 | 对应部件 | 借什么 | 评级 |
+| --- | --- | --- | --- | --- | --- |
+| [Amp Handoff](https://ampcode.com/news/handoff) | 闭源 | 取消压缩，改为交接：先声明下一步目标，另一模型从消息、工具调用、文件中提取相关内容，起草新会话首条消息 | 交接包工厂 | 目标驱动、他者提取；鼓励短而聚焦的会话 | 只借思路 |
+| [Cline new_task](https://docs.cline.bot/exploring-clines-tools/new-task-tool) | 开源 | 按规则触发交接，按固定格式打包上下文，确认后开新任务 | 交接包工厂；切换决策器 | 结构化交接块 | 只借思路 |
+| [Roo Boomerang](https://docs.roocode.com/features/boomerang-tasks) | 开源 | 主控把子任务派到独立上下文，完成后只收回总结 | 派子任务场景；零继承 | "派出去、只收结果"的样板 | 只借思路 |
+| [Slipstream](https://arxiv.org/abs/2605.08580) | 论文 | 压缩的同时让原会话继续执行，以其实际走向验证摘要；准确率最高 +8.8 点，延迟最高 −39.7% | 交接验证器 | 重叠验证 | 只借思路 |
+| [自我压缩 agent](https://arxiv.org/pdf/2606.23525) | 论文 | 给模型一套"何时压缩、何时不动"的判断标准；最高 +18.1 分，成本 −30%～70% | 切换决策器 | 判断标准代替阈值 | 只借思路 |
+| [结构化上下文清理](https://arxiv.org/pdf/2606.11213) | 论文 | 以结构化清理代替整体压缩 | 前缀与缓存管理 | 按段清理而非整体总结 | 只借思路 |
+| [CompactionRL](https://arxiv.org/pdf/2607.05378) | 论文 | 用强化学习训练模型学会压缩 | 远期：反射学习 | 压缩策略也可以从结果中学 | 只借思路 |
+| [压缩导致的执行不稳定](https://arxiv.org/pdf/2608.06503) | 论文 | 实证研究：压缩会让后续执行不稳定 | 切换决策器 | 支持"在边界交接，不在中途压缩" | 只借思路 |
+| [压缩是决策不是阈值](https://blakecrosley.com/blog/agent-context-compaction) | 文章 | 同题观点 | 切换决策器 | 原则佐证 | 只借思路 |
+| [各家压缩机制研究](https://gist.github.com/badlogic/cd2ef65b0697c4dbe2d13fbecb0a0a5f)、[Codex / Claude Code / OpenCode 压缩对比](https://codex.danielvaughan.com/2026/04/14/context-compaction-deep-dive-codex-cli-claude-code-opencode/) | 文章 | 各家 CLI 如何压缩长会话 | 健康监测；逐家能力核实 | 了解各家压缩行为，判断续接可靠性 | 只借思路 |
+
+### A3. 缓存与上下文装配
+
+| 项目 | 开源 | 是什么 | 对应部件 | 借什么 | 评级 |
+| --- | --- | --- | --- | --- | --- |
+| [TokenPilot](https://arxiv.org/abs/2606.17016) | 论文 | 入口处稳定前缀，内容仅在确实过期时成批清理；成本 −56%～87% | 前缀与缓存管理 | 固定前缀；成批清理 | 只借思路 |
+| [Anthropic 上下文编辑与记忆工具](https://claude.com/blog/context-management) | 闭源服务 | 服务端清理旧工具输出与思考过程，关键内容存到上下文外文件；效果 +39%，token −84% | 交接包工厂；长期记忆库 | 丢弃工具原始输出只留指针；记忆放在上下文之外 | 只借思路 |
+| [动态注意力作用域](https://arxiv.org/pdf/2604.07911) | 论文 | 多 agent 编排中按 agent 限定上下文范围 | 权限闸；按对象划分 | 按对象限定可见上下文 | 只借思路 |
+
+### A4. 会话状态、谱系与续接合规
+
+| 项目 | 开源 | 是什么 | 对应部件 | 借什么 | 评级 |
+| --- | --- | --- | --- | --- | --- |
+| [OpenRath](https://arxiv.org/pdf/2606.19409) | 论文 | 以会话为中心的运行状态：父会话、分叉、脱离、合并，谱系可回放 | 会话登记簿 | 谱系模型 | 只借思路 |
+| [Resume Means Resume](https://arxiv.org/pdf/2608.03836) | 论文 | 检查点、中断、续接语义的机器可检合规合同 | 逐家能力核实 | 用合规测试验证"续接是真续接" | 只借思路 |
+| [Agent Team Work Zone](https://arxiv.org/pdf/2607.22917) | 论文 | 长期运行的 Claude Code 团队的持久工作区 | 长期对象的席位记忆 | 跨时间保持团队连续性 | 只借思路 |
+| [编码 agent 源码研究（11 个系统）](https://arxiv.org/pdf/2609.00006)、[编码 agent 架构分类](https://arxiv.org/pdf/2604.03515) | 论文 | 各家 agent 架构的源码级对照 | 逐家能力核实 | 当作各家机制对照表 | 只借思路 |
+| [OpenCode 会话插件](https://github.com/malhashemi/opencode-sessions)、[oh-my-pi](https://github.com/apoc/oh-my-pi) | 开源 | 会话分叉以试探不同方案、按消息分支 | 继承度"原生复制" | 分叉后并行试探再择一 | 只借思路 |
+
+### A5. 记忆与做梦
+
+| 项目 | 开源 | 是什么 | 对应部件 | 借什么 | 评级 |
+| --- | --- | --- | --- | --- | --- |
+| Anthropic Dreams（[介绍](https://kenhuangus.substack.com/p/why-ai-agents-are-starting-to-dream)） | 闭源（研究预览） | 按计划离线读取记忆库与会话记录，合并重复、替换过时、提炼新见解，可指定关注范围 | 做梦 | 整理动作的分类；可聚焦范围 | 只借思路 |
+| Letta 睡眠时计算 | 开源 | 把部分推理挪到空闲时间，后台整理记忆 | 做梦 | 空闲时离线运行 | 只借思路 |
+| OpenDream | 开源 | 读过往会话、提炼规律，直接写入 AGENTS.md | 做梦 | **反面教材**：做梦不得直接写规则文件 | 不采用 |
+| Graphiti、Mem0 | 开源 | 时间知识图谱；记忆的增改删操作 | 长期记忆库 | 事实有效期；记忆更新操作 | 只借思路 |
+| [Devin 知识库与会话洞察](https://docs.devin.ai/product-guides/session-insights) | 闭源 | 知识在需要时自动召回；会话结束后分析问题并给建议 | 长期记忆库；记账与复盘 | 按需召回；会话复盘 | 只借思路 |
+| [SCM 睡眠式整理](https://www.emergentmind.com/papers/2604.20943)、[LLMs Need Sleep](https://www.emergentmind.com/papers/2606.03979)、[Learning to Forget](https://arxiv.org/pdf/2603.14517) | 论文 | 睡眠式整理、重放、主动遗忘 | 做梦 | 分阶段整理与遗忘 | 只借思路 |
+| [The Sleeping Agent](https://arxiv.org/pdf/2608.11775) | 论文 | 分析要点式压缩会丢掉什么 | 交接包工厂 | 识别摘要最易丢的信息类型 | 只借思路 |
+| [取用驱动的记忆再巩固](https://arxiv.org/pdf/2609.16053) | 论文 | 记忆在被取用时更新 | 用了就回写 | 按使用结果调整可信度 | 只借思路 |
+| [ZenBrain 七层记忆](https://arxiv.org/pdf/2604.23878) | 论文 | 仿神经科学的分层记忆架构 | 记忆分层 | 分层参照 | 只借思路 |
+
+### A6. 角色预设与子 agent
+
+| 项目 | 开源 | 是什么 | 对应部件 | 借什么 | 评级 |
+| --- | --- | --- | --- | --- | --- |
+| [Factory 自定义 Droid](https://docs.factory.ai/harness/subagents) | 闭源 | 每个角色预设提示词、模型、工具权限，每次全新上下文 | 程序记忆；零继承 | 角色预设 + 零继承 | 只借思路 |
+| [Claude Code agent 团队](https://code.claude.com/docs/en/agent-teams) | 闭源（实验） | 一个主会话协调多个会话，共享任务列表 | 并行场景 | 主控 + 共享任务列表 | 只借思路 |
+| Cursor 后台 agent | 闭源 | 云端沙箱运行，子 agent 各有独立上下文 | 并行场景；远期云端沙箱 | 独立上下文并行 | 市场参照 |
+
+### A7. 同类产品格局（市场参照）
+
+多数是"人当协调员"的多 agent 驾驶舱：并行开多家 CLI，各用独立工作树，看 diff、比结果。它们在把并行这一层商品化，gogoke 不在这一层竞争。
+
+- JetBrains Air（见 [Nimbalyst 的对比](https://nimbalyst.com/blog/best-multi-agent-desktop-apps-claude-code-codex-2026/)）
+- [Poracode](https://poracode.com/)：多家同题并行，AI 评委比较
+- [Patapim](https://otf-kit.dev/blog/patapim-ai-coding-cockpit)
+- Nimbalyst
+- [parallel-code](https://github.com/johannesjo/parallel-code)
+- [Warp 多 agent](https://docs.warp.dev/guides/agent-workflows/how-to-run-multiple-ai-coding-agents/)
+- [amux](https://amux.io/guides/multi-runtime-ai-coding-agents/)
+- [agentmaxxing 现象](https://codex.danielvaughan.com/2026/04/11/agentmaxxing-parallel-multi-cli-orchestration/)
+- 汇总清单：[awesome-agent-orchestrators](https://github.com/andyrewlee/awesome-agent-orchestrators)、[awesome-cli-coding-agents](https://github.com/bradAGI/awesome-cli-coding-agents)
+
+## 附录 B：模型 KV 缓存与系统层的对应
+
+| 模型内部 | gogoke 系统层 |
+| --- | --- |
+| KV 缓存：算过的内容存起来复用 | 会话里已积累的上下文 |
+| 预填充：把长输入先算一遍，贵 | 新会话冷启动重读材料；跨家交接就是这一步 |
+| YOCO：全局缓存建一次，后续各层共用 | 同一份固定前缀给所有会话共用；同家原生复制 |
+| 每层各管各的缓存、不共享，最费 | 每家 CLI 各管各的会话，跨家不共享 |
+| 压缩缓存（低精度、潜向量） | 交接包、摘要：压缩但有损 |
+| 挑选器从长上下文挑前几名，外加固定锚点与最近窗口 | 上下文装配：固定前缀与最新检查点常驻，其余按需召回 |
+| 挑选器用完整注意力蒸馏出来 | 偶尔用长上下文模型通读，校准检索挑选 |
+| Engram 外挂记忆 | Git 中的事实，按需查询 |
+| 3:1 混合：便宜层累积，定期插一层完整注意力纠偏 | 平时续接，按条件冷重建纠偏 |
+
+两层的本质区别：
+- 模型工程师看得见缓存的每个字节；gogoke 看不到别家会话内部，只能控制喂什么、按什么顺序喂、何时换；
+- 模型压缩丢的是数值精度，gogoke 交接丢的是语义；
+- gogoke 多一个维度：权限。
+
+## 附录 C：Codex 与 Claude 的单家机制（作为跨家版本的样板）
+
+| 能力 | Codex | Claude（桌面端） | gogoke 需要的跨家版本 |
+| --- | --- | --- | --- |
+| 主控 + 子 agent | 有。`fork_turns` 三档：`all`（默认，整个复制父线程，并继承父线程模型与推理强度，不接受改动）、`none`（从零开始，可指定模型）、数字（只带最近几轮） | 有；子 agent 从零开始，所需内容由主控写进任务说明 | 继承度四档 |
+| 线程间递话 | 有 | 有：可给本机其他会话发消息，对方忙时排队 | 收件箱与消息投递，跨厂商 |
+| 查看其他线程上下文 | 可互看 | 可全文检索其他会话记录，非实时共享 | 须经权限闸 |
+| 侧边聊天 | 有，不实时共享上下文 | — | 主线只读快照，结论经收件箱递交 |
+| 自行新开线程 | 可 | 不能直接新开，只能生成一键开会话的按钮，需人点击 | 由会话登记簿与决策器负责 |
+
+两家都只能在自家内部做到这些。互看、递话的便利与独立性冲突：盲审不能看作者会话，公开复核不能复用 Owner 私聊。所以 gogoke 借机制，但每次都要过权限。
+
+## 附录 D：借鉴方式的约定
+
+- 本附录所有条目都还没读过源码。"可考虑依赖"一档，在采用前必须做源码级核查：维护活跃度、测试、非单人维护、Windows 表现、许可证与依赖。
+- "只借思路"一档：读其设计，用自己的方式实现，别人的代码不进仓库。
+- 评级是动态的。候选项目成熟度变化后，可以升档或降档。
