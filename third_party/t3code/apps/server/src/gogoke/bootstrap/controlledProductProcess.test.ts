@@ -284,6 +284,46 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       /R2_ACTION_REPLAY_NO_NEW_RESULT/,
       "a repeated product request may read completion but cannot resend or invent a new Result",
     );
+    const evidenceRoot = process.env.GOGOKE_SERVER_EVIDENCE_ROOT;
+    if (evidenceRoot !== undefined) {
+      const executionEvidenceSha = process.env.GITHUB_SHA;
+      const runId = process.env.GITHUB_RUN_ID;
+      const runAttempt = process.env.GITHUB_RUN_ATTEMPT;
+      if (!/^[0-9a-f]{40}$/u.test(executionEvidenceSha ?? "") ||
+          !/^[1-9][0-9]*$/u.test(runId ?? "") ||
+          !/^[1-9][0-9]*$/u.test(runAttempt ?? "") ||
+          product.controlledTask === undefined) {
+        throw new Error("R2_PRODUCT_MACHINE_IDENTITY_MISSING");
+      }
+      const fact = {
+        schema: "gogoke.s1-r4.r2-02.product-test-result.v1",
+        testOnly: true,
+        operationId: `r2-02-result-${runId}-${runAttempt}`,
+        executionEvidenceSha,
+        cloudRunId: runId,
+        runAttempt,
+        sourceCommit: product.controlledTask.sourceCommit,
+        sourceBlob: product.controlledTask.sourceBlob,
+        reportSha256: product.controlledTask.reportSha256,
+        modelId: product.controlledTask.modelId,
+        relativePath: product.controlledTask.relativePath,
+        embeddedBytesSha256: product.controlledTask.embeddedBytesSha256,
+        actionCompletionRef: product.controlledTask.actionCompletionRef,
+        manifestHash: product.controlledTask.manifestHash,
+        decisionReceiptId: product.controlledTask.decisionReceiptId,
+        objectiveOutcomeContentHash: product.controlledTask.objectiveOutcomeContentHash,
+        objectiveOutcomeReceiptId: product.controlledTask.objectiveOutcomeReceiptId,
+        evaluationContentHash: product.controlledTask.evaluationContentHash,
+        evaluationReceiptId: product.controlledTask.evaluationReceiptId,
+        metricsHash: product.controlledTask.metricsHash,
+        dreamRunContentHash: product.controlledTask.dreamRunContentHash,
+        dreamProposalContentHash: product.controlledTask.dreamProposalContentHash,
+        dreamProposalState: product.controlledTask.dreamProposalState,
+        acceptance: product.acceptance,
+      };
+      await FS.writeFile(Path.join(evidenceRoot, "product-r2-02-test-result.json"),
+        `${JSON.stringify(fact)}\n`, "utf8");
+    }
   } finally {
     await client?.close();
     await FS.rm(root, { recursive: true, force: true });
