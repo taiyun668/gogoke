@@ -29,20 +29,23 @@ export function parseVitestReport(report, expectedFiles, exitCode) {
   const passed = count(report.numPassedTests);
   const failed = count(report.numFailedTests);
   const pending = count(report.numPendingTests);
-  const todo = count(report.numTodoTests ?? 0);
+  const todo = count(report.numTodoTests);
   const actualFiles = Array.isArray(report.testResults) ? report.testResults : [];
   const expected = new Set(expectedFiles.map((path) => resolve(path).toLowerCase()));
   const actual = new Set(actualFiles.map((entry) => resolve(entry.name ?? "").toLowerCase()));
   const failedFiles = actualFiles.filter((entry) => entry.status !== "passed").map((entry) => entry.name);
   const filesMatch = actualFiles.length === expectedFiles.length && expected.size === actual.size &&
     [...expected].every((path) => actual.has(path));
+  const executed = passed === null || failed === null ? null : passed + failed;
+  const accounted = passed === null || failed === null || pending === null || todo === null ? null :
+    passed + failed + pending + todo;
   const instrumentOk = Number.isSafeInteger(exitCode) && filesMatch && tests !== null && passed !== null && failed !== null &&
-    pending !== null && todo !== null && tests > 0 && passed + failed + pending + todo <= tests;
+    pending !== null && todo !== null && tests > 0 && executed > 0 && accounted === tests;
   const skipped = pending === null || todo === null ? null : pending + todo;
   return {
     test_files: actualFiles.length,
     discovered: tests,
-    executed: passed === null || failed === null ? null : passed + failed,
+    executed,
     passed,
     failed,
     skipped,

@@ -116,10 +116,13 @@ jobs:
             $passed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[2].Value } | Measure-Object -Sum).Sum }
             $testFailed = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[3].Value } | Measure-Object -Sum).Sum }
             $skipped = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[4].Value } | Measure-Object -Sum).Sum }
+            $measured = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[5].Value } | Measure-Object -Sum).Sum }
+            $filtered = if ($summaries.Count -eq 0) { 0 } else { ($summaries | ForEach-Object { [int]$_.Groups[6].Value } | Measure-Object -Sum).Sum }
             $executed = $passed + $testFailed
-            $instrumentOk = $summaries.Count -gt 0 -and $discovered -gt 0 -and $executed -gt 0
-            $state = if (-not $instrumentOk) { 'FAIL_INSTRUMENT' } elseif ($exitCode -ne 0 -or $testFailed -ne 0) { 'FAIL' } else { 'PASS' }
-            $reason = if (-not $instrumentOk) { 'ZERO_TESTS_OR_MACHINE_SUMMARY_MISSING' } elseif ($exitCode -ne 0 -or $testFailed -ne 0) { 'TEST_FAILURE' } else { $null }
+            $accounted = $executed + $skipped + $measured + $filtered
+            $instrumentOk = $summaries.Count -gt 0 -and $discovered -gt 0 -and $executed -gt 0 -and $accounted -eq $discovered
+            $state = if (-not $instrumentOk) { 'FAIL_INSTRUMENT' } elseif ($exitCode -ne 0 -or $testFailed -ne 0 -or $skipped -gt 0) { 'FAIL' } else { 'PASS' }
+            $reason = if (-not $instrumentOk) { 'ZERO_TESTS_OR_INCONSISTENT_MACHINE_COUNTS' } elseif ($exitCode -ne 0 -or $testFailed -ne 0) { 'TEST_FAILURE' } elseif ($skipped -gt 0) { 'IGNORED_TESTS' } else { $null }
             $results += [ordered]@{
               axis = $axis.id
               target = $axis.target

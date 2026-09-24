@@ -1,7 +1,9 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn host() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_gogoke-native-host"))
@@ -20,6 +22,52 @@ fn read_frame(client: &mut std::fs::File) -> String {
     let mut body = vec![0u8; u32::from_le_bytes(length) as usize];
     client.read_exact(&mut body).expect("body");
     String::from_utf8(body).expect("utf8")
+}
+
+fn verbatim_path(path: &Path) -> Option<PathBuf> {
+    let text = path.to_str()?;
+    if text.starts_with("\\\\?\\") {
+        return None;
+    }
+    (text.as_bytes().get(1) == Some(&b':'))
+        .then(|| PathBuf::from(format!("\\\\?\\{text}")))
+}
+
+fn second_host_is_refused(root: &Path) -> bool {
+    let mut contender = match Command::new(host())
+        .arg("--root")
+        .arg(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut exited = false;
+    while Instant::now() < deadline {
+        match contender.try_wait() {
+            Ok(Some(_)) => {
+                exited = true;
+                break;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(_) => break,
+        }
+    }
+    if !exited {
+        let _ = contender.kill();
+    }
+    let output = match contender.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+    exited
+        && !output.status.success()
+        && !output.stdout.windows(7).any(|bytes| bytes == b"LOCKED\t")
+        && !output.stdout.windows(5).any(|bytes| bytes == b"PIPE\t")
+        && !output.stdout.windows(11).any(|bytes| bytes == b"CAPABILITY\t")
 }
 
 fn legacy_action_frame(operation:&str,digest:&str,reservation:&str,session:&str)->String{
@@ -64,6 +112,13 @@ fn authenticated_service_uses_typed_host_without_sql_transport() {
     let authenticated = read_frame(&mut client);
     assert!(authenticated.contains("\"authenticated\":true"), "{authenticated}");
 
+    let same_spelling_refused = second_host_is_refused(&root);
+    let verbatim_root = verbatim_path(&root);
+    let verbatim_spelling_refused = verbatim_root
+        .as_deref()
+        .map(second_host_is_refused)
+        .unwrap_or(true);
+
     write_frame(&mut client, br#"{"operation":"execute","sql":"SELECT 1"}"#);
     let sql_reply = read_frame(&mut client);
     assert!(sql_reply.starts_with("ERR"), "{sql_reply}");
@@ -106,4 +161,11 @@ fn authenticated_service_uses_typed_host_without_sql_transport() {
     let _ = read_frame(&mut client);
     let _ = child.wait();
     std::fs::remove_dir_all(&root).ok();
+    assert!(same_spelling_refused, "second host acquired or served the same root");
+    if verbatim_root.is_some() {
+        assert!(
+            verbatim_spelling_refused,
+            "second host acquired or served the verbatim spelling of the same root"
+        );
+    }
 }

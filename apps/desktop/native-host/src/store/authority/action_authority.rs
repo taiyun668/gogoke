@@ -24,6 +24,7 @@ const INTENT_SCHEMA: &str = "CREATE TABLE gogoke_action_authority_intents (domai
 const COMPLETION_SCHEMA: &str = "CREATE TABLE gogoke_action_completion_receipts (domain_id TEXT NOT NULL,operation_id TEXT NOT NULL,reservation_id TEXT NOT NULL,semantic_digest TEXT NOT NULL CHECK(length(semantic_digest)=71),attempt_id TEXT NOT NULL,send_authority TEXT NOT NULL,binding_id TEXT NOT NULL,generation TEXT NOT NULL,source_epoch TEXT NOT NULL,runtime_instance_id TEXT NOT NULL,native_request_id TEXT NOT NULL,native_session_id TEXT NOT NULL,trusted_receipt_ref TEXT NOT NULL,evidence_hash TEXT NOT NULL CHECK(length(evidence_hash)=71),disposition TEXT NOT NULL CHECK(disposition IN ('COMPLETED','REJECTED','ACCEPTANCE_UNKNOWN')),receipt_id TEXT NOT NULL,PRIMARY KEY(domain_id,operation_id),UNIQUE(domain_id,reservation_id),FOREIGN KEY(operation_id) REFERENCES gogoke_action_reservations(operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT,FOREIGN KEY(domain_id,receipt_id) REFERENCES gogoke_receipts(domain_id,receipt_id) ON DELETE RESTRICT ON UPDATE RESTRICT) STRICT";
 const CURRENT_FACTS_SCHEMA: &str = "CREATE TABLE gogoke_action_current_facts (domain_id TEXT NOT NULL,operation_id TEXT NOT NULL,facts_revision TEXT NOT NULL,policy_revision TEXT NOT NULL,revocation_head TEXT NOT NULL,binding_id TEXT NOT NULL,generation TEXT NOT NULL,source_epoch TEXT NOT NULL,runtime_instance_id TEXT NOT NULL,model_ref_digest TEXT NOT NULL CHECK(length(model_ref_digest)=71),capability_revision TEXT NOT NULL,context_manifest_id TEXT NOT NULL,context_manifest_hash TEXT NOT NULL CHECK(length(context_manifest_hash)=71),admission_ref TEXT NOT NULL,admission_revision TEXT NOT NULL,expires_at_epoch_ms TEXT NOT NULL,PRIMARY KEY(domain_id,operation_id),FOREIGN KEY(operation_id) REFERENCES gogoke_action_reservations(operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT) STRICT";
 const NATIVE_RECEIPT_SCHEMA: &str = "CREATE TABLE gogoke_action_native_receipts (domain_id TEXT NOT NULL,receipt_ref TEXT NOT NULL,operation_id TEXT NOT NULL,reservation_id TEXT NOT NULL,semantic_digest TEXT NOT NULL,attempt_id TEXT NOT NULL,send_authority TEXT NOT NULL,binding_id TEXT NOT NULL,generation TEXT NOT NULL,source_epoch TEXT NOT NULL,runtime_instance_id TEXT NOT NULL,native_request_id TEXT NOT NULL,native_session_id TEXT NOT NULL,evidence_hash TEXT NOT NULL,disposition TEXT NOT NULL CHECK(disposition IN ('COMPLETED','REJECTED','ACCEPTANCE_UNKNOWN')),receipt_id TEXT NOT NULL,PRIMARY KEY(domain_id,receipt_ref),UNIQUE(domain_id,operation_id),FOREIGN KEY(operation_id) REFERENCES gogoke_action_reservations(operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT,FOREIGN KEY(domain_id,receipt_id) REFERENCES gogoke_receipts(domain_id,receipt_id) ON DELETE RESTRICT ON UPDATE RESTRICT) STRICT";
+const TRANSPORT_SCHEMA: &str = "CREATE TABLE gogoke_action_transport_evidence (domain_id TEXT NOT NULL,operation_id TEXT NOT NULL,receipt_ref TEXT NOT NULL,evidence_hash TEXT NOT NULL,stop_proof_hash TEXT NOT NULL,pid TEXT NOT NULL,creation_time_100ns TEXT NOT NULL,binary_digest_sha256 TEXT NOT NULL,frame0 TEXT NOT NULL,frame1 TEXT NOT NULL,frame2 TEXT NOT NULL,frame3 TEXT NOT NULL,frame4 TEXT NOT NULL,PRIMARY KEY(domain_id,operation_id),FOREIGN KEY(domain_id,receipt_ref) REFERENCES gogoke_action_native_receipts(domain_id,receipt_ref) ON DELETE RESTRICT ON UPDATE RESTRICT) STRICT";
 
 fn ensure_schema(tx: &mut Transaction<'_, '_>) -> Result<()> {
     for (name, ddl) in [
@@ -31,6 +32,7 @@ fn ensure_schema(tx: &mut Transaction<'_, '_>) -> Result<()> {
         ("gogoke_action_completion_receipts", COMPLETION_SCHEMA),
         ("gogoke_action_current_facts", CURRENT_FACTS_SCHEMA),
         ("gogoke_action_native_receipts", NATIVE_RECEIPT_SCHEMA),
+        ("gogoke_action_transport_evidence", TRANSPORT_SCHEMA),
     ] {
         let rows = tx.query(
             "SELECT type,sql FROM main.sqlite_schema WHERE name=?",
@@ -995,6 +997,22 @@ pub(crate) fn record_trusted_native_action_receipt(
     connection: &mut VerifiedDatabaseConnection<'_>,
     evidence: &TrustedActionCompletionEvidence,
 ) -> Result<String> {
+    record_trusted_native_action_receipt_inner(connection, evidence, None)
+}
+
+pub(crate) fn record_trusted_native_action_transport_receipt(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    evidence: &TrustedActionCompletionEvidence,
+    transport: &TrustedActionTransportEvidence,
+) -> Result<String> {
+    record_trusted_native_action_receipt_inner(connection, evidence, Some(transport))
+}
+
+fn record_trusted_native_action_receipt_inner(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    evidence: &TrustedActionCompletionEvidence,
+    transport: Option<&TrustedActionTransportEvidence>,
+) -> Result<String> {
     if matches!(
         evidence.disposition,
         ActionCompletionDisposition::AcceptanceUnknown
@@ -1026,6 +1044,9 @@ pub(crate) fn record_trusted_native_action_receipt(
     {
         return denied();
     }
+    if let Some(transport) = transport {
+        if !transport_matches_receipt(evidence, transport) { return denied(); }
+    }
     transaction::run(connection, |tx| {
         ensure_schema(tx)?;
         let expected_disposition = match evidence.disposition {
@@ -1046,6 +1067,9 @@ pub(crate) fn record_trusted_native_action_receipt(
             ];
             if existing[..13]!=expected {
                 return Err(OrchestrationError::OperationConflict);
+            }
+            if let Some(transport) = transport {
+                verify_transport_row(tx, evidence, transport)?;
             }
             return Ok(evidence.trusted_receipt_ref.clone());
         }
@@ -1105,6 +1129,10 @@ pub(crate) fn record_trusted_native_action_receipt(
             || rows[0][2] != evidence.evidence_hash
         {
             return Err(OrchestrationError::OperationConflict);
+        }
+        if let Some(transport) = transport {
+            let frames = &transport.frames;
+            tx.write("INSERT INTO main.gogoke_action_transport_evidence(domain_id,operation_id,receipt_ref,evidence_hash,stop_proof_hash,pid,creation_time_100ns,binary_digest_sha256,frame0,frame1,frame2,frame3,frame4) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", &[&evidence.domain_id,&evidence.operation_id,&evidence.trusted_receipt_ref,&evidence.evidence_hash,&transport.stop_proof_hash,&transport.pid,&transport.creation_time_100ns,&transport.binary_digest_sha256,&frames[0],&frames[1],&frames[2],&frames[3],&frames[4]])?;
         }
         Ok(evidence.trusted_receipt_ref.clone())
     })
