@@ -854,7 +854,8 @@ pub(crate) fn run_controlled_fixture_action(
     if selected.profile_id != identity.profile_id || selected.payload.as_slice() != prompt.as_bytes() {
         return Err(OrchestrationError::AccessDenied);
     }
-    if selected.runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
+    if selected.target_domain_id == "domain-r2-02-test"
+        && selected.runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
         authority::resolve_r2_test_fixture_driver(connection, &selected.runtime_instance_id)?;
     }
     let launch = controlled_fixture_request(
