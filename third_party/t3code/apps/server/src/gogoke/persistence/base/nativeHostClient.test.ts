@@ -8,6 +8,7 @@ import * as NodeTest from "node:test";
 
 import {
   decodeNativeControlledFixtureAction,
+  decodeR2ObjectiveFactRefs,
   decodeCurrentDelegationGrantReply,
   encodeCurrentDelegationGrantFrame,
   decodeExecutionRecipeReceipt,
@@ -24,6 +25,20 @@ import {
 
 const assert: typeof NodeAssert = NodeAssert;
 const test: typeof NodeTest.test = NodeTest.test;
+
+test("R2 Objective refs require exact native hashes", () => {
+  const valid = {
+    state: "TEST_ONLY_NATIVE_OBJECTIVE_REFS",
+    manifestHash: `sha256:${"a".repeat(64)}`,
+    manifestContentHash: `sha256:${"b".repeat(64)}`,
+    decisionContentHash: `sha256:${"c".repeat(64)}`,
+    actionCompletionHash: `sha256:${"d".repeat(64)}`,
+  };
+  assert.deepEqual(decodeR2ObjectiveFactRefs(JSON.stringify(valid)), valid);
+  assert.throws(() => decodeR2ObjectiveFactRefs(JSON.stringify({
+    ...valid, actionCompletionHash: "sha256:caller-assertion",
+  })), /native refs identity mismatch/);
+});
 
 test("native Action transport codec keeps completion distinct from Result and replay", () => {
   const actionCompletionRef = "receipt-action-one";

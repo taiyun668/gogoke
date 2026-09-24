@@ -211,6 +211,43 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       Assert.equal(result.sourceBlob, source.gitBlob);
     }
     Assert.match(nativeActionCompletionRef ?? "", /^[A-Za-z0-9][A-Za-z0-9._:/-]+$/);
+    const objectiveRefs = await client.readR2ObjectiveFactRefs(
+      caller, nativeActionCompletionRef!,
+    );
+    Assert.equal(objectiveRefs.state, "TEST_ONLY_NATIVE_OBJECTIVE_REFS");
+    Assert.equal(objectiveRefs.manifestHash, manifestHash);
+    Assert.match(objectiveRefs.manifestContentHash, /^sha256:[0-9a-f]{64}$/);
+    Assert.match(objectiveRefs.decisionContentHash, /^sha256:[0-9a-f]{64}$/);
+    Assert.match(objectiveRefs.actionCompletionHash, /^sha256:[0-9a-f]{64}$/);
+    const outcome = await client.appendObjectiveOutcome({
+      domainId: "domain-r2-02-test",
+      outcomeId: "outcome-r2-02-test",
+      revision: "1",
+      expectedPreviousRevision: null,
+      expectedPreviousContentHash: null,
+      operationId: "outcome-op-r2-02-test",
+      eventId: "outcome-event-r2-02-test",
+      receiptId: "outcome-receipt-r2-02-test",
+      recordedAt: "2026-09-23T00:00:02.000Z",
+      manifestId: "manifest-r2-02-test",
+      manifestVersion: "1",
+      manifestHash: objectiveRefs.manifestHash,
+      decisionId: "decision-r2-02-test",
+      decisionVersion: "1",
+      decisionHash: objectiveRefs.decisionContentHash,
+      actionOperationId: "opr_22222222222222222222222222222222",
+      actionCompletionRef: nativeActionCompletionRef!,
+      resultRefs: [{ objectType: "ActionCompletion", objectId: "opr_22222222222222222222222222222222", revision: "1", contentHash: objectiveRefs.actionCompletionHash }],
+      evidenceRefs: [{ objectType: "ContextManifest", objectId: "manifest-r2-02-test", revision: "1", contentHash: objectiveRefs.manifestContentHash }],
+      observationStartsAt: "2026-09-23T00:00:00.000Z",
+      observationEndsAt: "2026-09-23T00:00:01.000Z",
+      observationStatus: "OBSERVED",
+    });
+    Assert.equal(outcome.disposition, "COMMITTED");
+    const outcomeReadback = await client.readObjectiveOutcome(
+      "domain-r2-02-test", "outcome-r2-02-test", "1",
+    );
+    Assert.equal(outcomeReadback.contentHash, outcome.contentHash);
     Assert.equal(proofs.size, 2, "separate operations retain separate native custody");
     await client.close();
     client = undefined;
