@@ -130,7 +130,7 @@ export function upstreamLicenseBasis(pkg, metadata) {
     throw new Error(`immutable upstream license revision missing: ${pkg.name}@${pkg.version}`);
   }
   const repository = typeof metadata.repository === 'string' ? metadata.repository : metadata.repository?.url;
-  const match = /^(?:git\+)?https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(repository ?? '');
+  const match = /^(?:(?:git\+)?https:\/\/github\.com\/|git:\/\/github\.com\/|(?:git\+)?ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(repository ?? '');
   if (!match) throw new Error(`unsupported upstream license repository: ${pkg.name}@${pkg.version}`);
   const directory = typeof metadata.repository === 'object' ? metadata.repository.directory ?? '' : '';
   if (directory && (!/^[A-Za-z0-9_./-]+$/.test(directory) || directory.startsWith('/') || directory.split('/').some((v) => !v || v === '.' || v === '..'))) throw new Error('unsafe upstream license directory');

@@ -97,6 +97,8 @@ test('upstream notice fallback requires an exact version and immutable repositor
   const pkg = { name: '@fixture/package', version: '1.0.0' };
   const metadata = { ...pkg, gitHead: 'a'.repeat(40), repository: { url: 'git+https://github.com/fixture/source.git', directory: 'packages/component' } };
   assert.deepEqual(upstreamLicenseBasis(pkg, metadata), { repository: 'fixture/source', commit: 'a'.repeat(40), directory: 'packages/component' });
+  assert.deepEqual(upstreamLicenseBasis(pkg, { ...metadata, repository: { url: 'git://github.com/fixture/source.git', directory: 'packages/component' } }), { repository: 'fixture/source', commit: 'a'.repeat(40), directory: 'packages/component' });
+  assert.deepEqual(upstreamLicenseBasis(pkg, { ...metadata, repository: { url: 'git+ssh://git@github.com/fixture/source.git', directory: 'packages/component' } }), { repository: 'fixture/source', commit: 'a'.repeat(40), directory: 'packages/component' });
   const opencode = { name: '@opencode-ai/sdk', version: '1.18.32' };
   assert.deepEqual(upstreamLicenseBasis(opencode, { ...opencode }), {
     repository: 'anomalyco/opencode',
