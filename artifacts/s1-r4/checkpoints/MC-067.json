@@ -1,0 +1,67 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-067",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "9619a0489d066c14a3fc6c4a6faf95563ad77055",
+  "recorded_utc": "2026-09-24T17:06:29Z",
+  "reason": "AGENTS_DRIFT_THRESHOLD_EXTERNAL_REPOSITION_REQUIRED",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "production_changes_since_mc066": [
+    {
+      "commit": "e83739821c04dd9eaf6e83665c5b2f35fcedaf46",
+      "change": "Surface a bounded allowlisted child-service error code at the installed Tauri product boundary."
+    },
+    {
+      "commit": "9619a0489d066c14a3fc6c4a6faf95563ad77055",
+      "change": "Write a bounded process failure marker before the service exits and return only that marker through the product boundary."
+    }
+  ],
+  "cloud_evidence": [
+    {
+      "desktop_run": 36025270523,
+      "exact_sha": "e83739821c04dd9eaf6e83665c5b2f35fcedaf46",
+      "browser": "PASS",
+      "dependency_notices": "PASS",
+      "nsis_job": 107722838704,
+      "installed_resource_bytes": "PASS",
+      "installed_product_entry": "FAIL_GOGOKE_PRODUCT_SERVICE_FAILED_1_UNCLASSIFIED",
+      "first_failed_step": "Verify installed resource identity and read-only product entry"
+    },
+    {
+      "desktop_run": 36028928417,
+      "exact_sha": "9619a0489d066c14a3fc6c4a6faf95563ad77055",
+      "browser": "PASS",
+      "dependency_notices": "PASS",
+      "nsis_job": 107735774500,
+      "installed_resource_bytes": "PASS",
+      "installed_product_entry": "FAIL_GOGOKE_PRODUCT_SERVICE_FAILED_1_UNCLASSIFIED",
+      "first_failed_step": "Verify installed resource identity and read-only product entry",
+      "public_source_hygiene_run": 36028928420,
+      "public_source_hygiene": "PASS"
+    }
+  ],
+  "finding": "The installed non-administrator Tauri product call still exits with service status 1. The direct service call before the Tauri invocation passed by control flow. Neither bounded diagnostic increment produced a classified cause. The original service stderr or its absence has not been established; no root cause or product fix is claimed.",
+  "drift_signal": "Two consecutive construction increments ended without a new runnable product capability. AGENTS.md requires an immediate construction stop and external Owner repositioning; further diagnostic layers are not authorized by this checkpoint.",
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "evidence_boundary": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "candidate_review": "NOT_RUN",
+    "adoption_release_merge": "NONE"
+  },
+  "architecture_blocker": "NO_EVIDENCE_OF_ARCHITECTURE_BLOCKER",
+  "external_action": "NO_UNCERTAIN_REMOTE_WRITE; NO_MAIN_WRITE; NO_MERGE; NO_RELEASE",
+  "next_action": "STOP construction under the AGENTS.md drift rule and request one external Owner repositioning. On an explicit Owner direction, re-read exact remote truth and continue only within the directed R2-04 boundary."
+}
