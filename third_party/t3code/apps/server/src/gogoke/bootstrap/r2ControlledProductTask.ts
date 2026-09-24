@@ -44,7 +44,7 @@ export type R2ControlledProductTaskResult =
       readonly decisionReceiptId: string;
     };
 
-/** One fixed public R2-02 task, using native custody for its only Action. */
+/** One bounded public task per fixed or novel slot, using native custody for each Action. */
 export async function runR2ControlledProductTask(input: {
   readonly store: NativeStoreSession;
   readonly identity: NativeProductIdentitySnapshot;
@@ -52,6 +52,9 @@ export async function runR2ControlledProductTask(input: {
   readonly fixtureDriverId?: string;
 }): Promise<R2ControlledProductTaskResult> {
   const { store, identity, source, fixtureDriverId } = input;
+  const novel = fixtureDriverId !== undefined;
+  const slot = novel ? "novel" as const : undefined;
+  const series = novel ? "r2-03" : "r2-02";
   const sourceHash = createHash("sha256").update(source.bytes).digest("hex");
   const sourceBlob = createHash("sha1")
     .update(`blob ${source.bytes.length}\0`).update(source.bytes).digest("hex");
@@ -109,9 +112,9 @@ export async function runR2ControlledProductTask(input: {
   await prepareR2PublicContext({
     store, source, grant: contextGrant, policyRevision: identity.policyRevision,
   });
-  const task = await store.prepareR2TestTask!(caller);
+  const task = await store.prepareR2TestTask!(caller, slot);
   if (task.state !== "TEST_ONLY_TASK_PREPARED_NOT_ACTION" ||
-      task.taskId !== "task-r2-02-test") throw new Error("R2_TEST_TASK_MISMATCH");
+      task.taskId !== `task-${series}-test`) throw new Error("R2_TEST_TASK_MISMATCH");
   const message = JSON.stringify({
     schema: "gogoke.s1-r4.r2-02.fixture-task.v1", testOnly: true,
     source: {
@@ -123,15 +126,15 @@ export async function runR2ControlledProductTask(input: {
     },
   });
   const promptJson = JSON.stringify({ type: "prompt", message, id: "gogoke-pi-1" });
-  const packageReceipt = await store.prepareR2TestPackage!(caller, promptJson);
-  const lineage = await store.prepareR2TestLineage!(caller);
-  const recipe = await store.prepareR2TestRecipe!(caller, fixtureDriverRuntimeId);
+  const packageReceipt = await store.prepareR2TestPackage!(caller, promptJson, slot);
+  const lineage = await store.prepareR2TestLineage!(caller, slot);
+  const recipe = await store.prepareR2TestRecipe!(caller, fixtureDriverRuntimeId, slot);
   if (packageReceipt.state !== "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION" ||
       lineage.state !== "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION" ||
       recipe.state !== "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION") {
     throw new Error("R2_TEST_PREPARATION_MISMATCH");
   }
-  const basis = await store.readR2TestActionDecisionBasis!(caller, promptJson);
+  const basis = await store.readR2TestActionDecisionBasis!(caller, promptJson, slot);
   if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
       basis.taskRevision !== task.taskRevision ||
       basis.bindingId !== lineage.bindingId ||
@@ -142,11 +145,13 @@ export async function runR2ControlledProductTask(input: {
   // This one test-only operation uses a fixed record identity across process
   // restarts, including a lost reply after the manifest was committed.
   const recordedAt = "2026-09-23T00:00:00.000Z";
-  const decision = await commitR2ControlledDecision({ store, basis, grant, recordedAt });
+  const decision = await commitR2ControlledDecision({ store, basis, grant, recordedAt,
+    ...(slot === undefined ? {} : { slot }) });
   if (decision.kind !== "committed" && decision.kind !== "replayed") {
     throw new Error("R2_TEST_DECISION_NOT_COMMITTED");
   }
   const action = await store.prepareR2TestAction!({
+    ...(slot === undefined ? {} : { slot }),
     grantRef: grant.grantRef,
     promptJson,
     expectedActionDigest: basis.actionDigest,
@@ -185,10 +190,11 @@ export async function runR2ControlledProductTask(input: {
   }
   const manifest = await prepareR2ControlledManifest({
     store, basis, grant, contextGrant, source, recordedAt,
+    ...(slot === undefined ? {} : { slot }),
     ...(fixtureDriverRuntimeId === undefined ? {} : { runtimeInstanceId: fixtureDriverRuntimeId }),
     ...(replay ? { replay: true as const } : {}),
   });
-  if (manifest.manifestId !== "manifest-r2-02-test" || manifest.includedVersions.length !== 1) {
+  if (manifest.manifestId !== `manifest-${series}-test` || manifest.includedVersions.length !== 1) {
     throw new Error("R2_TEST_MANIFEST_MISMATCH");
   }
 
@@ -242,18 +248,18 @@ export async function runR2ControlledProductTask(input: {
   const observedAt = new Date(completedMs + 1).toISOString();
   const outcome = await store.appendObjectiveOutcome!({
     domainId: "domain-r2-02-test",
-    outcomeId: "outcome-r2-02-test",
+    outcomeId: `outcome-${series}-test`,
     revision: "1",
     expectedPreviousRevision: null,
     expectedPreviousContentHash: null,
-    operationId: "outcome-op-r2-02-test",
-    eventId: "outcome-event-r2-02-test",
-    receiptId: "outcome-receipt-r2-02-test",
+    operationId: `outcome-op-${series}-test`,
+    eventId: `outcome-event-${series}-test`,
+    receiptId: `outcome-receipt-${series}-test`,
     recordedAt: observedAt,
-    manifestId: "manifest-r2-02-test",
+    manifestId: `manifest-${series}-test`,
     manifestVersion: "1",
     manifestHash: refs.manifestHash,
-    decisionId: "decision-r2-02-test",
+    decisionId: `decision-${series}-test`,
     decisionVersion: "1",
     decisionHash: refs.decisionContentHash,
     actionOperationId: action.operationId,
@@ -267,14 +273,14 @@ export async function runR2ControlledProductTask(input: {
     observationStatus: "OBSERVED",
   });
   const outcomeReadback = await store.readObjectiveOutcome!(
-    "domain-r2-02-test", "outcome-r2-02-test", "1",
+    "domain-r2-02-test", `outcome-${series}-test`, "1",
   );
   if (!["COMMITTED", "RECONCILED"].includes(outcome.disposition) ||
       outcomeReadback.contentHash !== outcome.contentHash) {
     throw new Error("R2_TEST_OBJECTIVE_OUTCOME_READBACK_MISMATCH");
   }
   const metrics = JSON.stringify({
-    schema: "gogoke.s1-r4.r2-02.fixture-metrics.v1",
+    schema: `gogoke.s1-r4.${series}.fixture-metrics.v1`,
     testOnly: true,
     exactSourceMatch: true,
     reportSha256: result.reportSha256,
@@ -283,13 +289,13 @@ export async function runR2ControlledProductTask(input: {
   const metricsHash = `sha256:${createHash("sha256").update(metrics).digest("hex")}`;
   const evaluation = await store.appendEvaluation!({
     domainId: "domain-r2-02-test",
-    evaluationId: "evaluation-r2-02-test",
+    evaluationId: `evaluation-${series}-test`,
     revision: "1",
     expectedPreviousRevision: null,
     expectedPreviousContentHash: null,
-    operationId: "evaluation-op-r2-02-test",
-    eventId: "evaluation-event-r2-02-test",
-    receiptId: "evaluation-receipt-r2-02-test",
+    operationId: `evaluation-op-${series}-test`,
+    eventId: `evaluation-event-${series}-test`,
+    receiptId: `evaluation-receipt-${series}-test`,
     recordedAt: observedAt,
     sourceIdentity: "deterministic-public-fixture",
     outcomeRefs: [{ objectType: "OutcomeRecord", objectId: outcome.objectId,
@@ -297,9 +303,9 @@ export async function runR2ControlledProductTask(input: {
     decisionFamily: "CONTEXT_SELECTION",
     scorerVersion: "1",
     rubricVersion: "1",
-    calibrationKey: "r2-02-fixture",
+    calibrationKey: `${series}-fixture`,
     calibrationVersion: "1",
-    datasetNamespace: "test/s1-r4/r2-02",
+    datasetNamespace: `test/s1-r4/${series}`,
     datasetSplit: "controlled-public-fixture",
     evidenceRefs: [{ objectType: "ActionCompletion", objectId: action.operationId,
       revision: "1", contentHash: refs.actionCompletionHash }],
@@ -308,42 +314,42 @@ export async function runR2ControlledProductTask(input: {
     privacyStatus: "CLEAR",
   });
   const evaluationReadback = await store.readEvaluation!(
-    "domain-r2-02-test", "evaluation-r2-02-test", "1",
+    "domain-r2-02-test", `evaluation-${series}-test`, "1",
   );
   if (!["COMMITTED", "RECONCILED"].includes(evaluation.disposition) ||
       evaluationReadback.contentHash !== evaluation.contentHash) {
     throw new Error("R2_TEST_EVALUATION_READBACK_MISMATCH");
   }
-  const rollback = await store.prepareR2TestRollbackPlan!(caller);
+  const rollback = await store.prepareR2TestRollbackPlan!(caller, slot);
   if (rollback.state !== "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED" ||
       !["COMMITTED", "RECONCILED"].includes(rollback.disposition)) {
     throw new Error("R2_TEST_ROLLBACK_PLAN_NOT_PREPARED");
   }
   const dreamRun = await store.appendDreamRun!({
     domainId: "domain-r2-02-test",
-    runId: "dream-run-r2-02-test",
+    runId: `dream-run-${series}-test`,
     revision: "1",
     expectedPreviousRevision: null,
     expectedPreviousContentHash: null,
-    operationId: "dream-run-op-r2-02-test",
-    eventId: "dream-run-event-r2-02-test",
-    receiptId: "dream-run-receipt-r2-02-test",
+    operationId: `dream-run-op-${series}-test`,
+    eventId: `dream-run-event-${series}-test`,
+    receiptId: `dream-run-receipt-${series}-test`,
     recordedAt: observedAt,
     sourceIdentity: "deterministic-public-fixture",
     inputSnapshot: { objectType: "ContextManifest", objectId: manifest.manifestId,
       revision: "1", contentHash: refs.manifestContentHash },
-    datasetNamespace: "test/s1-r4/r2-02",
+    datasetNamespace: `test/s1-r4/${series}`,
     datasetSplit: "controlled-public-fixture",
     datasetSplitHash: source.coordinate.contentHash,
     recipeRef: { objectType: "ExecutionRecipe", objectId: recipe.recipeId,
       revision: recipe.revision, contentHash: recipe.contentHash },
-    budgetLease: { leaseRef: "capacity-lease-r2-02", operationId: "decision-r2-02-test",
+    budgetLease: { leaseRef: `capacity-lease-${series}`, operationId: `decision-${series}-test`,
       resourceRef: "capacity-r2-02-fixture", resourceRevision: "1", units: "1" },
     evaluationRefs: [{ objectType: "EvaluationRecord", objectId: evaluation.objectId,
       revision: evaluation.revision, contentHash: evaluation.contentHash }],
   });
   const dreamRunReadback = await store.readDreamRun!(
-    "domain-r2-02-test", "dream-run-r2-02-test", "1",
+    "domain-r2-02-test", `dream-run-${series}-test`, "1",
   );
   if (!["COMMITTED", "RECONCILED"].includes(dreamRun.disposition) ||
       dreamRunReadback.contentHash !== dreamRun.contentHash) {
@@ -351,13 +357,13 @@ export async function runR2ControlledProductTask(input: {
   }
   const proposal = await store.appendDreamProposal!({
     domainId: "domain-r2-02-test",
-    proposalId: "dream-proposal-r2-02-test",
+    proposalId: `dream-proposal-${series}-test`,
     revision: "1",
     expectedPreviousRevision: null,
     expectedPreviousContentHash: null,
-    operationId: "dream-proposal-op-r2-02-test",
-    eventId: "dream-proposal-event-r2-02-test",
-    receiptId: "dream-proposal-receipt-r2-02-test",
+    operationId: `dream-proposal-op-${series}-test`,
+    eventId: `dream-proposal-event-${series}-test`,
+    receiptId: `dream-proposal-receipt-${series}-test`,
     recordedAt: observedAt,
     sourceIdentity: "deterministic-public-fixture",
     runRef: { objectType: "DreamRun", objectId: dreamRun.objectId,
@@ -371,11 +377,11 @@ export async function runR2ControlledProductTask(input: {
     rollbackRef: { objectType: "RollbackPlan", objectId: rollback.planId,
       revision: rollback.revision, contentHash: rollback.contentHash },
     basePolicyRevision: identity.policyRevision,
-    namespace: "test/s1-r4/r2-02",
+    namespace: `test/s1-r4/${series}`,
     testOnly: true,
   });
   const proposalReadback = await store.readDreamProposal!(
-    "domain-r2-02-test", "dream-proposal-r2-02-test", "1",
+    "domain-r2-02-test", `dream-proposal-${series}-test`, "1",
   );
   if (!["COMMITTED", "RECONCILED"].includes(proposal.disposition) ||
       proposalReadback.contentHash !== proposal.contentHash) {

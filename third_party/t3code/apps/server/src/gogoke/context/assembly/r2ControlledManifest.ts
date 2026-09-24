@@ -64,12 +64,15 @@ export async function prepareR2ControlledManifest(input: {
   readonly source: GitFactReadback;
   readonly recordedAt: string;
   readonly runtimeInstanceId?: string;
+  readonly slot?: "novel";
   readonly replay?: true;
 }): Promise<ContextManifest> {
   const { store, basis, grant, contextGrant, source, recordedAt } = input;
+  const novel = input.slot === "novel";
   const runtimeInstanceId = input.runtimeInstanceId ?? "runtime-r2-02-fixture";
   if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
-      basis.bindingId !== "binding-r2-02-worker" || basis.bindingGeneration !== "1" ||
+      basis.bindingId !== (novel ? "binding-r2-03-worker" : "binding-r2-02-worker") || basis.bindingGeneration !== "1" ||
+      (novel !== (input.runtimeInstanceId !== undefined)) ||
       grant.state !== "TEST_ONLY_GRANT_PREPARED_NOT_ACTION" ||
       contextGrant.state !== "TEST_ONLY_CONTEXT_GRANT_PREPARED" ||
       source.coordinate.commit !== SOURCE_COMMIT || source.coordinate.path !== SOURCE_PATH ||
@@ -78,11 +81,11 @@ export async function prepareR2ControlledManifest(input: {
     throw new Error("INVALID_R2_TEST_MANIFEST_BASIS");
   }
   const snapshot = Object.freeze({
-    operationId: "r2-02-context-assembly",
+    operationId: novel ? "r2-03-context-assembly" : "r2-02-context-assembly",
     principalId: "principal-r2-02-worker",
     seatId: "seat-r2-02-worker",
-    taskId: "task-r2-02-test",
-    sessionId: "session-r2-02-worker",
+    taskId: novel ? "task-r2-03-test" : "task-r2-02-test",
+    sessionId: novel ? "session-r2-03-worker" : "session-r2-02-worker",
     domainId: "domain-r2-02-test",
     bindingId: basis.bindingId,
     bindingGeneration: basis.bindingGeneration,
@@ -92,9 +95,9 @@ export async function prepareR2ControlledManifest(input: {
     policyRevision: basis.policyRevision,
     authRevision: basis.policyRevision,
     revocationHead: grant.revocationHead,
-    selectionDecisionId: "decision-r2-02-test",
-    manifestId: "manifest-r2-02-test",
-    admissionActionOperationId: "opr_22222222222222222222222222222222",
+    selectionDecisionId: novel ? "decision-r2-03-test" : "decision-r2-02-test",
+    manifestId: novel ? "manifest-r2-03-test" : "manifest-r2-02-test",
+    admissionActionOperationId: novel ? "opr_33333333333333333333333333333333" : "opr_22222222222222222222222222222222",
     admissionDigest: basis.actionDigest,
     maxContentBytes: source.bytes.length,
     maxCandidates: 1,

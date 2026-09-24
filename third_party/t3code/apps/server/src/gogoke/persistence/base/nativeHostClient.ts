@@ -136,15 +136,15 @@ export function decodeR2TestContextGrantReceipt(body: string): NativeR2TestConte
 export interface NativeR2TestPackageReceipt {
   readonly state: "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION";
   readonly disposition: "COMMITTED" | "REPLAYED";
-  readonly packageOperationId: "r2-02-package";
+  readonly packageOperationId: "r2-02-package" | "r2-03-package";
   readonly packageDigest: string;
 }
 
 export interface NativeR2TestLineageReceipt {
   readonly state: "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION";
   readonly disposition: "COMMITTED" | "REPLAYED";
-  readonly sessionId: "session-r2-02-worker";
-  readonly bindingId: "binding-r2-02-worker";
+  readonly sessionId: "session-r2-02-worker" | "session-r2-03-worker";
+  readonly bindingId: "binding-r2-02-worker" | "binding-r2-03-worker";
   readonly generation: "1";
   readonly sourceEpoch: "1";
 }
@@ -152,7 +152,7 @@ export interface NativeR2TestLineageReceipt {
 export interface NativeR2TestTaskReceipt {
   readonly state: "TEST_ONLY_TASK_PREPARED_NOT_ACTION";
   readonly disposition: "COMMITTED" | "RECONCILED";
-  readonly taskId: "task-r2-02-test";
+  readonly taskId: "task-r2-02-test" | "task-r2-03-test";
   readonly taskRevision: string;
   readonly contentHash: string;
 }
@@ -160,7 +160,7 @@ export interface NativeR2TestTaskReceipt {
 export interface NativeR2TestRecipeReceipt {
   readonly state: "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION";
   readonly disposition: "COMMITTED" | "RECONCILED";
-  readonly recipeId: "recipe-r2-02-test";
+  readonly recipeId: "recipe-r2-02-test" | "recipe-r2-03-test";
   readonly revision: string;
   readonly contentHash: string;
 }
@@ -247,14 +247,14 @@ export interface NativeR2TestRollbackPlan {
   readonly state: "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED";
   readonly disposition: "COMMITTED" | "RECONCILED";
   readonly domainId: "domain-r2-02-test";
-  readonly planId: "rollback-r2-02-test";
+  readonly planId: "rollback-r2-02-test" | "rollback-r2-03-test";
   readonly revision: "1";
   readonly contentHash: string;
   readonly beforeHash: string;
   readonly afterHash: string;
 }
 
-export function decodeR2TestRollbackPlan(body: string): NativeR2TestRollbackPlan {
+export function decodeR2TestRollbackPlan(body: string, slot?: "novel"): NativeR2TestRollbackPlan {
   let value: unknown;
   try { value = JSON.parse(body); }
   catch { throw new NativeHostClientError("R2_ROLLBACK_PLAN", "invalid native rollback reply"); }
@@ -266,7 +266,7 @@ export function decodeR2TestRollbackPlan(body: string): NativeR2TestRollbackPlan
       record.state !== "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED" ||
       !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
       record.domainId !== "domain-r2-02-test" ||
-      record.planId !== "rollback-r2-02-test" || record.revision !== "1" ||
+      record.planId !== (slot === "novel" ? "rollback-r2-03-test" : "rollback-r2-02-test") || record.revision !== "1" ||
       !["contentHash", "beforeHash", "afterHash"].every(
         (key) => typeof record[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(record[key] as string),
       ) || record.beforeHash === record.afterHash) {
@@ -297,14 +297,14 @@ export function decodeR2ObjectiveFactRefs(body: string): NativeR2ObjectiveFactRe
 export interface NativeR2TestActionPreparation {
   readonly kind: "reserved" | "replay";
   readonly reservationState: "reserved" | "dispatching" | "not-sent" | "dispatched" | "rejected" | "outcome-unknown" | "completed";
-  readonly operationId: "opr_22222222222222222222222222222222";
+  readonly operationId: "opr_22222222222222222222222222222222" | "opr_33333333333333333333333333333333";
   readonly semanticDigest: string;
-  readonly reservationId: "reservation-r2-02-controlled";
+  readonly reservationId: "reservation-r2-02-controlled" | "reservation-r2-03-controlled";
   readonly packageDigest: string;
   readonly authorityStatus: "PREPARATORY_CURRENT_FACTS_REQUIRED";
 }
 
-export function decodeR2TestActionPreparation(body: string): NativeR2TestActionPreparation {
+export function decodeR2TestActionPreparation(body: string, slot?: "novel"): NativeR2TestActionPreparation {
   let value: unknown;
   try { value = JSON.parse(body); }
   catch { throw new NativeHostClientError("R2_TEST_ACTION", "invalid native Action preparation"); }
@@ -316,9 +316,9 @@ export function decodeR2TestActionPreparation(body: string): NativeR2TestActionP
       !["reserved", "replay"].includes(String(record.kind)) ||
       !["reserved", "dispatching", "not-sent", "dispatched", "rejected", "outcome-unknown", "completed"].includes(String(record.reservationState)) ||
       (record.kind === "reserved" && record.reservationState !== "reserved") ||
-      record.operationId !== "opr_22222222222222222222222222222222" ||
+      record.operationId !== (slot === "novel" ? "opr_33333333333333333333333333333333" : "opr_22222222222222222222222222222222") ||
       typeof record.semanticDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.semanticDigest) ||
-      record.reservationId !== "reservation-r2-02-controlled" ||
+      record.reservationId !== (slot === "novel" ? "reservation-r2-03-controlled" : "reservation-r2-02-controlled") ||
       typeof record.packageDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.packageDigest) ||
       record.authorityStatus !== "PREPARATORY_CURRENT_FACTS_REQUIRED") {
     throw new NativeHostClientError("R2_TEST_ACTION", "native Action identity mismatch");
@@ -347,7 +347,7 @@ export function decodeR2ActionDecisionBasis(body: string): NativeR2ActionDecisio
   return Object.freeze(record as unknown as NativeR2ActionDecisionBasis);
 }
 
-export function decodeR2TestRecipeReceipt(body: string): NativeR2TestRecipeReceipt {
+export function decodeR2TestRecipeReceipt(body: string, slot?: "novel"): NativeR2TestRecipeReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
   catch { throw new NativeHostClientError("R2_TEST_RECIPE", "invalid native Recipe reply"); }
@@ -358,7 +358,7 @@ export function decodeR2TestRecipeReceipt(body: string): NativeR2TestRecipeRecei
   if (Reflect.ownKeys(record).length !== 5 ||
       record.state !== "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION" ||
       !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
-      record.recipeId !== "recipe-r2-02-test" ||
+      record.recipeId !== (slot === "novel" ? "recipe-r2-03-test" : "recipe-r2-02-test") ||
       typeof record.revision !== "string" || !/^[1-9][0-9]*$/.test(record.revision) ||
       typeof record.contentHash !== "string" ||
       !/^sha256:[0-9a-f]{64}$/.test(record.contentHash)) {
@@ -367,7 +367,7 @@ export function decodeR2TestRecipeReceipt(body: string): NativeR2TestRecipeRecei
   return Object.freeze(record as unknown as NativeR2TestRecipeReceipt);
 }
 
-export function decodeR2TestTaskReceipt(body: string): NativeR2TestTaskReceipt {
+export function decodeR2TestTaskReceipt(body: string, slot?: "novel"): NativeR2TestTaskReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
   catch { throw new NativeHostClientError("R2_TEST_TASK", "invalid native Task reply"); }
@@ -378,7 +378,7 @@ export function decodeR2TestTaskReceipt(body: string): NativeR2TestTaskReceipt {
   if (Reflect.ownKeys(record).length !== 5 ||
       record.state !== "TEST_ONLY_TASK_PREPARED_NOT_ACTION" ||
       !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
-      record.taskId !== "task-r2-02-test" ||
+      record.taskId !== (slot === "novel" ? "task-r2-03-test" : "task-r2-02-test") ||
       typeof record.taskRevision !== "string" || !/^[1-9][0-9]*$/.test(record.taskRevision) ||
       typeof record.contentHash !== "string" ||
       !/^sha256:[0-9a-f]{64}$/.test(record.contentHash)) {
@@ -387,7 +387,7 @@ export function decodeR2TestTaskReceipt(body: string): NativeR2TestTaskReceipt {
   return Object.freeze(record as unknown as NativeR2TestTaskReceipt);
 }
 
-export function decodeR2TestLineageReceipt(body: string): NativeR2TestLineageReceipt {
+export function decodeR2TestLineageReceipt(body: string, slot?: "novel"): NativeR2TestLineageReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
   catch { throw new NativeHostClientError("R2_TEST_LINEAGE", "invalid native lineage reply"); }
@@ -398,15 +398,15 @@ export function decodeR2TestLineageReceipt(body: string): NativeR2TestLineageRec
   if (Reflect.ownKeys(record).length !== 6 ||
       record.state !== "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION" ||
       !["COMMITTED", "REPLAYED"].includes(String(record.disposition)) ||
-      record.sessionId !== "session-r2-02-worker" ||
-      record.bindingId !== "binding-r2-02-worker" ||
+      record.sessionId !== (slot === "novel" ? "session-r2-03-worker" : "session-r2-02-worker") ||
+      record.bindingId !== (slot === "novel" ? "binding-r2-03-worker" : "binding-r2-02-worker") ||
       record.generation !== "1" || record.sourceEpoch !== "1") {
     throw new NativeHostClientError("R2_TEST_LINEAGE", "native lineage identity mismatch");
   }
   return Object.freeze(record as unknown as NativeR2TestLineageReceipt);
 }
 
-export function decodeR2TestPackageReceipt(body: string): NativeR2TestPackageReceipt {
+export function decodeR2TestPackageReceipt(body: string, slot?: "novel"): NativeR2TestPackageReceipt {
   let value: unknown;
   try { value = JSON.parse(body); }
   catch { throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid native package reply"); }
@@ -417,7 +417,7 @@ export function decodeR2TestPackageReceipt(body: string): NativeR2TestPackageRec
   if (Reflect.ownKeys(record).length !== 4 ||
       record.state !== "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION" ||
       !["COMMITTED", "REPLAYED"].includes(String(record.disposition)) ||
-      record.packageOperationId !== "r2-02-package" ||
+      record.packageOperationId !== (slot === "novel" ? "r2-03-package" : "r2-02-package") ||
       typeof record.packageDigest !== "string" ||
       !/^sha256:[0-9a-f]{64}$/.test(record.packageDigest)) {
     throw new NativeHostClientError("R2_TEST_PACKAGE", "native package identity mismatch");
@@ -2292,6 +2292,7 @@ export class NativeHostClient {
   async prepareR2TestPackage(
     caller: NativeControllerCallerContext,
     promptJson: string,
+    slot?: "novel",
   ): Promise<NativeR2TestPackageReceipt> {
     if (Buffer.byteLength(promptJson, "utf8") > 32 * 1024 ||
         promptJson.includes("\n") || promptJson.includes("\r")) {
@@ -2309,7 +2310,8 @@ export class NativeHostClient {
     }
     const body = this.request(JSON.stringify({
       operation: "PrepareR2TestPackage",
-      operationId: "r2-02-package",
+      operationId: slot === "novel" ? "r2-03-package" : "r2-02-package",
+      ...(slot === "novel" ? { slot } : {}),
       policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
       principalId: canonicalControllerField(caller.principalId, "principalId"),
       profileId: canonicalControllerField(caller.profileId, "profileId"),
@@ -2318,15 +2320,17 @@ export class NativeHostClient {
       seatId: canonicalControllerField(caller.seatId, "seatId"),
       promptJson,
     })).body;
-    return decodeR2TestPackageReceipt(body);
+    return decodeR2TestPackageReceipt(body, slot);
   }
 
   async prepareR2TestLineage(
     caller: NativeControllerCallerContext,
+    slot?: "novel",
   ): Promise<NativeR2TestLineageReceipt> {
     const body = this.request(JSON.stringify({
       operation: "PrepareR2TestLineage",
-      operationId: "r2-02-lineage",
+      operationId: slot === "novel" ? "r2-03-lineage" : "r2-02-lineage",
+      ...(slot === "novel" ? { slot } : {}),
       policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
       principalId: canonicalControllerField(caller.principalId, "principalId"),
       profileId: canonicalControllerField(caller.profileId, "profileId"),
@@ -2334,15 +2338,17 @@ export class NativeHostClient {
       role: caller.role,
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
-    return decodeR2TestLineageReceipt(body);
+    return decodeR2TestLineageReceipt(body, slot);
   }
 
   async prepareR2TestTask(
     caller: NativeControllerCallerContext,
+    slot?: "novel",
   ): Promise<NativeR2TestTaskReceipt> {
     const body = this.request(JSON.stringify({
       operation: "PrepareR2TestTask",
-      operationId: "r2-02-task-context",
+      operationId: slot === "novel" ? "r2-03-task-context" : "r2-02-task-context",
+      ...(slot === "novel" ? { slot } : {}),
       policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
       principalId: canonicalControllerField(caller.principalId, "principalId"),
       profileId: canonicalControllerField(caller.profileId, "profileId"),
@@ -2350,20 +2356,23 @@ export class NativeHostClient {
       role: caller.role,
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
-    return decodeR2TestTaskReceipt(body);
+    return decodeR2TestTaskReceipt(body, slot);
   }
 
   async prepareR2TestRecipe(
     caller: NativeControllerCallerContext,
     runtimeInstanceId?: string,
+    slot?: "novel",
   ): Promise<NativeR2TestRecipeReceipt> {
-    if (runtimeInstanceId !== undefined &&
-        !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(runtimeInstanceId)) {
+    if ((slot === "novel") !== (runtimeInstanceId !== undefined) ||
+        (runtimeInstanceId !== undefined &&
+         !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(runtimeInstanceId))) {
       throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid fixture runtime identity");
     }
     const body = this.request(JSON.stringify({
       operation: "PrepareR2TestRecipe",
-      operationId: "r2-02-recipe",
+      operationId: slot === "novel" ? "r2-03-recipe" : "r2-02-recipe",
+      ...(slot === "novel" ? { slot } : {}),
       ...(runtimeInstanceId === undefined ? {} : { runtimeInstanceId }),
       policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
       principalId: canonicalControllerField(caller.principalId, "principalId"),
@@ -2372,7 +2381,7 @@ export class NativeHostClient {
       role: caller.role,
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
-    return decodeR2TestRecipeReceipt(body);
+    return decodeR2TestRecipeReceipt(body, slot);
   }
 
   async registerR2TestFixtureDriver(
@@ -2416,6 +2425,7 @@ export class NativeHostClient {
   async readR2TestActionDecisionBasis(
     caller: NativeControllerCallerContext,
     promptJson: string,
+    slot?: "novel",
   ): Promise<NativeR2ActionDecisionBasis> {
     if (Buffer.byteLength(promptJson, "utf8") > 32 * 1024 ||
         promptJson.includes("\n") || promptJson.includes("\r")) {
@@ -2423,6 +2433,7 @@ export class NativeHostClient {
     }
     const body = this.request(JSON.stringify({
       operation: "ReadR2TestActionDecisionBasis",
+      ...(slot === "novel" ? { slot } : {}),
       policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
       principalId: canonicalControllerField(caller.principalId, "principalId"),
       profileId: canonicalControllerField(caller.profileId, "profileId"),
@@ -2456,10 +2467,12 @@ export class NativeHostClient {
 
   async prepareR2TestRollbackPlan(
     caller: NativeControllerCallerContext,
+    slot?: "novel",
   ): Promise<NativeR2TestRollbackPlan> {
     const body = this.request(JSON.stringify({
       operation: "PrepareR2TestRollbackPlan",
-      operationId: "r2-02-rollback",
+      operationId: slot === "novel" ? "r2-03-rollback" : "r2-02-rollback",
+      ...(slot === "novel" ? { slot } : {}),
       policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
       principalId: canonicalControllerField(caller.principalId, "principalId"),
       profileId: canonicalControllerField(caller.profileId, "profileId"),
@@ -2467,10 +2480,11 @@ export class NativeHostClient {
       role: caller.role,
       seatId: canonicalControllerField(caller.seatId, "seatId"),
     })).body;
-    return decodeR2TestRollbackPlan(body);
+    return decodeR2TestRollbackPlan(body, slot);
   }
 
   async prepareR2TestAction(input: {
+    readonly slot?: "novel";
     readonly grantRef: string;
     readonly promptJson: string;
     readonly expectedActionDigest: string;
@@ -2486,19 +2500,19 @@ export class NativeHostClient {
     const body = this.request(JSON.stringify({
       operation: "ReserveAction",
       actionKind: "queue",
-      actionOperationId: "opr_22222222222222222222222222222222",
-      contextManifestId: "manifest-r2-02-test",
+      actionOperationId: input.slot === "novel" ? "opr_33333333333333333333333333333333" : "opr_22222222222222222222222222222222",
+      contextManifestId: input.slot === "novel" ? "manifest-r2-03-test" : "manifest-r2-02-test",
       domainId: "domain-r2-02-test",
       lane: "work",
-      packageOperationId: "r2-02-package",
+      packageOperationId: input.slot === "novel" ? "r2-03-package" : "r2-02-package",
       parentGrantRef: input.grantRef,
       payload: input.promptJson,
-      recipeId: "recipe-r2-02-test",
-      reservationId: "reservation-r2-02-controlled",
-      sessionId: "session-r2-02-worker",
-      taskId: "task-r2-02-test",
+      recipeId: input.slot === "novel" ? "recipe-r2-03-test" : "recipe-r2-02-test",
+      reservationId: input.slot === "novel" ? "reservation-r2-03-controlled" : "reservation-r2-02-controlled",
+      sessionId: input.slot === "novel" ? "session-r2-03-worker" : "session-r2-02-worker",
+      taskId: input.slot === "novel" ? "task-r2-03-test" : "task-r2-02-test",
     })).body;
-    const prepared = decodeR2TestActionPreparation(body);
+    const prepared = decodeR2TestActionPreparation(body, input.slot);
     if (prepared.semanticDigest !== input.expectedActionDigest ||
         prepared.packageDigest !== input.expectedPackageDigest) {
       throw new NativeHostClientError("R2_TEST_ACTION", "Action does not match current Decision or package");

@@ -450,7 +450,8 @@ pub(crate) fn read_native_action_fixture_selection(
         {
             return denied();
         }
-        let launch_digest_sha256 = if recipe.recipe.recipe_id == "recipe-r2-02-test"
+        let launch_digest_sha256 = if matches!(recipe.recipe.recipe_id.as_str(),
+            "recipe-r2-02-test" | "recipe-r2-03-test")
             && recipe.recipe.runtime_instance_id != super::r2_fixture_driver::FIXED_RUNTIME_INSTANCE_ID {
             super::r2_fixture_driver::resolve_in_transaction(tx, &recipe.recipe.runtime_instance_id)?.launch_digest_sha256
         } else {
@@ -1302,6 +1303,10 @@ pub(crate) fn complete_action_from_native_receipt(
             {
                 return denied();
             }
+            if terminal == "completed" {
+                super::decision_capacity::settle_r2_test_capacity_after_completion(
+                    tx, &request.domain_id, &request.operation_id, &native[0][0], &native[0][11])?;
+            }
             return Ok(ActionCompletionReceipt {
                 disposition: "REPLAYED",
                 terminal_state: terminal,
@@ -1346,6 +1351,10 @@ pub(crate) fn complete_action_from_native_receipt(
         let check=tx.query("SELECT receipt_id,semantic_digest FROM main.gogoke_action_completion_receipts WHERE domain_id=? AND operation_id=?", &[&request.domain_id,&request.operation_id],2)?;
         if check.len() != 1 || check[0][0] != storage.receipt_id || check[0][1] != native[0][2] {
             return Err(OrchestrationError::OperationConflict);
+        }
+        if terminal == "completed" {
+            super::decision_capacity::settle_r2_test_capacity_after_completion(
+                tx, &request.domain_id, &request.operation_id, &native[0][0], &native[0][11])?;
         }
         Ok(ActionCompletionReceipt {
             disposition: terminal,
@@ -1421,7 +1430,8 @@ pub(crate) fn begin_committed_action(
             payload,
         };
         let (package, task, lineage, recipe, current_profile) = current_selection(tx, &selected)?;
-        if recipe.recipe.recipe_id == "recipe-r2-02-test"
+        if matches!(recipe.recipe.recipe_id.as_str(),
+            "recipe-r2-02-test" | "recipe-r2-03-test")
             && recipe.recipe.runtime_instance_id != super::r2_fixture_driver::FIXED_RUNTIME_INSTANCE_ID {
             super::r2_fixture_driver::resolve_in_transaction(tx, &recipe.recipe.runtime_instance_id)?;
         }

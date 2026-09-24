@@ -21,23 +21,31 @@ export async function commitR2ControlledDecision(input: {
   readonly basis: NativeR2ActionDecisionBasis;
   readonly grant: NativeR2TestDelegationReceipt;
   readonly recordedAt: string;
+  readonly slot?: "novel";
 }): Promise<DecisionCommitResult> {
   const { store, basis, grant, recordedAt } = input;
+  const novel = input.slot === "novel";
+  const operation = novel ? "decision-r2-03-test" : OPERATION;
+  const action = novel ? "opr_33333333333333333333333333333333" : ACTION;
+  const candidate = novel ? "candidate-r2-03-fixture" : CANDIDATE;
+  const selectedHash = novel ? `sha256:${createHash("sha256")
+    .update("gogoke.s1-r4.r2-03.novel-candidate:deterministic-fixture")
+    .digest("hex")}` : candidateHash;
   const deadlineEpochMs = Number(grant.expiresAtEpochMs);
   if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
-      basis.bindingId !== "binding-r2-02-worker" || basis.bindingGeneration !== "1" ||
+      basis.bindingId !== (novel ? "binding-r2-03-worker" : "binding-r2-02-worker") || basis.bindingGeneration !== "1" ||
       grant.state !== "TEST_ONLY_GRANT_PREPARED_NOT_ACTION" ||
       !Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= Date.now() ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(recordedAt)) {
     throw new Error("INVALID_R2_TEST_DECISION_BASIS");
   }
   const record: DecisionRecord = Object.freeze({
-    operationId: OPERATION,
+    operationId: operation,
     scenarioId: "DF10",
     family: "CONTEXT_SELECTION",
     state: "COMMITTED",
     stateViewHash: basis.stateViewHash,
-    candidateHash,
+    candidateHash: selectedHash,
     questionVersion: "1",
     rubricVersion: "1",
     modelRequested: null,
@@ -47,26 +55,26 @@ export async function commitR2ControlledDecision(input: {
     capabilityRevision: "1",
     bindingGeneration: basis.bindingGeneration,
     backendKind: "FAKE",
-    choice: CANDIDATE,
+    choice: candidate,
     reason: "QUALIFIED_BOUNDED_SELECTION",
     budgetUnits: 1,
     deadlineEpochMs,
   });
   const port = createNativeDecisionCommitPort(store, {
-    operationId: OPERATION,
+    operationId: operation,
     domainId: "domain-r2-02-test",
-    decisionId: "decision-r2-02-test",
-    eventId: "r2-02-decision-event",
-    receiptId: "r2-02-decision-receipt",
+    decisionId: operation,
+    eventId: novel ? "r2-03-decision-event" : "r2-02-decision-event",
+    receiptId: novel ? "r2-03-decision-receipt" : "r2-02-decision-receipt",
     recordedAt,
     candidates: [{
-      candidateId: CANDIDATE,
+      candidateId: candidate,
       requiredCapacityUnits: 1,
       snapshot: {
-        operationId: OPERATION,
-        candidateId: CANDIDATE,
+        operationId: operation,
+        candidateId: candidate,
         stateViewHash: basis.stateViewHash,
-        candidateHash,
+        candidateHash: selectedHash,
         taskRevision: basis.taskRevision,
         policyRevision: basis.policyRevision,
         capabilityRevision: "1",
@@ -76,14 +84,14 @@ export async function commitR2ControlledDecision(input: {
         resourceRef: "capacity-r2-02-fixture",
         resourceRevision: "1",
         capacityTotal: 1,
-        actionOperationId: ACTION,
+        actionOperationId: action,
         actionDigest: basis.actionDigest,
       },
     }],
   });
   return port.commitDecisionReservation({
     record,
-    reservation: { candidateId: CANDIDATE, resourceReservationRef: "capacity-lease-r2-02" },
-    action: { actionIntentRef: ACTION },
+    reservation: { candidateId: candidate, resourceReservationRef: novel ? "capacity-lease-r2-03" : "capacity-lease-r2-02" },
+    action: { actionIntentRef: action },
   });
 }

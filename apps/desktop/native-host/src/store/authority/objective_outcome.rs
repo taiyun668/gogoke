@@ -89,14 +89,23 @@ pub(crate) fn read_r2_objective_fact_refs(
     identifier(action_completion_ref)?;
     transaction::run(connection, |tx| {
         let domain = "domain-r2-02-test";
-        let manifest_id = "manifest-r2-02-test";
-        let action_id = "opr_22222222222222222222222222222222";
+        let actions = tx.query(
+            "SELECT operation_id FROM main.gogoke_action_completion_receipts WHERE domain_id=? AND receipt_id=? AND disposition='COMPLETED'",
+            &[domain, action_completion_ref], 1)?;
+        if actions.len() != 1 { return denied(); }
+        let (action_id, manifest_id, decision_id) = match actions[0][0].as_str() {
+            "opr_22222222222222222222222222222222" =>
+                ("opr_22222222222222222222222222222222", "manifest-r2-02-test", "decision-r2-02-test"),
+            "opr_33333333333333333333333333333333" =>
+                ("opr_33333333333333333333333333333333", "manifest-r2-03-test", "decision-r2-03-test"),
+            _ => return denied(),
+        };
         let manifest_hash = super::context_manifest::resolve_current_manifest_in_transaction(
             tx, domain, manifest_id)?;
         let (manifest_content_hash, _) = validate_manifest(
             tx, domain, manifest_id, "1", &manifest_hash)?;
-        let decision = read_in_transaction(tx, domain, "decision-r2-02-test")?;
-        if decision.decision_id != "decision-r2-02-test" ||
+        let decision = read_in_transaction(tx, domain, decision_id)?;
+        if decision.decision_id != decision_id ||
             decision.object_version != "1" ||
             decision.action_intent_ref != action_id ||
             decision.record.family != "CONTEXT_SELECTION" {

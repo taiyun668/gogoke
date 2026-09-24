@@ -91,16 +91,20 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   readonly prepareR2TestPackage?: (
     caller: NativeControllerCallerContext,
     promptJson: string,
+    slot?: "novel",
   ) => Promise<NativeR2TestPackageReceipt>;
   readonly prepareR2TestLineage?: (
     caller: NativeControllerCallerContext,
+    slot?: "novel",
   ) => Promise<NativeR2TestLineageReceipt>;
   readonly prepareR2TestTask?: (
     caller: NativeControllerCallerContext,
+    slot?: "novel",
   ) => Promise<NativeR2TestTaskReceipt>;
   readonly prepareR2TestRecipe?: (
     caller: NativeControllerCallerContext,
     runtimeInstanceId?: string,
+    slot?: "novel",
   ) => Promise<NativeR2TestRecipeReceipt>;
   readonly registerR2TestFixtureDriver?: (
     caller: NativeControllerCallerContext,
@@ -113,6 +117,7 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   readonly readR2TestActionDecisionBasis?: (
     caller: NativeControllerCallerContext,
     promptJson: string,
+    slot?: "novel",
   ) => Promise<NativeR2ActionDecisionBasis>;
   readonly readR2ObjectiveFactRefs?: (
     caller: NativeControllerCallerContext,
@@ -120,8 +125,10 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   ) => Promise<NativeR2ObjectiveFactRefs>;
   readonly prepareR2TestRollbackPlan?: (
     caller: NativeControllerCallerContext,
+    slot?: "novel",
   ) => Promise<NativeR2TestRollbackPlan>;
   readonly prepareR2TestAction?: (input: {
+    readonly slot?: "novel";
     readonly grantRef: string;
     readonly promptJson: string;
     readonly expectedActionDigest: string;

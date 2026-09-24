@@ -11,6 +11,11 @@ import {
   decodeR2TestFactJournalEntry,
   decodeR2ObjectiveFactRefs,
   decodeR2TestRollbackPlan,
+  decodeR2TestTaskReceipt,
+  decodeR2TestPackageReceipt,
+  decodeR2TestLineageReceipt,
+  decodeR2TestRecipeReceipt,
+  decodeR2TestActionPreparation,
   decodeR2TestFixtureDriverRegistration,
   decodeR2TestFixtureActionBinding,
   decodeCurrentDelegationGrantReply,
@@ -74,6 +79,35 @@ test("R2 rollback plan reply remains test-only and unactivated", () => {
   assert.throws(() => decodeR2TestRollbackPlan(JSON.stringify({
     ...plan, state: "ACTIVATED",
   })), /native rollback identity mismatch/);
+  const novelPlan = { ...plan, planId: "rollback-r2-03-test" };
+  assert.deepEqual(decodeR2TestRollbackPlan(JSON.stringify(novelPlan), "novel"), novelPlan);
+  assert.throws(() => decodeR2TestRollbackPlan(JSON.stringify(novelPlan)),
+    /native rollback identity mismatch/);
+});
+
+test("R2 typed receipts reject cross-slot identity substitution", () => {
+  const hash = `sha256:${"a".repeat(64)}`;
+  const task = { state: "TEST_ONLY_TASK_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    taskId: "task-r2-03-test", taskRevision: "1", contentHash: hash };
+  const pack = { state: "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    packageOperationId: "r2-03-package", packageDigest: hash };
+  const lineage = { state: "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    sessionId: "session-r2-03-worker", bindingId: "binding-r2-03-worker",
+    generation: "1", sourceEpoch: "1" };
+  const recipe = { state: "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    recipeId: "recipe-r2-03-test", revision: "1", contentHash: hash };
+  const action = { kind: "reserved", reservationState: "reserved",
+    operationId: "opr_33333333333333333333333333333333", semanticDigest: hash,
+    reservationId: "reservation-r2-03-controlled", packageDigest: hash,
+    authorityStatus: "PREPARATORY_CURRENT_FACTS_REQUIRED" };
+  for (const [record, decode] of [
+    [task, decodeR2TestTaskReceipt], [pack, decodeR2TestPackageReceipt],
+    [lineage, decodeR2TestLineageReceipt], [recipe, decodeR2TestRecipeReceipt],
+    [action, decodeR2TestActionPreparation],
+  ] as const) {
+    assert.deepEqual(decode(JSON.stringify(record), "novel"), record);
+    assert.throws(() => decode(JSON.stringify(record)), NativeHostClientError);
+  }
 });
 
 test("native Action transport codec keeps completion distinct from Result and replay", () => {

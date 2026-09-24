@@ -408,10 +408,15 @@ fn preauthorized_action_runs_exact_fixture_once_and_records_native_completion() 
         assert!(body.contains("ACTION_TRANSPORT_COMPLETED_NOT_RESULT"));
         assert!(body.contains("\"actionCompletionRef\":\""));
         let replay = crate::store::session::run_controlled_fixture_action(db, owner, &mut custodian, &frame).unwrap();
-        assert!(replay.contains("ACTION_COMPLETION_RECONCILED_NOT_RESULT"));
-        assert!(!replay.contains("\"frames\""), "recovery must not invent another Result");
+        let first: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let recovered: serde_json::Value = serde_json::from_str(&replay).unwrap();
+        assert_eq!(recovered["state"], "ACTION_TRANSPORT_RECONCILED_NOT_RESULT");
+        assert_eq!(recovered["frames"], first["frames"], "replay returns only the exact original transport");
+        assert_eq!(recovered["actionCompletionRef"], first["actionCompletionRef"]);
+        assert_eq!(recovered["stopProofHash"], first["stopProofHash"]);
         assert_eq!(count(db, "SELECT state FROM main.gogoke_action_reservations"), "completed");
         assert_eq!(count(db, "SELECT state FROM main.gogoke_coordination_process_custody"), "STOPPED");
+        assert_eq!(count(db, "SELECT count(*) FROM main.gogoke_coordination_process_custody"), "1");
         drop(custodian);
         std::fs::remove_file(fixture_copy).unwrap();
         std::fs::remove_file(node_copy).unwrap();

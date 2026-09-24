@@ -722,9 +722,11 @@ fn validate_r2_test_prompt(prompt: &str) -> Result<String, OrchestrationError> {
 
 fn r2_test_package_recorded_at(
     connection: &VerifiedDatabaseConnection<'_>,
+    operation_id: &str,
 ) -> Result<String, OrchestrationError> {
     let mut prior = Statement::prepare(connection.as_ptr(),
-        "SELECT recorded_at FROM main.gogoke_authorized_task_packages WHERE domain_id='domain-r2-02-test' AND operation_id='r2-02-package'")?;
+        "SELECT recorded_at FROM main.gogoke_authorized_task_packages WHERE domain_id='domain-r2-02-test' AND operation_id=?")?;
+    prior.bind_text(1, operation_id)?;
     if prior.step_row()? {
         let recorded_at = prior.column_text(0)?;
         if prior.step_row()? {
@@ -739,6 +741,42 @@ fn r2_test_package_recorded_at(
         return Err(OrchestrationError::AccessDenied);
     }
     Ok(now.column_text(0)?)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum R2TestSlot { Fixed, Novel }
+
+impl R2TestSlot {
+    fn tag(self) -> &'static str { match self { Self::Fixed => "r2-02", Self::Novel => "r2-03" } }
+    fn operation(self, suffix: &str) -> String { format!("{}-{suffix}", self.tag()) }
+    fn task_id(self) -> String { format!("task-{}-test", self.tag()) }
+    fn session_id(self) -> String { format!("session-{}-worker", self.tag()) }
+    fn binding_id(self) -> String { format!("binding-{}-worker", self.tag()) }
+    fn native_session_id(self) -> String { format!("native-{}-worker", self.tag()) }
+    fn execution_id(self) -> String { format!("execution-{}-worker", self.tag()) }
+    fn recipe_id(self) -> String { format!("recipe-{}-test", self.tag()) }
+    fn manifest_id(self) -> String { format!("manifest-{}-test", self.tag()) }
+    fn action_id(self) -> &'static str { match self {
+        Self::Fixed => "opr_22222222222222222222222222222222",
+        Self::Novel => "opr_33333333333333333333333333333333",
+    } }
+    fn reservation_id(self) -> String { format!("reservation-{}-controlled", self.tag()) }
+}
+
+fn r2_test_slot_fields(line: &str, base: &[&str]) -> Result<(BTreeMap<String, String>, R2TestSlot), OrchestrationError> {
+    let fields = authority_fields(line)?;
+    let slot = match fields.get("slot").map(String::as_str) {
+        None => R2TestSlot::Fixed,
+        Some("novel") => R2TestSlot::Novel,
+        _ => return Err(OrchestrationError::AccessDenied),
+    };
+    let expected = base.len() + if slot == R2TestSlot::Novel { 1 } else { 0 };
+    if fields.len() != expected || fields.keys().any(|key|
+        !base.contains(&key.as_str()) && !(slot == R2TestSlot::Novel && key == "slot"))
+        || base.iter().any(|key| !fields.contains_key(*key)) {
+        return Err(OrchestrationError::Invalid("action frame fields"));
+    }
+    Ok((fields, slot))
 }
 
 fn r2_test_recorded_at(
@@ -1223,11 +1261,12 @@ fn handle_authenticated_line_with_process(
                 json_quote(&grant.revocation_head)))
         }
         "PrepareR2TestTask" => {
-            let fields = action_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId",
             ])?;
-            if required(&fields, "operationId")? != "r2-02-task-context" {
+            let operation_id = slot.operation("task-context");
+            if required(&fields, "operationId")? != operation_id {
                 return Err(OrchestrationError::AccessDenied);
             }
             let admitted = authority::admit_owner_controller_caller(
@@ -1270,20 +1309,20 @@ fn handle_authenticated_line_with_process(
                 "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e" {
                 return Err(OrchestrationError::AccessDenied);
             }
-            let recorded_at = r2_test_recorded_at(connection, "r2-02-task-context")?;
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
             let receipt = authority::commit_task_context_requirements(connection,
                 &CommitTaskContextRequirements {
-                    operation_id: "r2-02-task-context".into(),
+                    operation_id: operation_id.clone(),
                     domain_id: "domain-r2-02-test".into(),
-                    task_id: "task-r2-02-test".into(),
+                    task_id: slot.task_id(),
                     expected_previous_revision: None,
                     mandatory_refs: vec![MandatoryContextRef {
                         source_domain_id: "domain-r2-02-source".into(),
                         context_id: "context-r2-02-public-fixture".into(),
                         version: "1".into(),
                     }],
-                    event_id: "r2-02-task-event".into(),
-                    receipt_id: "r2-02-task-receipt".into(),
+                    event_id: slot.operation("task-event"),
+                    receipt_id: slot.operation("task-receipt"),
                     recorded_at,
                 })?;
             Ok(format!("{{\"state\":\"TEST_ONLY_TASK_PREPARED_NOT_ACTION\",\"disposition\":{},\"taskId\":{},\"taskRevision\":{},\"contentHash\":{}}}",
@@ -1292,11 +1331,12 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.current.content_hash)))
         }
         "PrepareR2TestPackage" => {
-            let fields = action_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId", "promptJson",
             ])?;
-            if required(&fields, "operationId")? != "r2-02-package" {
+            let operation_id = slot.operation("package");
+            if required(&fields, "operationId")? != operation_id {
                 return Err(OrchestrationError::AccessDenied);
             }
             let prompt = required(&fields, "promptJson")?;
@@ -1317,13 +1357,13 @@ fn handle_authenticated_line_with_process(
                 || grant.reference.revocation_head != admitted.revocation_head {
                 return Err(OrchestrationError::AccessDenied);
             }
-            let recorded_at = r2_test_package_recorded_at(connection)?;
+            let recorded_at = r2_test_package_recorded_at(connection, &operation_id)?;
             let prepared = authority::prepare_authorized_task_package(connection,
                 &authority::PrepareAuthorizedTaskPackage {
-                    operation_id: "r2-02-package".into(),
+                    operation_id,
                     domain_id: "domain-r2-02-test".into(),
-                    event_id: "r2-02-package-event".into(),
-                    receipt_id: "r2-02-package-receipt".into(),
+                    event_id: slot.operation("package-event"),
+                    receipt_id: slot.operation("package-receipt"),
                     recorded_at,
                     package: authority::AuthorizedTaskPackageDraft {
                         parent_grant_ref: grant.reference.grant_id,
@@ -1352,8 +1392,8 @@ fn handle_authenticated_line_with_process(
                             generation: grant.binding.generation,
                         },
                         target_binding: authority::TaskPackageBinding {
-                            session_id: "session-r2-02-worker".into(),
-                            execution_id: "execution-r2-02-worker".into(),
+                            session_id: slot.session_id(),
+                            execution_id: slot.execution_id(),
                             generation: "1".into(),
                         },
                         target_binding_kind: "existing".into(),
@@ -1367,11 +1407,13 @@ fn handle_authenticated_line_with_process(
                 json_quote(&prepared.package_digest)))
         }
         "PrepareR2TestLineage" => {
-            let fields = action_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId",
             ])?;
-            if required(&fields, "operationId")? != "r2-02-lineage" {
+            let operation_id = slot.operation("lineage");
+            let package_id = slot.operation("package");
+            if required(&fields, "operationId")? != operation_id {
                 return Err(OrchestrationError::AccessDenied);
             }
             let admitted = authority::admit_owner_controller_caller(
@@ -1383,27 +1425,27 @@ fn handle_authenticated_line_with_process(
             let grant = authority::read_current_delegation(connection,
                 &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
             let package = authority::read_authorized_task_package(
-                connection, "domain-r2-02-test", "r2-02-package")?;
+                connection, "domain-r2-02-test", &package_id)?;
             if grant.principal.principal_id != admitted.principal_id
                 || grant.principal.seat_id != admitted.seat_id
                 || grant.policy_revision != admitted.policy_revision
                 || grant.reference.revocation_head != admitted.revocation_head
-                || package.operation_id != "r2-02-package" {
+                || package.operation_id != package_id {
                 return Err(OrchestrationError::AccessDenied);
             }
-            let recorded_at = r2_test_recorded_at(connection, "r2-02-lineage")?;
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
             let receipt = authority::apply_session_lineage_command(connection,
                 &authority::SessionLineageCommand {
-                    operation_id: "r2-02-lineage".into(),
+                    operation_id,
                     domain_id: "domain-r2-02-test".into(),
-                    event_id: "r2-02-lineage-event".into(),
-                    receipt_id: "r2-02-lineage-receipt".into(),
+                    event_id: slot.operation("lineage-event"),
+                    receipt_id: slot.operation("lineage-receipt"),
                     recorded_at,
                     operation: authority::SessionLineageOperation::NewClean {
-                        session_id: "session-r2-02-worker".into(),
+                        session_id: slot.session_id(),
                         native: authority::NativeSessionIdentity {
-                            native_session_id: "native-r2-02-worker".into(),
-                            binding_id: "binding-r2-02-worker".into(),
+                            native_session_id: slot.native_session_id(),
+                            binding_id: slot.binding_id(),
                             generation: "1".into(),
                             source_epoch: "1".into(),
                             domain_id: "domain-r2-02-test".into(),
@@ -1420,17 +1462,15 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.snapshot.native.source_epoch)))
         }
         "PrepareR2TestRecipe" => {
-            let required_fields = [
+            let mut expected_fields = vec![
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId",
             ];
-            let fields = authority_fields(line)?;
-            if fields.len() != required_fields.len() + (if fields.contains_key("runtimeInstanceId") { 1 } else { 0 })
-                || fields.keys().any(|key| !required_fields.contains(&key.as_str()) && key != "runtimeInstanceId")
-                || required_fields.iter().any(|key| !fields.contains_key(*key)) {
-                return Err(OrchestrationError::Invalid("action frame fields"));
-            }
-            if required(&fields, "operationId")? != "r2-02-recipe" {
+            if authority_fields(line)?.contains_key("runtimeInstanceId") { expected_fields.push("runtimeInstanceId"); }
+            let (fields, slot) = r2_test_slot_fields(line, &expected_fields)?;
+            let operation_id = slot.operation("recipe");
+            let package_id = slot.operation("package");
+            if required(&fields, "operationId")? != operation_id {
                 return Err(OrchestrationError::AccessDenied);
             }
             let admitted = authority::admit_owner_controller_caller(
@@ -1441,48 +1481,51 @@ fn handle_authenticated_line_with_process(
             )?;
             let runtime_instance_id = fields.get("runtimeInstanceId")
                 .map(String::as_str).unwrap_or(authority::FIXED_RUNTIME_INSTANCE_ID);
+            if (slot == R2TestSlot::Fixed) != (runtime_instance_id == authority::FIXED_RUNTIME_INSTANCE_ID) {
+                return Err(OrchestrationError::AccessDenied);
+            }
             if runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
                 authority::resolve_r2_test_fixture_driver(connection, runtime_instance_id)?;
             }
             let grant = authority::read_current_delegation(connection,
                 &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
             let task = authority::read_task_context_requirements(
-                connection, "domain-r2-02-test", "task-r2-02-test")?;
+                connection, "domain-r2-02-test", &slot.task_id())?;
             let package = authority::read_authorized_task_package(
-                connection, "domain-r2-02-test", "r2-02-package")?;
+                connection, "domain-r2-02-test", &package_id)?;
             let lineage = authority::read_session_lineage(
-                connection, "domain-r2-02-test", "session-r2-02-worker")?;
+                connection, "domain-r2-02-test", &slot.session_id())?;
             if grant.principal.principal_id != admitted.principal_id
                 || grant.principal.seat_id != admitted.seat_id
                 || grant.policy_revision != admitted.policy_revision
                 || grant.reference.revocation_head != admitted.revocation_head
                 || task.task_revision != "1"
-                || package.operation_id != "r2-02-package"
+                || package.operation_id != package_id
                 || lineage.lifecycle != "ACTIVE"
-                || lineage.native.binding_id != "binding-r2-02-worker"
+                || lineage.native.binding_id != slot.binding_id()
                 || lineage.native.generation != "1" {
                 return Err(OrchestrationError::AccessDenied);
             }
-            let recorded_at = r2_test_recorded_at(connection, "r2-02-recipe")?;
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
             let mut model_ref = BTreeMap::new();
             model_ref.insert("kind".into(), RecipeJsonValue::String("TEST_FIXTURE".into()));
             model_ref.insert("modelId".into(), RecipeJsonValue::String("deterministic-fixture".into()));
             let receipt = authority::append_owner_execution_recipe(connection, owner,
                 &AppendExecutionRecipe {
-                    operation_id: "r2-02-recipe".into(),
+                    operation_id,
                     domain_id: "domain-r2-02-test".into(),
                     expected_previous_revision: None,
-                    recipe_id: "recipe-r2-02-test".into(),
+                    recipe_id: slot.recipe_id(),
                     seat_id: "seat-r2-02-worker".into(),
                     runtime_instance_id: runtime_instance_id.into(),
                     model_ref,
                     tool_profile: RecipeJsonValue::Null,
                     isolation_profile: RecipeJsonValue::Null,
-                    context_manifest_id: "manifest-r2-02-test".into(),
+                    context_manifest_id: slot.manifest_id(),
                     budget_policy: RecipeJsonValue::Null,
                     admission_ref: grant.reference.grant_id,
-                    event_id: "r2-02-recipe-event".into(),
-                    receipt_id: "r2-02-recipe-receipt".into(),
+                    event_id: slot.operation("recipe-event"),
+                    receipt_id: slot.operation("recipe-receipt"),
                     recorded_at,
                 })?;
             Ok(format!("{{\"state\":\"TEST_ONLY_RECIPE_PREPARED_NOT_ACTION\",\"disposition\":{},\"recipeId\":{},\"revision\":{},\"contentHash\":{}}}",
@@ -1491,7 +1534,7 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.version.content_hash)))
         }
         "ReadR2TestActionDecisionBasis" => {
-            let fields = action_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(line, &[
                 "operation", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId", "promptJson",
             ])?;
@@ -1515,13 +1558,13 @@ fn handle_authenticated_line_with_process(
                 &authority::PrepareActionAuthority {
                     domain_id: "domain-r2-02-test".into(),
                     parent_grant_ref: grant_ref,
-                    package_operation_id: "r2-02-package".into(),
-                    task_id: "task-r2-02-test".into(),
-                    recipe_id: "recipe-r2-02-test".into(),
-                    session_id: "session-r2-02-worker".into(),
-                    context_manifest_id: "manifest-r2-02-test".into(),
-                    action_operation_id: "opr_22222222222222222222222222222222".into(),
-                    reservation_id: "reservation-r2-02-controlled".into(),
+                    package_operation_id: slot.operation("package"),
+                    task_id: slot.task_id(),
+                    recipe_id: slot.recipe_id(),
+                    session_id: slot.session_id(),
+                    context_manifest_id: slot.manifest_id(),
+                    action_operation_id: slot.action_id().into(),
+                    reservation_id: slot.reservation_id(),
                     action_kind: "queue".into(),
                     lane: "work".into(),
                     payload: prompt.as_bytes().to_vec(),
@@ -1558,11 +1601,12 @@ fn handle_authenticated_line_with_process(
                 json_quote(&refs.action_completed_at)))
         }
         "PrepareR2TestRollbackPlan" => {
-            let fields = action_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(line, &[
                 "operation", "operationId", "policyRevision", "principalId",
                 "profileId", "revocationHead", "role", "seatId",
             ])?;
-            if required(&fields, "operationId")? != "r2-02-rollback" {
+            let operation_id = slot.operation("rollback");
+            if required(&fields, "operationId")? != operation_id {
                 return Err(OrchestrationError::AccessDenied);
             }
             let admitted = authority::admit_owner_controller_caller(
@@ -1580,10 +1624,10 @@ fn handle_authenticated_line_with_process(
                 return Err(OrchestrationError::AccessDenied);
             }
             let _evaluation = authority::read_evaluation(
-                connection, "domain-r2-02-test", "evaluation-r2-02-test", "1")?;
-            let recorded_at = r2_test_recorded_at(connection, "r2-02-rollback")?;
+                connection, "domain-r2-02-test", &format!("evaluation-{}-test", slot.tag()), "1")?;
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
             let plan: authority::R2TestRollbackPlan = authority::prepare_r2_test_rollback_plan(
-                connection, &recorded_at)?;
+                connection, &recorded_at, slot == R2TestSlot::Novel)?;
             Ok(format!("{{\"state\":\"TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED\",\"disposition\":{},\"domainId\":\"domain-r2-02-test\",\"planId\":{},\"revision\":{},\"contentHash\":{},\"beforeHash\":{},\"afterHash\":{}}}",
                 json_quote(plan.disposition), json_quote(&plan.reference.object_id),
                 json_quote(&plan.reference.revision), json_quote(&plan.reference.content_hash),
@@ -2264,22 +2308,14 @@ mod context_tests {
         assert!(first.contains("\"contentHash\":\"sha256:"));
         let registered = authority::register_r2_test_fixture_driver(
             &mut connection, &identity.profile_id, "mock_novel_0123456789abcdef").unwrap();
-        let recipe_frame = |runtime_instance_id: &str| format!(
-            "{{\"operation\":\"PrepareR2TestRecipe\",\"operationId\":\"r2-02-recipe\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"runtimeInstanceId\":{},\"seatId\":{}}}",
-            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
-            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
-            json_quote(runtime_instance_id), json_quote(&identity.seat_id),
-        );
-        assert!(matches!(handle_authenticated_line(&mut connection, &owner,
-            &recipe_frame("runtime-r2-03-unregistered")), Err(OrchestrationError::AccessDenied)));
         assert_eq!(authority::resolve_r2_test_fixture_driver(
             &mut connection, &registered.runtime_instance_id).unwrap(), registered);
         assert!(authority::resolve_r2_test_fixture_driver(
             &mut connection, "runtime-r2-03-unregistered").is_err());
         connection.execute("UPDATE main.gogoke_r2_test_fixture_drivers SET launch_digest_sha256='sha256:0000000000000000000000000000000000000000000000000000000000000000'").unwrap();
         assert!(handle_authenticated_line(&mut connection, &owner, &frame).is_err());
-        assert!(matches!(handle_authenticated_line(&mut connection, &owner,
-            &recipe_frame(&registered.runtime_instance_id)), Err(OrchestrationError::AccessDenied)));
+        assert!(authority::resolve_r2_test_fixture_driver(
+            &mut connection, &registered.runtime_instance_id).is_err());
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();

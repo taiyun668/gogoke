@@ -398,8 +398,6 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       "private SESSION canary must not enter the test Git draft");
     Assert.equal(writtenFact.serviceEntrySha256, entryHash);
     Assert.equal(writtenFact.dreamProposalState, "DRAFT_TEST_ONLY_NOT_ACTIVATED");
-    const novelRoot = Path.join(root, "product-entry-novel-root");
-    await FS.mkdir(novelRoot);
     const novelDriverId = `mock_novel_${Crypto.randomBytes(8).toString("hex")}`;
     let novelBytes: Buffer | undefined;
     let novelPath: string | undefined;
@@ -426,10 +424,9 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         sha: novelBlob(), size: novelBytes.length, encoding: "base64",
         content: novelBytes.toString("base64") }), { status: 200 });
     };
-    const novelProduct = await handleProductGoalRequest(
-      { ...writeRequest, fixtureDriverId: novelDriverId },
-      { ...writeIdentity, root: novelRoot, testWritePort: novelPort, testFetcher: novelFetcher },
-    );
+    const novelRequest = { ...writeRequest, fixtureDriverId: novelDriverId };
+    const novelIdentity = { ...writeIdentity, testWritePort: novelPort, testFetcher: novelFetcher };
+    const novelProduct = await handleProductGoalRequest(novelRequest, novelIdentity);
     Assert.equal(novelProduct.fixtureDriverId, novelDriverId);
     Assert.equal(novelProduct.controlledTask?.fixtureDriverBinding?.driverId, novelDriverId);
     Assert.equal(novelProduct.controlledTask?.fixtureDriverBinding?.adapterVersion, "1.0.0");
@@ -438,6 +435,23 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.match(novelProduct.controlledTask?.fixtureDriverBinding?.launchDigestSha256 ?? "",
       /^sha256:[0-9a-f]{64}$/);
     Assert.equal(novelProduct.testLedgerDraft?.state, "DRAFT_COMMITTED_NOT_ADOPTED");
+    Assert.notEqual(novelProduct.controlledTask?.actionCompletionRef,
+      writtenProduct.controlledTask?.actionCompletionRef,
+      "one product root must retain two distinct Action completions");
+    const repeatedNovel = await handleProductGoalRequest(novelRequest, novelIdentity);
+    Assert.equal(repeatedNovel.controlledTask?.actionCompletionRef,
+      novelProduct.controlledTask?.actionCompletionRef,
+      "the novel slot replays without a second Action");
+    Assert.equal(repeatedNovel.testLedgerDraft?.commit, novelProduct.testLedgerDraft?.commit);
+    const fixedAfterNovel = await handleProductGoalRequest(writeRequest,
+      { ...writeIdentity, testWritePort });
+    Assert.equal(fixedAfterNovel.controlledTask?.actionCompletionRef,
+      writtenProduct.controlledTask?.actionCompletionRef,
+      "the fixed slot still replays after the novel slot");
+    const otherNovelDriverId = `mock_novel_${Crypto.randomBytes(8).toString("hex")}`;
+    await Assert.rejects(handleProductGoalRequest(
+      { ...writeRequest, fixtureDriverId: otherNovelDriverId }, novelIdentity,
+    ), "a different novel driver must fail closed in the occupied product root");
     const novelFact = JSON.parse(Buffer.from(novelBytes ?? new Uint8Array()).toString("utf8")) as Record<string, unknown>;
     Assert.deepEqual(novelFact.fixtureDriverBinding, novelProduct.controlledTask?.fixtureDriverBinding);
     Assert.equal(novelFact.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
@@ -458,6 +472,10 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
         runtimeInstanceId: binding.runtimeInstanceId,
         launchDigestSha256: binding.launchDigestSha256,
         actionCompletionRef: novelProduct.controlledTask?.actionCompletionRef,
+        fixedActionCompletionRef: writtenProduct.controlledTask?.actionCompletionRef,
+        novelReplayActionCompletionRef: repeatedNovel.controlledTask?.actionCompletionRef,
+        fixedReplayAfterNovelActionCompletionRef: fixedAfterNovel.controlledTask?.actionCompletionRef,
+        sameProductRoot: novelIdentity.root === writeIdentity.root,
         draftState: novelProduct.testLedgerDraft?.state,
         privacyCanaryExcludedFromFixedDraft: true,
         acceptance: novelProduct.acceptance,
