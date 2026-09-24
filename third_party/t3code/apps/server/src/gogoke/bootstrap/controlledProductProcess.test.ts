@@ -27,7 +27,7 @@ const fixturePath = fileURLToPath(new URL("../../../../../../../apps/desktop/tes
 
 const cloudOnly = process.platform === "win32" && Boolean(process.env.GOGOKE_NATIVE_HOST) ? it : it.skip;
 
-cloudOnly("runs the fixed public fixture through native custody and Pi protocol without adoption", { timeout: 40_000 }, async () => {
+cloudOnly("runs the fixed public fixture through native custody and Pi protocol without adoption", { timeout: 110_000 }, async () => {
   const builtHost = process.env.GOGOKE_NATIVE_HOST;
   if (builtHost === undefined) throw new Error("GOGOKE_NATIVE_HOST missing");
   const source = await readGitHubFact(
@@ -322,20 +322,55 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     const runningEntry = process.argv[1];
     if (runningEntry === undefined) throw new Error("node test entry missing");
     const entryHash = `sha256:${sha256(await FS.readFile(runningEntry))}`;
+    const writeRequest = { ...productRequest, publishTestDraft: true as const };
+    const writeIdentity = {
+      root: writeRoot, hostBinary: hosted,
+      executionEvidenceSha: process.env.GITHUB_SHA ?? "1".repeat(40),
+      serviceEntrySha256: entryHash, testFetcher,
+    };
+    await Assert.rejects(handleProductGoalRequest(writeRequest, {
+      ...writeIdentity,
+      testWritePort: { ...testWritePort,
+        async assertCurrentAuthority() { throw new Error("R2_TEST_DRAFT_AUTHORITY_DENIED"); } },
+    }), /R2_TEST_DRAFT_AUTHORITY_DENIED/);
+    Assert.equal(writtenBytes, undefined, "denied preflight cannot write a draft");
     const writtenProduct = await handleProductGoalRequest(
-      { ...productRequest, publishTestDraft: true },
-      { root: writeRoot, hostBinary: hosted,
-        executionEvidenceSha: process.env.GITHUB_SHA ?? "1".repeat(40),
-        serviceEntrySha256: entryHash, testWritePort, testFetcher },
+      writeRequest, { ...writeIdentity, testWritePort },
     );
     Assert.equal(writtenProduct.testLedgerDraft?.state, "DRAFT_COMMITTED_NOT_ADOPTED");
     Assert.equal(writtenProduct.testLedgerDraft?.commit, testCommit);
     Assert.equal(writtenProduct.testLedgerDraft?.gitBlob, writtenBlob());
     Assert.equal(writtenProduct.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
-    const writtenFact = JSON.parse(writtenBytes?.toString("utf8") ?? "null") as Record<string, unknown>;
+    const writtenFact = JSON.parse(Buffer.from(writtenBytes ?? new Uint8Array()).toString("utf8")) as Record<string, unknown>;
     Assert.equal(writtenFact.testOnly, true);
     Assert.equal(writtenFact.serviceEntrySha256, entryHash);
     Assert.equal(writtenFact.dreamProposalState, "DRAFT_TEST_ONLY_NOT_ACTIVATED");
+    const unknownRoot = Path.join(root, "product-entry-unknown-root");
+    await FS.mkdir(unknownRoot);
+    let unknownBytes: Buffer | undefined;
+    let unknownUpdates = 0;
+    const unknownPort: GitFactWritePort = {
+      ...testWritePort,
+      async readHead() { return { commit: "e".repeat(40), tree: testTree }; },
+      async createBlob(bytes) {
+        unknownBytes = Buffer.from(bytes);
+        return Crypto.createHash("sha1").update(`blob ${unknownBytes.length}\0`)
+          .update(unknownBytes).digest("hex");
+      },
+      async createTree() { return "f".repeat(40); },
+      async createCommit() { return "0".repeat(40); },
+      async updateRef() { unknownUpdates += 1; throw new Error("remote update reply lost"); },
+    };
+    const unknownRequest = { ...writeIdentity, root: unknownRoot, testWritePort: unknownPort,
+      testFetcher: (async () => { throw new Error("unknown update cannot read an accepted fact"); }) as typeof fetch };
+    await Assert.rejects(handleProductGoalRequest(writeRequest, unknownRequest),
+      /TEST_FACT_WRITE_OUTCOME_UNKNOWN/);
+    Assert.equal(unknownUpdates, 1);
+    Assert.ok(unknownBytes !== undefined);
+    await Assert.rejects(handleProductGoalRequest(writeRequest, unknownRequest),
+      /R2_ACTION_REPLAY_NO_NEW_RESULT/,
+      "unknown Git update cannot cause a second native Action or resend");
+    Assert.equal(unknownUpdates, 1, "unknown update cannot be blindly repeated");
     const evidenceRoot = process.env.GOGOKE_SERVER_EVIDENCE_ROOT;
     if (evidenceRoot !== undefined) {
       const executionEvidenceSha = process.env.GITHUB_SHA;

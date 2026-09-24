@@ -256,6 +256,7 @@ export async function handleProductGoalRequest(
       } else {
         await currentNativeAdmission();
         writePort = paths.testWritePort;
+        await writePort.assertCurrentAuthority();
       }
     }
     if (request.runControlledTask === true) {
