@@ -332,11 +332,14 @@ const smokeReceiptSchema = 'gogoke.r2-04.installed-smoke-receipt.v1';
 function configuredSmokeReceiptPath() {
   const configured = process.env.GOGOKE_R2_SMOKE_RECEIPT;
   if (!configured) return null;
+  if (process.env.GITHUB_ACTIONS !== 'true' || !process.env.RUNNER_TEMP) {
+    throw new Error('installed smoke receipt requires cloud runner temp');
+  }
   const resolved = path.resolve(configured);
-  const tempRoot = fs.realpathSync(os.tmpdir());
+  const tempRoot = fs.realpathSync(process.env.RUNNER_TEMP);
   const parent = fs.realpathSync(path.dirname(resolved));
   const relative = path.relative(tempRoot, parent);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  if (relative !== '') {
     throw new Error('installed smoke receipt path escaped runner temp');
   }
   if (!/^gogoke-r2-smoke-receipt-[0-9a-f]{32}\.json$/.test(path.basename(resolved))) {
@@ -536,8 +539,8 @@ if (mode === 'stage') {
 } else if (mode === 'verify') {
   verify(ensureDir(root), ensure(other));
 } else if (mode === 'smoke') {
-  const installedSmoke = await smoke(ensureDir(root));
   const receiptPath = configuredSmokeReceiptPath();
+  const installedSmoke = await smoke(ensureDir(root));
   if (receiptPath) {
     writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'PASS', installedSmoke });
   } else {
@@ -551,15 +554,26 @@ if (mode === 'stage') {
  } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | record-smoke <receipt>');
 } catch (error) {
   let message = String(error?.message ?? error);
-  for (const value of [process.env.GITHUB_TOKEN, process.env.GH_TOKEN, repo, os.tmpdir(), root, other]) {
+  for (const value of [process.env.GITHUB_TOKEN, process.env.GH_TOKEN, repo, os.tmpdir(), process.env.RUNNER_TEMP, root, other]) {
     if (value) message = message.replaceAll(value, '[redacted]');
   }
   message = message.slice(0, 5000);
   const failure = { schema: 'gogoke.r2-04.package-operation.v1', operation: mode, state: 'FAIL',
     sourceSha: process.env.GITHUB_SHA ?? 'LOCAL_DIAGNOSTIC', runId: process.env.GITHUB_RUN_ID ?? null,
     message, nativeLocallyCompiled: false };
-  if (mode === 'smoke' && configuredSmokeReceiptPath()) {
-    writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'FAIL', failure });
+  let failureReceipt = null;
+  if (mode === 'smoke') {
+    try { failureReceipt = configuredSmokeReceiptPath(); } catch { /* Invalid receipt path has no safe write target. */ }
+  }
+  if (failureReceipt) {
+    try {
+      writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'FAIL', failure });
+    } catch {
+      console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+      console.error('::error::installed smoke failure receipt could not be written');
+    }
+  } else if (mode === 'smoke' && process.env.GOGOKE_R2_SMOKE_RECEIPT) {
+    console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
   } else {
     fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
     let record = {};
