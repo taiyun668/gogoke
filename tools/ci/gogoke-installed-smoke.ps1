@@ -15,6 +15,7 @@ if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true') {
 }
 $installed = (Resolve-Path -LiteralPath $InstallDirectory).Path
 $smoke = Join-Path $PSScriptRoot 'gogoke-package-service.mjs'
+$receipt = $null
 
 if ($MediumChild) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -47,9 +48,22 @@ try {
         throw 'Pinned x64 cloud token launcher missing'
     }
     $shell = Join-Path $PSHOME 'pwsh.exe'
+    $receipt = Join-Path $env:RUNNER_TEMP ('gogoke-r2-smoke-receipt-' + [Guid]::NewGuid().ToString('N') + '.json')
+    if (Test-Path -LiteralPath $receipt) { throw 'Fresh installed smoke receipt path already exists' }
+    $env:GOGOKE_R2_SMOKE_RECEIPT = $receipt
     & $launcher --integrity Medium --direct $shell -NoProfile -File $PSCommandPath -InstallDirectory $installed -MediumChild
-    if ($null -eq $LASTEXITCODE) { throw 'Cloud smoke child exit status unavailable; do not resend' }
-    if ($LASTEXITCODE -ne 0) { throw "Non-administrator installed smoke failed: $LASTEXITCODE" }
+    $childExit = $LASTEXITCODE
+    Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
+    if ($null -eq $childExit) { throw 'Cloud smoke child exit status unavailable; do not resend' }
+    if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
+        throw "Non-administrator installed smoke produced no receipt; exit $childExit"
+    }
+    & node $smoke record-smoke $receipt
+    if ($null -eq $LASTEXITCODE) { throw 'Installed smoke receipt recording status unavailable' }
+    if ($LASTEXITCODE -ne 0) { throw "Installed smoke receipt recording failed: $LASTEXITCODE" }
+    if ($childExit -ne 0) { throw "Non-administrator installed smoke failed: $childExit" }
 } finally {
+    Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
+    if ($receipt -and (Test-Path -LiteralPath $receipt -PathType Leaf)) { Remove-Item -LiteralPath $receipt -Force }
     Remove-Item -LiteralPath $tools -Recurse -Force
 }
