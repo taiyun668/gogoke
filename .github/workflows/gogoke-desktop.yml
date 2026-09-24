@@ -217,7 +217,8 @@ jobs:
           pnpm --filter t3 run build:bundle
           if ($LASTEXITCODE -ne 0) { throw "T3 server bundle failed: $LASTEXITCODE" }
           $service = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/src-tauri/resources/gogoke-service'
-          pnpm --config.node-linker=hoisted --filter t3 deploy $service --prod --legacy
+          # The root lock includes patches for unrelated workspaces; only this server subtree is deployed.
+          pnpm --config.allow-unused-patches=true --config.node-linker=hoisted --filter t3 deploy $service --prod --legacy
           if ($LASTEXITCODE -ne 0) { throw "T3 server production deployment failed: $LASTEXITCODE" }
       - name: Stage exact signed Node runtime and controlled fixture
         shell: pwsh
