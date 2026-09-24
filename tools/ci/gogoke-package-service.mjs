@@ -406,24 +406,13 @@ async function smokeTauri(installed, request) {
   await new Promise((resolve) => listener.close(resolve));
   // Microsoft WebView2 documented per-process diagnostic flags. No registry,
   // product configuration, security policy, or Owner-machine setting is changed.
-  const tauriEnv = { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
-    WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
-    GOGOKE_R2_CLOUD_DIAGNOSTIC: '1' };
   const child = spawn(ensure(path.join(installed, 'gogoke.exe')), [], {
-    cwd: temp, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: false,
-    env: tauriEnv,
+    cwd: temp, stdio: 'ignore', windowsHide: false,
+    env: { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
+      WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` },
   });
   let spawnError, exited = false, socket;
-  let originalChildStderr = '';
-  let originalChildStderrTruncated = false;
-  child.stderr.on('data', (chunk) => {
-    originalChildStderr += chunk.toString('utf8');
-    if (originalChildStderr.length > 1024 * 1024) {
-      originalChildStderr = originalChildStderr.slice(-1024 * 1024);
-      originalChildStderrTruncated = true;
-    }
-  });
   child.once('error', (error) => { spawnError = error; });
   child.once('exit', () => { exited = true; });
   try {
@@ -473,20 +462,7 @@ async function smokeTauri(installed, request) {
       if (!ready) await delay(250);
     }
     if (!ready) throw new Error('installed Home product entry did not render');
-    let response;
-    try {
-      response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
-    } catch (error) {
-      await delay(100);
-      console.error(`R2-04 original product stderr${originalChildStderrTruncated ? ' (tail truncated)' : ''} begin`);
-      console.error(redactRunnerTokens(originalChildStderr));
-      console.error('R2-04 original product stderr end');
-      try { diagnoseInstalledProductService(installed, request, tauriEnv); }
-      catch (diagnosticError) {
-        console.error('R2-04 direct service diagnosis failed: ' + redactRunnerTokens(String(diagnosticError?.message ?? diagnosticError)));
-      }
-      throw error;
-    }
+    const response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
     assertSmokeResponse(response, request);
     // A missing mandatory runtime must fail at the same Tauri product ingress.
     const node = path.join(installed, 'gogoke-service/runtime/node.exe');
@@ -521,62 +497,6 @@ function assertSmokeResponse(response, request) {
     if (response.goal?.id !== request.goal.id || response.caller?.admitted !== true || response.caller?.role !== 'controller' || response.nativeHost?.reachable !== true || response.ledgerReadback?.state !== 'COMMITTED_BYTES_VERIFIED_NOT_ADOPTED' || response.ledgerReadback?.gitBlob !== 'a20115fdd5acf9e7e5025c3b3ca50696001badac' || response.acceptance !== 'TEST_FIXTURE_NOT_ADOPTED' || response.testLedgerDraft !== undefined) throw new Error('installed service did not prove admitted native and Git readback without draft');
     const task = response.controlledTask;
     if (task?.state !== 'VALIDATED_TEST_RESULT_NOT_ADOPTED' || task?.objectiveOutcomeReceiptId !== 'outcome-receipt-r2-02-test' || task?.evaluationReceiptId !== 'evaluation-receipt-r2-02-test' || task?.dreamProposalState !== 'DRAFT_TEST_ONLY_NOT_ACTIVATED' || !['manifestHash', 'objectiveOutcomeContentHash', 'evaluationContentHash', 'metricsHash', 'dreamRunContentHash', 'dreamProposalContentHash'].every((key) => /^sha256:[0-9a-f]{64}$/.test(task[key]))) throw new Error('installed controlled task lacked validated Result, Outcome, Evaluation, or Dream');
-}
-
-function actualTauriProductRoot() {
-  const config = JSON.parse(fs.readFileSync(path.join(desktop, 'src-tauri/tauri.gogoke.unsigned.conf.json'), 'utf8'));
-  if (config.identifier !== 'app.gogoke.desktop') throw new Error('unexpected installed Tauri identifier');
-  // Tauri's Windows app_data_dir uses FOLDERID_RoamingAppData, then the bundle
-  // identifier. APPDATA injected for WebView does not change that known folder.
-  const knownFolder = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command',
-    '[Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)'],
-  { encoding: 'utf8', timeout: 10000, windowsHide: true });
-  const roaming = knownFolder.stdout?.trim();
-  if (knownFolder.error || knownFolder.status !== 0 || !roaming || !path.win32.isAbsolute(roaming)) {
-    throw new Error('RoamingAppData known-folder resolution failed in Medium process');
-  }
-  return path.join(roaming, config.identifier, 'product-authority');
-}
-
-function redactRunnerTokens(value) {
-  let redacted = value;
-  for (const token of [process.env.GH_TOKEN, process.env.GITHUB_TOKEN]) {
-    if (token) redacted = redacted.replaceAll(token, '[redacted token]');
-  }
-  for (const home of [process.env.USERPROFILE, os.homedir()]) {
-    if (home) redacted = redacted.replaceAll(home, '%USERPROFILE%');
-  }
-  return redacted;
-}
-
-function diagnoseInstalledProductService(installed, request, tauriEnv) {
-  const node = ensure(path.join(installed, 'gogoke-service/runtime/node.exe'));
-  const entry = ensure(path.join(installed, 'gogoke-service/dist/bin.mjs'));
-  const host = ensure(path.join(installed, 'gogoke-native-host.exe'));
-  const serviceRoot = path.join(installed, 'gogoke-service');
-  const productRoot = actualTauriProductRoot();
-  const freshRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gogoke-service-diagnostic-'));
-  try {
-    const pathHash = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
-    console.error(`R2-04 smoke input identity request_sha256=${pathHash(JSON.stringify(request))} root_path_sha256=${pathHash(productRoot)} node_path_sha256=${pathHash(node)} entry_path_sha256=${pathHash(entry)} host_path_sha256=${pathHash(host)} cwd_path_sha256=${pathHash(serviceRoot)}`);
-    console.error(redactRunnerTokens(`R2-04 smoke input paths root=${productRoot} node=${node} entry=${entry} host=${host} cwd=${serviceRoot}`));
-    for (const [label, targetRoot] of [['tauri-root', productRoot], ['fresh-root', freshRoot]]) {
-      const result = spawnSync(node, [entry, '--root', targetRoot, '--native-host', host], {
-        cwd: serviceRoot, input: JSON.stringify(request), encoding: 'utf8', timeout: 180000,
-        maxBuffer: 1024 * 1024, windowsHide: true, env: tauriEnv,
-      });
-      console.error(`R2-04 direct service ${label}: exit=${result.status ?? 'unavailable'} spawnError=${redactRunnerTokens(result.error?.message ?? 'none')}`);
-      console.error(`R2-04 direct service ${label} stderr begin`);
-      console.error(redactRunnerTokens(result.stderr ?? ''));
-      console.error(`R2-04 direct service ${label} stderr end`);
-    }
-  } finally {
-    const resolved = fs.realpathSync(freshRoot);
-    if (!within(fs.realpathSync(os.tmpdir()), resolved) || !path.basename(resolved).startsWith('gogoke-service-diagnostic-')) {
-      throw new Error('unsafe diagnostic root cleanup');
-    }
-    fs.rmSync(resolved, { recursive: true, force: true });
-  }
 }
 
 async function smoke(destination) {

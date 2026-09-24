@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -152,11 +151,41 @@ fn require_file(path: PathBuf, component: &'static str) -> Result<PathBuf, Strin
 }
 
 #[cfg(target_os = "windows")]
+fn node_compatible_windows_path(path: PathBuf) -> Result<PathBuf, String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| "GOGOKE_PRODUCT_RUNTIME_PATH_UNSUPPORTED".to_string())?;
+    let result = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else if let Some(drive) = text.strip_prefix(r"\\?\") {
+        let bytes = drive.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || bytes[2] != b'\\'
+        {
+            return Err("GOGOKE_PRODUCT_RUNTIME_PATH_UNSUPPORTED".to_string());
+        }
+        PathBuf::from(drive)
+    } else {
+        path
+    };
+    if !result.is_absolute() {
+        return Err("GOGOKE_PRODUCT_RUNTIME_PATH_UNSUPPORTED".to_string());
+    }
+    Ok(result)
+}
+
+#[cfg(target_os = "windows")]
 fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, String> {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|_| "GOGOKE_PRODUCT_RESOURCE_DIR_UNAVAILABLE".to_string())?;
+    // Tauri may return a verbatim Windows path. Node's entry resolver can
+    // treat that spelling as a drive-directory lookup and exit
+    // before the service starts. Preserve the same trusted install location.
+    let resource_dir = node_compatible_windows_path(
+        app.path()
+            .resource_dir()
+            .map_err(|_| "GOGOKE_PRODUCT_RESOURCE_DIR_UNAVAILABLE".to_string())?,
+    )?;
     let service_root = resource_dir.join("gogoke-service");
     let node_runtime = require_file(service_root.join("runtime").join("node.exe"), "node-runtime")?;
     let service_entry = require_file(service_root.join("dist").join("bin.mjs"), "service-entry")?;
@@ -177,12 +206,14 @@ fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, 
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| "GOGOKE_PRODUCT_COMPONENT_MISSING:native-host".to_string())?;
+    let native_host = node_compatible_windows_path(native_host)?;
 
-    let product_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "GOGOKE_PRODUCT_DATA_DIR_UNAVAILABLE".to_string())?
-        .join("product-authority");
+    let product_root = node_compatible_windows_path(
+        app.path()
+            .app_data_dir()
+            .map_err(|_| "GOGOKE_PRODUCT_DATA_DIR_UNAVAILABLE".to_string())?
+            .join("product-authority"),
+    )?;
     Ok(ProductRuntimePaths {
         node_runtime,
         service_entry,
@@ -306,18 +337,19 @@ async fn run_product_process(
         command.env("GOGOKE_EXECUTION_EVIDENCE_SHA", sha)
             .env("GOGOKE_SERVICE_ENTRY_SHA256", entry_hash);
     }
-    let service_root = paths
-        .service_entry
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE".to_string())?;
     command
         .arg(&paths.service_entry)
         .arg("--root")
         .arg(&paths.product_root)
         .arg("--native-host")
         .arg(&paths.native_host)
-        .current_dir(service_root)
+        .current_dir(
+            paths
+                .service_entry
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| "GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE".to_string())?,
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -350,30 +382,6 @@ async fn run_product_process(
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())?
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())?;
     if !output.status.success() {
-        if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
-            && std::env::var("GOGOKE_R2_CLOUD_DIAGNOSTIC").as_deref() == Ok("1")
-        {
-            // Temporary cloud smoke observation of the actual failed child.
-            // The installed smoke captures this stream and redacts runner tokens.
-            let path_hash = |value: &Path| format!("{:x}", Sha256::digest(value.to_string_lossy().as_bytes()));
-            let mut stderr = std::io::stderr().lock();
-            let _ = writeln!(stderr, "R2-04 original child identity request_sha256={:x} root_path_sha256={} node_path_sha256={} entry_path_sha256={} host_path_sha256={} cwd_path_sha256={} status={}",
-                Sha256::digest(&request_bytes), path_hash(&paths.product_root),
-                path_hash(&paths.node_runtime), path_hash(&paths.service_entry),
-                path_hash(&paths.native_host), path_hash(service_root),
-                output.status.code().unwrap_or(-1));
-            let _ = writeln!(stderr, "R2-04 original child paths root={} node={} entry={} host={} cwd={}",
-                paths.product_root.display(), paths.node_runtime.display(),
-                paths.service_entry.display(), paths.native_host.display(),
-                service_root.display());
-            let _ = stderr.write_all(b"R2-04 original child request begin\n");
-            let _ = stderr.write_all(&request_bytes);
-            let _ = stderr.write_all(b"\nR2-04 original child request end\nR2-04 original child stderr begin\n");
-            let _ = stderr.write_all(&output.stderr);
-            let _ = stderr.write_all(b"\nR2-04 original child stderr end\nR2-04 original child stdout begin\n");
-            let _ = stderr.write_all(&output.stdout);
-            let _ = stderr.write_all(b"\nR2-04 original child stdout end\n");
-        }
         return Err(format!(
             "GOGOKE_PRODUCT_SERVICE_FAILED:{}",
             output.status.code().unwrap_or(-1)
