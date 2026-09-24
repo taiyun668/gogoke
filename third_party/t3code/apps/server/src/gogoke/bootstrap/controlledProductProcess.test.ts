@@ -371,6 +371,36 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       /R2_ACTION_REPLAY_NO_NEW_RESULT/,
       "unknown Git update cannot cause a second native Action or resend");
     Assert.equal(unknownUpdates, 1, "unknown update cannot be blindly repeated");
+    const lostRoot = Path.join(root, "product-entry-readback-lost-root");
+    await FS.mkdir(lostRoot);
+    let lostHead = "8".repeat(40);
+    let lostBytes: Buffer | undefined;
+    let lostPath: string | undefined;
+    let lostUpdates = 0;
+    const lostCommit = "9".repeat(40);
+    const lostPort: GitFactWritePort = {
+      ...testWritePort,
+      async readHead() { return { commit: lostHead, tree: testTree }; },
+      async createBlob(bytes) {
+        lostBytes = Buffer.from(bytes);
+        return Crypto.createHash("sha1").update(`blob ${lostBytes.length}\0`)
+          .update(lostBytes).digest("hex");
+      },
+      async createTree(_base, path) { lostPath = path; return "7".repeat(40); },
+      async createCommit(parent) { Assert.equal(parent, lostHead); return lostCommit; },
+      async updateRef(commit) { Assert.equal(commit, lostCommit); lostUpdates += 1; lostHead = commit; },
+    };
+    await Assert.rejects(handleProductGoalRequest(writeRequest, {
+      ...writeIdentity, root: lostRoot, testWritePort: lostPort,
+      testFetcher: (async () => new Response("unavailable", { status: 503 })) as typeof fetch,
+    }), /TEST_FACT_COMMITTED_READBACK_UNVERIFIED/);
+    Assert.equal(lostHead, lostCommit, "remote draft exists despite lost readback");
+    Assert.equal(lostUpdates, 1);
+    Assert.ok(lostBytes !== undefined && lostPath !== undefined);
+    await Assert.rejects(handleProductGoalRequest(writeRequest, {
+      ...writeIdentity, root: lostRoot, testWritePort: lostPort,
+    }), /R2_ACTION_REPLAY_NO_NEW_RESULT/);
+    Assert.equal(lostUpdates, 1, "readback loss cannot resend the draft or Action");
     const evidenceRoot = process.env.GOGOKE_SERVER_EVIDENCE_ROOT;
     if (evidenceRoot !== undefined) {
       const executionEvidenceSha = process.env.GITHUB_SHA;
