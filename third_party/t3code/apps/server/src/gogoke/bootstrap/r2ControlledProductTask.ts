@@ -23,6 +23,9 @@ export type R2ControlledProductTaskResult =
       readonly decisionReceiptId: string;
       readonly objectiveOutcomeContentHash: string;
       readonly objectiveOutcomeReceiptId: string;
+      readonly evaluationContentHash: string;
+      readonly evaluationReceiptId: string;
+      readonly metricsHash: string;
     }
   | {
       readonly state: "ACTION_REPLAY_NO_NEW_RESULT";
@@ -51,6 +54,7 @@ export async function runR2ControlledProductTask(input: {
     "prepareR2TestRecipe", "readR2TestActionDecisionBasis", "prepareR2TestAction",
     "runControlledFixtureAction", "readR2ObjectiveFactRefs",
     "appendObjectiveOutcome", "readObjectiveOutcome",
+    "appendEvaluation", "readEvaluation",
   ] as const;
   for (const name of required) {
     if (typeof store[name] !== "function") throw new Error(`R2_CONTROLLED_TASK_UNAVAILABLE: ${name}`);
@@ -222,6 +226,47 @@ export async function runR2ControlledProductTask(input: {
       outcomeReadback.contentHash !== outcome.contentHash) {
     throw new Error("R2_TEST_OBJECTIVE_OUTCOME_READBACK_MISMATCH");
   }
+  const metrics = JSON.stringify({
+    schema: "gogoke.s1-r4.r2-02.fixture-metrics.v1",
+    testOnly: true,
+    exactSourceMatch: true,
+    reportSha256: result.reportSha256,
+    sourceBlob: result.sourceBlob,
+  });
+  const metricsHash = `sha256:${createHash("sha256").update(metrics).digest("hex")}`;
+  const evaluation = await store.appendEvaluation!({
+    domainId: "domain-r2-02-test",
+    evaluationId: "evaluation-r2-02-test",
+    revision: "1",
+    expectedPreviousRevision: null,
+    expectedPreviousContentHash: null,
+    operationId: "evaluation-op-r2-02-test",
+    eventId: "evaluation-event-r2-02-test",
+    receiptId: "evaluation-receipt-r2-02-test",
+    recordedAt: observedAt,
+    sourceIdentity: "deterministic-public-fixture",
+    outcomeRefs: [{ objectType: "OutcomeRecord", objectId: outcome.objectId,
+      revision: outcome.revision, contentHash: outcome.contentHash }],
+    decisionFamily: "CONTEXT_SELECTION",
+    scorerVersion: "1",
+    rubricVersion: "1",
+    calibrationKey: "r2-02-fixture",
+    calibrationVersion: "1",
+    datasetNamespace: "test/s1-r4/r2-02",
+    datasetSplit: "controlled-public-fixture",
+    evidenceRefs: [{ objectType: "ActionCompletion", objectId: action.operationId,
+      revision: "1", contentHash: refs.actionCompletionHash }],
+    metricsHash,
+    safetyStatus: "REVIEW_REQUIRED",
+    privacyStatus: "CLEAR",
+  });
+  const evaluationReadback = await store.readEvaluation!(
+    "domain-r2-02-test", "evaluation-r2-02-test", "1",
+  );
+  if (evaluation.disposition !== "COMMITTED" ||
+      evaluationReadback.contentHash !== evaluation.contentHash) {
+    throw new Error("R2_TEST_EVALUATION_READBACK_MISMATCH");
+  }
   return Object.freeze({
     state: "VALIDATED_TEST_RESULT_NOT_ADOPTED" as const,
     result,
@@ -230,5 +275,8 @@ export async function runR2ControlledProductTask(input: {
     decisionReceiptId: decision.decisionReceiptId,
     objectiveOutcomeContentHash: outcome.contentHash,
     objectiveOutcomeReceiptId: outcome.receiptId,
+    evaluationContentHash: evaluation.contentHash,
+    evaluationReceiptId: evaluation.receiptId,
+    metricsHash,
   });
 }

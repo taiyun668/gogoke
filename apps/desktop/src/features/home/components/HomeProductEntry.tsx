@@ -130,6 +130,10 @@ export function HomeProductEntry() {
               <dt className="home-product-entry-label">Objective Outcome (test-only coordination)</dt>
               <dd className="home-product-entry-code">{result.controlledTask.objectiveOutcomeContentHash}</dd>
             </div>
+            <div>
+              <dt className="home-product-entry-label">Evaluation (review required)</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.evaluationContentHash}</dd>
+            </div>
           </dl>
         </>
       ) : result ? (
