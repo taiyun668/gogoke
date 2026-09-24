@@ -1,0 +1,65 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-074",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "bb1cd06cf47fb707fed0549be5f9b23c05b6faed",
+  "recorded_utc": "2026-09-24T20:27:02Z",
+  "reason": "R2_04_CLOUD_PACKAGE_INCREMENT_DELIVERED_ENTER_R2_05_CANDIDATE_EVIDENCE",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package_transition": {
+    "from": "R2-04_CLOUD_INCREMENT_DELIVERED_NOT_CANDIDATE_NOT_ACCEPTED",
+    "to": "R2-05_WIP_CANDIDATE_EVIDENCE_AND_OWNER_MACHINE",
+    "scope_note": "The installed cloud package is complete for the R2-04 increment. Final V01-V08 all-axis settlement, external review, Owner Windows 11 Smart App Control and Owner decision remain open."
+  },
+  "cloud_evidence": {
+    "desktop_run": 36051863137,
+    "pr_head_sha": "bb1cd06cf47fb707fed0549be5f9b23c05b6faed",
+    "actual_checkout_sha": "9f8653291835f9c612c89210b2cd9014e8038d07",
+    "event": "pull_request_synthetic_merge_into_current_main",
+    "browser_tests": "PASS_145_FILES_1039_TESTS",
+    "dependency_notices": "PASS",
+    "unsigned_windows_nsis": "PASS",
+    "release_verifier_and_update_readiness_rollback": "PASS",
+    "installed_byte_identity": "PASS",
+    "installed_tauri_positive": "PASS_INSTALLED_HOME_PRODUCT_INVOKE_NATIVE_ADMISSION_GIT_READBACK_CONTROLLED_RESULT_OUTCOME_EVALUATION_DREAM_NOT_ADOPTED",
+    "installed_tauri_missing_node": "PASS_REJECTED_AT_PRODUCT_INGRESS",
+    "machine_inventory_artifact_id": 10831647791,
+    "unsigned_release_artifact_id": 10831991361,
+    "inventory": {
+      "node_version": "v24.13.1",
+      "required_file_hashes": 8,
+      "runtime_file_hashes": 12978,
+      "runtime_packages": 134,
+      "native_modules": 12,
+      "packages_missing_notice_files": 0,
+      "installed_smoke_receipt": "PASS_RUN_36051863137_SHA_9f8653291835f9c612c89210b2cd9014e8038d07",
+      "installed_app_sha256": "6261ebf84ce73fae3186a2dd2c60d50024e8f8f4177a9890adf73aa6d7d6ac39",
+      "package_operation_failure": "NONE"
+    },
+    "source_hygiene_run": 36051863099,
+    "source_hygiene": "PASS"
+  },
+  "evidence_boundary": {
+    "R2_04_increment": "DELIVERED_CLOUD",
+    "V06": "CLOUD_SUBASSERTIONS_EXECUTED_FINAL_SAME_CANDIDATE_REVIEW_PENDING",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "independent_cross_model_review": "NOT_RUN",
+    "adoption_goal_acceptance_release_merge": "NONE"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate_state": "NOT_FROZEN_THIS_CHECKPOINT; EXACT_HEAD_R2_05_AXES_PENDING",
+  "architecture_blocker": "NO",
+  "workspace": "Clean before checkpoint; the downloaded read-only package inventory copy was removed after inspection.",
+  "external_action": "NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "next_action": "After this checkpoint push, dispatch gogoke-native-host.yml on the exact execution branch HEAD and inspect both native real-process and Gogoke server machine artifacts. Verify the automatically triggered desktop build on its actual checkout SHA, then freeze a single candidate for fresh independent and external Claude review. Owner Windows 11 Smart App Control and final V01-V08 settlement follow on that same candidate without claiming adoption, Goal Acceptance or release."
+}
