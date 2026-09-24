@@ -33,6 +33,7 @@ test("R2 Objective refs require exact native hashes", () => {
     manifestContentHash: `sha256:${"b".repeat(64)}`,
     decisionContentHash: `sha256:${"c".repeat(64)}`,
     actionCompletionHash: `sha256:${"d".repeat(64)}`,
+    actionCompletedAt: "2026-09-23T00:00:01.000Z",
   };
   assert.deepEqual(decodeR2ObjectiveFactRefs(JSON.stringify(valid)), valid);
   assert.throws(() => decodeR2ObjectiveFactRefs(JSON.stringify({

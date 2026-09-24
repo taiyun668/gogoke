@@ -54,6 +54,8 @@ export interface ProductGoalView extends ProductGoalRequest {
     readonly actionCompletionRef: string;
     readonly manifestHash: string;
     readonly decisionReceiptId: string;
+    readonly objectiveOutcomeContentHash: string;
+    readonly objectiveOutcomeReceiptId: string;
   };
   readonly acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 }
@@ -193,6 +195,8 @@ export async function handleProductGoalRequest(
         actionCompletionRef: task.actionCompletionRef,
         manifestHash: task.manifestHash,
         decisionReceiptId: task.decisionReceiptId,
+        objectiveOutcomeContentHash: task.objectiveOutcomeContentHash,
+        objectiveOutcomeReceiptId: task.objectiveOutcomeReceiptId,
       });
     }
     return Object.freeze({

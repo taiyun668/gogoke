@@ -1426,9 +1426,10 @@ fn handle_authenticated_line_with_process(
             }
             let refs: authority::R2ObjectiveFactRefs = authority::read_r2_objective_fact_refs(
                 connection, required(&fields, "actionCompletionRef")?)?;
-            Ok(format!("{{\"state\":\"TEST_ONLY_NATIVE_OBJECTIVE_REFS\",\"manifestHash\":{},\"manifestContentHash\":{},\"decisionContentHash\":{},\"actionCompletionHash\":{}}}",
+            Ok(format!("{{\"state\":\"TEST_ONLY_NATIVE_OBJECTIVE_REFS\",\"manifestHash\":{},\"manifestContentHash\":{},\"decisionContentHash\":{},\"actionCompletionHash\":{},\"actionCompletedAt\":{}}}",
                 json_quote(&refs.manifest_hash), json_quote(&refs.manifest_content_hash),
-                json_quote(&refs.decision_content_hash), json_quote(&refs.action_completion_hash)))
+                json_quote(&refs.decision_content_hash), json_quote(&refs.action_completion_hash),
+                json_quote(&refs.action_completed_at)))
         }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;

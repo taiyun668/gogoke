@@ -76,6 +76,7 @@ pub(crate) struct R2ObjectiveFactRefs {
     pub manifest_content_hash: String,
     pub decision_content_hash: String,
     pub action_completion_hash: String,
+    pub action_completed_at: String,
 }
 
 /// Reads the current, same-domain test facts needed by Objective Outcome.
@@ -106,11 +107,18 @@ pub(crate) fn read_r2_objective_fact_refs(
         if state != "COMPLETED" {
             return denied();
         }
+        let completion_time = tx.query(
+            "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND receipt_id=? AND receipt_type='ActionCompletionRecorded'",
+            &[domain, action_completion_ref], 1)?;
+        if completion_time.len() != 1 || completion_time[0][0].is_empty() {
+            return denied();
+        }
         Ok(R2ObjectiveFactRefs {
             manifest_hash,
             manifest_content_hash,
             decision_content_hash: decision.decision_content_hash,
             action_completion_hash,
+            action_completed_at: completion_time[0][0].clone(),
         })
     })
 }

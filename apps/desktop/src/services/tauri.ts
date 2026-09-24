@@ -1261,6 +1261,8 @@ export type GogokeProductGoalView = GogokeProductGoalRequest & {
     actionCompletionRef: string;
     manifestHash: string;
     decisionReceiptId: string;
+    objectiveOutcomeContentHash: string;
+    objectiveOutcomeReceiptId: string;
   };
   acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 };

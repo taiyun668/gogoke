@@ -126,6 +126,10 @@ export function HomeProductEntry() {
               <dt className="home-product-entry-label">Decision receipt</dt>
               <dd className="home-product-entry-code">{result.controlledTask.decisionReceiptId}</dd>
             </div>
+            <div>
+              <dt className="home-product-entry-label">Objective Outcome (test-only coordination)</dt>
+              <dd className="home-product-entry-code">{result.controlledTask.objectiveOutcomeContentHash}</dd>
+            </div>
           </dl>
         </>
       ) : result ? (

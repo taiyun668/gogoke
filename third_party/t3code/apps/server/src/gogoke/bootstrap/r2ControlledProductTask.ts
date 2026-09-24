@@ -21,6 +21,8 @@ export type R2ControlledProductTaskResult =
       readonly actionCompletionRef: string;
       readonly manifestHash: string;
       readonly decisionReceiptId: string;
+      readonly objectiveOutcomeContentHash: string;
+      readonly objectiveOutcomeReceiptId: string;
     }
   | {
       readonly state: "ACTION_REPLAY_NO_NEW_RESULT";
@@ -47,7 +49,8 @@ export async function runR2ControlledProductTask(input: {
     "admitControllerCaller", "prepareR2TestDelegation", "prepareR2TestContextGrant",
     "prepareR2TestTask", "prepareR2TestPackage", "prepareR2TestLineage",
     "prepareR2TestRecipe", "readR2TestActionDecisionBasis", "prepareR2TestAction",
-    "runControlledFixtureAction",
+    "runControlledFixtureAction", "readR2ObjectiveFactRefs",
+    "appendObjectiveOutcome", "readObjectiveOutcome",
   ] as const;
   for (const name of required) {
     if (typeof store[name] !== "function") throw new Error(`R2_CONTROLLED_TASK_UNAVAILABLE: ${name}`);
@@ -179,11 +182,53 @@ export async function runR2ControlledProductTask(input: {
   const observation = await session.promptAndObserveSettlement(message, 30_000);
   if (actionCompletionRef === undefined) throw new Error("R2_TEST_ACTION_COMPLETION_MISSING");
   const result = validateControlledFixtureResult(source, observation);
+  const refs = await store.readR2ObjectiveFactRefs!(caller, actionCompletionRef);
+  if (refs.manifestHash !== manifest.manifestHash) {
+    throw new Error("R2_TEST_OBJECTIVE_MANIFEST_MISMATCH");
+  }
+  const completedMs = Date.parse(refs.actionCompletedAt);
+  if (!Number.isFinite(completedMs)) throw new Error("R2_TEST_COMPLETION_TIME_INVALID");
+  const observedAt = new Date(Math.max(Date.now(), completedMs + 1)).toISOString();
+  const outcome = await store.appendObjectiveOutcome!({
+    domainId: "domain-r2-02-test",
+    outcomeId: "outcome-r2-02-test",
+    revision: "1",
+    expectedPreviousRevision: null,
+    expectedPreviousContentHash: null,
+    operationId: "outcome-op-r2-02-test",
+    eventId: "outcome-event-r2-02-test",
+    receiptId: "outcome-receipt-r2-02-test",
+    recordedAt: observedAt,
+    manifestId: "manifest-r2-02-test",
+    manifestVersion: "1",
+    manifestHash: refs.manifestHash,
+    decisionId: "decision-r2-02-test",
+    decisionVersion: "1",
+    decisionHash: refs.decisionContentHash,
+    actionOperationId: action.operationId,
+    actionCompletionRef,
+    resultRefs: [{ objectType: "ActionCompletion", objectId: action.operationId,
+      revision: "1", contentHash: refs.actionCompletionHash }],
+    evidenceRefs: [{ objectType: "ContextManifest", objectId: manifest.manifestId,
+      revision: "1", contentHash: refs.manifestContentHash }],
+    observationStartsAt: refs.actionCompletedAt,
+    observationEndsAt: observedAt,
+    observationStatus: "OBSERVED",
+  });
+  const outcomeReadback = await store.readObjectiveOutcome!(
+    "domain-r2-02-test", "outcome-r2-02-test", "1",
+  );
+  if (outcome.disposition !== "COMMITTED" ||
+      outcomeReadback.contentHash !== outcome.contentHash) {
+    throw new Error("R2_TEST_OBJECTIVE_OUTCOME_READBACK_MISMATCH");
+  }
   return Object.freeze({
     state: "VALIDATED_TEST_RESULT_NOT_ADOPTED" as const,
     result,
     actionCompletionRef,
     manifestHash: manifest.manifestHash,
     decisionReceiptId: decision.decisionReceiptId,
+    objectiveOutcomeContentHash: outcome.contentHash,
+    objectiveOutcomeReceiptId: outcome.receiptId,
   });
 }

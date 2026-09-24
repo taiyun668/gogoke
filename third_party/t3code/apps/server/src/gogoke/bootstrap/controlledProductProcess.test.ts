@@ -219,6 +219,9 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.match(objectiveRefs.manifestContentHash, /^sha256:[0-9a-f]{64}$/);
     Assert.match(objectiveRefs.decisionContentHash, /^sha256:[0-9a-f]{64}$/);
     Assert.match(objectiveRefs.actionCompletionHash, /^sha256:[0-9a-f]{64}$/);
+    const observationEnd = new Date(Math.max(
+      Date.now(), Date.parse(objectiveRefs.actionCompletedAt) + 1,
+    )).toISOString();
     const outcome = await client.appendObjectiveOutcome({
       domainId: "domain-r2-02-test",
       outcomeId: "outcome-r2-02-test",
@@ -228,7 +231,7 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       operationId: "outcome-op-r2-02-test",
       eventId: "outcome-event-r2-02-test",
       receiptId: "outcome-receipt-r2-02-test",
-      recordedAt: "2026-09-23T00:00:02.000Z",
+      recordedAt: observationEnd,
       manifestId: "manifest-r2-02-test",
       manifestVersion: "1",
       manifestHash: objectiveRefs.manifestHash,
@@ -239,8 +242,8 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       actionCompletionRef: nativeActionCompletionRef!,
       resultRefs: [{ objectType: "ActionCompletion", objectId: "opr_22222222222222222222222222222222", revision: "1", contentHash: objectiveRefs.actionCompletionHash }],
       evidenceRefs: [{ objectType: "ContextManifest", objectId: "manifest-r2-02-test", revision: "1", contentHash: objectiveRefs.manifestContentHash }],
-      observationStartsAt: "2026-09-23T00:00:00.000Z",
-      observationEndsAt: "2026-09-23T00:00:01.000Z",
+      observationStartsAt: objectiveRefs.actionCompletedAt,
+      observationEndsAt: observationEnd,
       observationStatus: "OBSERVED",
     });
     Assert.equal(outcome.disposition, "COMMITTED");
@@ -267,6 +270,8 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.equal(product.controlledTask?.state, "VALIDATED_TEST_RESULT_NOT_ADOPTED");
     Assert.match(product.controlledTask?.actionCompletionRef ?? "", /^[A-Za-z0-9][A-Za-z0-9._:/-]+$/);
     Assert.match(product.controlledTask?.manifestHash ?? "", /^sha256:[0-9a-f]{64}$/);
+    Assert.match(product.controlledTask?.objectiveOutcomeContentHash ?? "", /^sha256:[0-9a-f]{64}$/);
+    Assert.equal(product.controlledTask?.objectiveOutcomeReceiptId, "outcome-receipt-r2-02-test");
     Assert.equal(product.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
     await Assert.rejects(
       handleProductGoalRequest(productRequest, { root: entryRoot, hostBinary: hosted }),

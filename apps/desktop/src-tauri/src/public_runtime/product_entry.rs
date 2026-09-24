@@ -87,6 +87,8 @@ pub(crate) struct ControlledTaskView {
     action_completion_ref: String,
     manifest_hash: String,
     decision_receipt_id: String,
+    objective_outcome_content_hash: String,
+    objective_outcome_receipt_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -172,6 +174,9 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
             || !task.manifest_hash.starts_with("sha256:")
             || task.manifest_hash.len() != 71
             || task.decision_receipt_id.is_empty()
+            || !task.objective_outcome_content_hash.starts_with("sha256:")
+            || task.objective_outcome_content_hash.len() != 71
+            || task.objective_outcome_receipt_id.is_empty()
         {
             return Err("GOGOKE_CONTROLLED_TASK_NOT_VALIDATED".to_string());
         }

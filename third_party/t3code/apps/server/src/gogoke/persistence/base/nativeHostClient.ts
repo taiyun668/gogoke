@@ -178,6 +178,7 @@ export interface NativeR2ObjectiveFactRefs {
   readonly manifestContentHash: string;
   readonly decisionContentHash: string;
   readonly actionCompletionHash: string;
+  readonly actionCompletedAt: string;
 }
 
 export function decodeR2ObjectiveFactRefs(body: string): NativeR2ObjectiveFactRefs {
@@ -188,10 +189,12 @@ export function decodeR2ObjectiveFactRefs(body: string): NativeR2ObjectiveFactRe
     throw new NativeHostClientError("R2_OBJECTIVE_REFS", "invalid native refs reply");
   }
   const record = value as Record<string, unknown>;
-  if (Reflect.ownKeys(record).length !== 5 ||
+  if (Reflect.ownKeys(record).length !== 6 ||
       record.state !== "TEST_ONLY_NATIVE_OBJECTIVE_REFS" ||
       !["manifestHash", "manifestContentHash", "decisionContentHash", "actionCompletionHash"]
-        .every((key) => typeof record[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(record[key] as string))) {
+        .every((key) => typeof record[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(record[key] as string)) ||
+      typeof record.actionCompletedAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(record.actionCompletedAt)) {
     throw new NativeHostClientError("R2_OBJECTIVE_REFS", "native refs identity mismatch");
   }
   return Object.freeze(record as unknown as NativeR2ObjectiveFactRefs);
