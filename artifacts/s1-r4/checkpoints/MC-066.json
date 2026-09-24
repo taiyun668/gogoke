@@ -1,0 +1,52 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-066",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "30da0655a7bc00e00ad926ce9131961922cf8670",
+  "reason": "OWNER_REQUESTED_PAUSE_DURING_R2_04_REPLACEMENT_CLOUD_RUN",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "this_turn": {
+    "code_changes": "NONE",
+    "rules_reviewed": ["AGENTS.md", "docs/model-routing.md", ".codex/config.toml", "docs/governance/gpt-construction-window-rules.md", "docs/governance/gogoke-build-and-release.md", "docs/governance/gogoke-ledger-decision.md", "docs/design/gogoke-s1-r4-plan-v2/PLAN.md", "docs/design/gogoke-s1-r4-plan-v2/PLAN.json"],
+    "decision": "Controller retained integration and exact CI evidence ownership; no subagent needed for this already bounded receipt-path change. Native compilation remains cloud-only."
+  },
+  "latest_cloud": {
+    "desktop_run": 36019375854,
+    "exact_sha": "30da0655a7bc00e00ad926ce9131961922cf8670",
+    "state": "IN_PROGRESS_AT_CHECKPOINT",
+    "browser_job": "PASS",
+    "notices_job": "PASS",
+    "nsis_job": "IN_PROGRESS_AT_SMOKE_FULL_UPDATE_READINESS_AND_ROLLBACK",
+    "confirmed_preceding_steps": ["T3 locked bundle and deployment", "pinned Node staging", "native-host cloud build for staged Node", "package seal and license inventory", "release verifier", "unsigned installer build", "installer and portable staging"],
+    "installed_resource_and_product_smoke": "NOT_RUN_AT_LAST_OBSERVATION",
+    "source_hygiene_run": 36019375843,
+    "source_hygiene": "PASS_EXACT_SHA"
+  },
+  "evidence_boundary": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "candidate_review": "NOT_RUN",
+    "adoption_release_merge": "NONE"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "test_ledger_branch": {
+    "head": "e1df87873a1ad2fcdf54cf2d9d0799f09255cef2",
+    "new_write": "NONE"
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "architecture_blocker": "NO",
+  "external_action": "RUN_36019375854_IN_PROGRESS;_NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "workspace": "No uncommitted production changes or newly launched local native build at checkpoint; earlier read-only cloud artifact copies remain under the custody recorded in MC-054 through MC-056.",
+  "next_action": "On Owner resume, re-read remote execution/main/authorization/PR/inbox and run 36019375854. If the checkpoint push cancels it, dispatch existing gogoke-desktop workflow at the new exact execution HEAD. Inspect installed resource identity, non-administrator WebView product smoke, bounded child receipt and parent inventory record. If FAIL, use the first original failure now preserved by the receipt-path fix; repair only R2-04 contract, push and rerun. Keep PR Draft and do not enter R2-05, merge or release until the authorized boundary."
+}
