@@ -411,6 +411,28 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     const novelFact = JSON.parse(Buffer.from(novelBytes ?? new Uint8Array()).toString("utf8")) as Record<string, unknown>;
     Assert.deepEqual(novelFact.fixtureDriverBinding, novelProduct.controlledTask?.fixtureDriverBinding);
     Assert.equal(novelFact.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
+    if (process.env.GOGOKE_SERVER_EVIDENCE_ROOT !== undefined) {
+      const binding = novelProduct.controlledTask?.fixtureDriverBinding;
+      if (binding === undefined || process.env.GITHUB_SHA === undefined ||
+          process.env.GITHUB_RUN_ID === undefined) {
+        throw new Error("R2_NOVEL_DRIVER_MACHINE_EVIDENCE_MISSING");
+      }
+      await FS.writeFile(Path.join(process.env.GOGOKE_SERVER_EVIDENCE_ROOT,
+        "r2-03-open-fixture-driver.json"), `${JSON.stringify({
+        schema: "gogoke.s1-r4.r2-03.open-fixture-driver.v1",
+        testOnly: true,
+        executionEvidenceSha: process.env.GITHUB_SHA,
+        cloudRunId: process.env.GITHUB_RUN_ID,
+        driverId: binding.driverId,
+        adapterVersion: binding.adapterVersion,
+        runtimeInstanceId: binding.runtimeInstanceId,
+        launchDigestSha256: binding.launchDigestSha256,
+        actionCompletionRef: novelProduct.controlledTask?.actionCompletionRef,
+        draftState: novelProduct.testLedgerDraft?.state,
+        privacyCanaryExcludedFromFixedDraft: true,
+        acceptance: novelProduct.acceptance,
+      })}\n`, "utf8");
+    }
     const unknownRoot = Path.join(root, "product-entry-unknown-root");
     await FS.mkdir(unknownRoot);
     let unknownBytes: Buffer | undefined;
