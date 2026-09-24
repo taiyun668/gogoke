@@ -158,6 +158,20 @@ gogoke 要让 Owner 不在环内：日常判断由系统完成，Owner 只定边
 - 各家报告的缓存命中数据是否可靠；
 - 重叠验证本身的成本。
 
+**待定的大问题：执行层自己做，还是借用成熟底座。**Paseo 的执行层已经比 gogoke 更全、更成熟：
+- 守护进程驱动 35 家以上的 agent；
+- 跨家交接与续接；
+- 工作树扇出；
+- 手机端与端到端加密中继；
+- 对外提供 MCP、SDK 与插件。
+
+可能的走法是借它当执行底座，gogoke 只做上面的治理层：事实账本、权限闸、独立验收、分阶段放权、额度调度、会话决策。NaveHQ 当年选 CAO 当骨架、只自研护城河，是同一思路。
+
+- 好处：跨家续接、远程、多家驱动都不用自建，还能跟上社区的维护速度。
+- 代价：现有原生宿主与服务要重新划分边界；Paseo 是 Electron，gogoke 是 Tauri；还要确认其接口能否承载权限闸与事实账本。
+
+建议 R4 之后第一件事，对 Paseo 做源码级核查，回答它能否在不改治理设计的前提下充当执行底座。结论出来后由 Owner 决定。OpenMausBot 作为第二候选一并对照。
+
 ## 13. 当天被推翻的判断
 
 - "跨家只能走交接包，必然有损"：错。会话转录工具可以把整段对话转成目标 CLI 的原生格式续接，只丢思考过程和图片。
@@ -211,6 +225,7 @@ gogoke 要让 Owner 不在环内：日常判断由系统完成，Owner 只定边
 | [agent-chorus](https://github.com/cote-star/agent-chorus) | 开源 | 读取、比较、交接四家会话，支持检查点与跨 agent 递话 | 会话登记簿；交接包 | 跨家读会话与比较 | 只借思路 |
 | [agentOS](https://github.com/Sokori-Inc/agentos) | 开源 | 经 ACP 管理会话，跨 agent 通用记录格式，agent 跑在隔离 Linux 虚拟机 | 会话登记簿；远期云端沙箱 | 通用记录格式；ACP 会话管理 | 只借思路 |
 | [handoff](https://github.com/TStansel/handoff) | 开源 | 读本机会话文件，把交接内容写成仓库内 Markdown，不上传记录 | 交接包工厂 | 交接内容落仓库而非聊天 | 只借思路 |
+| [Paseo](https://github.com/getpaseo/paseo) | Apache 2.0，约 1.8 万星、2100 分叉、5400+ 提交，持续活跃 | 编码 agent 控制平面：本地或远程守护进程管理 agent，桌面（Electron）、手机、网页、CLI 客户端连接；驱动 Claude Code、Codex、Copilot、OpenCode、Cursor CLI、Gemini CLI、Pi 等 35 家以上；`/paseo-handoff` 跨家交接，会话中途可换家续接或分叉；`/paseo-committee` 组两个风格相反的 agent 成委员会；子 agent 与工作树，可把 GitHub issue 扇出到各自工作树；定时，以及 GitHub / Slack / Discord 触发；端到端加密中继、Tailscale 或直连；本地语音；无遥测；MCP 服务、TypeScript SDK、插件。人仍是协调员；多 agent 协作靠技能（提示词约定），交接由 agent 自述；无事实账本、独立性保证、分阶段放权、额度调度；插件信任模型为"只装信任的代码" | 跨家转录；适配层；并行与工作树；远程与手机；组队模式（委员会） | 可能整体充当执行底座（见第 12 节待定问题）；跨家交接与续接；委员会式异构复核；issue 扇出；加密中继 | 可考虑依赖（最高优先级源码核查） |
 | [OpenMausBot](https://github.com/milind-soni/OpenMausBot) | Apache 2.0，约 3500 星、近 600 分叉，持续活跃，支持 Windows x64 | Grok Bot 的开源本地优先版：本地宿主管理全部 agent 进程，直接驱动本机 claude / codex / grok CLI（沿用现有登录与订阅）；驱动注册表把各家协议统一为标准事件流（Claude、Codex 解析流式 JSON，Grok 走 ACP），每家一个文件；每个 bot 有自己的模型、记忆、电脑与应用；频道承载记录、共享指令、工作目录、名单与响应规则；对话中途可换模型；定时任务在上次未完成时跳过；开放有边界的 MCP 控制接口供外部客户端调度。人在环内：高风险动作逐条批准；无 bot 间递话与主控派活；无事实账本、独立验收、分阶段放权、额度调度 | 跨家转录；适配层；项目层配置；秘书长式外部调度 | 对话中途换模型的实现；驱动注册表与统一事件流；频道组织形式；有边界的外部控制接口 | 可考虑依赖（待源码核查；R4 后评估是否作为执行层参照或部分复用） |
 
 ### A2. 交接、压缩与切换时机
