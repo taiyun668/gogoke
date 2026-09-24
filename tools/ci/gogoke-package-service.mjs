@@ -408,12 +408,22 @@ async function smokeTauri(installed, request) {
   // product configuration, security policy, or Owner-machine setting is changed.
   const tauriEnv = { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
     WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` };
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
+    GOGOKE_R2_CLOUD_DIAGNOSTIC: '1' };
   const child = spawn(ensure(path.join(installed, 'gogoke.exe')), [], {
-    cwd: temp, stdio: 'ignore', windowsHide: false,
+    cwd: temp, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: false,
     env: tauriEnv,
   });
   let spawnError, exited = false, socket;
+  let originalChildStderr = '';
+  let originalChildStderrTruncated = false;
+  child.stderr.on('data', (chunk) => {
+    originalChildStderr += chunk.toString('utf8');
+    if (originalChildStderr.length > 1024 * 1024) {
+      originalChildStderr = originalChildStderr.slice(-1024 * 1024);
+      originalChildStderrTruncated = true;
+    }
+  });
   child.once('error', (error) => { spawnError = error; });
   child.once('exit', () => { exited = true; });
   try {
@@ -467,6 +477,10 @@ async function smokeTauri(installed, request) {
     try {
       response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
     } catch (error) {
+      await delay(100);
+      console.error(`R2-04 original product stderr${originalChildStderrTruncated ? ' (tail truncated)' : ''} begin`);
+      console.error(redactRunnerTokens(originalChildStderr));
+      console.error('R2-04 original product stderr end');
       try { diagnoseInstalledProductService(installed, request, tauriEnv); }
       catch (diagnosticError) {
         console.error('R2-04 direct service diagnosis failed: ' + redactRunnerTokens(String(diagnosticError?.message ?? diagnosticError)));
@@ -529,6 +543,9 @@ function redactRunnerTokens(value) {
   for (const token of [process.env.GH_TOKEN, process.env.GITHUB_TOKEN]) {
     if (token) redacted = redacted.replaceAll(token, '[redacted token]');
   }
+  for (const home of [process.env.USERPROFILE, os.homedir()]) {
+    if (home) redacted = redacted.replaceAll(home, '%USERPROFILE%');
+  }
   return redacted;
 }
 
@@ -540,6 +557,9 @@ function diagnoseInstalledProductService(installed, request, tauriEnv) {
   const productRoot = actualTauriProductRoot();
   const freshRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gogoke-service-diagnostic-'));
   try {
+    const pathHash = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
+    console.error(`R2-04 smoke input identity request_sha256=${pathHash(JSON.stringify(request))} root_path_sha256=${pathHash(productRoot)} node_path_sha256=${pathHash(node)} entry_path_sha256=${pathHash(entry)} host_path_sha256=${pathHash(host)} cwd_path_sha256=${pathHash(serviceRoot)}`);
+    console.error(redactRunnerTokens(`R2-04 smoke input paths root=${productRoot} node=${node} entry=${entry} host=${host} cwd=${serviceRoot}`));
     for (const [label, targetRoot] of [['tauri-root', productRoot], ['fresh-root', freshRoot]]) {
       const result = spawnSync(node, [entry, '--root', targetRoot, '--native-host', host], {
         cwd: serviceRoot, input: JSON.stringify(request), encoding: 'utf8', timeout: 180000,

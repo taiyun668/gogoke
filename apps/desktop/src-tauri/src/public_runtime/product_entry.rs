@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -305,19 +306,18 @@ async fn run_product_process(
         command.env("GOGOKE_EXECUTION_EVIDENCE_SHA", sha)
             .env("GOGOKE_SERVICE_ENTRY_SHA256", entry_hash);
     }
+    let service_root = paths
+        .service_entry
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE".to_string())?;
     command
         .arg(&paths.service_entry)
         .arg("--root")
         .arg(&paths.product_root)
         .arg("--native-host")
         .arg(&paths.native_host)
-        .current_dir(
-            paths
-                .service_entry
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| "GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE".to_string())?,
-        )
+        .current_dir(service_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -350,6 +350,30 @@ async fn run_product_process(
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())?
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())?;
     if !output.status.success() {
+        if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+            && std::env::var("GOGOKE_R2_CLOUD_DIAGNOSTIC").as_deref() == Ok("1")
+        {
+            // Temporary cloud smoke observation of the actual failed child.
+            // The installed smoke captures this stream and redacts runner tokens.
+            let path_hash = |value: &Path| format!("{:x}", Sha256::digest(value.to_string_lossy().as_bytes()));
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr, "R2-04 original child identity request_sha256={:x} root_path_sha256={} node_path_sha256={} entry_path_sha256={} host_path_sha256={} cwd_path_sha256={} status={}",
+                Sha256::digest(&request_bytes), path_hash(&paths.product_root),
+                path_hash(&paths.node_runtime), path_hash(&paths.service_entry),
+                path_hash(&paths.native_host), path_hash(service_root),
+                output.status.code().unwrap_or(-1));
+            let _ = writeln!(stderr, "R2-04 original child paths root={} node={} entry={} host={} cwd={}",
+                paths.product_root.display(), paths.node_runtime.display(),
+                paths.service_entry.display(), paths.native_host.display(),
+                service_root.display());
+            let _ = stderr.write_all(b"R2-04 original child request begin\n");
+            let _ = stderr.write_all(&request_bytes);
+            let _ = stderr.write_all(b"\nR2-04 original child request end\nR2-04 original child stderr begin\n");
+            let _ = stderr.write_all(&output.stderr);
+            let _ = stderr.write_all(b"\nR2-04 original child stderr end\nR2-04 original child stdout begin\n");
+            let _ = stderr.write_all(&output.stdout);
+            let _ = stderr.write_all(b"\nR2-04 original child stdout end\n");
+        }
         return Err(format!(
             "GOGOKE_PRODUCT_SERVICE_FAILED:{}",
             output.status.code().unwrap_or(-1)
