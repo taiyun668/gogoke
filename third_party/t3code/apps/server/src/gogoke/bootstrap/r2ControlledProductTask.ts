@@ -269,7 +269,7 @@ export async function runR2ControlledProductTask(input: {
   const outcomeReadback = await store.readObjectiveOutcome!(
     "domain-r2-02-test", "outcome-r2-02-test", "1",
   );
-  if (!["COMMITTED", "REPLAYED"].includes(outcome.disposition) ||
+  if (!["COMMITTED", "RECONCILED"].includes(outcome.disposition) ||
       outcomeReadback.contentHash !== outcome.contentHash) {
     throw new Error("R2_TEST_OBJECTIVE_OUTCOME_READBACK_MISMATCH");
   }
@@ -310,7 +310,7 @@ export async function runR2ControlledProductTask(input: {
   const evaluationReadback = await store.readEvaluation!(
     "domain-r2-02-test", "evaluation-r2-02-test", "1",
   );
-  if (!["COMMITTED", "REPLAYED"].includes(evaluation.disposition) ||
+  if (!["COMMITTED", "RECONCILED"].includes(evaluation.disposition) ||
       evaluationReadback.contentHash !== evaluation.contentHash) {
     throw new Error("R2_TEST_EVALUATION_READBACK_MISMATCH");
   }
@@ -345,7 +345,7 @@ export async function runR2ControlledProductTask(input: {
   const dreamRunReadback = await store.readDreamRun!(
     "domain-r2-02-test", "dream-run-r2-02-test", "1",
   );
-  if (!["COMMITTED", "REPLAYED"].includes(dreamRun.disposition) ||
+  if (!["COMMITTED", "RECONCILED"].includes(dreamRun.disposition) ||
       dreamRunReadback.contentHash !== dreamRun.contentHash) {
     throw new Error("R2_TEST_DREAM_RUN_READBACK_MISMATCH");
   }
@@ -377,7 +377,7 @@ export async function runR2ControlledProductTask(input: {
   const proposalReadback = await store.readDreamProposal!(
     "domain-r2-02-test", "dream-proposal-r2-02-test", "1",
   );
-  if (!["COMMITTED", "REPLAYED"].includes(proposal.disposition) ||
+  if (!["COMMITTED", "RECONCILED"].includes(proposal.disposition) ||
       proposalReadback.contentHash !== proposal.contentHash) {
     throw new Error("R2_TEST_DREAM_PROPOSAL_READBACK_MISMATCH");
   }
