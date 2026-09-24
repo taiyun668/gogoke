@@ -25,6 +25,15 @@ const pinnedUpstreamLicenseRevisions = new Map([
     commit: '0027387dc5c59793c12dfc531abc78f825ed6868',
     directory: 'packages/sdk/js',
   }],
+  // This release's scripts/publish.js assigns the root version to npm/*.
+  // The platform templates omit repository and LICENSE; use the verified root text.
+  ...['linux-x64-gnu', 'linux-x64-musl', 'win32-ia32-msvc', 'win32-x64-msvc'].map((platform) => [
+    `@yuuang/ffi-rs-${platform}@1.3.2`, {
+      repository: 'zhangyuang/node-ffi-rs',
+      commit: '9c5ba3452d8cedbb0b30c7ce4dd0138135bd06ea',
+      directory: '',
+    },
+  ]),
 ]);
 
 function ensure(file) {
@@ -118,7 +127,7 @@ export function licenses(serviceRoot = service, requireText = true) {
   return inventory.sort((a, b) => a.id.localeCompare(b.id) || a.packagePath.localeCompare(b.packagePath));
 }
 
-// npm's exact-version gitHead is the only upstream fallback. Mutable tags,
+// Use verified exact-version pins or npm's immutable gitHead. Mutable tags,
 // guessed copyright holders and SPDX template text are never substitutes.
 export function upstreamLicenseBasis(pkg, metadata) {
   if (metadata.name !== pkg.name || metadata.version !== pkg.version) {

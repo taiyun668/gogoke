@@ -111,3 +111,19 @@ test('upstream notice fallback requires an exact version and immutable repositor
     assert.throws(() => upstreamLicenseBasis(pkg, {...metadata, ...delta}));
   }
 });
+
+test('ffi platform notice pins cover only the verified package versions', () => {
+  for (const platform of ['linux-x64-gnu', 'linux-x64-musl', 'win32-ia32-msvc', 'win32-x64-msvc']) {
+    const pkg = { name: `@yuuang/ffi-rs-${platform}`, version: '1.3.2' };
+    assert.deepEqual(upstreamLicenseBasis(pkg, { ...pkg }), {
+      repository: 'zhangyuang/node-ffi-rs',
+      commit: '9c5ba3452d8cedbb0b30c7ce4dd0138135bd06ea',
+      directory: '',
+    });
+    assert.throws(() => upstreamLicenseBasis(pkg, { ...pkg, version: '1.3.3' }), /metadata mismatch/);
+    const changed = { ...pkg, version: '1.3.3' };
+    assert.throws(() => upstreamLicenseBasis(changed, { ...changed }), /immutable upstream license revision missing/);
+  }
+  const unpinned = { name: '@yuuang/ffi-rs-win32-arm64-msvc', version: '1.3.2' };
+  assert.throws(() => upstreamLicenseBasis(unpinned, { ...unpinned }), /immutable upstream license revision missing/);
+});

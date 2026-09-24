@@ -1,0 +1,60 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-060",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "fd8b2265fe30a6141a576f283166301427fa4488",
+  "recorded_utc": "2026-09-24T05:58:46Z",
+  "reason": "R2_04_PIN_PLATFORM_LICENSE_PROVENANCE",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "owner_scope": "R2-04 only. PR27 stays OPEN/DRAFT/WIP. Stop after cloud packaging closure and handoff; R2-05 belongs to Codex. No merge or acceptance.",
+  "last_cloud_result": {
+    "run": 35960814180,
+    "source_head": "df58fd83549aeb9b9fb17fd0873ae40ea41f439e",
+    "tested_merge": "a57d51d3c595d02e9f05e6899b4aca923b1315f4",
+    "state": "FAIL",
+    "browser": "PASS",
+    "notices": "PASS_DESKTOP_GRAPH",
+    "source_hygiene": {"run": 35960814162, "state": "PASS"},
+    "nsis_job": 107510407717,
+    "first_failed_step": "18 Seal exact staged package hashes and dependency license inventory",
+    "command": "node ../../tools/ci/gogoke-package-service.mjs seal",
+    "exit": 1,
+    "first_failure": "Four @yuuang/ffi-rs platform packages@1.3.2 still lack supported repository metadata; Redis failures no longer occur.",
+    "native_host_build": "PASS_CLOUD_BUILD_ONLY",
+    "installed_smoke": "NOT_RUN_AFTER_SEAL_FAILURE",
+    "artifact": 10793060292,
+    "artifact_zip_sha256": "a5edf0d19e177cb246cd523f54885ca64c27409efa53d8eb617a1e47d741c73e",
+    "artifact_sha_verified_after_download": true
+  },
+  "root_cause_and_fix": {
+    "cause": "The upstream platform package template has no repository field or license file; publish.js copies the root version into the platform package before publication. More generic URL normalization cannot repair omitted metadata.",
+    "fix": "Add exact name/version pins only for the four actually staged failing platform packages. Keep all other missing-source failures closed and fetch the real immutable root LICENSE, not a generated SPDX substitute.",
+    "upstream_repository": "zhangyuang/node-ffi-rs",
+    "upstream_commit": "9c5ba3452d8cedbb0b30c7ce4dd0138135bd06ea",
+    "upstream_root_package_blob": "cf2fed34ce4a4f37d0b90e2bdaa26c8d8174f757",
+    "upstream_publish_script_blob": "6bad3f213e7180a7160ad530db8d7e4aed8d5509",
+    "upstream_windows_template_blob": "e128410edaa03a5071b68a5fb97ab40fe2a7ab90",
+    "upstream_license_blob": "510d2a98f1d7cf083a1a944f1417b832fa556108"
+  },
+  "tests": {
+    "new_regression": "Existing CI-invoked notice test file now checks all four pins, mismatched registry versions, unpinned versions and unpinned platforms.",
+    "new_source_execution": "NOT_RUN_AT_CHECKPOINT_CREATION",
+    "local_native_compilation": "NOT_PERFORMED"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "custody": "Two source files and this checkpoint are one atomic commit. No WIP depends on local files; downloaded failure inventories are read-only evidence copies.",
+  "V06": "IN_PROGRESS_NOT_PASS",
+  "architecture_blocker": "NO",
+  "next_action": "Publish this exact narrow change and read its replacement PR27 cloud run. Require package seal, installed hashes, installed Tauri/service/native controlled task and missing-runtime rejection. Fix any concrete failure within R2-04; on cloud closure record exact runs/artifacts and handoff then STOP before R2-05."
+}
