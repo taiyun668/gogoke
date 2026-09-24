@@ -31,16 +31,21 @@ function within(root, candidate) {
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 function assertPhysicalRuntime(root, removeBin = false) {
+  const resolvedRoot = fs.realpathSync(root);
   function visit(dir) {
     if (!within(root, dir) && path.resolve(dir) !== path.resolve(root)) throw new Error(`runtime traversal escaped stage: ${dir}`);
     for (const name of fs.readdirSync(dir)) {
       const child = path.join(dir, name);
       if (!within(root, child)) throw new Error(`runtime path escaped stage: ${child}`);
+      const stat = fs.lstatSync(child);
       if (name === '.bin' && removeBin) {
+        if (!stat.isDirectory() || stat.isSymbolicLink() ||
+            !within(resolvedRoot, fs.realpathSync(child))) {
+          throw new Error(`refusing to remove runtime shim path outside stage: ${child}`);
+        }
         fs.rmSync(child, { recursive: true, force: true });
         continue;
       }
-      const stat = fs.lstatSync(child);
       if (stat.isSymbolicLink()) throw new Error(`runtime link cannot be bundled as a physical resource: ${child}`);
       if (stat.isDirectory()) visit(child);
     }
