@@ -1,10 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off - executable product boundary owns stdin/stdout.
 import * as NodeFS from "node:fs";
+import { createHash } from "node:crypto";
 
 import { constructGogokeService } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
-import { currentGhToken } from "../context/repository/ghCredential.ts";
+import { createR2GhCredentialAccess, currentGhToken } from "../context/repository/ghCredential.ts";
+import { R2_TEST_LEDGER, writeR2TestFact } from "../context/repository/gitFactWrite.ts";
+import type { GitFactWritePort } from "../context/repository/gitFactWrite.ts";
+import { createR2TestGitHubWritePort } from "../context/repository/gitFactWriteHttp.ts";
 import { runR2ControlledProductTask } from "./r2ControlledProductTask.ts";
 
 const R2_02_TEST_LEDGER_REPOSITORY = "taiyun668/gogoke";
@@ -26,6 +30,7 @@ export interface ProductGoalRequest {
   readonly goal: { readonly id: string; readonly title: string };
   readonly ledger: ProductLedgerReference;
   readonly runControlledTask?: true;
+  readonly publishTestDraft?: true;
 }
 
 export interface ProductGoalView extends ProductGoalRequest {
@@ -62,6 +67,15 @@ export interface ProductGoalView extends ProductGoalRequest {
     readonly dreamRunContentHash: string;
     readonly dreamProposalContentHash: string;
     readonly dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
+  };
+  readonly testLedgerDraft?: {
+    readonly state: "DRAFT_COMMITTED_NOT_ADOPTED";
+    readonly repository: "taiyun668/gogoke";
+    readonly branch: "s1-r4-ledger-test/r2-02";
+    readonly commit: string;
+    readonly path: string;
+    readonly gitBlob: string;
+    readonly contentHash: string;
   };
   readonly acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 }
@@ -106,9 +120,15 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
   const parsed = parseStrictJsonBytes(bytes);
   const hasTask = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
     Object.hasOwn(parsed, "runControlledTask");
-  const root = exactRecord(parsed, "request", hasTask ? ["goal", "ledger", "runControlledTask"] : ["goal", "ledger"]);
+  const hasDraft = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, "publishTestDraft");
+  const root = exactRecord(parsed, "request", ["goal", "ledger",
+    ...(hasTask ? ["runControlledTask"] : []), ...(hasDraft ? ["publishTestDraft"] : [])]);
   if (hasTask && root.runControlledTask !== true) {
     return invalid("request.runControlledTask", "must be true when present");
+  }
+  if (hasDraft && (!hasTask || root.publishTestDraft !== true)) {
+    return invalid("request.publishTestDraft", "requires the controlled task and true");
   }
   const goal = exactRecord(root.goal, "request.goal", ["id", "title"]);
   const ledger = exactRecord(root.ledger, "request.ledger", [
@@ -141,6 +161,7 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
     }),
     ledger: Object.freeze({ repository, commit, path, contentHash }),
     ...(hasTask ? { runControlledTask: true as const } : {}),
+    ...(hasDraft ? { publishTestDraft: true as const } : {}),
   });
 }
 
@@ -158,8 +179,25 @@ export function parseProductProcessArgs(
 
 export async function handleProductGoalRequest(
   request: ProductGoalRequest,
-  paths: { readonly root: string; readonly hostBinary: string },
+  paths: { readonly root: string; readonly hostBinary: string;
+    readonly executionEvidenceSha?: string; readonly serviceEntrySha256?: string;
+    readonly testWritePort?: GitFactWritePort; readonly testFetcher?: typeof fetch },
 ): Promise<ProductGoalView> {
+  const executionEvidenceSha = paths.executionEvidenceSha ?? process.env.GOGOKE_EXECUTION_EVIDENCE_SHA;
+  const serviceEntrySha256 = paths.serviceEntrySha256 ?? process.env.GOGOKE_SERVICE_ENTRY_SHA256;
+  if (request.publishTestDraft === true &&
+      (!/^[0-9a-f]{40}$/u.test(executionEvidenceSha ?? "") ||
+       !/^sha256:[0-9a-f]{64}$/u.test(serviceEntrySha256 ?? ""))) {
+    throw new Error("R2_TEST_DRAFT_BUILD_IDENTITY_UNAVAILABLE");
+  }
+  if (request.publishTestDraft === true) {
+    const runningEntry = process.argv[1];
+    if (runningEntry === undefined ||
+        `sha256:${createHash("sha256").update(NodeFS.readFileSync(runningEntry))
+          .digest("hex")}` !== serviceEntrySha256) {
+      throw new Error("R2_TEST_DRAFT_LOADED_SERVICE_MISMATCH");
+    }
+  }
   const service = await constructGogokeService({
     request: {
       authority: "public",
@@ -187,6 +225,39 @@ export async function handleProductGoalRequest(
     const ledgerReadback = await readGitHubFact(
       request.ledger, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
     let controlledTask: ProductGoalView["controlledTask"];
+    let testLedgerDraft: ProductGoalView["testLedgerDraft"];
+    let writePort: GitFactWritePort | undefined;
+    let draftToken: string | undefined;
+    if (request.publishTestDraft === true) {
+      const currentNativeAdmission = async () => {
+        const current = await service.store.admitControllerCaller!({
+          policyRevision: service.identity.policyRevision,
+          principalId: service.identity.principalId,
+          profileId: service.identity.profileId,
+          revocationHead: service.identity.revocationHead,
+          role: "controller",
+          seatId: service.identity.seatId,
+        });
+        if (current.admitted !== true || current.principalId !== service.identity.principalId ||
+            current.seatId !== service.identity.seatId ||
+            current.policyRevision !== service.identity.policyRevision ||
+            current.revocationHead !== service.identity.revocationHead) {
+          throw new Error("R2_TEST_DRAFT_NATIVE_ADMISSION_CHANGED");
+        }
+      };
+      if (paths.testWritePort === undefined) {
+        const access = createR2GhCredentialAccess(currentNativeAdmission);
+        await access.assertCurrentAuthority();
+        draftToken = await access.credential();
+        writePort = createR2TestGitHubWritePort({
+          currentAuthority: access.assertCurrentAuthority,
+          credential: access.credential,
+        });
+      } else {
+        await currentNativeAdmission();
+        writePort = paths.testWritePort;
+      }
+    }
     if (request.runControlledTask === true) {
       const source = await readGitHubFact(
         R2_02_SOURCE, R2_02_TEST_LEDGER_REPOSITORY, fetch, gitReadToken);
@@ -210,11 +281,57 @@ export async function handleProductGoalRequest(
         dreamProposalContentHash: task.dreamProposalContentHash,
         dreamProposalState: task.dreamProposalState,
       });
+      if (request.publishTestDraft === true) {
+        if (writePort === undefined || executionEvidenceSha === undefined ||
+            serviceEntrySha256 === undefined) {
+          throw new Error("R2_TEST_DRAFT_PORT_UNAVAILABLE");
+        }
+        const operationId = `r2-02-product-${createHash("sha256")
+          .update(`${task.actionCompletionRef}\0${executionEvidenceSha}`)
+          .digest("hex").slice(0, 32)}`;
+        const bytes = Buffer.from(JSON.stringify({
+          schema: "gogoke.s1-r4.r2-02.product-test-result.v1",
+          testOnly: true,
+          operationId,
+          executionEvidenceSha,
+          serviceEntrySha256,
+          sourceCommit: task.result.sourceCommit,
+          sourceBlob: task.result.sourceBlob,
+          reportSha256: task.result.reportSha256,
+          modelId: task.result.modelId,
+          relativePath: task.result.relativePath,
+          embeddedBytesSha256: task.result.embeddedBytesSha256,
+          actionCompletionRef: task.actionCompletionRef,
+          manifestHash: task.manifestHash,
+          decisionReceiptId: task.decisionReceiptId,
+          objectiveOutcomeContentHash: task.objectiveOutcomeContentHash,
+          objectiveOutcomeReceiptId: task.objectiveOutcomeReceiptId,
+          evaluationContentHash: task.evaluationContentHash,
+          evaluationReceiptId: task.evaluationReceiptId,
+          metricsHash: task.metricsHash,
+          dreamRunContentHash: task.dreamRunContentHash,
+          dreamProposalContentHash: task.dreamProposalContentHash,
+          dreamProposalState: task.dreamProposalState,
+          acceptance: "TEST_FIXTURE_NOT_ADOPTED",
+        }));
+        const draft = await writeR2TestFact({ operationId, executionEvidenceSha, bytes },
+          writePort, paths.testFetcher ?? fetch, draftToken);
+        testLedgerDraft = Object.freeze({
+          state: draft.state,
+          repository: R2_TEST_LEDGER.repository,
+          branch: R2_TEST_LEDGER.branch,
+          commit: draft.commit,
+          path: draft.path,
+          gitBlob: draft.readback.gitBlob,
+          contentHash: draft.readback.coordinate.contentHash,
+        });
+      }
     }
     return Object.freeze({
       goal: request.goal,
       ledger: request.ledger,
       ...(request.runControlledTask === true ? { runControlledTask: true as const } : {}),
+      ...(request.publishTestDraft === true ? { publishTestDraft: true as const } : {}),
       caller: Object.freeze({
         admitted: admission.admitted,
         policyRevision: admission.policyRevision,
@@ -230,6 +347,7 @@ export async function handleProductGoalRequest(
       }),
       ledgerReadback: Object.freeze({ state: ledgerReadback.state, gitBlob: ledgerReadback.gitBlob }),
       ...(controlledTask === undefined ? {} : { controlledTask }),
+      ...(testLedgerDraft === undefined ? {} : { testLedgerDraft }),
       acceptance: "TEST_FIXTURE_NOT_ADOPTED" as const,
     });
   } finally {

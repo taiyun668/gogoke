@@ -5,8 +5,12 @@ use std::time::Duration;
 use tauri::Manager;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use sha2::{Digest, Sha256};
 
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
+// The draft path performs bounded Git preflight, CAS write and immutable readback
+// after the controlled process; each remote request has its own 10s limit.
+const DRAFT_SERVICE_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,6 +35,8 @@ pub(crate) struct ProductGoalRequest {
     ledger: LedgerRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_controlled_task: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publish_test_draft: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -66,11 +72,15 @@ pub(crate) struct ProductGoalView {
     ledger: LedgerRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_controlled_task: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publish_test_draft: Option<bool>,
     caller: ProductCallerView,
     native_host: NativeHostView,
     ledger_readback: LedgerReadbackView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controlled_task: Option<ControlledTaskView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    test_ledger_draft: Option<TestLedgerDraftView>,
     acceptance: String,
 }
 
@@ -95,6 +105,18 @@ pub(crate) struct ControlledTaskView {
     dream_run_content_hash: String,
     dream_proposal_content_hash: String,
     dream_proposal_state: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TestLedgerDraftView {
+    state: String,
+    repository: String,
+    branch: String,
+    commit: String,
+    path: String,
+    git_blob: String,
+    content_hash: String,
 }
 
 #[derive(Clone, Debug)]
@@ -197,6 +219,24 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
             return Err("GOGOKE_CONTROLLED_TASK_NOT_VALIDATED".to_string());
         }
     }
+    if let Some(draft) = &response.test_ledger_draft {
+        if response.publish_test_draft != Some(true)
+            || draft.state != "DRAFT_COMMITTED_NOT_ADOPTED"
+            || draft.repository != "taiyun668/gogoke"
+            || draft.branch != "s1-r4-ledger-test/r2-02"
+            || draft.commit.len() != 40
+            || !draft.commit.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !draft.path.starts_with("apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/")
+            || !draft.path.ends_with(".json")
+            || draft.git_blob.len() != 40
+            || !draft.git_blob.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !draft.content_hash.starts_with("sha256:")
+            || draft.content_hash.len() != 71
+            || !draft.content_hash[7..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("GOGOKE_TEST_LEDGER_DRAFT_NOT_VERIFIED".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -210,7 +250,27 @@ async fn run_product_process(
     let request_bytes =
         serde_json::to_vec(request).map_err(|_| "GOGOKE_PRODUCT_REQUEST_ENCODE_FAILED".to_string())?;
 
+    let draft_identity = if request.publish_test_draft == Some(true) {
+        if request.run_controlled_task != Some(true) {
+            return Err("GOGOKE_TEST_DRAFT_REQUIRES_CONTROLLED_TASK".to_string());
+        }
+        let sha = option_env!("GITHUB_SHA")
+            .ok_or_else(|| "GOGOKE_TEST_DRAFT_BUILD_SHA_UNAVAILABLE".to_string())?;
+        if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("GOGOKE_TEST_DRAFT_BUILD_SHA_INVALID".to_string());
+        }
+        let entry = tokio::fs::read(&paths.service_entry).await
+            .map_err(|_| "GOGOKE_TEST_DRAFT_SERVICE_HASH_UNAVAILABLE".to_string())?;
+        Some((sha.to_owned(), format!("sha256:{:x}", Sha256::digest(&entry))))
+    } else {
+        None
+    };
+
     let mut command = Command::new(&paths.node_runtime);
+    if let Some((sha, entry_hash)) = &draft_identity {
+        command.env("GOGOKE_EXECUTION_EVIDENCE_SHA", sha)
+            .env("GOGOKE_SERVICE_ENTRY_SHA256", entry_hash);
+    }
     command
         .arg(&paths.service_entry)
         .arg("--root")
@@ -246,7 +306,12 @@ async fn run_product_process(
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_CLOSE_FAILED".to_string())?;
     drop(stdin);
 
-    let output = tokio::time::timeout(SERVICE_TIMEOUT, child.wait_with_output())
+    let timeout = if request.publish_test_draft == Some(true) {
+        DRAFT_SERVICE_TIMEOUT
+    } else {
+        SERVICE_TIMEOUT
+    };
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())?
         .map_err(|_| "GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())?;
@@ -266,7 +331,9 @@ async fn run_product_process(
         || response.ledger.path != request.ledger.path
         || response.ledger.content_hash != request.ledger.content_hash
         || response.run_controlled_task != request.run_controlled_task
+        || response.publish_test_draft != request.publish_test_draft
         || (request.run_controlled_task == Some(true)) != response.controlled_task.is_some()
+        || (request.publish_test_draft == Some(true)) != response.test_ledger_draft.is_some()
     {
         return Err("GOGOKE_PRODUCT_RESPONSE_IDENTITY_MISMATCH".to_string());
     }
@@ -300,11 +367,13 @@ mod tests {
                 content_hash: format!("sha256:{}", "a".repeat(64)),
             },
             run_controlled_task: None,
+            publish_test_draft: None,
         };
         let valid = ProductGoalView {
             goal: request.goal.clone(),
             ledger: request.ledger.clone(),
             run_controlled_task: None,
+            publish_test_draft: None,
             caller: ProductCallerView {
                 admitted: true,
                 policy_revision: "1".into(),
@@ -323,6 +392,7 @@ mod tests {
                 git_blob: "a".repeat(40),
             },
             controlled_task: None,
+            test_ledger_draft: None,
             acceptance: "TEST_FIXTURE_NOT_ADOPTED".into(),
         };
         assert!(validate_product_response(&valid).is_ok());

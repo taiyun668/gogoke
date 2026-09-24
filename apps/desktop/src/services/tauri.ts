@@ -1224,6 +1224,7 @@ export async function sendNotification(
 export type GogokeProductGoalRequest = {
   goal: { id: string; title: string };
   runControlledTask?: true;
+  publishTestDraft?: true;
   ledger: {
     repository: string;
     commit: string;
@@ -1269,6 +1270,15 @@ export type GogokeProductGoalView = GogokeProductGoalRequest & {
     dreamRunContentHash: string;
     dreamProposalContentHash: string;
     dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
+  };
+  testLedgerDraft?: {
+    state: "DRAFT_COMMITTED_NOT_ADOPTED";
+    repository: "taiyun668/gogoke";
+    branch: "s1-r4-ledger-test/r2-02";
+    commit: string;
+    path: string;
+    gitBlob: string;
+    contentHash: string;
   };
   acceptance: "TEST_FIXTURE_NOT_ADOPTED";
 };

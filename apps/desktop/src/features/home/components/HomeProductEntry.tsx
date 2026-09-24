@@ -29,7 +29,7 @@ export function HomeProductEntry() {
     setError(null);
     try {
       const next = await runGogokeR2GoalProbe(mode === "task"
-        ? { ...R2_GOAL_FIXTURE, runControlledTask: true }
+        ? { ...R2_GOAL_FIXTURE, runControlledTask: true, publishTestDraft: true }
         : R2_GOAL_FIXTURE);
       setResult(next);
     } catch (cause) {
@@ -64,7 +64,7 @@ export function HomeProductEntry() {
             onClick={() => void run("task")}
             type="button"
           >
-            {running === "task" ? "Running test task…" : "Run controlled test task"}
+            {running === "task" ? "Running test task…" : "Run test and save draft"}
           </button>
         </div>
       </div>
@@ -143,6 +143,11 @@ export function HomeProductEntry() {
       ) : result ? (
         <div className="home-product-entry-result" role="status" aria-atomic="true">
           Controller/Seat admitted by native Product Authority · Git blob {result.ledgerReadback.gitBlob.slice(0, 12)} verified, not adopted · {result.nativeHost.elapsedMicros}µs
+        </div>
+      ) : null}
+      {result?.testLedgerDraft ? (
+        <div className="home-product-entry-result" role="status" aria-atomic="true">
+          Test ledger draft {result.testLedgerDraft.commit.slice(0, 12)} verified at {result.testLedgerDraft.path} · not adopted
         </div>
       ) : null}
       {error ? (

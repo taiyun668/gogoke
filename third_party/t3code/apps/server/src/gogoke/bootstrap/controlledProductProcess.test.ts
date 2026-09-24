@@ -12,6 +12,7 @@ import { validateControlledFixtureResult } from "../actions/controlledFixtureRes
 import { prepareR2ControlledManifest, prepareR2PublicContext } from "../context/assembly/r2ControlledManifest.ts";
 import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
+import { R2_TEST_LEDGER, type GitFactWritePort } from "../context/repository/gitFactWrite.ts";
 import { NativeHostClient, type NativeContextManifestReceipt, type NativeR2ActionDecisionBasis, type NativeR2TestActionPreparation, type NativeR2TestLineageReceipt, type NativeR2TestPackageReceipt, type NativeR2TestRecipeReceipt } from "../persistence/base/nativeHostClient.ts";
 import { handleProductGoalRequest } from "./productEntry.ts";
 
@@ -284,6 +285,57 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
       /R2_ACTION_REPLAY_NO_NEW_RESULT/,
       "a repeated product request may read completion but cannot resend or invent a new Result",
     );
+    const writeRoot = Path.join(root, "product-entry-write-root");
+    await FS.mkdir(writeRoot);
+    let writtenBytes: Buffer | undefined;
+    let writtenPath: string | undefined;
+    let testHead = "a".repeat(40);
+    const testCommit = "d".repeat(40);
+    const testTree = "b".repeat(40);
+    const writtenBlob = () => {
+      if (writtenBytes === undefined) throw new Error("test draft bytes missing");
+      return Crypto.createHash("sha1").update(`blob ${writtenBytes.length}\0`)
+        .update(writtenBytes).digest("hex");
+    };
+    const testWritePort: GitFactWritePort = {
+      repository: R2_TEST_LEDGER.repository,
+      branch: R2_TEST_LEDGER.branch,
+      async assertCurrentAuthority() { Assert.equal(testHead.length, 40); },
+      async readHead() { return { commit: testHead, tree: testTree }; },
+      async readPath() { return null; },
+      async createBlob(bytes) { writtenBytes = Buffer.from(bytes); return writtenBlob(); },
+      async createTree(_base, path, blob) {
+        Assert.equal(blob, writtenBlob());
+        writtenPath = path;
+        return "c".repeat(40);
+      },
+      async createCommit(parent) { Assert.equal(parent, testHead); return testCommit; },
+      async updateRef(commit) { Assert.equal(commit, testCommit); testHead = commit; },
+    };
+    const testFetcher: typeof fetch = async () => {
+      if (writtenBytes === undefined || writtenPath === undefined) throw new Error("test draft not written");
+      return new Response(JSON.stringify({
+        type: "file", path: writtenPath, sha: writtenBlob(), size: writtenBytes.length,
+        encoding: "base64", content: writtenBytes.toString("base64"),
+      }), { status: 200 });
+    };
+    const runningEntry = process.argv[1];
+    if (runningEntry === undefined) throw new Error("node test entry missing");
+    const entryHash = `sha256:${sha256(await FS.readFile(runningEntry))}`;
+    const writtenProduct = await handleProductGoalRequest(
+      { ...productRequest, publishTestDraft: true },
+      { root: writeRoot, hostBinary: hosted,
+        executionEvidenceSha: process.env.GITHUB_SHA ?? "1".repeat(40),
+        serviceEntrySha256: entryHash, testWritePort, testFetcher },
+    );
+    Assert.equal(writtenProduct.testLedgerDraft?.state, "DRAFT_COMMITTED_NOT_ADOPTED");
+    Assert.equal(writtenProduct.testLedgerDraft?.commit, testCommit);
+    Assert.equal(writtenProduct.testLedgerDraft?.gitBlob, writtenBlob());
+    Assert.equal(writtenProduct.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
+    const writtenFact = JSON.parse(writtenBytes?.toString("utf8") ?? "null") as Record<string, unknown>;
+    Assert.equal(writtenFact.testOnly, true);
+    Assert.equal(writtenFact.serviceEntrySha256, entryHash);
+    Assert.equal(writtenFact.dreamProposalState, "DRAFT_TEST_ONLY_NOT_ACTIVATED");
     const evidenceRoot = process.env.GOGOKE_SERVER_EVIDENCE_ROOT;
     if (evidenceRoot !== undefined) {
       const executionEvidenceSha = process.env.GITHUB_SHA;

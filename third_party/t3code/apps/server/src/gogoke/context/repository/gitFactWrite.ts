@@ -50,6 +50,7 @@ export async function writeR2TestFact(
   input: R2TestFactWrite,
   port: GitFactWritePort,
   fetcher: typeof fetch = fetch,
+  readbackToken?: string,
 ): Promise<{
   readonly state: "DRAFT_COMMITTED_NOT_ADOPTED";
   readonly commit: string;
@@ -98,7 +99,7 @@ export async function writeR2TestFact(
       commit,
       path,
       contentHash: `sha256:${sourceHash}`,
-    }, R2_TEST_LEDGER.repository, fetcher);
+    }, R2_TEST_LEDGER.repository, fetcher, readbackToken);
   } catch (error) {
     throw new GitFactWriteError("TEST_FACT_COMMITTED_READBACK_UNVERIFIED",
       { cause: error, commit, path });

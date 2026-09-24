@@ -46,6 +46,28 @@ it("admits only an explicit true controlled test-task request", () => {
     valid.slice(0, -1) + ',"runControlledTask":false}'))).toThrow("INVALID_PRODUCT_ENTRY");
 });
 
+it("requires the controlled task for a test ledger draft", () => {
+  expect(decodeProductGoalRequest(Buffer.from(
+    valid.slice(0, -1) + ',"runControlledTask":true,"publishTestDraft":true}',
+  ))).toMatchObject({ runControlledTask: true, publishTestDraft: true });
+  expect(() => decodeProductGoalRequest(Buffer.from(
+    valid.slice(0, -1) + ',"publishTestDraft":true}',
+  ))).toThrow("INVALID_PRODUCT_ENTRY");
+  expect(() => decodeProductGoalRequest(Buffer.from(
+    valid.slice(0, -1) + ',"runControlledTask":true,"publishTestDraft":false}',
+  ))).toThrow("INVALID_PRODUCT_ENTRY");
+});
+
+it("rejects a test draft without a running build identity before native construction", async () => {
+  const request = decodeProductGoalRequest(Buffer.from(
+    valid.slice(0, -1) + ',"runControlledTask":true,"publishTestDraft":true}',
+  ));
+  await expect(handleProductGoalRequest(request, {
+    root: "unused", hostBinary: "unused", executionEvidenceSha: "invalid",
+    serviceEntrySha256: "invalid",
+  })).rejects.toThrow("R2_TEST_DRAFT_BUILD_IDENTITY_UNAVAILABLE");
+});
+
 it("rejects mutable or path-escaping ledger coordinates before construction", () => {
   for (const value of [
     valid.replace("6765d4e11ace61c47b9aeb123e0ef4770ab072c0", "main"),
