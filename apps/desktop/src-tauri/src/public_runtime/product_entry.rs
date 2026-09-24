@@ -371,10 +371,14 @@ async fn run_product_process(
             "ENOENT",
         ];
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let code = SAFE_FAILURE_CODES
-            .iter()
-            .copied()
-            .find(|code| stderr.contains(code))
+        let code = stderr
+            .rsplit_once("GOGOKE_PRODUCT_PROCESS_FAILURE:")
+            .and_then(|(_, tail)| tail.lines().next())
+            .filter(|code| {
+                (3..=64).contains(&code.len())
+                    && code.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+            })
+            .or_else(|| SAFE_FAILURE_CODES.iter().copied().find(|code| stderr.contains(code)))
             .unwrap_or("UNCLASSIFIED");
         return Err(format!(
             "GOGOKE_PRODUCT_SERVICE_FAILED:{}:{}",

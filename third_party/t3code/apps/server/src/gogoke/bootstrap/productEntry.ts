@@ -387,10 +387,27 @@ export async function handleProductGoalRequest(
 }
 
 export async function runGogokeProductProcess(argv: readonly string[]): Promise<void> {
-  const paths = parseProductProcessArgs(argv);
-  const input = NodeFS.readFileSync(0);
-  const request = decodeProductGoalRequest(input);
-  const response = await handleProductGoalRequest(request, paths);
-  // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.
-  NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+  try {
+    const paths = parseProductProcessArgs(argv);
+    const input = NodeFS.readFileSync(0);
+    const request = decodeProductGoalRequest(input);
+    const response = await handleProductGoalRequest(request, paths);
+    // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.
+    NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+  } catch (error) {
+    // The parent returns only a bounded code; process stderr may include paths
+    // or credentials and is never forwarded to the product UI.
+    const coded = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
+    const prefix = error instanceof Error
+      ? /^([A-Z][A-Z0-9_]{2,63})(?::|$)/u.exec(error.message)?.[1]
+      : undefined;
+    const name = error instanceof Error
+      ? error.name.replace(/([a-z])([A-Z])/gu, "$1_$2").toUpperCase()
+      : undefined;
+    const candidate = [coded, prefix, name].find((value) =>
+      typeof value === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(value));
+    const code = typeof candidate === "string" ? candidate : "UNKNOWN";
+    NodeFS.writeSync(2, `GOGOKE_PRODUCT_PROCESS_FAILURE:${code}\n`);
+    throw error;
+  }
 }
