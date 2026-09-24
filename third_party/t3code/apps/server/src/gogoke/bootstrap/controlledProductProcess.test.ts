@@ -12,6 +12,7 @@ import { validateControlledFixtureResult } from "../actions/controlledFixtureRes
 import { prepareR2ControlledManifest, prepareR2PublicContext } from "../context/assembly/r2ControlledManifest.ts";
 import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
 import { readGitHubFact } from "../context/repository/gitFact.ts";
+import type { ContextObject } from "../contracts/model.ts";
 import { R2_TEST_LEDGER, type GitFactWritePort } from "../context/repository/gitFactWrite.ts";
 import { NativeHostClient, type NativeContextManifestReceipt, type NativeR2ActionDecisionBasis, type NativeR2TestActionPreparation, type NativeR2TestLineageReceipt, type NativeR2TestPackageReceipt, type NativeR2TestRecipeReceipt } from "../persistence/base/nativeHostClient.ts";
 import { handleProductGoalRequest } from "./productEntry.ts";
@@ -287,6 +288,26 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     );
     const writeRoot = Path.join(root, "product-entry-write-root");
     await FS.mkdir(writeRoot);
+    const privateCanary = Crypto.randomBytes(32).toString("hex");
+    const privateClient = await NativeHostClient.attach({ root: writeRoot, hostBinary: hosted });
+    try {
+      const privateReceipt = await privateClient.commitContextVersion({
+        operationId: "r2-03-private-canary",
+        object: {
+          contextId: "context-r2-03-private-canary", version: "1" as ContextObject["version"], scope: "SESSION",
+          domainId: "domain-r2-03-private", kind: "fact",
+          contentHash: `sha256:${sha256(Buffer.from(privateCanary))}`,
+          sourceRef: { ref: `test-private:${privateCanary}`, hash: `sha256:${sha256(Buffer.from(privateCanary))}` },
+          sourceAuthority: { kind: "test-fixture", ref: "r2-03-private" },
+          derivedFrom: [], validity: "ACTIVE", supersedes: [],
+          accessPolicyRevision: "1" as ContextObject["accessPolicyRevision"],
+        },
+        access: { visibility: "OWNER_PRIVATE", readGrantRefs: [] },
+      });
+      Assert.equal(privateReceipt.disposition, "COMMITTED");
+    } finally {
+      await privateClient.close();
+    }
     let writtenBytes: Buffer | undefined;
     let writtenPath: string | undefined;
     let testHead = "a".repeat(40);
@@ -343,6 +364,8 @@ cloudOnly("runs the fixed public fixture through native custody and Pi protocol 
     Assert.equal(writtenProduct.acceptance, "TEST_FIXTURE_NOT_ADOPTED");
     const writtenFact = JSON.parse(Buffer.from(writtenBytes ?? new Uint8Array()).toString("utf8")) as Record<string, unknown>;
     Assert.equal(writtenFact.testOnly, true);
+    Assert.ok(!Buffer.from(writtenBytes ?? new Uint8Array()).includes(privateCanary),
+      "private SESSION canary must not enter the test Git draft");
     Assert.equal(writtenFact.serviceEntrySha256, entryHash);
     Assert.equal(writtenFact.dreamProposalState, "DRAFT_TEST_ONLY_NOT_ACTIVATED");
     const unknownRoot = Path.join(root, "product-entry-unknown-root");
