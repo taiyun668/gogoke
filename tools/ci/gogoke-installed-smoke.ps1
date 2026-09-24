@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$InstallDirectory,
-    [switch]$MediumChild
+    [switch]$MediumChild,
+    [switch]$NegativeOnly
 )
 
 Set-StrictMode -Version Latest
@@ -16,6 +17,7 @@ if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true') {
 $installed = (Resolve-Path -LiteralPath $InstallDirectory).Path
 $smoke = Join-Path $PSScriptRoot 'gogoke-package-service.mjs'
 $receipt = $null
+$negativeReceipt = $null
 
 if ($MediumChild) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -26,7 +28,8 @@ if ($MediumChild) {
         }
     } finally { $identity.Dispose() }
     Write-Output 'R2-04 installed UI smoke: non-administrator cloud process'
-    & node $smoke smoke $installed
+    $mode = if ($NegativeOnly) { 'smoke-negative' } else { 'smoke' }
+    & node $smoke $mode $installed
     if ($null -eq $LASTEXITCODE) { throw 'Installed smoke exit status unavailable; do not resend' }
     exit $LASTEXITCODE
 }
@@ -52,18 +55,46 @@ try {
     if (Test-Path -LiteralPath $receipt) { throw 'Fresh installed smoke receipt path already exists' }
     $env:GOGOKE_R2_SMOKE_RECEIPT = $receipt
     & $launcher --integrity Medium --direct $shell -NoProfile -File $PSCommandPath -InstallDirectory $installed -MediumChild
-    $childExit = $LASTEXITCODE
+    $positiveExit = $LASTEXITCODE
     Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
-    if ($null -eq $childExit) { throw 'Cloud smoke child exit status unavailable; do not resend' }
+    if ($null -eq $positiveExit) { throw 'Cloud smoke child exit status unavailable; do not resend' }
     if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
-        throw "Non-administrator installed smoke produced no receipt; exit $childExit"
+        throw "Non-administrator installed smoke produced no receipt; exit $positiveExit"
     }
-    & node $smoke record-smoke $receipt
+    if ($positiveExit -ne 0) {
+        & node $smoke record-smoke $receipt
+        if ($LASTEXITCODE -ne 0) { throw "Installed smoke failure receipt recording failed: $LASTEXITCODE" }
+        throw "Non-administrator installed smoke failed: $positiveExit"
+    }
+
+    # The installed package is read by the Medium product process. Move the
+    # mandatory executable only after that process has exited, using the same
+    # elevated token that installed it; the negative invoke stays Medium.
+    $node = Join-Path $installed 'gogoke-service/runtime/node.exe'
+    $held = "$node.r204-held"
+    if (Test-Path -LiteralPath $held) { throw 'Installed Node hold path already exists' }
+    Move-Item -LiteralPath $node -Destination $held
+    try {
+        $negativeReceipt = Join-Path $env:RUNNER_TEMP ('gogoke-r2-smoke-receipt-' + [Guid]::NewGuid().ToString('N') + '.json')
+        if (Test-Path -LiteralPath $negativeReceipt) { throw 'Fresh negative smoke receipt path already exists' }
+        $env:GOGOKE_R2_SMOKE_RECEIPT = $negativeReceipt
+        & $launcher --integrity Medium --direct $shell -NoProfile -File $PSCommandPath -InstallDirectory $installed -MediumChild -NegativeOnly
+        $negativeExit = $LASTEXITCODE
+    } finally {
+        Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath $held -Destination $node
+    }
+    if ($null -eq $negativeExit) { throw 'Cloud negative smoke child exit status unavailable; do not resend' }
+    if (-not (Test-Path -LiteralPath $negativeReceipt -PathType Leaf)) {
+        throw "Non-administrator negative smoke produced no receipt; exit $negativeExit"
+    }
+    & node $smoke record-smoke $receipt $negativeReceipt
     if ($null -eq $LASTEXITCODE) { throw 'Installed smoke receipt recording status unavailable' }
     if ($LASTEXITCODE -ne 0) { throw "Installed smoke receipt recording failed: $LASTEXITCODE" }
-    if ($childExit -ne 0) { throw "Non-administrator installed smoke failed: $childExit" }
+    if ($negativeExit -ne 0) { throw "Non-administrator negative smoke failed: $negativeExit" }
 } finally {
     Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue
     if ($receipt -and (Test-Path -LiteralPath $receipt -PathType Leaf)) { Remove-Item -LiteralPath $receipt -Force }
+    if ($negativeReceipt -and (Test-Path -LiteralPath $negativeReceipt -PathType Leaf)) { Remove-Item -LiteralPath $negativeReceipt -Force }
     Remove-Item -LiteralPath $tools -Recurse -Force
 }

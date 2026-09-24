@@ -368,23 +368,39 @@ function validateInstalledSmoke(value) {
   }
 }
 
-function recordSmokeReceipt(receiptFile) {
+function readSmokeReceipt(receiptFile) {
   const stat = fs.statSync(ensure(receiptFile));
   if (stat.size <= 0 || stat.size > 16 * 1024) throw new Error('installed smoke receipt size is invalid');
   const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
   if (receipt?.schema !== smokeReceiptSchema || !['PASS', 'FAIL'].includes(receipt.state)) {
     throw new Error('installed smoke receipt schema is invalid');
   }
+  return receipt;
+}
+
+function recordSmokeReceipt(receiptFile, negativeReceiptFile) {
+  const receipt = readSmokeReceipt(receiptFile);
+  const negative = negativeReceiptFile ? readSmokeReceipt(negativeReceiptFile) : null;
   const record = JSON.parse(fs.readFileSync(ensure(manifestPath), 'utf8'));
-  if (receipt.state === 'PASS') {
+  const failure = receipt.state === 'FAIL' ? receipt.failure : negative?.failure;
+  if (receipt.state === 'PASS' && negative?.state === 'PASS') {
+    if (negative.negativeSmoke?.state !== 'PASS' ||
+        negative.negativeSmoke.platform !== 'WINDOWS_CLOUD_NOT_OWNER_WIN11' ||
+        negative.negativeSmoke.runId !== process.env.GITHUB_RUN_ID ||
+        negative.negativeSmoke.sourceSha !== process.env.GITHUB_SHA ||
+        negative.negativeSmoke.appSha256 !== receipt.installedSmoke?.appSha256 ||
+        negative.negativeSmoke.missingNode !== 'REJECTED_AT_TAURI_INGRESS') {
+      throw new Error('installed missing-Node receipt is invalid');
+    }
+    receipt.installedSmoke.missingNode = negative.negativeSmoke.missingNode;
     validateInstalledSmoke(receipt.installedSmoke);
     if (record.installedSmoke !== undefined || record.packageOperationFailure !== undefined) {
       throw new Error('installed smoke evidence already exists');
     }
     record.installedSmoke = receipt.installedSmoke;
   } else {
-    const failure = receipt.failure;
-    if (failure?.schema !== 'gogoke.r2-04.package-operation.v1' || failure.operation !== 'smoke' ||
+    if (failure?.schema !== 'gogoke.r2-04.package-operation.v1' ||
+        !['smoke', 'smoke-negative'].includes(failure.operation) ||
         failure.state !== 'FAIL' || failure.sourceSha !== process.env.GITHUB_SHA ||
         failure.runId !== process.env.GITHUB_RUN_ID || failure.nativeLocallyCompiled !== false ||
         typeof failure.message !== 'string' || failure.message.length === 0 || failure.message.length > 5000) {
@@ -394,10 +410,16 @@ function recordSmokeReceipt(receiptFile) {
     console.error('::error::' + failure.message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
   }
   fs.writeFileSync(manifestPath, JSON.stringify(record, null, 2) + '\n');
-  console.log(`PASS recorded ${receipt.state} installed-smoke receipt under parent token`);
+  console.log(`PASS recorded ${failure ? 'FAIL' : 'PASS'} installed-smoke receipt under parent token`);
 }
 
-async function smokeTauri(installed, request) {
+const smokeRequest = {
+  goal: { id: 'goal-r2-01', title: 'Reach the native Product Authority from the Gogoke product entry' },
+  ledger: { repository: 'taiyun668/gogoke', commit: '6765d4e11ace61c47b9aeb123e0ef4770ab072c0', path: 'apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json', contentHash: 'sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08' },
+  runControlledTask: true,
+};
+
+async function smokeTauri(installed, request, missingNodeExpected = false) {
   if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true') throw new Error('installed Tauri smoke is cloud Windows only');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'gogoke-ui-smoke-'));
   const listener = createServer();
@@ -462,22 +484,22 @@ async function smokeTauri(installed, request) {
       if (!ready) await delay(250);
     }
     if (!ready) throw new Error('installed Home product entry did not render');
-    const response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
-    assertSmokeResponse(response, request);
-    // A missing mandatory runtime must fail at the same Tauri product ingress.
-    const node = path.join(installed, 'gogoke-service/runtime/node.exe');
-    const held = node + '.r204-held';
-    fs.renameSync(node, held);
-    try {
+    if (missingNodeExpected) {
       const rejected = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}}).then(() => 'UNEXPECTED_SUCCESS', error => String(error))`);
       if (rejected !== 'GOGOKE_PRODUCT_COMPONENT_MISSING:node-runtime') throw new Error('missing installed Node was not rejected by Tauri');
-    } finally { fs.renameSync(held, node); }
+      console.log('PASS missing installed Node rejected at Tauri product ingress');
+      return { state: 'PASS', platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11',
+        runId: process.env.GITHUB_RUN_ID, sourceSha: process.env.GITHUB_SHA,
+        missingNode: 'REJECTED_AT_TAURI_INGRESS', appSha256: digest(path.join(installed, 'gogoke.exe')) };
+    }
+    const response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
+    assertSmokeResponse(response, request);
     const installedSmoke = { state: 'PASS', platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11',
       runId: process.env.GITHUB_RUN_ID, sourceSha: process.env.GITHUB_SHA,
       entry: 'installed gogoke.exe Home -> gogoke_r2_goal_probe -> installed dist/bin.mjs -> native-host',
-      controlledTask: 'VALIDATED_TEST_RESULT_NOT_ADOPTED', missingNode: 'REJECTED_AT_TAURI_INGRESS',
+      controlledTask: 'VALIDATED_TEST_RESULT_NOT_ADOPTED',
       appSha256: digest(path.join(installed, 'gogoke.exe')), adoption: false, release: false };
-    console.log('PASS installed Tauri Home and product invoke; missing Node rejected at the same ingress');
+    console.log('PASS installed Tauri Home and product invoke');
     return installedSmoke;
   } finally {
     socket?.close();
@@ -502,11 +524,7 @@ function assertSmokeResponse(response, request) {
 async function smoke(destination) {
   const installed = path.resolve(destination);
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'gogoke-service-smoke-'));
-  const request = {
-    goal: { id: 'goal-r2-01', title: 'Reach the native Product Authority from the Gogoke product entry' },
-    ledger: { repository: 'taiyun668/gogoke', commit: '6765d4e11ace61c47b9aeb123e0ef4770ab072c0', path: 'apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json', contentHash: 'sha256:b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08' },
-    runControlledTask: true,
-  };
+  const request = smokeRequest;
   try {
     const result = spawnSync(path.join(installed, 'gogoke-service/runtime/node.exe'), [path.join(installed, 'gogoke-service/dist/bin.mjs'), '--root', temp, '--native-host', path.join(installed, 'gogoke-native-host.exe')], { cwd: path.join(installed, 'gogoke-service'), input: JSON.stringify(request), encoding: 'utf8', timeout: 180000, maxBuffer: 1024 * 1024, windowsHide: true });
     if (result.error || result.status !== 0) throw new Error(`installed service failed: ${result.error?.message ?? result.status}; ${result.stderr?.slice(-3000)}`);
@@ -544,14 +562,15 @@ if (mode === 'stage') {
   if (receiptPath) {
     writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'PASS', installedSmoke });
   } else {
-    const record = JSON.parse(fs.readFileSync(ensure(manifestPath), 'utf8'));
-    if (record.installedSmoke !== undefined || record.packageOperationFailure !== undefined) throw new Error('installed smoke evidence already exists');
-    record.installedSmoke = installedSmoke;
-    fs.writeFileSync(manifestPath, JSON.stringify(record, null, 2) + '\n');
+    throw new Error('installed product smoke requires a cloud receipt');
   }
+} else if (mode === 'smoke-negative') {
+  if (!configuredSmokeReceiptPath()) throw new Error('installed negative smoke requires a cloud receipt');
+  const negativeSmoke = await smokeTauri(ensureDir(root), smokeRequest, true);
+  writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'PASS', negativeSmoke });
 } else if (mode === 'record-smoke') {
-  recordSmokeReceipt(ensure(root));
- } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | record-smoke <receipt>');
+  recordSmokeReceipt(ensure(root), other ? ensure(other) : null);
+ } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | smoke-negative <installed-dir> | record-smoke <positive-receipt> [negative-receipt]');
 } catch (error) {
   let message = String(error?.message ?? error);
   for (const value of [process.env.GITHUB_TOKEN, process.env.GH_TOKEN, repo, os.tmpdir(), process.env.RUNNER_TEMP, root, other]) {
@@ -562,7 +581,7 @@ if (mode === 'stage') {
     sourceSha: process.env.GITHUB_SHA ?? 'LOCAL_DIAGNOSTIC', runId: process.env.GITHUB_RUN_ID ?? null,
     message, nativeLocallyCompiled: false };
   let failureReceipt = null;
-  if (mode === 'smoke') {
+  if (mode === 'smoke' || mode === 'smoke-negative') {
     try { failureReceipt = configuredSmokeReceiptPath(); } catch { /* Invalid receipt path has no safe write target. */ }
   }
   if (failureReceipt) {
@@ -572,7 +591,7 @@ if (mode === 'stage') {
       console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
       console.error('::error::installed smoke failure receipt could not be written');
     }
-  } else if (mode === 'smoke' && process.env.GOGOKE_R2_SMOKE_RECEIPT) {
+  } else if ((mode === 'smoke' || mode === 'smoke-negative') && process.env.GOGOKE_R2_SMOKE_RECEIPT) {
     console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
   } else {
     fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
