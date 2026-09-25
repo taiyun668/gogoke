@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -133,6 +134,28 @@ class FrozenArtifactTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("duplicate frozen metadata key", result.stderr)
+
+    def test_frozen_verify_rejects_float_indexed_file_length_with_updated_hash(self) -> None:
+        frozen = self.root / "frozen"
+        self.stage("frozen", frozen)
+        index_path = frozen / "resource-index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["files"][0]["length"] = float(index["files"][0]["length"])
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        index_bytes = index_path.read_bytes()
+        metadata_path = frozen / "frozen-build.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["files"]["resource-index.json"] = {
+            "length": len(index_bytes), "sha256": hashlib.sha256(index_bytes).hexdigest()
+        }
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        result = self.run_tool(
+            FREEZE_TOOL, "verify", "--directory", frozen,
+            "--source-commit", SOURCE, "--run-id", 42, "--run-attempt", 3,
+            "--lane", "frozen", check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("index.files item.length", result.stderr)
 
 
 if __name__ == "__main__":

@@ -127,6 +127,42 @@ class GogokeResourcePackTests(unittest.TestCase):
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("duplicate JSON key: schema", rejected.stderr)
 
+    def test_verify_rejects_non_integer_indexed_file_length(self) -> None:
+        (self.dist / "bin.mjs").write_bytes(b"x")
+        self.assertEqual(self.build_pack(self.pack).returncode, 0)
+        self.assertEqual(self.build_index().returncode, 0)
+        original = json.loads(self.index.read_text(encoding="utf-8"))
+        self.assertEqual(original["files"][0]["path"], "dist/bin.mjs")
+        for invalid in (True, 1.0):
+            with self.subTest(length=invalid):
+                edited = json.loads(json.dumps(original))
+                edited["files"][0]["length"] = invalid
+                self.index.write_text(json.dumps(edited), encoding="utf-8")
+                rejected = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("index.files item.length", rejected.stderr)
+
+    def test_index_rejects_nul_in_original_zip_entry_name(self) -> None:
+        with zipfile.ZipFile(self.pack, "w") as archive:
+            for name, data in (("frontend/index.html", b"<main>ok</main>"),
+                               ("dist/bin.mjsX.exe", b"x")):
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                archive.writestr(info, data)
+        original = b"dist/bin.mjsX.exe"
+        hidden = b"dist/bin.mjs\x00.exe"
+        payload = self.pack.read_bytes()
+        self.assertEqual(payload.count(original), 2)
+        self.assertEqual(len(original), len(hidden))
+        self.pack.write_bytes(payload.replace(original, hidden))
+        with zipfile.ZipFile(self.pack) as archive:
+            self.assertEqual(archive.infolist()[1].filename, "dist/bin.mjs")
+            self.assertNotEqual(archive.infolist()[1].orig_filename, "dist/bin.mjs")
+        rejected = self.build_index()
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("NUL in its original ZIP name", rejected.stderr)
+
     def test_pack_requires_frontend_index_and_dist_bin(self) -> None:
         (self.frontend / "index.html").unlink()
         missing_frontend = self.build_pack(self.pack)
