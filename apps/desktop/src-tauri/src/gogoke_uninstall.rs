@@ -133,9 +133,38 @@ fn no_reparse_ancestors(path: &Path) -> Result<(), String> {
 }
 
 fn path_text(path: &Path) -> Result<String, String> {
+    // Signed index paths use '/', but the embedded finalizer accepts only
+    // drive-absolute Windows paths with backslash separators.
     path.to_str()
-        .map(str::to_owned)
+        .map(|value| value.replace('/', "\\"))
         .ok_or_else(|| "GOGOKE_UNINSTALL_PATH_ENCODING".to_string())
+}
+
+#[cfg(test)]
+mod handoff_path_tests {
+    use super::*;
+
+    #[test]
+    fn signed_relative_paths_serialize_with_windows_separators() {
+        let root = Path::new(r"C:\gogoke-test");
+        for (relative, expected) in [
+            (
+                "gogoke-service/runtime/node.exe",
+                r"C:\gogoke-test\gogoke-service\runtime\node.exe",
+            ),
+            (
+                "gogoke-service/generations/set/frontend/icon one.svg",
+                r"C:\gogoke-test\gogoke-service\generations\set\frontend\icon one.svg",
+            ),
+        ] {
+            let joined = root.join(relative);
+            assert!(
+                joined.to_str().unwrap().contains('/'),
+                "the test must use the actual mixed path shape"
+            );
+            assert_eq!(path_text(&joined).unwrap(), expected);
+        }
+    }
 }
 
 fn opened_identity(file: &File) -> Result<OpenedObjectIdentity, String> {
