@@ -132,7 +132,10 @@ def parent_helper(payload_path: Path) -> int:
                     print(f"first finalizer receipt unreadable: {type(error).__name__}", file=sys.stderr)
             return 4
         lock_file.seek(0)
-        if lock_file.read(len(payload["nonce"]) + 6) != f"LOCK:{payload['nonce']}\n".encode():
+        observed = lock_file.read(1024)
+        if not observed.startswith(f"LOCK:{payload['nonce']}\n".encode()):
+            print(f"lock witness head={observed[:128]!r}; length={len(observed)}; "
+                  f"marker_offset={observed.find(b'LOCK:')}", file=sys.stderr)
             child.kill()
             return 5
         # The finalizer now owns the inherited lock handle and waits for this
