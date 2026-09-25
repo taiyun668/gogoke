@@ -10,6 +10,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 from tools.ci.gogoke_resource_pack import _is_reparse_point, _normalized_relative
@@ -321,6 +322,36 @@ class GogokeResourcePackTests(unittest.TestCase):
         rejected = self.build_index()
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("case-insensitive path collision", rejected.stderr)
+
+    def test_index_and_verify_reject_unicode_path_zip_extras(self) -> None:
+        self.assertEqual(self.build_pack(self.pack).returncode, 0)
+        self.assertEqual(self.build_index().returncode, 0)
+        original_index = self.index.read_bytes()
+        for version, wrong_crc in ((1, True), (2, False)):
+            with self.subTest(version=version, wrong_crc=wrong_crc):
+                with zipfile.ZipFile(self.pack, "w") as archive:
+                    for name in ("dist/bin.mjs", "frontend/index.html"):
+                        info = zipfile.ZipInfo(name)
+                        info.create_system = 3
+                        info.external_attr = (stat.S_IFREG | 0o644) << 16
+                        if name == "frontend/index.html":
+                            crc = zlib.crc32(name.encode("ascii")) ^ int(wrong_crc)
+                            payload = bytes((version,)) + crc.to_bytes(4, "little") + b"frontend/renamed.html"
+                            info.extra = (0x7075).to_bytes(2, "little") + len(payload).to_bytes(2, "little") + payload
+                        archive.writestr(info, b"x")
+                rejected_index = self.build_index()
+                self.assertNotEqual(rejected_index.returncode, 0)
+                self.assertIn("ZIP extra fields are not allowed", rejected_index.stderr)
+
+                index = json.loads(original_index)
+                pack_bytes = self.pack.read_bytes()
+                index["pack"]["length"] = len(pack_bytes)
+                index["pack"]["sha256"] = hashlib.sha256(pack_bytes).hexdigest()
+                index["generationId"] = index["pack"]["sha256"]
+                self.index.write_text(json.dumps(index), encoding="utf-8")
+                rejected_verify = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
+                self.assertNotEqual(rejected_verify.returncode, 0)
+                self.assertIn("ZIP extra fields are not allowed", rejected_verify.stderr)
 
     def test_pack_requires_frontend_index_and_dist_bin(self) -> None:
         (self.frontend / "index.html").unlink()

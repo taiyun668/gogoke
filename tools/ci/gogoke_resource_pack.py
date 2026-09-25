@@ -312,6 +312,9 @@ def _read_pack_files(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
     infos = archive.infolist()
     names: list[str] = []
     for info in infos:
+        # The Windows consumer interprets Unicode path extras; our packer emits none.
+        if info.extra:
+            raise ResourcePackError("resource pack ZIP extra fields are not allowed")
         if info.orig_filename != info.filename:
             raise ResourcePackError("resource pack entry contains a NUL in its original ZIP name")
         names.append(_normalized_relative(info.filename))
