@@ -72,7 +72,6 @@ Var WixMode
 Var OldMainBinaryName
 Var GogokeInstallDomain
 Var GogokeUninstallKey
-Var GogokeProductKey
 Var GogokeDefaultRoot
 Var GogokeVersion
 Var GogokeReceiptDomain
@@ -268,7 +267,6 @@ Function SelectSignedInstallDomain
   ${AndIf} $3 = 0
     StrCpy $GogokeInstallDomain "CI_CANDIDATE_RESOURCE"
     StrCpy $GogokeUninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate"
-    StrCpy $GogokeProductKey "Software\gogoke\gogoke-candidate"
     StrCpy $GogokeDefaultRoot "$LOCALAPPDATA\gogoke-candidate"
     StrCpy $NoShortcutMode 1
     Return
@@ -279,7 +277,6 @@ Function SelectSignedInstallDomain
   ${AndIf} $3 = 1
     StrCpy $GogokeInstallDomain "OWNER_RELEASE"
     StrCpy $GogokeUninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke"
-    StrCpy $GogokeProductKey "Software\gogoke\gogoke"
     StrCpy $GogokeDefaultRoot "$LOCALAPPDATA\gogoke"
     Return
   ${EndIf}
@@ -592,10 +589,6 @@ install_set_verified:
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
   {{/each}}
 
-  ; Activate the verified candidate or formal instance in its separate HKCU key.
-  ClearErrors
-  WriteRegStr HKCU "$GogokeProductKey" "" "$INSTDIR"
-
   !if "${INSTALLMODE}" == "both"
     ; Save install mode to be selected by default for the next installation such as updating
     ; or when uninstalling
@@ -607,6 +600,7 @@ install_set_verified:
   ReadRegStr $OldMainBinaryName HKCU "$GogokeUninstallKey" "MainBinaryName"
 
   ; Save current MAINBINARYNAME for future updates
+  ClearErrors
   WriteRegStr HKCU "$GogokeUninstallKey" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
   ; Registry information for add/remove programs
