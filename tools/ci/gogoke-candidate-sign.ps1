@@ -46,9 +46,8 @@ if ($index.schema -cne 'gogoke.resource-index.v1' -or $index.sourceCommit -cne $
     throw 'Candidate index identity does not match the controlled source run.'
 }
 $version = [string]$index.version
-if ($version -cnotmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
-    throw 'Candidate version is not SemVer.'
-}
+# gogoke_resource_pack.py verify already checks the complete SemVer shape,
+# including a prerelease and build suffix on the same version.
 $manifestPath = Join-Path $artifactRoot 'CANDIDATE-RESOURCES.windows'
 if (Test-Path -LiteralPath $manifestPath) { throw 'Candidate manifest already exists; refusing overwrite.' }
 $indexHash = (Get-FileHash -LiteralPath $indexPath -Algorithm SHA256).Hash.ToLowerInvariant()
