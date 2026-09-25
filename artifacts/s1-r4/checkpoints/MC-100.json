@@ -1,0 +1,33 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-100",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "d7621dd9e3c7c42277fa68375bd6f5418063372e",
+  "recorded_utc": "2026-09-25T19:41:00Z",
+  "reason": "OWNER_REQUESTED_STOP_AFTER_R2_06A_DAEMON_INVENTORY_FIX",
+  "previous_checkpoints": [
+    "artifacts/s1-r4/checkpoints/MC-098.json",
+    "artifacts/s1-r4/checkpoints/MC-099.json"
+  ],
+  "current_main": "5f7aa30d569d780428b5ea081ad9e25bcc17a0a1",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac were verified in MC-099 and main has not moved. Owner's newer direct instruction splits R2-06 into 06a then R2-05 then 06b and authorizes Controller local formal SHA256SUMS.windows signing without moving or exposing the existing private key. Public -Publish still needs Owner's explicit decision.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_STOPPED_BY_OWNER_REQUEST_NOT_CANDIDATE",
+  "execution_state": "Execution branch production fix e4ddfa0c80ad34b5ae2883ec6a965c449f77ca3b and MC-098/MC-099 checkpoints are pushed. The worktree is clean before this stop checkpoint. No new uncommitted WIP, local native build or running local command is retained.",
+  "pr_state": "PR27 OPEN/DRAFT/NOT_MERGED at d7621dd9 before this checkpoint; PR34 OPEN/Owner-held/NOT_MERGED; PR46 MERGED at main 5f7aa30d; PR45 CLOSED/NOT_MERGED.",
+  "executed_evidence": {
+    "confirmed_root_cause": "Branch installed smoke run 36177698787, exact branch f6d39c7f, verified main-signed source 3a973f54 and actually installed the candidate. Product readiness passed. Uninstall finalizer produced DELETED after 159.4 seconds, then smoke failed because exactly one file remained in the isolated install root: gogoke_daemon.exe. Machine artifact 10883336403. NSIS bundles this existing product daemon, while the previous signed installedFiles inventory omitted it; finalizer correctly preserved the unowned path.",
+    "fix": "At source e4ddfa0c the cloud build copies its Tauri-built gogoke_daemon.exe into the static installed inventory before generating the resource index. The signed index, product bootstrap and uninstall ownership list will then bind the exact bytes; the portable ZIP also receives the same indexed daemon because product bootstrap uses one inventory. No recursive or unknown-file deletion was added. Independent focused review found this path coherent but explicitly requires fresh cloud installed byte proof.",
+    "local_non_native": "Resource-pack Python suite 22/22 PASS and frozen-artifact Python suite 8/8 PASS; initial direct test-script invocation had an import-path error, then the correct module invocation passed. These are script tests only, not native or installed-product evidence.",
+    "latest_cloud": "Source e4ddfa0c public source hygiene run 36178906666 SUCCESS. Desktop run 36178902298 had Browser and dependency notices PASS, and both Windows lanes reached actual unsigned shell/NSIS build. On Owner stop, cancellation was requested and remote readback confirmed final status COMPLETED/CANCELLED for both Windows lanes and byte comparison. This run is not an all-axis PASS and produced no accepted frozen candidate evidence."
+  },
+  "blocked_or_not_run": "06a daemon fix has no completed cloud native/package or installed smoke evidence. Exact frozen candidate, independent review and Owner Win11/SAC same-candidate test remain NOT_RUN. Formal SHA256SUMS.windows has not been signed by the Controller. R2-05 remains WIP/PR34 open; 06b full update/resource update/rollback/crash recovery code remains present but NOT_ACCEPTED and deferred until R2-05. No adoption, Goal Acceptance or formal release.",
+  "path_first_reflection": "The main-only signer plus branch smoke eliminated repeated main merges for diagnosis. The first branch installation measured DELETED and exposed one exact missed daemon file; the current fix uses the already-signed installedFiles mechanism instead of broad cleanup. On resume, one new exact-head cloud build can cover native tests, index, portable, installer and reproducibility before signing that same frozen artifact and running branch installed smoke. The Owner stop cancels the in-flight build, so no old partial result may be promoted to PASS.",
+  "retained_custody": "Execution worktree is clean at the pushed stop checkpoint. The separate clean signer worktree for merged PR46 is retained by the Controller for provenance until 06a resumes and the same signer is verified on a new source; then remove it after checking worktree registration and ownership. Older previously auto-review-rejected temporary copies remain as recorded in MC-096/MC-097; no alternate deletion route was attempted.",
+  "external_action": "OWNER_STOP; DESKTOP_36178902298_CANCELLED; HYGIENE_36178906666_SUCCESS; MAIN_SIGNER_36177574200_SUCCESS_ON_OLD_SOURCE; INSTALLED_SMOKE_36177698787_FAIL_DAEMON_RESIDUE; NO_NEW_SIGNING; NO_PUBLISH; NO_RELEASE",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action_on_explicit_resume": "Re-read current main, authorization, execution HEAD, latest checkpoint and Parallel Inbox. From the then-current execution branch HEAD, dispatch exact-head cloud desktop and source-hygiene runs; require both Windows lanes, portable package, native tests and byte comparison PASS, and inspect the index entry for gogoke_daemon.exe. Use the trusted main-only candidate signer on that exact successful frozen artifact, then dispatch the branch installed smoke. Require exact NSIS daemon hash, product readiness, DELETED receipt, no product-owned residual files and intact data sentinel. Complete 06a candidate freeze, independent review and Win11/SAC test before R2-05, then 06b. Formal manifest signing is Controller-authorized locally with the existing key; never use -Publish without Owner decision. Remove temporary PR43 main diagnostics only after the root fix is verified."
+}
