@@ -28,12 +28,6 @@ $script:installInvoked = $false
 $script:uninstallInvoked = $false
 $script:instanceId = $null
 $script:finalizerReceiptPath = $null
-$script:diagnosticSinkInitialized = $false
-$script:productStarted = $false
-$script:productStdoutCapture = $null
-$script:productStderrCapture = $null
-$script:webviewDebugPort = $null
-$product = $null
 $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
@@ -116,221 +110,6 @@ function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMil
     return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode }
 }
 
-function Redact-Diagnostic([string]$Text) {
-    $bounded = if ($Text.Length -gt 32768) { $Text.Substring(0, 32768) } else { $Text }
-    $bounded = $bounded -replace '(?i)\bgithub_pat_[A-Za-z0-9_]+\b', '[REDACTED]'
-    $bounded = $bounded -replace '(?i)\bgh[pousr]_[A-Za-z0-9_]+\b', '[REDACTED]'
-    return ($bounded -replace '(?i)(Bearer\s+)[^\s"'']+', '$1[REDACTED]')
-}
-
-function Initialize-DiagnosticSink {
-    if ($script:diagnosticSinkInitialized) { return }
-    Add-Type -TypeDefinition @'
-using System;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
-
-public sealed class GogokeDiagnosticSink : Stream {
-    private readonly object gate = new object();
-    private readonly byte[] saved = new byte[32768];
-    private int length;
-    public byte[] Snapshot() {
-        lock (gate) {
-            var result = new byte[length];
-            Buffer.BlockCopy(saved, 0, result, 0, length);
-            return result;
-        }
-    }
-    public override void Write(byte[] buffer, int offset, int count) {
-        lock (gate) {
-            int take = Math.Min(count, saved.Length - length);
-            if (take > 0) {
-                Buffer.BlockCopy(buffer, offset, saved, length, take);
-                length += take;
-            }
-        }
-    }
-    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken token) {
-        token.ThrowIfCancellationRequested();
-        Write(buffer, offset, count);
-        return Task.CompletedTask;
-    }
-    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken token = default) {
-        token.ThrowIfCancellationRequested();
-        lock (gate) {
-            int take = Math.Min(buffer.Length, saved.Length - length);
-            if (take > 0) {
-                buffer.Span.Slice(0, take).CopyTo(saved.AsSpan(length, take));
-                length += take;
-            }
-        }
-        return ValueTask.CompletedTask;
-    }
-    public override bool CanRead => false;
-    public override bool CanSeek => false;
-    public override bool CanWrite => true;
-    public override long Length => throw new NotSupportedException();
-    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-    public override void Flush() { }
-    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-    public override void SetLength(long value) => throw new NotSupportedException();
-}
-'@
-    $script:diagnosticSinkInitialized = $true
-}
-
-function Start-BoundedCapture([IO.Stream]$Stream) {
-    Initialize-DiagnosticSink
-    $sink = [GogokeDiagnosticSink]::new()
-    return [pscustomobject]@{ sink = $sink; copy = $Stream.CopyToAsync($sink, 4096) }
-}
-
-function Finish-BoundedCapture([object]$Capture) {
-    if (-not $Capture) { return '' }
-    # Keep draining even after the first 32 KiB. A descendant holding the
-    # pipe open cannot make evidence collection wait beyond two seconds.
-    $null = [Threading.Tasks.Task]::WhenAny(
-        $Capture.copy, [Threading.Tasks.Task]::Delay(2000)).GetAwaiter().GetResult()
-    return (Redact-Diagnostic ([Text.Encoding]::UTF8.GetString($Capture.sink.Snapshot())))
-}
-
-function Get-WebviewSnapshot([int]$Port, [bool]$ProbeReadiness = $false) {
-    $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 3
-    $pages = [Collections.Generic.List[object]]::new()
-    foreach ($target in $targets) {
-        if ($target.type -ceq 'page') { $pages.Add($target) }
-    }
-    $page = $null
-    foreach ($candidate in $pages) {
-        if ([string]$candidate.url -match 'gogoke-resource') {
-            $page = $candidate
-            break
-        }
-    }
-    if (-not $page) {
-        $reportedPages = [Collections.Generic.List[object]]::new()
-        foreach ($candidate in $pages) {
-            if ($reportedPages.Count -ge 4) { break }
-            $url = [string]$candidate.url
-            $title = [string]$candidate.title
-            $reportedPages.Add([pscustomobject]@{
-                url = $url.Substring(0, [Math]::Min(256, $url.Length));
-                title = $title.Substring(0, [Math]::Min(256, $title.Length))
-            })
-        }
-        return [pscustomobject]@{ pages = $reportedPages.ToArray() }
-    }
-    $socket = [Net.WebSockets.ClientWebSocket]::new()
-    $timeoutMilliseconds = if ($ProbeReadiness) { 25000 } else { 3000 }
-    $timeout = [Threading.CancellationTokenSource]::new([int]$timeoutMilliseconds)
-    try {
-        $null = $socket.ConnectAsync([Uri]$page.webSocketDebuggerUrl,
-            $timeout.Token).GetAwaiter().GetResult()
-        $expression = if ($ProbeReadiness) {
-            '(async()=>{try{await window.__TAURI_INTERNALS__.invoke("gogoke_update_signal_ready",{resourceSetId:null});return {ok:true}}catch(e){return {ok:false,error:String(e).slice(0,512)}}})()'
-        } else {
-            '({href:location.href,readyState:document.readyState,tauriInternals:!!window.__TAURI_INTERNALS__,rootChildren:document.getElementById("root")?.childElementCount ?? -1,rootTextLength:document.getElementById("root")?.textContent?.length ?? -1,scriptUrls:[...document.scripts].map(s=>s.src).slice(0,4)})'
-        }
-        $parameters = @{ expression = $expression; returnByValue = $true }
-        if ($ProbeReadiness) { $parameters.awaitPromise = $true }
-        $request = @{ id = 1; method = 'Runtime.evaluate'; params = $parameters } |
-            ConvertTo-Json -Compress -Depth 4
-        $bytes = [Text.Encoding]::UTF8.GetBytes($request)
-        $null = $socket.SendAsync([ArraySegment[byte]]::new($bytes),
-            [Net.WebSockets.WebSocketMessageType]::Text, $true,
-            $timeout.Token).GetAwaiter().GetResult()
-        $buffer = [byte[]]::new(65536)
-        for ($attempt = 0; $attempt -lt 8; $attempt++) {
-            $frame = [IO.MemoryStream]::new()
-            try {
-                do {
-                    $result = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer),
-                        $timeout.Token).GetAwaiter().GetResult()
-                    if ($result.MessageType -ne [Net.WebSockets.WebSocketMessageType]::Text) {
-                        throw 'WebView diagnostic returned a non-text frame'
-                    }
-                    $frame.Write($buffer, 0, $result.Count)
-                    if ($frame.Length -gt 65536) { throw 'WebView diagnostic response exceeded bound' }
-                } while (-not $result.EndOfMessage)
-            $reply = [Text.Encoding]::UTF8.GetString($frame.ToArray()) | ConvertFrom-Json
-            } finally { $frame.Dispose() }
-            if ($reply.PSObject.Properties['id'] -and $reply.id -eq 1) {
-                if ($reply.PSObject.Properties['error']) {
-                    return [pscustomobject]@{ targetUrl = [string]$page.url;
-                        errorCode = $reply.error.code; errorMessage = [string]$reply.error.message }
-                }
-                $exception = if ($reply.result.PSObject.Properties['exceptionDetails']) {
-                    [string]$reply.result.exceptionDetails.text
-                } else { $null }
-                $value = if ($reply.result.PSObject.Properties['result'] -and
-                    $reply.result.result.PSObject.Properties['value']) {
-                    $reply.result.result.value
-                } else { $null }
-                return [pscustomobject]@{ targetUrl = [string]$page.url;
-                    value = $value; exception = $exception }
-            }
-        }
-        throw 'WebView diagnostic response was not received'
-    } finally {
-        $socket.Dispose()
-        $timeout.Dispose()
-    }
-}
-
-function Invoke-DirectReadinessDiagnostic([string]$Root) {
-    if (-not (Test-Path -LiteralPath $Root)) {
-        New-Item -ItemType Directory -Path $Root | Out-Null
-    }
-    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
-        throw 'Direct readiness root is not a directory'
-    }
-    Assert-NoReparseAncestors $Root
-    $node = Join-Path $script:targetRoot 'gogoke-service\runtime\node.exe'
-    $nativeHost = Join-Path $script:targetRoot 'gogoke-native-host.exe'
-    $generationRoot = Join-Path $script:targetRoot "gogoke-service\generations\$($index.generationId)"
-    $entry = Join-Path $generationRoot 'dist\bin.mjs'
-    foreach ($path in @($node, $nativeHost, $entry)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Direct diagnostic component missing: $path" }
-    }
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $node
-    $start.WorkingDirectory = $generationRoot
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.RedirectStandardInput = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $null = $start.Environment.Remove('NODE_OPTIONS')
-    $null = $start.Environment.Remove('NODE_PATH')
-    foreach ($argument in @($entry, '--root', $Root, '--native-host', $nativeHost)) {
-        [void]$start.ArgumentList.Add($argument)
-    }
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    if (-not $process.Start()) { throw 'Direct readiness diagnostic did not start' }
-    try {
-        $stdout = Start-BoundedCapture $process.StandardOutput.BaseStream
-        $stderr = Start-BoundedCapture $process.StandardError.BaseStream
-        $process.StandardInput.Write('{"operation":"readiness"}')
-        $process.StandardInput.Close()
-        $timedOut = -not $process.WaitForExit(20000)
-        if ($timedOut) { $process.Kill(); $null = $process.WaitForExit(5000) }
-        return [pscustomobject]@{
-            root = $Root
-            cwd = $generationRoot
-            entry = $entry
-            node = $node
-            nativeHost = $nativeHost
-            timedOut = $timedOut
-            exitCode = $(if ($timedOut) { $null } else { $process.ExitCode })
-            stdout = Finish-BoundedCapture $stdout
-            stderr = Finish-BoundedCapture $stderr
-        }
-    } finally { $process.Dispose() }
-}
-
 function Assert-RegistryRegistration {
     $uninstallPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate'
     $registration = Get-RegistryKey $uninstallPath
@@ -365,7 +144,8 @@ try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     try {
         $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        if ($identity.IsSystem -or
+            $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             throw 'Candidate installed product smoke must run in a Medium process'
         }
     } finally { $identity.Dispose() }
@@ -471,28 +251,26 @@ try {
     $sentinelBytes = [Text.Encoding]::UTF8.GetBytes("gogoke-r2-06-candidate-appdata-sentinel`n$ExpectedSourceCommit`n$ExpectedRunId`n$ExpectedRunAttempt`n")
     [IO.File]::WriteAllBytes($script:ownedSentinel, $sentinelBytes)
     $readyName = 'gogoke-update-r2-06-' + [Guid]::NewGuid().ToString('N') + '.ready'
-    $script:ownedReadyReceipt = Join-Path ([IO.Path]::GetTempPath()) $readyName
+    # Rust's Windows temp_dir uses GetTempPath2W, which preserves the raw TMP
+    # spelling. .NET GetTempPath expands 8.3 aliases on hosted Windows runners.
+    $rawTemp = [string]$env:TMP
+    if ([string]::IsNullOrWhiteSpace($rawTemp) -or
+        -not [IO.Path]::IsPathFullyQualified($rawTemp) -or
+        -not (Test-Path -LiteralPath $rawTemp -PathType Container)) {
+        throw 'Candidate TMP is not an existing absolute directory'
+    }
+    Assert-NoReparseAncestors $rawTemp
+    $script:ownedReadyReceipt = [IO.Path]::Combine($rawTemp, $readyName)
     if (Test-Path -LiteralPath $script:ownedReadyReceipt) { throw 'Readiness receipt path is not fresh' }
     $productExe = Join-Path $script:targetRoot 'gogoke.exe'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $productExe
     $start.UseShellExecute = $false
     $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-    $probe.Start()
-    try { $script:webviewDebugPort = ([Net.IPEndPoint]$probe.LocalEndpoint).Port }
-    finally { $probe.Stop() }
-    $start.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] =
-        "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$script:webviewDebugPort"
     [void]$start.ArgumentList.Add("--gogoke-update-ready=$script:ownedReadyReceipt")
     $product = [Diagnostics.Process]::new()
     $product.StartInfo = $start
     if (-not $product.Start()) { throw 'Installed Gogoke did not start' }
-    $script:productStarted = $true
-    $script:productStdoutCapture = Start-BoundedCapture $product.StandardOutput.BaseStream
-    $script:productStderrCapture = Start-BoundedCapture $product.StandardError.BaseStream
     $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
     while ([DateTime]::UtcNow -lt $readyDeadline) {
         if (Test-Path -LiteralPath $script:ownedReadyReceipt -PathType Leaf) { break }
@@ -591,59 +369,6 @@ try {
     Write-Output ($script:result | ConvertTo-Json -Depth 6 -Compress)
 } catch {
     $message = [string]$_.Exception.Message
-    if ($script:stage -ceq 'sentinel-and-product-readiness') {
-        try {
-            $actualRoot = Join-Path $script:appDataRoot 'product-authority'
-            Write-Output ("DIAG_PRODUCT_ROOT_BEFORE_READY_PROBE=" +
-                (Test-Path -LiteralPath $actualRoot -PathType Container))
-            $tempSpellings = [pscustomobject]@{
-                argParent = [IO.Path]::GetDirectoryName($script:ownedReadyReceipt)
-                tmp = [string]$env:TMP
-                temp = [string]$env:TEMP
-                dotnet = [IO.Path]::GetTempPath()
-            }
-            Write-Output ("DIAG_TEMP_SPELLINGS=" +
-                (Redact-Diagnostic ($tempSpellings | ConvertTo-Json -Compress)))
-            if ($script:productStarted -and $script:webviewDebugPort -and
-                $product -and -not $product.HasExited) {
-                try {
-                    $snapshot = (Get-WebviewSnapshot $script:webviewDebugPort) |
-                        ConvertTo-Json -Depth 5 -Compress
-                    Write-Output ("DIAG_WEBVIEW=" + (Redact-Diagnostic $snapshot))
-                } catch {
-                    Write-Output ("DIAG_WEBVIEW_FAILED=" +
-                        (Redact-Diagnostic ([string]$_.Exception.Message)))
-                }
-                try {
-                    $readyProbe = (Get-WebviewSnapshot $script:webviewDebugPort $true) |
-                        ConvertTo-Json -Depth 5 -Compress
-                    Write-Output ("DIAG_READY_INVOKE=" + (Redact-Diagnostic $readyProbe))
-                } catch {
-                    Write-Output ("DIAG_READY_INVOKE_FAILED=" +
-                        (Redact-Diagnostic ([string]$_.Exception.Message)))
-                }
-            }
-            if ($script:productStarted -and $product -and -not $product.HasExited) {
-                $product.Kill()
-                $null = $product.WaitForExit(5000)
-            }
-            if ($script:productStderrCapture) {
-                Write-Output ("DIAG_PRODUCT_STDERR=" + (Finish-BoundedCapture $script:productStderrCapture))
-            }
-            if ($script:productStdoutCapture) {
-                Write-Output ("DIAG_PRODUCT_STDOUT=" + (Finish-BoundedCapture $script:productStdoutCapture))
-            }
-            Write-Output ("DIAG_PRODUCT_ROOT_EXISTS=" + (Test-Path -LiteralPath $actualRoot -PathType Container))
-            $formalRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)) 'app.gogoke.desktop\product-authority'
-            Write-Output ("DIAG_FORMAL_ROOT_EXISTS=" + (Test-Path -LiteralPath $formalRoot -PathType Container))
-            Write-Output ("DIAG_SAME_ROOT=" + ((Invoke-DirectReadinessDiagnostic $actualRoot) | ConvertTo-Json -Depth 4 -Compress))
-            $freshRoot = Join-Path $env:RUNNER_TEMP ('gogoke-r2-06-diagnostic-' + [Guid]::NewGuid().ToString('N'))
-            if (Test-Path -LiteralPath $freshRoot) { throw 'fresh diagnostic root already exists' }
-            Write-Output ("DIAG_FRESH_ROOT=" + ((Invoke-DirectReadinessDiagnostic $freshRoot) | ConvertTo-Json -Depth 4 -Compress))
-        } catch {
-            Write-Output ("DIAG_FAILED=" + (Redact-Diagnostic ([string]$_.Exception.Message)))
-        }
-    }
     if ($message.Length -gt 320) { $message = $message.Substring(0, 320) }
     $script:result.state = 'FAIL'
     $script:result.stage = $script:stage
