@@ -1,0 +1,34 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-097",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "7b2b256953e85e5af2c4e43bc68de480680ea652",
+  "recorded_utc": "2026-09-25T18:32:40Z",
+  "reason": "R2_06_EXACT_PORTABLE_CLOUD_PASS_AND_FINALIZER_DIRECT_PROGRESS_MEASURED",
+  "current_main": "23bb9702c1d4885edbcd1572610a6eee4349d74b",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac remain current. Main changed from MC-096 only by merged PR43 trusted candidate smoke script, not by a production or governance contract change.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_CONFLICTING_NOT_MERGED at execution source/checkpoint head before this checkpoint.",
+  "pr34": "OPEN_NOT_MERGED; Owner-held R2-05 remains WIP.",
+  "pr43": "MERGED to main 23bb9702; four checks PASS and independent focused review found no definite defect. Its diagnostic did not change product bytes or the existing 125-second DELETED gate.",
+  "pr45": "OPEN at d9998190c5c5cb471a7ea54a01075f9bb511173d, based on main 23bb9702, checks pending. It changes only the trusted test harness: measured 300-second finalizer observation bound, exact elapsed time, and count/first 12 root-relative filenames if a DELETED receipt is followed by a nonempty isolated candidate install root. It preserves FAIL and the root in that case. Local PowerShell parse and mapping passed; independent focused review retracted a tool-rendering misread and found no definite defect.",
+  "concurrent_pr44": "OPEN AGENTS.md proposal on separate branch; not merged and not used as current governance. Re-read main before any later merge.",
+  "executed_evidence": {
+    "source_3a_cloud": "Exact source 3a973f5492489b0b0f42e1b6156b1d44cb7cae9f desktop run 36169211192 SUCCESS: Browser, notices, both cloud Windows lanes, deterministic portable construction, and independent raw shell/NSIS shell/native-host/Node/pack/index byte comparison. Frozen lane ran 30 resource-pack/frozen-artifact Python tests and native filters 9 gogoke_update, 5 resource_trust, 1 gogoke_uninstall, all PASS, zero ignored. Full portable ZIP artifact 10881485750 is about 111 MB and contains the indexed runtime; frozen artifact 10881231148, reproducibility artifact 10881177909. Exact source hygiene run 36167440120 SUCCESS. These are cloud build facts, not formal portable startup or Owner Win11/SAC evidence.",
+    "source_4563_trusted_retest": "Trusted main 23bb9702 manual signer run 36172722996 reused exact successful source 4563a907/run 36165174824/attempt 1/frozen artifact 10879006918. Candidate signing, actual installation and version/generation/set-bound readiness PASS. Uninstall parent exited 0 and the finalizer produced a DELETED receipt before the 125-second gate. Smoke then FAILED at post-uninstall-preservation-check because the isolated install root still contained at least one file; its path was not recorded by the then-current script. AppData sentinel after this failure is not accepted as a full preservation PASS. Machine artifact 10880723585; signed candidate artifact 10881022602. No blind deletion of unknown files was attempted.",
+    "source_3a_trusted_candidate": "Trusted main 23bb9702 automatic signer run 36173004213 used exact source-3a frozen artifact 10881231148. Candidate signing, actual installation and product readiness PASS. At 125.3 seconds after uninstall parent exit 0, receipt was LOCKED, finalizer process was alive with CPU 130.14 seconds, read transfer 661178632 bytes and 10338 install files remaining. At 131.6 seconds it was still alive/LOCKED, CPU 136.41 seconds, read transfer 666015939 bytes and 9497 files remaining. Smoke correctly FAILED at the existing 125-second gate; machine artifact 10880749094, signed candidate artifact 10880198014. The measured CPU, reads and decreasing file count prove ongoing work at that time, not a completed uninstall or deadlock."
+  },
+  "blocked_or_not_run": "PR45 cloud checks and same-frozen-source candidate rerun NOT_RUN/IN_PROGRESS. Source-3a installed candidate did not reach DELETED inside old test bound and post-uninstall file ownership remains unknown. Formal Owner-signed full/resources update, rollback/crash recovery, formal portable startup with external signed sidecars, Owner Win11 SAC formal installer, final independent candidate review and R2-05 remain NOT_RUN. No release, adoption or acceptance.",
+  "path_first_reflection": "The original 125-second receipt failure was ambiguous because FileShare.None hides PENDING while the child runs. The trusted post-timeout sample measured a live, CPU-active finalizer removing 841 files in about six seconds, so the next harness bound is grounded in actual work rather than a generic timeout guess. A separate same-source run already reached DELETED and exposed a different post-uninstall root-nonempty failure. PR45 collects root-relative filenames on that exact failure instead of assuming every remaining file is product-owned or deleting unknown bytes. It reuses successful frozen artifacts, avoiding another native rebuild for diagnosis.",
+  "retained_custody": [
+    "Execution worktree is clean at pushed MC-096 head before this checkpoint. Trusted signer worktree owns clean pushed branch codex/r2-06-post-uninstall-inventory at d9998190 while PR45 checks run; temporary finalizer diagnostics remain in trusted main until measured repair and removal.",
+    "Earlier small public machine JSON copies under %TEMP% and previously auto-review-rejected temporary files remain as stated in MC-096; no alternate cleanup route was attempted."
+  ],
+  "external_action": "PR27_DRAFT; PR34_OPEN_OWNER_HELD; PR43_MERGED; PR45_OPEN_CHECKS_PENDING; PR44_OPEN_UNMERGED_GOVERNANCE_PROPOSAL; SOURCE_3A_DESKTOP_PASS; SOURCE_4563_SIGNER_DELETED_THEN_ROOT_NONEMPTY_FAIL; SOURCE_3A_SIGNER_ACTIVE_DELETION_AT_125S_FAIL; NO_OWNER_KEY_USE; NO_RELEASE",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Require PR45 exact-head checks; re-read current main and governance before merging the narrowly reviewed trusted harness. Reuse source-3a desktop run 36169211192/attempt 1/frozen artifact 10881231148 in the trusted candidate signer. Require actual DELETED receipt, measured finalizer elapsed time and root-relative remaining-file evidence. Classify remaining files as signed-owned versus intentionally preserved unknown before changing production deletion or smoke acceptance. Continue formal R2-06 axes dependency-safely; keep PR27 Draft and PR34 Owner-held."
+}
