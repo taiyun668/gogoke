@@ -170,6 +170,8 @@ jobs:
         lane: [frozen, repro]
     env:
       RUSTUP_TOOLCHAIN: 1.89.0
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      RUSTFLAGS: "-C link-arg=/Brepro"
     defaults:
       run:
         working-directory: apps/desktop
