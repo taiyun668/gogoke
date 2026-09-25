@@ -179,13 +179,24 @@ def _installed_files(installed_root: Path) -> list[dict[str, Any]]:
 
 
 def _check_casefold_unique(paths: list[str]) -> None:
-    seen: dict[str, str] = {}
+    files: dict[str, str] = {}
+    directories: dict[str, str] = {}
     for name in paths:
+        parts = name.split("/")
+        for depth in range(1, len(parts)):
+            component_path = "/".join(parts[:depth])
+            key = component_path.casefold()
+            previous = directories.get(key)
+            if previous is not None and previous != component_path:
+                raise ResourcePackError(
+                    f"case-insensitive path collision: {previous!r} and {component_path!r}"
+                )
+            directories[key] = component_path
         key = name.casefold()
-        previous = seen.get(key)
+        previous = files.get(key)
         if previous is not None:
             raise ResourcePackError(f"case-insensitive path collision: {previous!r} and {name!r}")
-        seen[key] = name
+        files[key] = name
 
 
 def _check_file_ancestors(paths: list[str]) -> None:
