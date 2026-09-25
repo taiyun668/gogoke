@@ -66,14 +66,17 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm run check:product-identity
-      - name: Parse candidate installed product smoke script
+      - name: Parse candidate installed preflight and product smoke scripts
         shell: pwsh
         run: |
-          $path = (Resolve-Path ../../tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1).Path
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -ne 0) { throw "Candidate installed smoke has $($errors.Count) PowerShell parse errors." }
+          foreach ($name in @('gogoke-candidate-installed-preflight.ps1',
+                              'gogoke-r2-06-candidate-installed-smoke.ps1')) {
+            $path = (Resolve-Path "../../tools/ci/$name").Path
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -ne 0) { throw "$name has $($errors.Count) PowerShell parse errors." }
+          }
       - name: Verify full-update readiness argument quoting on cloud Windows
         shell: powershell
         run: |

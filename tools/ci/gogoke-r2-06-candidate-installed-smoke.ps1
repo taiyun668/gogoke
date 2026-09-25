@@ -13,7 +13,9 @@ param(
     [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedRunAttempt,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedArtifactId,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedSigningRunId,
-    [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedSigningRunAttempt
+    [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedSigningRunAttempt,
+    [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedSmokeRunId,
+    [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedSmokeRunAttempt
 )
 
 Set-StrictMode -Version Latest
@@ -37,6 +39,8 @@ $script:result = [ordered]@{
     sourceArtifactId = $ExpectedArtifactId
     signingRunId = $ExpectedSigningRunId
     signingRunAttempt = $ExpectedSigningRunAttempt
+    smokeRunId = $ExpectedSmokeRunId
+    smokeRunAttempt = $ExpectedSmokeRunAttempt
     version = $ExpectedVersion
     setupSha256 = $ExpectedSetupSha256
     installedShellSha256 = $ExpectedInstalledShellSha256
@@ -94,20 +98,105 @@ function Get-PhysicalTree([string]$Root) {
     return [pscustomobject]@{ Directories = $directories; Files = $files }
 }
 
-function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMilliseconds, [bool]$Hidden) {
+function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMilliseconds, [bool]$Hidden, [bool]$CaptureStderr = $false) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $FilePath
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $Hidden
+    $start.RedirectStandardError = $CaptureStderr
     $start.WindowStyle = if ($Hidden) { [Diagnostics.ProcessWindowStyle]::Hidden } else { [Diagnostics.ProcessWindowStyle]::Normal }
     foreach ($argument in $Arguments) { [void]$start.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     if (-not $process.Start()) { throw "Process did not start: $FilePath" }
-    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-        return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null }
+    if (-not $CaptureStderr) {
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null; Stderr = '' }
+        }
+        return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode; Stderr = '' }
     }
-    return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode }
+    $stream = $process.StandardError.BaseStream
+    $buffer = [byte[]]::new(4096)
+    $saved = [byte[]]::new(2048)
+    $savedCount = 0
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $exitedAt = $null
+    $read = $stream.ReadAsync($buffer, 0, $buffer.Length)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($read.Wait(100)) {
+            $count = $read.Result
+            if ($count -eq 0) { break }
+            $take = [Math]::Min($count, $saved.Length - $savedCount)
+            if ($take -gt 0) {
+                [Array]::Copy($buffer, 0, $saved, $savedCount, $take)
+                $savedCount += $take
+            }
+            $read = $stream.ReadAsync($buffer, 0, $buffer.Length)
+        }
+        if ($process.HasExited) {
+            if ($null -eq $exitedAt) { $exitedAt = [DateTime]::UtcNow }
+            if (([DateTime]::UtcNow - $exitedAt).TotalMilliseconds -ge 1500) { break }
+        }
+    }
+    $remaining = [Math]::Max(0, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+    if (-not $process.WaitForExit($remaining)) {
+        return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null; Stderr = '' }
+    }
+    $stream.Close()
+    $stderr = ''
+    if ($savedCount -gt 0) {
+        $stderr = [Text.Encoding]::UTF8.GetString($saved, 0, $savedCount)
+        $stderr = $stderr -replace '(?i)\bgh[pousr]_[A-Za-z0-9_]+\b', '[REDACTED]'
+        $stderr = $stderr -replace '(?i)\bgithub_pat_[A-Za-z0-9_]+\b', '[REDACTED]'
+        $stderr = $stderr -replace '(?i)(Bearer\s+)[^\s"'']+', '$1[REDACTED]'
+        $published = [Text.Encoding]::UTF8.GetBytes($stderr)
+        if ($published.Length -gt 2048) {
+            # Leave room for one replacement character if the cut meets a UTF-8 sequence.
+            $stderr = [Text.Encoding]::UTF8.GetString($published, 0, 2045)
+        }
+    }
+    return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode; Stderr = $stderr }
+}
+
+function Measure-Finalizer([Diagnostics.Process]$Process, [string]$ReceiptPath,
+    [string]$Root, [Diagnostics.Stopwatch]$Watch) {
+    $sample = [ordered]@{
+        elapsedSeconds = [Math]::Round($Watch.Elapsed.TotalSeconds, 1)
+        receiptState = 'ABSENT'
+        processState = 'not_found'
+        exitCode = $null
+        cpuSeconds = $null
+        readBytes = $null
+        remainingFiles = $null
+    }
+    if ($ReceiptPath -and (Test-Path -LiteralPath $ReceiptPath -PathType Leaf)) {
+        try { $sample.receiptState = [string](([IO.File]::ReadAllText($ReceiptPath) | ConvertFrom-Json).state) }
+        catch [IO.IOException] { $sample.receiptState = 'LOCKED' }
+        catch { $sample.receiptState = 'INVALID' }
+    }
+    if ($null -ne $Process) {
+        try {
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                $sample.processState = 'exited'
+                $sample.exitCode = $Process.ExitCode
+            } else {
+                $sample.processState = 'running'
+                $sample.cpuSeconds = [Math]::Round($Process.TotalProcessorTime.TotalSeconds, 2)
+                try {
+                    $live = Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.Id)" -ErrorAction Stop
+                    if ($null -ne $live -and $null -ne $live.ReadTransferCount) {
+                        $sample.readBytes = [long]$live.ReadTransferCount
+                    }
+                } catch { }
+            }
+        } catch { $sample.processState = 'unavailable' }
+    }
+    if (Test-Path -LiteralPath $Root -PathType Container) {
+        try { $sample.remainingFiles = (Get-PhysicalTree $Root).Files.Count }
+        catch { $sample.remainingFiles = 'unavailable' }
+    } else { $sample.remainingFiles = 0 }
+    return $sample
 }
 
 function Assert-RegistryRegistration {
@@ -137,14 +226,16 @@ try {
         $env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke') {
         throw 'Candidate installed smoke requires GitHub-hosted Windows Actions'
     }
-    if ($env:GITHUB_RUN_ID -cne [string]$ExpectedSigningRunId -or
-        $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSigningRunAttempt) {
-        throw 'Expected signing run identity differs from the current GitHub Actions run'
+    if ($env:GITHUB_REF -cne 'refs/heads/gpt/s1-r4-r2-execution-r1' -or
+        $env:GITHUB_RUN_ID -cne [string]$ExpectedSmokeRunId -or
+        $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSmokeRunAttempt) {
+        throw 'Expected execution-branch smoke identity differs from the current GitHub Actions run'
     }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     try {
         $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        if ($identity.IsSystem -or
+            $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             throw 'Candidate installed product smoke must run in a Medium process'
         }
     } finally { $identity.Dispose() }
@@ -207,7 +298,7 @@ try {
     $script:stage = 'fresh-target-and-registration'
     $script:result.stage = $script:stage
     $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
-    $script:targetRoot = [IO.Path]::GetFullPath((Join-Path $runnerTemp "gogoke-r2-06-candidate-$ExpectedSigningRunId-$ExpectedSigningRunAttempt"))
+    $script:targetRoot = [IO.Path]::GetFullPath((Join-Path $runnerTemp "gogoke-r2-06-candidate-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt"))
     if (-not $script:targetRoot.StartsWith($runnerTemp + '\', [StringComparison]::OrdinalIgnoreCase) -or
         (Test-Path -LiteralPath $script:targetRoot)) {
         throw 'Candidate install target is not a fresh child of RUNNER_TEMP'
@@ -250,7 +341,16 @@ try {
     $sentinelBytes = [Text.Encoding]::UTF8.GetBytes("gogoke-r2-06-candidate-appdata-sentinel`n$ExpectedSourceCommit`n$ExpectedRunId`n$ExpectedRunAttempt`n")
     [IO.File]::WriteAllBytes($script:ownedSentinel, $sentinelBytes)
     $readyName = 'gogoke-update-r2-06-' + [Guid]::NewGuid().ToString('N') + '.ready'
-    $script:ownedReadyReceipt = Join-Path ([IO.Path]::GetTempPath()) $readyName
+    # Rust's Windows temp_dir uses GetTempPath2W, which preserves the raw TMP
+    # spelling. .NET GetTempPath expands 8.3 aliases on hosted Windows runners.
+    $rawTemp = [string]$env:TMP
+    if ([string]::IsNullOrWhiteSpace($rawTemp) -or
+        -not [IO.Path]::IsPathFullyQualified($rawTemp) -or
+        -not (Test-Path -LiteralPath $rawTemp -PathType Container)) {
+        throw 'Candidate TMP is not an existing absolute directory'
+    }
+    Assert-NoReparseAncestors $rawTemp
+    $script:ownedReadyReceipt = [IO.Path]::Combine($rawTemp, $readyName)
     if (Test-Path -LiteralPath $script:ownedReadyReceipt) { throw 'Readiness receipt path is not fresh' }
     $productExe = Join-Path $script:targetRoot 'gogoke.exe'
     $start = [Diagnostics.ProcessStartInfo]::new()
@@ -295,10 +395,18 @@ try {
     $beforeReceipts = @{}
     Get-ChildItem -LiteralPath $runnerTemp -Filter "$receiptPrefix*.json" -File -ErrorAction SilentlyContinue | ForEach-Object { $beforeReceipts[$_.Name] = $true }
     $script:uninstallInvoked = $true
-    $uninstall = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true
+    $uninstall = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
     if ($uninstall.TimedOut) { throw "Installed uninstall exceeded parent bound; retain candidate state under: $script:targetRoot" }
-    if ($uninstall.ExitCode -ne 0) { throw "Installed uninstall failed with exit code $($uninstall.ExitCode); retain candidate state under: $script:targetRoot" }
-    $finalizerDeadline = [DateTime]::UtcNow.AddSeconds(125)
+    if ($uninstall.ExitCode -ne 0) {
+        $script:result.uninstallExitCode = $uninstall.ExitCode
+        $script:result.uninstallStderr = $uninstall.Stderr
+        throw "Installed uninstall failed with exit code $($uninstall.ExitCode); stderr: $($uninstall.Stderr); retain candidate state under: $script:targetRoot"
+    }
+    $finalizerWatch = [Diagnostics.Stopwatch]::StartNew()
+    # The signed candidate has about 13,000 owned files. Run 36173004213
+    # observed active deletion at 125 seconds (10,338 files still present),
+    # then another 841 files removed over the next 6.3 seconds.
+    $finalizerDeadline = [DateTime]::UtcNow.AddSeconds(300)
     $finalizerReceipt = $null
     while ([DateTime]::UtcNow -lt $finalizerDeadline) {
         $newReceipts = @(Get-ChildItem -LiteralPath $runnerTemp -Filter "$receiptPrefix*.json" -File -ErrorAction SilentlyContinue | Where-Object { -not $beforeReceipts.ContainsKey($_.Name) })
@@ -314,11 +422,36 @@ try {
                 continue
             }
             if ($candidateReceipt.state -ceq 'FAILED') { throw "Uninstall finalizer failed: $([string]$candidateReceipt.detail). Receipt: $($newReceipts[0].FullName)" }
-            if ($candidateReceipt.state -ceq 'DELETED') { $finalizerReceipt = $newReceipts[0]; break }
+            if ($candidateReceipt.state -ceq 'DELETED' -and [DateTime]::UtcNow -lt $finalizerDeadline) {
+                $finalizerReceipt = $newReceipts[0]
+                break
+            }
         }
         Start-Sleep -Milliseconds 250
     }
-    if ($null -eq $finalizerReceipt) { throw "No bounded DELETED finalizer receipt; preserve state under: $script:targetRoot" }
+    if ($null -eq $finalizerReceipt) {
+        $finalizerProcess = $null
+        $script:result.finalizerChildLookup = 'unavailable'
+        try {
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($uninstall.Process.Id)" -ErrorAction Stop |
+                Where-Object { $_.Name -ieq 'powershell.exe' })
+            if ($children.Count -eq 1) {
+                $finalizerProcess = [Diagnostics.Process]::GetProcessById([int]$children[0].ProcessId)
+                $script:result.finalizerChildLookup = 'found'
+                $script:result.finalizerPid = $finalizerProcess.Id
+            } elseif ($children.Count -eq 0) {
+                $script:result.finalizerChildLookup = 'none'
+            } else {
+                $script:result.finalizerChildLookup = 'ambiguous'
+            }
+        } catch { }
+        $first = Measure-Finalizer $finalizerProcess $script:finalizerReceiptPath $script:targetRoot $finalizerWatch
+        Start-Sleep -Seconds 5
+        $second = Measure-Finalizer $finalizerProcess $script:finalizerReceiptPath $script:targetRoot $finalizerWatch
+        $script:result.finalizerDiagnostics = @($first, $second)
+        throw "No bounded DELETED finalizer receipt; preserve state under: $script:targetRoot"
+    }
+    $script:result.finalizerElapsedSeconds = [Math]::Round($finalizerWatch.Elapsed.TotalSeconds, 1)
     $receiptRecord = Get-Content -LiteralPath $finalizerReceipt.FullName -Raw | ConvertFrom-Json
     if ($receiptRecord.schema -cne 'gogoke.uninstall-result.v1' -or
         $receiptRecord.state -cne 'DELETED' -or
@@ -340,7 +473,16 @@ try {
     }
     if (Test-Path -LiteralPath $script:targetRoot) {
         $tree = Get-PhysicalTree $script:targetRoot
-        if ($tree.Files.Count -ne 0) { throw "Owned candidate install files remain; preserve root: $script:targetRoot" }
+        if ($tree.Files.Count -ne 0) {
+            $relative = @($tree.Files | ForEach-Object {
+                $_.Substring($script:targetRoot.Length + 1).Replace('\', '/')
+            } | Sort-Object)
+            $script:result.remainingInstallFiles = [ordered]@{
+                count = $relative.Count
+                first = @($relative | Select-Object -First 12)
+            }
+            throw "Candidate install files remain after DELETED receipt; preserve root: $script:targetRoot"
+        }
         foreach ($directory in @($tree.Directories | Sort-Object Length -Descending)) {
             Remove-Item -LiteralPath $directory -Force
         }
@@ -354,7 +496,7 @@ try {
     Remove-Item -LiteralPath $script:ownedSentinel -Force
     $script:result.state = 'PASS'
     $script:result.stage = 'complete'
-    $script:evidencePath = Join-Path $env:RUNNER_TEMP ("gogoke-r2-06-candidate-smoke-$ExpectedSigningRunId-$ExpectedSigningRunAttempt.json")
+    $script:evidencePath = Join-Path $env:RUNNER_TEMP ("gogoke-r2-06-candidate-smoke-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.json")
     $script:result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:evidencePath -Encoding utf8
     Write-Output ($script:result | ConvertTo-Json -Depth 6 -Compress)
 } catch {
@@ -370,7 +512,7 @@ try {
     $script:result.readinessReceiptPath = if ($script:ownedReadyReceipt) { $script:ownedReadyReceipt } else { $null }
     $script:result.finalizerReceiptPath = $script:finalizerReceiptPath
     if ($env:RUNNER_TEMP -and (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) {
-        $script:evidencePath = Join-Path $env:RUNNER_TEMP ("gogoke-r2-06-candidate-smoke-$ExpectedSigningRunId-$ExpectedSigningRunAttempt.json")
+        $script:evidencePath = Join-Path $env:RUNNER_TEMP ("gogoke-r2-06-candidate-smoke-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.json")
         try { $script:result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:evidencePath -Encoding utf8 }
         catch { $script:evidencePath = $null }
     }
