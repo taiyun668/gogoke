@@ -2653,6 +2653,33 @@ export class NativeHostClient {
     return entry;
   }
 
+  async rejectR2TestFactWrite(
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+    baseHead: string, targetCommit: string,
+  ): Promise<R2TestFactJournalEntry> {
+    validateR2FactIntent(intent);
+    if (!R2_FACT_SHA.test(baseHead) || !R2_FACT_SHA.test(targetCommit)) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid rejected binding");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RejectR2TestFactWrite",
+      domainId: "domain-r2-02-test",
+      operationId: intent.operationId, executionEvidenceSha: intent.executionEvidenceSha,
+      bytesHash: intent.bytesHash, repository: intent.repository, branch: intent.branch,
+      path: intent.path, baseHead, targetCommit,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role, seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    const entry = decodeR2TestFactJournalEntry(body, intent);
+    if (entry.baseHead !== null || entry.targetCommit !== null) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "native rejected binding mismatch");
+    }
+    return entry;
+  }
+
   async publishDecisionSnapshot(input: NativeDecisionAuthoritySnapshot): Promise<void> {
     const reply = this.request(encodeDecisionSnapshotFrame(input));
     if (reply.body !== '{"published":true}') {

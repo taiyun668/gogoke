@@ -69,4 +69,17 @@ describe("R2-02 pinned GitHub write transport", () => {
     expect(requests[0]).toMatchObject({ method: "GET",
       url: `https://api.github.com/repos/taiyun668/gogoke/compare/${commit}...${next}?per_page=1&page=1` });
   });
+
+  it("distinguishes an explicit non-fast-forward rejection from other 422 responses", async () => {
+    for (const message of ["Update is not a fast forward", "Validation Failed"]) {
+      const port = createR2TestGitHubWritePort({
+        currentAuthority: async () => {}, credential: async () => "test-only-secret",
+        fetcher: async () => new Response(JSON.stringify({ message }), { status: 422 }),
+      });
+      await expect(port.updateRef(next)).rejects.toMatchObject({
+        code: message === "Update is not a fast forward"
+          ? "GIT_FACT_REF_NON_FAST_FORWARD" : "GIT_FACT_HTTP_422",
+      });
+    }
+  });
 });

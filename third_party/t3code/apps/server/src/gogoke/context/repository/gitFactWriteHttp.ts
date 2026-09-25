@@ -31,7 +31,24 @@ export function createR2TestGitHubWritePort(input: {
       signal: AbortSignal.timeout(10_000),
     });
     if (response.status === 404 && method === "GET" && path.startsWith("/contents/")) return null;
-    if (!response.ok) return fail(`GIT_FACT_HTTP_${response.status}`);
+    if (!response.ok) {
+      if (method === "PATCH" && response.status === 422 &&
+          path === `/git/refs/heads/${ref}`) {
+        const length = Number(response.headers.get("content-length"));
+        if (Number.isFinite(length) && length > MAX_REPLY_BYTES) return fail("GIT_FACT_HTTP_422");
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.length <= MAX_REPLY_BYTES) {
+          let nonFastForward = false;
+          try {
+            const body: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+            nonFastForward = typeof body === "object" && body !== null && !Array.isArray(body) &&
+              (body as Record<string, unknown>).message === "Update is not a fast forward";
+          } catch { /* Unrecognized 422 remains an unknown write outcome. */ }
+          if (nonFastForward) return fail("GIT_FACT_REF_NON_FAST_FORWARD");
+        }
+      }
+      return fail(`GIT_FACT_HTTP_${response.status}`);
+    }
     const length = Number(response.headers.get("content-length"));
     if (Number.isFinite(length) && length > MAX_REPLY_BYTES) return fail("GIT_FACT_HTTP_REPLY_TOO_LARGE");
     const bytes = new Uint8Array(await response.arrayBuffer());

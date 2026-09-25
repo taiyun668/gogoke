@@ -149,6 +149,10 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
     caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
     baseHead: string, targetCommit: string,
   ) => Promise<R2TestFactJournalEntry>;
+  readonly rejectR2TestFactWrite?: (
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+    baseHead: string, targetCommit: string,
+  ) => Promise<R2TestFactJournalEntry>;
   commitContextVersion(input: CommitContextVersionRequest): Promise<ContextCommitReceipt>;
   reserve(input: DurableActionReservation): Promise<ReserveActionResult>;
   begin(reservationId: string, input: DurableActionReservation): Promise<BeginActionResult>;

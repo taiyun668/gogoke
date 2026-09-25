@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { constructGogokeService } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
 import { readAcceptedGitHubFact, readGitHubFact } from "../context/repository/gitFact.ts";
-import { createR2GhCredentialAccess, currentGhToken } from "../context/repository/ghCredential.ts";
+import { createR2GhCredentialAccess, currentGhTokenIfAvailable } from "../context/repository/ghCredential.ts";
 import { R2_TEST_LEDGER, writeR2TestFact } from "../context/repository/gitFactWrite.ts";
 import type { GitFactWritePort, R2TestFactJournal } from "../context/repository/gitFactWrite.ts";
 import { createR2TestGitHubWritePort } from "../context/repository/gitFactWriteHttp.ts";
@@ -274,7 +274,8 @@ export async function handleProductGoalRequest(
     });
     // This construction Goal is test-only. The repository scope comes from
     // Owner's R2-02 authorization, not from the caller's ledger field.
-    const gitReadToken = currentGhToken();
+    // GitHub fact reads are public; use the existing gh credential only when available.
+    const gitReadToken = currentGhTokenIfAvailable();
     const ledgerMerge = request.ledgerMergePullNumber === undefined ? undefined :
       await readAcceptedGitHubFact(request.ledger, request.ledgerMergePullNumber,
         R2_02_MERGE_POLICY, fetch, gitReadToken);
@@ -330,6 +331,13 @@ export async function handleProductGoalRequest(
             throw new Error("R2_TEST_DRAFT_NATIVE_JOURNAL_UNAVAILABLE");
           }
           return service.store.bindR2TestFactWrite(caller, intent, baseHead, targetCommit);
+        },
+        async rejectTarget(intent, baseHead, targetCommit) {
+          await currentNativeAdmission();
+          if (typeof service.store.rejectR2TestFactWrite !== "function") {
+            throw new Error("R2_TEST_DRAFT_NATIVE_JOURNAL_UNAVAILABLE");
+          }
+          return service.store.rejectR2TestFactWrite(caller, intent, baseHead, targetCommit);
         },
       };
     }

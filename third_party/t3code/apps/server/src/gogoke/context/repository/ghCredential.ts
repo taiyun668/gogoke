@@ -1,16 +1,90 @@
 import { spawnSync } from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 export class GhCredentialError extends Error {
   override readonly name = "GhCredentialError";
   readonly code: string;
-  constructor(code: string) { super(code); this.code = code; }
+  constructor(code: string) {
+    super(code);
+    this.code = code;
+  }
 }
 
 type GhRunner = (args: readonly string[]) => string;
 
+function isWithin(
+  pathApi: typeof NodePath | typeof NodePath.win32,
+  root: string,
+  value: string,
+): boolean {
+  const relative = pathApi.relative(root, value);
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative))
+  );
+}
+
+function trustedRoots(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
+  if (platform === "win32") {
+    return [
+      env.ProgramFiles,
+      env["ProgramFiles(x86)"],
+      env.SystemRoot === undefined ? undefined : NodePath.win32.join(env.SystemRoot, "System32"),
+    ].filter((root): root is string => root !== undefined && NodePath.win32.isAbsolute(root));
+  }
+  return ["/usr/bin", "/usr/local/bin", "/bin"];
+}
+
+/** Resolve gh only from system-managed locations, never the product or current directory. */
+export function resolveTrustedGhExecutable(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd(),
+  executablePath = process.execPath,
+): string {
+  const pathApi = platform === "win32" ? NodePath.win32 : NodePath;
+  const roots = trustedRoots(platform, env).map((root) => pathApi.resolve(root));
+  const excluded = [cwd, pathApi.dirname(executablePath)].map((path) => pathApi.resolve(path));
+  const pathEntries = (env.PATH ?? "").split(platform === "win32" ? ";" : ":").filter(Boolean);
+  const candidates = pathEntries.map((entry) =>
+    pathApi.join(entry, platform === "win32" ? "gh.exe" : "gh"),
+  );
+  for (const root of roots)
+    candidates.push(pathApi.join(root, "GitHub CLI", platform === "win32" ? "gh.exe" : "gh"));
+
+  for (const candidate of candidates) {
+    if (!pathApi.isAbsolute(candidate)) continue;
+    const absolute = pathApi.resolve(candidate);
+    if (
+      !roots.some((root) => isWithin(pathApi, root, absolute)) ||
+      excluded.some((directory) => isWithin(pathApi, directory, absolute))
+    )
+      continue;
+    try {
+      const resolved = NodeFS.realpathSync(absolute);
+      const stat = NodeFS.statSync(resolved);
+      if (
+        !stat.isFile() ||
+        !roots.some((root) => isWithin(pathApi, root, resolved)) ||
+        excluded.some((directory) => isWithin(pathApi, directory, resolved))
+      )
+        continue;
+      return resolved;
+    } catch {
+      // Missing PATH entries and inaccessible candidates are not executable sources.
+    }
+  }
+  throw new GhCredentialError("GH_AUTH_UNAVAILABLE");
+}
+
 const runGh: GhRunner = (args) => {
-  const result = spawnSync("gh", [...args], {
-    encoding: "utf8", timeout: 10_000, maxBuffer: 4096, windowsHide: true,
+  const executable = resolveTrustedGhExecutable();
+  const result = spawnSync(executable, [...args], {
+    encoding: "utf8",
+    timeout: 10_000,
+    maxBuffer: 4096,
+    windowsHide: true,
     stdio: ["ignore", "pipe", "ignore"],
   });
   if (result.error !== undefined || result.status !== 0 || typeof result.stdout !== "string") {
@@ -23,20 +97,35 @@ const runGh: GhRunner = (args) => {
 export function currentGhToken(runner: GhRunner = runGh): string {
   // Actions supplies GH_TOKEN directly; the installed product uses the user's
   // existing gh login when that environment credential is absent.
-  const token = runner === runGh && process.env.GH_TOKEN !== undefined
-    ? process.env.GH_TOKEN
-    : runner(["auth", "token", "--hostname", "github.com"]);
+  const token =
+    runner === runGh && process.env.GH_TOKEN !== undefined
+      ? process.env.GH_TOKEN
+      : runner(["auth", "token", "--hostname", "github.com"]);
   if (token.length < 20 || token.includes("\n") || token.includes("\r")) {
     throw new GhCredentialError("GH_AUTH_UNAVAILABLE");
   }
   return token;
 }
 
+/** Public readback can fall back to GitHub's unauthenticated API when no gh login exists. */
+export function currentGhTokenIfAvailable(runner: GhRunner = runGh): string | undefined {
+  try {
+    return currentGhToken(runner);
+  } catch (error) {
+    if (error instanceof GhCredentialError && error.code === "GH_AUTH_UNAVAILABLE")
+      return undefined;
+    throw error;
+  }
+}
+
 /** Uses the existing local gh login. Credentials never enter argv or logs. */
 export function createR2GhCredentialAccess(
   currentNativeAdmission: () => Promise<void>,
   runner: GhRunner = runGh,
-): { readonly assertCurrentAuthority: () => Promise<void>; readonly credential: () => Promise<string> } {
+): {
+  readonly assertCurrentAuthority: () => Promise<void>;
+  readonly credential: () => Promise<string>;
+} {
   return Object.freeze({
     async assertCurrentAuthority() {
       await currentNativeAdmission();

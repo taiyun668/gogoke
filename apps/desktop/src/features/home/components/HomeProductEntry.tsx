@@ -20,13 +20,17 @@ export const R2_GOAL_FIXTURE: GogokeProductGoalRequest = Object.freeze({
 
 export function HomeProductEntry() {
   const [result, setResult] = useState<GogokeProductGoalView | null>(null);
+  const [accepted, setAccepted] = useState<GogokeProductGoalView["ledgerMerge"] | null>(null);
+  const [pullNumber, setPullNumber] = useState("");
+  const [mergeCommit, setMergeCommit] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState<"verify" | "task" | "novel" | null>(null);
+  const [running, setRunning] = useState<"verify" | "task" | "novel" | "accepted" | null>(null);
 
   const run = async (mode: "verify" | "task" | "novel") => {
     if (running !== null) return;
     setRunning(mode);
     setError(null);
+    setAccepted(null);
     try {
       const next = await runGogokeR2GoalProbe(mode === "verify" ? R2_GOAL_FIXTURE : {
         ...R2_GOAL_FIXTURE, runControlledTask: true, publishTestDraft: true,
@@ -37,6 +41,37 @@ export function HomeProductEntry() {
       setResult(next);
     } catch (cause) {
       setResult(null);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  const readAccepted = async () => {
+    const draft = result?.testLedgerDraft;
+    const number = Number(pullNumber);
+    if (running !== null || draft === undefined ||
+        !Number.isSafeInteger(number) || number <= 0 ||
+        !/^[0-9a-f]{40}$/u.test(mergeCommit)) return;
+    setRunning("accepted");
+    setError(null);
+    setAccepted(null);
+    try {
+      const readback = await runGogokeR2GoalProbe({
+        goal: R2_GOAL_FIXTURE.goal,
+        ledger: {
+          repository: draft.repository,
+          commit: mergeCommit,
+          path: draft.path,
+          contentHash: draft.contentHash,
+        },
+        ledgerMergePullNumber: number,
+      });
+      if (readback.ledgerMerge?.state !== "PR_MERGE_ACCEPTED_FACT_VERIFIED") {
+        throw new Error("Accepted Git fact readback was not verified");
+      }
+      setAccepted(readback.ledgerMerge);
+    } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setRunning(null);
@@ -166,8 +201,44 @@ export function HomeProductEntry() {
         </div>
       ) : null}
       {result?.testLedgerDraft ? (
+        <>
+          <div className="home-product-entry-result" role="status" aria-atomic="true">
+            Test ledger draft {result.testLedgerDraft.commit.slice(0, 12)} verified at {result.testLedgerDraft.path} · not adopted
+          </div>
+          <div className="home-product-entry-actions" aria-label="Accepted test fact readback">
+            <input
+              aria-label="Test result PR number"
+              className="home-product-entry-button"
+              inputMode="numeric"
+              onChange={(event) => setPullNumber(event.target.value)}
+              placeholder="Merged PR number"
+              type="text"
+              value={pullNumber}
+            />
+            <input
+              aria-label="Test result merge commit"
+              className="home-product-entry-button"
+              onChange={(event) => setMergeCommit(event.target.value.trim().toLowerCase())}
+              placeholder="Merge commit SHA"
+              type="text"
+              value={mergeCommit}
+            />
+            <button
+              className="home-product-entry-button"
+              data-tauri-drag-region="false"
+              disabled={running !== null || !Number.isSafeInteger(Number(pullNumber)) ||
+                Number(pullNumber) <= 0 || !/^[0-9a-f]{40}$/u.test(mergeCommit)}
+              onClick={() => void readAccepted()}
+              type="button"
+            >
+              {running === "accepted" ? "Reading accepted fact…" : "Read accepted test fact"}
+            </button>
+          </div>
+        </>
+      ) : null}
+      {accepted ? (
         <div className="home-product-entry-result" role="status" aria-atomic="true">
-          Test ledger draft {result.testLedgerDraft.commit.slice(0, 12)} verified at {result.testLedgerDraft.path} · not adopted
+          Test result accepted Git fact verified · PR #{accepted.pullNumber} · merge {accepted.mergeCommit.slice(0, 12)} · merged by {accepted.mergedBy}; Goal Acceptance remains separate
         </div>
       ) : null}
       {error ? (

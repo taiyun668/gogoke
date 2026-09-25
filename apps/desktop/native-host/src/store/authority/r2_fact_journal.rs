@@ -118,6 +118,25 @@ pub(crate) fn bind(connection: &mut VerifiedDatabaseConnection<'_>, intent: &R2T
     })
 }
 
+pub(crate) fn reject(connection: &mut VerifiedDatabaseConnection<'_>, intent: &R2TestFactIntent,
+    base_head: &str, target_commit: &str) -> Result<R2TestFactJournalEntry> {
+    validate(intent)?;
+    if !sha(base_head) || !sha(target_commit) { return denied(); }
+    transaction::run(connection, |tx| {
+        ensure_schema(tx)?;
+        let existing = read(tx, &intent.operation_id)?.ok_or(OrchestrationError::OperationConflict)?;
+        if existing.intent != *intent || existing.base_head.as_deref() != Some(base_head)
+            || existing.target_commit.as_deref() != Some(target_commit) {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        tx.write("UPDATE main.gogoke_coordination_r2_fact_pending_refs SET base_head=NULL,target_commit=NULL WHERE operation_id=? AND base_head=? AND target_commit=?",
+            &[&intent.operation_id,base_head,target_commit])?;
+        let changed = tx.query("SELECT changes()", &[], 1)?;
+        if changed.len()!=1 || changed[0][0]!="1" { return Err(OrchestrationError::OperationConflict); }
+        read(tx, &intent.operation_id)?.ok_or(OrchestrationError::OperationConflict)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,9 +168,17 @@ mod tests {
         assert_eq!(bound.target_commit.as_deref(), Some("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
         assert_eq!(bind(&mut db, &intent, &"d".repeat(40), &"e".repeat(40)).unwrap(), bound);
         assert!(bind(&mut db, &intent, &"d".repeat(40), &"f".repeat(40)).is_err());
+        assert!(reject(&mut db, &intent, &"d".repeat(40), &"f".repeat(40)).is_err());
+        let released = reject(&mut db, &intent, &"d".repeat(40), &"e".repeat(40)).unwrap();
+        assert_eq!(released.base_head, None);
+        assert_eq!(released.target_commit, None);
+        assert!(reject(&mut db, &intent, &"d".repeat(40), &"e".repeat(40)).is_err());
+        let rebound = bind(&mut db, &intent, &"f".repeat(40), &"1".repeat(40)).unwrap();
+        assert_eq!(rebound.base_head.as_deref(), Some("ffffffffffffffffffffffffffffffffffffffff"));
+        assert_eq!(rebound.target_commit.as_deref(), Some("1111111111111111111111111111111111111111"));
         db.close_checked().unwrap();
         let mut reopened = open_existing(&root, &database).unwrap();
-        assert_eq!(begin(&mut reopened, &intent).unwrap(), bound);
+        assert_eq!(begin(&mut reopened, &intent).unwrap(), rebound);
         assert!(bind(&mut reopened, &intent, &"d".repeat(40), &"f".repeat(40)).is_err());
         reopened.close_checked().unwrap();
         drop(root);

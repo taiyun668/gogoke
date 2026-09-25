@@ -1172,9 +1172,10 @@ fn handle_authenticated_line_with_process(
             let custodian = process_custodian.ok_or(OrchestrationError::AccessDenied)?;
             run_controlled_fixture_action(connection, owner, custodian, line)
         }
-        "BeginR2TestFactWrite" | "BindR2TestFactWrite" => {
+        "BeginR2TestFactWrite" | "BindR2TestFactWrite" | "RejectR2TestFactWrite" => {
             let binding = decoded.name == "BindR2TestFactWrite";
-            let expected = if binding {
+            let rejection = decoded.name == "RejectR2TestFactWrite";
+            let expected = if binding || rejection {
                 &["baseHead","branch","bytesHash","domainId","executionEvidenceSha","operation","operationId",
                   "path","policyRevision","principalId","profileId","repository","revocationHead",
                   "role","seatId","targetCommit"][..]
@@ -1201,6 +1202,9 @@ fn handle_authenticated_line_with_process(
             };
             let entry = if binding {
                 authority::bind_r2_test_fact_write(connection, &intent,
+                    required(&fields,"baseHead")?, required(&fields,"targetCommit")?)?
+            } else if rejection {
+                authority::reject_r2_test_fact_write(connection, &intent,
                     required(&fields,"baseHead")?, required(&fields,"targetCommit")?)?
             } else {
                 authority::begin_r2_test_fact_write(connection, &intent)?
@@ -2575,6 +2579,16 @@ mod context_tests {
         let first = handle_authenticated_line(&mut connection, &owner, &frame).unwrap();
         assert!(first.contains("\"baseHead\":null"));
         assert_eq!(handle_authenticated_line(&mut connection, &owner, &frame).unwrap(), first);
+        let target_frame = frame.replace("\"operation\":\"BeginR2TestFactWrite\"", "\"operation\":\"BindR2TestFactWrite\"")
+            .replace("\"branch\":", &format!("\"baseHead\":\"{}\",\"branch\":", "c".repeat(40)));
+        let target_frame = format!("{},\"targetCommit\":\"{}\"}}", target_frame.strip_suffix('}').unwrap(), "d".repeat(40));
+        let bound = handle_authenticated_line(&mut connection, &owner, &target_frame).unwrap();
+        assert!(bound.contains(&format!("\"targetCommit\":\"{}\"", "d".repeat(40))));
+        let reject_frame = target_frame.replace("\"operation\":\"BindR2TestFactWrite\"", "\"operation\":\"RejectR2TestFactWrite\"");
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &reject_frame.replace("\"role\":\"controller\"", "\"role\":\"worker\"")).is_err());
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &reject_frame).unwrap(), first);
+        assert!(handle_authenticated_line(&mut connection, &owner, &reject_frame).is_err());
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).unwrap();

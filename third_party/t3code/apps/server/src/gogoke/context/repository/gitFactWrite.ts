@@ -52,6 +52,9 @@ export interface R2TestFactJournal {
   /** Durably bind exact values before updateRef; an existing different binding is a conflict. */
   bindTarget(intent: R2TestFactJournalIntent, baseHead: string,
     targetCommit: string): Promise<R2TestFactJournalEntry>;
+  /** Clear only this exact rejected binding after a confirmed non-fast-forward response. */
+  rejectTarget(intent: R2TestFactJournalIntent, baseHead: string,
+    targetCommit: string): Promise<R2TestFactJournalEntry>;
 }
 
 export class GitFactWriteError extends Error {
@@ -162,6 +165,25 @@ export async function writeR2TestFact(
   try {
     await port.updateRef(commit);
   } catch (error) {
+    if (error instanceof Error && "code" in error &&
+        error.code === "GIT_FACT_REF_NON_FAST_FORWARD") {
+      try {
+        const current = await port.readHead();
+        if (!SHA.test(current.commit)) throw new Error("invalid current head");
+        if (current.commit !== commit && !await port.isAncestor(commit, current.commit)) {
+          const released = await journal.rejectTarget(intent, head.commit, commit);
+          if (!exact(released) || released.baseHead !== null || released.targetCommit !== null) {
+            return fail("TEST_FACT_OPERATION_CONFLICT");
+          }
+          throw new GitFactWriteError("TEST_FACT_REF_NON_FAST_FORWARD", { cause: error, commit, path });
+        }
+      } catch (reconcileError) {
+        if (reconcileError instanceof GitFactWriteError &&
+            reconcileError.code === "TEST_FACT_REF_NON_FAST_FORWARD") throw reconcileError;
+        throw new GitFactWriteError("TEST_FACT_WRITE_OUTCOME_UNKNOWN",
+          { cause: reconcileError, commit, path });
+      }
+    }
     return verifyBound(bound);
   }
   return verifyBound(bound);

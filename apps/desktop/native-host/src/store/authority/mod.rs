@@ -14,6 +14,7 @@ mod r2_fixture_driver;
 mod r2_fact_journal;
 pub(crate) use r2_fact_journal::{
     begin as begin_r2_test_fact_write, bind as bind_r2_test_fact_write,
+    reject as reject_r2_test_fact_write,
     R2TestFactIntent, R2TestFactJournalEntry,
 };
 pub(crate) use r2_fixture_driver::{
