@@ -1,0 +1,55 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-086",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "4ab3ebb86a5430e8a77e4d1f5644e8a556f95be7",
+  "recorded_utc": "2026-09-25T06:32:08Z",
+  "reason": "R2_06_FIRST_DUAL_WINDOWS_BUILD_AND_REPRODUCIBILITY_FAILURE",
+  "current_main": "56536f4ab850bc8b962456f95f5d0f2162d0c43a",
+  "authorization": "Current main still has v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35. Owner-merged R2-06 design blob is d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac; no new authorization was requested.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "pr34": "OPEN_NOT_MERGED; R2-05 remains WIP under the Owner's hold.",
+  "pr37": "OPEN_DRAFT_NOT_MERGED; trusted candidate signer head e8513767f5010b1c92588f7b86e3ce2bfa4fe5ba on its separate branch; no real candidate signature exists.",
+  "wip_implemented_since_mc085": [
+    "Installer preflight now receives and checks the target root before copy; PR CI uses the exact source head rather than a synthetic merge SHA. Rust command and macro compilation defects found by cloud CI were fixed.",
+    "Custom NSIS template restored its required page-skip functions. The installed shell and frozen resource set built successfully in two clean Windows lanes at the old source SHA.",
+    "Resource pack signer and execution verifier now reject non-integer and out-of-u64 indexed lengths, NUL-truncated ZIP entry names, resource indexes over the product's 4 MiB limit, Windows path components over 255 characters, and file/ancestor path collisions. The trusted signer change is on PR #37 and the matching verifier change is on this execution branch.",
+    "Installer and resource verification preserve unknown files at an existing target root; a nonempty unregistered install root is refused rather than treated as owned.",
+    "The formal unsigned portable ZIP is now generated deterministically from the exact frozen portable shell plus LICENSE and THIRD_PARTY_NOTICES.md, outside the candidate signer's fixed frozen input set. This new cloud packaging path has not yet run.",
+    "The next two-lane Windows build sets release codegen-units to one and passes MSVC /Brepro to address the observed code layout and PE timestamp differences. These flags are WIP until the next exact-SHA byte comparison executes."
+  ],
+  "executed_evidence": {
+    "desktop_ci_old_sha": "Run 36100213297 at 1c2cc43710c6a3e751407d9c743ee4f66a8458a4: browser PASS, dependency notices PASS, clean frozen Windows build PASS, clean repro Windows build PASS; byte comparison FAIL at gogoke-portable.exe. Frozen lane native release tests: 7 passed, 0 failed; resource trust tests: 2 passed, 0 failed. This is not a candidate PASS.",
+    "source_hygiene_old_sha": "Run 36100213329 at the same SHA: PASS.",
+    "frozen_artifact": "Run 36100213297 artifact 10849518124; archive SHA-256 917ad613074cf1fcf376597c65156b2af225b38d8908c4864c061bb87bb4a699; 124580112 bytes.",
+    "repro_artifact": "Run 36100213297 artifact 10849548951; archive SHA-256 4488bdbbb8c42ae1fb81c5fc01c55ed70ca16c9a2e976447b8573e6e5f57b0e6; 124578372 bytes.",
+    "byte_diagnosis": "Both GitHub artifact ZIPs were downloaded once and their outer SHA-256 matched GitHub. The resource pack and Node hashes match. Portable shell length is 30840832 in both, but hashes differ and .text has 3245919 differing bytes; PE timestamps differ. Native host .text matches and the full host differs by 45 bytes. This supports code/linker nondeterminism rather than a resource-pack difference; new flags must be tested, not assumed effective.",
+    "local_python": "Execution branch: 22 resource pack/frozen artifact tests PASS, 0 fail, 0 skip on current WIP bytes. Trusted signer branch: 22 relevant Python tests PASS on e8513767; cloud checks for that SHA still pending.",
+    "signer_review": "Fresh full-axis read-only audit on prior c136bbd9 found three reproducible P2 signer/consumer mismatches (index size, u64 range, filesystem path set). They were fixed at e8513767 and focused mutation review is pending; no acceptance is claimed.",
+    "resource_update_readthrough": "Independent read-only trace found the formal Windows resources update production path uses a product gate, new generation WebView URL, request-scoped T3 readiness process and durable pointer commit; real installed/runtime behavior remains NOT_RUN.",
+    "trusted_candidate_signature_and_installed_smoke": "NOT_RUN",
+    "owner_win11_sac_candidate": "NOT_RUN",
+    "uninstall_completion": "NOT_VERIFIED; fixed finalizer still deletes nothing."
+  },
+  "open_findings": [
+    "The latest source CI did not achieve byte-identical Windows executables. Next exact-SHA cloud run must measure whether single codegen unit and /Brepro close both shell and native-host differences; no old-SHA PASS transfers.",
+    "Trusted candidate-signing workflow is still a Draft PR and cannot use its main-only environment secret until reviewed and merged to current main. No candidate installer may be treated as signed/testable yet.",
+    "Full update coordinator still has a lifecycle-lock custody gap across NSIS and retains the old backup after success; this axis is NOT_VERIFIED.",
+    "Uninstall front-half has an inherited lock handshake, but its finalizer deliberately stops before deletion. Same-open-object identity, ancestor handle pinning, shortcut ownership, registry removal, and cloud process tests remain.",
+    "Formal Owner-signed install, candidate installed smoke, resource-only update crash/failure smoke, Owner Win11 SAC, and R2-05 final gates are NOT_RUN."
+  ],
+  "path_first_reflection": "Earlier cloud attempts exposed compilation and NSIS template errors one at a time. The first successful two-lane build moved the real failure to reproducibility. Reading the two exact artifact archives once showed the pack and Node match, a large shell .text code-layout difference, and small host/PE timestamp differences. The next push batches the signer-consumer parser fixes, preservation of unknown install files, deterministic portable packaging, and release codegen/linker flags into one new two-lane run, then reads its first actual failure. It does not add a new error-label layer or treat old checks as current evidence.",
+  "retained_custody": [
+    "Controller execution worktree remains the R2-06 WIP checkout; no locally built native binary exists.",
+    "The separate PR #37 signer worktree is retained for review and trusted workflow landing; it is not an execution integration writer.",
+    "%TEMP%/gogoke-r206-repro-36100213297 contains two downloaded public CI artifact ZIPs whose SHA-256 matched GitHub; retained only to compare the next byte result, then remove after exact-path custody verification.",
+    "MC-085's prior temporary paths remain under their recorded custody because automatic cleanup review had rejected their removal. No bypass was attempted."
+  ],
+  "external_action": "NO_CANDIDATE_SIGNATURE; NO_OWNER_KEY_USE; NO_MAIN_MERGE; NO_PR34_MERGE; NO_RELEASE; NEXT_EXECUTION_PUSH_PENDING",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "next_action": "Push this execution checkpoint with the five local commits, observe the automatic exact-head cloud run and public hygiene, classify the first real failure or confirm the two-lane byte comparison and portable ZIP. Continue PR #37 focused then fresh final audit on exact signer bytes; merge only after required independent cross-model review. Keep uninstall/full-update gaps explicit and proceed on dependency-safe R2-06 work."
+}
