@@ -14,6 +14,7 @@ on:
       - "tools/ci/gogoke_resource_pack.py"
       - "tools/ci/gogoke_ci_frozen_artifact.py"
       - "tools/ci/gogoke-candidate-sign.ps1"
+      - "tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1"
       - "tools/ci/test_gogoke_*.py"
       - ".github/workflows/gogoke-candidate-sign.yml"
       - ".github/workflows/gogoke-desktop.yml"
@@ -29,6 +30,7 @@ on:
       - "tools/ci/gogoke_resource_pack.py"
       - "tools/ci/gogoke_ci_frozen_artifact.py"
       - "tools/ci/gogoke-candidate-sign.ps1"
+      - "tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1"
       - "tools/ci/test_gogoke_*.py"
       - ".github/workflows/gogoke-candidate-sign.yml"
       - ".github/workflows/gogoke-desktop.yml"
@@ -65,6 +67,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "candidate signer safety tests failed: $LASTEXITCODE" }
           } finally { Pop-Location }
       - run: npm run check:product-identity
+      - name: Parse candidate installed product smoke script
+        shell: pwsh
+        run: |
+          $path = (Resolve-Path ../../tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1).Path
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) { throw "Candidate installed smoke has $($errors.Count) PowerShell parse errors." }
       - name: Check release trust boundary
         shell: pwsh
         run: |

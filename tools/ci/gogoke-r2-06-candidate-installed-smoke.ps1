@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedInstalledShellSha256,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedNativeHostSha256,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedNodeSha256,
-    [Parameter(Mandatory = $true)][ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$')][string]$ExpectedVersion,
+    [Parameter(Mandatory = $true)][ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')][string]$ExpectedVersion,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSourceCommit,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedRunId,
     [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedRunAttempt,
@@ -305,7 +305,14 @@ try {
         if ($newReceipts.Count -gt 1) { throw 'More than one new finalizer receipt appeared for the candidate instance' }
         if ($newReceipts.Count -eq 1) {
             $script:finalizerReceiptPath = $newReceipts[0].FullName
-            $candidateReceipt = Get-Content -LiteralPath $newReceipts[0].FullName -Raw | ConvertFrom-Json
+            try {
+                # The finalizer reserves this file with FileShare.None before
+                # publishing PENDING and only releases it after DELETED/FAILED.
+                $candidateReceipt = [IO.File]::ReadAllText($newReceipts[0].FullName) | ConvertFrom-Json
+            } catch [IO.IOException] {
+                Start-Sleep -Milliseconds 250
+                continue
+            }
             if ($candidateReceipt.state -ceq 'FAILED') { throw "Uninstall finalizer failed: $([string]$candidateReceipt.detail). Receipt: $($newReceipts[0].FullName)" }
             if ($candidateReceipt.state -ceq 'DELETED') { $finalizerReceipt = $newReceipts[0]; break }
         }
