@@ -306,9 +306,17 @@ try {
     $null = $parent.Handle
     Reserve-Receipt
     $marker = [Text.Encoding]::ASCII.GetBytes('LOCK:' + $data.nonce + "`n")
-    $lockStream = [Console]::OpenStandardError()
-    $lockStream.Write($marker, 0, $marker.Length)
-    $lockStream.Flush()
+    # PowerShell may write a CLIXML header to stderr before this script runs.
+    # Rewind and replace only that same inherited, already-verified lock
+    # handle; the borrowed wrapper must not release custody on Dispose.
+    $borrowedLock = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($lockHandle, $false)
+    $lockStream = [IO.FileStream]::new($borrowedLock, [IO.FileAccess]::ReadWrite)
+    try {
+        $lockStream.SetLength(0)
+        $lockStream.Position = 0
+        $lockStream.Write($marker, 0, $marker.Length)
+        $lockStream.Flush($true)
+    } finally { $lockStream.Dispose() }
     [Console]::Out.WriteLine('READY:' + $data.nonce)
     [Console]::Out.Flush()
     if (-not $parent.WaitForExit(120000)) { Fail 'GOGOKE_UNINSTALL_PARENT_STILL_RUNNING' }
