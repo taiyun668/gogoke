@@ -58,21 +58,22 @@ jobs:
       - name: Prove this workflow and verifier are running from main
         shell: pwsh
         run: |
-          if ('${{ github.ref }}' -cne 'refs/heads/main') {
+          if ($env:GITHUB_REF -cne 'refs/heads/main') {
             throw 'Candidate signing workflow is not running from the trusted default branch.'
           }
           $checkedOut = (git rev-parse HEAD).Trim()
           $remoteMain = (git ls-remote origin refs/heads/main).Split("`t")[0]
-          if ($checkedOut -cne $remoteMain -or $checkedOut -cne '${{ github.sha }}') {
+          if ($checkedOut -cne $remoteMain -or $checkedOut -cne $env:GITHUB_SHA) {
             throw 'Trusted verifier checkout is not the exact current main workflow revision.'
           }
       - name: Resolve exact controlled source run and artifact identity
         id: identity
         shell: pwsh
         run: |
-          if ('${{ github.event_name }}' -ceq 'workflow_run') {
-            $sourceCommit = '${{ github.event.workflow_run.head_sha }}'
-            $runId = [long]'${{ github.event.workflow_run.id }}'
+          $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_run') {
+            $sourceCommit = [string]$event.workflow_run.head_sha
+            $runId = [long]$event.workflow_run.id
             $runAttempt = 0
             if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $runId -le 0) {
               throw 'workflow_run source identity is malformed.'
@@ -86,16 +87,16 @@ jobs:
             if ($matches.Count -ne 1) { throw 'Frozen source artifact identity is ambiguous or unavailable.' }
             $artifactId = [long]$matches[0].id
           } else {
-            $sourceCommit = '${{ inputs.source_commit }}'
-            $runId = [long]'${{ inputs.run_id }}'
-            $runAttempt = [int]'${{ inputs.run_attempt }}'
-            $artifactId = [long]'${{ inputs.artifact_id }}'
+            $sourceCommit = [string]$event.inputs.source_commit
+            $runId = [long]$event.inputs.run_id
+            $runAttempt = [int]$event.inputs.run_attempt
+            $artifactId = [long]$event.inputs.artifact_id
           }
           if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $runId -le 0 -or $artifactId -le 0) {
             throw 'Candidate signing identity is malformed.'
           }
           $run = gh api "repos/taiyun668/gogoke/actions/runs/$runId" | ConvertFrom-Json
-          if ('${{ github.event_name }}' -ceq 'workflow_run') {
+          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_run') {
             $runAttempt = [int]$run.run_attempt
           }
           if ($LASTEXITCODE -ne 0 -or $run.repository.full_name -cne 'taiyun668/gogoke' -or
@@ -136,13 +137,14 @@ jobs:
           "run_attempt=$runAttempt" >> $env:GITHUB_OUTPUT
           "artifact_id=$artifactId" >> $env:GITHUB_OUTPUT
           "artifact_name=gogoke-windows-frozen-$sourceCommit-$runId" >> $env:GITHUB_OUTPUT
-      - name: Download exact frozen artifact as untrusted data
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path candidate-input | Out-Null
-          gh run download '${{ steps.identity.outputs.run_id }}' --repo taiyun668/gogoke `
-            --name '${{ steps.identity.outputs.artifact_name }}' --dir candidate-input
-          if ($LASTEXITCODE -ne 0) { throw 'Exact frozen candidate artifact download failed.' }
+      - name: Download exact frozen artifact by immutable ID as untrusted data
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.identity.outputs.artifact_id }}
+          run-id: ${{ steps.identity.outputs.run_id }}
+          repository: taiyun668/gogoke
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: candidate-input
       - name: Verify complete frozen artifact byte inventory with trusted main code
         shell: pwsh
         run: |

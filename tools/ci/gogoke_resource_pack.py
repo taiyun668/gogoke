@@ -265,6 +265,8 @@ def _read_pack_files(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
             raise ResourcePackError(f"native executable is not allowed in resource pack: {name}")
         if info.is_dir():
             raise ResourcePackError(f"directory ZIP entry is not allowed: {name}")
+        if info.compress_type != zipfile.ZIP_STORED or info.file_size != info.compress_size:
+            raise ResourcePackError(f"resource pack entry is not stored verbatim: {name}")
         mode = (info.external_attr >> 16) & 0xFFFF
         if stat.S_ISLNK(mode) or (mode and not stat.S_ISREG(mode)):
             raise ResourcePackError(f"non-regular ZIP entry is not allowed: {name}")

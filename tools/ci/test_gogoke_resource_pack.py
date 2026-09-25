@@ -180,6 +180,21 @@ class GogokeResourcePackTests(unittest.TestCase):
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("native executable is not allowed", rejected.stderr)
 
+    def test_index_rejects_compressed_entry_before_expansion(self) -> None:
+        with zipfile.ZipFile(self.pack, "w") as archive:
+            for name, data, compression in (
+                ("frontend/index.html", b"<main>ok</main>\n", zipfile.ZIP_STORED),
+                ("dist/bin.mjs", b"x" * (1024 * 1024), zipfile.ZIP_DEFLATED),
+            ):
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                info.compress_type = compression
+                archive.writestr(info, data)
+        rejected = self.build_index()
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("not stored verbatim", rejected.stderr)
+
     def test_windows_reparse_attribute_is_rejected(self) -> None:
         info = SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
         self.assertTrue(_is_reparse_point(info))
