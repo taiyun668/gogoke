@@ -103,9 +103,17 @@ pub fn run() {
     }
 
     #[cfg(target_os = "windows")]
-    if std::env::args().any(|argument| argument.starts_with("--gogoke-verify-install-set=")) {
+    if std::env::args().any(|argument| {
+        argument.starts_with("--gogoke-verify-install-set=")
+            || argument.starts_with("--gogoke-install-target=")
+    }) {
         let arguments: Vec<String> = std::env::args().skip(1).collect();
-        let result = if arguments.len() == 2 {
+        let result = if arguments.len() == 1 {
+            match arguments[0].strip_prefix("--gogoke-verify-install-set=") {
+                Some(source) => resource_trust::verify_install_set(std::path::Path::new(source)),
+                None => Err("GOGOKE_INSTALL_PREFLIGHT_ARGUMENTS_INVALID".to_string()),
+            }
+        } else if arguments.len() == 2 {
             match (
                 arguments[0].strip_prefix("--gogoke-verify-install-set="),
                 arguments[1].strip_prefix("--gogoke-install-target="),
@@ -229,7 +237,9 @@ pub fn run() {
             let state = state::AppState::load(&app.handle());
             app.manage(state);
             #[cfg(target_os = "windows")]
-            if let (Some(resources), Some(mut main_config)) = (&resource_for_setup, &verified_main_config) {
+            if let (Some(resources), Some(mut main_config)) =
+                (&resource_for_setup, verified_main_config.as_ref().cloned())
+            {
                 main_config.url = tauri::WebviewUrl::CustomProtocol(
                     reqwest::Url::parse("gogoke-resource://localhost/index.html")
                         .expect("fixed gogoke resource URL"),

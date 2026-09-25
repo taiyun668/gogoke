@@ -901,7 +901,7 @@ pub(crate) fn verify_install_target(source: &Path, target: &Path) -> Result<(), 
     }
     let signed = signed_index(source)?;
     let verifier = std::env::current_exe().map_err(|_| "GOGOKE_EXE_PATH_UNAVAILABLE")?;
-    file_sha256(&verifier, &signed.index.executables.portable_shell)?;
+    file_sha256(&verifier, &signed.index.executables.installed_shell)?;
     let parent = target.parent().ok_or("GOGOKE_INSTALL_TARGET_INVALID")?;
     for path in parent.ancestors() {
         if !path.exists() { return Err("GOGOKE_INSTALL_PARENT_MISSING".to_string()); }
