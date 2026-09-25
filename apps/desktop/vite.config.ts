@@ -63,6 +63,7 @@ const appGitBranch = resolveGitBranch();
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  base: "./",
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

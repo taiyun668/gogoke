@@ -119,7 +119,12 @@ pub(crate) struct VerifiedResources {
 }
 
 #[derive(Clone)]
-pub(crate) struct ResourceState(Arc<RwLock<VerifiedResources>>);
+pub(crate) struct ResourceState(Arc<RwLock<ResourceStateInner>>);
+
+struct ResourceStateInner {
+    active: String,
+    sets: HashMap<String, VerifiedResources>,
+}
 
 pub(crate) struct LifecycleLock {
     _file: fs::File,
@@ -144,22 +149,47 @@ pub(crate) fn acquire_lifecycle_lock(root: &Path) -> Result<LifecycleLock, Strin
 
 impl ResourceState {
     pub(crate) fn new(resources: VerifiedResources) -> Self {
-        Self(Arc::new(RwLock::new(resources)))
+        let active = resources.set_id.clone();
+        let sets = HashMap::from([(active.clone(), resources)]);
+        Self(Arc::new(RwLock::new(ResourceStateInner { active, sets })))
     }
 
     pub(crate) fn current(&self) -> Result<VerifiedResources, String> {
-        self.0
+        let state = self.0
             .read()
-            .map(|value| value.clone())
-            .map_err(|_| "GOGOKE_RESOURCE_STATE_UNAVAILABLE".to_string())
+            .map_err(|_| "GOGOKE_RESOURCE_STATE_UNAVAILABLE".to_string())?;
+        state
+            .sets
+            .get(&state.active)
+            .cloned()
+            .ok_or_else(|| "GOGOKE_RESOURCE_STATE_UNAVAILABLE".to_string())
     }
 
     pub(crate) fn replace(&self, resources: VerifiedResources) -> Result<(), String> {
-        *self
+        let mut state = self
             .0
             .write()
-            .map_err(|_| "GOGOKE_RESOURCE_STATE_UNAVAILABLE".to_string())? = resources;
+            .map_err(|_| "GOGOKE_RESOURCE_STATE_UNAVAILABLE".to_string())?;
+        state.active = resources.set_id.clone();
+        state.sets.insert(resources.set_id.clone(), resources);
         Ok(())
+    }
+
+    pub(crate) fn read_frontend_request(
+        &self,
+        request_path: &str,
+    ) -> Result<(Vec<u8>, &'static str), String> {
+        let (set_id, relative) = frontend_request_path(request_path)?;
+        let resources = self
+            .0
+            .read()
+            .map_err(|_| "GOGOKE_RESOURCE_STATE_UNAVAILABLE".to_string())?
+            .sets
+            .get(set_id)
+            .cloned()
+            .ok_or_else(|| "GOGOKE_RESOURCE_SET_UNAVAILABLE".to_string())?;
+        let bytes = resources.read_frontend(&relative)?;
+        Ok((bytes, content_type(&relative)))
     }
 }
 
@@ -422,6 +452,44 @@ fn safe_relative_path(path: &str) -> bool {
                     | "LPT9"
             )
         })
+}
+
+fn frontend_request_path(path: &str) -> Result<(&str, String), String> {
+    let (set_id, encoded) = path
+        .strip_prefix('/')
+        .and_then(|value| value.split_once('/'))
+        .ok_or_else(|| "GOGOKE_RESOURCE_PATH_UNSAFE".to_string())?;
+    if !lowercase_sha(set_id, 64) {
+        return Err("GOGOKE_RESOURCE_SET_ID_INVALID".to_string());
+    }
+    let source = encoded.as_bytes();
+    let mut decoded = Vec::with_capacity(source.len());
+    let mut offset = 0;
+    while offset < source.len() {
+        if source[offset] == b'%' {
+            if offset + 2 >= source.len() {
+                return Err("GOGOKE_RESOURCE_PATH_UNSAFE".to_string());
+            }
+            let digits = std::str::from_utf8(&source[offset + 1..offset + 3])
+                .map_err(|_| "GOGOKE_RESOURCE_PATH_UNSAFE".to_string())?;
+            let byte = u8::from_str_radix(digits, 16)
+                .map_err(|_| "GOGOKE_RESOURCE_PATH_UNSAFE".to_string())?;
+            if byte == b'/' || byte == b'\\' {
+                return Err("GOGOKE_RESOURCE_PATH_UNSAFE".to_string());
+            }
+            decoded.push(byte);
+            offset += 3;
+        } else {
+            decoded.push(source[offset]);
+            offset += 1;
+        }
+    }
+    let relative = String::from_utf8(decoded)
+        .map_err(|_| "GOGOKE_RESOURCE_PATH_UNSAFE".to_string())?;
+    if !safe_relative_path(&relative) {
+        return Err("GOGOKE_RESOURCE_PATH_UNSAFE".to_string());
+    }
+    Ok((set_id, relative))
 }
 
 fn signed_index(root: &Path) -> Result<SignedIndex, String> {
@@ -1168,19 +1236,20 @@ pub(crate) fn stage_resource_update(
     file_sha256(&executable, &index.executables.installed_shell)?;
     current.verify_runtime_files()?;
     let expected = indexed_files(index)?;
-    let set_dir = stage_signed_set(source, &current.install_root, &signed)?;
     let generations = current.service_root.join("generations");
     physical_directory_or_create(&generations)?;
     let generation_root = generations.join(&index.generation_id);
     if !generation_root.exists() {
         let temporary = generations.join(format!(".stage-{}", uuid::Uuid::new_v4()));
         physical_directory_or_create(&temporary)?;
-        extract_generation(&set_dir.join(RESOURCE_PACK), &temporary, &expected)?;
+        extract_generation(&source.join(RESOURCE_PACK), &temporary, &expected)?;
         verify_generation(&temporary, &expected)?;
         fs::rename(&temporary, &generation_root)
             .map_err(|_| "GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED")?;
     }
     verify_generation(&generation_root, &expected)?;
+    // A normally named signed set must never point at an absent generation.
+    stage_signed_set(source, &current.install_root, &signed)?;
     Ok(VerifiedResources {
         domain: Domain::Formal,
         version: index.version.clone(),
@@ -1426,6 +1495,107 @@ mod tests {
     use super::*;
 
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn frontend_request_decodes_one_url_layer_and_rejects_ambiguous_paths() {
+        let request = |path: &str| {
+            frontend_request_path(&format!("/{HASH}/{path}")).map(|(_, relative)| relative)
+        };
+        assert_eq!(request("assets/icon%20one.svg").unwrap(), "assets/icon one.svg");
+        assert_eq!(request("assets/icon%23one.svg").unwrap(), "assets/icon#one.svg");
+        assert_eq!(request("assets/icon%25one.svg").unwrap(), "assets/icon%one.svg");
+        assert_eq!(request("assets/icon%252e.svg").unwrap(), "assets/icon%2e.svg");
+        for path in [
+            "assets/icon%2Fone.svg",
+            "assets/icon%5cone.svg",
+            "assets/%2e%2e/secret.js",
+            "assets/icon%00.svg",
+            "assets/icon%.svg",
+            "assets/icon%GG.svg",
+        ] {
+            assert!(request(path).is_err(), "ambiguous request accepted: {path}");
+        }
+        assert!(frontend_request_path("/assets/index.js").is_err());
+        assert!(frontend_request_path("/not-a-set/index.html").is_err());
+    }
+
+    #[test]
+    fn frontend_requests_remain_bound_to_their_verified_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-generation-route-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let old_id = HASH.to_string();
+        let new_id = "a".repeat(64);
+        let resources = |set_id: &str, payload: &[u8]| {
+            let generation_root = root.join(set_id);
+            fs::create_dir_all(generation_root.join("frontend")).expect("test generation");
+            fs::write(generation_root.join("frontend/index.html"), payload)
+                .expect("test frontend bytes");
+            let record = ByteRecord {
+                length: payload.len() as u64,
+                sha256: sha256(payload),
+            };
+            let executable = ByteRecord {
+                length: 0,
+                sha256: HASH.to_string(),
+            };
+            VerifiedResources {
+                domain: Domain::Formal,
+                version: "1.2.3".to_string(),
+                source_commit: "0".repeat(40),
+                generation_id: set_id.to_string(),
+                set_id: set_id.to_string(),
+                generation_root,
+                service_root: root.clone(),
+                install_root: root.clone(),
+                native_host_path: root.join("native-host.exe"),
+                node_runtime_path: root.join("node.exe"),
+                native_host: executable.clone(),
+                node: executable.clone(),
+                executables: Executables {
+                    portable_shell: executable.clone(),
+                    installed_shell: executable.clone(),
+                    native_host: executable.clone(),
+                    node: executable,
+                },
+                files: Arc::new(HashMap::from([("frontend/index.html".to_string(), record)])),
+                installed_files: Arc::new(HashMap::new()),
+            }
+        };
+        let old = resources(&old_id, b"old generation");
+        let new = resources(&new_id, b"new generation");
+        let state = ResourceState::new(old.clone());
+        state.replace(new).expect("switch pending generation");
+        assert_eq!(
+            state
+                .read_frontend_request(&format!("/{old_id}/index.html"))
+                .unwrap()
+                .0,
+            b"old generation".to_vec()
+        );
+        assert_eq!(
+            state
+                .read_frontend_request(&format!("/{new_id}/index.html"))
+                .unwrap()
+                .0,
+            b"new generation".to_vec()
+        );
+        assert!(state.read_frontend_request("/index.html").is_err());
+        assert!(state
+            .read_frontend_request(&format!("/{}/index.html", "b".repeat(64)))
+            .is_err());
+        state.replace(old).expect("roll back pending generation");
+        assert_eq!(state.current().unwrap().set_id, old_id);
+        assert_eq!(
+            state
+                .read_frontend_request(&format!("/{new_id}/index.html"))
+                .unwrap()
+                .0,
+            b"new generation".to_vec()
+        );
+        fs::remove_dir_all(&root).expect("remove owned test generation");
+    }
 
     #[test]
     fn signed_manifest_shape_separates_full_resources_and_candidate() {

@@ -682,9 +682,23 @@ fn resource_page_url(window: &WebviewWindow, set_id: &str) -> Result<Url, String
     let trusted_origin = (url.scheme() == "gogoke-resource" && url.host_str() == Some("localhost"))
         || ((url.scheme() == "http" || url.scheme() == "https")
             && url.host_str() == Some("gogoke-resource.localhost"));
-    if !trusted_origin || url.path() != "/index.html" {
+    let page_set = url
+        .path()
+        .strip_prefix('/')
+        .and_then(|path| path.split_once('/'));
+    let valid_set = |value: &str| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    if !trusted_origin
+        || !valid_set(set_id)
+        || !matches!(page_set, Some((current, "index.html")) if valid_set(current))
+    {
         return Err("GOGOKE_UPDATE_WEBVIEW_ORIGIN_INVALID".to_string());
     }
+    url.set_path(&format!("/{set_id}/index.html"));
     url.set_query(Some(&format!("{RESOURCE_SET_QUERY}={set_id}")));
     Ok(url)
 }

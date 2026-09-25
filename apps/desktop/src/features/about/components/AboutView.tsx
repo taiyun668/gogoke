@@ -66,7 +66,7 @@ function AboutViewContent() {
         <div className="about-header">
           <img
             className="about-icon"
-            src="/app-icon.png"
+            src="./app-icon.png"
             alt={tx("gogoke icon")}
           />
           <div className="about-title">{tx("gogoke")}</div>

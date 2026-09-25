@@ -336,10 +336,14 @@ pub(crate) fn handle_menu_event<R: tauri::Runtime>(
                 return;
             }
             #[cfg(target_os = "windows")]
-            let url = if app.try_state::<crate::resource_trust::ResourceState>().is_some() {
+            let url = if let Some(resources) = app.try_state::<crate::resource_trust::ResourceState>() {
+                let Ok(current) = resources.current() else { return; };
                 WebviewUrl::CustomProtocol(
-                    reqwest::Url::parse("gogoke-resource://localhost/index.html")
-                        .expect("fixed gogoke resource URL"),
+                    reqwest::Url::parse(&format!(
+                        "gogoke-resource://localhost/{}/index.html",
+                        current.set_id
+                    ))
+                    .expect("verified gogoke resource URL"),
                 )
             } else {
                 WebviewUrl::App("index.html".into())

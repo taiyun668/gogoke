@@ -208,13 +208,13 @@ pub fn run() {
         let protocol_resources = verified_resources.clone();
         builder.register_uri_scheme_protocol("gogoke-resource", move |_context, request| {
             let path = request.uri().path();
-            let bytes = protocol_resources.as_ref()
+            let response = protocol_resources.as_ref()
                 .ok_or_else(|| "GOGOKE_RESOURCE_DOMAIN_UNAVAILABLE".to_string())
-                .and_then(|resources| resources.current()?.read_frontend(path));
-            match bytes {
-                Ok(bytes) => tauri::http::Response::builder()
+                .and_then(|resources| resources.read_frontend_request(path));
+            match response {
+                Ok((bytes, content_type)) => tauri::http::Response::builder()
                     .status(tauri::http::StatusCode::OK)
-                    .header("Content-Type", resource_trust::content_type(path))
+                    .header("Content-Type", content_type)
                     .header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; object-src 'none'; base-uri 'self'")
                     .body(bytes)
                     .expect("fixed resource response headers"),
@@ -249,9 +249,12 @@ pub fn run() {
             if let (Some(resources), Some(mut main_config)) =
                 (&resource_for_setup, verified_main_config.as_ref().cloned())
             {
+                let set_id = resources.current().expect("verified resource state").set_id;
                 main_config.url = tauri::WebviewUrl::CustomProtocol(
-                    reqwest::Url::parse("gogoke-resource://localhost/index.html")
-                        .expect("fixed gogoke resource URL"),
+                    reqwest::Url::parse(&format!(
+                        "gogoke-resource://localhost/{set_id}/index.html"
+                    ))
+                    .expect("verified gogoke resource URL"),
                 );
                 app.manage(resources.clone());
                 tauri::WebviewWindowBuilder::from_config(app.handle(), &main_config)?.build()?;
