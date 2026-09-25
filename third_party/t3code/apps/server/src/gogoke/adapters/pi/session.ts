@@ -8,6 +8,7 @@ import type {
   PiPauseResult,
   PiProtectionAdmission,
   PiRpcDiagnostic,
+  PiSettledObservation,
 } from "./types.ts";
 
 const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
@@ -30,7 +31,8 @@ export type PiManagedSessionErrorCode =
   | "SESSION_CLOSED"
   | "WRITE_FAILED"
   | "REMOTE_REJECTED"
-  | "INVALID_RESPONSE";
+  | "INVALID_RESPONSE"
+  | "SETTLEMENT_TIMEOUT";
 
 export class PiManagedSessionError extends Error {
   readonly code: PiManagedSessionErrorCode;
@@ -158,6 +160,15 @@ export class PiManagedSession {
   #writeTail: Promise<void> = Promise.resolve();
   #pauseFlight: Promise<PiPauseResult> | undefined;
   #pauseComplete = false;
+  #exclusiveTaskUsed = false;
+  #priorPromptCommand = false;
+  #priorAgentRun = false;
+  #settlement: {
+    started: boolean;
+    untrustedFinalText: string | null;
+    resolve: () => void;
+    reject: (error: PiManagedSessionError) => void;
+  } | undefined;
 
   constructor(options: PiManagedSessionOptions) {
     const admission = snapshotPiProtectionAdmission(options.admission);
@@ -198,6 +209,42 @@ export class PiManagedSession {
     const command: JsonRecord = { type: "prompt", message };
     if (streamingBehavior !== undefined) command.streamingBehavior = streamingBehavior;
     return this.#accepted("prompt", command);
+  }
+
+  /** One agent run per controlled task because Pi events have no request id. */
+  async promptAndObserveSettlement(message: string, timeoutMs: number): Promise<PiSettledObservation> {
+    this.#requireDispatch();
+    if (this.#exclusiveTaskUsed || this.#priorPromptCommand || this.#priorAgentRun || this.#pending.size !== 0) {
+      throw new PiManagedSessionError("INVALID_ADMISSION", "settlement requires a session without prior agent work");
+    }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new PiManagedSessionError("INVALID_ADMISSION", "settlement timeout must be positive");
+    }
+    let settle!: () => void;
+    let rejectSettlement!: (error: PiManagedSessionError) => void;
+    const observed = new Promise<void>((resolve, reject) => {
+      settle = resolve;
+      rejectSettlement = reject;
+    });
+    this.#settlement = { started: false, untrustedFinalText: null, resolve: settle, reject: rejectSettlement };
+    const activeSettlement = this.#settlement;
+    const accepted = this.#accepted("prompt", { type: "prompt", message });
+    this.#exclusiveTaskUsed = true;
+    const timer = setTimeout(() => {
+      this.#settlement?.reject(new PiManagedSessionError("SETTLEMENT_TIMEOUT", "agent_settled was not observed"));
+      this.#settlement = undefined;
+    }, timeoutMs);
+    try {
+      const [command] = await Promise.all([accepted, observed]);
+      return Object.freeze({
+        status: "protocol-settled-not-result" as const,
+        accepted: command,
+        untrustedFinalText: activeSettlement.untrustedFinalText,
+      });
+    } finally {
+      clearTimeout(timer);
+      this.#settlement = undefined;
+    }
   }
 
   steer(message: string): Promise<PiAcceptedCommand> {
@@ -298,6 +345,8 @@ export class PiManagedSession {
     const error = new PiManagedSessionError("SESSION_CLOSED", reason);
     for (const pending of this.#pending.values()) pending.reject(error);
     this.#pending.clear();
+    this.#settlement?.reject(error);
+    this.#settlement = undefined;
   }
 
   async #accepted(
@@ -317,6 +366,9 @@ export class PiManagedSession {
       return Promise.reject(
         new PiManagedSessionError("INVALID_RESPONSE", "outgoing command type is required"),
       );
+    }
+    if (type === "prompt" || type === "steer" || type === "follow_up") {
+      this.#priorPromptCommand = true;
     }
     const id = `gogoke-pi-${++this.#nextRequest}`;
     const bytes = new TextEncoder().encode(`${JSON.stringify({ ...command, id })}\n`);
@@ -344,6 +396,26 @@ export class PiManagedSession {
     }
     const frozen = deepFreeze(value);
     if (frozen.type !== "response") {
+      if (frozen.type === "agent_start" || frozen.type === "agent_end" || frozen.type === "agent_settled") {
+        this.#priorAgentRun = true;
+      }
+      if (frozen.type === "agent_start") {
+        if (this.#settlement !== undefined) this.#settlement.started = true;
+      } else if (frozen.type === "message_end" && this.#settlement?.started === true) {
+        const message = frozen.message;
+        if (isRecord(message) && message.role === "assistant" &&
+            message.stopReason === "stop" && Array.isArray(message.content)) {
+          const text = message.content.filter((part) => isRecord(part) && part.type === "text")
+            .map((part) => typeof (part as JsonRecord).text === "string" ? (part as JsonRecord).text as string : "")
+            .join("");
+          if (text.length > 0 && Buffer.byteLength(text, "utf8") <= 32 * 1024) {
+            this.#settlement.untrustedFinalText = text;
+          }
+        }
+      } else if (frozen.type === "agent_settled" && this.#settlement?.started === true) {
+        this.#settlement.resolve();
+        this.#settlement = undefined;
+      }
       this.#options.onEvent?.(frozen);
       return;
     }
@@ -402,6 +474,9 @@ export class PiManagedSession {
 
   #requireDispatch(): void {
     if (this.#closed) throw this.#closedError();
+    if (this.#exclusiveTaskUsed) {
+      throw new PiManagedSessionError("DISPATCH_PAUSED", "exclusive Pi task has consumed this session");
+    }
     if (!this.#dispatchOpen) {
       throw new PiManagedSessionError("DISPATCH_PAUSED", "Pi dispatch admission is paused");
     }

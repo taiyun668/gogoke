@@ -1,0 +1,49 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-043",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "f0b25acfb7b3aa34952526691649a647074bae8c",
+  "reason": "R2-02_OWNER_TEST_LEDGER_SCOPE_AND_REMOTE_DIAGNOSTIC",
+  "current_main": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+  "authorization": "CURRENT_S1_R4_V2_MANIFEST_AND_OWNER_RECEIPT_UNCHANGED",
+  "package": "R2-02_WIP",
+  "owner_test_ledger_scope": {
+    "repository": "taiyun668/gogoke",
+    "branch": "s1-r4-ledger-test/r2-02",
+    "allowed_packages": ["R2-02", "R2-03"],
+    "test_only": true,
+    "no_main_write": true,
+    "no_merge_to_main": true,
+    "no_release": true,
+    "no_production_ledger_or_adoption_claim": true,
+    "source_fixture_scope": "apps/desktop/test-fixtures/s1-r4/**"
+  },
+  "external_action": {
+    "kind": "TEST_LEDGER_BRANCH_CREATE_AND_DIAGNOSTIC_WRITE_READBACK",
+    "branch_base": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+    "branch_head": "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+    "commit_parent": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+    "commit_tree": "e06529bcb7adfff20a81bf72cef18a1da1cde289",
+    "fact_path": "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-source-reference.json",
+    "fact_blob": "a20115fdd5acf9e7e5025c3b3ca50696001badac",
+    "fact_sha256": "b57db8a5fec4d9a4a09ca1e356c865017f88473916c5debeefa0ca2d87b08d08",
+    "source_path": "apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json",
+    "source_blob": "0670d5d49247df2fc520740f7044babe579b60c4",
+    "source_sha256": "268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e",
+    "state": "REMOTE_EXACT_REF_COMMIT_BLOB_READBACK_VERIFIED",
+    "nonclaim": "Controller diagnostic source reference only; not a Gogoke product task Result, accepted fact, adoption, Goal Acceptance, candidate, or release."
+  },
+  "r2_02_product_task": "NOT_RUN",
+  "r2_02_product_git_write_readback": "NOT_RUN",
+  "r2_02_adoption": "NOT_RUN",
+  "r2_01_cloud_run": 35889725090,
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate": "NOT_CUT",
+  "architecture_blocker": "NO",
+  "next_action": "Continue R2-02 product code on the execution branch: connect bounded native process custody and Pi JSONL stdio from the actual entry, distinguish prompt ACK and agent_settled from validated task completion, produce Result/Outcome/Evaluation/isolated Dream draft, then use only the designated test ledger branch for product Git write/readback with exact source and target permission checks."
+}

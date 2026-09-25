@@ -1,0 +1,71 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-077",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "985e17d1ffdb19ef05ca5f6bc0a8970a66df3f0d",
+  "recorded_utc": "2026-09-24T23:11:06Z",
+  "reason": "R2_05_EXACT_CLOUD_CANDIDATE_AND_FRESH_AUDIT_BOUNDARY",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "main_drift": "Only AGENTS.md changed since the preceding observed main; its calculate-the-path-first rule was reread and applied. No production merge from main was needed.",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-05_FROZEN_SOURCE_CANDIDATE_NOT_ACCEPTED",
+  "candidate": {
+    "source_sha": "985e17d1ffdb19ef05ca5f6bc0a8970a66df3f0d",
+    "state": "FROZEN_FOR_REMAINING_EVIDENCE_NOT_ACCEPTED",
+    "desktop_run": 36066910163,
+    "unsigned_package_artifact_id": 10837862139,
+    "unsigned_package_artifact_name": "gogoke-windows-unsigned",
+    "installer_sha256": "5bf0e841a94a6a9127d435d13d20cd516c4d90d85b64500a59964ad61cd33f45",
+    "portable_zip_sha256": "b053d0faf9bfe004cf311dcedc52e1a05956e0dc2b5859a81f462d6e809ac4cb",
+    "installed_app_sha256": "333c56ea63da2c1ded3a260a2db546618ebcc38af7393a02b509ac549147ed1d",
+    "native_host_sha256": "a3854c8146fb8df3a8dbf0bbc6fb2bdec0512f87970f6a45a5c9f09b99178648",
+    "node_runtime_sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50",
+    "service_entry_sha256": "e266112f295e1f764a6af36232ac57e2fe1dee20fb674696915665822d2200fc"
+  },
+  "executed_evidence": {
+    "native_server_cloud": "workflow_dispatch run 36066883566 checked out exact candidate SHA; server 589/589 PASS, native lib 402/402 PASS, two real-process axes and six focused probes PASS, zero skips; artifacts 10837047121 and 10837251785.",
+    "desktop_cloud": "workflow_dispatch run 36066910163 checked out exact candidate SHA; frontend, dependency notices, unsigned NSIS, update/readiness/rollback, installed Medium Tauri product path and component negatives PASS; inventory artifact 10837867147 and unsigned package artifact 10837862139.",
+    "installed_scope": "Windows cloud installed Home -> Tauri command -> installed T3-derived service -> native-host; fixed test task reached Outcome/Evaluation/Dream without adoption. Node, native-host and active service-start failures rejected readiness. Service-file-absent was NOT_RUN.",
+    "public_source_hygiene": "PR-associated run 36066881146 SUCCESS; PR event may use a synthetic merge checkout and is not substituted for the two exact workflow_dispatch runs.",
+    "fresh_all_axis_audit": "Independent risk auditor inspected V01-V08 at the candidate SHA. V06 main-EXE hash finding was withdrawn after an independent byte calculation; V03 real product GitHub write, selected recovery/mutation axes, Owner Win11 and external review remain NOT_RUN.",
+    "mutation": "On exact candidate bytes, temporarily omitted the production Git ref update's final authority recheck in gitFactWrite.ts. Focused gitFactWrite.test.ts exited 1 with 2 failed/8 passed, including the revoked-authority negative. Restored the original 6ec953ccf8ba9c48f0f6a4c38eb078d4279b764dfbae3837283b96d9951ca2e1 file SHA-256; same focused test exited 0 with 10/10. No mutation was committed or pushed; this is one V03 sub-axis only."
+  },
+  "tauri_nsis_main_executable_identity": {
+    "finding": "RESOLVED_EXPECTED_BUNDLE_PATCH_NO_PRODUCT_CHANGE",
+    "source": "Locked tauri-cli-v2.10.1 tauri-bundler bundle.rs patches one main-binary token from __TAURI_BUNDLE_TYPE_VAR_UNK to __TAURI_BUNDLE_TYPE_VAR_NSS for NSIS, then restores the unsigned source binary.",
+    "actual_log": "run 36066910163 printed Patching gogoke.exe with bundle type information: nsis",
+    "portable_app_sha256": "9a7a11591b53400c57f8c312bc97a238f95eb3a39728a5d11b2101745180a86b",
+    "portable_token_count": 1,
+    "patched_sha256": "333c56ea63da2c1ded3a260a2db546618ebcc38af7393a02b509ac549147ed1d",
+    "installed_sha256": "333c56ea63da2c1ded3a260a2db546618ebcc38af7393a02b509ac549147ed1d",
+    "independent_audit_disposition": "RA-V06-01_WITHDRAWN; V06 cloud packaging/installed evidence PASS"
+  },
+  "evidence_limits": [
+    "Current candidate has no real installed-product GitHub test-ledger write/readback; cloud product tests use testWritePort, and the old test branch commits belong to earlier source. V03 remains partial/NOT_RUN as a full axis.",
+    "The authorized test branch may hold only test drafts and must not be merged into main or presented as adoption or Goal Acceptance. The existing accepted PR fact reader is a distinct read-only proof.",
+    "Root-loss evidence rejects missing coordination DB with marker retained and reads the Git source independently; accepted-result recovery from the same installed product root, WAL-only and full-root-loss cases remain NOT_RUN.",
+    "Other production mutations and the Owner Windows 11 Smart App Control enforced installed operation remain NOT_RUN; cloud Windows Server cannot satisfy that axis.",
+    "External Claude cross-model review, Owner final decision, offline manifest signature and public release remain NOT_RUN or NOT_AUTHORIZED."
+  ],
+  "reflection_on_route": "Calculate the path before editing: exact workflow_dispatch checkout avoids relying on PR synthetic merge SHA; the locked Tauri bundle source plus a three-byte token calculation resolved the executable hash without another cloud build or a new detector. Earlier native test failure arose from an undeclared serde_json test dependency and was fixed within the affected test; a manifest check before dispatch would have avoided that CI round trip.",
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_NOT_MERGED_AT_CANDIDATE_SOURCE_SHA",
+  "architecture_blocker": "NO_CONFIRMED_ARCHITECTURE_BLOCKER",
+  "external_action": "NO_MAIN_WRITE_NO_PR_MERGE_NO_RELEASE_NO_TEST_LEDGER_WRITE_THIS_TURN; exact cloud workflow_dispatch runs completed",
+  "workspace": {
+    "git_tree_before_checkpoint": "CLEAN",
+    "retained_evidence_copies": ["%TEMP%/gogoke-r205-36060049869", "%TEMP%/gogoke-r205-36060709537"],
+    "retained_copy_owner": "Codex Construction Controller",
+    "retained_copy_reason": "Read-only failed-run evidence; automatic approval review previously rejected local recursive cleanup.",
+    "retained_copy_cleanup_condition": "Delete only through a permitted local cleanup action after verifying each exact temp path; do not commit the copies."
+  },
+  "next_action": "Keep source candidate 985e17d1 pinned and PR #27 Draft. Use artifact 10837862139 for Owner Windows 11 Smart App Control enforced installed product test; record per-executable identity, test-only product Git write/readback and restart/replay, then obtain fresh external Claude review through Parallel Inbox. Resolve any actual finding at a new exact source SHA with fresh cloud evidence. Preserve V03/V04/V05/V07/V08 NOT_RUN limits until their own evidence exists; no adoption, main merge or release without Owner decision."
+}

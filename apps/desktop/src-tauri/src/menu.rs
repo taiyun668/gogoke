@@ -335,7 +335,18 @@ pub(crate) fn handle_menu_event<R: tauri::Runtime>(
                 let _ = window.set_focus();
                 return;
             }
-            let _ = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into()))
+            #[cfg(target_os = "windows")]
+            let url = if app.try_state::<crate::resource_trust::ResourceState>().is_some() {
+                WebviewUrl::CustomProtocol(
+                    reqwest::Url::parse("gogoke-resource://localhost/index.html")
+                        .expect("fixed gogoke resource URL"),
+                )
+            } else {
+                WebviewUrl::App("index.html".into())
+            };
+            #[cfg(not(target_os = "windows"))]
+            let url = WebviewUrl::App("index.html".into());
+            let _ = WebviewWindowBuilder::new(app, "about", url)
                 .title("About gogoke")
                 .resizable(false)
                 .inner_size(360.0, 240.0)

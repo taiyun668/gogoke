@@ -1,0 +1,47 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-044",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "f8b8cf25c58020f70c90b5591e89a0b11c04edb7",
+  "reason": "R2-02_PI_SETTLEMENT_OBSERVATION_INCREMENT",
+  "current_main": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+  "authorization": "CURRENT_S1_R4_V2_MANIFEST_AND_OWNER_RECEIPT_UNCHANGED",
+  "package": "R2-02_WIP",
+  "changed_files": [
+    "third_party/t3code/apps/server/src/gogoke/adapters/pi/index.ts",
+    "third_party/t3code/apps/server/src/gogoke/adapters/pi/session.ts",
+    "third_party/t3code/apps/server/src/gogoke/adapters/pi/types.ts",
+    "third_party/t3code/apps/server/src/gogoke/adapters/pi/piAdapter.test.ts"
+  ],
+  "increment": "A fresh exclusive Pi session can observe agent_start followed by agent_settled after prompt ACK. agent_end and stream closure do not become a task Result. The returned marker is protocol-settled-not-result. This is adapter behavior, not yet a production-reachable R2-02 task.",
+  "protocol_source": "earendil-works/pi@d1230ea2000d876b479a69b8b061f9d670f262f5:packages/coding-agent/docs/rpc.md",
+  "evidence": {
+    "local_pi_adapter_test": "15_PASS_0_FAIL",
+    "local_targeted_typescript": "PASS",
+    "full_local_server_typecheck": "NOT_PASS_UNRELATED_SCRIPTS_LIB_MISSING_FILTERED_WORKSPACE_DEPENDENCIES",
+    "cloud_native_server_run": 35893231230,
+    "cloud_checkout_sha": "f8b8cf25c58020f70c90b5591e89a0b11c04edb7",
+    "cloud_server": "PASS_45_FILES_9_NODE_36_VITE_542_EXECUTED_542_PASS_0_SKIP",
+    "cloud_native_host": "PASS_RELEASE_BUILD_2_REAL_PROCESS_AXES_3_FOCUSED_PROBES_384_LIB_TESTS_0_SKIP",
+    "desktop_browser_at_code_sha": "PASS_RUN_35893228159",
+    "source_hygiene_at_code_sha": "PASS_RUN_35893228065",
+    "desktop_nsis_at_code_sha": "IN_PROGRESS_RUN_35893228159",
+    "product_controlled_task": "NOT_RUN",
+    "product_result_outcome_evaluation_dream": "NOT_RUN",
+    "product_git_write_readback": "NOT_RUN"
+  },
+  "test_ledger_branch": {
+    "head": "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+    "state": "TEST_ONLY_DIAGNOSTIC_SOURCE_REFERENCE_NO_ADOPTION"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate": "NOT_CUT",
+  "architecture_blocker": "NO",
+  "retained_local_work": "The isolated Codex construction clone, ignored locked JavaScript dependencies, and downloaded CI evidence are held for ongoing R2-02 work; Codex owns cleanup at final custody handoff.",
+  "next_action": "Connect the existing native-host ProcessCustodian to a bounded product task operation with explicit stdio handle inheritance, current native admission and durable custody. Run a test-only Pi protocol process through that real path, then validate its report before producing Outcome/Evaluation/Dream draft and product Git fact write/readback on the designated test ledger branch."
+}

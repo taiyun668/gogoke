@@ -23,6 +23,7 @@ use super::same_open::{OpenLedger, SameOpenError, VerifiedDatabaseConnection};
 use super::session::{open_product_database, serve_authenticated_pipe, serve_lines, serve_pipe};
 use crate::ipc::PrivatePipeConnection;
 use crate::root::RootLock;
+use crate::process::ProcessCustodian;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -33,6 +34,7 @@ type Result<T> = std::result::Result<T, OrchestrationError>;
 pub struct ProductDatabase<'root> {
     connection: VerifiedDatabaseConnection<'root>,
     owner: OwnerIssuer,
+    process_custodian: ProcessCustodian,
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -47,10 +49,12 @@ impl<'root> ProductDatabase<'root> {
         authority::initialize_authorized_task_package_schema(&mut connection)?;
         authority::initialize_session_lineage_schema(&mut connection)?;
         authority::initialize_execution_recipe_schema(&mut connection)?;
+        authority::initialize_process_custody_schema(&mut connection)?;
         // Reopen the already-persisted bootstrap identity, not a second owner or
         // grant store. initialize_profile checks the exact retained database pin.
         let owner = authority::initialize_profile(&mut connection, root)?;
-        Ok(Self { connection, owner })
+        let process_custodian = ProcessCustodian::new()?;
+        Ok(Self { connection, owner, process_custodian })
     }
 
     pub fn serve_pipe(&mut self, pipe: &PrivatePipeConnection) -> Result<()> {
@@ -62,7 +66,7 @@ impl<'root> ProductDatabase<'root> {
         pipe: &PrivatePipeConnection,
         service_capability: &str,
     ) -> Result<()> {
-        serve_authenticated_pipe(&mut self.connection, &self.owner, pipe, service_capability)
+        serve_authenticated_pipe(&mut self.connection, &self.owner, &mut self.process_custodian, pipe, service_capability)
     }
 
     pub fn serve_lines<R: BufRead, W: Write>(&mut self, input: R, output: &mut W) -> Result<()> {
@@ -70,7 +74,11 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        self.connection.close_checked()
+        let Self { connection, owner: _, process_custodian } = self;
+        // Closing the Job first prevents a child from outliving the active
+        // coordination database. Unresolved rows stay UNKNOWN on recovery.
+        drop(process_custodian);
+        connection.close_checked()
     }
 
     // Trusted in-process composition ONLY. These are not IPC operations and do

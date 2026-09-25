@@ -70,6 +70,68 @@ pub(crate) struct ObjectiveOutcomeVersion {
     pub canonical_outcome: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct R2ObjectiveFactRefs {
+    pub manifest_hash: String,
+    pub manifest_content_hash: String,
+    pub decision_content_hash: String,
+    pub action_completion_hash: String,
+    pub action_completed_at: String,
+}
+
+/// Reads the current, same-domain test facts needed by Objective Outcome.
+/// Every hash is derived from native durable records; the service cannot
+/// substitute a report hash, stale Decision or a bare transport ACK.
+pub(crate) fn read_r2_objective_fact_refs(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    action_completion_ref: &str,
+) -> Result<R2ObjectiveFactRefs> {
+    identifier(action_completion_ref)?;
+    transaction::run(connection, |tx| {
+        let domain = "domain-r2-02-test";
+        let actions = tx.query(
+            "SELECT operation_id FROM main.gogoke_action_completion_receipts WHERE domain_id=? AND receipt_id=? AND disposition='COMPLETED'",
+            &[domain, action_completion_ref], 1)?;
+        if actions.len() != 1 { return denied(); }
+        let (action_id, manifest_id, decision_id) = match actions[0][0].as_str() {
+            "opr_22222222222222222222222222222222" =>
+                ("opr_22222222222222222222222222222222", "manifest-r2-02-test", "decision-r2-02-test"),
+            "opr_33333333333333333333333333333333" =>
+                ("opr_33333333333333333333333333333333", "manifest-r2-03-test", "decision-r2-03-test"),
+            _ => return denied(),
+        };
+        let manifest_hash = super::context_manifest::resolve_current_manifest_in_transaction(
+            tx, domain, manifest_id)?;
+        let (manifest_content_hash, _) = validate_manifest(
+            tx, domain, manifest_id, "1", &manifest_hash)?;
+        let decision = read_in_transaction(tx, domain, decision_id)?;
+        if decision.decision_id != decision_id ||
+            decision.object_version != "1" ||
+            decision.action_intent_ref != action_id ||
+            decision.record.family != "CONTEXT_SELECTION" {
+            return denied();
+        }
+        let (state, action_completion_hash, _) = completion(
+            tx, domain, action_id, action_completion_ref)?;
+        if state != "COMPLETED" {
+            return denied();
+        }
+        let completion_time = tx.query(
+            "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND receipt_id=? AND receipt_type='ActionCompletionRecorded'",
+            &[domain, action_completion_ref], 1)?;
+        if completion_time.len() != 1 || completion_time[0][0].is_empty() {
+            return denied();
+        }
+        Ok(R2ObjectiveFactRefs {
+            manifest_hash,
+            manifest_content_hash,
+            decision_content_hash: decision.decision_content_hash,
+            action_completion_hash,
+            action_completed_at: completion_time[0][0].clone(),
+        })
+    })
+}
+
 fn hash(value: &str) -> Result<()> {
     if value.len() != 71
         || !value.starts_with("sha256:")

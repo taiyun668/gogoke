@@ -74,15 +74,26 @@ fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, DreamObjectRef,
         recorded_at: "2026-09-22T00:00:00Z".into(), record, resource_reservation_ref: "capacity-lease-one".into(), action_intent_ref: action.into(), required_capacity_units: 1,
     }).unwrap();
 
-    let manifest_body = object(vec![s("domainId", "domain-one"), s("labelSource", "CONTEXT_MANIFEST"), s("manifestId", "manifest-one"), s("revision", "1")]);
-    let manifest_hash = seed_record(&mut db, "domain-one", "ContextManifest", "manifest-one", "1", "ContextManifestCommitted", "ContextManifestCommitted", manifest_body.into_bytes(), "manifest-event", "manifest-receipt", "manifest-op");
+    let manifest_body = object(vec![s("domainId", "domain-one"), s("manifestId", "manifest-one")]);
+    let manifest_hash = content_hash(manifest_body.as_bytes());
+    let manifest_record = object(vec![s("domainId", "domain-one"), s("manifestHash", &manifest_hash), s("manifestId", "manifest-one")]);
+    let manifest_record_hash = content_hash(manifest_record.as_bytes());
+    assert_ne!(manifest_hash, manifest_record_hash, "Manifest body and object hashes must stay distinct");
+    commit_domain_record(&mut db, DomainRecordInput {
+        domain_id: "domain-one".into(), object_type: "ContextManifest".into(), object_id: "manifest-one".into(), object_version: "1".into(), object_bytes: manifest_record.into_bytes(), native_identity: None,
+        event_id: "manifest-event".into(), stream_id: "gogoke.context-manifest.v1/manifest-one".into(), expected_previous_counter: None, counter: "0".into(),
+        event_type: "ContextManifestCommitted".into(), occurred_at: "2026-09-22T00:00:00Z".into(),
+        event_bytes: object(vec![s("manifestHash", &manifest_hash), s("manifestId", "manifest-one"), s("operationId", "manifest-op")]).into_bytes(),
+        receipt_id: "manifest-receipt".into(), operation_id: "manifest-op".into(), receipt_type: "ContextManifestCommitted".into(), recorded_at: "2026-09-22T00:00:00Z".into(),
+        receipt_bytes: object(vec![s("manifestHash", &manifest_hash), s("schema", "gogoke.context-manifest-commit.v1")]).into_bytes(),
+    }).unwrap();
     super::transaction::run(&mut db, |tx| tx.write(
         "INSERT INTO gogoke_context_assembly_snapshots(operation_id,principal_id,seat_id,task_id,session_id,domain_id,binding_id,binding_generation,source_epoch,runtime_instance_id,task_revision,policy_revision,auth_revision,revocation_head,selection_decision_id,manifest_id,admission_action_operation_id,admission_digest,max_content_bytes,max_candidates) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         &["manifest-op","principal-one","seat-one","task-one","session-one","domain-one","binding-one","7","epoch-one","runtime-one","1","1","1","revocation-one","decision-one","manifest-one",action,&snapshot.action_digest,"10000","32"])).unwrap();
-    let manifest_ref = DreamObjectRef { object_type: "ContextManifest".into(), object_id: "manifest-one".into(), revision: "1".into(), content_hash: manifest_hash };
+    let manifest_ref = DreamObjectRef { object_type: "ContextManifest".into(), object_id: "manifest-one".into(), revision: "1".into(), content_hash: manifest_record_hash };
 
     let outcome_body = object(vec![s("decisionHash", &committed.replay.decision_content_hash), s("decisionId", "decision-one"), s("decisionRevision", "1"), s("domainId", "domain-one"),
-        s("labelSource", "OBJECTIVE"), s("manifestHash", &manifest_ref.content_hash), s("manifestId", "manifest-one"), s("manifestVersion", "1"), s("outcomeId", "objective-one"), s("revision", "1")]);
+        s("labelSource", "OBJECTIVE"), s("manifestHash", &manifest_hash), s("manifestId", "manifest-one"), s("manifestVersion", "1"), s("outcomeId", "objective-one"), s("revision", "1")]);
     let outcome_hash = content_hash(outcome_body.as_bytes());
     let outcome_event = object(vec![s("contentHash", &outcome_hash), s("outcomeId", "objective-one"), ("previousHash", "null".into()), s("revision", "1")]);
     commit_domain_record(&mut db, DomainRecordInput {

@@ -48,15 +48,18 @@ describe("native Decision typed codec",()=>{
   it("decodes committed and durable replay replies without rewriting history",()=>{
     const committed=decodeDecisionCommitReply('{"kind":"committed","operationId":"decision-op","decisionReceiptId":"receipt-one"}');
     Assert.equal(committed.kind,"committed");
-    const replay=decodeDecisionCommitReply(JSON.stringify({kind:"replayed",operationId:"decision-op",decisionReceiptId:"receipt-one",record:commit().record}));
+    const durable={...commit().record,budgetUnits:"1",deadlineEpochMs:"1000"};
+    const replay=decodeDecisionCommitReply(JSON.stringify({kind:"replayed",operationId:"decision-op",decisionReceiptId:"receipt-one",record:durable}));
     Assert.equal(replay.kind,"replayed");
-    if(replay.kind==="replayed"){Assert.equal(replay.record.choice,"candidate-one");Assert.equal(Object.isFrozen(replay.record),true);}
+    if(replay.kind==="replayed"){Assert.equal(replay.record.choice,"candidate-one");Assert.equal(replay.record.budgetUnits,1);Assert.equal(replay.record.deadlineEpochMs,1000);Assert.equal(Object.isFrozen(replay.record),true);}
   });
 
   it("rejects replay record mismatch, missing fields and extra aliases",()=>{
-    const record=commit().record;
+    const record={...commit().record,budgetUnits:"1",deadlineEpochMs:"1000"};
     Assert.throws(()=>decodeDecisionCommitReply(JSON.stringify({kind:"replayed",operationId:"other",decisionReceiptId:"r",record})),NativeHostClientError);
     Assert.throws(()=>decodeDecisionCommitReply(JSON.stringify({kind:"replayed",operationId:"decision-op",decisionReceiptId:"r",record:{...record,choice:null}})),NativeHostClientError);
+    Assert.throws(()=>decodeDecisionCommitReply(JSON.stringify({kind:"replayed",operationId:"decision-op",decisionReceiptId:"r",record:{...record,budgetUnits:1}})),NativeHostClientError);
+    Assert.throws(()=>decodeDecisionCommitReply(JSON.stringify({kind:"replayed",operationId:"decision-op",decisionReceiptId:"r",record:{...record,deadlineEpochMs:"01"}})),NativeHostClientError);
     Assert.throws(()=>decodeDecisionCommitReply(JSON.stringify({kind:"committed",operationId:"decision-op",decisionReceiptId:"r",extra:true})),NativeHostClientError);
   });
 

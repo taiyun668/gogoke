@@ -44,6 +44,48 @@ fn count(db: &VerifiedDatabaseConnection<'_>, sql: &str) -> String {
     value
 }
 
+#[test]
+fn exact_native_transport_hash_rejects_changed_or_missing_frames() {
+    let transport = TrustedActionTransportEvidence {
+        stop_proof_hash: format!("sha256:{}", "a".repeat(64)),
+        pid: "123".into(), creation_time_100ns: "456".into(),
+        binary_digest_sha256: format!("sha256:{}", "b".repeat(64)),
+        frames: vec!["ack\n".into(), "start\n".into(), "message\n".into(),
+            "end\n".into(), "settled\n".into()],
+    };
+    let mut evidence = TrustedActionCompletionEvidence {
+        domain_id: "domain-one".into(), operation_id: "operation-one".into(),
+        reservation_id: "reservation-one".into(), semantic_digest: format!("sha256:{}", "c".repeat(64)),
+        attempt_id: "attempt-one".into(), send_authority: "send-one".into(),
+        binding_id: "binding-one".into(), generation: "7".into(), source_epoch: "9".into(),
+        runtime_instance_id: "runtime-one".into(), native_request_id: "request-one".into(),
+        native_session_id: "session-one".into(), trusted_receipt_ref: String::new(),
+        evidence_hash: String::new(), disposition: ActionCompletionDisposition::Completed,
+    };
+    let material = format!("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        evidence.operation_id, evidence.attempt_id, evidence.send_authority,
+        evidence.native_request_id, transport.pid, transport.creation_time_100ns,
+        transport.binary_digest_sha256, evidence.semantic_digest, transport.stop_proof_hash,
+        evidence.native_session_id,
+        transport.frames.iter().map(|frame| format!("{}:{frame}", frame.len())).collect::<String>());
+    evidence.evidence_hash = content_hash(material.as_bytes());
+    evidence.trusted_receipt_ref = format!("native-receipt-{}", &evidence.evidence_hash[7..]);
+    assert!(transport_matches_receipt(&evidence, &transport));
+    let mut changed = transport.clone();
+    changed.frames[2].push('x');
+    assert!(!transport_matches_receipt(&evidence, &changed));
+    changed = transport.clone();
+    changed.frames[2].replace_range(0..1, "X");
+    assert!(!transport_matches_receipt(&evidence, &changed),
+        "same-length byte changes must not retain the trusted evidence hash");
+    changed = transport.clone();
+    changed.frames.pop();
+    assert!(!transport_matches_receipt(&evidence, &changed));
+    changed = transport.clone();
+    changed.stop_proof_hash.replace_range(7..8, "f");
+    assert!(!transport_matches_receipt(&evidence, &changed));
+}
+
 pub(crate) fn persist_manifest(db: &mut VerifiedDatabaseConnection<'_>, owner: &super::super::OwnerIssuer, action: &PrepareActionAuthority, semantic_digest: &str) -> String {
     use super::super::context_manifest::{commit_context_manifest, publish_context_assembly_snapshot, ContextAssemblySnapshot, ContextManifestCommitInput, ContextPartitionGrantBinding, ManifestExpectedVersion};
     use super::super::context_read::{ContextReadRequest, GranteeContextReadRequest};
@@ -458,6 +500,17 @@ fn current_atp_task_lineage_and_recipe_prepare_one_native_derived_reservation() 
         );
         assert_eq!(count(db,"SELECT state FROM main.gogoke_action_reservations WHERE operation_id='opr_11111111111111111111111111111111'"),"completed");
         assert_eq!(count(db,"SELECT count(*) FROM main.gogoke_action_completion_receipts WHERE operation_id='opr_11111111111111111111111111111111'"),"1");
+        assert!(read_reconciled_action_transport(db, &begin, "bounded instruction", &completed.receipt_id).is_err(),
+            "legacy completion without exact transport frames must stay unknown");
+        super::super::transaction::run(db, |tx| {
+            tx.write("INSERT INTO main.gogoke_action_transport_evidence(domain_id,operation_id,receipt_ref,evidence_hash,stop_proof_hash,pid,creation_time_100ns,binary_digest_sha256,frame0,frame1,frame2,frame3,frame4) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                &["domain-one", &begin.operation_id, "native-receipt-one", &format!("sha256:{}", "d".repeat(64)),
+                  &format!("sha256:{}", "a".repeat(64)), "123", "456", &format!("sha256:{}", "b".repeat(64)),
+                  "ack", "start", "message", "end", "settled"])?;
+            Ok(())
+        }).unwrap();
+        assert!(read_reconciled_action_transport(db, &begin, "bounded instruction", &completed.receipt_id).is_err(),
+            "fabricated or changed transport frames must not recover the old completion");
 
         // A typed completion projection cannot treat a corrupted canonical
         // object as valid replay evidence.

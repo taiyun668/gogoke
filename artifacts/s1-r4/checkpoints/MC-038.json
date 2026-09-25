@@ -1,0 +1,122 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-038",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "df12b54f29acd6def719b1b49127017da94a01ec",
+  "recorded_utc": "2026-09-23T11:58:00Z",
+  "reason": "HARD_STOP_RECOVERY_DESKTOP_CI_FIRST_FAILURE_CAPTURED",
+  "control_restart": {
+    "owner_hard_stop_recovered": true,
+    "authorization_revoked": false,
+    "plan_redesigned": false,
+    "rule": "Resume from current durable GitHub truth; do not reimplement correct R2-01 WIP."
+  },
+  "current_main": {
+    "head": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+    "latest_change": "PR #28 merged docs/governance/gpt-construction-window-rules.md only.",
+    "production_write_domain_conflict": "NONE"
+  },
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_pr": 21,
+    "authorization_merge_commit": "b762d3a8c6d043b57bd0f5458531fe0ab47ebeba",
+    "authorization_merged_by": "taiyun668",
+    "authorization_changed_files": 1,
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11",
+    "current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "construction": {
+    "package": "R2-01",
+    "state": "WIP_REAL_ENTRY_WIRED_COMPILE_FAILURE",
+    "current_execution_head": "df12b54f29acd6def719b1b49127017da94a01ec",
+    "latest_prior_checkpoint": "MC-037",
+    "commits_after_mc037": [
+      {
+        "sha": "cd095d48ff17de947ef4feaea98eaecb01f5a432",
+        "purpose": "MC-037 durable checkpoint commit"
+      },
+      {
+        "sha": "df12b54f29acd6def719b1b49127017da94a01ec",
+        "purpose": "Add cloud integration constraint that R2-01 probe leaves coordination project set empty"
+      }
+    ],
+    "pr27": {
+      "number": 27,
+      "state": "OPEN_DRAFT_WIP",
+      "exact_head": "df12b54f29acd6def719b1b49127017da94a01ec",
+      "merge_claim": false,
+      "candidate_claim": false
+    },
+    "preserved_wip": [
+      "T3-derived executable entry enters Gogoke composition rather than donor start/serve.",
+      "native-host exposes Product Authority identity.",
+      "Owner-backed Controller/Seat caller context is transaction-validated; pipe capability is not product permission.",
+      "Tauri product command and Home construction Goal + Git ledger reference are wired in source.",
+      "fixture is explicitly TEST_FIXTURE_NOT_ADOPTED.",
+      "current probe test constrains coordination project set to remain empty."
+    ]
+  },
+  "evidence": {
+    "source_hygiene": {
+      "run": 35853966815,
+      "exact_head": "df12b54f29acd6def719b1b49127017da94a01ec",
+      "state": "PASS",
+      "level": "CONFIGURED_PINNED_TEST"
+    },
+    "desktop_ci": {
+      "run": 35853966902,
+      "exact_head": "df12b54f29acd6def719b1b49127017da94a01ec",
+      "state": "FAIL",
+      "jobs": {
+        "browser_build_and_tests": "PASS",
+        "dependency_notices": "PASS",
+        "unsigned_windows_nsis": "FAIL"
+      },
+      "failed_job_id": 107160344301,
+      "failed_step": "Test the gogoke release verifier",
+      "command": "cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib",
+      "first_real_failure": {
+        "code": "E0433",
+        "file": "apps/desktop/src-tauri/src/lib.rs",
+        "line": 194,
+        "message": "failed to resolve: could not find __cmd__gogoke_r2_goal_probe in public_runtime",
+        "related_warning": "pub(crate) use product_entry::gogoke_r2_goal_probe is unused in public_runtime/mod.rs"
+      },
+      "nonclaim": "Installer/build steps after the failing Rust compile were skipped; desktop axis is not PASS."
+    },
+    "native_host_cloud_axis": {
+      "state": "NOT_RUN_CURRENT_HEAD",
+      "basis": "No gogoke native-host CI run is associated with exact execution HEAD via current commit workflow evidence.",
+      "nonclaim": "Existing workflow/test source is not execution evidence and Windows Server evidence would not replace Owner Win11 acceptance."
+    }
+  },
+  "parallel_inbox": {
+    "previous_checkpoint_observed_head": "32384a8ba20c5695acf837c104b59df5dbf50ab5",
+    "observed_head_before_mc038": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "head_changed": true,
+    "new_entries": [],
+    "classification": "INBOX_HEAD_CHANGED_NO_NEW_ENTRIES",
+    "explanation": "Current control HEAD is the prior controller-only ack commit; index contains zero entries. No report/evidence was loaded and control branch was not modified."
+  },
+  "v2_evidence_levels": {
+    "V01": {
+      "state": "IN_PROGRESS_NO_PASS_CLAIM",
+      "highest_observed": "CONFIGURED_PINNED_TEST_PARTIAL",
+      "facts": "Authorization/manifest binding is current; exact-head source hygiene and browser build/tests executed. Full V01 remains unsettled."
+    },
+    "V02": {
+      "state": "IN_PROGRESS_NO_PASS_CLAIM",
+      "highest_observed": "CONFIGURED_TEST_WITH_CONTROLLED_PLATFORM_COMPILE_FAILURE",
+      "facts": "Production-reachable Tauri/service/native source seam exists, but Windows Rust compile currently fails before product path execution."
+    },
+    "V03": {
+      "state": "IN_PROGRESS_NO_PASS_CLAIM",
+      "highest_observed": "SOURCE_AND_CONFIGURED_TEST_ONLY",
+      "facts": "No accepted-fact Git/GitHub adoption/rebuild flow has executed in R2-01; coordination non-pollution constraint exists but current native/server cloud integration is not executed."
+    }
+  },
+  "architecture_blocker": "NO",
+  "exact_next_action": "Fix only the current-byte Tauri command macro visibility/path failure for gogoke_r2_goal_probe (__cmd__ symbol resolution), push durable WIP, then read exact replacement PR #27 desktop CI. Do not broaden into R2-04 packaging or unrelated cleanup."
+}

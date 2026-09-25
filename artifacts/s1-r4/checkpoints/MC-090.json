@@ -1,0 +1,49 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-090",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "13d95c7d687dc67cdb20c6c3966ccd223d80a075",
+  "recorded_utc": "2026-09-25T10:37:00Z",
+  "reason": "R2_06_DUAL_BUILD_METADATA_DRIFT_AND_LOCK_HANDOFF_WIP",
+  "current_main": "56536f4ab850bc8b962456f95f5d0f2162d0c43a",
+  "authorization": "Current main retains v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac. The later main change adds a source inventory document and does not change these bytes.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "execution_remote_before_push": "d0f0f8bc9047d063ee1fed350eb5441cbff6779a",
+  "pr27": "OPEN_DRAFT_NOT_MERGED at remote d0f0f8bc before this checkpoint push.",
+  "pr34": "OPEN_NOT_MERGED; Owner-held R2-05 remains WIP.",
+  "pr37": "OPEN_DRAFT_NOT_MERGED at b032caefcc801f6d71457b56418b065c4fd1847a; trusted signer source and CI checks passed, external Claude review and main landing NOT_RUN.",
+  "wip_implemented_since_mc089": [
+    "Commit b14646a6 fixes the Windows Cargo and Tauri shell versions at 0.0.0 and exposes signed product version through the native command. Commit 3244bcc2 restores the non-Windows About release version from the base Tauri config and keeps Codex daemon handshake on the fixed Cargo protocol version. The actual new PE bytes are not yet measured.",
+    "Commit 8f918fb3 retains the full-update coordinator's original exclusive lifecycle file handle across NSIS launch, wait, readiness and rollback. STARTUPINFOEX passes one inheritable duplicate only to the created current-user NSIS process; NSIS binds the received handle to the physical sibling lock path and rejects missing, changed or reparse objects before modifying the installation. Ordinary direct install keeps its separate exclusive open. A focused read-only source audit found and then rechecked a volume-root path append defect, now fixed. Actual handoff and concurrent installer behavior remain NOT_RUN.",
+    "Commit 13d95c7d removes pnpm's generated node_modules/.modules.yaml from the staged T3 runtime after physical-file checks. Node runtime resolution uses package directories; the existing T3 CLI archive path also removes pnpm bookkeeping. The next independent cloud build will test whether this removes the measured index drift."
+  ],
+  "executed_evidence": {
+    "desktop_ci_diagnostic_removal": "Run 36121183429 at exact remote d0f0f8bc9047d063ee1fed350eb5441cbff6779a: Browser build/tests PASS, dependency notices PASS, both independent clean Windows build lanes PASS with native release/resource tests and NSIS packaging. Final byte comparison FAIL; no reproducibility PASS is claimed.",
+    "first_comparison_failure": "The exact comparison job 108037032516 reported resource-index.json as the first differing file. Downloaded frozen artifact 10859321470 and repro artifact 10858791434 show exactly one index field difference: installedFiles[6] is gogoke-service/node_modules/.modules.yaml, equal length 19785 but SHA-256 410f99f933163df67f79e98847e186911b3dd9719fa020b307ba70bddec351e3 versus 7ef1ab0eb1dddd2f591736f84e7fbf16fca24df99fdde8aeb1d0a4bacf847bea. The raw shell, NSIS-patched shell, native-host, Node and resource pack hashes match across lanes; the package inventory and index do not. Local pnpm metadata contains prunedAt and absolute store paths, but the exact cloud file-byte difference was not extracted, so the volatile-field cause remains a hypothesis until the next run.",
+    "source_hygiene": "Run 36121183488 at d0f0f8bc9047d063ee1fed350eb5441cbff6779a: PASS. Later local commits require new exact-head evidence.",
+    "local_script_checks": "npm run check:product-identity PASS; npm run test:localization 9 PASS, 0 failed; PowerShell coordinator AST parse PASS; node --check on package-service PASS; git diff --check PASS. No local native build or native test was used as evidence.",
+    "focused_lock_review": "Sol/high read-only focused review found a volume-root parent-path append defect and no second definite source defect after the fix. It did not run NSIS, CreateProcess, installer rollback or concurrent competition.",
+    "candidate_signing_installed_product_sac": "NOT_RUN at this new source head; PR #37 is not landed on main and no candidate was signed or installed."
+  },
+  "open_findings": [
+    "The new source head has no cloud result. The .modules.yaml omission is an unverified fix hypothesis; rerun both clean lanes and inspect the first new failure or complete exact-byte report.",
+    "The Windows shell version must be read from the newly built PE and resource/version-only changes must leave shell and host bytes unchanged across source commits; both axes remain NOT_RUN at the new source head.",
+    "Full-update lifecycle lock inheritance, direct install fallback, copied-command replay rejection, failure/rollback, owner backup cleanup and installed --uninstall still need controlled cloud product evidence.",
+    "Uninstall still lacks installer-recorded shortcut identity, and partial owned-file deletion may prevent a retry. Resource-switch failure/crash rollback smoke remains NOT_RUN.",
+    "PR #37 requires external Claude review before main merge. The prior review-request PR comment was rejected by automatic approval review before posting; no alternate-channel retry was attempted.",
+    "Formal Owner signing, Owner Win11 SAC formal-install evidence, R2-05 final gates and PR #34 merge remain NOT_RUN or held."
+  ],
+  "path_first_reflection": "The prior source head did not change resource inputs, yet both clean lanes' package inventories differed. Downloading only the two named frozen artifacts and comparing parsed index fields localized the failure to one pnpm bookkeeping file, while the raw shell, host, Node and pack were stable. A repeated identical cloud run would not answer more. The existing T3 packaging precedent supports removing that non-runtime metadata at the one service staging seam; the next single cloud round checks that fix together with the Windows version and lifecycle-lock source changes, then stops at its first actual failure.",
+  "retained_custody": [
+    "The execution worktree is clean at local 13d95c7d before this checkpoint; it is four commits ahead of the remote execution ref. The next push will be an ordinary fast-forward; no force push or reset occurred.",
+    "%TEMP%/gogoke-r206-d0-compare-36121183429 holds the two downloaded public frozen artifacts for the exact index comparison. The outer artifact digests are sha256:59ce514a85a8d424565c8e77ef3e33dadd1e7cdb5a27ef403dce0c4a95cae01a and sha256:9fde5fe73d112ab8dc00957ed7919cd794e21722e1049aafbffc2d5e01cd8b87; clean after verifying target paths and preserving this finding.",
+    "Earlier public comparison and frozen artifact copies and the separate PR #37 signer worktree remain under MC-089 custody. MC-085 paths remain retained after the prior automatic cleanup rejection; no bypass was attempted."
+  ],
+  "external_action": "EXECUTION_PUSH_PENDING; NO_CANDIDATE_SIGNATURE; NO_OWNER_KEY_USE; NO_MAIN_MERGE; NO_PR34_MERGE; NO_RELEASE; PR37_REVIEW_REQUEST_AUTO_REVIEW_REJECTED",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Commit/push MC-090 and the three local code commits by ordinary fast-forward, verify the remote execution HEAD, then run exact-head cloud desktop/source-hygiene CI. Investigate the first real failure; if PASS, inspect PE FileVersion/ProductVersion and the executed six-file comparison. Continue the R2-06 owned shortcut, full-update backup and controlled rollback seams without claiming installed candidate or R2-05 acceptance."
+}

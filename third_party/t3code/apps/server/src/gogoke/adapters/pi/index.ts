@@ -15,4 +15,5 @@ export type {
   PiRpcByteSink,
   PiRpcDiagnostic,
   PiRpcDiagnosticCode,
+  PiSettledObservation,
 } from "./types.ts";

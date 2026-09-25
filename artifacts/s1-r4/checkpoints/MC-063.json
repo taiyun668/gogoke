@@ -1,0 +1,87 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-063",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "71c16e356a376e909351ff8d5ecb6eafabaaaba4",
+  "recorded_utc": "2026-09-24T13:43:25Z",
+  "reason": "R2_04_MEDIUM_TOKEN_PRODUCT_PATH_PASSED_EVIDENCE_WRITE_FAILED",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "owner_scope": "R2-04 only. PR27 stays OPEN/DRAFT/WIP. Stop after cloud packaging closure and durable handoff. Do not enter R2-05 or merge main.",
+  "cloud_evidence": {
+    "desktop_run": 36004854663,
+    "source_sha": "71c16e356a376e909351ff8d5ecb6eafabaaaba4",
+    "tested_merge_sha": "0e435b687005dfe7936a93d769c0d52b5ca60fc4",
+    "desktop_state": "FAIL",
+    "source_hygiene": {
+      "run": 36004854500,
+      "state": "PASS"
+    },
+    "browser_job": {
+      "id": 107650445889,
+      "state": "PASS"
+    },
+    "notices_job": {
+      "id": 107650445339,
+      "state": "PASS"
+    },
+    "nsis_job": {
+      "id": 107653356217,
+      "state": "FAIL",
+      "passed": [
+        "T3 locked bundle and deployment",
+        "pinned Node staging",
+        "native-host cloud build",
+        "package seal and complete license inventory",
+        "release verifier",
+        "unsigned installer build",
+        "portable byte verification",
+        "update/readiness/rollback smoke",
+        "installed resource byte identity",
+        "non-administrator cloud smoke launch",
+        "installed Tauri Home/WebView discovery",
+        "gogoke_r2_goal_probe through installed service/native-host",
+        "controlled Result/Outcome/Evaluation/Dream assertions",
+        "missing installed Node rejection at the same Tauri ingress"
+      ],
+      "first_failed_step": "26 Verify installed resource identity and read-only product entry",
+      "first_failure": "EPERM writing apps/desktop/generated/gogoke-package-hashes.json from the intentionally non-administrator smoke child after all product assertions passed",
+      "failure_log_lines": "2881-2907 in job log",
+      "final_smoke_verified_package_upload": "SKIPPED_NOT_PASS"
+    },
+    "inventory": {
+      "artifact_id": 10811446328,
+      "artifact_name": "gogoke-windows-package-inventory-0e435b687005dfe7936a93d769c0d52b5ca60fc4-36004854663",
+      "archive_digest": "sha256:6e4c99c5656fbf5eca74168e9112cb74752f541dd5fd67ac1bfa2b2f4d8c74ab"
+    }
+  },
+  "diagnosis": {
+    "classification": "CI_EVIDENCE_HANDOFF_BUG_NOT_PRODUCT_PATH_FAILURE",
+    "basis": "The medium-integrity child printed the non-administrator marker, completed installed byte verification, reached the manifest update after Tauri/Home/product/native assertions and missing-Node negative control, then failed because the lowered token cannot modify the elevated workspace file.",
+    "write_domain": [
+      "tools/ci/gogoke-package-service.mjs",
+      "tools/ci/gogoke-installed-smoke.ps1"
+    ],
+    "fix": "Have the non-administrator child write a bounded success receipt under its writable runner temp directory only after all assertions pass; have the parent verify that receipt and update the package inventory under the parent token. Do not change product code, installer bytes, assertions, or retry product operations."
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "evidence_limits": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "CONTROLLED_PLATFORM_PRODUCT_PATH_ASSERTIONS_PASSED_BUT_FINAL_EVIDENCE_WRITE_FAILED",
+    "owner_win11": "NOT_RUN",
+    "review_and_acceptance": "NOT_CLAIMED",
+    "local_native_compilation": "NOT_PERFORMED"
+  },
+  "architecture_blocker": "NO",
+  "next_action": "Implement only the parent/medium-child evidence handoff in the two named CI files, preserving all existing installed Tauri/service/native assertions and no-resend semantics. Push, read exact-head cloud run, and on full R2-04 package closure write exact run/job/artifact handoff checkpoint then STOP before R2-05."
+}

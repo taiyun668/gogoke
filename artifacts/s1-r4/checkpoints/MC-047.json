@@ -1,0 +1,55 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-047",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "45f107fbd9bb563af30be3ed9d9d369a91c68c92",
+  "reason": "R2-02_EXACT_HEAD_NATIVE_AND_SERVER_CLOUD_PASS",
+  "current_main": "be7e4d7e73e5afc3c9cd35df94b1168447d908d5",
+  "main_drift": "PR_30_EDITED_DIRECTION_CANDIDATES_ONLY;_NO_S1_R4_V2_CONTRACT_OR_AUTHORIZATION_CHANGE;_NO_MECHANICAL_MAIN_MERGE",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-02_WIP_NOT_DELIVERED",
+  "increment": [
+    "The test-only native Action current-facts producer is compiled into the native-host release image and has an executed unit test. Its product invocation and Action commitment/completion remain unwired.",
+    "The native Windows process fixture test now accepts the actual DOS short-path tilde in the runner temp path; both focused and full cloud axes passed at the exact source SHA.",
+    "An obsolete comment beside begin_committed_action was corrected after the cloud-tested SHA; this comment-only change is not claimed as cloud-tested bytes."
+  ],
+  "evidence": {
+    "cloud_run": 35915069531,
+    "exact_sha": "45f107fbd9bb563af30be3ed9d9d369a91c68c92",
+    "scope": "WINDOWS_SERVER_REAL_RUN_NOT_OWNER_WIN11",
+    "server": "PASS_51_FILES_10_NODE_41_VITE_563_EXECUTED_563_PASS_0_SKIP",
+    "native": "PASS_RELEASE_BUILD_2_REAL_PROCESS_AXES_6_FOCUSED_PROBES_388_LIB_TESTS_0_SKIP",
+    "machine_artifacts": [
+      "gogoke-server-evidence-45f107fbd9bb563af30be3ed9d9d369a91c68c92-35915069531-1",
+      "native-host-evidence-45f107fbd9bb563af30be3ed9d9d369a91c68c92-35915069531-1"
+    ],
+    "product_action_prepare_begin_completion": "NOT_RUN",
+    "product_outcome_evaluation_dream": "NOT_RUN",
+    "product_git_fact_write_readback": "NOT_RUN",
+    "owner_win11_installed_product": "NOT_RUN"
+  },
+  "test_ledger_branch": {
+    "head": "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+    "state": "TEST_ONLY_DIAGNOSTIC_SOURCE_REFERENCE_NOT_ADOPTED"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate": "NOT_CUT",
+  "architecture_blocker": "NO",
+  "external_action": "CLOUD_RUN_35915069531_SUCCESS;_NO_NEW_TEST_LEDGER_WRITE",
+  "workspace_retained": {
+    "owner": "Codex Construction Controller",
+    "paths_relative_to_execution_checkout": [".", "../gogoke-codex-evidence/run-35915069531-server", "../gogoke-codex-evidence/run-35915069531-native"],
+    "reason": "Active execution checkout and exact cloud machine-evidence copies",
+    "cleanup_condition": "After S1-R4 custody ends and the durable GitHub artifacts are confirmed retained or no longer required"
+  },
+  "next_action": "Wire the already existing Context/Decision/Recipe and Action prepare to the actual controlled native fixture path. Derive current Action facts from the exact ACTIVE custody, commit beginCommitted immediately before the sole protocol write, record trusted completion only after validated frames and durable stop. Then form Outcome/Evaluation/isolated Dream and write/read back a test-only Git fact on the Owner-authorized ledger branch through gh. Keep PR #27 Draft."
+}

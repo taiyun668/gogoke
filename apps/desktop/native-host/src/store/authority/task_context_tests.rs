@@ -46,6 +46,7 @@ fn fixture(test: impl FnOnce(&mut crate::store::same_open::VerifiedDatabaseConne
     std::fs::remove_file(&database).ok();
     std::fs::remove_file(format!("{}-wal", database.display())).ok();
     std::fs::remove_file(format!("{}-shm", database.display())).ok();
+    std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).ok();
     std::fs::remove_dir(path).ok();
 }
 

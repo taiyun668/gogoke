@@ -66,6 +66,14 @@ describe("Home", () => {
   it("shows the empty state when there are no latest runs", () => {
     render(<Home {...baseProps} />);
 
+    expect(
+      screen.getByText("Verify the Gogoke product entry reaches native Product Authority"),
+    ).toBeTruthy();
+    expect(screen.getByText("taiyun668/gogoke")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Verify local path" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run test and save draft" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run open fixture driver" })).toBeTruthy();
+    expect(screen.getByText("Construction fixture · not adopted")).toBeTruthy();
     expect(screen.getByText("No agent activity yet")).toBeTruthy();
     expect(
       screen.getByText("Start a thread to see the latest responses here."),

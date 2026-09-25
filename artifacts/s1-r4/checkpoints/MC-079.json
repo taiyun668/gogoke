@@ -1,0 +1,57 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-079",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "3b560bd5a1edcda14710767fa2b37aec643f6cd4",
+  "recorded_utc": "2026-09-25T00:32:28Z",
+  "reason": "R2_05_CLAUDE_F1_F5_REVIEW_REPAIR_AND_OWNER_MACHINE_CLEANUP_PREFLIGHT",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "owner_decision": "Owner authorized one test-result adoption PR to main, personal Owner merge, then installed-product accepted-fact readback; Owner also directed F5 cleanup after path, hash and data-byte verification. No agent main merge or release is authorized."
+  },
+  "package": "R2-05_F1_F5_REVIEW_REPAIR_IN_PROGRESS_NOT_ACCEPTED",
+  "source_candidate": "3b560bd5a1edcda14710767fa2b37aec643f6cd4",
+  "parallel_inbox": {
+    "observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+    "new_entry": "claude-r2-05-985e17d1",
+    "finding_state": {
+      "F1": "IN_PROGRESS_OWNER_MERGE_AND_PRODUCT_READBACK_NOT_RUN",
+      "F2": "REPAIRED_IN_SOURCE_CLOUD_NATIVE_PENDING",
+      "F3": "REPAIRED_IN_SOURCE_PRODUCT_NO_LOGIN_NOT_YET_EXECUTED",
+      "F4": "REPAIRED_IN_SOURCE_FOCUSED_REAUDIT_PENDING",
+      "F5": "BYTE_VERIFIED_CLEANUP_BLOCKED_BY_AUTOMATIC_APPROVAL_REVIEW"
+    }
+  },
+  "code_repair": "Explicit GitHub non-fast-forward rejection plus branch-absence readback permits exact native journal binding release and new-base retry. Public GitHub reads can omit gh credentials. gh execution uses fixed absolute canonical CLI paths, with the package root excluded. Home can read a merged test result by PR number and merge SHA without draft-write flags.",
+  "validation": {
+    "local_server_focused": "21 passed for F2/F3/F4 after latest repair; previous integrated selection had 29 passed and 2 existing native integration skips",
+    "local_desktop": "6 passed; TypeScript noEmit passed for Home including accepted-fact control",
+    "public_source_scan": "PASS: 24471 committed files, leaks=0",
+    "previous_source_native_server_run": "36076717704: FAIL at source 9f2d11db; server 51-file cloud job PASS, native full library 401 passed/1 failed because RejectR2TestFactWrite was absent from closed protocol list; focused Windows job-descendant probe timed out before child PID publication. Both failures remain failures, not PASS.",
+    "current_source_native_server_run": "36077605120: exact source 3b560bd5, IN_PROGRESS; server and native final machine results pending",
+    "current_source_desktop_run": "36077611859: exact source 3b560bd5, IN_PROGRESS; browser/build/package final results pending",
+    "focused_independent_audit": "9f2d11db review found F4 inherited environment root and incomplete package-root exclusion. Repair is in 3b560bd5; fresh focused reaudit pending."
+  },
+  "owner_machine_preflight": {
+    "installed_previous_app": "SHA256 f49fbd43e734b2f64782425e93504bd11e3a0e958d011902afb02143566227d9, matching MC-078; Gogoke process count 0",
+    "untracked_screenshot_copy": "Exact MC-078 file SHA256 0a0915f33b71456c7be68aab90f6b530c6a904747794290e9bc9ec955fcbaffb; not committed",
+    "candidate_download_stage": "Exact expected three files and MC-078 installer/portable hashes verified under %TEMP%",
+    "private_data_backup": "Exactly four files; current %APPDATA%/app.gogoke.desktop file set and every byte matched the backup under %LOCALAPPDATA% before any deletion or new candidate install",
+    "previous_installer_backup": "Exact expected four files and MC-078 setup/portable/manifest/signature hashes verified under %LOCALAPPDATA%",
+    "cleanup": "Remove-Item for the exact verified screenshot copy and candidate stage was rejected before execution by automatic approval review: blocked by policy. No alternate shell or deletion path was used. All four leftovers remain; private data and prior installer were not deleted."
+  },
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "candidate_state": "SOURCE_REPAIRED_CLOUD_VALIDATION_AND_REVIEW_PENDING; NOT_ACCEPTED_NOT_RELEASED",
+  "external_action": "NO_NEW_TEST_LEDGER_WRITE_NO_MAIN_WRITE_NO_ADOPTION_PR_NO_OWNER_MERGE_NO_RELEASE; CLEANUP_ATTEMPTS_BLOCKED_BEFORE_EXECUTION",
+  "architecture_blocker": "NO_CONFIRMED_ARCHITECTURE_BLOCKER",
+  "workspace": {
+    "tracked_diff_before_checkpoint": "NONE",
+    "untracked_novel_screenshot_copy": "artifacts/s1-r4/R2-05-owner-win11-novel-985e17d1.png",
+    "cleanup_condition": "Automatic approval review still blocks deletion despite new Owner instruction; retain outside Git and report for Owner-directed manual cleanup."
+  },
+  "next_action": "Complete exact-head cloud native/server and desktop package validation; resolve any first failure, finish focused review, obtain new cloud artifact and perform Owner Win11 candidate task; open a one-result PR targeting main for Owner personal merge, then read merged accepted Git fact through installed Home. Record F5 cleanup as blocked unless automatic review permits a future exact cleanup action; request renewed independent/Claude review of final bytes."
+}

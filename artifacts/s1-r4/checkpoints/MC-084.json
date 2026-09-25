@@ -1,0 +1,69 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-084",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "04d36fa05c0ec70aa17fe44343961845e0f8d945",
+  "recorded_utc": "2026-09-25T02:10:04Z",
+  "reason": "OWNER_REQUESTED_985E17D1_PORTABLE_CONTROL_EXPERIMENT",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "package": "R2-05_IN_PROGRESS_NOT_ACCEPTED",
+  "current_source_candidate": "041a49660ffe3ecc6e061ef3b20fd54e2ec47535",
+  "owner_instruction": "Redownload 985e17d1 portable ZIP, verify hash, extract to %TEMP% using the same method as 041a4966, launch gogoke.exe once, record Code Integrity result, close and clean. No install, retry or bypass.",
+  "control_source": {
+    "sha": "985e17d1ffdb19ef05ca5f6bc0a8970a66df3f0d",
+    "desktop_cloud_run": 36066910163,
+    "run_result": "SUCCESS at exact control source SHA",
+    "unsigned_artifact_id": 10837862139,
+    "redownload_stage": "%TEMP%/gogoke-r205-control-985e17d1-redownload",
+    "portable_zip_sha256": "b053d0faf9bfe004cf311dcedc52e1a05956e0dc2b5859a81f462d6e809ac4cb",
+    "hash_validation": "Fresh download matched SHA256SUMS.windows from the same artifact and MC-078; 13047 ZIP entries were checked for absolute/traversal paths before extraction.",
+    "extraction_root": "%TEMP%/gk985",
+    "max_output_path_length": 163,
+    "extracted_hashes_match_zip": true,
+    "extracted_files_sha256": {
+      "gogoke.exe": "9a7a11591b53400c57f8c312bc97a238f95eb3a39728a5d11b2101745180a86b",
+      "gogoke-native-host.exe": "a3854c8146fb8df3a8dbf0bbc6fb2bdec0512f87970f6a45a5c9f09b99178648",
+      "gogoke-service/runtime/node.exe": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50",
+      "gogoke-service/dist/bin.mjs": "e266112f295e1f764a6af36232ac57e2fe1dee20fb674696915665822d2200fc"
+    }
+  },
+  "control_launch": {
+    "method": "The same .NET ZipFile.ExtractToDirectory and PowerShell Start-Process -FilePath <portable-root>/gogoke.exe -WorkingDirectory <portable-root> -WindowStyle Normal -PassThru -ErrorAction Stop pattern used for 041a4966; one launch only.",
+    "attempt_started_utc": "2026-09-25T02:08:00.2195517Z",
+    "result": "STARTED_AND_REMAINED_RESPONSIVE",
+    "pid": 34772,
+    "window_handle_observed": 12780722,
+    "actual_process_executable": "%TEMP%/gk985/gogoke.exe",
+    "code_integrity_log": "Microsoft-Windows-CodeIntegrity/Operational",
+    "code_integrity_3033_3077_count": 0,
+    "event_scope": "No 3033 or 3077 events at all from the control launch through the post-exit query; no block event target path exists for this control run.",
+    "closure": "CloseMainWindow returned true; the exact control process exited within five seconds. No control-directory executable process or Gogoke process remained.",
+    "native_host_and_node": "No product task was invoked; their executable startup and Smart App Control behavior are NOT_RUN in this control."
+  },
+  "comparison_to_041a4966": {
+    "current_portable_zip_sha256": "3e8269369cbd0a3f263a8dd2deb66530e94484b1030d510e7de9fc8aa59f1dcc",
+    "current_portable_gogoke_exe_sha256": "4eb782721c0703856599e12285205308acf9e92d3f3bafdf2aecf5576a50e351",
+    "current_result": "MC-083: same launch pattern from %TEMP%/gk041 was blocked before execution, Code Integrity 3033 record 7077 and 3077 record 7079.",
+    "control_result": "985e17d1 portable gogoke.exe from %TEMP%/gk985 started once and was responsive; zero Code Integrity 3033/3077 events were observed.",
+    "inference_limit": "The executable bytes, extraction subdirectory and time differed. This comparison shows distinct outcomes on the same Owner machine under the same launch procedure; it does not prove the hash alone caused the different Smart App Control decisions or that either result will recur."
+  },
+  "cleanup": {
+    "preflight": "Both new control directories resolved inside %TEMP%, contained zero reparse points and no active executable process; the redownloaded ZIP and extracted gogoke.exe hashes still matched the expected values immediately before cleanup.",
+    "requested_action": "Remove only %TEMP%/gk985 and %TEMP%/gogoke-r205-control-985e17d1-redownload with PowerShell Remove-Item -LiteralPath -Recurse -Force after path validation.",
+    "result": "BLOCKED_BY_AUTOMATIC_APPROVAL_REVIEW_BEFORE_EXECUTION; error stated blocked by policy. No alternate shell, UI or tool was used to bypass the rejection.",
+    "postcheck": "Both control directories still exist; the control process count is zero.",
+    "retained_path_custody": [
+      "%TEMP%/gk985: 12984 files, 349599725 bytes; Controller-owned control extraction",
+      "%TEMP%/gogoke-r205-control-985e17d1-redownload: 3 files, 172639475 bytes; Controller-owned fresh artifact download"
+    ],
+    "cleanup_condition": "Remove after a permitted exact-path action or Owner-managed cleanup; do not reinterpret the blocked review as successful deletion."
+  },
+  "plan_boundary": "Portable execution is a diagnostic comparison only. R2-05 still requires a formal installed-package Owner Win11 closure; neither the 041a4966 installer nor its portable main executable ran successfully. No candidate acceptance, Goal Acceptance or release is claimed.",
+  "pr34": "OPEN_NOT_MERGED; no accepted-fact product readback or Owner merge requested in this control experiment",
+  "test_ledger_branch": "s1-r4-ledger-test/r2-02 at d2e210a798767273b1b120fa26feeca79ed5c512; no new write",
+  "workspace": "No production code change; prior untracked 985e17d1 Owner screenshot copy remains untouched.",
+  "external_action": "CONTROL_PORTABLE_LAUNCH_ONCE_AND_EXITED; NO_INSTALL_NO_RETRY_NO_BYPASS_NO_MAIN_MERGE_NO_RELEASE",
+  "next_action": "Stop this bounded control experiment. Report the 985e17d1 allowed versus 041a4966 blocked observations and the automatic approval review cleanup rejection to Owner. Keep PR34 open and await new Owner direction."
+}

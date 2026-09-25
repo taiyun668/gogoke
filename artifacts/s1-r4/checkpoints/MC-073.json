@@ -1,0 +1,62 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-073",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "75dd782d500917b1de640512f8285ea9aabeaaee",
+  "recorded_utc": "2026-09-24T19:58:44Z",
+  "reason": "R2_04_INSTALLED_POSITIVE_REACHED_NEGATIVE_SMOKE_FILE_OPERATION_FAILED",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "cloud_evidence": {
+    "desktop_run": 36048060369,
+    "event": "pull_request",
+    "pr_head_sha": "75dd782d500917b1de640512f8285ea9aabeaaee",
+    "actual_checkout_sha": "69f8fbbdd553d2e5994c11d54cf33ce9b88167b9",
+    "browser_build_and_tests": "PASS",
+    "dependency_notices": "PASS",
+    "unsigned_nsis_job": "FAIL_AT_INSTALLED_PRODUCT_SMOKE",
+    "passed_before_failure": [
+      "actual T3 service bundle and locked deployment",
+      "staged Node and cloud native-host build",
+      "package seal and release verifier",
+      "unsigned NSIS installer build",
+      "update/readiness/rollback smoke",
+      "installed resource byte identity"
+    ],
+    "first_failure": "The Medium-token smoke attempted to rename installed gogoke-service/runtime/node.exe after the positive Tauri response assertion; Windows returned EPERM. The positive assertion was reached by source control flow, but no combined PASS receipt was produced.",
+    "inventory_artifact_id": 10831055607,
+    "source_hygiene_run": 36048060265,
+    "source_hygiene": "PASS"
+  },
+  "finding": "The production path-spelling repair passed the installed positive Tauri response assertion in this run. The current failure is the negative test's file mutation under the Medium token, not an observed service failure. A separate machine PASS receipt remains required.",
+  "change_in_this_commit": "Keep the installed positive product run under Medium without mutating its resources. After that process exits, let the installing CI parent temporarily move the mandatory Node file, run the missing-component Tauri ingress under a fresh Medium process, restore the file, and combine exact-run positive and negative receipts. No product IPC error code or production marker was added.",
+  "local_validation": {
+    "javascript_syntax": "PASS",
+    "powershell_parse": "PASS",
+    "git_diff_check": "PASS",
+    "public_source_scan": "PASS_LEAKS_0",
+    "native_build_or_test": "NOT_RUN_LOCAL_CLOUD_ONLY"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate_state": "NONE",
+  "evidence_boundary": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "candidate_review": "NOT_RUN",
+    "adoption_release_merge": "NONE"
+  },
+  "architecture_blocker": "NO",
+  "external_action": "NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "next_action": "Commit and push this focused cloud smoke repair with the checkpoint. Verify the new run's actual checkout SHA, installed positive and negative Tauri receipts, full package inventory and unsigned artifacts. If the elevated parent also cannot move Node, inspect that first platform failure without weakening the product check."
+}

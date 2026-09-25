@@ -1123,6 +1123,7 @@ export async function getAppBuildType(): Promise<AppBuildType> {
 
 export type GogokeUpdateOffer = {
   version: string;
+  releaseType: "full" | "resources";
   asset: string;
   sha256: string;
   publishedAt: string;
@@ -1139,7 +1140,8 @@ export async function installGogokeUpdate(version: string): Promise<void> {
 }
 
 export async function signalGogokeUpdateReady(): Promise<void> {
-  return invoke<void>("gogoke_update_signal_ready");
+  const resourceSetId = new URL(window.location.href).searchParams.get("gogoke-resource-set");
+  return invoke<void>("gogoke_update_signal_ready", { resourceSetId });
 }
 
 export async function takeGogokeUpdateFailure(): Promise<string | null> {
@@ -1218,4 +1220,87 @@ export async function sendNotification(
   }
 
   await attemptFallback();
+}
+
+
+export type GogokeProductGoalRequest = {
+  goal: { id: string; title: string };
+  runControlledTask?: true;
+  publishTestDraft?: true;
+  fixtureDriverId?: string;
+  ledgerMergePullNumber?: number;
+  ledger: {
+    repository: string;
+    commit: string;
+    path: string;
+    contentHash: string;
+  };
+};
+
+export type GogokeProductGoalView = GogokeProductGoalRequest & {
+  caller: {
+    admitted: true;
+    policyRevision: string;
+    principalId: string;
+    profileId: string;
+    revocationHead: string;
+    role: "controller";
+    seatId: string;
+  };
+  nativeHost: {
+    reachable: true;
+    elapsedMicros: number;
+  };
+  ledgerReadback: {
+    state: "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED";
+    gitBlob: string;
+  };
+  ledgerMerge?: {
+    state: "PR_MERGE_ACCEPTED_FACT_VERIFIED";
+    pullNumber: number;
+    mergeCommit: string;
+    mergedBy: string;
+  };
+  controlledTask?: {
+    state: "VALIDATED_TEST_RESULT_NOT_ADOPTED";
+    sourceCommit: string;
+    sourceBlob: string;
+    reportSha256: string;
+    modelId: string;
+    relativePath: string;
+    embeddedBytesSha256: string;
+    actionCompletionRef: string;
+    manifestHash: string;
+    decisionReceiptId: string;
+    objectiveOutcomeContentHash: string;
+    objectiveOutcomeReceiptId: string;
+    evaluationContentHash: string;
+    evaluationReceiptId: string;
+    metricsHash: string;
+    dreamRunContentHash: string;
+    dreamProposalContentHash: string;
+    dreamProposalState: "DRAFT_TEST_ONLY_NOT_ACTIVATED";
+    fixtureDriverBinding?: {
+      driverId: string;
+      adapterVersion: "1.0.0";
+      runtimeInstanceId: string;
+      launchDigestSha256: string;
+    };
+  };
+  testLedgerDraft?: {
+    state: "DRAFT_COMMITTED_NOT_ADOPTED";
+    repository: "taiyun668/gogoke";
+    branch: "s1-r4-ledger-test/r2-02";
+    commit: string;
+    path: string;
+    gitBlob: string;
+    contentHash: string;
+  };
+  acceptance: "TEST_FIXTURE_NOT_ADOPTED";
+};
+
+export async function runGogokeR2GoalProbe(
+  request: GogokeProductGoalRequest,
+): Promise<GogokeProductGoalView> {
+  return invoke<GogokeProductGoalView>("gogoke_r2_goal_probe", { request });
 }

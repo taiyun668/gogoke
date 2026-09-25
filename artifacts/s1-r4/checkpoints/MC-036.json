@@ -1,0 +1,69 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-036",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "b762d3a8c6d043b57bd0f5458531fe0ab47ebeba",
+  "recorded_utc": "2026-09-23T10:32:05Z",
+  "reason": "OWNER_AUTHORIZATION_VERIFIED_RESUME_R2_01",
+  "authorization_validation": {
+    "plan_merge_commit": "d2563331c70181c7cea6f0a0b233b2edd681a957",
+    "authorization_pr": 21,
+    "authorization_merge_commit": "b762d3a8c6d043b57bd0f5458531fe0ab47ebeba",
+    "authorization_merged_by": "taiyun668",
+    "authorization_changed_files": 1,
+    "authorization_path": "artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "authorization_schema": "gogoke.s1-r4.public-authorization.v1",
+    "public_plan_path": "docs/design/gogoke-s1-r4-plan-v2/",
+    "bound_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11",
+    "current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11",
+    "state": "VALID_OWNER_MERGED_CURRENT"
+  },
+  "stop_transition": {
+    "previous": "MC-035 OWNER_STOP_PENDING_REVISED_S1_R4_PLAN",
+    "current": "RELEASED_FOR_AUTHORIZED_CONSTRUCTION",
+    "effect": "The authorization-specific stop is cleared. Construction may resume only inside the Owner-merged S1-R4 v2 plan and existing governance.",
+    "nonclaim": "No gate, check, candidate, review, qualification, Goal Acceptance, installation or release is promoted by this checkpoint."
+  },
+  "construction_start": {
+    "plan": "docs/design/gogoke-s1-r4-plan-v2/",
+    "first_package": "R2-01",
+    "title": "实际入口与账本/协调分工",
+    "state": "AUTHORIZED_NOT_STARTED",
+    "integration_owner": "Construction Controller",
+    "requirements": ["O1", "O2", "O3", "O4", "O7"],
+    "required_checks": ["V01", "V02", "V03"],
+    "scope_rule": "Plan areas are upper bounds, not whole-tree write authorization. Construction intake must first identify exact production composition, Tauri route and service/native-host entry files.",
+    "product_code_written_by_master_control": false
+  },
+  "role_boundary": {
+    "master_control": "Owns product North Star, architecture/contracts, phase/gate/candidate truth and architecture escalation; does not compete for production integration writes.",
+    "construction_controller": "Owns R2-01 implementation, tests, integration, frequent recovery checkpoints and dependency-safe continuation on the execution branch.",
+    "gpt_construction_runtime_discipline": "Use small targeted reads, keep large logs/results durable, checkpoint frequently at valuable micro-boundaries, and never rely on hidden reasoning for recovery."
+  },
+  "gate_state": {
+    "G0": "PASS",
+    "G1": "IN_PROGRESS_NOT_ACCEPTED",
+    "G2": "NOT_ACCEPTED_PREPARATORY_COMPONENTS_ONLY",
+    "G3": "IN_PROGRESS_NOT_ACCEPTED",
+    "G4": "IN_PROGRESS_NOT_ACCEPTED",
+    "G5": "NOT_RUN",
+    "GN": "NOT_AUTHORIZED"
+  },
+  "v2_checks": {
+    "V01": "NOT_RUN",
+    "V02": "NOT_RUN",
+    "V03": "NOT_RUN",
+    "V04": "NOT_RUN",
+    "V05": "NOT_RUN",
+    "V06": "NOT_RUN",
+    "V07": "NOT_RUN",
+    "V08": "NOT_RUN"
+  },
+  "preserved_findings": {
+    "PR13": "Draft/not merged; prior NB-F1 and provisional NB-F3 remain historical findings until current bytes make them fixed, superseded or still present.",
+    "legacy_due_checks": "No old unpromoted check is converted to PASS by the revised plan or this resume checkpoint."
+  },
+  "next_action": "Construction Controller takes gpt/s1-r4-r2-execution-r1 at MC-036, performs the R2-01 intake against current bytes, fixes exact write ownership, then implements only the smallest coherent production-reachable vertical increment with frequent durable recovery points."
+}

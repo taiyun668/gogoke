@@ -25,11 +25,22 @@ export function collectProductionNotices(sbom, desktopRoot = ROOT) {
   if (!Array.isArray(sbom?.packages) || sbom.packages.length < 2) {
     throw new Error("FAIL_INSTRUMENT: production SPDX package set is empty");
   }
+  const rootPackage = JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8"));
+  if (rootPackage.name !== "gogoke" || typeof rootPackage.version !== "string") {
+    throw new Error("FAIL_INSTRUMENT: gogoke root package identity is invalid");
+  }
   const nodeModules = resolve(desktopRoot, "node_modules");
   const seen = new Set();
   const notices = [];
+  let rootCount = 0;
   for (const entry of sbom.packages) {
-    if (entry.name === "gogoke" && entry.versionInfo === "0.1.2") continue;
+    if (entry.name === rootPackage.name && entry.packageFileName === "") {
+      if (entry.versionInfo !== rootPackage.version) {
+        throw new Error("FAIL_INSTRUMENT: gogoke root SPDX identity differs from package.json");
+      }
+      rootCount += 1;
+      continue;
+    }
     if (typeof entry.name !== "string" || typeof entry.versionInfo !== "string" ||
         typeof entry.licenseDeclared !== "string" ||
         !entry.licenseDeclared || entry.licenseDeclared === "NOASSERTION" ||
@@ -57,6 +68,7 @@ export function collectProductionNotices(sbom, desktopRoot = ROOT) {
       license: entry.licenseDeclared, packagePath: relative(desktopRoot, packageDir).replaceAll("\\", "/"),
       sources: candidates });
   }
+  if (rootCount !== 1) throw new Error("FAIL_INSTRUMENT: gogoke root SPDX identity is missing or duplicate");
   if (notices.length < 100) throw new Error(`FAIL_INSTRUMENT: only ${notices.length} production npm packages`);
   return notices.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
 }

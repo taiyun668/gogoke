@@ -1,0 +1,73 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-061",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "d6d684537f9d699284960ab2d49fabbce3862a4c",
+  "recorded_utc": "2026-09-24T13:13:48Z",
+  "reason": "R2_04_PACKAGE_SEAL_PASS_INSTALLED_WEBVIEW_FAILURE_RECOVERED",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "owner_scope": {
+    "package": "R2-04",
+    "stop_after": "R2-04 closure and durable handoff checkpoint",
+    "R2-05": "Reserved to Codex; not entered",
+    "pr": { "number": 27, "head": "d6d684537f9d699284960ab2d49fabbce3862a4c", "state": "OPEN_DRAFT_WIP", "merged": false }
+  },
+  "cloud_evidence": {
+    "desktop_run": 35962614536,
+    "source_sha": "d6d684537f9d699284960ab2d49fabbce3862a4c",
+    "tested_merge_sha": "a340fbc564c3859479ab0a1c9ae372ec36c921cb",
+    "desktop_state": "FAIL",
+    "source_hygiene_run": 35962614573,
+    "source_hygiene_state": "PASS",
+    "browser_job": { "id": 107514234232, "state": "PASS" },
+    "notices_job": { "id": 107514234474, "state": "PASS" },
+    "nsis_job": {
+      "id": 107515850223,
+      "state": "FAIL",
+      "passed": ["T3 locked bundle and deployment", "pinned Node staging", "native-host cloud build", "package seal and complete license inventory", "release verifier", "unsigned installer build", "portable byte verification", "update/readiness/rollback smoke"],
+      "first_failed_step": "26 Verify installed resource identity and read-only product entry",
+      "first_failure": "installed Tauri WebView target unavailable",
+      "final_smoke_verified_package_upload": "SKIPPED_NOT_PASS"
+    },
+    "inventory": {
+      "artifact_id": 10793701466,
+      "artifact_name": "gogoke-windows-package-inventory-a340fbc564c3859479ab0a1c9ae372ec36c921cb-35962614536",
+      "archive_sha256": "69e5483aeeb4a964f6d5d4755cdaa59dd5e1f84cfdf25595833932d253156fee",
+      "archive_digest_verified": true,
+      "member": "gogoke-package-hashes.json",
+      "failure_field": "packageOperationFailure",
+      "runtime_packages": 134,
+      "packages_missing_notice_files": [],
+      "notice_state": "SOURCE_TEXT_COLLECTED_NOT_LEGAL_ACCEPTANCE"
+    }
+  },
+  "targeted_diagnosis": {
+    "write_domain": [".github/workflows/gogoke-desktop.yml", "tools/ci/gogoke-installed-smoke.ps1"],
+    "finding": "The smoke requests WebView2 CDP via process environment while the Windows runner is elevated. Upstream documents that WebView2 Runtime 150+ ignores those overrides for elevated hosts. This matches the observed missing endpoint; the proposed medium-integrity execution still requires an actual cloud result.",
+    "upstream_evidence": ["https://github.com/tauri-apps/wry/issues/1782", "https://github.com/tauri-apps/tauri/blob/7dbfc1fe5c36143b6a4614cbbd9d4c14ee9dfdcf/.github/workflows/test-api-e2e.yml"],
+    "fix_boundary": "Run only the existing installed-package smoke in an explicitly non-administrator child. No production backdoor, runtime downgrade, registry/policy change, signing change, or Owner-machine action. Any CI token helper remains outside product packaging.",
+    "new_code_state": "NOT_WRITTEN_AT_THIS_CHECKPOINT"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "evidence_limits": {
+    "R2-04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_CONTROLLED_PLATFORM_NOT_PASS",
+    "owner_win11": "NOT_RUN",
+    "review_and_acceptance": "NOT_CLAIMED",
+    "local_native_compilation": "NOT_PERFORMED"
+  },
+  "custody": "All source WIP remains on execution HEAD. The downloaded inventory is a digest-verified copy of the named GitHub artifact, not a separate authority. No unpushed production code is needed to resume.",
+  "architecture_blocker": "NO",
+  "next_action": "Implement the minimal cloud-only medium-integrity smoke launcher in the named write domain, preserving the existing installed Tauri/service/native path and missing-Node rejection. Push and read the replacement exact-head desktop CI. Fix ordinary failures in R2-04. After actual package closure, write source/merge/run/artifact handoff and STOP before R2-05; do not merge main."
+}

@@ -7,6 +7,17 @@ import * as NodeStream from "node:stream";
 import * as NodeTest from "node:test";
 
 import {
+  decodeNativeControlledFixtureAction,
+  decodeR2TestFactJournalEntry,
+  decodeR2ObjectiveFactRefs,
+  decodeR2TestRollbackPlan,
+  decodeR2TestTaskReceipt,
+  decodeR2TestPackageReceipt,
+  decodeR2TestLineageReceipt,
+  decodeR2TestRecipeReceipt,
+  decodeR2TestActionPreparation,
+  decodeR2TestFixtureDriverRegistration,
+  decodeR2TestFixtureActionBinding,
   decodeCurrentDelegationGrantReply,
   encodeCurrentDelegationGrantFrame,
   decodeExecutionRecipeReceipt,
@@ -23,6 +34,132 @@ import {
 
 const assert: typeof NodeAssert = NodeAssert;
 const test: typeof NodeTest.test = NodeTest.test;
+
+test("novel fixture registration and Action binding keep native identity exact", () => {
+  const driverId = "mock_novel_0123456789abcdef";
+  const runtimeInstanceId = "runtime-r2-03-0123456789abcdef-fedcba9876543210";
+  const registration = { state: "TEST_ONLY_FIXTURE_DRIVER_REGISTERED", driverId,
+    adapterVersion: "1.0.0", runtimeInstanceId, contentHash: `sha256:${"a".repeat(64)}` };
+  const binding = { state: "TEST_ONLY_ACTION_BINDING", driverId,
+    adapterVersion: "1.0.0", runtimeInstanceId, launchDigestSha256: `sha256:${"b".repeat(64)}` };
+  assert.deepEqual(decodeR2TestFixtureDriverRegistration(JSON.stringify(registration)), registration);
+  assert.deepEqual(decodeR2TestFixtureActionBinding(JSON.stringify(binding)), binding);
+  assert.throws(() => decodeR2TestFixtureActionBinding(JSON.stringify({
+    ...binding, runtimeInstanceId: "runtime-r2-02-fixture",
+  })), /native Action binding mismatch/);
+});
+
+test("R2 Objective refs require exact native hashes", () => {
+  const valid = {
+    state: "TEST_ONLY_NATIVE_OBJECTIVE_REFS",
+    manifestHash: `sha256:${"a".repeat(64)}`,
+    manifestContentHash: `sha256:${"b".repeat(64)}`,
+    decisionContentHash: `sha256:${"c".repeat(64)}`,
+    actionCompletionHash: `sha256:${"d".repeat(64)}`,
+    actionCompletedAt: "2026-09-23T00:00:01.000Z",
+  };
+  assert.deepEqual(decodeR2ObjectiveFactRefs(JSON.stringify(valid)), valid);
+  assert.throws(() => decodeR2ObjectiveFactRefs(JSON.stringify({
+    ...valid, actionCompletionHash: "sha256:caller-assertion",
+  })), /native refs identity mismatch/);
+});
+
+test("R2 rollback plan reply remains test-only and unactivated", () => {
+  const plan = {
+    state: "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED",
+    disposition: "COMMITTED",
+    domainId: "domain-r2-02-test",
+    planId: "rollback-r2-02-test",
+    revision: "1",
+    contentHash: `sha256:${"a".repeat(64)}`,
+    beforeHash: `sha256:${"b".repeat(64)}`,
+    afterHash: `sha256:${"c".repeat(64)}`,
+  };
+  assert.deepEqual(decodeR2TestRollbackPlan(JSON.stringify(plan)), plan);
+  assert.throws(() => decodeR2TestRollbackPlan(JSON.stringify({
+    ...plan, state: "ACTIVATED",
+  })), /native rollback identity mismatch/);
+  const novelPlan = { ...plan, planId: "rollback-r2-03-test" };
+  assert.deepEqual(decodeR2TestRollbackPlan(JSON.stringify(novelPlan), "novel"), novelPlan);
+  assert.throws(() => decodeR2TestRollbackPlan(JSON.stringify(novelPlan)),
+    /native rollback identity mismatch/);
+});
+
+test("R2 typed receipts reject cross-slot identity substitution", () => {
+  const hash = `sha256:${"a".repeat(64)}`;
+  const task = { state: "TEST_ONLY_TASK_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    taskId: "task-r2-03-test", taskRevision: "1", contentHash: hash };
+  const pack = { state: "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    packageOperationId: "r2-03-package", packageDigest: hash };
+  const lineage = { state: "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    sessionId: "session-r2-03-worker", bindingId: "binding-r2-03-worker",
+    generation: "1", sourceEpoch: "1" };
+  const recipe = { state: "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    recipeId: "recipe-r2-03-test", revision: "1", contentHash: hash };
+  const action = { kind: "reserved", reservationState: "reserved",
+    operationId: "opr_33333333333333333333333333333333", semanticDigest: hash,
+    reservationId: "reservation-r2-03-controlled", packageDigest: hash,
+    authorityStatus: "PREPARATORY_CURRENT_FACTS_REQUIRED" };
+  for (const [record, decode] of [
+    [task, decodeR2TestTaskReceipt], [pack, decodeR2TestPackageReceipt],
+    [lineage, decodeR2TestLineageReceipt], [recipe, decodeR2TestRecipeReceipt],
+    [action, decodeR2TestActionPreparation],
+  ] as const) {
+    assert.deepEqual(decode(JSON.stringify(record), "novel"), record);
+    assert.throws(() => decode(JSON.stringify(record)), NativeHostClientError);
+  }
+});
+
+test("native Action transport codec keeps completion distinct from Result and replay", () => {
+  const actionCompletionRef = "receipt-action-one";
+  const stopProofHash = `sha256:${"a".repeat(64)}`;
+  const frames = ["ack", "start", "message", "end", "settled"];
+  const completed = decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT", frames, actionCompletionRef, stopProofHash,
+  }));
+  assert.equal(completed.state, "ACTION_TRANSPORT_COMPLETED_NOT_RESULT");
+  const recovered = decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT", frames, actionCompletionRef, stopProofHash,
+  }));
+  assert.deepEqual(recovered, {
+    state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT", frames, actionCompletionRef, stopProofHash,
+  });
+  const reconciled = decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef,
+  }));
+  assert.deepEqual(reconciled, { state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef });
+  assert.throws(() => decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT", frames: [], actionCompletionRef, stopProofHash,
+  })), NativeHostClientError);
+  assert.throws(() => decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT", actionCompletionRef, frames,
+  })), NativeHostClientError);
+  assert.throws(() => decodeNativeControlledFixtureAction(JSON.stringify({
+    state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT", frames: [], actionCompletionRef, stopProofHash,
+  })), NativeHostClientError);
+});
+
+test("R2 test fact journal codec requires exact intent and all-or-none target binding", () => {
+  const intent = {
+    operationId: "r2-02-one", executionEvidenceSha: "a".repeat(40),
+    bytesHash: `sha256:${"b".repeat(64)}`, repository: "taiyun668/gogoke",
+    branch: "s1-r4-ledger-test/r2-02",
+    path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-one.json",
+  };
+  const pending = { ...intent, baseHead: null, targetCommit: null };
+  assert.deepEqual(decodeR2TestFactJournalEntry(JSON.stringify(pending), intent), pending);
+  const bound = { ...intent, baseHead: "c".repeat(40), targetCommit: "d".repeat(40) };
+  assert.deepEqual(decodeR2TestFactJournalEntry(JSON.stringify(bound), intent), bound);
+  assert.throws(() => decodeR2TestFactJournalEntry(JSON.stringify({
+    ...pending, bytesHash: `sha256:${"f".repeat(64)}`,
+  }), intent), NativeHostClientError);
+  assert.throws(() => decodeR2TestFactJournalEntry(JSON.stringify({
+    ...bound, targetCommit: null,
+  }), intent), NativeHostClientError);
+  assert.throws(() => decodeR2TestFactJournalEntry(JSON.stringify({
+    ...pending, accepted: true,
+  }), intent), NativeHostClientError);
+});
 
 test("startup handshake retains all three lines emitted in one pipe chunk", async () => {
   const pipe = new NodeStream.PassThrough();

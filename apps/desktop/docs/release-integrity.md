@@ -4,11 +4,21 @@ gogoke publishes unsigned Windows binaries, while automatic updates use a
 separate Owner-controlled integrity chain. Windows publisher reputation and
 gogoke release authorization are different questions.
 
-CI produces these artifacts:
+CI produces a resource pack and its byte index for every release. A `full`
+release also contains the installer and portable ZIP; a `resources` release
+contains only the resource pack and index. The Owner-signed
+`SHA256SUMS.windows` manifest identifies the release type and version and
+contains exactly the corresponding asset set:
 
-- `gogoke-<version>-windows-x64-unsigned-setup.exe`
-- `gogoke-<version>-windows-x64-unsigned-portable.zip`
-- `SHA256SUMS.windows`
+- `full`: `gogoke-<version>-windows-x64-unsigned-setup.exe`,
+  `gogoke-<version>-windows-x64-unsigned-portable.zip`,
+  `gogoke-resources.windows.zip`, and `resource-index.json`
+- `resources`: `gogoke-resources.windows.zip` and `resource-index.json`
+
+Manifest headers are exactly `# gogoke-Version: <version>` and
+`# gogoke-Release-Type: full|resources`; each checksum line uses a lowercase
+SHA-256, two spaces, the exact asset filename, and an LF ending. Duplicate,
+missing, mixed-type, and extra entries are rejected.
 
 Before a GitHub release is published, the Owner signs the checksum manifest
 offline with `tools/sign-gogoke-release-manifest.ps1`. The private P-256 key
@@ -17,10 +27,13 @@ enter the repository, build tree, CI, or release assets. Only the public half
 is compiled into the application.
 
 `tools/publish-gogoke-release.ps1` validates the exact CI artifacts,
-recomputes their hashes, signs the manifest, and verifies that signature
-against the public key embedded in the application. Its default mode stops
-there. Publishing to GitHub requires the explicit `-Publish` switch and a
-release-notes file.
+recomputes their hashes, verifies the resource pack against its index, signs
+the manifest, and verifies that signature against the public key embedded in
+the application. Use `-ReleaseType full` (the default) for a complete install
+release or `-ReleaseType resources` for a resource-only release. Its default
+mode stops after signing and verification. Publishing to GitHub still
+requires the explicit `-Publish` switch and a release-notes file; it publishes
+only the asset set selected by the signed manifest.
 
 The application checks only `taiyun668/gogoke`. It accepts one newer,
 non-draft, non-prerelease version with one exactly named installer, one checksum

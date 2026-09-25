@@ -72,8 +72,8 @@ const cargoVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
 if (packageJson.name !== "gogoke") failures.push("package.json: wrong package identity");
 if (tauriConfig.productName !== "gogoke") failures.push("tauri.conf.json: wrong product identity");
 if (tauriConfig.identifier !== "app.gogoke.desktop") failures.push("tauri.conf.json: wrong app identifier");
-if (packageJson.version !== tauriConfig.version || packageJson.version !== cargoVersion) {
-  failures.push("package.json, tauri.conf.json, and Cargo.toml versions differ");
+if (tauriConfig.version !== packageJson.version || cargoVersion !== "0.0.0") {
+  failures.push("release version must come from package.json while Cargo shell version stays fixed");
 }
 if (tauriConfig.plugins?.updater) failures.push("tauri.conf.json: inherited updater is still configured");
 
@@ -81,6 +81,7 @@ const mergedWindowsConfig = mergePatch(mergePatch(tauriConfig, windowsConfig), u
 const [mergedWindow] = mergedWindowsConfig.app?.windows ?? [];
 assert(mergedWindowsConfig.productName === "gogoke", "merged Tauri config: wrong product identity");
 assert(mergedWindowsConfig.identifier === "app.gogoke.desktop", "merged Tauri config: wrong app identifier");
+assert(mergedWindowsConfig.version === "0.0.0", "merged Windows shell version must stay fixed");
 assert(mergedWindow?.title === "gogoke", "merged Windows window: wrong title");
 assert(mergedWindow?.titleBarStyle === "Visible", "merged Windows window: titleBarStyle must remain Visible");
 assert(mergedWindow?.transparent === true, "merged Windows window: transparent must remain true");

@@ -87,6 +87,7 @@ describe("useUpdater", () => {
   it("installs a prepared gogoke update and enters restart state", async () => {
     checkMock.mockResolvedValue({
       version: "1.2.3",
+      releaseType: "full",
       asset: "gogoke-1.2.3-windows-x64-unsigned-setup.exe",
       sha256: "a".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",
@@ -118,6 +119,7 @@ describe("useUpdater", () => {
   it("resets to idle on dismiss", async () => {
     checkMock.mockResolvedValue({
       version: "1.0.0",
+      releaseType: "full",
       asset: "gogoke-1.0.0-windows-x64-unsigned-setup.exe",
       sha256: "b".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",
@@ -140,6 +142,7 @@ describe("useUpdater", () => {
   it("surfaces verified installer launch errors", async () => {
     checkMock.mockResolvedValue({
       version: "2.0.0",
+      releaseType: "full",
       asset: "gogoke-2.0.0-windows-x64-unsigned-setup.exe",
       sha256: "c".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",
@@ -174,6 +177,7 @@ describe("useUpdater", () => {
   it("does not run updater workflow when disabled", async () => {
     checkMock.mockResolvedValue({
       version: "9.9.9",
+      releaseType: "full",
       asset: "gogoke-9.9.9-windows-x64-unsigned-setup.exe",
       sha256: "d".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",

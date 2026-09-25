@@ -266,3 +266,6 @@ mod tests {
         assert!(guard.activated().is_err());
     }
 }
+
+
+pub(crate) mod product_entry;

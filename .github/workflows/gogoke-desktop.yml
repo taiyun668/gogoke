@@ -11,7 +11,10 @@ on:
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
       - "tools/gogoke-release/**"
+      - "tools/ci/**"
+      - "third_party/t3code/**"
       - ".github/workflows/gogoke-desktop.yml"
+      - ".github/workflows/gogoke-candidate-sign.yml"
   pull_request:
     branches:
       - main
@@ -21,7 +24,10 @@ on:
       - "tools/publish-gogoke-release.ps1"
       - "tools/smoke-gogoke-update.ps1"
       - "tools/gogoke-release/**"
+      - "tools/ci/**"
+      - "third_party/t3code/**"
       - ".github/workflows/gogoke-desktop.yml"
+      - ".github/workflows/gogoke-candidate-sign.yml"
 
 permissions:
   contents: read
@@ -40,9 +46,22 @@ jobs:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bind browser build to exact source commit and date
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          if ($commit -cne '${{ github.event.pull_request.head.sha || github.sha }}') { throw 'Browser checkout differs from source head' }
+          "GIT_COMMIT=$commit" >> $env:GITHUB_ENV
+          $branch = if ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF } else { $env:GITHUB_REF_NAME }
+          "GIT_BRANCH=$branch" >> $env:GITHUB_ENV
+          $epoch = (git show -s --format=%ct HEAD).Trim()
+          if ($epoch -notmatch '^[0-9]+$') { throw 'Source commit timestamp is unavailable' }
+          "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.13.1"
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
@@ -62,6 +81,11 @@ jobs:
           }
       - run: npm run typecheck
       - run: npm test
+      - name: Exercise embedded uninstall finalizer on clean cloud Windows
+        shell: pwsh
+        run: |
+          python ../../tools/ci/test_gogoke_uninstall_finalizer_cloud.py -v
+          if ($LASTEXITCODE -ne 0) { throw "uninstall finalizer cloud test failed: $LASTEXITCODE" }
       - run: npm run build
 
   licenses:
@@ -73,6 +97,8 @@ jobs:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
@@ -130,7 +156,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gogoke-license-notices-${{ github.sha }}-${{ github.run_id }}
+          name: gogoke-license-notices-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
           path: |
             apps/desktop/generated/npm-production.spdx.json
             apps/desktop/generated/npm-production-notices.html
@@ -138,58 +164,111 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  unsigned-windows:
-    name: Unsigned Windows NSIS
-    timeout-minutes: 60
+  windows-build:
+    name: Clean Windows build (${{ matrix.lane }})
+    timeout-minutes: 75
     needs: [web, licenses]
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [frozen, repro]
     env:
       RUSTUP_TOOLCHAIN: 1.89.0
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      RUSTFLAGS: "-C link-arg=/Brepro"
     defaults:
       run:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind Windows build to exact source commit and date
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          if ($commit -cne '${{ github.event.pull_request.head.sha || github.sha }}') { throw 'Windows checkout differs from source head' }
+          "GIT_COMMIT=$commit" >> $env:GITHUB_ENV
+          $branch = if ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF } else { $env:GITHUB_REF_NAME }
+          "GIT_BRANCH=$branch" >> $env:GITHUB_ENV
+          $epoch = (git show -s --format=%ct HEAD).Trim()
+          if ($epoch -notmatch '^[0-9]+$') { throw 'Source commit timestamp is unavailable' }
+          "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.13.1"
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
       - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Select the common pinned MSVC and Windows SDK toolchain
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installations = @(& $vswhere -latest -products '*' `
+            -requires Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64 -property installationPath)
+          if ($LASTEXITCODE -ne 0 -or $installations.Count -ne 1) {
+            throw 'The pinned MSVC 14.44 toolset is unavailable on this runner.'
+          }
+          $vcvars = Join-Path $installations[0] 'VC/Auxiliary/Build/vcvarsall.bat'
+          $command = 'call "' + $vcvars + '" amd64 10.0.26100.0 -vcvars_ver=14.44 >nul && set'
+          $dump = @(& $env:ComSpec /d /c $command)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not activate the pinned MSVC and Windows SDK toolchain.' }
+          $vars = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($line in $dump) {
+            if ($line -match '^([^=]+)=(.*)$') { $vars[$matches[1]] = $matches[2] }
+          }
+          if (-not $vars.ContainsKey('VCToolsVersion') -or $vars['VCToolsVersion'] -notmatch '^14\.44\.' -or
+              -not $vars.ContainsKey('WindowsSDKVersion') -or $vars['WindowsSDKVersion'] -notmatch '^10\.0\.26100\.0\\?$' -or
+              -not $vars.ContainsKey('VCToolsInstallDir')) {
+            throw 'Activated MSVC or Windows SDK identity is not the pinned version.'
+          }
+          $bin = Join-Path $vars['VCToolsInstallDir'] 'bin/Hostx64/x64'
+          if (-not (Test-Path -LiteralPath (Join-Path $bin 'cl.exe') -PathType Leaf) -or
+              -not (Test-Path -LiteralPath (Join-Path $bin 'link.exe') -PathType Leaf)) {
+            throw 'Pinned MSVC compiler or linker is missing.'
+          }
+          $bin >> $env:GITHUB_PATH
+          foreach ($name in @('VCToolsVersion', 'VCToolsInstallDir', 'WindowsSDKVersion', 'WindowsSdkDir',
+                'UniversalCRTSdkDir', 'UCRTVersion', 'INCLUDE', 'LIB', 'LIBPATH')) {
+            if (-not $vars.ContainsKey($name)) { throw "Pinned toolchain environment lacks $name" }
+            "$name=$($vars[$name])" >> $env:GITHUB_ENV
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(Join-Path $bin 'link.exe')" >> $env:GITHUB_ENV
+          "CC=$(Join-Path $bin 'cl.exe')" >> $env:GITHUB_ENV
+          "CXX=$(Join-Path $bin 'cl.exe')" >> $env:GITHUB_ENV
+          Write-Output "Pinned Windows toolchain: MSVC $($vars['VCToolsVersion']); SDK $($vars['WindowsSDKVersion'])"
+      - name: Prove the pinned MSVC C tools are selected
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64'
+          foreach ($tool in @('cl.exe', 'link.exe')) {
+            $actual = (Get-Command $tool -ErrorAction Stop).Source
+            if (-not [string]::Equals([IO.Path]::GetFullPath($actual),
+                [IO.Path]::GetFullPath((Join-Path $bin $tool)), [StringComparison]::OrdinalIgnoreCase)) {
+              throw "The active $tool is not from the pinned MSVC toolset."
+            }
+          }
       - name: Download notices from this exact workflow run
         uses: actions/download-artifact@v4
         with:
-          name: gogoke-license-notices-${{ github.sha }}-${{ github.run_id }}
+          name: gogoke-license-notices-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
           path: apps/desktop/generated
-      - name: Require generated notices before installer build
+      - name: Require clean independent native outputs and notices
         shell: pwsh
         run: |
+          foreach ($path in @('src-tauri/target', 'native-host/target')) {
+            if (Test-Path -LiteralPath $path) { throw "Fresh runner unexpectedly contains native output: $path" }
+          }
           foreach ($path in @('generated/npm-production-notices.html', 'generated/rust-dependency-notices.html')) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
               throw "Installer notice missing or empty: $path"
             }
-          }
-      - name: Restore Rust registry, git sources, and build outputs
-        id: rust-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            apps/desktop/src-tauri/target
-          key: gogoke-${{ runner.os }}-${{ runner.arch }}-rust-1.89.0-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/src/**', 'apps/desktop/src-tauri/update/**', 'apps/desktop/src-tauri/capabilities/**', 'apps/desktop/src-tauri/*.json', 'apps/desktop/src-tauri/icons/**', 'apps/desktop/package.json', 'apps/desktop/package-lock.json', 'apps/desktop/src/**', 'apps/desktop/index.html', 'apps/desktop/vite.config.ts', 'apps/desktop/tsconfig*.json') }}
-          restore-keys: |
-            gogoke-${{ runner.os }}-${{ runner.arch }}-rust-1.89.0-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}-
-      - name: Remove cached deliverables
-        shell: pwsh
-        run: |
-          $cachedExecutable = "src-tauri/target/release/gogoke.exe"
-          if (Test-Path -LiteralPath $cachedExecutable) {
-            Remove-Item -LiteralPath $cachedExecutable -Force -ErrorAction Stop
-          }
-          $cachedBundle = "src-tauri/target/release/bundle"
-          if (Test-Path -LiteralPath $cachedBundle) {
-            Remove-Item -LiteralPath $cachedBundle -Recurse -Force -ErrorAction Stop
           }
       - name: Install native build tools
         run: choco install cmake llvm -y --no-progress
@@ -200,94 +279,202 @@ jobs:
           "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       - run: npm ci
       - run: npm run prepare:gogoke-icons
-      - name: Test the gogoke release verifier
-        run: cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
-      - name: Build unsigned gogoke installer
-        run: npm run tauri:build:win:unsigned
-      - name: Save Rust registry, git sources, and build outputs
-        if: steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            apps/desktop/src-tauri/target
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-      - name: Stage local-only unsigned gogoke executable
+      - name: Test deterministic resource pack instrumentation
         shell: pwsh
         run: |
-          $stage = "desktop-local-only"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Push-Location ../..
+          try {
+            python -m unittest tools.ci.test_gogoke_resource_pack tools.ci.test_gogoke_ci_frozen_artifact
+            if ($LASTEXITCODE -ne 0) { throw "resource pack tests failed: $LASTEXITCODE" }
+          } finally { Pop-Location }
+      - name: Build and deploy actual T3 server from pinned lockfile
+        shell: pwsh
+        working-directory: third_party/t3code
+        run: |
+          pnpm install --filter 't3...' --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw "T3 locked install failed: $LASTEXITCODE" }
+          pnpm --filter t3 run build:bundle
+          if ($LASTEXITCODE -ne 0) { throw "T3 server bundle failed: $LASTEXITCODE" }
+          $service = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/src-tauri/resources/gogoke-service'
+          pnpm --config.allow-unused-patches=true --config.node-linker=hoisted --filter t3 deploy $service --prod --legacy
+          if ($LASTEXITCODE -ne 0) { throw "T3 server production deployment failed: $LASTEXITCODE" }
+      - name: Stage exact signed Node runtime and controlled fixture
+        shell: pwsh
+        run: |
+          $license = Join-Path $env:RUNNER_TEMP 'gogoke-node-v24.13.1-LICENSE'
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nodejs/node/v24.13.1/LICENSE' -OutFile $license
+          if ((Get-Item -LiteralPath $license).Length -lt 1000) { throw 'Pinned Node LICENSE is unexpectedly short' }
+          $service = 'src-tauri/resources/gogoke-service'
+          node ../../tools/ci/gogoke-package-service.mjs stage $service $license
+          if ($LASTEXITCODE -ne 0) { throw "service staging failed: $LASTEXITCODE" }
+          $node = (Resolve-Path -LiteralPath "$service/runtime/node.exe").Path
+          if ((Get-AuthenticodeSignature -LiteralPath $node).Status -ne 'Valid') { throw 'Staged Node runtime is not Authenticode-valid' }
+          "GOGOKE_CONTROLLED_NODE_PATH=$node" >> $env:GITHUB_ENV
+      - name: Build native host for exact staged Node
+        shell: pwsh
+        run: |
+          $node = (Resolve-Path -LiteralPath 'src-tauri/resources/gogoke-service/runtime/node.exe').Path
+          if ($env:GOGOKE_CONTROLLED_NODE_PATH -cne $node) { throw 'Native build Node binding differs from staged runtime' }
+          $sysroot = (& rustc +1.85.1 --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the pinned native-host Rust sysroot.' }
+          $linker = Join-Path $sysroot 'lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "Pinned native-host linker missing: $linker" }
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Resolve-Path -LiteralPath $linker).Path
+          $env:RUSTFLAGS = '-C linker-flavor=lld-link -C link-arg=/Brepro -C link-arg=/DEBUG:NONE'
+          Write-Output "Native-host linker: $linker; SHA-256 $((Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash)"
+          cargo +1.85.1 build --locked --manifest-path native-host/Cargo.toml --bin gogoke-native-host --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "native host build failed: $LASTEXITCODE" }
+          New-Item -ItemType Directory -Force 'src-tauri/binaries' | Out-Null
+          Copy-Item -LiteralPath 'native-host/target/x86_64-pc-windows-msvc/release/gogoke-native-host.exe' -Destination 'src-tauri/binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe' -Force
+      - name: Seal exact staged service and native package
+        shell: pwsh
+        run: |
+          node ../../tools/ci/gogoke-package-service.mjs seal
+          if ($LASTEXITCODE -ne 0) { throw "package seal failed: $LASTEXITCODE" }
+          node ../../tools/ci/gogoke-package-service.mjs verify src-tauri/resources generated/gogoke-package-hashes.json
+          if ($LASTEXITCODE -ne 0) { throw "staged resources failed byte check: $LASTEXITCODE" }
+      - name: Test native release and resource trust paths
+        shell: pwsh
+        run: |
+          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
+          if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
+          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
+          if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
+      - name: Build unsigned shell and NSIS installer
+        shell: pwsh
+        run: |
+          $sysroot = (& rustc +1.89.0 --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the pinned shell Rust sysroot.' }
+          $linker = Join-Path $sysroot 'lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "Pinned shell linker missing: $linker" }
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Resolve-Path -LiteralPath $linker).Path
+          $env:RUSTFLAGS = '-C linker-flavor=lld-link -C link-arg=/Brepro -C link-arg=/DEBUG:NONE'
+          Write-Output "Shell linker: $linker; SHA-256 $((Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash)"
+          npm run tauri:build:win:unsigned
+          if ($LASTEXITCODE -ne 0) { throw "shell or installer build failed: $LASTEXITCODE" }
+      - name: Freeze resource pack, index, and executable identities
+        shell: pwsh
+        run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $source = Get-Item src-tauri/target/release/gogoke.exe
-          $destination = Join-Path $stage "gogoke.exe"
-          Copy-Item $source.FullName $destination
-          Copy-Item LICENSE "$stage/LICENSE"
-          Copy-Item THIRD_PARTY_NOTICES.md "$stage/THIRD_PARTY_NOTICES.md"
-          Copy-Item generated/npm-production-notices.html "$stage/npm-production-notices.html"
-          Copy-Item generated/rust-dependency-notices.html "$stage/rust-dependency-notices.html"
-          $status = (Get-AuthenticodeSignature $destination).Status
-          if ($status -ne "NotSigned") {
-            throw "Local-only executable unexpectedly produced $status"
+          $pack = Join-Path $env:RUNNER_TEMP 'gogoke-resources.windows.zip'
+          $index = Join-Path $env:RUNNER_TEMP 'resource-index.json'
+          $installedRoot = Join-Path $env:RUNNER_TEMP 'gogoke-installed-static'
+          New-Item -ItemType Directory -Path $installedRoot | Out-Null
+          foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+            Copy-Item -LiteralPath $name -Destination (Join-Path $installedRoot $name)
           }
-          $hash = (Get-FileHash $destination -Algorithm SHA256).Hash.ToLowerInvariant()
-          @(
-            "# gogoke-Version: $version"
-            "# local-only: unsigned executable; release smoke not yet passed"
-            "$hash  gogoke.exe"
-          ) | Set-Content "$stage/SHA256SUMS.local-only" -Encoding ascii
-      - name: Upload local-only unsigned gogoke executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: gogoke-windows-local-only-unsigned-executable
-          path: apps/desktop/desktop-local-only/*
-          if-no-files-found: error
-      - name: Stage installer, portable executable, and checksums
-        shell: pwsh
-        run: |
-          $stage = "desktop-artifacts"
-          $portable = "desktop-portable"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item -LiteralPath generated/npm-production-notices.html -Destination (Join-Path $installedRoot 'npm-production-notices.html')
+          Copy-Item -LiteralPath generated/rust-dependency-notices.html -Destination (Join-Path $installedRoot 'rust-dependency-notices.html')
+          $installedService = Join-Path $installedRoot 'gogoke-service'
+          New-Item -ItemType Directory -Path $installedService | Out-Null
+          foreach ($name in @('node_modules', 'fixtures')) {
+            Copy-Item -LiteralPath (Join-Path 'src-tauri/resources/gogoke-service' $name) -Destination $installedService -Recurse
+          }
+          New-Item -ItemType Directory -Path (Join-Path $installedService 'runtime') | Out-Null
+          Copy-Item -LiteralPath src-tauri/resources/gogoke-service/runtime/LICENSE -Destination (Join-Path $installedService 'runtime/LICENSE')
+          foreach ($name in @('package.json', 'T3-LICENSE', 'T3-runtime-notices.html', 'native-host-notices.html')) {
+            Copy-Item -LiteralPath (Join-Path 'src-tauri/resources/gogoke-service' $name) -Destination (Join-Path $installedService $name)
+          }
+          if (Test-Path -LiteralPath (Join-Path $installedRoot 'gogoke-service/runtime/node.exe')) {
+            throw 'Installed static inventory must not contain the separately indexed Node executable.'
+          }
+          python ../../tools/ci/gogoke_resource_pack.py pack --frontend-dir dist --service-dist-dir src-tauri/resources/gogoke-service/dist --output $pack
+          if ($LASTEXITCODE -ne 0) { throw "resource pack creation failed: $LASTEXITCODE" }
+          python ../../tools/ci/gogoke_resource_pack.py index --pack $pack `
+            --portable-shell src-tauri/target/release/gogoke.exe `
+            --native-host src-tauri/binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe `
+            --node src-tauri/resources/gogoke-service/runtime/node.exe `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --version $version `
+            --installed-root $installedRoot --output $index
+          if ($LASTEXITCODE -ne 0) { throw "resource index creation failed: $LASTEXITCODE" }
+          python ../../tools/ci/gogoke_resource_pack.py verify --pack $pack --index $index
+          if ($LASTEXITCODE -ne 0) { throw "resource pack verification failed: $LASTEXITCODE" }
           $installers = @(Get-Item src-tauri/target/release/bundle/nsis/*.exe)
-          if ($installers.Count -ne 1) {
-            throw "Expected one NSIS installer, found $($installers.Count)"
-          }
-          $installer = $installers[0]
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $releaseInstaller = Join-Path $stage "gogoke-$version-windows-x64-unsigned-setup.exe"
-          Copy-Item $installer.FullName $releaseInstaller
-          Copy-Item src-tauri/target/release/gogoke.exe "$portable/gogoke.exe"
-          Copy-Item LICENSE "$portable/LICENSE"
-          Copy-Item THIRD_PARTY_NOTICES.md "$portable/THIRD_PARTY_NOTICES.md"
-          Copy-Item generated/npm-production-notices.html "$portable/npm-production-notices.html"
-          Copy-Item generated/rust-dependency-notices.html "$portable/rust-dependency-notices.html"
-          foreach ($file in @($releaseInstaller, "$portable/gogoke.exe")) {
-            $status = (Get-AuthenticodeSignature $file).Status
-            if ($status -ne "NotSigned") {
-              throw "Unsigned trial unexpectedly produced $status for $file"
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)" }
+          foreach ($file in @($installers[0].FullName, 'src-tauri/target/release/gogoke.exe', 'src-tauri/binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe')) {
+            if ((Get-AuthenticodeSignature -LiteralPath $file).Status -ne 'NotSigned') {
+              throw "Unsigned build unexpectedly produced a signed executable: $file"
             }
           }
-          $portableZip = Join-Path $stage "gogoke-$version-windows-x64-unsigned-portable.zip"
-          Compress-Archive -Path "$portable/*" -DestinationPath $portableZip
-          $hashLines = @(Get-ChildItem $stage -File |
-            Sort-Object Name |
-            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name })
-          @("# gogoke-Version: $version") + $hashLines |
-            Set-Content "$stage/SHA256SUMS.windows" -Encoding ascii
-      - name: Smoke full update, readiness, and rollback
-        timeout-minutes: 15
+          python ../../tools/ci/gogoke_ci_frozen_artifact.py stage `
+            --pack $pack --index $index `
+            --portable-shell src-tauri/target/release/gogoke.exe `
+            --native-host src-tauri/binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe `
+            --node src-tauri/resources/gogoke-service/runtime/node.exe `
+            --installer $installers[0].FullName `
+            --package-inventory generated/gogoke-package-hashes.json `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --run-id '${{ github.run_id }}' `
+            --run-attempt '${{ github.run_attempt }}' --lane '${{ matrix.lane }}' `
+            --output frozen-artifact
+          if ($LASTEXITCODE -ne 0) { throw "frozen artifact staging failed: $LASTEXITCODE" }
+      - name: Package formal unsigned portable ZIP from frozen shell
+        if: matrix.lane == 'frozen'
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $releaseInstaller = Join-Path "desktop-artifacts" "gogoke-$version-windows-x64-unsigned-setup.exe"
-          & ../../tools/smoke-gogoke-update.ps1 -Installer $releaseInstaller -Version $version -ExpectedNoticeDirectory generated
-          if ($LASTEXITCODE -ne 0) {
-            throw "gogoke update smoke failed with exit code $LASTEXITCODE"
-          }
-      - name: Upload smoke-verified unsigned release artifacts
+          $portable = Join-Path 'portable-artifact' "gogoke-$version-windows-x64-unsigned-portable.zip"
+          python ../../tools/ci/gogoke_ci_frozen_artifact.py portable `
+            --frozen frozen-artifact --license LICENSE --notices THIRD_PARTY_NOTICES.md `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --run-id '${{ github.run_id }}' `
+            --run-attempt '${{ github.run_attempt }}' --output $portable
+          if ($LASTEXITCODE -ne 0) { throw "portable ZIP packaging failed: $LASTEXITCODE" }
+      - name: Upload formal unsigned portable ZIP
+        if: matrix.lane == 'frozen'
         uses: actions/upload-artifact@v4
         with:
-          name: gogoke-windows-unsigned
-          path: apps/desktop/desktop-artifacts/*
+          name: gogoke-windows-portable-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
+          path: apps/desktop/portable-artifact/*
           if-no-files-found: error
+          retention-days: 30
+      - name: Select immutable artifact name
+        id: artifact-name
+        shell: pwsh
+        run: |
+          $name = if ('${{ matrix.lane }}' -ceq 'frozen') {
+            'gogoke-windows-frozen-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}'
+          } else {
+            'gogoke-windows-repro-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}'
+          }
+          "name=$name" >> $env:GITHUB_OUTPUT
+      - name: Upload immutable build lane
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: apps/desktop/frozen-artifact/*
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-reproducibility:
+    name: Compare independent Windows executable bytes
+    timeout-minutes: 15
+    needs: [windows-build]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: gogoke-windows-frozen-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
+          path: comparison/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: gogoke-windows-repro-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
+          path: comparison/repro
+      - name: Require byte-identical raw shell, NSIS-patched shell, host, Node, pack, and index
+        shell: pwsh
+        run: |
+          python tools/ci/gogoke_ci_frozen_artifact.py compare `
+            --frozen comparison/frozen --repro comparison/repro `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --run-id '${{ github.run_id }}' `
+            --run-attempt '${{ github.run_attempt }}' `
+            --output comparison/gogoke-r2-06-reproducibility.json
+          if ($LASTEXITCODE -ne 0) { throw "independent Windows byte comparison failed: $LASTEXITCODE" }
+      - name: Upload reproducibility evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-windows-reproducibility-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
+          path: comparison/gogoke-r2-06-reproducibility.json
+          if-no-files-found: error
+          retention-days: 30

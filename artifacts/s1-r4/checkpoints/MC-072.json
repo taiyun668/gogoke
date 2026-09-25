@@ -1,0 +1,53 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-072",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "ea11f6b5152f887867b4fc71a9350e09fe8ff49a",
+  "recorded_utc": "2026-09-24T19:24:55Z",
+  "reason": "OWNER_REQUESTED_PAUSE_DURING_R2_04_PATH_FIX_CLOUD_RUN",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "completed_increment": {
+    "diagnostic_run": 36042269456,
+    "diagnostic_sha": "66854f4bf86051416dc623103b341499fccbe85e",
+    "root_cause_evidence": "The installed Tauri child exited in Node main module resolution with EISDIR while lstat reached a drive root. Product request and source-derived root hashes matched direct successful replays; Tauri installed resource paths used Windows verbatim spelling while direct replays used ordinary drive spelling.",
+    "path_reflection": "MC-070 recorded the Owner-requested path-first reflection and diagnostic plan; MC-071 recorded the original child stderr and root cause.",
+    "production_fix_sha": "ea11f6b5152f887867b4fc71a9350e09fe8ff49a",
+    "production_fix": "Normalize supported trusted Tauri Windows verbatim disk and UNC paths to equivalent ordinary absolute paths before Node launch; reject unsupported namespaces. Temporary diagnostic output and direct replay instrumentation were removed."
+  },
+  "evidence_at_pause": {
+    "desktop_run": 36046157501,
+    "exact_sha": "ea11f6b5152f887867b4fc71a9350e09fe8ff49a",
+    "run_status": "IN_PROGRESS",
+    "browser_build_and_tests": "PASS",
+    "dependency_notices": "PASS",
+    "unsigned_nsis_job": "IN_PROGRESS_AT_BUILD_INSTALLER",
+    "installed_product_smoke": "NOT_RUN_AT_OBSERVATION",
+    "source_hygiene_run": 36046157459,
+    "source_hygiene": "PASS",
+    "local_checks": "git diff --check and package script syntax passed; committed-tree public source scan passed with zero leaks"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate_state": "NONE",
+  "evidence_boundary": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "candidate_review": "NOT_RUN",
+    "adoption_release_merge": "NONE"
+  },
+  "architecture_blocker": "NO",
+  "external_action": "NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "pause_state": "OWNER_REQUESTED_STOP_AFTER_CHECKPOINT_PUSH; NO_FURTHER_CI_WAIT_OR_CONSTRUCTION",
+  "next_action_on_owner_resume": "Re-read execution, main, PR and Parallel Inbox remote truth. Re-read run 36046157501 and any replacement run triggered by this checkpoint push at their exact SHAs. Inspect installed product smoke and machine inventory evidence; if the path fix still fails, repair the first real cause within R2-04 and rerun exact-head cloud verification."
+}

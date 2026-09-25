@@ -1,6 +1,7 @@
 //! Native Product Authority, in the product's existing Route-B SQLite domain.
 //! No model/adapter/Node caller can construct an OwnerIssuer or issue grants.
 //! Grant validation is transaction-scoped, not a second Context-side authority.
+pub(crate) const PUBLIC_R2_MANIFEST_BLOB: &str = "17afbba28795338561530927595fda93fd8a2a11";
 mod bootstrap;
 mod catalog;
 mod delegation;
@@ -8,8 +9,33 @@ mod model;
 mod promotion;
 mod promotion_commit;
 mod transaction;
+mod process_custody;
+mod r2_fixture_driver;
+mod r2_fact_journal;
+pub(crate) use r2_fact_journal::{
+    begin as begin_r2_test_fact_write, bind as bind_r2_test_fact_write,
+    reject as reject_r2_test_fact_write,
+    R2TestFactIntent, R2TestFactJournalEntry,
+};
+pub(crate) use r2_fixture_driver::{
+    register as register_r2_test_fixture_driver,
+    resolve as resolve_r2_test_fixture_driver,
+    read_action_binding as read_r2_test_fixture_action_binding,
+    FIXED_RUNTIME_INSTANCE_ID,
+};
 
-pub(crate) use bootstrap::initialize_profile;
+pub(crate) use process_custody::{
+    initialize as initialize_process_custody_schema,
+    mark_active as mark_process_active,
+    mark_stopped as mark_process_stopped,
+    mark_unknown as mark_process_unknown,
+    record_prepared as record_prepared_process,
+};
+
+pub(crate) use bootstrap::{
+    admit_owner_controller_caller, initialize_profile, read_product_identity,
+    ProductIdentitySnapshot,
+};
 
 #[cfg(test)]
 mod promotion_commit_tests;
@@ -92,7 +118,9 @@ pub(crate) use execution_recipe::{
 
 pub(crate) use bootstrap::OwnerIssuer;
 pub(crate) use catalog::{
-    delegate_owner_grant, issue_owner_grant, revise_owner_grant, revoke_owner_grant,
+    delegate_owner_grant, issue_owner_grant, issue_r2_public_context_grant_once,
+    r2_public_context_grant_id,
+    revise_owner_grant, revoke_owner_grant,
 };
 pub(crate) use context_read::{
     read_grantee_context, read_owner_context, AuthorizedContextReadSnapshot, ContextReadRequest,
@@ -102,7 +130,8 @@ pub(crate) use context_read_set::{
     read_grantee_context_set, read_owner_context_set, AuthorizedContextReadSet, ContextReadSet,
 };
 pub(crate) use delegation::{
-    delegate_owner_delegation, issue_owner_delegation, read_current_delegation,
+    delegate_owner_delegation, issue_owner_delegation, issue_r2_test_owner_delegation_once,
+    r2_test_grant_id, read_current_delegation,
     revise_owner_delegation, revoke_owner_delegation, AuthorityCeiling, DelegationBinding,
     DelegationGrantIdentity, DelegationGrantInput, DelegationGrantSnapshot, DelegationPrincipal,
 };
@@ -125,7 +154,7 @@ mod objective_outcome;
 pub(crate) use objective_outcome::{
     append_objective_outcome, read_objective_outcome, AppendObjectiveOutcome,
     ObjectiveEvidenceRef, ObjectiveObservationWindow, ObjectiveOutcomeVersion,
-    ObjectiveVersionRef,
+    ObjectiveVersionRef, R2ObjectiveFactRefs, read_r2_objective_fact_refs,
 };
 #[cfg(test)]
 #[path = "objective_outcome_tests.rs"]
@@ -140,6 +169,7 @@ pub(crate) use dream::{
     append_dream_proposal, append_dream_run, read_dream_proposal, read_dream_run,
     AppendDreamProposal, AppendDreamRun, DreamAllowedChange, DreamBudgetLease,
     DreamEvaluationRef, DreamObjectRef, DreamReceipt, DreamVersionRef,
+    R2TestRollbackPlan, prepare_r2_test_rollback_plan,
 };
 #[cfg(test)]
 #[path = "dream_tests.rs"]
@@ -177,6 +207,12 @@ mod decision_commit_tests;
 
 mod action_authority;
 pub(crate) use action_authority::{
-    begin_committed_action, prepare_action_authority, BeginCommittedAction,
-    BeginCommittedDisposition, PrepareActionAuthority, PreparedActionAuthority,
+    begin_committed_action, derive_action_decision_basis, derive_native_action_current_facts,
+    prepare_action_authority,
+    read_native_action_fixture_selection, read_reconciled_action_transport,
+    record_trusted_native_action_receipt, record_trusted_native_action_transport_receipt,
+    complete_action_from_native_receipt, ActionCompletionDisposition, ActionDecisionBasis, BeginCommittedAction,
+    BeginCommittedDisposition, NativeActionCurrentFactsRefs, NativeActionFixtureSelection,
+    TrustedActionCompletionEvidence, TrustedActionTransportEvidence,
+    PrepareActionAuthority, PreparedActionAuthority,
 };

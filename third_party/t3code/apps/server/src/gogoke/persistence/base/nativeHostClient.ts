@@ -7,6 +7,9 @@ import type {
   ContextCommitReceipt,
 } from "../../context/repository/repository.ts";
 import type {
+  R2TestFactJournalIntent, R2TestFactJournalEntry,
+} from "../../context/repository/gitFactWrite.ts";
+import type {
   BeginActionResult,
   DurableActionReservation,
   DurableDispatchOutcome,
@@ -28,6 +31,567 @@ export type NativeHostReply = {
   readonly ok: boolean;
   readonly body: string;
   readonly elapsedMicros: number;
+};
+
+export interface NativeProductIdentitySnapshot {
+  readonly policyRevision: string;
+  readonly principalId: string;
+  readonly profileId: string;
+  readonly revocationHead: string;
+  readonly rootIdentity: string;
+  readonly seatId: string;
+}
+
+const decodeProductIdentity = (body: string): NativeProductIdentitySnapshot => {
+  const value: unknown = JSON.parse(body);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("PRODUCT_IDENTITY_REPLY", "identity reply must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = [
+    "policyRevision",
+    "principalId",
+    "profileId",
+    "revocationHead",
+    "rootIdentity",
+    "seatId",
+  ] as const;
+  const ownKeys = Reflect.ownKeys(record);
+  if (
+    ownKeys.length !== keys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key as (typeof keys)[number])) ||
+    keys.some(
+      (key) =>
+        typeof record[key] !== "string" ||
+        (record[key] as string).length === 0 ||
+        record[key] !== (record[key] as string).trim(),
+    )
+  ) {
+    throw new NativeHostClientError("PRODUCT_IDENTITY_REPLY", "identity reply fields are invalid");
+  }
+  if (
+    !/^(?:0|[1-9][0-9]*)$/.test(record.policyRevision as string) ||
+    !/^(?:0|[1-9][0-9]*)$/.test(record.revocationHead as string)
+  ) {
+    throw new NativeHostClientError("PRODUCT_IDENTITY_REPLY", "identity revisions are not canonical");
+  }
+  return Object.freeze({
+    policyRevision: record.policyRevision as string,
+    principalId: record.principalId as string,
+    profileId: record.profileId as string,
+    revocationHead: record.revocationHead as string,
+    rootIdentity: record.rootIdentity as string,
+    seatId: record.seatId as string,
+  });
+};
+
+export interface NativeControllerCallerContext {
+  readonly policyRevision: string;
+  readonly principalId: string;
+  readonly profileId: string;
+  readonly revocationHead: string;
+  readonly role: "controller";
+  readonly seatId: string;
+}
+
+export interface NativeControllerAdmissionReceipt extends NativeControllerCallerContext {
+  readonly admitted: true;
+  readonly elapsedMicros: number;
+}
+
+export interface NativeR2TestDelegationReceipt {
+  readonly state: "TEST_ONLY_GRANT_PREPARED_NOT_ACTION";
+  readonly grantRef: string;
+  readonly revision: string;
+  readonly revocationHead: string;
+  readonly expiresAtEpochMs: string;
+}
+
+export interface NativeR2TestContextGrantReceipt {
+  readonly state: "TEST_ONLY_CONTEXT_GRANT_PREPARED";
+  readonly grantRef: string;
+  readonly revision: string;
+  readonly revocationHead: string;
+}
+
+export function decodeR2TestContextGrantReceipt(body: string): NativeR2TestContextGrantReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_CONTEXT", "invalid native Context grant reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_CONTEXT", "invalid native Context grant reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 4 ||
+      record.state !== "TEST_ONLY_CONTEXT_GRANT_PREPARED" ||
+      typeof record.grantRef !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.grantRef) ||
+      typeof record.revision !== "string" || !/^[1-9][0-9]*$/.test(record.revision) ||
+      typeof record.revocationHead !== "string" || !/^(0|[1-9][0-9]*)$/.test(record.revocationHead)) {
+    throw new NativeHostClientError("R2_TEST_CONTEXT", "native Context grant identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestContextGrantReceipt);
+}
+
+export interface NativeR2TestPackageReceipt {
+  readonly state: "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "REPLAYED";
+  readonly packageOperationId: "r2-02-package" | "r2-03-package";
+  readonly packageDigest: string;
+}
+
+export interface NativeR2TestLineageReceipt {
+  readonly state: "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "REPLAYED";
+  readonly sessionId: "session-r2-02-worker" | "session-r2-03-worker";
+  readonly bindingId: "binding-r2-02-worker" | "binding-r2-03-worker";
+  readonly generation: "1";
+  readonly sourceEpoch: "1";
+}
+
+export interface NativeR2TestTaskReceipt {
+  readonly state: "TEST_ONLY_TASK_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "RECONCILED";
+  readonly taskId: "task-r2-02-test" | "task-r2-03-test";
+  readonly taskRevision: string;
+  readonly contentHash: string;
+}
+
+export interface NativeR2TestRecipeReceipt {
+  readonly state: "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION";
+  readonly disposition: "COMMITTED" | "RECONCILED";
+  readonly recipeId: "recipe-r2-02-test" | "recipe-r2-03-test";
+  readonly revision: string;
+  readonly contentHash: string;
+}
+
+export interface NativeR2TestFixtureDriverRegistration {
+  readonly state: "TEST_ONLY_FIXTURE_DRIVER_REGISTERED";
+  readonly driverId: string;
+  readonly adapterVersion: "1.0.0";
+  readonly runtimeInstanceId: string;
+  readonly contentHash: string;
+}
+
+export interface NativeR2TestFixtureActionBinding {
+  readonly state: "TEST_ONLY_ACTION_BINDING";
+  readonly driverId: string;
+  readonly adapterVersion: "1.0.0";
+  readonly runtimeInstanceId: string;
+  readonly launchDigestSha256: string;
+}
+
+const novelDriver = /^mock_novel_[0-9a-f]{16}$/u;
+
+export function decodeR2TestFixtureDriverRegistration(body: string): NativeR2TestFixtureDriverRegistration {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native registration reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native registration reply");
+  }
+  const r = value as Record<string, unknown>;
+  if (Reflect.ownKeys(r).length !== 5 || r.state !== "TEST_ONLY_FIXTURE_DRIVER_REGISTERED" ||
+      typeof r.driverId !== "string" || !novelDriver.test(r.driverId) ||
+      r.adapterVersion !== "1.0.0" ||
+      typeof r.runtimeInstanceId !== "string" ||
+      !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(r.runtimeInstanceId) ||
+      !r.runtimeInstanceId.startsWith(`runtime-r2-03-${r.driverId.slice(11)}-`) ||
+      typeof r.contentHash !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(r.contentHash)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "native registration identity mismatch");
+  }
+  return Object.freeze(r as unknown as NativeR2TestFixtureDriverRegistration);
+}
+
+export function decodeR2TestFixtureActionBinding(body: string): NativeR2TestFixtureActionBinding {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native Action binding reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid native Action binding reply");
+  }
+  const r = value as Record<string, unknown>;
+  if (Reflect.ownKeys(r).length !== 5 || r.state !== "TEST_ONLY_ACTION_BINDING" ||
+      typeof r.driverId !== "string" || !novelDriver.test(r.driverId) ||
+      r.adapterVersion !== "1.0.0" ||
+      typeof r.runtimeInstanceId !== "string" ||
+      !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(r.runtimeInstanceId) ||
+      !r.runtimeInstanceId.startsWith(`runtime-r2-03-${r.driverId.slice(11)}-`) ||
+      typeof r.launchDigestSha256 !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(r.launchDigestSha256)) {
+    throw new NativeHostClientError("R2_NOVEL_DRIVER", "native Action binding mismatch");
+  }
+  return Object.freeze(r as unknown as NativeR2TestFixtureActionBinding);
+}
+
+export interface NativeR2ActionDecisionBasis {
+  readonly state: "TEST_ONLY_DECISION_BASIS_NOT_ACTION";
+  readonly actionDigest: string;
+  readonly stateViewHash: string;
+  readonly taskRevision: string;
+  readonly policyRevision: string;
+  readonly bindingId: string;
+  readonly bindingGeneration: string;
+}
+
+export interface NativeR2ObjectiveFactRefs {
+  readonly state: "TEST_ONLY_NATIVE_OBJECTIVE_REFS";
+  readonly manifestHash: string;
+  readonly manifestContentHash: string;
+  readonly decisionContentHash: string;
+  readonly actionCompletionHash: string;
+  readonly actionCompletedAt: string;
+}
+
+export interface NativeR2TestRollbackPlan {
+  readonly state: "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED";
+  readonly disposition: "COMMITTED" | "RECONCILED";
+  readonly domainId: "domain-r2-02-test";
+  readonly planId: "rollback-r2-02-test" | "rollback-r2-03-test";
+  readonly revision: "1";
+  readonly contentHash: string;
+  readonly beforeHash: string;
+  readonly afterHash: string;
+}
+
+export function decodeR2TestRollbackPlan(body: string, slot?: "novel"): NativeR2TestRollbackPlan {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_ROLLBACK_PLAN", "invalid native rollback reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_ROLLBACK_PLAN", "invalid native rollback reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 8 ||
+      record.state !== "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED" ||
+      !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
+      record.domainId !== "domain-r2-02-test" ||
+      record.planId !== (slot === "novel" ? "rollback-r2-03-test" : "rollback-r2-02-test") || record.revision !== "1" ||
+      !["contentHash", "beforeHash", "afterHash"].every(
+        (key) => typeof record[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(record[key] as string),
+      ) || record.beforeHash === record.afterHash) {
+    throw new NativeHostClientError("R2_ROLLBACK_PLAN", "native rollback identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestRollbackPlan);
+}
+
+export function decodeR2ObjectiveFactRefs(body: string): NativeR2ObjectiveFactRefs {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_OBJECTIVE_REFS", "invalid native refs reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_OBJECTIVE_REFS", "invalid native refs reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 6 ||
+      record.state !== "TEST_ONLY_NATIVE_OBJECTIVE_REFS" ||
+      !["manifestHash", "manifestContentHash", "decisionContentHash", "actionCompletionHash"]
+        .every((key) => typeof record[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(record[key] as string)) ||
+      typeof record.actionCompletedAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(record.actionCompletedAt)) {
+    throw new NativeHostClientError("R2_OBJECTIVE_REFS", "native refs identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2ObjectiveFactRefs);
+}
+
+export interface NativeR2TestActionPreparation {
+  readonly kind: "reserved" | "replay";
+  readonly reservationState: "reserved" | "dispatching" | "not-sent" | "dispatched" | "rejected" | "outcome-unknown" | "completed";
+  readonly operationId: "opr_22222222222222222222222222222222" | "opr_33333333333333333333333333333333";
+  readonly semanticDigest: string;
+  readonly reservationId: "reservation-r2-02-controlled" | "reservation-r2-03-controlled";
+  readonly packageDigest: string;
+  readonly authorityStatus: "PREPARATORY_CURRENT_FACTS_REQUIRED";
+}
+
+export function decodeR2TestActionPreparation(body: string, slot?: "novel"): NativeR2TestActionPreparation {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_ACTION", "invalid native Action preparation"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_ACTION", "invalid native Action preparation");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 7 ||
+      !["reserved", "replay"].includes(String(record.kind)) ||
+      !["reserved", "dispatching", "not-sent", "dispatched", "rejected", "outcome-unknown", "completed"].includes(String(record.reservationState)) ||
+      (record.kind === "reserved" && record.reservationState !== "reserved") ||
+      record.operationId !== (slot === "novel" ? "opr_33333333333333333333333333333333" : "opr_22222222222222222222222222222222") ||
+      typeof record.semanticDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.semanticDigest) ||
+      record.reservationId !== (slot === "novel" ? "reservation-r2-03-controlled" : "reservation-r2-02-controlled") ||
+      typeof record.packageDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.packageDigest) ||
+      record.authorityStatus !== "PREPARATORY_CURRENT_FACTS_REQUIRED") {
+    throw new NativeHostClientError("R2_TEST_ACTION", "native Action identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestActionPreparation);
+}
+
+export function decodeR2ActionDecisionBasis(body: string): NativeR2ActionDecisionBasis {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_DECISION", "invalid native Decision basis"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_DECISION", "invalid native Decision basis");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 7 ||
+      record.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
+      typeof record.actionDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.actionDigest) ||
+      typeof record.stateViewHash !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.stateViewHash) ||
+      typeof record.taskRevision !== "string" || !/^[1-9][0-9]*$/.test(record.taskRevision) ||
+      typeof record.policyRevision !== "string" || !/^[1-9][0-9]*$/.test(record.policyRevision) ||
+      typeof record.bindingId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.bindingId) ||
+      record.bindingGeneration !== "1") {
+    throw new NativeHostClientError("R2_TEST_DECISION", "native Decision basis mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2ActionDecisionBasis);
+}
+
+export function decodeR2TestRecipeReceipt(body: string, slot?: "novel"): NativeR2TestRecipeReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_RECIPE", "invalid native Recipe reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_RECIPE", "invalid native Recipe reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 5 ||
+      record.state !== "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
+      record.recipeId !== (slot === "novel" ? "recipe-r2-03-test" : "recipe-r2-02-test") ||
+      typeof record.revision !== "string" || !/^[1-9][0-9]*$/.test(record.revision) ||
+      typeof record.contentHash !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.contentHash)) {
+    throw new NativeHostClientError("R2_TEST_RECIPE", "native Recipe identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestRecipeReceipt);
+}
+
+export function decodeR2TestTaskReceipt(body: string, slot?: "novel"): NativeR2TestTaskReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_TASK", "invalid native Task reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_TASK", "invalid native Task reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 5 ||
+      record.state !== "TEST_ONLY_TASK_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "RECONCILED"].includes(String(record.disposition)) ||
+      record.taskId !== (slot === "novel" ? "task-r2-03-test" : "task-r2-02-test") ||
+      typeof record.taskRevision !== "string" || !/^[1-9][0-9]*$/.test(record.taskRevision) ||
+      typeof record.contentHash !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.contentHash)) {
+    throw new NativeHostClientError("R2_TEST_TASK", "native Task identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestTaskReceipt);
+}
+
+export function decodeR2TestLineageReceipt(body: string, slot?: "novel"): NativeR2TestLineageReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_LINEAGE", "invalid native lineage reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_LINEAGE", "invalid native lineage reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 6 ||
+      record.state !== "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "REPLAYED"].includes(String(record.disposition)) ||
+      record.sessionId !== (slot === "novel" ? "session-r2-03-worker" : "session-r2-02-worker") ||
+      record.bindingId !== (slot === "novel" ? "binding-r2-03-worker" : "binding-r2-02-worker") ||
+      record.generation !== "1" || record.sourceEpoch !== "1") {
+    throw new NativeHostClientError("R2_TEST_LINEAGE", "native lineage identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestLineageReceipt);
+}
+
+export function decodeR2TestPackageReceipt(body: string, slot?: "novel"): NativeR2TestPackageReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid native package reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid native package reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 4 ||
+      record.state !== "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION" ||
+      !["COMMITTED", "REPLAYED"].includes(String(record.disposition)) ||
+      record.packageOperationId !== (slot === "novel" ? "r2-03-package" : "r2-02-package") ||
+      typeof record.packageDigest !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.packageDigest)) {
+    throw new NativeHostClientError("R2_TEST_PACKAGE", "native package identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestPackageReceipt);
+}
+
+export function decodeR2TestDelegationReceipt(body: string): NativeR2TestDelegationReceipt {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_GRANT", "invalid native grant reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_GRANT", "invalid native grant reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 5 ||
+      record.state !== "TEST_ONLY_GRANT_PREPARED_NOT_ACTION" ||
+      typeof record.grantRef !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.grantRef) ||
+      typeof record.revision !== "string" || !/^[1-9][0-9]*$/.test(record.revision) ||
+      typeof record.revocationHead !== "string" || !/^(0|[1-9][0-9]*)$/.test(record.revocationHead) ||
+      typeof record.expiresAtEpochMs !== "string" || !/^[1-9][0-9]*$/.test(record.expiresAtEpochMs)) {
+    throw new NativeHostClientError("R2_TEST_GRANT", "native grant identity mismatch");
+  }
+  return Object.freeze(record as unknown as NativeR2TestDelegationReceipt);
+}
+
+export interface NativeControlledFixtureProbe {
+  readonly state: "TEST_PROTOCOL_SETTLED_NOT_RESULT";
+  readonly frames: readonly string[];
+  readonly stopProofHash: string;
+}
+
+export interface NativeControlledFixtureActionInput {
+  readonly caller: NativeControllerCallerContext;
+  readonly domainId: string;
+  readonly operationId: string;
+  readonly reservationId: string;
+  readonly promptJson: string;
+}
+
+export type NativeControlledFixtureAction =
+  | { readonly state: "ACTION_TRANSPORT_COMPLETED_NOT_RESULT";
+      readonly frames: readonly string[]; readonly actionCompletionRef: string;
+      readonly stopProofHash: string }
+  | { readonly state: "ACTION_TRANSPORT_RECONCILED_NOT_RESULT";
+      readonly frames: readonly string[]; readonly actionCompletionRef: string;
+      readonly stopProofHash: string }
+  | { readonly state: "ACTION_COMPLETION_RECONCILED_NOT_RESULT";
+      readonly actionCompletionRef: string };
+
+export function decodeNativeControlledFixtureAction(body: string): NativeControlledFixtureAction {
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("CONTROLLED_ACTION", "invalid native action reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("CONTROLLED_ACTION", "invalid native action reply");
+  }
+  const record = value as Record<string, unknown>;
+  const ref = record.actionCompletionRef;
+  if (typeof ref !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(ref)) {
+    throw new NativeHostClientError("CONTROLLED_ACTION", "invalid Action completion reference");
+  }
+  if (record.state === "ACTION_COMPLETION_RECONCILED_NOT_RESULT" &&
+      Reflect.ownKeys(record).length === 2) {
+    return Object.freeze({ state: record.state, actionCompletionRef: ref });
+  }
+  if ((record.state !== "ACTION_TRANSPORT_COMPLETED_NOT_RESULT" &&
+       record.state !== "ACTION_TRANSPORT_RECONCILED_NOT_RESULT") ||
+      Reflect.ownKeys(record).length !== 4 || !Array.isArray(record.frames) ||
+      record.frames.length !== 5 || !record.frames.every((frame) => typeof frame === "string" && frame.length > 0) ||
+      record.frames.reduce<number>((size, frame) => size + Buffer.byteLength(frame as string, "utf8"), 0) > 64 * 1024 ||
+      typeof record.stopProofHash !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(record.stopProofHash)) {
+    throw new NativeHostClientError("CONTROLLED_ACTION", "invalid native Action transport evidence");
+  }
+  return Object.freeze({ state: record.state,
+    frames: Object.freeze([...record.frames] as string[]), actionCompletionRef: ref,
+    stopProofHash: record.stopProofHash });
+}
+
+const R2_FACT_OPERATION = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const R2_FACT_SHA = /^[0-9a-f]{40}$/u;
+const R2_FACT_HASH = /^sha256:[0-9a-f]{64}$/u;
+const R2_FACT_REPOSITORY = "taiyun668/gogoke";
+const R2_FACT_BRANCH = "s1-r4-ledger-test/r2-02";
+const R2_FACT_PATH_ROOT = "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results";
+
+const validateR2FactIntent = (intent: R2TestFactJournalIntent): void => {
+  if (!R2_FACT_OPERATION.test(intent.operationId) ||
+      !R2_FACT_SHA.test(intent.executionEvidenceSha) ||
+      !R2_FACT_HASH.test(intent.bytesHash) ||
+      intent.repository !== R2_FACT_REPOSITORY || intent.branch !== R2_FACT_BRANCH ||
+      intent.path !== `${R2_FACT_PATH_ROOT}/${intent.operationId}.json`) {
+    throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid fixed test ledger intent");
+  }
+};
+
+export function decodeR2TestFactJournalEntry(
+  body: string, intent: R2TestFactJournalIntent,
+): R2TestFactJournalEntry {
+  validateR2FactIntent(intent);
+  let value: unknown;
+  try { value = JSON.parse(body); }
+  catch { throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid native journal reply"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid native journal reply");
+  }
+  const record = value as Record<string, unknown>;
+  if (Reflect.ownKeys(record).length !== 8 ||
+      record.operationId !== intent.operationId ||
+      record.executionEvidenceSha !== intent.executionEvidenceSha ||
+      record.bytesHash !== intent.bytesHash ||
+      record.repository !== intent.repository || record.branch !== intent.branch ||
+      record.path !== intent.path ||
+      !((record.baseHead === null && record.targetCommit === null) ||
+        (typeof record.baseHead === "string" && R2_FACT_SHA.test(record.baseHead) &&
+         typeof record.targetCommit === "string" && R2_FACT_SHA.test(record.targetCommit)))) {
+    throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "native journal identity mismatch");
+  }
+  return Object.freeze(record as unknown as R2TestFactJournalEntry);
+}
+
+const canonicalControllerField = (value: unknown, path: string): string => {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    throw new NativeHostClientError("CALLER_ADMISSION", `${path} must be canonical text`);
+  }
+  return value;
+};
+
+const encodeControllerAdmissionFrame = (input: NativeControllerCallerContext): string => {
+  if (input.role !== "controller") {
+    throw new NativeHostClientError("CALLER_ADMISSION", "role must be controller");
+  }
+  return JSON.stringify({
+    operation: "AdmitControllerCaller",
+    policyRevision: canonicalControllerField(input.policyRevision, "policyRevision"),
+    principalId: canonicalControllerField(input.principalId, "principalId"),
+    profileId: canonicalControllerField(input.profileId, "profileId"),
+    revocationHead: canonicalControllerField(input.revocationHead, "revocationHead"),
+    role: input.role,
+    seatId: canonicalControllerField(input.seatId, "seatId"),
+  });
+};
+
+const decodeControllerAdmission = (
+  body: string,
+  input: NativeControllerCallerContext,
+  elapsedMicros: number,
+): NativeControllerAdmissionReceipt => {
+  const value: unknown = JSON.parse(body);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeHostClientError("CALLER_ADMISSION", "admission reply must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = [
+    "admitted",
+    "policyRevision",
+    "principalId",
+    "profileId",
+    "revocationHead",
+    "role",
+    "seatId",
+  ] as const;
+  const ownKeys = Reflect.ownKeys(record);
+  if (
+    ownKeys.length !== keys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key as (typeof keys)[number])) ||
+    record.admitted !== true ||
+    keys.slice(1).some((key) => record[key] !== input[key as keyof NativeControllerCallerContext])
+  ) {
+    throw new NativeHostClientError("CALLER_ADMISSION", "native caller admission mismatch");
+  }
+  return Object.freeze({ ...input, admitted: true as const, elapsedMicros });
 };
 
 export interface NativeDecisionAuthoritySnapshot {
@@ -387,13 +951,13 @@ export const decodeExecutionRecipeReceipt = (body: string): NativeExecutionRecip
 export interface NativeObjectiveOutcomeRequest { readonly domainId:string; readonly outcomeId:string; readonly revision:string; readonly expectedPreviousRevision:string|null; readonly expectedPreviousContentHash:string|null; readonly operationId:string; readonly eventId:string; readonly receiptId:string; readonly recordedAt:string; readonly manifestId:string; readonly manifestVersion:string; readonly manifestHash:string; readonly decisionId:string; readonly decisionVersion:string; readonly decisionHash:string; readonly actionOperationId:string; readonly actionCompletionRef:string; readonly resultRefs:ReadonlyArray<NativeContextRecord>; readonly evidenceRefs:ReadonlyArray<NativeContextRecord>; readonly observationStartsAt:string; readonly observationEndsAt:string; readonly observationStatus:string; }
 export interface NativeEvaluationRequest { readonly domainId:string; readonly evaluationId:string; readonly revision:string; readonly expectedPreviousRevision:string|null; readonly expectedPreviousContentHash:string|null; readonly operationId:string; readonly eventId:string; readonly receiptId:string; readonly recordedAt:string; readonly sourceIdentity:string; readonly outcomeRefs:ReadonlyArray<NativeContextRecord>; readonly decisionFamily:string; readonly scorerVersion:string; readonly rubricVersion:string; readonly calibrationKey:string; readonly calibrationVersion:string; readonly datasetNamespace:string; readonly datasetSplit:string; readonly evidenceRefs:ReadonlyArray<NativeContextRecord>; readonly metricsHash:string; readonly safetyStatus:string; readonly privacyStatus:string; }
 export interface NativeContextRecord { readonly objectType:string; readonly objectId:string; readonly revision:string; readonly contentHash:string; }
-export interface NativeAuthorityRecordReceipt { readonly disposition:"COMMITTED"|"REPLAYED"; readonly operationId:string; readonly objectId:string; readonly revision:string; readonly contentHash:string; readonly receiptId:string; }
+export interface NativeAuthorityRecordReceipt { readonly disposition:"COMMITTED"|"RECONCILED"; readonly operationId:string; readonly objectId:string; readonly revision:string; readonly contentHash:string; readonly receiptId:string; }
 export interface NativeAuthorityObjectSnapshot { readonly contentHash:string; readonly domainId:string; readonly objectId:string; readonly revision:string; }
 export interface NativeSessionLineageSnapshot { readonly contentHash:string; readonly domainId:string; readonly lifecycle:string; readonly revision:string; readonly sessionId:string; }
 export interface NativeExposureReceiptSnapshot { readonly domainId:string; readonly receiptId:string; readonly sessionRevision:string; readonly sessionId:string; }
 const encodeAuthorityRecords=(tag:string,records:ReadonlyArray<NativeContextRecord>,width=4):string=>encodeStringRecords(tag,records.map(r=>[r.objectType,r.objectId,r.revision,r.contentHash].slice(0,width)),width,false);
 const encodeEvaluationOutcomes=(records:ReadonlyArray<NativeContextRecord>):string=>encodeStringRecords("gogoke.evaluation-outcomes.v1",records.map(r=>[r.objectId,r.revision,r.contentHash]),3,false);
-const decodeAuthorityReceipt=(body:string,operation:string):NativeAuthorityRecordReceipt=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["contentHash","disposition","objectId","operationId","receiptId","revision"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string")||v.operation!==undefined||!["COMMITTED","REPLAYED"].includes(String(v.disposition)))throw new NativeHostClientError("AUTHORITY_REPLY",`${operation} reply invalid`);return Object.freeze({contentHash:v.contentHash as string,disposition:v.disposition as "COMMITTED"|"REPLAYED",objectId:v.objectId as string,operationId:v.operationId as string,receiptId:v.receiptId as string,revision:v.revision as string});};
+const decodeAuthorityReceipt=(body:string,operation:string):NativeAuthorityRecordReceipt=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["contentHash","disposition","objectId","operationId","receiptId","revision"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string")||v.operation!==undefined||!["COMMITTED","RECONCILED"].includes(String(v.disposition)))throw new NativeHostClientError("AUTHORITY_REPLY",`${operation} reply invalid`);return Object.freeze({contentHash:v.contentHash as string,disposition:v.disposition as "COMMITTED"|"RECONCILED",objectId:v.objectId as string,operationId:v.operationId as string,receiptId:v.receiptId as string,revision:v.revision as string});};
 const decodeAuthoritySnapshot=(body:string):NativeAuthorityObjectSnapshot=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["contentHash","domainId","objectId","revision"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string"||(v[k] as string).length===0))throw new NativeHostClientError("AUTHORITY_REPLY","snapshot reply invalid");return Object.freeze({contentHash:v.contentHash as string,domainId:v.domainId as string,objectId:v.objectId as string,revision:v.revision as string});};
 const decodeSessionLineageSnapshot=(body:string):NativeSessionLineageSnapshot=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["contentHash","domainId","lifecycle","revision","sessionId"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string"||(v[k] as string).length===0))throw new NativeHostClientError("SESSION_LINEAGE_REPLY","lineage reply invalid");return Object.freeze(v as unknown as NativeSessionLineageSnapshot);};
 const decodeExposureReceiptSnapshot=(body:string):NativeExposureReceiptSnapshot=>{const v=JSON.parse(body) as Record<string,unknown>;const keys=["domainId","receiptId","sessionRevision","sessionId"];if(Reflect.ownKeys(v).length!==keys.length||keys.some(k=>typeof v[k]!=="string"||(v[k] as string).length===0))throw new NativeHostClientError("EXPOSURE_REPLY","exposure reply invalid");return Object.freeze(v as unknown as NativeExposureReceiptSnapshot);};
@@ -540,12 +1104,12 @@ const decisionReplyRecord = (value: unknown): NativeDecisionRecord => {
     !["RULES", "FAKE", "REPLAY"].includes(String(record.backendKind)) ||
     (record.modelRequested !== null && typeof record.modelRequested !== "string") ||
     (record.modelResolved !== null && typeof record.modelResolved !== "string") ||
-    typeof record.budgetUnits !== "number" ||
-    !Number.isSafeInteger(record.budgetUnits) ||
-    record.budgetUnits < 0 ||
-    typeof record.deadlineEpochMs !== "number" ||
-    !Number.isSafeInteger(record.deadlineEpochMs) ||
-    record.deadlineEpochMs < 0
+    typeof record.budgetUnits !== "string" ||
+    !/^(0|[1-9][0-9]*)$/u.test(record.budgetUnits) ||
+    !Number.isSafeInteger(Number(record.budgetUnits)) ||
+    typeof record.deadlineEpochMs !== "string" ||
+    !/^(0|[1-9][0-9]*)$/u.test(record.deadlineEpochMs) ||
+    !Number.isSafeInteger(Number(record.deadlineEpochMs))
   ) {
     throw new NativeHostClientError("DECISION_REPLY", "durable Decision semantics are invalid");
   }
@@ -567,8 +1131,8 @@ const decisionReplyRecord = (value: unknown): NativeDecisionRecord => {
     backendKind: record.backendKind as NativeDecisionRecord["backendKind"],
     choice: record.choice as string,
     reason: "QUALIFIED_BOUNDED_SELECTION",
-    budgetUnits: record.budgetUnits,
-    deadlineEpochMs: record.deadlineEpochMs,
+    budgetUnits: Number(record.budgetUnits),
+    deadlineEpochMs: Number(record.deadlineEpochMs),
   });
 };
 
@@ -1679,6 +2243,441 @@ export class NativeHostClient {
 
   async getReceipt(commandId: string): Promise<NativeHostReply> {
     return this.request(JSON.stringify({ commandId, operation: "GetReceipt" }));
+  }
+
+  async readProductIdentity(): Promise<NativeProductIdentitySnapshot> {
+    return decodeProductIdentity(
+      this.request(JSON.stringify({ operation: "ReadProductIdentity" })).body,
+    );
+  }
+
+  async admitControllerCaller(
+    input: NativeControllerCallerContext,
+  ): Promise<NativeControllerAdmissionReceipt> {
+    const reply = this.request(encodeControllerAdmissionFrame(input));
+    return decodeControllerAdmission(reply.body, input, reply.elapsedMicros);
+  }
+
+  async prepareR2TestDelegation(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestDelegationReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestDelegation",
+      operationId: "r2-02-controlled-task",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestDelegationReceipt(body);
+  }
+
+  async prepareR2TestContextGrant(
+    caller: NativeControllerCallerContext,
+  ): Promise<NativeR2TestContextGrantReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestContextGrant",
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestContextGrantReceipt(body);
+  }
+
+  async prepareR2TestPackage(
+    caller: NativeControllerCallerContext,
+    promptJson: string,
+    slot?: "novel",
+  ): Promise<NativeR2TestPackageReceipt> {
+    if (Buffer.byteLength(promptJson, "utf8") > 32 * 1024 ||
+        promptJson.includes("\n") || promptJson.includes("\r")) {
+      throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid prompt frame");
+    }
+    let prompt: unknown;
+    try { prompt = JSON.parse(promptJson); }
+    catch { throw new NativeHostClientError("R2_TEST_PACKAGE", "invalid prompt JSON"); }
+    if (typeof prompt !== "object" || prompt === null || Array.isArray(prompt) ||
+        Reflect.ownKeys(prompt).length !== 3 ||
+        (prompt as Record<string, unknown>).type !== "prompt" ||
+        typeof (prompt as Record<string, unknown>).id !== "string" ||
+        typeof (prompt as Record<string, unknown>).message !== "string") {
+      throw new NativeHostClientError("R2_TEST_PACKAGE", "prompt identity mismatch");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestPackage",
+      operationId: slot === "novel" ? "r2-03-package" : "r2-02-package",
+      ...(slot === "novel" ? { slot } : {}),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      promptJson,
+    })).body;
+    return decodeR2TestPackageReceipt(body, slot);
+  }
+
+  async prepareR2TestLineage(
+    caller: NativeControllerCallerContext,
+    slot?: "novel",
+  ): Promise<NativeR2TestLineageReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestLineage",
+      operationId: slot === "novel" ? "r2-03-lineage" : "r2-02-lineage",
+      ...(slot === "novel" ? { slot } : {}),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestLineageReceipt(body, slot);
+  }
+
+  async prepareR2TestTask(
+    caller: NativeControllerCallerContext,
+    slot?: "novel",
+  ): Promise<NativeR2TestTaskReceipt> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestTask",
+      operationId: slot === "novel" ? "r2-03-task-context" : "r2-02-task-context",
+      ...(slot === "novel" ? { slot } : {}),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestTaskReceipt(body, slot);
+  }
+
+  async prepareR2TestRecipe(
+    caller: NativeControllerCallerContext,
+    runtimeInstanceId?: string,
+    slot?: "novel",
+  ): Promise<NativeR2TestRecipeReceipt> {
+    if ((slot === "novel") !== (runtimeInstanceId !== undefined) ||
+        (runtimeInstanceId !== undefined &&
+         !/^runtime-r2-03-[0-9a-f]{16}-[0-9a-f]{16}$/u.test(runtimeInstanceId))) {
+      throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid fixture runtime identity");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestRecipe",
+      operationId: slot === "novel" ? "r2-03-recipe" : "r2-02-recipe",
+      ...(slot === "novel" ? { slot } : {}),
+      ...(runtimeInstanceId === undefined ? {} : { runtimeInstanceId }),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestRecipeReceipt(body, slot);
+  }
+
+  async registerR2TestFixtureDriver(
+    caller: NativeControllerCallerContext,
+    driverId: string,
+  ): Promise<NativeR2TestFixtureDriverRegistration> {
+    if (!novelDriver.test(driverId)) {
+      throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid fixture driver identity");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RegisterR2TestFixtureDriver", driverId,
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+    })).body;
+    return decodeR2TestFixtureDriverRegistration(body);
+  }
+
+  async readR2TestFixtureActionBinding(
+    caller: NativeControllerCallerContext,
+    actionCompletionRef: string,
+  ): Promise<NativeR2TestFixtureActionBinding> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(actionCompletionRef)) {
+      throw new NativeHostClientError("R2_NOVEL_DRIVER", "invalid completion identity");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReadR2TestFixtureActionBinding", actionCompletionRef,
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+    })).body;
+    return decodeR2TestFixtureActionBinding(body);
+  }
+
+  async readR2TestActionDecisionBasis(
+    caller: NativeControllerCallerContext,
+    promptJson: string,
+    slot?: "novel",
+  ): Promise<NativeR2ActionDecisionBasis> {
+    if (Buffer.byteLength(promptJson, "utf8") > 32 * 1024 ||
+        promptJson.includes("\n") || promptJson.includes("\r")) {
+      throw new NativeHostClientError("R2_TEST_DECISION", "invalid prompt frame");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReadR2TestActionDecisionBasis",
+      ...(slot === "novel" ? { slot } : {}),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+      promptJson,
+    })).body;
+    return decodeR2ActionDecisionBasis(body);
+  }
+
+  async readR2ObjectiveFactRefs(
+    caller: NativeControllerCallerContext,
+    actionCompletionRef: string,
+  ): Promise<NativeR2ObjectiveFactRefs> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(actionCompletionRef)) {
+      throw new NativeHostClientError("R2_OBJECTIVE_REFS", "invalid completion identity");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReadR2ObjectiveFactRefs",
+      actionCompletionRef,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2ObjectiveFactRefs(body);
+  }
+
+  async prepareR2TestRollbackPlan(
+    caller: NativeControllerCallerContext,
+    slot?: "novel",
+  ): Promise<NativeR2TestRollbackPlan> {
+    const body = this.request(JSON.stringify({
+      operation: "PrepareR2TestRollbackPlan",
+      operationId: slot === "novel" ? "r2-03-rollback" : "r2-02-rollback",
+      ...(slot === "novel" ? { slot } : {}),
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role,
+      seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestRollbackPlan(body, slot);
+  }
+
+  async prepareR2TestAction(input: {
+    readonly slot?: "novel";
+    readonly grantRef: string;
+    readonly promptJson: string;
+    readonly expectedActionDigest: string;
+    readonly expectedPackageDigest: string;
+  }): Promise<NativeR2TestActionPreparation> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(input.grantRef) ||
+        Buffer.byteLength(input.promptJson, "utf8") > 32 * 1024 ||
+        input.promptJson.includes("\n") || input.promptJson.includes("\r") ||
+        !/^sha256:[0-9a-f]{64}$/.test(input.expectedActionDigest) ||
+        !/^sha256:[0-9a-f]{64}$/.test(input.expectedPackageDigest)) {
+      throw new NativeHostClientError("R2_TEST_ACTION", "invalid Action preparation input");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "ReserveAction",
+      actionKind: "queue",
+      actionOperationId: input.slot === "novel" ? "opr_33333333333333333333333333333333" : "opr_22222222222222222222222222222222",
+      contextManifestId: input.slot === "novel" ? "manifest-r2-03-test" : "manifest-r2-02-test",
+      domainId: "domain-r2-02-test",
+      lane: "work",
+      packageOperationId: input.slot === "novel" ? "r2-03-package" : "r2-02-package",
+      parentGrantRef: input.grantRef,
+      payload: input.promptJson,
+      recipeId: input.slot === "novel" ? "recipe-r2-03-test" : "recipe-r2-02-test",
+      reservationId: input.slot === "novel" ? "reservation-r2-03-controlled" : "reservation-r2-02-controlled",
+      sessionId: input.slot === "novel" ? "session-r2-03-worker" : "session-r2-02-worker",
+      taskId: input.slot === "novel" ? "task-r2-03-test" : "task-r2-02-test",
+    })).body;
+    const prepared = decodeR2TestActionPreparation(body, input.slot);
+    if (prepared.semanticDigest !== input.expectedActionDigest ||
+        prepared.packageDigest !== input.expectedPackageDigest) {
+      throw new NativeHostClientError("R2_TEST_ACTION", "Action does not match current Decision or package");
+    }
+    return prepared;
+  }
+
+  async runControlledFixtureProbe(input: {
+    readonly caller: NativeControllerCallerContext;
+    readonly operationId: string;
+    readonly promptJson: string;
+  }): Promise<NativeControlledFixtureProbe> {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.operationId) ||
+        Buffer.byteLength(input.promptJson, "utf8") > 32 * 1024 ||
+        input.promptJson.includes("\n") || input.promptJson.includes("\r")) {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "invalid controlled protocol frame");
+    }
+    const command: unknown = JSON.parse(input.promptJson);
+    if (typeof command !== "object" || command === null || Array.isArray(command) ||
+        Reflect.ownKeys(command).length !== 3 ||
+        typeof (command as Record<string, unknown>).id !== "string" ||
+        !((command as Record<string, unknown>).id as string).startsWith("gogoke-pi-") ||
+        (command as Record<string, unknown>).type !== "prompt" ||
+        typeof (command as Record<string, unknown>).message !== "string") {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "prompt identity mismatch");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RunControlledFixtureProbe",
+      operationId: input.operationId,
+      policyRevision: canonicalControllerField(input.caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(input.caller.principalId, "principalId"),
+      profileId: canonicalControllerField(input.caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(input.caller.revocationHead, "revocationHead"),
+      role: input.caller.role,
+      seatId: canonicalControllerField(input.caller.seatId, "seatId"),
+      promptJson: input.promptJson,
+    })).body;
+    const response: unknown = JSON.parse(body);
+    if (typeof response !== "object" || response === null || Array.isArray(response)) {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "invalid native probe reply");
+    }
+    const record = response as Record<string, unknown>;
+    if (Reflect.ownKeys(record).length !== 3 ||
+        record.state !== "TEST_PROTOCOL_SETTLED_NOT_RESULT" ||
+        !Array.isArray(record.frames) || record.frames.length < 2 || record.frames.length > 8 ||
+        !record.frames.every((frame) => typeof frame === "string") ||
+        typeof record.stopProofHash !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/.test(record.stopProofHash)) {
+      throw new NativeHostClientError("CONTROLLED_PROBE", "native protocol evidence invalid");
+    }
+    return Object.freeze({
+      state: "TEST_PROTOCOL_SETTLED_NOT_RESULT" as const,
+      frames: Object.freeze([...record.frames] as string[]),
+      stopProofHash: record.stopProofHash,
+    });
+  }
+
+  async runControlledFixtureAction(
+    input: NativeControlledFixtureActionInput,
+  ): Promise<NativeControlledFixtureAction> {
+    const identifier = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
+    if (!identifier.test(input.domainId) || !identifier.test(input.operationId) ||
+        !identifier.test(input.reservationId) ||
+        Buffer.byteLength(input.promptJson, "utf8") > 32 * 1024 ||
+        input.promptJson.includes("\n") || input.promptJson.includes("\r")) {
+      throw new NativeHostClientError("CONTROLLED_ACTION", "invalid Action references or prompt frame");
+    }
+    let command: unknown;
+    try { command = JSON.parse(input.promptJson); }
+    catch { throw new NativeHostClientError("CONTROLLED_ACTION", "invalid prompt JSON"); }
+    if (typeof command !== "object" || command === null || Array.isArray(command) ||
+        Reflect.ownKeys(command).length !== 3 ||
+        (command as Record<string, unknown>).type !== "prompt" ||
+        typeof (command as Record<string, unknown>).message !== "string" ||
+        typeof (command as Record<string, unknown>).id !== "string" ||
+        !/^gogoke-pi-[A-Za-z0-9_-]{1,118}$/u.test((command as Record<string, string>).id!)) {
+      throw new NativeHostClientError("CONTROLLED_ACTION", "prompt identity mismatch");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RunControlledFixtureAction",
+      domainId: input.domainId,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      policyRevision: canonicalControllerField(input.caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(input.caller.principalId, "principalId"),
+      profileId: canonicalControllerField(input.caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(input.caller.revocationHead, "revocationHead"),
+      role: input.caller.role,
+      seatId: canonicalControllerField(input.caller.seatId, "seatId"),
+      promptJson: input.promptJson,
+    })).body;
+    return decodeNativeControlledFixtureAction(body);
+  }
+
+  async beginR2TestFactWrite(
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+  ): Promise<R2TestFactJournalEntry> {
+    validateR2FactIntent(intent);
+    const body = this.request(JSON.stringify({
+      operation: "BeginR2TestFactWrite",
+      domainId: "domain-r2-02-test",
+      operationId: intent.operationId, executionEvidenceSha: intent.executionEvidenceSha,
+      bytesHash: intent.bytesHash, repository: intent.repository, branch: intent.branch,
+      path: intent.path,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role, seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    return decodeR2TestFactJournalEntry(body, intent);
+  }
+
+  async bindR2TestFactWrite(
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+    baseHead: string, targetCommit: string,
+  ): Promise<R2TestFactJournalEntry> {
+    validateR2FactIntent(intent);
+    if (!R2_FACT_SHA.test(baseHead) || !R2_FACT_SHA.test(targetCommit)) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid target binding");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "BindR2TestFactWrite",
+      domainId: "domain-r2-02-test",
+      operationId: intent.operationId, executionEvidenceSha: intent.executionEvidenceSha,
+      bytesHash: intent.bytesHash, repository: intent.repository, branch: intent.branch,
+      path: intent.path, baseHead, targetCommit,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role, seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    const entry = decodeR2TestFactJournalEntry(body, intent);
+    if (entry.baseHead !== baseHead || entry.targetCommit !== targetCommit) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "native target binding mismatch");
+    }
+    return entry;
+  }
+
+  async rejectR2TestFactWrite(
+    caller: NativeControllerCallerContext, intent: R2TestFactJournalIntent,
+    baseHead: string, targetCommit: string,
+  ): Promise<R2TestFactJournalEntry> {
+    validateR2FactIntent(intent);
+    if (!R2_FACT_SHA.test(baseHead) || !R2_FACT_SHA.test(targetCommit)) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "invalid rejected binding");
+    }
+    const body = this.request(JSON.stringify({
+      operation: "RejectR2TestFactWrite",
+      domainId: "domain-r2-02-test",
+      operationId: intent.operationId, executionEvidenceSha: intent.executionEvidenceSha,
+      bytesHash: intent.bytesHash, repository: intent.repository, branch: intent.branch,
+      path: intent.path, baseHead, targetCommit,
+      policyRevision: canonicalControllerField(caller.policyRevision, "policyRevision"),
+      principalId: canonicalControllerField(caller.principalId, "principalId"),
+      profileId: canonicalControllerField(caller.profileId, "profileId"),
+      revocationHead: canonicalControllerField(caller.revocationHead, "revocationHead"),
+      role: caller.role, seatId: canonicalControllerField(caller.seatId, "seatId"),
+    })).body;
+    const entry = decodeR2TestFactJournalEntry(body, intent);
+    if (entry.baseHead !== null || entry.targetCommit !== null) {
+      throw new NativeHostClientError("R2_TEST_FACT_JOURNAL", "native rejected binding mismatch");
+    }
+    return entry;
   }
 
   async publishDecisionSnapshot(input: NativeDecisionAuthoritySnapshot): Promise<void> {

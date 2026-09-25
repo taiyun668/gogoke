@@ -1,0 +1,48 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-045",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "831457dea67c17318c100801a4f69972cbe5318f",
+  "reason": "R2-02_TEST_LEDGER_AND_NATIVE_PROTOCOL_PIPE_CLOUD_EVIDENCE",
+  "current_main": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "package": "R2-02_WIP_NOT_DELIVERED",
+  "increment": [
+    "Owner-designated test ledger branch s1-r4-ledger-test/r2-02 remains isolated from execution and main. A public source-reference diagnostic was written and read back at 6765d4e11ace61c47b9aeb123e0ef4770ab072c0; it is not a product Result or adoption.",
+    "The product Goal path now verifies immutable Git bytes after native Controller/Seat admission and displays a verified, not-adopted blob reference. This is readback, not a product Git fact write.",
+    "Pi adapter separates prompt ACK, agent_end and agent_settled, captures bounded untrusted final text, and validates a deterministic public fixture report against exact Git source bytes. The real signed-Node process test is diagnostic; it does not prove native product custody.",
+    "A scoped test-ledger Git write interface and pinned GitHub transport use non-force ref update, current authority checks, exact readback and unknown-outcome reconciliation. They are not yet invoked by the production product path; no product Git write has occurred.",
+    "Native ProcessCustodian now has explicit protocol stdin/stdout handles with a Windows handle allowlist through suspended creation, Job assignment and durable custody. Cloud real-process test passes. The custodian and pipe are not yet connected to native-host product IPC or a durable product task."
+  ],
+  "evidence": {
+    "cloud_run": 35901682706,
+    "exact_sha": "831457dea67c17318c100801a4f69972cbe5318f",
+    "scope": "WINDOWS_SERVER_REAL_RUN_NOT_OWNER_WIN11",
+    "server": "PASS_49_FILES_9_NODE_40_VITE_558_EXECUTED_558_PASS_0_SKIP",
+    "native_release_build": "PASS",
+    "native_real_process_axes": "2_PASS_0_SKIP",
+    "native_focused_probes": "4_PASS_0_SKIP_INCLUDING_PROTOCOL_STDIO",
+    "native_library": "385_PASS_0_SKIP",
+    "desktop_browser": "PASS_RUN_35901412606",
+    "source_hygiene": "PASS_RUN_35901412593",
+    "desktop_unsigned_nsis": "PASS_RUN_35901412606",
+    "r2_02_product_custodied_task": "NOT_RUN",
+    "r2_02_product_git_write": "NOT_RUN",
+    "r2_02_outcome_evaluation_dream": "NOT_RUN",
+    "owner_win11_installed_product": "NOT_RUN"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate": "NOT_CUT",
+  "external_action": "CLOUD_RUN_35901682706_COMPLETED_SUCCESS;_TEST_LEDGER_BRANCH_UNCHANGED_AT_6765D4E11ACE61C47B9AEB123E0EF4770AB072C0",
+  "architecture_blocker": "NO",
+  "next_action": "Connect the existing ProcessCustodian and protocol pipe to a narrow authenticated native-host product operation with current Controller/Seat admission and durable active coordination. Run the fixed public fixture process through the actual Tauri-to-service-to-native-host path; verify output and completion before Outcome/Evaluation/Dream draft and product Git write/readback. Do not treat this checkpoint or diagnostic source-reference write as R2-02 completion."
+}

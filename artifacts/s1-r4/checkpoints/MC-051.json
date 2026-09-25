@@ -1,0 +1,57 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-051",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "82adfc5d1837ea82c3ed00c39eb68fa27216b1dd",
+  "reason": "R2-02_FIXED_TEST_GRANT_PRODUCT_SERVICE_CLIENT_REAL_PROCESS_INCREMENT",
+  "current_main": "165f4b234654711c45d05ecd80e9b6553dd93ceb",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-02_WIP_NOT_DELIVERED",
+  "increment": [
+    "The native Product Authority authenticated operation can prepare only one fixed R2 public test delegation under a deterministic operation identity. It rejects different operation IDs, arbitrary ceiling fields, stale profile revisions, wider ceilings, and revoked replay. The grant cannot by itself execute an Action or write Git facts.",
+    "The T3-derived NativeHostClient now invokes this actual native operation and reads back its fixed ceiling. Cloud controlled-product-process test confirms the same grant on replay rather than a second issuance.",
+    "The product Goal still uses the diagnostic fixture path. Task Package, SessionLineage, ContextManifest, Recipe, Decision and Action selection are not yet integrated into that Goal."
+  ],
+  "evidence": {
+    "cloud_run": 35926941258,
+    "exact_sha": "82adfc5d1837ea82c3ed00c39eb68fa27216b1dd",
+    "scope": "WINDOWS_SERVER_REAL_RUN_NOT_OWNER_WIN11",
+    "server": "PASS_51_FILES_10_NODE_41_VITE_565_EXECUTED_565_PASS_0_SKIP",
+    "native": "PASS_RELEASE_BUILD_2_REAL_PROCESS_AXES_6_FOCUSED_PROBES_391_LIB_TESTS_0_SKIP",
+    "source_hygiene": "PASS_RUN_35926936107",
+    "desktop": "RUN_35926936079_IN_PROGRESS_AT_CHECKPOINT",
+    "product_goal_action_chain": "NOT_RUN",
+    "product_outcome_evaluation_dream": "NOT_RUN",
+    "product_git_fact_write_readback": "NOT_RUN",
+    "owner_win11_installed_product": "NOT_RUN"
+  },
+  "test_ledger_branch": {
+    "head": "1ee82a2758f74c5c6e6507e1729c809523372d1b",
+    "state": "DIAGNOSTIC_CAS_FACT_NOT_PRODUCT_RESULT_NOT_ADOPTED"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "review": {
+    "fresh_gpt6_sol_high_focused": "NOT_RUN_COLLABORATION_THREAD_LIMIT",
+    "older_fixed_auditor": "GPT_5_6_SOL_HIGH_PROBLEM_LEADS_ONLY",
+    "candidate": "NOT_CUT"
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "architecture_blocker": "NO",
+  "external_action": "CLOUD_RUN_35926941258_SUCCESS;_TEST_LEDGER_HEAD_UNCHANGED_IN_THIS_INCREMENT",
+  "workspace_retained": {
+    "owner": "Codex Construction Controller",
+    "paths_relative_to_execution_checkout": [".", "../gogoke-codex-evidence/run-35926941258-server", "../gogoke-codex-evidence/run-35926941258-native", "../gogoke-codex-evidence/r2-02-ledger-write-diagnostic.mjs"],
+    "reason": "Active checkout, exact cloud evidence and test-ledger reconciliation script",
+    "cleanup_condition": "After S1-R4 custody ends and durable GitHub artifacts are confirmed retained or no longer required",
+    "older_failed_run_copies": "RETAINED_AFTER_RECURSIVE_LOCAL_CLEANUP_WAS_REJECTED_BY_AUTOMATIC_POLICY;_NO_BYPASS_ATTEMPT"
+  },
+  "next_action": "Continue R2-02 by preparing a fixed public Task Package from the current bounded grant and exact Pi prompt bytes, then current SessionLineage, ContextManifest, Recipe, Decision and Action; keep one Product Authority and do not treat grant preparation as Task completion. Wire the Product Goal only after the chain has a fail-closed runtime admission and exact cloud real-process evidence. Later bind Result/Outcome/Evaluation/isolated Dream and product Git fact write/readback; keep PR #27 Draft."
+}

@@ -27,26 +27,100 @@ use super::authority::{
 use super::atomic::{Json as NativeJson, JsonString as NativeJsonString, Parser as NativeJsonParser};
 use super::same_open::{create_new, open_existing, VerifiedDatabaseConnection};
 use crate::ipc::PrivatePipeConnection;
+use crate::process::{controlled_fixture_request, DurableStopConfirmation, ProcessCustodian, StopBudgets};
 use crate::root::RootLock;
 use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub fn open_product_database<'root>(
     root: &'root RootLock,
     database: &Path,
 ) -> Result<VerifiedDatabaseConnection<'root>, OrchestrationError> {
-    let mut connection = if database.exists() {
+    let marker = product_root_custody_marker(root, database)?;
+    let expected = format!(
+        "gogoke-root-custody-v1\n{}\n{}\n",
+        root.canonical_root().identity.opaque(),
+        database.file_name().and_then(|name| name.to_str()).ok_or(OrchestrationError::AccessDenied)?.to_ascii_lowercase(),
+    );
+    let marker_exists = match fs::symlink_metadata(&marker) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+            && metadata.len() == expected.len() as u64 => {
+            if fs::read(&marker).map_err(|_| OrchestrationError::AccessDenied)?.as_slice() != expected.as_bytes() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            true
+        }
+        Ok(_) => return Err(OrchestrationError::AccessDenied),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err(OrchestrationError::AccessDenied),
+    };
+    let database_exists = database.exists();
+    if marker_exists && !database_exists {
+        // The root has already hosted this product DB. Its lost coordination
+        // journal cannot be silently recreated into a fresh Product Authority.
+        return Err(OrchestrationError::AccessDenied);
+    }
+    if !marker_exists && !database_exists {
+        write_product_root_custody_marker(&marker, expected.as_bytes())?;
+    }
+    let mut connection = if database_exists {
         open_existing(root, database).map_err(|error| OrchestrationError::Atomic(error.into()))?
     } else {
         create_new(root, database).map_err(|error| OrchestrationError::Atomic(error.into()))?
     };
+    if database_exists {
+        // An existing file is never permission to mint a replacement Owner.
+        // In particular, an empty replacement DB must not take the bootstrap
+        // path even when the root marker has survived.
+        let mut profile = Statement::prepare(connection.as_ptr(),
+            "SELECT name FROM main.sqlite_schema WHERE type='table' AND name='gogoke_authority_profile'")?;
+        if !profile.step_row()? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+    }
     apply_orchestration_slice_schema(&mut connection)?;
     apply_context_schema(&mut connection)?;
     apply_action_schema(&mut connection)?;
     let _owner_issuer = super::authority::initialize_profile(&mut connection, root)?;
+    if !marker_exists && database_exists {
+        // An established DB without a marker predates this custody signal.
+        // Only a successfully validated authority profile can migrate it.
+        write_product_root_custody_marker(&marker, expected.as_bytes())?;
+    }
     Ok(connection)
+}
+
+fn product_root_custody_marker(root: &RootLock, database: &Path) -> Result<std::path::PathBuf, OrchestrationError> {
+    let parent = database.parent().ok_or(OrchestrationError::AccessDenied)?;
+    let observed = crate::root::inspect_root(parent).map_err(|_| OrchestrationError::AccessDenied)?;
+    if observed.identity != root.canonical_root().identity {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let name = database.file_name().and_then(|name| name.to_str()).ok_or(OrchestrationError::AccessDenied)?;
+    if name.is_empty() || name.starts_with('.') || name.ends_with('.') || name.ends_with(' ')
+        || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let device_stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    if matches!(device_stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (device_stem.len() == 4
+            && (device_stem.starts_with("COM") || device_stem.starts_with("LPT"))
+            && matches!(device_stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(root.canonical_root().canonical_path.join(format!(".gogoke-{}.custody-v1", name.to_ascii_lowercase())))
+}
+
+fn write_product_root_custody_marker(path: &Path, contents: &[u8]) -> Result<(), OrchestrationError> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)
+        .map_err(|_| OrchestrationError::AccessDenied)?;
+    file.write_all(contents).map_err(|_| OrchestrationError::AccessDenied)?;
+    file.sync_all().map_err(|_| OrchestrationError::AccessDenied)
 }
 
 fn successful_shutdown(line: &str, handled: &Result<String, OrchestrationError>) -> bool {
@@ -106,6 +180,7 @@ fn capability_matches(expected: &str, observed: &str) -> bool {
 pub(crate) fn serve_authenticated_pipe(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
+    process_custodian: &mut crate::process::ProcessCustodian,
     pipe: &PrivatePipeConnection,
     expected_capability: &str,
 ) -> Result<(), OrchestrationError> {
@@ -127,7 +202,7 @@ pub(crate) fn serve_authenticated_pipe(
         let frame = pipe.read_frame().map_err(|_| OrchestrationError::Invalid("pipe read"))?;
         let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
         let started = Instant::now();
-        let handled = handle_authenticated_line(connection, owner, line);
+        let handled = handle_authenticated_line_with_process(connection, owner, Some(process_custodian), line);
         let should_stop = successful_shutdown(line, &handled);
         let reply = match handled {
             Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
@@ -500,6 +575,38 @@ fn json_string_array(values: &[String]) -> String {
     format!("[{}]", values.iter().map(|value| json_quote(value)).collect::<Vec<_>>().join(","))
 }
 
+fn product_identity_body(identity: &authority::ProductIdentitySnapshot) -> String {
+    format!(
+        "{{\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"rootIdentity\":{},\"seatId\":{}}}",
+        json_quote(&identity.policy_revision),
+        json_quote(&identity.principal_id),
+        json_quote(&identity.profile_id),
+        json_quote(&identity.revocation_head),
+        json_quote(&identity.root_identity),
+        json_quote(&identity.seat_id),
+    )
+}
+
+fn controller_admission_body(identity: &authority::ProductIdentitySnapshot) -> String {
+    format!(
+        "{{\"admitted\":true,\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+        json_quote(&identity.policy_revision),
+        json_quote(&identity.principal_id),
+        json_quote(&identity.profile_id),
+        json_quote(&identity.revocation_head),
+        json_quote(&identity.seat_id),
+    )
+}
+
+fn r2_test_fact_journal_body(entry: &authority::R2TestFactJournalEntry) -> String {
+    let base = entry.base_head.as_deref().map(json_quote).unwrap_or_else(|| "null".into());
+    let target = entry.target_commit.as_deref().map(json_quote).unwrap_or_else(|| "null".into());
+    format!("{{\"operationId\":{},\"executionEvidenceSha\":{},\"bytesHash\":{},\"repository\":{},\"branch\":{},\"path\":{},\"baseHead\":{base},\"targetCommit\":{target}}}",
+        json_quote(&entry.intent.operation_id), json_quote(&entry.intent.execution_evidence_sha),
+        json_quote(&entry.intent.bytes_hash), json_quote(&entry.intent.repository),
+        json_quote(&entry.intent.branch), json_quote(&entry.intent.path))
+}
+
 fn delegation_grant_body(grant: &authority::DelegationGrantSnapshot) -> String {
     let parent = grant.parent.as_ref().map_or_else(
         || "null".to_owned(),
@@ -535,13 +642,1074 @@ const ACTION_PREPARE_FIELDS: [&str; 13] = [
     "packageOperationId", "parentGrantRef", "payload", "recipeId", "reservationId", "sessionId", "taskId",
 ];
 
+fn run_controlled_fixture_probe(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    custodian: &mut ProcessCustodian,
+    line: &str,
+) -> Result<String, OrchestrationError> {
+    let fields = action_fields(line, &["operation", "operationId", "policyRevision",
+        "principalId", "profileId", "revocationHead", "role", "seatId", "promptJson"])?;
+    let operation_id = required(&fields, "operationId")?;
+    let prompt = required(&fields, "promptJson")?;
+    if prompt.len() > 32 * 1024 || prompt.contains('\n') || prompt.contains('\r') {
+        return Err(OrchestrationError::Invalid("controlled prompt frame"));
+    }
+    let command = decode_flat_string_object(prompt.as_bytes()).map_err(protocol_error)?;
+    if command.len() != 3 || command.get("type").map(String::as_str) != Some("prompt") ||
+        !command.get("id").is_some_and(|id| id.starts_with("gogoke-pi-") && id.len() <= 128) ||
+        !command.contains_key("message") {
+        return Err(OrchestrationError::Invalid("controlled prompt identity"));
+    }
+    let admit = |connection: &mut VerifiedDatabaseConnection<'_>| {
+        authority::admit_owner_controller_caller(connection, owner,
+            required(&fields, "profileId")?, required(&fields, "principalId")?,
+            required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+            required(&fields, "revocationHead")?, required(&fields, "role")?)
+    };
+    let identity = admit(connection)?;
+    let launch = controlled_fixture_request(&identity.profile_id, "domain-r2-02-test", "1")?;
+    let prepared = custodian.prepare(&launch)?;
+    if let Err(error) = authority::record_prepared_process(connection, operation_id, &prepared) {
+        let _ = custodian.abort_prepared(&prepared);
+        return Err(error);
+    }
+    if let Err(error) = custodian.activate(&prepared) {
+        let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+        return Err(error.into());
+    }
+    if authority::mark_process_active(connection, operation_id, &prepared).is_err() {
+        let _ = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()));
+        let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let execution = (|| -> Result<Vec<String>, OrchestrationError> {
+        admit(connection)?;
+        let process = custodian.active(&prepared.ticket)
+            .ok_or(OrchestrationError::Invalid("controlled process absent"))?;
+        let mut bytes = prompt.as_bytes().to_vec();
+        bytes.push(b'\n');
+        process.write_protocol(&bytes).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+        let started = Instant::now();
+        let mut frames = Vec::new();
+        let mut total = 0usize;
+        loop {
+            let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+            if remaining.is_zero() || frames.len() >= 8 {
+                return Err(OrchestrationError::Invalid("controlled protocol did not settle"));
+            }
+            let frame = process.read_protocol_frame(remaining).map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+            total += frame.len();
+            if total > 64 * 1024 {
+                return Err(OrchestrationError::Invalid("controlled protocol aggregate too large"));
+            }
+            let text = std::str::from_utf8(&frame)
+                .map_err(|_| OrchestrationError::Invalid("controlled protocol utf8"))?;
+            let settled = text.trim_end_matches(['\r', '\n']) == "{\"type\":\"agent_settled\"}";
+            frames.push(text.to_owned());
+            if settled { break; }
+        }
+        if !process.wait(Duration::from_secs(2)).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? ||
+            process.exit_code().map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? != Some(0) {
+            return Err(OrchestrationError::Invalid("controlled process did not exit cleanly"));
+        }
+        Ok(frames)
+    })();
+    let proof = match custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(())) {
+        Ok(proof) => proof,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+            return Err(error.into());
+        }
+    };
+    let revision = match authority::mark_process_stopped(connection, operation_id, &proof) {
+        Ok(revision) => revision,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
+            return Err(error);
+        }
+    };
+    custodian.confirm_stop_durable(&DurableStopConfirmation {
+        ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+        identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
+        durable_revision: revision,
+    })?;
+    match execution {
+        Ok(frames) => {
+            let encoded = frames.iter().map(|frame| json_quote(frame)).collect::<Vec<_>>().join(",");
+            Ok(format!("{{\"state\":\"TEST_PROTOCOL_SETTLED_NOT_RESULT\",\"frames\":[{encoded}],\"stopProofHash\":{}}}",
+                json_quote(&proof.proof_hash())))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn native_json_text(value: &NativeJson) -> Option<String> {
+    match value {
+        NativeJson::String(text) => text.to_well_formed_string(),
+        _ => None,
+    }
+}
+
+fn validate_r2_test_prompt(prompt: &str) -> Result<String, OrchestrationError> {
+    if prompt.len() > 32 * 1024 || prompt.contains('\n') || prompt.contains('\r') {
+        return Err(OrchestrationError::Invalid("R2 test prompt frame"));
+    }
+    let command = decode_flat_string_object(prompt.as_bytes()).map_err(protocol_error)?;
+    if command.len() != 3 || command.get("type").map(String::as_str) != Some("prompt") ||
+        !command.get("id").is_some_and(|id| id.starts_with("gogoke-pi-") && id.len() <= 128) {
+        return Err(OrchestrationError::Invalid("R2 test prompt identity"));
+    }
+    let message = command.get("message").ok_or(OrchestrationError::Invalid("R2 test message"))?;
+    let NativeJson::Object(root) = NativeJsonParser::parse(message)
+        .map_err(|_| OrchestrationError::Invalid("R2 test message JSON"))? else {
+        return Err(OrchestrationError::Invalid("R2 test message JSON"));
+    };
+    let field = |key: &str| root.get(&NativeJsonString::from_str(key));
+    if root.len() != 3 || field("schema").and_then(native_json_text).as_deref() !=
+        Some("gogoke.s1-r4.r2-02.fixture-task.v1") ||
+        !matches!(field("testOnly"), Some(NativeJson::Bool(true))) {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let Some(NativeJson::Object(source)) = field("source") else {
+        return Err(OrchestrationError::AccessDenied);
+    };
+    let source_field = |key: &str| source.get(&NativeJsonString::from_str(key));
+    let content = source_field("content").and_then(native_json_text)
+        .ok_or(OrchestrationError::AccessDenied)?;
+    if source.len() != 5 ||
+        source_field("repository").and_then(native_json_text).as_deref() != Some("taiyun668/gogoke") ||
+        source_field("commit").and_then(native_json_text).as_deref() != Some("f6a820dda05a3eac5c29be48c4149bff7e1c9598") ||
+        source_field("path").and_then(native_json_text).as_deref() != Some("apps/desktop/test-fixtures/s1-r4/sealing/model-asset.json") ||
+        source_field("sha256").and_then(native_json_text).as_deref() != Some("268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e") ||
+        super::digest::content_hash(content.as_bytes()) !=
+            "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e" {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(command.get("id").expect("checked prompt id").clone())
+}
+
+fn r2_test_package_recorded_at(
+    connection: &VerifiedDatabaseConnection<'_>,
+    operation_id: &str,
+) -> Result<String, OrchestrationError> {
+    let mut prior = Statement::prepare(connection.as_ptr(),
+        "SELECT recorded_at FROM main.gogoke_authorized_task_packages WHERE domain_id='domain-r2-02-test' AND operation_id=?")?;
+    prior.bind_text(1, operation_id)?;
+    if prior.step_row()? {
+        let recorded_at = prior.column_text(0)?;
+        if prior.step_row()? {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        return Ok(recorded_at);
+    }
+    drop(prior);
+    let mut now = Statement::prepare(connection.as_ptr(),
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")?;
+    if !now.step_row()? {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(now.column_text(0)?)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum R2TestSlot { Fixed, Novel }
+
+impl R2TestSlot {
+    fn tag(self) -> &'static str { match self { Self::Fixed => "r2-02", Self::Novel => "r2-03" } }
+    fn operation(self, suffix: &str) -> String { format!("{}-{suffix}", self.tag()) }
+    fn task_id(self) -> String { format!("task-{}-test", self.tag()) }
+    fn session_id(self) -> String { format!("session-{}-worker", self.tag()) }
+    fn binding_id(self) -> String { format!("binding-{}-worker", self.tag()) }
+    fn native_session_id(self) -> String { format!("native-{}-worker", self.tag()) }
+    fn execution_id(self) -> String { format!("execution-{}-worker", self.tag()) }
+    fn recipe_id(self) -> String { format!("recipe-{}-test", self.tag()) }
+    fn manifest_id(self) -> String { format!("manifest-{}-test", self.tag()) }
+    fn action_id(self) -> &'static str { match self {
+        Self::Fixed => "opr_22222222222222222222222222222222",
+        Self::Novel => "opr_33333333333333333333333333333333",
+    } }
+    fn reservation_id(self) -> String { format!("reservation-{}-controlled", self.tag()) }
+}
+
+fn r2_test_slot_fields(line: &str, base: &[&str]) -> Result<(BTreeMap<String, String>, R2TestSlot), OrchestrationError> {
+    let fields = authority_fields(line)?;
+    let slot = match fields.get("slot").map(String::as_str) {
+        None => R2TestSlot::Fixed,
+        Some("novel") => R2TestSlot::Novel,
+        _ => return Err(OrchestrationError::AccessDenied),
+    };
+    let expected = base.len() + if slot == R2TestSlot::Novel { 1 } else { 0 };
+    if fields.len() != expected || fields.keys().any(|key|
+        !base.contains(&key.as_str()) && !(slot == R2TestSlot::Novel && key == "slot"))
+        || base.iter().any(|key| !fields.contains_key(*key)) {
+        return Err(OrchestrationError::Invalid("action frame fields"));
+    }
+    Ok((fields, slot))
+}
+
+fn r2_test_recorded_at(
+    connection: &VerifiedDatabaseConnection<'_>,
+    operation_id: &str,
+) -> Result<String, OrchestrationError> {
+    let mut prior = Statement::prepare(connection.as_ptr(),
+        "SELECT recorded_at FROM main.gogoke_receipts WHERE domain_id=? AND operation_id=?")?;
+    prior.bind_text(1, "domain-r2-02-test")?;
+    prior.bind_text(2, operation_id)?;
+    if prior.step_row()? {
+        let recorded_at = prior.column_text(0)?;
+        if prior.step_row()? {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        return Ok(recorded_at);
+    }
+    drop(prior);
+    let mut now = Statement::prepare(connection.as_ptr(),
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")?;
+    if !now.step_row()? {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(now.column_text(0)?)
+}
+
+fn validate_controlled_action_frame(
+    index: usize,
+    body: &str,
+    expected_ack: &str,
+    message_identity: &mut Option<String>,
+) -> Result<(), OrchestrationError> {
+    let invalid = || OrchestrationError::Invalid("controlled Action protocol sequence");
+    if index == 0 || index == 1 || index == 4 {
+        let expected = match index {
+            0 => expected_ack,
+            1 => "{\"type\":\"agent_start\"}",
+            _ => "{\"type\":\"agent_settled\"}",
+        };
+        return if body == expected { Ok(()) } else { Err(invalid()) };
+    }
+    let NativeJson::Object(root) = NativeJsonParser::parse(body).map_err(|_| invalid())? else {
+        return Err(invalid());
+    };
+    let field = |key: &str| root.get(&NativeJsonString::from_str(key));
+    if index == 2 {
+        if root.len() != 2 || field("type").and_then(native_json_text).as_deref() != Some("message_end") {
+            return Err(invalid());
+        }
+        let Some(NativeJson::Object(message)) = field("message") else { return Err(invalid()); };
+        let message_field = |key: &str| message.get(&NativeJsonString::from_str(key));
+        if message.len() != 7 || message_field("role").and_then(native_json_text).as_deref() != Some("assistant") ||
+            message_field("api").and_then(native_json_text).as_deref() != Some("gogoke-test-protocol") ||
+            message_field("provider").and_then(native_json_text).as_deref() != Some("gogoke-test-only") ||
+            message_field("model").and_then(native_json_text).as_deref() != Some("deterministic-fixture") ||
+            message_field("stopReason").and_then(native_json_text).as_deref() != Some("stop") ||
+            !matches!(message_field("timestamp"), Some(NativeJson::Number(_))) {
+            return Err(invalid());
+        }
+        let Some(NativeJson::Array(content)) = message_field("content") else { return Err(invalid()); };
+        let Some(NativeJson::Object(text)) = content.first() else { return Err(invalid()); };
+        if content.len() != 1 || text.len() != 2 ||
+            text.get(&NativeJsonString::from_str("type")).and_then(native_json_text).as_deref() != Some("text") ||
+            !text.get(&NativeJsonString::from_str("text")).and_then(native_json_text)
+                .is_some_and(|report| matches!(NativeJsonParser::parse(&report), Ok(NativeJson::Object(_)))) {
+            return Err(invalid());
+        }
+        *message_identity = Some(field("message").expect("checked message").canonical());
+        return Ok(());
+    }
+    let Some(NativeJson::Array(messages)) = field("messages") else { return Err(invalid()); };
+    let end_message = messages.first().map(NativeJson::canonical);
+    if index != 3 || root.len() != 3 ||
+        field("type").and_then(native_json_text).as_deref() != Some("agent_end") ||
+        !matches!(field("willRetry"), Some(NativeJson::Bool(false))) || messages.len() != 1 ||
+        message_identity.as_deref() != end_message.as_deref() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn validate_reconciled_action_frames(frames: &[String], prompt_id: &str) -> Result<(), OrchestrationError> {
+    if frames.len() != 5 || frames.iter().map(String::len).sum::<usize>() > 64 * 1024 {
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let expected_ack = format!("{{\"type\":\"response\",\"id\":{},\"command\":\"prompt\",\"success\":true}}",
+        json_quote(prompt_id));
+    let mut message_identity = None;
+    for (index, frame) in frames.iter().enumerate() {
+        validate_controlled_action_frame(index, frame.trim_end_matches(['\r','\n']),
+            &expected_ack, &mut message_identity)?;
+    }
+    Ok(())
+}
+
+/// Executes only an Action already reserved by Product Authority. This entry
+/// cannot issue a grant or prepare a package; the native currentness checks
+/// and one-way begin fence precede the sole protocol write.
+pub(crate) fn run_controlled_fixture_action(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    custodian: &mut ProcessCustodian,
+    line: &str,
+) -> Result<String, OrchestrationError> {
+    let fields = action_fields(line, &[
+        "domainId", "operation", "operationId", "reservationId", "policyRevision",
+        "principalId", "profileId", "revocationHead", "role", "seatId", "promptJson",
+    ])?;
+    let prompt = required(&fields, "promptJson")?;
+    let prompt_id = validate_r2_test_prompt(prompt)?;
+    let identity = authority::admit_owner_controller_caller(connection, owner,
+        required(&fields, "profileId")?, required(&fields, "principalId")?,
+        required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+        required(&fields, "revocationHead")?, required(&fields, "role")?)?;
+    let references = authority::NativeActionCurrentFactsRefs {
+        domain_id: required(&fields, "domainId")?.to_owned(),
+        operation_id: required(&fields, "operationId")?.to_owned(),
+        reservation_id: required(&fields, "reservationId")?.to_owned(),
+    };
+    let action = authority::BeginCommittedAction {
+        domain_id: references.domain_id.clone(),
+        operation_id: references.operation_id.clone(),
+        reservation_id: references.reservation_id.clone(),
+    };
+    // A prior native receipt may have committed before its separate Action
+    // projection. Reconcile that durable evidence without another process or
+    // protocol write. A reserved Action has no completion to reconcile.
+    if let Ok(completion) = authority::complete_action_from_native_receipt(connection, &action) {
+        if completion.terminal_state == "completed" {
+            let transport = authority::read_reconciled_action_transport(
+                connection, &action, prompt, &completion.receipt_id)?;
+            validate_reconciled_action_frames(&transport.frames, &prompt_id)?;
+            let encoded = transport.frames.iter().map(|frame| json_quote(frame)).collect::<Vec<_>>().join(",");
+            return Ok(format!("{{\"state\":\"ACTION_TRANSPORT_RECONCILED_NOT_RESULT\",\"frames\":[{encoded}],\"actionCompletionRef\":{},\"stopProofHash\":{}}}",
+                json_quote(&completion.receipt_id), json_quote(&transport.stop_proof_hash)));
+        }
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let selected = authority::read_native_action_fixture_selection(connection, &references)?;
+    if selected.profile_id != identity.profile_id || selected.payload.as_slice() != prompt.as_bytes() {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    if selected.target_domain_id == "domain-r2-02-test"
+        && selected.runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
+        authority::resolve_r2_test_fixture_driver(connection, &selected.runtime_instance_id)?;
+    }
+    let launch = controlled_fixture_request(
+        &selected.profile_id, &selected.target_domain_id, &selected.generation)?;
+    let script = launch.launch.arguments.first().ok_or(OrchestrationError::AccessDenied)?;
+    if launch.launch.arguments.len() != 1 ||
+        super::digest::content_hash(&std::fs::read(script).map_err(|_| OrchestrationError::AccessDenied)?)
+            != selected.launch_digest_sha256 {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let prepared = custodian.prepare(&launch)?;
+    if let Err(error) = authority::record_prepared_process(connection, &references.operation_id, &prepared) {
+        let _ = custodian.abort_prepared(&prepared);
+        return Err(error);
+    }
+    if let Err(error) = custodian.activate(&prepared) {
+        let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+        return Err(error.into());
+    }
+    if authority::mark_process_active(connection, &references.operation_id, &prepared).is_err() {
+        let _ = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()));
+        let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let mut granted: Option<(String, String)> = None;
+    let execution = (|| -> Result<Vec<String>, OrchestrationError> {
+        let process = custodian.active(&prepared.ticket)
+            .ok_or(OrchestrationError::Invalid("controlled Action process absent"))?;
+        authority::derive_native_action_current_facts(
+            connection, &references, &prepared, process.identity())?;
+        let mut bytes = selected.payload.clone();
+        bytes.push(b'\n');
+        match authority::begin_committed_action(connection, &action)? {
+            authority::BeginCommittedDisposition::Granted { attempt_id, send_authority } => {
+                granted = Some((attempt_id, send_authority));
+            }
+            _ => return Err(OrchestrationError::AccessDenied),
+        }
+        // No fallible preparation or authority callback belongs between begin
+        // and this one write attempt. A partial WriteFile error is unknown.
+        process.write_protocol(&bytes).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+        let expected_ack = format!(
+            "{{\"type\":\"response\",\"id\":{},\"command\":\"prompt\",\"success\":true}}",
+            json_quote(&prompt_id),
+        );
+        let started = Instant::now();
+        let mut frames = Vec::new();
+        let mut total = 0usize;
+        let mut message_identity = None;
+        for index in 0..5 {
+            let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(OrchestrationError::Invalid("controlled Action protocol deadline"));
+            }
+            let frame = process.read_protocol_frame(remaining).map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))?;
+            total += frame.len();
+            if total > 64 * 1024 {
+                return Err(OrchestrationError::Invalid("controlled Action protocol aggregate"));
+            }
+            let text = std::str::from_utf8(&frame)
+                .map_err(|_| OrchestrationError::Invalid("controlled Action protocol utf8"))?;
+            let body = text.trim_end_matches(['\r', '\n']);
+            validate_controlled_action_frame(index, body, &expected_ack, &mut message_identity)?;
+            frames.push(text.to_owned());
+        }
+        if !process.wait(Duration::from_secs(2)).map_err(|error|
+            OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? ||
+            process.exit_code().map_err(|error|
+                OrchestrationError::Process(crate::process::ProcessCustodyError::ProtocolPipe(error)))? != Some(0) {
+            return Err(OrchestrationError::Invalid("controlled Action process exit"));
+        }
+        Ok(frames)
+    })();
+    let proof = match custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(())) {
+        Ok(proof) => proof,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+            if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+            return Err(error.into());
+        }
+    };
+    let revision = match authority::mark_process_stopped(connection, &references.operation_id, &proof) {
+        Ok(revision) => revision,
+        Err(error) => {
+            let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
+            if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+            return Err(error);
+        }
+    };
+    if let Err(error) = custodian.confirm_stop_durable(&DurableStopConfirmation {
+        ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+        identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
+        durable_revision: revision,
+    }) {
+        if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+        return Err(error.into());
+    }
+    let frames = match execution {
+        Ok(frames) => frames,
+        Err(error) => {
+            if granted.is_some() { let _ = authority::complete_action_from_native_receipt(connection, &action); }
+            return Err(error);
+        }
+    };
+    let (attempt_id, send_authority) = granted.expect("successful execution requires begin");
+    let evidence = format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        references.operation_id, attempt_id, send_authority, prompt_id,
+        prepared.identity.pid, prepared.identity.creation_time_100ns,
+        prepared.binding.binary_digest_sha256, selected.semantic_digest,
+        proof.proof_hash(), selected.native_session_id,
+        frames.iter().map(|frame| format!("{}:{frame}", frame.len())).collect::<String>(),
+    );
+    let evidence_hash = super::digest::content_hash(evidence.as_bytes());
+    let trusted_receipt_ref = format!("native-receipt-{}", &evidence_hash[7..]);
+    let native = authority::TrustedActionCompletionEvidence {
+        domain_id: references.domain_id.clone(),
+        operation_id: references.operation_id.clone(),
+        reservation_id: references.reservation_id.clone(),
+        semantic_digest: selected.semantic_digest,
+        attempt_id, send_authority,
+        binding_id: selected.binding_id,
+        generation: selected.generation,
+        source_epoch: selected.source_epoch,
+        runtime_instance_id: selected.runtime_instance_id,
+        native_request_id: prompt_id,
+        native_session_id: selected.native_session_id,
+        trusted_receipt_ref,
+        evidence_hash,
+        disposition: authority::ActionCompletionDisposition::Completed,
+    };
+    let transport = authority::TrustedActionTransportEvidence {
+        stop_proof_hash: proof.proof_hash(),
+        pid: prepared.identity.pid.to_string(),
+        creation_time_100ns: prepared.identity.creation_time_100ns.to_string(),
+        binary_digest_sha256: prepared.binding.binary_digest_sha256.clone(),
+        frames: frames.clone(),
+    };
+    if let Err(error) = authority::record_trusted_native_action_transport_receipt(connection, &native, &transport) {
+        let _ = authority::complete_action_from_native_receipt(connection, &action);
+        return Err(error);
+    }
+    let completion = authority::complete_action_from_native_receipt(connection, &action)?;
+    if completion.disposition != "completed" {
+        return Err(OrchestrationError::CommitUnknown);
+    }
+    let encoded = frames.iter().map(|frame| json_quote(frame)).collect::<Vec<_>>().join(",");
+    Ok(format!("{{\"state\":\"ACTION_TRANSPORT_COMPLETED_NOT_RESULT\",\"frames\":[{encoded}],\"actionCompletionRef\":{},\"stopProofHash\":{}}}",
+        json_quote(&completion.receipt_id), json_quote(&proof.proof_hash())))
+}
+
+#[cfg(test)]
 fn handle_authenticated_line(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
     line: &str,
 ) -> Result<String, OrchestrationError> {
+    handle_authenticated_line_with_process(connection, owner, None, line)
+}
+
+fn handle_authenticated_line_with_process(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    process_custodian: Option<&mut crate::process::ProcessCustodian>,
+    line: &str,
+) -> Result<String, OrchestrationError> {
     let decoded = decode_operation_frame(line.as_bytes()).map_err(protocol_error)?;
     match decoded.name {
+        "RunControlledFixtureProbe" => {
+            let custodian = process_custodian.ok_or(OrchestrationError::AccessDenied)?;
+            run_controlled_fixture_probe(connection, owner, custodian, line)
+        }
+        "RunControlledFixtureAction" => {
+            let custodian = process_custodian.ok_or(OrchestrationError::AccessDenied)?;
+            run_controlled_fixture_action(connection, owner, custodian, line)
+        }
+        "BeginR2TestFactWrite" | "BindR2TestFactWrite" | "RejectR2TestFactWrite" => {
+            let binding = decoded.name == "BindR2TestFactWrite";
+            let rejection = decoded.name == "RejectR2TestFactWrite";
+            let expected = if binding || rejection {
+                &["baseHead","branch","bytesHash","domainId","executionEvidenceSha","operation","operationId",
+                  "path","policyRevision","principalId","profileId","repository","revocationHead",
+                  "role","seatId","targetCommit"][..]
+            } else {
+                &["branch","bytesHash","domainId","executionEvidenceSha","operation","operationId",
+                  "path","policyRevision","principalId","profileId","repository","revocationHead",
+                  "role","seatId"][..]
+            };
+            let fields = action_fields(line, expected)?;
+            if required(&fields,"domainId")? != "domain-r2-02-test" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            authority::admit_owner_controller_caller(connection, owner,
+                required(&fields,"profileId")?, required(&fields,"principalId")?,
+                required(&fields,"seatId")?, required(&fields,"policyRevision")?,
+                required(&fields,"revocationHead")?, required(&fields,"role")?)?;
+            let intent = authority::R2TestFactIntent {
+                operation_id: required(&fields,"operationId")?.into(),
+                execution_evidence_sha: required(&fields,"executionEvidenceSha")?.into(),
+                bytes_hash: required(&fields,"bytesHash")?.into(),
+                repository: required(&fields,"repository")?.into(),
+                branch: required(&fields,"branch")?.into(),
+                path: required(&fields,"path")?.into(),
+            };
+            let entry = if binding {
+                authority::bind_r2_test_fact_write(connection, &intent,
+                    required(&fields,"baseHead")?, required(&fields,"targetCommit")?)?
+            } else if rejection {
+                authority::reject_r2_test_fact_write(connection, &intent,
+                    required(&fields,"baseHead")?, required(&fields,"targetCommit")?)?
+            } else {
+                authority::begin_r2_test_fact_write(connection, &intent)?
+            };
+            Ok(r2_test_fact_journal_body(&entry))
+        }
+        "ReadProductIdentity" => {
+            let _fields = action_fields(line, &["operation"])?;
+            let identity = authority::read_product_identity(connection, owner)?;
+            Ok(product_identity_body(&identity))
+        }
+        "AdmitControllerCaller" => {
+            let fields = action_fields(line, &[
+                "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let identity = authority::admit_owner_controller_caller(
+                connection,
+                owner,
+                required(&fields, "profileId")?,
+                required(&fields, "principalId")?,
+                required(&fields, "seatId")?,
+                required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?,
+                required(&fields, "role")?,
+            )?;
+            Ok(controller_admission_body(&identity))
+        }
+        "RegisterR2TestFixtureDriver" => {
+            let fields = action_fields(line, &[
+                "driverId", "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let binding = authority::register_r2_test_fixture_driver(
+                connection, &admitted.profile_id, required(&fields, "driverId")?,
+            )?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_FIXTURE_DRIVER_REGISTERED\",\"driverId\":{},\"adapterVersion\":{},\"runtimeInstanceId\":{},\"contentHash\":{}}}",
+                json_quote(&binding.driver_id), json_quote(&binding.adapter_version),
+                json_quote(&binding.runtime_instance_id), json_quote(&binding.content_hash)))
+        }
+        "ReadR2TestFixtureActionBinding" => {
+            let fields = action_fields(line, &[
+                "actionCompletionRef", "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let binding = authority::read_r2_test_fixture_action_binding(
+                connection, required(&fields, "actionCompletionRef")?,
+            )?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_ACTION_BINDING\",\"driverId\":{},\"adapterVersion\":{},\"runtimeInstanceId\":{},\"launchDigestSha256\":{}}}",
+                json_quote(&binding.driver_id), json_quote(&binding.adapter_version),
+                json_quote(&binding.runtime_instance_id), json_quote(&binding.launch_digest_sha256)))
+        }
+        "PrepareR2TestDelegation" => {
+            let fields = action_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let operation_id = required(&fields, "operationId")?;
+            if operation_id != "r2-02-controlled-task" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let expiry = SystemTime::now().duration_since(UNIX_EPOCH)
+                .map_err(|_| OrchestrationError::AccessDenied)?.as_millis() as u64 + 3_600_000;
+            let grant = authority::issue_r2_test_owner_delegation_once(
+                connection, owner, &admitted, operation_id,
+                authority::DelegationGrantInput {
+                    principal: authority::DelegationPrincipal {
+                        principal_id: admitted.principal_id.clone(),
+                        project_id: "project-r2-02-test".into(),
+                        domain_id: "domain-r2-02-test".into(),
+                        role: "controller".into(),
+                        seat_id: admitted.seat_id.clone(),
+                    },
+                    binding: authority::DelegationBinding {
+                        session_id: "session-r2-02-source".into(),
+                        execution_id: "execution-r2-02-source".into(),
+                        generation: "1".into(),
+                    },
+                    expires_at_epoch_ms: expiry,
+                    ceiling: authority::AuthorityCeiling {
+                        allowed_actions: vec!["delegate".into()],
+                        allowed_target_principal_ids: vec!["principal-r2-02-worker".into()],
+                        allowed_target_domain_ids: vec!["domain-r2-02-test".into()],
+                        allowed_sinks: vec!["task-package".into()],
+                        allowed_material_classes: vec![],
+                        explicit_private_material_ids: vec![],
+                        allowed_continuation_responses: vec![],
+                        max_material_items: 0,
+                        max_material_bytes: 0,
+                        max_response_bytes: 32 * 1024,
+                    },
+                },
+            )?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_GRANT_PREPARED_NOT_ACTION\",\"grantRef\":{},\"revision\":{},\"revocationHead\":{},\"expiresAtEpochMs\":{}}}",
+                json_quote(&grant.reference.grant_id), json_quote(&grant.reference.revision),
+                json_quote(&grant.reference.revocation_head),
+                json_quote(&grant.expires_at_epoch_ms.to_string())))
+        }
+        "PrepareR2TestContextGrant" => {
+            let fields = action_fields(line, &[
+                "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::issue_r2_public_context_grant_once(connection, owner, &admitted)?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_CONTEXT_GRANT_PREPARED\",\"grantRef\":{},\"revision\":{},\"revocationHead\":{}}}",
+                json_quote(&grant.grant_id), json_quote(&grant.revision),
+                json_quote(&grant.revocation_head)))
+        }
+        "PrepareR2TestTask" => {
+            let (fields, slot) = r2_test_slot_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let operation_id = slot.operation("task-context");
+            if required(&fields, "operationId")? != operation_id {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let context = authority::read_grantee_context(connection,
+                &authority::GranteeContextReadRequest {
+                    principal_id: "principal-r2-02-worker".into(),
+                    seat_id: "seat-r2-02-worker".into(),
+                    source: authority::ContextReadRequest {
+                        source_domain_id: "domain-r2-02-source".into(),
+                        context_id: "context-r2-02-public-fixture".into(),
+                        version: "1".into(),
+                        expected_scope: "PROJECT".into(),
+                        expected_content_hash: "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e".into(),
+                        expected_access_policy_revision: admitted.policy_revision.clone(),
+                        destination_domain_id: "domain-r2-02-test".into(),
+                        destination_scope: "PROJECT".into(),
+                        promotion_kind: "PROJECT_ONLY".into(),
+                        policy_revision: admitted.policy_revision.clone(),
+                        grant: authority::GrantRef {
+                            grant_id: authority::r2_public_context_grant_id(),
+                            revision: "1".into(),
+                            revocation_head: admitted.revocation_head.clone(),
+                        },
+                    },
+                })?;
+            if context.state != "ACTIVE" || context.source.source_hash !=
+                "sha256:268f5e2c65e254e7dd55e6e8dfc8eabfa23f7a14a9cfd1be8a998f1297cefa8e" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
+            let receipt = authority::commit_task_context_requirements(connection,
+                &CommitTaskContextRequirements {
+                    operation_id: operation_id.clone(),
+                    domain_id: "domain-r2-02-test".into(),
+                    task_id: slot.task_id(),
+                    expected_previous_revision: None,
+                    mandatory_refs: vec![MandatoryContextRef {
+                        source_domain_id: "domain-r2-02-source".into(),
+                        context_id: "context-r2-02-public-fixture".into(),
+                        version: "1".into(),
+                    }],
+                    event_id: slot.operation("task-event"),
+                    receipt_id: slot.operation("task-receipt"),
+                    recorded_at,
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_TASK_PREPARED_NOT_ACTION\",\"disposition\":{},\"taskId\":{},\"taskRevision\":{},\"contentHash\":{}}}",
+                json_quote(receipt.disposition), json_quote(&receipt.current.task_id),
+                json_quote(&receipt.current.task_revision),
+                json_quote(&receipt.current.content_hash)))
+        }
+        "PrepareR2TestPackage" => {
+            let (fields, slot) = r2_test_slot_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId", "promptJson",
+            ])?;
+            let operation_id = slot.operation("package");
+            if required(&fields, "operationId")? != operation_id {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let prompt = required(&fields, "promptJson")?;
+            validate_r2_test_prompt(prompt)?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant_id = authority::r2_test_grant_id("r2-02-controlled-task")?;
+            let grant = authority::read_current_delegation(connection, &grant_id)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.principal.project_id != "project-r2-02-test"
+                || grant.principal.domain_id != "domain-r2-02-test"
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_package_recorded_at(connection, &operation_id)?;
+            let prepared = authority::prepare_authorized_task_package(connection,
+                &authority::PrepareAuthorizedTaskPackage {
+                    operation_id,
+                    domain_id: "domain-r2-02-test".into(),
+                    event_id: slot.operation("package-event"),
+                    receipt_id: slot.operation("package-receipt"),
+                    recorded_at,
+                    package: authority::AuthorizedTaskPackageDraft {
+                        parent_grant_ref: grant.reference.grant_id,
+                        parent_grant_revision: grant.reference.revision,
+                        parent_grant_revocation_head: grant.reference.revocation_head,
+                        parent_policy_revision: grant.policy_revision,
+                        parent_seat_id: grant.principal.seat_id,
+                        child_ceiling: grant.ceiling,
+                        action: "delegate".into(),
+                        route: "controller-worker".into(),
+                        source: authority::TaskPackagePrincipal {
+                            principal_id: admitted.principal_id,
+                            project_id: "project-r2-02-test".into(),
+                            domain_id: "domain-r2-02-test".into(),
+                            role: "controller".into(),
+                        },
+                        target: authority::TaskPackagePrincipal {
+                            principal_id: "principal-r2-02-worker".into(),
+                            project_id: "project-r2-02-test".into(),
+                            domain_id: "domain-r2-02-test".into(),
+                            role: "worker".into(),
+                        },
+                        source_binding: authority::TaskPackageBinding {
+                            session_id: grant.binding.session_id,
+                            execution_id: grant.binding.execution_id,
+                            generation: grant.binding.generation,
+                        },
+                        target_binding: authority::TaskPackageBinding {
+                            session_id: slot.session_id(),
+                            execution_id: slot.execution_id(),
+                            generation: "1".into(),
+                        },
+                        target_binding_kind: "existing".into(),
+                        sink: "task-package".into(),
+                        instruction: prompt.to_owned(),
+                    },
+                    material_refs: vec![],
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION\",\"disposition\":{},\"packageOperationId\":{},\"packageDigest\":{}}}",
+                json_quote(prepared.disposition), json_quote(&prepared.operation_id),
+                json_quote(&prepared.package_digest)))
+        }
+        "PrepareR2TestLineage" => {
+            let (fields, slot) = r2_test_slot_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ])?;
+            let operation_id = slot.operation("lineage");
+            let package_id = slot.operation("package");
+            if required(&fields, "operationId")? != operation_id {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            let package = authority::read_authorized_task_package(
+                connection, "domain-r2-02-test", &package_id)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head
+                || package.operation_id != package_id {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
+            let receipt = authority::apply_session_lineage_command(connection,
+                &authority::SessionLineageCommand {
+                    operation_id,
+                    domain_id: "domain-r2-02-test".into(),
+                    event_id: slot.operation("lineage-event"),
+                    receipt_id: slot.operation("lineage-receipt"),
+                    recorded_at,
+                    operation: authority::SessionLineageOperation::NewClean {
+                        session_id: slot.session_id(),
+                        native: authority::NativeSessionIdentity {
+                            native_session_id: slot.native_session_id(),
+                            binding_id: slot.binding_id(),
+                            generation: "1".into(),
+                            source_epoch: "1".into(),
+                            domain_id: "domain-r2-02-test".into(),
+                        },
+                    },
+                })?;
+            if receipt.snapshot.lifecycle != "ACTIVE" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            Ok(format!("{{\"state\":\"TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION\",\"disposition\":{},\"sessionId\":{},\"bindingId\":{},\"generation\":{},\"sourceEpoch\":{}}}",
+                json_quote(receipt.disposition), json_quote(&receipt.snapshot.session_id),
+                json_quote(&receipt.snapshot.native.binding_id),
+                json_quote(&receipt.snapshot.native.generation),
+                json_quote(&receipt.snapshot.native.source_epoch)))
+        }
+        "PrepareR2TestRecipe" => {
+            let mut expected_fields = vec![
+                "operation", "operationId", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId",
+            ];
+            if authority_fields(line)?.contains_key("runtimeInstanceId") { expected_fields.push("runtimeInstanceId"); }
+            let (fields, slot) = r2_test_slot_fields(line, &expected_fields)?;
+            let operation_id = slot.operation("recipe");
+            let package_id = slot.operation("package");
+            if required(&fields, "operationId")? != operation_id {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let runtime_instance_id = fields.get("runtimeInstanceId")
+                .map(String::as_str).unwrap_or(authority::FIXED_RUNTIME_INSTANCE_ID);
+            if (slot == R2TestSlot::Fixed) != (runtime_instance_id == authority::FIXED_RUNTIME_INSTANCE_ID) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            if runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
+                authority::resolve_r2_test_fixture_driver(connection, runtime_instance_id)?;
+            }
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            let task = authority::read_task_context_requirements(
+                connection, "domain-r2-02-test", &slot.task_id())?;
+            let package = authority::read_authorized_task_package(
+                connection, "domain-r2-02-test", &package_id)?;
+            let lineage = authority::read_session_lineage(
+                connection, "domain-r2-02-test", &slot.session_id())?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head
+                || task.task_revision != "1"
+                || package.operation_id != package_id
+                || lineage.lifecycle != "ACTIVE"
+                || lineage.native.binding_id != slot.binding_id()
+                || lineage.native.generation != "1" {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
+            let mut model_ref = BTreeMap::new();
+            model_ref.insert("kind".into(), RecipeJsonValue::String("TEST_FIXTURE".into()));
+            model_ref.insert("modelId".into(), RecipeJsonValue::String("deterministic-fixture".into()));
+            let receipt = authority::append_owner_execution_recipe(connection, owner,
+                &AppendExecutionRecipe {
+                    operation_id,
+                    domain_id: "domain-r2-02-test".into(),
+                    expected_previous_revision: None,
+                    recipe_id: slot.recipe_id(),
+                    seat_id: "seat-r2-02-worker".into(),
+                    runtime_instance_id: runtime_instance_id.into(),
+                    model_ref,
+                    tool_profile: RecipeJsonValue::Null,
+                    isolation_profile: RecipeJsonValue::Null,
+                    context_manifest_id: slot.manifest_id(),
+                    budget_policy: RecipeJsonValue::Null,
+                    admission_ref: grant.reference.grant_id,
+                    event_id: slot.operation("recipe-event"),
+                    receipt_id: slot.operation("recipe-receipt"),
+                    recorded_at,
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_RECIPE_PREPARED_NOT_ACTION\",\"disposition\":{},\"recipeId\":{},\"revision\":{},\"contentHash\":{}}}",
+                json_quote(receipt.disposition), json_quote(&receipt.version.recipe.recipe_id),
+                json_quote(&receipt.version.recipe.revision),
+                json_quote(&receipt.version.content_hash)))
+        }
+        "ReadR2TestActionDecisionBasis" => {
+            let (fields, slot) = r2_test_slot_fields(line, &[
+                "operation", "policyRevision", "principalId", "profileId",
+                "revocationHead", "role", "seatId", "promptJson",
+            ])?;
+            let prompt = required(&fields, "promptJson")?;
+            validate_r2_test_prompt(prompt)?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant_ref = authority::r2_test_grant_id("r2-02-controlled-task")?;
+            let grant = authority::read_current_delegation(connection, &grant_ref)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let basis = authority::derive_action_decision_basis(connection,
+                &authority::PrepareActionAuthority {
+                    domain_id: "domain-r2-02-test".into(),
+                    parent_grant_ref: grant_ref,
+                    package_operation_id: slot.operation("package"),
+                    task_id: slot.task_id(),
+                    recipe_id: slot.recipe_id(),
+                    session_id: slot.session_id(),
+                    context_manifest_id: slot.manifest_id(),
+                    action_operation_id: slot.action_id().into(),
+                    reservation_id: slot.reservation_id(),
+                    action_kind: "queue".into(),
+                    lane: "work".into(),
+                    payload: prompt.as_bytes().to_vec(),
+                })?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_DECISION_BASIS_NOT_ACTION\",\"actionDigest\":{},\"stateViewHash\":{},\"taskRevision\":{},\"policyRevision\":{},\"bindingId\":{},\"bindingGeneration\":{}}}",
+                json_quote(&basis.semantic_digest), json_quote(&basis.state_view_hash),
+                json_quote(&basis.task_revision), json_quote(&basis.policy_revision),
+                json_quote(&basis.binding_id), json_quote(&basis.generation)))
+        }
+        "ReadR2ObjectiveFactRefs" => {
+            let fields = action_fields(line, &[
+                "actionCompletionRef", "operation", "policyRevision", "principalId",
+                "profileId", "revocationHead", "role", "seatId",
+            ])?;
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant_ref = authority::r2_test_grant_id("r2-02-controlled-task")?;
+            let grant = authority::read_current_delegation(connection, &grant_ref)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let refs: authority::R2ObjectiveFactRefs = authority::read_r2_objective_fact_refs(
+                connection, required(&fields, "actionCompletionRef")?)?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_NATIVE_OBJECTIVE_REFS\",\"manifestHash\":{},\"manifestContentHash\":{},\"decisionContentHash\":{},\"actionCompletionHash\":{},\"actionCompletedAt\":{}}}",
+                json_quote(&refs.manifest_hash), json_quote(&refs.manifest_content_hash),
+                json_quote(&refs.decision_content_hash), json_quote(&refs.action_completion_hash),
+                json_quote(&refs.action_completed_at)))
+        }
+        "PrepareR2TestRollbackPlan" => {
+            let (fields, slot) = r2_test_slot_fields(line, &[
+                "operation", "operationId", "policyRevision", "principalId",
+                "profileId", "revocationHead", "role", "seatId",
+            ])?;
+            let operation_id = slot.operation("rollback");
+            if required(&fields, "operationId")? != operation_id {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let admitted = authority::admit_owner_controller_caller(
+                connection, owner,
+                required(&fields, "profileId")?, required(&fields, "principalId")?,
+                required(&fields, "seatId")?, required(&fields, "policyRevision")?,
+                required(&fields, "revocationHead")?, required(&fields, "role")?,
+            )?;
+            let grant = authority::read_current_delegation(connection,
+                &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+            if grant.principal.principal_id != admitted.principal_id
+                || grant.principal.seat_id != admitted.seat_id
+                || grant.policy_revision != admitted.policy_revision
+                || grant.reference.revocation_head != admitted.revocation_head {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let _evaluation = authority::read_evaluation(
+                connection, "domain-r2-02-test", &format!("evaluation-{}-test", slot.tag()), "1")?;
+            let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
+            let plan: authority::R2TestRollbackPlan = authority::prepare_r2_test_rollback_plan(
+                connection, &recorded_at, slot == R2TestSlot::Novel)?;
+            Ok(format!("{{\"state\":\"TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED\",\"disposition\":{},\"domainId\":\"domain-r2-02-test\",\"planId\":{},\"revision\":{},\"contentHash\":{},\"beforeHash\":{},\"afterHash\":{}}}",
+                json_quote(plan.disposition), json_quote(&plan.reference.object_id),
+                json_quote(&plan.reference.revision), json_quote(&plan.reference.content_hash),
+                json_quote(&plan.before_hash), json_quote(&plan.after_hash)))
+        }
         "CommitTaskContextRequirements" => {
             let fields = task_context_commit_fields(line)?;
             let expected = required(&fields,"expectedPreviousTaskRevision")?;
@@ -892,13 +2060,14 @@ fn handle_line(
                 },
             )?;
             Ok(format!(
-                "{{\"kind\":\"{}\",\"operationId\":\"{}\",\"semanticDigest\":\"{}\",\"reservationId\":\"{}\",\"packageDigest\":\"{}\",\"authorityStatus\":\"{}\"}}",
+                "{{\"kind\":\"{}\",\"operationId\":\"{}\",\"semanticDigest\":\"{}\",\"reservationId\":\"{}\",\"packageDigest\":\"{}\",\"authorityStatus\":\"{}\",\"reservationState\":\"{}\"}}",
                 if result.disposition == "COMMITTED" { "reserved" } else { "replay" },
                 result.operation_id,
                 result.semantic_digest,
                 result.reservation_id,
                 result.package_digest,
                 result.authority_status,
+                result.reservation_state,
             ))
         }
         "BeginActionCommitment" => {
@@ -1194,6 +2363,44 @@ mod context_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn novel_fixture_driver_registration_replays_and_tampering_fails_closed() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root_path = std::env::temp_dir().join(format!("gogoke-r2-driver-{nonce}"));
+        std::fs::create_dir(&root_path).unwrap();
+        let root = RootLock::acquire(&root_path).unwrap();
+        let database = root_path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).unwrap();
+        let owner = authority::initialize_profile(&mut connection, &root).unwrap();
+        let identity = authority::read_product_identity(&mut connection, &owner).unwrap();
+        let frame = format!(
+            "{{\"driverId\":\"mock_novel_0123456789abcdef\",\"operation\":\"RegisterR2TestFixtureDriver\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id),
+        );
+        let first = handle_authenticated_line(&mut connection, &owner, &frame).unwrap();
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &frame).unwrap(), first);
+        assert!(first.contains("\"adapterVersion\":\"1.0.0\""));
+        assert!(first.contains("\"contentHash\":\"sha256:"));
+        let registered = authority::register_r2_test_fixture_driver(
+            &mut connection, &identity.profile_id, "mock_novel_0123456789abcdef").unwrap();
+        assert_eq!(authority::resolve_r2_test_fixture_driver(
+            &mut connection, &registered.runtime_instance_id).unwrap(), registered);
+        assert!(authority::resolve_r2_test_fixture_driver(
+            &mut connection, "runtime-r2-03-unregistered").is_err());
+        connection.execute("UPDATE main.gogoke_r2_test_fixture_drivers SET launch_digest_sha256='sha256:0000000000000000000000000000000000000000000000000000000000000000'").unwrap();
+        assert!(handle_authenticated_line(&mut connection, &owner, &frame).is_err());
+        assert!(authority::resolve_r2_test_fixture_driver(
+            &mut connection, &registered.runtime_instance_id).is_err());
+        connection.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
+        std::fs::remove_dir(root_path).ok();
+    }
+
+    #[test]
     fn cognition_codec_rejects_missing_typed_revision_fields() {
         let frame = r#"{"domainId":"d","operation":"ReadObjectiveOutcome","outcomeId":"o","revision":"1"}"#;
         assert!(action_fields(frame, &["domainId","operation","outcomeId","revision"]).is_ok());
@@ -1239,6 +2446,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 
@@ -1270,7 +2478,146 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
+    }
+
+    #[test]
+    fn controller_caller_admission_requires_current_owner_seat_and_revisions() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root_path = std::env::temp_dir().join(format!("gogoke-controller-admission-{nonce}"));
+        std::fs::create_dir(&root_path).unwrap();
+        let root = RootLock::acquire(&root_path).unwrap();
+        let database = root_path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).unwrap();
+        let owner = authority::initialize_profile(&mut connection, &root).unwrap();
+        let identity = authority::read_product_identity(&mut connection, &owner).unwrap();
+        let frame = format!(
+            "{{\"operation\":\"AdmitControllerCaller\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            json_quote(&identity.policy_revision),
+            json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id),
+            json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id),
+        );
+        let body = handle_authenticated_line(&mut connection, &owner, &frame).unwrap();
+        assert!(body.contains("\"admitted\":true"));
+        assert!(body.contains("\"role\":\"controller\""));
+
+        let forged_seat = frame.replace(
+            &json_quote(&identity.seat_id),
+            &json_quote("owner-seat:forged"),
+        );
+        assert!(handle_authenticated_line(&mut connection, &owner, &forged_seat).is_err());
+        let forged_revision = frame.replace(
+            &format!("\"policyRevision\":{}", json_quote(&identity.policy_revision)),
+            "\"policyRevision\":\"999\"",
+        );
+        assert!(handle_authenticated_line(&mut connection, &owner, &forged_revision).is_err());
+        let forged_role = frame.replace(
+            "\"role\":\"controller\"",
+            "\"role\":\"worker\"",
+        );
+        assert!(handle_authenticated_line(&mut connection, &owner, &forged_role).is_err());
+
+        let prompt = r#"{"type":"prompt","message":"test","id":"gogoke-pi-1"}"#;
+        let action = format!(
+            "{{\"domainId\":\"domain-one\",\"operation\":\"RunControlledFixtureAction\",\"operationId\":\"missing-action\",\"reservationId\":\"missing-reservation\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{},\"promptJson\":{}}}",
+            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id), json_quote(prompt),
+        );
+        let mut custodian = ProcessCustodian::new().unwrap();
+        assert!(handle_authenticated_line_with_process(
+            &mut connection, &owner, Some(&mut custodian), &action,
+        ).is_err(), "current profile fields alone cannot create Action authority");
+
+        let fixed = format!(
+            "{{\"operation\":\"PrepareR2TestDelegation\",\"operationId\":\"r2-02-controlled-task\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            json_quote(&identity.policy_revision), json_quote(&identity.principal_id),
+            json_quote(&identity.profile_id), json_quote(&identity.revocation_head),
+            json_quote(&identity.seat_id),
+        );
+        let first = handle_authenticated_line(&mut connection, &owner, &fixed).unwrap();
+        assert!(first.contains("TEST_ONLY_GRANT_PREPARED_NOT_ACTION"));
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &fixed).unwrap(), first,
+            "a lost reply must not mint another grant");
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &fixed.replace("r2-02-controlled-task", "another-task")).is_err());
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &fixed.replace("\"role\":\"controller\"", "\"allowedActions\":\"any\",\"role\":\"controller\"")).is_err());
+
+        connection.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
+        std::fs::remove_dir(root_path).ok();
+    }
+
+    #[test]
+    fn r2_test_fact_journal_requires_native_controller_and_fixed_ledger() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root_path = std::env::temp_dir().join(format!("gogoke-fact-journal-frame-{nonce}"));
+        std::fs::create_dir(&root_path).unwrap();
+        let root = RootLock::acquire(&root_path).unwrap();
+        let database = root_path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).unwrap();
+        let owner = authority::initialize_profile(&mut connection, &root).unwrap();
+        let identity = authority::read_product_identity(&mut connection, &owner).unwrap();
+        let frame = format!("{{\"branch\":\"s1-r4-ledger-test/r2-02\",\"bytesHash\":\"sha256:{}\",\"domainId\":\"domain-r2-02-test\",\"executionEvidenceSha\":\"{}\",\"operation\":\"BeginR2TestFactWrite\",\"operationId\":\"r2-02-one\",\"path\":\"apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-one.json\",\"policyRevision\":{},\"principalId\":{},\"profileId\":{},\"repository\":\"taiyun668/gogoke\",\"revocationHead\":{},\"role\":\"controller\",\"seatId\":{}}}",
+            "b".repeat(64), "a".repeat(40), json_quote(&identity.policy_revision),
+            json_quote(&identity.principal_id), json_quote(&identity.profile_id),
+            json_quote(&identity.revocation_head), json_quote(&identity.seat_id));
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &frame.replace("\"role\":\"controller\"", "\"role\":\"worker\"")).is_err());
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &frame.replace("taiyun668/gogoke", "other/repo")).is_err());
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &frame.replace("domain-r2-02-test", "domain-other")).is_err());
+        let first = handle_authenticated_line(&mut connection, &owner, &frame).unwrap();
+        assert!(first.contains("\"baseHead\":null"));
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &frame).unwrap(), first);
+        let target_frame = frame.replace("\"operation\":\"BeginR2TestFactWrite\"", "\"operation\":\"BindR2TestFactWrite\"")
+            .replace("\"branch\":", &format!("\"baseHead\":\"{}\",\"branch\":", "c".repeat(40)));
+        let target_frame = format!("{},\"targetCommit\":\"{}\"}}", target_frame.strip_suffix('}').unwrap(), "d".repeat(40));
+        let bound = handle_authenticated_line(&mut connection, &owner, &target_frame).unwrap();
+        assert!(bound.contains(&format!("\"targetCommit\":\"{}\"", "d".repeat(40))));
+        let reject_frame = target_frame.replace("\"operation\":\"BindR2TestFactWrite\"", "\"operation\":\"RejectR2TestFactWrite\"");
+        assert!(handle_authenticated_line(&mut connection, &owner,
+            &reject_frame.replace("\"role\":\"controller\"", "\"role\":\"worker\"")).is_err());
+        assert_eq!(handle_authenticated_line(&mut connection, &owner, &reject_frame).unwrap(), first);
+        assert!(handle_authenticated_line(&mut connection, &owner, &reject_frame).is_err());
+        connection.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).unwrap();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        std::fs::remove_dir(root_path).unwrap();
+    }
+
+    #[test]
+    fn controlled_action_requires_complete_matching_protocol_frames() {
+        let ack = "{\"type\":\"response\",\"id\":\"gogoke-pi-1\",\"command\":\"prompt\",\"success\":true}";
+        let message = "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"api\":\"gogoke-test-protocol\",\"provider\":\"gogoke-test-only\",\"model\":\"deterministic-fixture\",\"stopReason\":\"stop\",\"timestamp\":1}";
+        let end = format!("{{\"type\":\"message_end\",\"message\":{message}}}");
+        let agent_end = format!("{{\"type\":\"agent_end\",\"messages\":[{message}],\"willRetry\":false}}");
+        let mut identity = None;
+        validate_controlled_action_frame(0, ack, ack, &mut identity).unwrap();
+        validate_controlled_action_frame(1, "{\"type\":\"agent_start\"}", ack, &mut identity).unwrap();
+        validate_controlled_action_frame(2, &end, ack, &mut identity).unwrap();
+        validate_controlled_action_frame(3, &agent_end, ack, &mut identity).unwrap();
+        validate_controlled_action_frame(4, "{\"type\":\"agent_settled\"}", ack, &mut identity).unwrap();
+        let frames = vec![ack.into(), "{\"type\":\"agent_start\"}".into(), end.clone(),
+            agent_end.clone(), "{\"type\":\"agent_settled\"}".into()];
+        validate_reconciled_action_frames(&frames, "gogoke-pi-1").unwrap();
+        let mut altered = frames.clone();
+        altered[3] = altered[3].replace("\\\"ok\\\":true", "\\\"ok\\\":false");
+        assert!(validate_reconciled_action_frames(&altered, "gogoke-pi-1").is_err());
+        assert!(validate_controlled_action_frame(2, "{\"type\":\"message_end\",\"message\":", ack, &mut None).is_err());
+        assert!(validate_controlled_action_frame(3, "{\"type\":\"agent_end\",\"messages\":", ack, &mut identity).is_err());
+        let mismatched = agent_end.replace("\\\"ok\\\":true", "\\\"ok\\\":false");
+        assert!(validate_controlled_action_frame(3, &mismatched, ack, &mut identity).is_err());
     }
 
     #[test]
@@ -1330,6 +2677,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 
@@ -1464,6 +2812,7 @@ mod context_tests {
         connection.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(database).ok();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).ok();
         std::fs::remove_dir(root_path).ok();
     }
 }

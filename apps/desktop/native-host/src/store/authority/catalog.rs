@@ -2,7 +2,7 @@
 use super::super::digest::content_hash;
 use super::super::orchestration::OrchestrationError;
 use super::super::same_open::VerifiedDatabaseConnection;
-use super::bootstrap::{self, OwnerIssuer, Profile};
+use super::bootstrap::{self, OwnerIssuer, ProductIdentitySnapshot, Profile};
 use super::model::{denied, identifier, next_revision, revision, GrantRecord, GrantRef, GrantSpec};
 use super::transaction::{self, Result, Transaction};
 use std::collections::HashSet;
@@ -224,6 +224,72 @@ pub(crate) fn issue_owner_grant(
     transaction::run(connection, |tx| {
         let profile = owner_profile(tx, owner, policy, revocation)?;
         create_record(tx, &profile, spec, profile.issuer_id.clone(), None)
+    })
+}
+
+pub(crate) fn r2_public_context_grant_id() -> String {
+    let digest = content_hash(format!("r2-02-public-context-grant:{}", super::PUBLIC_R2_MANIFEST_BLOB).as_bytes());
+    format!("grant:r2-02-context:{}", &digest[7..])
+}
+
+/// One Owner-issued context.read grant for the public R2 fixture only. The
+/// deterministic identity makes a lost reply replay the same bounded grant.
+pub(crate) fn issue_r2_public_context_grant_once(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    admitted: &ProductIdentitySnapshot,
+) -> Result<GrantRef> {
+    let spec = GrantSpec {
+        principal_id: "principal-r2-02-worker".into(),
+        seat_id: "seat-r2-02-worker".into(),
+        permission: "context.read".into(),
+        promotion_kind: "PROJECT_ONLY".into(),
+        source_domain_id: "domain-r2-02-source".into(),
+        destination_domain_id: "domain-r2-02-test".into(),
+        destination_scope: "PROJECT".into(),
+        delegable_depth: 0,
+    };
+    let grant_id = r2_public_context_grant_id();
+    transaction::run(connection, |tx| {
+        let profile = current_profile(tx)?;
+        owner.check(&profile)?;
+        if profile.profile_id != admitted.profile_id
+            || profile.root_identity != admitted.root_identity
+            || profile.principal_id != admitted.principal_id
+            || profile.seat_id != admitted.seat_id
+            || profile.policy_revision != admitted.policy_revision
+            || profile.revocation_head != admitted.revocation_head {
+            return denied();
+        }
+        let reference = GrantRef {
+            grant_id: grant_id.clone(), revision: "1".into(),
+            revocation_head: profile.revocation_head.clone(),
+        };
+        let heads = tx.query(
+            "SELECT revision,revoked FROM main.gogoke_authority_grant_heads WHERE grant_id=?",
+            &[&grant_id], 2,
+        )?;
+        if !heads.is_empty() {
+            if heads.len() != 1 || heads[0][0] != "1" || heads[0][1] != "0" {
+                return denied();
+            }
+            let current = resolve_current(tx, &profile, &reference)?;
+            if current.parent.is_some() || current.spec != spec || current.issuer_id != profile.issuer_id {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            return Ok(reference);
+        }
+        let record = GrantRecord {
+            reference: reference.clone(), spec,
+            issuer_id: profile.issuer_id.clone(), parent: None,
+            policy_revision: profile.policy_revision.clone(),
+        };
+        append_record(tx, &profile, &record)?;
+        tx.write("INSERT INTO main.gogoke_authority_grant_heads(grant_id,revision,revoked) VALUES(?,?,0)",
+            &[&reference.grant_id, &reference.revision])?;
+        audit(tx, "ISSUE", &record.issuer_id, &reference, &profile.policy_revision)?;
+        resolve_current(tx, &profile, &reference)?;
+        Ok(reference)
     })
 }
 

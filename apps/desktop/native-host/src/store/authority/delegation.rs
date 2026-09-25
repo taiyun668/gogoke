@@ -4,14 +4,20 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::super::orchestration::OrchestrationError;
+use super::super::digest::content_hash;
 use super::super::same_open::VerifiedDatabaseConnection;
-use super::bootstrap::{self, OwnerIssuer, Profile};
+use super::bootstrap::{self, OwnerIssuer, ProductIdentitySnapshot, Profile};
 use super::catalog::verify_grant_payload_kind;
 use super::catalog::{current_profile, seat_issuer};
 use super::model::{denied, identifier, next_revision, revision, GrantRef};
 use super::transaction::{self, Result, Transaction};
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+pub(crate) fn r2_test_grant_id(operation_id: &str) -> Result<String> {
+    identifier(operation_id)?;
+    let digest = content_hash(format!("r2-02-test-grant:{}:{operation_id}", super::PUBLIC_R2_MANIFEST_BLOB).as_bytes());
+    Ok(format!("grant:r2-02:{}", &digest[7..]))
+}
 const CEILING_AXES: [&str; 7] = [
     "allowed_actions",
     "allowed_target_principal_ids",
@@ -393,6 +399,86 @@ pub(crate) fn issue_owner_delegation(
             grant_id: bootstrap::random_id("grant")?,
             revision: "1".into(),
         };
+        insert_grant(tx, &profile, &identity, &input, &profile.issuer_id, None)?;
+        tx.write("INSERT INTO main.gogoke_authority_grant_heads(grant_id,revision,revoked) VALUES(?,?,0)",
+            &[&identity.grant_id, &identity.revision])?;
+        tx.write(
+            "INSERT INTO main.gogoke_authority_events(event_kind,issuer_id,grant_id,grant_revision,policy_revision,revocation_head) VALUES('ISSUE',?,?,?,?,?)",
+            &[&profile.issuer_id, &identity.grant_id, &identity.revision, &profile.policy_revision, &profile.revocation_head])?;
+        current_in_transaction(tx, &profile, &identity)
+    })
+}
+
+/// The public R2-02 fixture has one fixed, non-private grant envelope. The
+/// operation identity determines its grant ID so a lost reply cannot issue a
+/// second grant. This remains private native composition, never an IPC grant
+/// constructor; the caller still needs a separately verified Owner ingress.
+pub(crate) fn issue_r2_test_owner_delegation_once(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    admitted: &ProductIdentitySnapshot,
+    operation_id: &str,
+    input: DelegationGrantInput,
+) -> Result<DelegationGrantSnapshot> {
+    identifier(operation_id)?;
+    input.validate()?;
+    let expected = AuthorityCeiling {
+        allowed_actions: vec!["delegate".into()],
+        allowed_target_principal_ids: vec!["principal-r2-02-worker".into()],
+        allowed_target_domain_ids: vec!["domain-r2-02-test".into()],
+        allowed_sinks: vec!["task-package".into()],
+        allowed_material_classes: vec![],
+        explicit_private_material_ids: vec![],
+        allowed_continuation_responses: vec![],
+        max_material_items: 0,
+        max_material_bytes: 0,
+        max_response_bytes: 32 * 1024,
+    };
+    let now = current_epoch_ms()?;
+    if input.principal.principal_id != owner.principal_id()
+        || input.principal.seat_id != owner.seat_id()
+        || input.principal.project_id != "project-r2-02-test"
+        || input.principal.domain_id != "domain-r2-02-test"
+        || input.principal.role != "controller"
+        || input.binding.session_id != "session-r2-02-source"
+        || input.binding.execution_id != "execution-r2-02-source"
+        || input.binding.generation != "1"
+        || input.ceiling != expected
+        || input.expires_at_epoch_ms <= now
+        || input.expires_at_epoch_ms > now + 3_600_000
+    {
+        return denied();
+    }
+    let identity = DelegationGrantIdentity {
+        grant_id: r2_test_grant_id(operation_id)?,
+        revision: "1".into(),
+    };
+    transaction::run(connection, |tx| {
+        let profile = current_profile(tx)?;
+        validate_owner(owner, &profile)?;
+        if profile.profile_id != admitted.profile_id
+            || profile.root_identity != admitted.root_identity
+            || profile.principal_id != admitted.principal_id
+            || profile.seat_id != admitted.seat_id
+            || profile.policy_revision != admitted.policy_revision
+            || profile.revocation_head != admitted.revocation_head {
+            return denied();
+        }
+        let heads = tx.query(
+            "SELECT revision,revoked FROM main.gogoke_authority_grant_heads WHERE grant_id=?",
+            &[&identity.grant_id], 2,
+        )?;
+        if !heads.is_empty() {
+            if heads.len() != 1 || heads[0][0] != "1" || heads[0][1] != "0" {
+                return denied();
+            }
+            let existing = current_in_transaction(tx, &profile, &identity)?;
+            if existing.parent.is_some() || existing.principal != input.principal
+                || existing.binding != input.binding || existing.ceiling != input.ceiling {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            return Ok(existing);
+        }
         insert_grant(tx, &profile, &identity, &input, &profile.issuer_id, None)?;
         tx.write("INSERT INTO main.gogoke_authority_grant_heads(grant_id,revision,revoked) VALUES(?,?,0)",
             &[&identity.grant_id, &identity.revision])?;

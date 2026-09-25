@@ -6,7 +6,7 @@ use crate::store::action::{
 use crate::store::atomic::Statement;
 use crate::store::context::{commit_context_version, PromotionEvidence};
 use crate::store::digest::content_hash;
-use crate::store::same_open::route_b_test_guard;
+use crate::store::same_open::{create_new, route_b_test_guard};
 use std::io::Cursor;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,6 +22,7 @@ fn fixture(run: impl FnOnce(&RootLock, &mut ProductDatabase<'_>)) {
     run(&root, &mut product);
     product.close_checked().unwrap(); drop(root);
     std::fs::remove_file(database).unwrap();
+    std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
     if let Err(error) = std::fs::remove_dir(&path) { eprintln!("owned fixture retained: {error}"); }
 }
 fn scalar(product: &ProductDatabase<'_>, sql: &str) -> String {
@@ -256,7 +257,7 @@ fn vertical_manifest(request_digest: &str) -> Vec<u8> {
 }
 
 fn cleanup_vertical(path: &Path) {
-    for name in ["state.sqlite", "state.sqlite-wal", "state.sqlite-shm"] {
+    for name in ["state.sqlite", "state.sqlite-wal", "state.sqlite-shm", ".gogoke-state.sqlite.custody-v1"] {
         match std::fs::remove_file(path.join(name)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -274,6 +275,68 @@ fn startup_retains_one_persisted_owner_and_creates_no_automatic_grants() {
         assert_eq!(scalar(product, "SELECT count(*) FROM gogoke_authority_events WHERE event_kind='BOOTSTRAP'"), "1");
         assert_eq!(scalar(product, "SELECT count(*) FROM gogoke_authority_grants"), "0");
     });
+}
+
+#[test]
+fn established_root_refuses_lost_database_before_product_authority_bootstrap() {
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("gogoke-root-loss-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let database = path.join("state.sqlite");
+    let marker = path.join(".gogoke-state.sqlite.custody-v1");
+    let root = RootLock::acquire(&path).unwrap();
+    let product = ProductDatabase::open(&root, &database).unwrap();
+    product.close_checked().unwrap();
+    drop(root);
+
+    let original = std::fs::read(&marker).unwrap();
+    std::fs::write(&marker, b"tampered\n").unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    assert!(matches!(ProductDatabase::open(&root, &database), Err(OrchestrationError::AccessDenied)));
+    drop(root);
+    assert!(database.exists(), "marker tamper must not mutate the valid database");
+    std::fs::write(&marker, original).unwrap();
+
+    for name in ["state.sqlite", "state.sqlite-wal", "state.sqlite-shm"] {
+        match std::fs::remove_file(path.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("isolated fixture DB loss failed: {error}"),
+        }
+    }
+    let root = RootLock::acquire(&path).unwrap();
+    assert!(matches!(ProductDatabase::open(&root, &database), Err(OrchestrationError::AccessDenied)));
+    assert!(matches!(ProductDatabase::open(&root, &path.join("STATE.SQLITE")), Err(OrchestrationError::AccessDenied)));
+    assert!(!database.exists(), "rejected reopen must not create a replacement authority journal");
+    let blank = create_new(&root, &database).unwrap();
+    blank.close_checked().unwrap();
+    assert!(matches!(ProductDatabase::open(&root, &database), Err(OrchestrationError::AccessDenied)),
+        "an empty replacement DB cannot mint a new Owner under the established root");
+    drop(root);
+    cleanup_vertical(&path);
+}
+
+#[test]
+fn existing_valid_database_gains_custody_marker_without_replacing_owner() {
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("gogoke-root-migration-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let database = path.join("state.sqlite");
+    let marker = path.join(".gogoke-state.sqlite.custody-v1");
+    let root = RootLock::acquire(&path).unwrap();
+    let mut old = create_new(&root, &database).unwrap();
+    let owner = authority::initialize_profile(&mut old, &root).unwrap();
+    let original_principal = owner.principal_id().to_owned();
+    old.close_checked().unwrap();
+    assert!(!marker.exists());
+    let product = ProductDatabase::open(&root, &database).unwrap();
+    assert_eq!(product.owner.principal_id(), original_principal);
+    assert!(marker.is_file());
+    product.close_checked().unwrap();
+    drop(root);
+    cleanup_vertical(&path);
 }
 #[test]
 fn trusted_native_methods_use_the_retained_issuer_and_same_context_database() {
@@ -355,6 +418,7 @@ fn an_issuer_swapped_from_another_native_profile_is_rejected() {
         assert_eq!(scalar(product, "SELECT count(*) FROM gogoke_authority_grants"), "0");
         std::mem::swap(&mut product.owner, &mut other.owner);
         other.close_checked().unwrap(); std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(root.canonical_root().canonical_path.join(".gogoke-other.sqlite.custody-v1")).unwrap();
     });
 }
 #[test]
