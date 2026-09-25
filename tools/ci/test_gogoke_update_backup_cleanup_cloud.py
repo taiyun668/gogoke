@@ -59,6 +59,12 @@ try {
         Write-UpdateState 'installed_backup_retained' 'old owned cleanup incomplete'
     }
     $outcome = @{ state = 'FAILED'; detail = [string]$_.Exception.Message }
+    if ($outcome.detail -ceq 'old backup inventory path is not normalized') {
+        $outcome.pathShape = @($data.inventory.files | ForEach-Object {
+            $source = ([string]$_.path).Replace('/', '\')
+            [pscustomobject]@{ source = $source; canonical = [IO.Path]::GetFullPath($source) }
+        })
+    }
 } finally { $script:lifecycleLock.Dispose() }
 [IO.File]::WriteAllText($Result, ($outcome | ConvertTo-Json -Compress),
     [Text.UTF8Encoding]::new($false))
@@ -147,6 +153,8 @@ class BackupCleanupCloudTest(unittest.TestCase):
                 )
                 self.assertEqual(process.returncode, 0, process.stderr)
                 result = json.loads(result_file.read_text(encoding="utf-8"))
+                if "pathShape" in result:
+                    print("PATH_NORMALIZATION_DIAGNOSTIC=" + json.dumps(result["pathShape"]))
                 state = json.loads(state_file.read_text(encoding="utf-8"))
                 self.assertEqual(identity(target)["fileId"] != old_root_identity["fileId"], True)
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY) as key:
