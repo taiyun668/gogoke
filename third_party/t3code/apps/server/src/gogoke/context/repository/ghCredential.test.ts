@@ -74,8 +74,8 @@ describe("R2-02 existing gh login adapter", () => {
     const product = "C:\\Program Files\\Gogoke";
     const resolved = resolveTrustedGhExecutable(
       "win32",
-      NodePath.win32.join(product, "resources", "gogoke-service"),
-      NodePath.win32.join(product, "resources", "runtime", "node.exe"),
+      NodePath.win32.join(product, "gogoke-service"),
+      NodePath.win32.join(product, "gogoke-service", "runtime", "node.exe"),
       fsApi,
     );
     expect(resolved).toBe(gh);
@@ -84,8 +84,8 @@ describe("R2-02 existing gh login adapter", () => {
     expect(() =>
       resolveTrustedGhExecutable(
         "win32",
-        NodePath.win32.join(conflictingInstall, "resources", "gogoke-service"),
-        NodePath.win32.join(conflictingInstall, "resources", "runtime", "node.exe"),
+        NodePath.win32.join(conflictingInstall, "gogoke-service"),
+        NodePath.win32.join(conflictingInstall, "gogoke-service", "runtime", "node.exe"),
         fsApi,
       ),
     ).toThrow("GH_AUTH_UNAVAILABLE");

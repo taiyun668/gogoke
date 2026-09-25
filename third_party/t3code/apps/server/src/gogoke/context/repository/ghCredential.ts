@@ -43,9 +43,7 @@ export function resolveTrustedGhExecutable(
 ): string {
   const pathApi = platform === "win32" ? NodePath.win32 : NodePath;
   const excluded =
-    platform === "win32"
-      ? [cwd, pathApi.dirname(executablePath), pathApi.dirname(pathApi.dirname(cwd))]
-      : [cwd];
+    platform === "win32" ? [cwd, pathApi.dirname(executablePath), pathApi.dirname(cwd)] : [cwd];
   const excludedPaths = excluded.map((path) => pathApi.resolve(path));
   for (const candidate of trustedGhPaths(platform)) {
     const absolute = pathApi.resolve(candidate);
