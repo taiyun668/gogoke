@@ -201,6 +201,54 @@ jobs:
           version: 11.10.0
       - uses: dtolnay/rust-toolchain@1.89.0
       - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Select the common pinned MSVC and Windows SDK toolchain
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installations = @(& $vswhere -latest -products '*' `
+            -requires Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64 -property installationPath)
+          if ($LASTEXITCODE -ne 0 -or $installations.Count -ne 1) {
+            throw 'The pinned MSVC 14.44 toolset is unavailable on this runner.'
+          }
+          $vcvars = Join-Path $installations[0] 'VC/Auxiliary/Build/vcvarsall.bat'
+          $command = 'call "' + $vcvars + '" amd64 10.0.26100.0 -vcvars_ver=14.44 >nul && set'
+          $dump = @(& $env:ComSpec /d /c $command)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not activate the pinned MSVC and Windows SDK toolchain.' }
+          $vars = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($line in $dump) {
+            if ($line -match '^([^=]+)=(.*)$') { $vars[$matches[1]] = $matches[2] }
+          }
+          if (-not $vars.ContainsKey('VCToolsVersion') -or $vars['VCToolsVersion'] -notmatch '^14\.44\.' -or
+              -not $vars.ContainsKey('WindowsSDKVersion') -or $vars['WindowsSDKVersion'] -notmatch '^10\.0\.26100\.0\\?$' -or
+              -not $vars.ContainsKey('VCToolsInstallDir')) {
+            throw 'Activated MSVC or Windows SDK identity is not the pinned version.'
+          }
+          $bin = Join-Path $vars['VCToolsInstallDir'] 'bin/Hostx64/x64'
+          if (-not (Test-Path -LiteralPath (Join-Path $bin 'cl.exe') -PathType Leaf) -or
+              -not (Test-Path -LiteralPath (Join-Path $bin 'link.exe') -PathType Leaf)) {
+            throw 'Pinned MSVC compiler or linker is missing.'
+          }
+          $bin >> $env:GITHUB_PATH
+          foreach ($name in @('VCToolsVersion', 'VCToolsInstallDir', 'WindowsSDKVersion', 'WindowsSdkDir',
+                'UniversalCRTSdkDir', 'UCRTVersion', 'INCLUDE', 'LIB', 'LIBPATH')) {
+            if (-not $vars.ContainsKey($name)) { throw "Pinned toolchain environment lacks $name" }
+            "$name=$($vars[$name])" >> $env:GITHUB_ENV
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(Join-Path $bin 'link.exe')" >> $env:GITHUB_ENV
+          "CC=$(Join-Path $bin 'cl.exe')" >> $env:GITHUB_ENV
+          "CXX=$(Join-Path $bin 'cl.exe')" >> $env:GITHUB_ENV
+          Write-Output "Pinned Windows toolchain: MSVC $($vars['VCToolsVersion']); SDK $($vars['WindowsSDKVersion'])"
+      - name: Prove the pinned compiler and linker are active
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64'
+          foreach ($tool in @('cl.exe', 'link.exe')) {
+            $actual = (Get-Command $tool -ErrorAction Stop).Source
+            if (-not [string]::Equals([IO.Path]::GetFullPath($actual),
+                [IO.Path]::GetFullPath((Join-Path $bin $tool)), [StringComparison]::OrdinalIgnoreCase)) {
+              throw "The active $tool is not from the pinned MSVC toolset."
+            }
+          }
       - name: Download notices from this exact workflow run
         uses: actions/download-artifact@v4
         with:
