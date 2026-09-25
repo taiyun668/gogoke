@@ -117,37 +117,77 @@ function Redact-Diagnostic([string]$Text) {
     return ($bounded -replace '(?i)(Bearer\s+)[^\s"'']+', '$1[REDACTED]')
 }
 
-function Start-BoundedCapture([IO.Stream]$Stream) {
-    $bytes = [byte[]]::new(32768)
-    return [pscustomobject]@{
-        bytes = $bytes
-        stream = $Stream
-        read = $Stream.ReadAsync($bytes, 0, $bytes.Length)
+function Initialize-DiagnosticSink {
+    if ($script:diagnosticSinkInitialized) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+
+public sealed class GogokeDiagnosticSink : Stream {
+    private readonly object gate = new object();
+    private readonly byte[] saved = new byte[32768];
+    private int length;
+    public byte[] Snapshot() {
+        lock (gate) {
+            var result = new byte[length];
+            Buffer.BlockCopy(saved, 0, result, 0, length);
+            return result;
+        }
     }
+    public override void Write(byte[] buffer, int offset, int count) {
+        lock (gate) {
+            int take = Math.Min(count, saved.Length - length);
+            if (take > 0) {
+                Buffer.BlockCopy(buffer, offset, saved, length, take);
+                length += take;
+            }
+        }
+    }
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken token) {
+        token.ThrowIfCancellationRequested();
+        Write(buffer, offset, count);
+        return Task.CompletedTask;
+    }
+    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken token = default) {
+        token.ThrowIfCancellationRequested();
+        lock (gate) {
+            int take = Math.Min(buffer.Length, saved.Length - length);
+            if (take > 0) {
+                buffer.Span.Slice(0, take).CopyTo(saved.AsSpan(length, take));
+                length += take;
+            }
+        }
+        return ValueTask.CompletedTask;
+    }
+    public override bool CanRead => false;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+}
+'@
+    $script:diagnosticSinkInitialized = $true
+}
+
+function Start-BoundedCapture([IO.Stream]$Stream) {
+    Initialize-DiagnosticSink
+    $sink = [GogokeDiagnosticSink]::new()
+    return [pscustomobject]@{ sink = $sink; copy = $Stream.CopyToAsync($sink, 4096) }
 }
 
 function Finish-BoundedCapture([object]$Capture) {
     if (-not $Capture) { return '' }
-    # Read no more than the fixed buffer, and never wait for EOF from a pipe
-    # that a child of the direct process may still hold open.
-    $deadline = [DateTime]::UtcNow.AddSeconds(2)
-    $length = 0
-    while ($length -lt $Capture.bytes.Length) {
-        $remaining = [Math]::Max(0, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
-        if ($remaining -eq 0) { break }
-        $winner = [Threading.Tasks.Task]::WhenAny(
-            $Capture.read, [Threading.Tasks.Task]::Delay($remaining)).GetAwaiter().GetResult()
-        if ($winner -ne $Capture.read) { break }
-        try { $count = $Capture.read.GetAwaiter().GetResult() }
-        catch { break }
-        if ($count -le 0) { break }
-        $length += $count
-        if ($length -lt $Capture.bytes.Length) {
-            $Capture.read = $Capture.stream.ReadAsync($Capture.bytes, $length,
-                $Capture.bytes.Length - $length)
-        }
-    }
-    return (Redact-Diagnostic ([Text.Encoding]::UTF8.GetString($Capture.bytes, 0, $length)))
+    # Keep draining even after the first 32 KiB. A descendant holding the
+    # pipe open cannot make evidence collection wait beyond two seconds.
+    $null = [Threading.Tasks.Task]::WhenAny(
+        $Capture.copy, [Threading.Tasks.Task]::Delay(2000)).GetAwaiter().GetResult()
+    return (Redact-Diagnostic ([Text.Encoding]::UTF8.GetString($Capture.sink.Snapshot())))
 }
 
 function Invoke-DirectReadinessDiagnostic([string]$Root) {
