@@ -1,0 +1,33 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-096",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "3a973f5492489b0b0f42e1b6156b1d44cb7cae9f",
+  "recorded_utc": "2026-09-25T18:04:43Z",
+  "reason": "R2_06_PORTABLE_AND_FORMAL_PREFLIGHT_INCREMENT_WITH_INSTALLED_UNINSTALL_FINALIZER_MEASUREMENT_PENDING",
+  "current_main": "10512410e5fbba4ccae79a33ea38b926ba248a36",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac remain current.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_CONFLICTING_NOT_MERGED at exact execution source head 3a973f5492489b0b0f42e1b6156b1d44cb7cae9f before this checkpoint.",
+  "pr34": "OPEN_NOT_MERGED at dacd466e1a870c1820aed0854a676ec23a2d1613; Owner-held R2-05 remains WIP.",
+  "pr43": "OPEN at 59c150b123d80b63110934c8b9c96cbcec26c7b3, based on main 10512410; trusted script only, checks pending. It preserves the 125-second DELETED gate and records two post-timeout process, receipt and remaining-file samples when that gate fails.",
+  "executed_evidence": {
+    "source_4563_cloud": "Exact source 4563a907cfaa5b90d86fd596c53c250ac99c8bfb desktop run 36165174824 SUCCESS: Browser, dependency notices, both clean Windows build lanes, and raw shell/NSIS shell/native-host/Node/pack/index byte comparison. Cloud native filters ran 9 gogoke_update, 5 resource_trust and 1 gogoke_uninstall tests, all passing with no ignored tests; the new Windows separator regression test executed. Reproducibility machine artifact 10879327357, frozen artifact 10879006918; public source hygiene run 36165178545 SUCCESS.",
+    "source_4563_candidate": "Trusted main 10512410 signer run 36169173434 verified the exact successful source run and signed candidate bytes, then installed the frozen candidate on a cloud Medium Windows runner. Actual product wrote version 0.1.3 and generation/set-bound readiness. gogoke.exe --uninstall --quiet exited 0 and a unique finalizer receipt path appeared, but no DELETED receipt was observed within the existing 125-second smoke bound. Installed smoke FAIL at stage uninstall-once-and-finalizer-receipt; machine artifact 10879492597, signed candidate artifact 10879077597. The candidate install and AppData sentinel were retained on the ephemeral runner; data preservation after uninstall is NOT_VERIFIED. Receipt path alone does not prove the child was alive: LOCKED, PENDING, child exit and ongoing work were not distinguished by this run.",
+    "source_3a_increment": "Execution 3a973f54 adds complete indexed portable runtime ZIP, publisher byte binding of every ZIP member to the resource index, valid 128-hex P-256 signature decoding, legal SemVer build-metadata asset names, and non-ASCII signature rejection before Rust string slicing. Local resource pack/frozen artifact Python suite 30/30 PASS, PowerShell script parses PASS, public P-256 fixture decoding PASS, and independent focused read-only review found no definite defect. Exact source hygiene run 36167440120 SUCCESS. Exact desktop run 36169211192 IN_PROGRESS; its native/Windows results and installed candidate result remain NOT_RUN/IN_PROGRESS.",
+    "finalizer_diagnosis": "Independent read-only analysis found the finalizer validates and then deletes about 13,000 owned files, with repeated per-file registry and file identity checks. The 125-second timeout may be shorter than that work, but this is not proven. Trusted PR43 measures actual child/receipt/file state only after the unchanged 125-second failure boundary, so it cannot turn a late result into PASS. The first review found and the Controller removed an in-loop full-tree scan that would have changed the gate; fresh focused re-review found no remaining definite defect. PR43 cloud checks and same-frozen-source diagnostic rerun remain NOT_RUN."
+  },
+  "blocked_or_not_run": "Exact-3a desktop native tests, two-lane byte comparison, complete portable artifact and source-3a candidate install are IN_PROGRESS/NOT_RUN. PR43 trusted checks and measured finalizer rerun NOT_RUN. Formal Owner-signed full/resources update, rollback/crash recovery, formal portable start with external signed sidecars, Owner Win11 SAC formal installer, final candidate review and R2-05 remain NOT_RUN. No release, adoption or acceptance.",
+  "path_first_reflection": "The source-4563 two-lane run proved the separator fix reached the real child handshake: uninstall parent changed from exit 1 to exit 0. Its next failure was a receipt deadline, not the old error. Instead of changing product deletion or lengthening the smoke gate on a guess, the next trusted run will inspect finalizer liveness, CPU/read transfer, receipt state and remaining files after the same gate fails, reusing the already frozen source artifact without another native build. The portable/publisher fixes were batched into source 3a973f54 and one exact cloud run while that trusted diagnosis proceeds.",
+  "retained_custody": [
+    "Execution worktree is clean at pushed source 3a973f54 before this checkpoint. Trusted signer worktree owns clean pushed branch codex/r2-06-finalizer-observe at 59c150b1 while PR43 is open; remove temporary diagnostics after measured repair and safe review.",
+    "Earlier small public machine JSON copies under %TEMP% remain pending safe cleanup. Temporary PR body files and an ignored CI Python cache file also remain because exact-path Remove-Item requests were automatically rejected as blocked by policy; no alternate deletion route was attempted."
+  ],
+  "external_action": "PR27_DRAFT; PR34_OPEN_OWNER_HELD; PR43_OPEN_CHECKS_PENDING; SOURCE_4563_DESKTOP_PASS; SOURCE_4563_SIGNER_INSTALLED_SMOKE_FAIL_AFTER_PARENT_EXIT_ZERO; SOURCE_3A_DESKTOP_IN_PROGRESS; NO_OWNER_KEY_USE; NO_RELEASE; TEMP_CLEANUP_AUTO_REVIEW_REJECTED",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Require PR43 exact-head checks, merge only that reviewed trusted diagnostic, then rerun the same successful source 4563a907/run 36165174824/attempt 1/frozen artifact 10879006918 through main signer to observe finalizer state at the unchanged receipt deadline. Inspect source-3a desktop run 36169211192 independently; on PASS require complete portable member/byte evidence and its own exact-source candidate smoke. Fix the measured first finalizer cause narrowly, remove temporary diagnostics after proof, and preserve PR34/R2-05 hold."
+}
