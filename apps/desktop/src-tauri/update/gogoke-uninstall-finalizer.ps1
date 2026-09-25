@@ -12,17 +12,15 @@ function Same([string]$a, [string]$b) {
 }
 function Full-Path([string]$path) {
     if ($path -cnotmatch '^[A-Za-z]:\\' -or $path -match '[\x00-\x1f]' -or
-        $path.Substring(2) -match ':') {
-        if ($env:GITHUB_ACTIONS -ceq 'true') {
-            $script:ciPathFailure = 'input=' + $path + ' guard=prefix/control/colon'
-        }
+        $path.Substring(2) -match ':' -or $path -match '/' -or
+        $path -match '(^|\\)\.\.?($|\\)' -or $path -match '[. ]($|\\)') {
         Fail 'GOGOKE_UNINSTALL_PATH_INVALID'
     }
+    # .NET Framework expands short-name ancestors to their long names.
+    # The opened handle, volume and file ID checks below bind the expanded
+    # path to the actual object before any deletion.
     $full = [IO.Path]::GetFullPath($path)
-    if (-not (Same $full $path) -or $full -match '[\\/]\.\.?([\\/]|$)') {
-        if ($env:GITHUB_ACTIONS -ceq 'true') {
-            $script:ciPathFailure = 'input=' + $path + ' full=' + $full + ' guard=normalize/dot'
-        }
+    if ($full -match '[\\/]\.\.?([\\/]|$)') {
         Fail 'GOGOKE_UNINSTALL_PATH_INVALID'
     }
     return $full
@@ -334,17 +332,6 @@ try {
     Write-Receipt 'DELETED' 'owned files removed; unknown files and user data retained'
     exit 0
 } catch {
-    # Temporary cloud diagnostic for the first real process failure. Remove
-    # after the failing operation has been identified and repaired.
-    if ($env:GITHUB_ACTIONS -ceq 'true') {
-        $detail = ('{0} line={1} {2}' -f $_.Exception.GetType().Name,
-            $_.InvocationInfo.ScriptLineNumber, $_.Exception.Message) -replace '[\r\n]', ' '
-        if ($script:ciPathFailure) {
-            $detail += ' ' + ($script:ciPathFailure -replace '[\r\n]', ' ')
-        }
-        [Console]::Out.WriteLine('CI_FINALIZER_ERROR ' + $detail.Substring(0, [Math]::Min($detail.Length, 512)))
-        [Console]::Out.Flush()
-    }
     try { Write-Receipt 'FAILED' ([string]$_.Exception.Message) } catch { }
     exit 1
 } finally {
