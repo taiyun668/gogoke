@@ -260,6 +260,8 @@ def _read_pack_files(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
     _check_casefold_unique(names)
     files: list[dict[str, Any]] = []
     for info in infos:
+        if info.orig_filename != info.filename:
+            raise ResourcePackError("resource pack entry contains a NUL in its original ZIP name")
         name = _normalized_relative(info.filename)
         if PurePosixPath(name).suffix.lower() in NATIVE_EXECUTABLE_SUFFIXES:
             raise ResourcePackError(f"native executable is not allowed in resource pack: {name}")
@@ -338,6 +340,11 @@ def verify_pack(pack_path: Path, index_path: Path) -> None:
     files = index["files"]
     if not isinstance(files, list):
         raise ResourcePackError("index.files must be an array")
+    for item in files:
+        record = _expect_object(item, {"path", "length", "sha256"}, "index.files item")
+        if not isinstance(record["path"], str):
+            raise ResourcePackError("index file path must be a string")
+        _validate_record({"length": record["length"], "sha256": record["sha256"]}, "index.files item")
     installed_files = index["installedFiles"]
     if not isinstance(installed_files, list) or not installed_files:
         raise ResourcePackError("index.installedFiles must be a nonempty array")
