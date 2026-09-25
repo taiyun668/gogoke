@@ -15,6 +15,8 @@ mod files;
 mod git;
 mod git_utils;
 mod gogoke_update;
+#[cfg(target_os = "windows")]
+mod gogoke_uninstall;
 mod local_usage;
 #[cfg(desktop)]
 mod menu;
@@ -26,6 +28,8 @@ mod prompts;
 pub mod public_core;
 mod public_runtime;
 mod release_policy;
+#[cfg(target_os = "windows")]
+mod resource_trust;
 mod remote_backend;
 mod rules;
 mod settings;
@@ -72,6 +76,66 @@ fn is_mobile_runtime() -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    {
+        let arguments: Vec<String> = std::env::args().skip(1).collect();
+        if arguments.iter().any(|argument| argument == "--uninstall") {
+            if !(arguments.len() == 1 && arguments[0] == "--uninstall"
+                || arguments.len() == 2 && arguments[0] == "--uninstall" && arguments[1] == "--quiet") {
+                eprintln!("GOGOKE_UNINSTALL_ARGUMENTS_INVALID");
+                std::process::exit(1);
+            }
+            let result = gogoke_uninstall::run();
+            if let Err(error) = &result { eprintln!("{error}"); }
+            std::process::exit(if result.is_ok() { 0 } else { 1 });
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(path) = std::env::args().find_map(|argument| {
+        argument
+            .strip_prefix("--gogoke-install-resources=")
+            .map(std::path::PathBuf::from)
+    }) {
+        let result = resource_trust::install_resources(&path);
+        if let Err(error) = &result { eprintln!("{error}"); }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(path) = std::env::args().find_map(|argument| {
+        argument
+            .strip_prefix("--gogoke-verify-install-set=")
+            .map(std::path::PathBuf::from)
+    }) {
+        let result = resource_trust::verify_install_set(&path);
+        if let Err(error) = &result { eprintln!("{error}"); }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+
+    #[cfg(target_os = "windows")]
+    let verified_resources = if cfg!(debug_assertions) {
+        None
+    } else {
+        match resource_trust::verify_bootstrap() {
+            Ok(resources) => Some(resource_trust::ResourceState::new(resources)),
+            Err(error) => { eprintln!("{error}"); return; }
+        }
+    };
+    let mut context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    let verified_main_config = if let Some(resources) = &verified_resources {
+        let config = context.config().app.windows.iter()
+            .find(|window| window.label == "main")
+            .cloned()
+            .expect("gogoke main window config is required");
+        context.config_mut().app.windows.clear();
+        if resources.current().expect("verified resource state").domain == resource_trust::Domain::Candidate {
+            context.config_mut().identifier = "app.gogoke.desktop.candidate".to_string();
+        }
+        Some(config)
+    } else { None };
+
     #[cfg(target_os = "linux")]
     {
         // Avoid WebKit compositing issues on NVIDIA Linux setups (GBM buffer errors).
@@ -112,6 +176,34 @@ pub fn run() {
     #[cfg(not(desktop))]
     let builder = tauri::Builder::default();
 
+    #[cfg(target_os = "windows")]
+    let builder = {
+        let protocol_resources = verified_resources.clone();
+        builder.register_uri_scheme_protocol("gogoke-resource", move |_context, request| {
+            let path = request.uri().path();
+            let bytes = protocol_resources.as_ref()
+                .ok_or_else(|| "GOGOKE_RESOURCE_DOMAIN_UNAVAILABLE".to_string())
+                .and_then(|resources| resources.current()?.read_frontend(path));
+            match bytes {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::OK)
+                    .header("Content-Type", resource_trust::content_type(path))
+                    .header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; object-src 'none'; base-uri 'self'")
+                    .body(bytes)
+                    .expect("fixed resource response headers"),
+                Err(error) => {
+                    eprintln!("{error}");
+                    tauri::http::Response::builder()
+                        .status(tauri::http::StatusCode::NOT_FOUND)
+                        .body(Vec::new())
+                        .expect("fixed resource error response")
+                }
+            }
+        })
+    };
+
+    #[cfg(target_os = "windows")]
+    let resource_for_setup = verified_resources.clone();
     let builder = builder
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -123,9 +215,18 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let state = state::AppState::load(&app.handle());
             app.manage(state);
+            #[cfg(target_os = "windows")]
+            if let (Some(resources), Some(mut main_config)) = (&resource_for_setup, &verified_main_config) {
+                main_config.url = tauri::WebviewUrl::CustomProtocol(
+                    reqwest::Url::parse("gogoke-resource://localhost/index.html")
+                        .expect("fixed gogoke resource URL"),
+                );
+                app.manage(resources.clone());
+                tauri::WebviewWindowBuilder::from_config(&app.handle(), &main_config)?.build()?;
+            }
             #[cfg(target_os = "macos")]
             {
                 let tray_state = app.state::<tray::TrayState>();
@@ -315,7 +416,7 @@ pub fn run() {
             tailscale::tailscale_daemon_status,
             is_mobile_runtime
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running tauri application");
 
     app.run(|app_handle, event| {

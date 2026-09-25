@@ -155,6 +155,7 @@ struct ProductRuntimePaths {
     service_entry: PathBuf,
     native_host: PathBuf,
     product_root: PathBuf,
+    source_commit: Option<String>,
 }
 
 fn require_file(path: PathBuf, component: &'static str) -> Result<PathBuf, String> {
@@ -201,9 +202,20 @@ fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, 
             .resource_dir()
             .map_err(|_| "GOGOKE_PRODUCT_RESOURCE_DIR_UNAVAILABLE".to_string())?,
     )?;
-    let service_root = resource_dir.join("gogoke-service");
+    let verified = app.try_state::<crate::resource_trust::ResourceState>()
+        .map(|state| state.current())
+        .transpose()?;
+    if let Some(resources) = &verified { resources.verify_runtime_files()?; }
+    let service_root = verified.as_ref()
+        .map(|resources| resources.service_root.clone())
+        .unwrap_or_else(|| resource_dir.join("gogoke-service"));
     let node_runtime = require_file(service_root.join("runtime").join("node.exe"), "node-runtime")?;
-    let service_entry = require_file(service_root.join("dist").join("bin.mjs"), "service-entry")?;
+    let service_entry = require_file(
+        verified.as_ref()
+            .map(|resources| resources.generation_root.join("dist").join("bin.mjs"))
+            .unwrap_or_else(|| service_root.join("dist").join("bin.mjs")),
+        "service-entry",
+    )?;
 
     // R2-04 owns final packaging. R2-01 admits only fixed product-controlled
     // install locations; no caller path, PATH lookup, or development-tree fallback.
@@ -217,10 +229,14 @@ fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, 
             .map(|dir| dir.join("gogoke-native-host.exe"))
             .unwrap_or_default(),
     ];
-    let native_host = native_candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(|| "GOGOKE_PRODUCT_COMPONENT_MISSING:native-host".to_string())?;
+    let native_host = if let Some(resources) = &verified {
+        resources.native_host_path.clone()
+    } else {
+        native_candidates
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| "GOGOKE_PRODUCT_COMPONENT_MISSING:native-host".to_string())?
+    };
     let native_host = node_compatible_windows_path(native_host)?;
 
     let product_root = node_compatible_windows_path(
@@ -234,6 +250,7 @@ fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, 
         service_entry,
         native_host,
         product_root,
+        source_commit: verified.as_ref().map(|resources| resources.source_commit.clone()),
     })
 }
 
@@ -395,10 +412,10 @@ async fn run_product_process(
         if request.run_controlled_task != Some(true) {
             return Err("GOGOKE_TEST_DRAFT_REQUIRES_CONTROLLED_TASK".to_string());
         }
-        let sha = option_env!("GITHUB_SHA")
-            .ok_or_else(|| "GOGOKE_TEST_DRAFT_BUILD_SHA_UNAVAILABLE".to_string())?;
+        let sha = paths.source_commit.as_deref()
+            .ok_or_else(|| "GOGOKE_TEST_DRAFT_VERIFIED_SOURCE_UNAVAILABLE".to_string())?;
         if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err("GOGOKE_TEST_DRAFT_BUILD_SHA_INVALID".to_string());
+            return Err("GOGOKE_TEST_DRAFT_VERIFIED_SOURCE_INVALID".to_string());
         }
         let entry = tokio::fs::read(&paths.service_entry).await
             .map_err(|_| "GOGOKE_TEST_DRAFT_SERVICE_HASH_UNAVAILABLE".to_string())?;
@@ -483,8 +500,15 @@ pub(crate) async fn gogoke_r2_goal_probe(
     app: tauri::AppHandle,
     request: ProductGoalRequest,
 ) -> Result<ProductGoalView, String> {
+    let _guard = PRODUCT_RUNTIME_GATE.lock().await;
     let paths = resolve_runtime_paths(&app)?;
     run_product_process(paths, &request).await
+}
+
+static PRODUCT_RUNTIME_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub(crate) async fn acquire_product_gate() -> tokio::sync::MutexGuard<'static, ()> {
+    PRODUCT_RUNTIME_GATE.lock().await
 }
 
 #[cfg(test)]

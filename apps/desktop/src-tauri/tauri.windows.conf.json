@@ -19,12 +19,24 @@
   "bundle": {
     "createUpdaterArtifacts": false,
     "externalBin": ["binaries/gogoke-native-host"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "template": "installer/gogoke.nsi"
+      }
+    },
     "resources": {
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "../generated/npm-production-notices.html": "npm-production-notices.html",
       "../generated/rust-dependency-notices.html": "rust-dependency-notices.html",
-      "resources/gogoke-service/": "gogoke-service/"
+      "resources/gogoke-service/runtime/": "gogoke-service/runtime/",
+      "resources/gogoke-service/node_modules/": "gogoke-service/node_modules/",
+      "resources/gogoke-service/fixtures/": "gogoke-service/fixtures/",
+      "resources/gogoke-service/package.json": "gogoke-service/package.json",
+      "resources/gogoke-service/T3-LICENSE": "gogoke-service/T3-LICENSE",
+      "resources/gogoke-service/T3-runtime-notices.html": "gogoke-service/T3-runtime-notices.html",
+      "resources/gogoke-service/native-host-notices.html": "gogoke-service/native-host-notices.html"
     }
   }
 }

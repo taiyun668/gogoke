@@ -1123,6 +1123,7 @@ export async function getAppBuildType(): Promise<AppBuildType> {
 
 export type GogokeUpdateOffer = {
   version: string;
+  releaseType: "full" | "resources";
   asset: string;
   sha256: string;
   publishedAt: string;
@@ -1139,7 +1140,8 @@ export async function installGogokeUpdate(version: string): Promise<void> {
 }
 
 export async function signalGogokeUpdateReady(): Promise<void> {
-  return invoke<void>("gogoke_update_signal_ready");
+  const resourceSetId = new URL(window.location.href).searchParams.get("gogoke-resource-set");
+  return invoke<void>("gogoke_update_signal_ready", { resourceSetId });
 }
 
 export async function takeGogokeUpdateFailure(): Promise<string | null> {
