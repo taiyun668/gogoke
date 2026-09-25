@@ -1,0 +1,33 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-095",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "4563a907cfaa5b90d86fd596c53c250ac99c8bfb",
+  "recorded_utc": "2026-09-25T17:10:02Z",
+  "reason": "R2_06_CANDIDATE_UNINSTALL_HANDOFF_CAUSE_MEASURED_AND_EXACT_FIX_CLOUD_RUNNING",
+  "current_main": "10512410e5fbba4ccae79a33ea38b926ba248a36",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac remain current.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_NOT_MERGED at remote 4563a907cfaa5b90d86fd596c53c250ac99c8bfb before this checkpoint.",
+  "pr34": "OPEN_NOT_MERGED at dacd466e1a870c1820aed0854a676ec23a2d1613; Owner-held R2-05 remains WIP.",
+  "pr42": "MERGED into main at 10512410 after exact 3a9a14e0 Browser, notices, unsigned Windows NSIS, public hygiene and focused independent stderr-capture review PASS. It is a temporary direct-error diagnostic in the trusted secret-free Medium smoke, to be removed after measured repair.",
+  "executed_evidence": {
+    "uninstall_first_error": "Trusted main 10512410 signer run 36163585385 reused successful source 295c4447/run 36153652792/attempt 1/frozen artifact 10874445723. Signing PASS. Installed product again wrote exact version 0.1.3, generation/set-bound readiness, then gogoke.exe --uninstall --quiet exited 1 with direct stderr GOGOKE_UNINSTALL_LOCK_HANDOFF_UNCONFIRMED. No DELETED finalizer receipt or data preservation PASS. Machine evidence artifact 10875859102; signed candidate artifact 10876118665. This is cloud Windows Server, not Owner Win11/SAC evidence.",
+    "handoff_path_cause": "Independent read-only cross-language audit of source 295c4447 found that owned_files_for_uninstall joins slash-delimited signed index paths, Windows Rust PathBuf preserves internal slash spellings, and path_text serialized them unchanged. The embedded finalizer Full-Path rejects '/' during inventory validation before Reserve-Receipt and READY, consistent with the measured parent handshake error. Direct extracted finalizer cases rejected two mixed paths and accepted backslash controls; this defect is proven, while another later failure is not ruled out.",
+    "execution_fix": "Execution 4563a907 changes only gogoke_uninstall::path_text to serialize Windows separators and wires a new real PathBuf join regression test into the existing cloud native job. Focused independent review found no remaining definite defect; exact-4563 native test and installed candidate uninstall remain NOT_RUN. Source hygiene run 36165178545 SUCCESS; desktop run 36165174824 IN_PROGRESS.",
+    "prior_resource_increment": "Execution 5b6b7eb6 Browser, notices and cloud resource trust tests completed; its two Windows lanes did not finish installer/reproducibility before it was superseded and cancelled by the 4563a907 exact-head run. Run 36161994385 is CANCELLED and is not PASS."
+  },
+  "blocked_or_not_run": "Exact-4563 native test count, Windows reproducibility and candidate installed uninstall NOT_RUN/IN_PROGRESS. Formal Owner-signed full/resource update, rollback/crash recovery, Owner Win11 SAC formal installer, final independent candidate review and R2-05 remain NOT_RUN. No release, adoption or acceptance.",
+  "path_first_reflection": "The first repaired smoke directly proved readiness, then stopped at uninstall exit 1. A bounded same-Medium stderr capture exposed the parent handshake code without rebuilding candidate bytes. Comparing the actual Rust inventory serialization with the embedded PowerShell validator identified an earlier slash-format rejection; a narrow serializer fix plus a cloud-wired regression test avoids weakening the finalizer. The old source run was cancelled once a new exe-changing commit required a fresh two-lane build anyway, so cloud time moved to the exact current SHA.",
+  "retained_custody": [
+    "Execution worktree is clean at pushed 4563a907 before this checkpoint. Trusted signer worktree remains on clean merged PR42 branch 3a9a14e0 pending removal of the temporary stderr capture and safe worktree cleanup.",
+    "Earlier small public machine JSON copies under %TEMP% remain pending safe cleanup. Temporary PR body files and an ignored CI Python cache file also remain because exact-path Remove-Item requests were automatically rejected as blocked by policy; no alternate deletion route was attempted."
+  ],
+  "external_action": "PR42_MERGED; PR27_DRAFT; PR34_OPEN_OWNER_HELD; SIGNER_RUN_36163585385_FAILED_AT_UNINSTALL_KNOWN; OLD_RUN_36161994385_CANCELLED; NEW_RUN_36165174824_IN_PROGRESS; NO_OWNER_KEY_USE; NO_RELEASE; TEMP_CLEANUP_AUTO_REVIEW_REJECTED",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Inspect exact-4563 cloud run 36165174824, require the new gogoke_uninstall filter to run nonzero tests and both Windows lanes to complete with byte comparison; inspect first failure if any. On success use its frozen artifact in trusted main candidate signer, then require installed uninstall exit 0, DELETED finalizer receipt, registry/root cleanup and unchanged candidate AppData sentinel. Remove the temporary stderr capture after proven root repair, preserve PR34/R2-05 hold and continue remaining authorized R2-06 axes."
+}
