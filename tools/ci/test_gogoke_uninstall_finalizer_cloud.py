@@ -46,6 +46,10 @@ if kernel32:
         ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
     )
     kernel32.GetFileInformationByHandleEx.restype = ctypes.c_int
+    kernel32.SetFileInformationByHandle.argtypes = (
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+    )
+    kernel32.SetFileInformationByHandle.restype = ctypes.c_int
     kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
 
 
@@ -146,6 +150,28 @@ class CloudFinalizerTest(unittest.TestCase):
             else:
                 raise AssertionError(f"{registration} already exists on cloud runner")
 
+    def test_delete_on_close_can_be_cleared_before_recorded_link_commit(self):
+        with tempfile.TemporaryDirectory(prefix="gogoke-link-disposition-ci-") as temporary:
+            for clear in (False, True):
+                path = Path(temporary) / f"shortcut-{int(clear)}.lnk"
+                handle = kernel32.CreateFileW(
+                    str(path), GENERIC_READ | GENERIC_WRITE | 0x00010000,
+                    0, None, 1, 0x04000000, None,
+                )
+                self.assertNotIn(handle, (None, INVALID_HANDLE), ctypes.get_last_error())
+                try:
+                    if clear:
+                        flags = ctypes.c_uint32(0)  # FileDispositionInfoEx DO_NOT_DELETE
+                        self.assertTrue(
+                            kernel32.SetFileInformationByHandle(
+                                handle, 21, ctypes.byref(flags), ctypes.sizeof(flags)
+                            ),
+                            ctypes.get_last_error(),
+                        )
+                finally:
+                    self.assertTrue(kernel32.CloseHandle(handle))
+                self.assertEqual(path.exists(), clear)
+
     def test_owned_files_only_and_stale_identity(self):
         with tempfile.TemporaryDirectory(prefix="gogoke-finalizer-ci-") as temporary:
             base = Path(temporary)
@@ -234,8 +260,8 @@ class CloudFinalizerTest(unittest.TestCase):
         self.assertFalse(shortcut.exists(), "cloud runner must not have an existing Gogoke link")
         with tempfile.TemporaryDirectory(prefix="gogoke-formal-finalizer-ci-") as temporary:
             base = Path(temporary)
-            for replaced in (False, True):
-                root = base / f"formal-{int(replaced)}"
+            for mutation in ("original", "replaced_changed", "same_file_changed", "replaced_same"):
+                root = base / f"formal-{mutation}"
                 root.mkdir()
                 exe = root / "gogoke.exe"
                 exe.write_bytes(b"fixture shell")
@@ -251,6 +277,7 @@ class CloudFinalizerTest(unittest.TestCase):
                     "sha256": hashlib.sha256(original).hexdigest(),
                     "identity": identity(shortcut),
                 }
+                original_identity = record["identity"]
                 raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
                 with winreg.CreateKey(winreg.HKEY_CURRENT_USER, FORMAL_REGISTRY) as key:
                     for name, value in (
@@ -262,9 +289,31 @@ class CloudFinalizerTest(unittest.TestCase):
                     ):
                         winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
                 try:
-                    if replaced:
+                    if mutation.startswith("replaced"):
+                        replacement = base / f"replacement-{mutation}.lnk"
+                        replacement.write_bytes(
+                            original if mutation == "replaced_same" else b"user replacement"
+                        )
+                        replacement_identity = identity(replacement)
+                        self.assertNotEqual(replacement_identity, original_identity)
                         shortcut.unlink()
-                        shortcut.write_bytes(b"user replacement")
+                        os.replace(replacement, shortcut)
+                    elif mutation == "same_file_changed":
+                        shortcut.write_bytes(b"user edited bytes")
+                    observed_identity = identity(shortcut)
+                    observed_hash = hashlib.sha256(shortcut.read_bytes()).hexdigest()
+                    if mutation == "original":
+                        self.assertEqual(observed_identity, original_identity)
+                        self.assertEqual(observed_hash, record["sha256"])
+                    elif mutation == "same_file_changed":
+                        self.assertEqual(observed_identity, original_identity)
+                        self.assertNotEqual(observed_hash, record["sha256"])
+                    elif mutation == "replaced_same":
+                        self.assertNotEqual(observed_identity, original_identity)
+                        self.assertEqual(observed_hash, record["sha256"])
+                    else:
+                        self.assertNotEqual(observed_identity, original_identity)
+                        self.assertNotEqual(observed_hash, record["sha256"])
                     nonce = str(uuid.uuid4())
                     tag = hashlib.sha256(instance.encode()).hexdigest()[:16]
                     payload = {
@@ -307,16 +356,20 @@ class CloudFinalizerTest(unittest.TestCase):
                     self.assertIsNotNone(terminal)
                     self.assertEqual(terminal["state"], "DELETED", terminal)
                     self.assertFalse(exe.exists())
-                    if replaced:
-                        self.assertEqual(shortcut.read_bytes(), b"user replacement")
-                    else:
+                    if mutation == "original":
                         self.assertFalse(shortcut.exists())
+                    else:
+                        self.assertTrue(shortcut.exists())
+                        self.assertEqual(identity(shortcut), observed_identity)
+                        self.assertEqual(
+                            hashlib.sha256(shortcut.read_bytes()).hexdigest(), observed_hash
+                        )
                 finally:
                     try:
                         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, FORMAL_REGISTRY)
                     except FileNotFoundError:
                         pass
-                    if shortcut.exists() and shortcut.read_bytes() == b"user replacement":
+                    if shortcut.exists():
                         shortcut.unlink()
 
 

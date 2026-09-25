@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::os::windows::ffi::OsStrExt;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
@@ -33,11 +33,14 @@ use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Programs, IShellLinkW, SHGetKnownFolderPath, ShellLink,
 };
 use windows_sys::Win32::Foundation::GetHandleInformation;
-use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+use windows_sys::Win32::Foundation::{
+    DuplicateHandle, DUPLICATE_SAME_ACCESS, GENERIC_READ, GENERIC_WRITE, HANDLE,
+};
 use windows_sys::Win32::Storage::FileSystem::{
-    FileAttributeTagInfo, FileIdInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
-    FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_ID_INFO,
+    FileAttributeTagInfo, FileDispositionInfoEx, FileIdInfo, GetFileInformationByHandleEx,
+    GetFinalPathNameByHandleW, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_TAG_INFO,
+    FILE_DISPOSITION_FLAG_DO_NOT_DELETE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -444,7 +447,8 @@ pub(crate) fn install_shortcut(args: &[String]) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .share_mode(0)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE)
         .open(&path)
         .map_err(|_| "GOGOKE_SHORTCUT_CREATE_FAILED".to_string())?;
     created
@@ -475,6 +479,34 @@ pub(crate) fn install_shortcut(args: &[String]) -> Result<(), String> {
         .map_err(|_| "GOGOKE_SHORTCUT_RECORD_READBACK_FAILED".to_string())?;
     if readback != raw {
         return Err("GOGOKE_SHORTCUT_RECORD_CHANGED".to_string());
+    }
+    // The new link is delete-on-close until its instance-bound record is
+    // durable. Clearing the on-close disposition is the final commit step.
+    // A process termination before this call cannot publish an unowned link.
+    let disposition = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DO_NOT_DELETE,
+    };
+    if unsafe {
+        SetFileInformationByHandle(
+            created.as_raw_handle() as HANDLE,
+            FileDispositionInfoEx,
+            (&disposition as *const FILE_DISPOSITION_INFO_EX).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    } == 0
+    {
+        return Err("GOGOKE_SHORTCUT_COMMIT_FAILED".to_string());
+    }
+    drop(created);
+    let mut committed = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path)
+        .map_err(|_| "GOGOKE_SHORTCUT_COMMIT_NOT_VISIBLE".to_string())?;
+    let visible = shortcut_record_for(&mut committed, root, slot, &folder, &instance)?;
+    if visible.identity != current.identity || visible.sha256 != current.sha256 {
+        return Err("GOGOKE_SHORTCUT_COMMIT_CHANGED".to_string());
     }
     Ok(())
 }

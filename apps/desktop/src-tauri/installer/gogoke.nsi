@@ -88,6 +88,7 @@ Var GogokeShortcutProcessInfo
 Var GogokeShortcutCommand
 Var GogokeShortcutProcess
 Var GogokeShortcutThread
+Var GogokeShortcutChildUnknown
 
 !if ${NSIS_PTR_SIZE} > 4
   !define GOGOKE_STARTUP_EX_SIZE 112
@@ -664,6 +665,15 @@ install_registration_verified:
     Call CreateOrUpdateStartMenuShortcut
   !insertmacro MUI_STARTMENU_WRITE_END
 
+  ; Rebind an already owned desktop link to this install instance even when
+  ; the optional finish-page creation checkbox is left unchecked.
+  ${If} $GogokeInstallDomain != "CI_CANDIDATE_RESOURCE"
+    StrCpy $GogokeShortcutKind "desktop"
+    StrCpy $GogokeShortcutFolder ""
+    StrCpy $GogokeShortcutMode "adopt"
+    Call GogokeWriteOwnedShortcut
+  ${EndIf}
+
   ; Create desktop shortcut for silent and passive installers
   ; because finish page will be skipped
   ${If} $PassiveMode = 1
@@ -821,7 +831,23 @@ Function GogokeWriteOwnedShortcut
   Call GogokeReleaseShortcutLauncher
   Return
 gogoke_shortcut_failed:
+  ; Closing a process handle does not stop the child. Confirm its exit before
+  ; the installer releases its lifecycle lock and reports a settled failure.
+  StrCpy $GogokeShortcutChildUnknown 0
+  ${If} $GogokeShortcutProcess != ""
+    System::Call 'kernel32::WaitForSingleObject(p $GogokeShortcutProcess, i 0) i .r0'
+    ${If} $0 != 0
+      System::Call 'kernel32::TerminateProcess(p $GogokeShortcutProcess, i 1) i .r0'
+      System::Call 'kernel32::WaitForSingleObject(p $GogokeShortcutProcess, i 10000) i .r0'
+      ${If} $0 != 0
+        StrCpy $GogokeShortcutChildUnknown 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
   Call GogokeReleaseShortcutLauncher
+  ${If} $GogokeShortcutChildUnknown == 1
+    Abort "Gogoke shortcut writer exit is unconfirmed; installation custody is unresolved."
+  ${EndIf}
   Abort "Gogoke could not create or retain a provably owned shortcut."
 FunctionEnd
 
