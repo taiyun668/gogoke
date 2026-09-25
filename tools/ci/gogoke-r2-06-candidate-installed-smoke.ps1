@@ -117,7 +117,47 @@ function Redact-Diagnostic([string]$Text) {
     return ($bounded -replace '(?i)(Bearer\s+)[^\s"'']+', '$1[REDACTED]')
 }
 
+function Start-BoundedCapture([IO.Stream]$Stream) {
+    $bytes = [byte[]]::new(32768)
+    return [pscustomobject]@{
+        bytes = $bytes
+        stream = $Stream
+        read = $Stream.ReadAsync($bytes, 0, $bytes.Length)
+    }
+}
+
+function Finish-BoundedCapture([object]$Capture) {
+    if (-not $Capture) { return '' }
+    # Read no more than the fixed buffer, and never wait for EOF from a pipe
+    # that a child of the direct process may still hold open.
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    $length = 0
+    while ($length -lt $Capture.bytes.Length) {
+        $remaining = [Math]::Max(0, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        if ($remaining -eq 0) { break }
+        $winner = [Threading.Tasks.Task]::WhenAny(
+            $Capture.read, [Threading.Tasks.Task]::Delay($remaining)).GetAwaiter().GetResult()
+        if ($winner -ne $Capture.read) { break }
+        try { $count = $Capture.read.GetAwaiter().GetResult() }
+        catch { break }
+        if ($count -le 0) { break }
+        $length += $count
+        if ($length -lt $Capture.bytes.Length) {
+            $Capture.read = $Capture.stream.ReadAsync($Capture.bytes, $length,
+                $Capture.bytes.Length - $length)
+        }
+    }
+    return (Redact-Diagnostic ([Text.Encoding]::UTF8.GetString($Capture.bytes, 0, $length)))
+}
+
 function Invoke-DirectReadinessDiagnostic([string]$Root) {
+    if (-not (Test-Path -LiteralPath $Root)) {
+        New-Item -ItemType Directory -Path $Root | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw 'Direct readiness root is not a directory'
+    }
+    Assert-NoReparseAncestors $Root
     $node = Join-Path $script:targetRoot 'gogoke-service\runtime\node.exe'
     $nativeHost = Join-Path $script:targetRoot 'gogoke-native-host.exe'
     $generationRoot = Join-Path $script:targetRoot "gogoke-service\generations\$($index.generationId)"
@@ -142,8 +182,8 @@ function Invoke-DirectReadinessDiagnostic([string]$Root) {
     $process.StartInfo = $start
     if (-not $process.Start()) { throw 'Direct readiness diagnostic did not start' }
     try {
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
+        $stdout = Start-BoundedCapture $process.StandardOutput.BaseStream
+        $stderr = Start-BoundedCapture $process.StandardError.BaseStream
         $process.StandardInput.Write('{"operation":"readiness"}')
         $process.StandardInput.Close()
         $timedOut = -not $process.WaitForExit(20000)
@@ -156,8 +196,8 @@ function Invoke-DirectReadinessDiagnostic([string]$Root) {
             nativeHost = $nativeHost
             timedOut = $timedOut
             exitCode = $(if ($timedOut) { $null } else { $process.ExitCode })
-            stdout = Redact-Diagnostic $stdout.GetAwaiter().GetResult()
-            stderr = Redact-Diagnostic $stderr.GetAwaiter().GetResult()
+            stdout = Finish-BoundedCapture $stdout
+            stderr = Finish-BoundedCapture $stderr
         }
     } finally { $process.Dispose() }
 }
@@ -315,8 +355,8 @@ try {
     $product = [Diagnostics.Process]::new()
     $product.StartInfo = $start
     if (-not $product.Start()) { throw 'Installed Gogoke did not start' }
-    $script:productStdoutTask = $product.StandardOutput.ReadToEndAsync()
-    $script:productStderrTask = $product.StandardError.ReadToEndAsync()
+    $script:productStdoutCapture = Start-BoundedCapture $product.StandardOutput.BaseStream
+    $script:productStderrCapture = Start-BoundedCapture $product.StandardError.BaseStream
     $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
     while ([DateTime]::UtcNow -lt $readyDeadline) {
         if (Test-Path -LiteralPath $script:ownedReadyReceipt -PathType Leaf) { break }
@@ -421,11 +461,11 @@ try {
                 $product.Kill()
                 $null = $product.WaitForExit(5000)
             }
-            if ($script:productStderrTask) {
-                Write-Output ("DIAG_PRODUCT_STDERR=" + (Redact-Diagnostic $script:productStderrTask.GetAwaiter().GetResult()))
+            if ($script:productStderrCapture) {
+                Write-Output ("DIAG_PRODUCT_STDERR=" + (Finish-BoundedCapture $script:productStderrCapture))
             }
-            if ($script:productStdoutTask) {
-                Write-Output ("DIAG_PRODUCT_STDOUT=" + (Redact-Diagnostic $script:productStdoutTask.GetAwaiter().GetResult()))
+            if ($script:productStdoutCapture) {
+                Write-Output ("DIAG_PRODUCT_STDOUT=" + (Finish-BoundedCapture $script:productStdoutCapture))
             }
             $actualRoot = Join-Path $script:appDataRoot 'product-authority'
             Write-Output ("DIAG_PRODUCT_ROOT_EXISTS=" + (Test-Path -LiteralPath $actualRoot -PathType Container))
