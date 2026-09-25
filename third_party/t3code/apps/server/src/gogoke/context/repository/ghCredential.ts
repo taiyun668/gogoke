@@ -25,54 +25,43 @@ function isWithin(
   );
 }
 
-function trustedRoots(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
+function trustedGhPaths(platform: NodeJS.Platform): string[] {
   if (platform === "win32") {
-    return [
-      env.ProgramFiles,
-      env["ProgramFiles(x86)"],
-      env.SystemRoot === undefined ? undefined : NodePath.win32.join(env.SystemRoot, "System32"),
-    ].filter((root): root is string => root !== undefined && NodePath.win32.isAbsolute(root));
+    return ["C:\\Program Files\\GitHub CLI\\gh.exe", "C:\\Program Files (x86)\\GitHub CLI\\gh.exe"];
   }
-  return ["/usr/bin", "/usr/local/bin", "/bin"];
+  return ["/usr/bin/gh", "/usr/local/bin/gh", "/bin/gh"];
 }
 
-/** Resolve gh only from system-managed locations, never the product or current directory. */
+type GhFilesystem = Pick<typeof NodeFS, "realpathSync" | "statSync">;
+
+/** Use fixed system CLI locations; inherited PATH and ProgramFiles are not trust roots. */
 export function resolveTrustedGhExecutable(
   platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
   executablePath = process.execPath,
+  fsApi: GhFilesystem = NodeFS,
 ): string {
   const pathApi = platform === "win32" ? NodePath.win32 : NodePath;
-  const roots = trustedRoots(platform, env).map((root) => pathApi.resolve(root));
-  const excluded = [cwd, pathApi.dirname(executablePath)].map((path) => pathApi.resolve(path));
-  const pathEntries = (env.PATH ?? "").split(platform === "win32" ? ";" : ":").filter(Boolean);
-  const candidates = pathEntries.map((entry) =>
-    pathApi.join(entry, platform === "win32" ? "gh.exe" : "gh"),
-  );
-  for (const root of roots)
-    candidates.push(pathApi.join(root, "GitHub CLI", platform === "win32" ? "gh.exe" : "gh"));
-
-  for (const candidate of candidates) {
-    if (!pathApi.isAbsolute(candidate)) continue;
+  const excluded =
+    platform === "win32"
+      ? [cwd, pathApi.dirname(executablePath), pathApi.dirname(pathApi.dirname(cwd))]
+      : [cwd];
+  const excludedPaths = excluded.map((path) => pathApi.resolve(path));
+  for (const candidate of trustedGhPaths(platform)) {
     const absolute = pathApi.resolve(candidate);
-    if (
-      !roots.some((root) => isWithin(pathApi, root, absolute)) ||
-      excluded.some((directory) => isWithin(pathApi, directory, absolute))
-    )
-      continue;
+    if (excludedPaths.some((directory) => isWithin(pathApi, directory, absolute))) continue;
     try {
-      const resolved = NodeFS.realpathSync(absolute);
-      const stat = NodeFS.statSync(resolved);
+      const resolved = fsApi.realpathSync(absolute);
+      const stat = fsApi.statSync(resolved);
       if (
         !stat.isFile() ||
-        !roots.some((root) => isWithin(pathApi, root, resolved)) ||
-        excluded.some((directory) => isWithin(pathApi, directory, resolved))
+        pathApi.normalize(resolved).toLowerCase() !== pathApi.normalize(absolute).toLowerCase() ||
+        excludedPaths.some((directory) => isWithin(pathApi, directory, resolved))
       )
         continue;
       return resolved;
     } catch {
-      // Missing PATH entries and inaccessible candidates are not executable sources.
+      // An absent fixed installation is unavailable; never search writable PATH entries.
     }
   }
   throw new GhCredentialError("GH_AUTH_UNAVAILABLE");

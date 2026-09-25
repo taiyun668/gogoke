@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import * as NodeFS from "node:fs/promises";
-import * as NodeOS from "node:os";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import {
@@ -63,33 +62,32 @@ describe("R2-02 existing gh login adapter", () => {
     expect(() => currentGhToken(unavailable)).toThrow("GH_AUTH_UNAVAILABLE");
   });
 
-  it("resolves gh only from a trusted absolute path outside cwd and product install", async () => {
-    const root = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "gogoke-gh-path-"));
-    try {
-      const programFiles = NodePath.join(root, "Program Files");
-      const cwd = NodePath.join(programFiles, "product-cwd");
-      const install = NodePath.join(programFiles, "product-install");
-      const userBin = NodePath.join(root, "user-bin");
-      const trustedBin = NodePath.join(programFiles, "GitHub CLI");
-      for (const directory of [cwd, install, userBin, trustedBin]) {
-        await NodeFS.mkdir(directory, { recursive: true });
-        await NodeFS.writeFile(NodePath.join(directory, "gh.exe"), "fixture");
-      }
-      const resolved = resolveTrustedGhExecutable(
+  it("uses a fixed absolute CLI path and rejects the full packaged install root", () => {
+    const gh = "C:\\Program Files\\GitHub CLI\\gh.exe";
+    const fsApi = {
+      realpathSync: (value: string) => value,
+      statSync: (value: string) => {
+        if (value !== gh) throw new Error("missing");
+        return { isFile: () => true };
+      },
+    } as unknown as Pick<typeof NodeFS, "realpathSync" | "statSync">;
+    const product = "C:\\Program Files\\Gogoke";
+    const resolved = resolveTrustedGhExecutable(
+      "win32",
+      NodePath.win32.join(product, "resources", "gogoke-service"),
+      NodePath.win32.join(product, "resources", "runtime", "node.exe"),
+      fsApi,
+    );
+    expect(resolved).toBe(gh);
+    expect(NodePath.win32.isAbsolute(resolved)).toBe(true);
+    const conflictingInstall = "C:\\Program Files\\GitHub CLI";
+    expect(() =>
+      resolveTrustedGhExecutable(
         "win32",
-        {
-          PATH: [cwd, install, userBin, trustedBin].join(";"),
-          ProgramFiles: programFiles,
-        },
-        cwd,
-        NodePath.join(install, "node.exe"),
-      );
-      expect(NodePath.win32.isAbsolute(resolved)).toBe(true);
-      expect(NodePath.win32.normalize(resolved)).toBe(
-        NodePath.win32.normalize(NodePath.join(trustedBin, "gh.exe")),
-      );
-    } finally {
-      await NodeFS.rm(root, { recursive: true, force: true });
-    }
+        NodePath.win32.join(conflictingInstall, "resources", "gogoke-service"),
+        NodePath.win32.join(conflictingInstall, "resources", "runtime", "node.exe"),
+        fsApi,
+      ),
+    ).toThrow("GH_AUTH_UNAVAILABLE");
   });
 });
