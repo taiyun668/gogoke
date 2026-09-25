@@ -19,7 +19,7 @@ def identity_script() -> str:
     text = WORKFLOW.read_text(encoding="utf-8")
     start = text.index("      - name: Resolve exact controlled source run and artifact identity\n")
     start = text.index("        run: |\n", start) + len("        run: |\n")
-    end = text.index("      - name: Download exact frozen artifact", start)
+    end = text.index("      - name: Download exact frozen archive", start)
     lines = text[start:end].splitlines()
     if any(line and not line.startswith("          ") for line in lines):
         raise AssertionError("identity run block has unexpected YAML indentation")

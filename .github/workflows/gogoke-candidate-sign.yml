@@ -137,14 +137,63 @@ jobs:
           "run_attempt=$runAttempt" >> $env:GITHUB_OUTPUT
           "artifact_id=$artifactId" >> $env:GITHUB_OUTPUT
           "artifact_name=gogoke-windows-frozen-$sourceCommit-$runId" >> $env:GITHUB_OUTPUT
-      - name: Download exact frozen artifact by immutable ID as untrusted data
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ steps.identity.outputs.artifact_id }}
-          run-id: ${{ steps.identity.outputs.run_id }}
-          repository: taiyun668/gogoke
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: candidate-input
+      - name: Download exact frozen archive by ID and require uploaded digest
+        shell: pwsh
+        env:
+          ARTIFACT_ID: ${{ steps.identity.outputs.artifact_id }}
+          SOURCE_RUN_ID: ${{ steps.identity.outputs.run_id }}
+          SOURCE_COMMIT: ${{ steps.identity.outputs.source_commit }}
+          ARTIFACT_NAME: ${{ steps.identity.outputs.artifact_name }}
+        run: |
+          $artifactId = [long]$env:ARTIFACT_ID
+          $runId = [long]$env:SOURCE_RUN_ID
+          $artifact = gh api "repos/taiyun668/gogoke/actions/artifacts/$artifactId" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $artifact.id -ne $artifactId -or
+              $artifact.name -cne $env:ARTIFACT_NAME -or $artifact.workflow_run.id -ne $runId -or
+              $artifact.workflow_run.head_sha -cne $env:SOURCE_COMMIT -or $artifact.expired -or
+              $artifact.size_in_bytes -le 0 -or $artifact.size_in_bytes -gt 1073741824 -or
+              $artifact.digest -cnotmatch '^sha256:([0-9a-f]{64})$') {
+            throw 'Exact frozen archive metadata or uploaded SHA-256 is invalid.'
+          }
+          $expectedDigest = [string]$artifact.digest.Substring(7)
+          $archive = Join-Path $env:RUNNER_TEMP "gogoke-frozen-$artifactId.zip"
+          if (Test-Path -LiteralPath $archive) { throw 'Frozen archive temporary path already exists.' }
+          $endpoint = "https://api.github.com/repos/taiyun668/gogoke/actions/artifacts/$artifactId/zip"
+          Invoke-WebRequest -Uri $endpoint -Headers @{Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'} `
+            -MaximumRedirection 5 -OutFile $archive
+          if ((Get-Item -LiteralPath $archive).Length -ne $artifact.size_in_bytes -or
+              (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedDigest) {
+            throw 'Downloaded frozen archive does not match the uploaded artifact digest.'
+          }
+          if (Test-Path -LiteralPath candidate-input) { throw 'Candidate input directory already exists.' }
+          New-Item -ItemType Directory -Path candidate-input | Out-Null
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $fixedNames = @(
+              'frozen-build.json', 'gogoke-package-hashes.json', 'gogoke-portable.exe',
+              'gogoke-installed-shell.nsis.exe', 'gogoke-native-host.exe', 'node.exe',
+              'gogoke-resources.windows.zip', 'resource-index.json'
+            )
+            $total = 0L
+            foreach ($entry in $zip.Entries) {
+              if (($fixedNames -cnotcontains $entry.FullName -and
+                   $entry.FullName -cnotmatch '^gogoke-[0-9A-Za-z.+-]+-windows-x64-unsigned-setup\.exe$') -or
+                  -not $seen.Add($entry.FullName) -or $entry.Length -lt 0 -or $entry.Length -gt 1073741824) {
+                throw 'Frozen archive contains an unsafe or duplicate entry name.'
+              }
+              $total += $entry.Length
+              if ($seen.Count -gt 20 -or $total -gt 1073741824) {
+                throw 'Frozen archive exceeds the bounded extracted file set.'
+              }
+              $source = $entry.Open()
+              try {
+                $target = [IO.File]::Open((Join-Path 'candidate-input' $entry.FullName), [IO.FileMode]::CreateNew)
+                try { $source.CopyTo($target) } finally { $target.Dispose() }
+              } finally { $source.Dispose() }
+            }
+            if ($seen.Count -ne 9) { throw 'Frozen archive has an incomplete file set.' }
+          } finally { $zip.Dispose() }
       - name: Verify complete frozen artifact byte inventory with trusted main code
         shell: pwsh
         run: |
