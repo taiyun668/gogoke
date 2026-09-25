@@ -154,6 +154,47 @@ function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMil
     return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode; Stderr = $stderr }
 }
 
+function Measure-Finalizer([Diagnostics.Process]$Process, [string]$ReceiptPath,
+    [string]$Root, [Diagnostics.Stopwatch]$Watch) {
+    $sample = [ordered]@{
+        elapsedSeconds = [Math]::Round($Watch.Elapsed.TotalSeconds, 1)
+        receiptState = 'ABSENT'
+        processState = 'not_found'
+        exitCode = $null
+        cpuSeconds = $null
+        readBytes = $null
+        remainingFiles = $null
+    }
+    if ($ReceiptPath -and (Test-Path -LiteralPath $ReceiptPath -PathType Leaf)) {
+        try { $sample.receiptState = [string](([IO.File]::ReadAllText($ReceiptPath) | ConvertFrom-Json).state) }
+        catch [IO.IOException] { $sample.receiptState = 'LOCKED' }
+        catch { $sample.receiptState = 'INVALID' }
+    }
+    if ($null -ne $Process) {
+        try {
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                $sample.processState = 'exited'
+                $sample.exitCode = $Process.ExitCode
+            } else {
+                $sample.processState = 'running'
+                $sample.cpuSeconds = [Math]::Round($Process.TotalProcessorTime.TotalSeconds, 2)
+                try {
+                    $live = Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.Id)" -ErrorAction Stop
+                    if ($null -ne $live -and $null -ne $live.ReadTransferCount) {
+                        $sample.readBytes = [long]$live.ReadTransferCount
+                    }
+                } catch { }
+            }
+        } catch { $sample.processState = 'unavailable' }
+    }
+    if (Test-Path -LiteralPath $Root -PathType Container) {
+        try { $sample.remainingFiles = (Get-PhysicalTree $Root).Files.Count }
+        catch { $sample.remainingFiles = 'unavailable' }
+    } else { $sample.remainingFiles = 0 }
+    return $sample
+}
+
 function Assert-RegistryRegistration {
     $uninstallPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate'
     $registration = Get-RegistryKey $uninstallPath
@@ -356,6 +397,7 @@ try {
         $script:result.uninstallStderr = $uninstall.Stderr
         throw "Installed uninstall failed with exit code $($uninstall.ExitCode); stderr: $($uninstall.Stderr); retain candidate state under: $script:targetRoot"
     }
+    $finalizerWatch = [Diagnostics.Stopwatch]::StartNew()
     $finalizerDeadline = [DateTime]::UtcNow.AddSeconds(125)
     $finalizerReceipt = $null
     while ([DateTime]::UtcNow -lt $finalizerDeadline) {
@@ -372,11 +414,35 @@ try {
                 continue
             }
             if ($candidateReceipt.state -ceq 'FAILED') { throw "Uninstall finalizer failed: $([string]$candidateReceipt.detail). Receipt: $($newReceipts[0].FullName)" }
-            if ($candidateReceipt.state -ceq 'DELETED') { $finalizerReceipt = $newReceipts[0]; break }
+            if ($candidateReceipt.state -ceq 'DELETED' -and [DateTime]::UtcNow -lt $finalizerDeadline) {
+                $finalizerReceipt = $newReceipts[0]
+                break
+            }
         }
         Start-Sleep -Milliseconds 250
     }
-    if ($null -eq $finalizerReceipt) { throw "No bounded DELETED finalizer receipt; preserve state under: $script:targetRoot" }
+    if ($null -eq $finalizerReceipt) {
+        $finalizerProcess = $null
+        $script:result.finalizerChildLookup = 'unavailable'
+        try {
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($uninstall.Process.Id)" -ErrorAction Stop |
+                Where-Object { $_.Name -ieq 'powershell.exe' })
+            if ($children.Count -eq 1) {
+                $finalizerProcess = [Diagnostics.Process]::GetProcessById([int]$children[0].ProcessId)
+                $script:result.finalizerChildLookup = 'found'
+                $script:result.finalizerPid = $finalizerProcess.Id
+            } elseif ($children.Count -eq 0) {
+                $script:result.finalizerChildLookup = 'none'
+            } else {
+                $script:result.finalizerChildLookup = 'ambiguous'
+            }
+        } catch { }
+        $first = Measure-Finalizer $finalizerProcess $script:finalizerReceiptPath $script:targetRoot $finalizerWatch
+        Start-Sleep -Seconds 5
+        $second = Measure-Finalizer $finalizerProcess $script:finalizerReceiptPath $script:targetRoot $finalizerWatch
+        $script:result.finalizerDiagnostics = @($first, $second)
+        throw "No bounded DELETED finalizer receipt; preserve state under: $script:targetRoot"
+    }
     $receiptRecord = Get-Content -LiteralPath $finalizerReceipt.FullName -Raw | ConvertFrom-Json
     if ($receiptRecord.schema -cne 'gogoke.uninstall-result.v1' -or
         $receiptRecord.state -cne 'DELETED' -or
