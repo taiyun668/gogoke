@@ -28,6 +28,11 @@ $script:installInvoked = $false
 $script:uninstallInvoked = $false
 $script:instanceId = $null
 $script:finalizerReceiptPath = $null
+$script:diagnosticSinkInitialized = $false
+$script:productStarted = $false
+$script:productStdoutCapture = $null
+$script:productStderrCapture = $null
+$product = $null
 $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
@@ -108,6 +113,138 @@ function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMil
         return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null }
     }
     return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode }
+}
+
+function Redact-Diagnostic([string]$Text) {
+    $bounded = if ($Text.Length -gt 32768) { $Text.Substring(0, 32768) } else { $Text }
+    $bounded = $bounded -replace '(?i)\bgithub_pat_[A-Za-z0-9_]+\b', '[REDACTED]'
+    $bounded = $bounded -replace '(?i)\bgh[pousr]_[A-Za-z0-9_]+\b', '[REDACTED]'
+    return ($bounded -replace '(?i)(Bearer\s+)[^\s"'']+', '$1[REDACTED]')
+}
+
+function Initialize-DiagnosticSink {
+    if ($script:diagnosticSinkInitialized) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+
+public sealed class GogokeDiagnosticSink : Stream {
+    private readonly object gate = new object();
+    private readonly byte[] saved = new byte[32768];
+    private int length;
+    public byte[] Snapshot() {
+        lock (gate) {
+            var result = new byte[length];
+            Buffer.BlockCopy(saved, 0, result, 0, length);
+            return result;
+        }
+    }
+    public override void Write(byte[] buffer, int offset, int count) {
+        lock (gate) {
+            int take = Math.Min(count, saved.Length - length);
+            if (take > 0) {
+                Buffer.BlockCopy(buffer, offset, saved, length, take);
+                length += take;
+            }
+        }
+    }
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken token) {
+        token.ThrowIfCancellationRequested();
+        Write(buffer, offset, count);
+        return Task.CompletedTask;
+    }
+    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken token = default) {
+        token.ThrowIfCancellationRequested();
+        lock (gate) {
+            int take = Math.Min(buffer.Length, saved.Length - length);
+            if (take > 0) {
+                buffer.Span.Slice(0, take).CopyTo(saved.AsSpan(length, take));
+                length += take;
+            }
+        }
+        return ValueTask.CompletedTask;
+    }
+    public override bool CanRead => false;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+}
+'@
+    $script:diagnosticSinkInitialized = $true
+}
+
+function Start-BoundedCapture([IO.Stream]$Stream) {
+    Initialize-DiagnosticSink
+    $sink = [GogokeDiagnosticSink]::new()
+    return [pscustomobject]@{ sink = $sink; copy = $Stream.CopyToAsync($sink, 4096) }
+}
+
+function Finish-BoundedCapture([object]$Capture) {
+    if (-not $Capture) { return '' }
+    # Keep draining even after the first 32 KiB. A descendant holding the
+    # pipe open cannot make evidence collection wait beyond two seconds.
+    $null = [Threading.Tasks.Task]::WhenAny(
+        $Capture.copy, [Threading.Tasks.Task]::Delay(2000)).GetAwaiter().GetResult()
+    return (Redact-Diagnostic ([Text.Encoding]::UTF8.GetString($Capture.sink.Snapshot())))
+}
+
+function Invoke-DirectReadinessDiagnostic([string]$Root) {
+    if (-not (Test-Path -LiteralPath $Root)) {
+        New-Item -ItemType Directory -Path $Root | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw 'Direct readiness root is not a directory'
+    }
+    Assert-NoReparseAncestors $Root
+    $node = Join-Path $script:targetRoot 'gogoke-service\runtime\node.exe'
+    $nativeHost = Join-Path $script:targetRoot 'gogoke-native-host.exe'
+    $generationRoot = Join-Path $script:targetRoot "gogoke-service\generations\$($index.generationId)"
+    $entry = Join-Path $generationRoot 'dist\bin.mjs'
+    foreach ($path in @($node, $nativeHost, $entry)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Direct diagnostic component missing: $path" }
+    }
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $node
+    $start.WorkingDirectory = $generationRoot
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $null = $start.Environment.Remove('NODE_OPTIONS')
+    $null = $start.Environment.Remove('NODE_PATH')
+    foreach ($argument in @($entry, '--root', $Root, '--native-host', $nativeHost)) {
+        [void]$start.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    if (-not $process.Start()) { throw 'Direct readiness diagnostic did not start' }
+    try {
+        $stdout = Start-BoundedCapture $process.StandardOutput.BaseStream
+        $stderr = Start-BoundedCapture $process.StandardError.BaseStream
+        $process.StandardInput.Write('{"operation":"readiness"}')
+        $process.StandardInput.Close()
+        $timedOut = -not $process.WaitForExit(20000)
+        if ($timedOut) { $process.Kill(); $null = $process.WaitForExit(5000) }
+        return [pscustomobject]@{
+            root = $Root
+            cwd = $generationRoot
+            entry = $entry
+            node = $node
+            nativeHost = $nativeHost
+            timedOut = $timedOut
+            exitCode = $(if ($timedOut) { $null } else { $process.ExitCode })
+            stdout = Finish-BoundedCapture $stdout
+            stderr = Finish-BoundedCapture $stderr
+        }
+    } finally { $process.Dispose() }
 }
 
 function Assert-RegistryRegistration {
@@ -257,10 +394,15 @@ try {
     $start.FileName = $productExe
     $start.UseShellExecute = $false
     $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
     [void]$start.ArgumentList.Add("--gogoke-update-ready=$script:ownedReadyReceipt")
     $product = [Diagnostics.Process]::new()
     $product.StartInfo = $start
     if (-not $product.Start()) { throw 'Installed Gogoke did not start' }
+    $script:productStarted = $true
+    $script:productStdoutCapture = Start-BoundedCapture $product.StandardOutput.BaseStream
+    $script:productStderrCapture = Start-BoundedCapture $product.StandardError.BaseStream
     $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
     while ([DateTime]::UtcNow -lt $readyDeadline) {
         if (Test-Path -LiteralPath $script:ownedReadyReceipt -PathType Leaf) { break }
@@ -359,6 +501,28 @@ try {
     Write-Output ($script:result | ConvertTo-Json -Depth 6 -Compress)
 } catch {
     $message = [string]$_.Exception.Message
+    if ($script:stage -ceq 'sentinel-and-product-readiness') {
+        try {
+            if ($script:productStarted -and $product -and -not $product.HasExited) {
+                $product.Kill()
+                $null = $product.WaitForExit(5000)
+            }
+            if ($script:productStderrCapture) {
+                Write-Output ("DIAG_PRODUCT_STDERR=" + (Finish-BoundedCapture $script:productStderrCapture))
+            }
+            if ($script:productStdoutCapture) {
+                Write-Output ("DIAG_PRODUCT_STDOUT=" + (Finish-BoundedCapture $script:productStdoutCapture))
+            }
+            $actualRoot = Join-Path $script:appDataRoot 'product-authority'
+            Write-Output ("DIAG_PRODUCT_ROOT_EXISTS=" + (Test-Path -LiteralPath $actualRoot -PathType Container))
+            Write-Output ("DIAG_SAME_ROOT=" + ((Invoke-DirectReadinessDiagnostic $actualRoot) | ConvertTo-Json -Depth 4 -Compress))
+            $freshRoot = Join-Path $env:RUNNER_TEMP ('gogoke-r2-06-diagnostic-' + [Guid]::NewGuid().ToString('N'))
+            if (Test-Path -LiteralPath $freshRoot) { throw 'fresh diagnostic root already exists' }
+            Write-Output ("DIAG_FRESH_ROOT=" + ((Invoke-DirectReadinessDiagnostic $freshRoot) | ConvertTo-Json -Depth 4 -Compress))
+        } catch {
+            Write-Output ("DIAG_FAILED=" + (Redact-Diagnostic ([string]$_.Exception.Message)))
+        }
+    }
     if ($message.Length -gt 320) { $message = $message.Substring(0, 320) }
     $script:result.state = 'FAIL'
     $script:result.stage = $script:stage
