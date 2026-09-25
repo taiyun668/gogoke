@@ -161,7 +161,7 @@ class CloudFinalizerTest(unittest.TestCase):
                 self.assertNotIn(handle, (None, INVALID_HANDLE), ctypes.get_last_error())
                 try:
                     if clear:
-                        flags = ctypes.c_uint32(0)  # FileDispositionInfoEx DO_NOT_DELETE
+                        flags = ctypes.c_uint32(8)  # FileDispositionInfoEx ON_CLOSE, without DELETE
                         self.assertTrue(
                             kernel32.SetFileInformationByHandle(
                                 handle, 21, ctypes.byref(flags), ctypes.sizeof(flags)

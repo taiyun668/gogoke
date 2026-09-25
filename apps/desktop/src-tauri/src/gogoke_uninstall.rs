@@ -39,7 +39,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     FileAttributeTagInfo, FileDispositionInfoEx, FileIdInfo, GetFileInformationByHandleEx,
     GetFinalPathNameByHandleW, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_DISPOSITION_FLAG_DO_NOT_DELETE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_DISPOSITION_FLAG_ON_CLOSE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
@@ -484,7 +484,7 @@ pub(crate) fn install_shortcut(args: &[String]) -> Result<(), String> {
     // durable. Clearing the on-close disposition is the final commit step.
     // A process termination before this call cannot publish an unowned link.
     let disposition = FILE_DISPOSITION_INFO_EX {
-        Flags: FILE_DISPOSITION_FLAG_DO_NOT_DELETE,
+        Flags: FILE_DISPOSITION_FLAG_ON_CLOSE,
     };
     if unsafe {
         SetFileInformationByHandle(
