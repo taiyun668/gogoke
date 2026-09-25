@@ -1738,6 +1738,7 @@ dependencies = [
  "toml_edit 0.20.2",
  "uuid",
  "whisper-rs",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
  "winreg 0.55.0",
  "zip",

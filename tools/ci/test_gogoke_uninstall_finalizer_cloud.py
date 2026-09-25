@@ -27,6 +27,7 @@ if os.name == "nt":
 SCRIPT = Path(__file__).resolve().parents[2] / "apps/desktop/src-tauri/update/gogoke-uninstall-finalizer.ps1"
 RUST_PARENT = Path(__file__).resolve().parents[2] / "apps/desktop/src-tauri/src/gogoke_uninstall.rs"
 REGISTRY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate"
+FORMAL_REGISTRY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke"
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 FILE_READ_ATTRIBUTES = 0x80
@@ -137,12 +138,13 @@ class CloudFinalizerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         require_cloud()
-        try:
-            winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY).Close()
-        except FileNotFoundError:
-            pass
-        else:
-            raise AssertionError("candidate registration already exists on cloud runner")
+        for registration in (REGISTRY, FORMAL_REGISTRY):
+            try:
+                winreg.OpenKey(winreg.HKEY_CURRENT_USER, registration).Close()
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError(f"{registration} already exists on cloud runner")
 
     def test_owned_files_only_and_stale_identity(self):
         with tempfile.TemporaryDirectory(prefix="gogoke-finalizer-ci-") as temporary:
@@ -179,6 +181,7 @@ class CloudFinalizerTest(unittest.TestCase):
                              "identity": identity(path)}
                             for path in (exe, owned)
                         ],
+                        "shortcuts": [],
                     }
                     if negative:
                         payload["files"][1]["identity"]["fileId"] = "f" * 32
@@ -219,6 +222,102 @@ class CloudFinalizerTest(unittest.TestCase):
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY)
                 except FileNotFoundError:
                     pass
+
+    def test_formal_shortcut_requires_recorded_bytes_and_file_id(self):
+        desktop = Path(subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command",
+             "[Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)"],
+            text=True,
+        ).strip())
+        self.assertTrue(desktop.is_dir())
+        shortcut = desktop / "gogoke.lnk"
+        self.assertFalse(shortcut.exists(), "cloud runner must not have an existing Gogoke link")
+        with tempfile.TemporaryDirectory(prefix="gogoke-formal-finalizer-ci-") as temporary:
+            base = Path(temporary)
+            for replaced in (False, True):
+                root = base / f"formal-{int(replaced)}"
+                root.mkdir()
+                exe = root / "gogoke.exe"
+                exe.write_bytes(b"fixture shell")
+                original = b"installer-owned shortcut bytes"
+                shortcut.write_bytes(original)
+                instance = f"formal-fixture-{uuid.uuid4()}"
+                record = {
+                    "schema": "gogoke.shortcut-ownership.v1",
+                    "instance": instance,
+                    "root": str(root),
+                    "slot": "desktop",
+                    "folder": "",
+                    "sha256": hashlib.sha256(original).hexdigest(),
+                    "identity": identity(shortcut),
+                }
+                raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, FORMAL_REGISTRY) as key:
+                    for name, value in (
+                        ("InstallLocation", str(root)),
+                        ("InstallInstanceId", instance),
+                        ("InstallDomain", "OWNER_RELEASE"),
+                        ("UninstallString", f'"{exe}" --uninstall'),
+                        ("GogokeShortcutDesktopV1", raw),
+                    ):
+                        winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+                try:
+                    if replaced:
+                        shortcut.unlink()
+                        shortcut.write_bytes(b"user replacement")
+                    nonce = str(uuid.uuid4())
+                    tag = hashlib.sha256(instance.encode()).hexdigest()[:16]
+                    payload = {
+                        "root": str(root), "rootIdentity": identity(root),
+                        "lockPath": str(base / "gogoke-install-lifecycle.lock"),
+                        "registryKey": "gogoke", "instance": instance,
+                        "domain": "OWNER_RELEASE", "parentPid": 0,
+                        "nonce": nonce,
+                        "receipt": str(base / f"gogoke-uninstall-{tag}-{nonce}.json"),
+                        "files": [{
+                            "path": str(exe),
+                            "sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
+                            "identity": identity(exe),
+                        }],
+                        "shortcuts": [{
+                            "registryValue": "GogokeShortcutDesktopV1",
+                            "raw": raw,
+                            "record": record,
+                        }],
+                    }
+                    payload_path = base / f"payload-{nonce}.json"
+                    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, __file__, "--parent", str(payload_path)],
+                        timeout=45, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0)
+                    receipt = Path(payload["receipt"])
+                    deadline = time.monotonic() + 90
+                    terminal = None
+                    while time.monotonic() < deadline:
+                        try:
+                            observed = json.loads(receipt.read_text(encoding="utf-8"))
+                            if observed.get("state") in ("FAILED", "DELETED"):
+                                terminal = observed
+                                break
+                        except (OSError, json.JSONDecodeError):
+                            pass
+                        time.sleep(0.2)
+                    self.assertIsNotNone(terminal)
+                    self.assertEqual(terminal["state"], "DELETED", terminal)
+                    self.assertFalse(exe.exists())
+                    if replaced:
+                        self.assertEqual(shortcut.read_bytes(), b"user replacement")
+                    else:
+                        self.assertFalse(shortcut.exists())
+                finally:
+                    try:
+                        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, FORMAL_REGISTRY)
+                    except FileNotFoundError:
+                        pass
+                    if shortcut.exists() and shortcut.read_bytes() == b"user replacement":
+                        shortcut.unlink()
 
 
 if __name__ == "__main__":

@@ -88,6 +88,11 @@ pub fn run() {
             if let Err(error) = &result { eprintln!("{error}"); }
             std::process::exit(if result.is_ok() { 0 } else { 1 });
         }
+        if arguments.iter().any(|argument| argument == "--gogoke-install-shortcut") {
+            let result = gogoke_uninstall::install_shortcut(&arguments);
+            if let Err(error) = &result { eprintln!("{error}"); }
+            std::process::exit(if result.is_ok() { 0 } else { 1 });
+        }
         if arguments.iter().any(|argument| argument == "--uninstall") {
             if !(arguments.len() == 1 && arguments[0] == "--uninstall"
                 || arguments.len() == 2 && arguments[0] == "--uninstall" && arguments[1] == "--quiet") {

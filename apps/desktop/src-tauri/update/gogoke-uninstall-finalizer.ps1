@@ -5,6 +5,7 @@ $script:data = $null
 $script:receiptAllowed = $false
 $script:receiptStream = $null
 $script:pinned = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+$script:missingShortcuts = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 
 function Fail([string]$code) { throw $code }
 function Same([string]$a, [string]$b) {
@@ -224,6 +225,75 @@ function Verify-File([object]$entry, [bool]$delete) {
         Fail 'GOGOKE_UNINSTALL_DELETE_UNCONFIRMED'
     }
 }
+function Shortcut-Path([object]$entry) {
+    $record = $entry.record
+    if ($record.schema -cne 'gogoke.shortcut-ownership.v1' -or
+        $record.instance -cne [string]$data.instance -or
+        -not (Same (Full-Path ([string]$record.root)) $data.root) -or
+        [string]$record.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$record.identity.volumeSerialNumber -cnotmatch '^[0-9]+$' -or
+        [string]$record.identity.fileId -cnotmatch '^[0-9a-f]{32}$') {
+        Fail 'GOGOKE_UNINSTALL_SHORTCUT_RECORD_INVALID'
+    }
+    if ($entry.registryValue -ceq 'GogokeShortcutDesktopV1') {
+        if ($record.slot -cne 'desktop' -or [string]$record.folder -cne '') {
+            Fail 'GOGOKE_UNINSTALL_SHORTCUT_SLOT_INVALID'
+        }
+        $base = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+        $path = [IO.Path]::Combine($base, 'gogoke.lnk')
+    } elseif ($entry.registryValue -ceq 'GogokeShortcutStartV1') {
+        $folder = [string]$record.folder
+        if ($record.slot -cne 'start' -or $folder.Length -gt 80 -or
+            $folder -in @('.', '..') -or
+            $folder -match '[\\/:*?"<>|\x00-\x1f]' -or $folder -match '[. ]$') {
+            Fail 'GOGOKE_UNINSTALL_SHORTCUT_SLOT_INVALID'
+        }
+        $base = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+        $path = if ($folder) { [IO.Path]::Combine($base, $folder, 'gogoke.lnk') }
+            else { [IO.Path]::Combine($base, 'gogoke.lnk') }
+    } else {
+        Fail 'GOGOKE_UNINSTALL_SHORTCUT_SLOT_INVALID'
+    }
+    $key = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
+        $data.registryKey
+    $recordNow = [string](Get-ItemPropertyValue -LiteralPath $key -Name ([string]$entry.registryValue))
+    if (-not $base -or [string]$entry.raw -cne $recordNow) {
+        Fail 'GOGOKE_UNINSTALL_SHORTCUT_RECORD_CHANGED'
+    }
+    return Full-Path $path
+}
+function Verify-Shortcut([object]$entry) {
+    if ($script:missingShortcuts.Contains([string]$entry.registryValue)) { return }
+    Assert-Root
+    $path = Shortcut-Path $entry
+    # These directory handles stay pinned until the final receipt. A replaced
+    # parent or junction cannot redirect the later path open.
+    Pin-Ancestors ([IO.Path]::GetDirectoryName($path)) $null
+    if ((Path-State $path) -cne 'PRESENT') { return }
+    $handle = $null
+    $stream = $null
+    try {
+        $handle = Open-Object $path $false $true
+        $raw = $handle.DangerousGetHandle()
+        try { $null = Assert-Opened $raw $path $false $entry.record.identity }
+        catch { return } # A replacement is user-owned.
+        $stream = [IO.FileStream]::new($handle, [IO.FileAccess]::Read)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        if ($hash -cne [string]$entry.record.sha256) { return }
+        $null = Assert-Opened $raw $path $false $entry.record.identity
+        Assert-Root
+        $null = Shortcut-Path $entry
+        Delete-Opened $handle
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        if ($handle) { $handle.Dispose() }
+    }
+    if ((Path-State $path) -cne 'MISSING') {
+        Fail 'GOGOKE_UNINSTALL_SHORTCUT_DELETE_UNCONFIRMED'
+    }
+}
 function Write-Receipt([string]$state, [string]$detail) {
     if (-not $script:receiptAllowed) { return }
     $record = @{ schema = 'gogoke.uninstall-result.v1'; state = $state;
@@ -255,6 +325,7 @@ try {
     $script:data = $payload | ConvertFrom-Json
     if ($data.registryKey -cnotin @('gogoke','gogoke-candidate') -or
         $data.files.Count -lt 1 -or $data.files.Count -gt 100000 -or
+        $data.shortcuts.Count -gt 2 -or
         [string]$data.nonce -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
         [int]$data.parentPid -le 0 -or -not $data.instance) {
         Fail 'GOGOKE_UNINSTALL_HANDOFF_INVALID'
@@ -291,6 +362,17 @@ try {
             Fail 'GOGOKE_UNINSTALL_INVENTORY_INVALID'
         }
     }
+    if ($data.domain -cne 'OWNER_RELEASE' -and $data.shortcuts.Count -ne 0) {
+        Fail 'GOGOKE_UNINSTALL_CANDIDATE_SHORTCUTS_FORBIDDEN'
+    }
+    $shortcutValues = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $data.shortcuts) {
+        if (-not $shortcutValues.Add([string]$entry.registryValue) -or
+            $entry.raw.Length -gt 2048) {
+            Fail 'GOGOKE_UNINSTALL_SHORTCUT_HANDOFF_INVALID'
+        }
+        $null = Shortcut-Path $entry
+    }
     # Pin from the volume root to the installed root, including every
     # ancestor. Holding no-delete-sharing handles prevents a junction swap
     # between a check and a later path open.
@@ -321,6 +403,14 @@ try {
     [Console]::Out.Flush()
     if (-not $parent.WaitForExit(120000)) { Fail 'GOGOKE_UNINSTALL_PARENT_STILL_RUNNING' }
     Assert-Root
+    foreach ($entry in $data.shortcuts) {
+        $shortcutPath = Shortcut-Path $entry
+        if ((Path-State $shortcutPath) -cne 'PRESENT') {
+            $null = $script:missingShortcuts.Add([string]$entry.registryValue)
+        } else {
+            Pin-Ancestors ([IO.Path]::GetDirectoryName($shortcutPath)) $null
+        }
+    }
     foreach ($entry in $data.files) {
         # Pin and reject every intermediate subdirectory without following
         # any reparse point. These handles remain open through deletion.
@@ -336,9 +426,7 @@ try {
         Verify-File $entry $false
     }
     foreach ($entry in $data.files) { Verify-File $entry $true }
-    # Shortcut deletion requires installer-recorded identity. A matching
-    # filename and TargetPath do not prove that a later user-created .lnk
-    # belongs to this installation.
+    foreach ($entry in $data.shortcuts) { Verify-Shortcut $entry }
     Assert-Root
     $subkey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $data.registryKey
     [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($subkey, $false)

@@ -68,8 +68,6 @@ ${StrLoc}
 Var PassiveMode
 Var UpdateMode
 Var NoShortcutMode
-Var WixMode
-Var OldMainBinaryName
 Var GogokeInstallDomain
 Var GogokeUninstallKey
 Var GogokeDefaultRoot
@@ -77,6 +75,29 @@ Var GogokeVersion
 Var GogokeReceiptDomain
 Var GogokeInstallInstanceId
 Var GogokeLifecycleLockHandle
+Var GogokeShortcutKind
+Var GogokeShortcutFolder
+Var GogokeShortcutMode
+Var GogokeShortcutDuplicate
+Var GogokeShortcutHandleList
+Var GogokeShortcutAttributeSize
+Var GogokeShortcutAttributes
+Var GogokeShortcutAttributesInitialized
+Var GogokeShortcutStartup
+Var GogokeShortcutProcessInfo
+Var GogokeShortcutCommand
+Var GogokeShortcutProcess
+Var GogokeShortcutThread
+
+!if ${NSIS_PTR_SIZE} > 4
+  !define GOGOKE_STARTUP_EX_SIZE 112
+  !define GOGOKE_STARTUP_EX_ATTRIBUTES_OFFSET 104
+  !define GOGOKE_PROCESS_INFO_SIZE 24
+!else
+  !define GOGOKE_STARTUP_EX_SIZE 72
+  !define GOGOKE_STARTUP_EX_ATTRIBUTES_OFFSET 68
+  !define GOGOKE_PROCESS_INFO_SIZE 16
+!endif
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -595,10 +616,6 @@ install_set_verified:
     WriteRegStr SHCTX "$GogokeUninstallKey" $MultiUser.InstallMode 1
   !endif
 
-  ; Retain legacy main-binary identity for shortcut migration. An unknown
-  ; existing file is never removed by the new installer.
-  ReadRegStr $OldMainBinaryName HKCU "$GogokeUninstallKey" "MainBinaryName"
-
   ; Save current MAINBINARYNAME for future updates
   ClearErrors
   WriteRegStr HKCU "$GogokeUninstallKey" "MainBinaryName" "${MAINBINARYNAME}.exe"
@@ -665,7 +682,8 @@ install_registration_verified:
 SectionEnd
 
 Function .onInstSuccess
-  Call ReleaseGogokeLifecycleLock
+  ; Finish-page shortcut creation still needs this exact lifecycle lock.
+  ; .onGUIEnd releases it after the finish page and optional shortcut action.
   ; Check for `/R` flag only in silent and passive installers because
   ; GUI installer has a toggle for the user to (re)start the app
   ${If} $PassiveMode = 1
@@ -690,69 +708,157 @@ Function CreateOrUpdateStartMenuShortcut
   ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
     Return
   ${EndIf}
-  ; We used to use product name as MAINBINARYNAME
-  ; migrate old shortcuts to target the new MAINBINARYNAME
-  StrCpy $R0 0
-
-  !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
-  Pop $0
-  ${If} $0 = 1
-    !insertmacro SetShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    StrCpy $R0 1
+  StrCpy $GogokeShortcutKind "start"
+  StrCpy $GogokeShortcutFolder "$AppStartMenuFolder"
+  StrCpy $GogokeShortcutMode "create"
+  ${If} $UpdateMode = 1
+  ${OrIf} $NoShortcutMode = 1
+    StrCpy $GogokeShortcutMode "adopt"
   ${EndIf}
-
-  !insertmacro IsShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
-  Pop $0
-  ${If} $0 = 1
-    !insertmacro SetShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    StrCpy $R0 1
-  ${EndIf}
-
-  ${If} $R0 = 1
-    Return
-  ${EndIf}
-
-  ; Skip creating shortcut if in update mode or no shortcut mode
-  ; but always create if migrating from wix
-  ${If} $WixMode = 0
-    ${If} $UpdateMode = 1
-    ${OrIf} $NoShortcutMode = 1
-      Return
-    ${EndIf}
-  ${EndIf}
-
-  !if "${STARTMENUFOLDER}" != ""
-    CreateDirectory "$SMPROGRAMS\$AppStartMenuFolder"
-    CreateShortcut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
-  !else
-    CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-  !endif
+  Call GogokeWriteOwnedShortcut
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
   ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
     Return
   ${EndIf}
-  ; We used to use product name as MAINBINARYNAME
-  ; migrate old shortcuts to target the new MAINBINARYNAME
-  !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
-  Pop $0
-  ${If} $0 = 1
-    !insertmacro SetShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    Return
+  StrCpy $GogokeShortcutKind "desktop"
+  StrCpy $GogokeShortcutFolder ""
+  StrCpy $GogokeShortcutMode "create"
+  ${If} $UpdateMode = 1
+  ${OrIf} $NoShortcutMode = 1
+    StrCpy $GogokeShortcutMode "adopt"
   ${EndIf}
+  Call GogokeWriteOwnedShortcut
+FunctionEnd
 
-  ; Skip creating shortcut if in update mode or no shortcut mode
-  ; but always create if migrating from wix
-  ${If} $WixMode = 0
-    ${If} $UpdateMode = 1
-    ${OrIf} $NoShortcutMode = 1
-      Return
+Function GogokeWriteOwnedShortcut
+  ; ExecWait disables inheritance. STARTUPINFOEX passes only the installer
+  ; lifecycle handle, so the installed writer can verify the exact custody.
+  StrCpy $GogokeShortcutDuplicate ""
+  StrCpy $GogokeShortcutHandleList ""
+  StrCpy $GogokeShortcutAttributes ""
+  StrCpy $GogokeShortcutAttributesInitialized 0
+  StrCpy $GogokeShortcutStartup ""
+  StrCpy $GogokeShortcutProcessInfo ""
+  StrCpy $GogokeShortcutCommand ""
+  StrCpy $GogokeShortcutProcess ""
+  StrCpy $GogokeShortcutThread ""
+  System::Call 'kernel32::GetCurrentProcess() p .r0'
+  System::Call 'kernel32::DuplicateHandle(p $0, p $GogokeLifecycleLockHandle, p $0, *p .r1, i 0, i 1, i 2) i .r2'
+  ${If} $2 == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  StrCpy $GogokeShortcutDuplicate $1
+  System::Alloc ${NSIS_PTR_SIZE}
+  Pop $GogokeShortcutHandleList
+  ${If} $GogokeShortcutHandleList == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  System::Call '*$GogokeShortcutHandleList(p $GogokeShortcutDuplicate)'
+  System::Call 'kernel32::InitializeProcThreadAttributeList(p 0, i 1, i 0, *p .r0) i .r1'
+  StrCpy $GogokeShortcutAttributeSize $0
+  ${If} $GogokeShortcutAttributeSize <= 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  ${If} $GogokeShortcutAttributeSize > 4096
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  System::Alloc $GogokeShortcutAttributeSize
+  Pop $GogokeShortcutAttributes
+  ${If} $GogokeShortcutAttributes == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  System::Call 'kernel32::InitializeProcThreadAttributeList(p $GogokeShortcutAttributes, i 1, i 0, *p r0) i .r1'
+  ${If} $1 == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  StrCpy $GogokeShortcutAttributesInitialized 1
+  System::Call 'kernel32::UpdateProcThreadAttribute(p $GogokeShortcutAttributes, i 0, p 0x00020002, p $GogokeShortcutHandleList, p ${NSIS_PTR_SIZE}, p 0, p 0) i .r1'
+  ${If} $1 == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  ; VirtualAlloc returns zeroed storage for STARTUPINFOEX and the mutable
+  ; command line. Its native pointer width matches this NSIS process.
+  System::Call 'kernel32::VirtualAlloc(p 0, p ${GOGOKE_STARTUP_EX_SIZE}, i 0x3000, i 0x04) p .r0'
+  StrCpy $GogokeShortcutStartup $0
+  System::Call 'kernel32::VirtualAlloc(p 0, p ${GOGOKE_PROCESS_INFO_SIZE}, i 0x3000, i 0x04) p .r0'
+  StrCpy $GogokeShortcutProcessInfo $0
+  System::Call 'kernel32::VirtualAlloc(p 0, p 8192, i 0x3000, i 0x04) p .r0'
+  StrCpy $GogokeShortcutCommand $0
+  ${If} $GogokeShortcutStartup == 0
+  ${OrIf} $GogokeShortcutProcessInfo == 0
+  ${OrIf} $GogokeShortcutCommand == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  System::Call '*$GogokeShortcutStartup(i ${GOGOKE_STARTUP_EX_SIZE})'
+  IntOp $0 $GogokeShortcutStartup + ${GOGOKE_STARTUP_EX_ATTRIBUTES_OFFSET}
+  System::Call '*$0(p $GogokeShortcutAttributes)'
+  StrCpy $9 '$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --gogoke-install-shortcut $GogokeShortcutKind $\"$GogokeShortcutFolder$\" $GogokeShortcutDuplicate $GogokeShortcutMode'
+  StrLen $0 $9
+  ${If} $0 > 4000
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  System::Call 'kernel32::lstrcpyW(p $GogokeShortcutCommand, w r9) p'
+  System::Call 'kernel32::CreateProcessW(w "$INSTDIR\${MAINBINARYNAME}.exe", p $GogokeShortcutCommand, p 0, p 0, i 1, i 0x00080000, p 0, w "$INSTDIR", p $GogokeShortcutStartup, p $GogokeShortcutProcessInfo) i .r0'
+  ${If} $0 == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  System::Call '*$GogokeShortcutProcessInfo(p .r0, p .r1)'
+  StrCpy $GogokeShortcutProcess $0
+  StrCpy $GogokeShortcutThread $1
+  System::Call 'kernel32::WaitForSingleObject(p $GogokeShortcutProcess, i 120000) i .r0'
+  ${If} $0 != 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  System::Call 'kernel32::GetExitCodeProcess(p $GogokeShortcutProcess, *i .r0) i .r1'
+  ${If} $1 == 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  ${If} $0 != 0
+    Goto gogoke_shortcut_failed
+  ${EndIf}
+  Call GogokeReleaseShortcutLauncher
+  Return
+gogoke_shortcut_failed:
+  Call GogokeReleaseShortcutLauncher
+  Abort "Gogoke could not create or retain a provably owned shortcut."
+FunctionEnd
+
+Function GogokeReleaseShortcutLauncher
+  ${If} $GogokeShortcutThread != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeShortcutThread)'
+    StrCpy $GogokeShortcutThread ""
+  ${EndIf}
+  ${If} $GogokeShortcutProcess != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeShortcutProcess)'
+    StrCpy $GogokeShortcutProcess ""
+  ${EndIf}
+  ${If} $GogokeShortcutDuplicate != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeShortcutDuplicate)'
+    StrCpy $GogokeShortcutDuplicate ""
+  ${EndIf}
+  ${If} $GogokeShortcutAttributes != ""
+    ${If} $GogokeShortcutAttributesInitialized == 1
+      System::Call 'kernel32::DeleteProcThreadAttributeList(p $GogokeShortcutAttributes)'
     ${EndIf}
+    System::Free $GogokeShortcutAttributes
+    StrCpy $GogokeShortcutAttributes ""
   ${EndIf}
-
-  CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+  ${If} $GogokeShortcutHandleList != ""
+    System::Free $GogokeShortcutHandleList
+    StrCpy $GogokeShortcutHandleList ""
+  ${EndIf}
+  ${If} $GogokeShortcutStartup != ""
+    System::Call 'kernel32::VirtualFree(p $GogokeShortcutStartup, p 0, i 0x8000)'
+    StrCpy $GogokeShortcutStartup ""
+  ${EndIf}
+  ${If} $GogokeShortcutProcessInfo != ""
+    System::Call 'kernel32::VirtualFree(p $GogokeShortcutProcessInfo, p 0, i 0x8000)'
+    StrCpy $GogokeShortcutProcessInfo ""
+  ${EndIf}
+  ${If} $GogokeShortcutCommand != ""
+    System::Call 'kernel32::VirtualFree(p $GogokeShortcutCommand, p 0, i 0x8000)'
+    StrCpy $GogokeShortcutCommand ""
+  ${EndIf}
 FunctionEnd
