@@ -141,6 +141,13 @@ try {
         $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSigningRunAttempt) {
         throw 'Expected signing run identity differs from the current GitHub Actions run'
     }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Candidate installed product smoke must run in a Medium process'
+        }
+    } finally { $identity.Dispose() }
     foreach ($secretName in @('GH_TOKEN', 'GITHUB_TOKEN', 'GOGOKE_CANDIDATE_P256_KEY',
                               'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN')) {
         if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($secretName))) {

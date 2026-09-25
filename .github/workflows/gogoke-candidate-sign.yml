@@ -359,20 +359,58 @@ jobs:
       - name: Exercise actual installed candidate product and uninstall
         shell: pwsh
         run: |
-          & ./tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1 `
-            -ArtifactDirectory $env:CANDIDATE_INPUT `
-            -ExpectedSetupSha256 '${{ needs.authorize-and-sign.outputs.setup_sha256 }}' `
-            -ExpectedInstalledShellSha256 '${{ needs.authorize-and-sign.outputs.installed_shell_sha256 }}' `
-            -ExpectedNativeHostSha256 '${{ needs.authorize-and-sign.outputs.native_host_sha256 }}' `
-            -ExpectedNodeSha256 '${{ needs.authorize-and-sign.outputs.node_sha256 }}' `
-            -ExpectedVersion '${{ needs.authorize-and-sign.outputs.version }}' `
-            -ExpectedSourceCommit '${{ needs.authorize-and-sign.outputs.source_commit }}' `
-            -ExpectedRunId '${{ needs.authorize-and-sign.outputs.source_run_id }}' `
-            -ExpectedRunAttempt '${{ needs.authorize-and-sign.outputs.source_run_attempt }}' `
-            -ExpectedArtifactId '${{ needs.authorize-and-sign.outputs.source_artifact_id }}' `
-            -ExpectedSigningRunId '${{ github.run_id }}' `
-            -ExpectedSigningRunAttempt '${{ github.run_attempt }}'
-          if ($LASTEXITCODE -ne 0) { throw "Installed candidate smoke failed: $LASTEXITCODE" }
+          # The hosted runner starts elevated; WebView2 product smoke uses the
+          # same pinned Medium token launcher as the existing installed smoke.
+          $toolRoot = Join-Path $env:RUNNER_TEMP "gogoke-candidate-medium-${{ github.run_id }}-${{ github.run_attempt }}"
+          $runnerRoot = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+          if (-not [IO.Path]::GetFullPath($toolRoot).StartsWith($runnerRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+              (Test-Path -LiteralPath $toolRoot)) {
+            throw 'Medium token launcher path is not a fresh runner temporary child.'
+          }
+          New-Item -ItemType Directory -Path $toolRoot | Out-Null
+          try {
+            $archive = Join-Path $toolRoot 'gsudo.portable.zip'
+            Invoke-WebRequest -Uri 'https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip' -OutFile $archive
+            $expected = '21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44'
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) {
+              throw 'Pinned Medium token launcher archive digest mismatch.'
+            }
+            Expand-Archive -LiteralPath $archive -DestinationPath $toolRoot
+            $launcher = Join-Path $toolRoot 'x64/gsudo.exe'
+            if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+              throw 'Pinned Medium token launcher is missing.'
+            }
+            $smokeScript = (Resolve-Path -LiteralPath './tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1').Path
+            $arguments = @(
+              '--integrity', 'Medium', '--direct', (Join-Path $PSHOME 'pwsh.exe'),
+              '-NoProfile', '-File', $smokeScript,
+              '-ArtifactDirectory', $env:CANDIDATE_INPUT,
+              '-ExpectedSetupSha256', '${{ needs.authorize-and-sign.outputs.setup_sha256 }}',
+              '-ExpectedInstalledShellSha256', '${{ needs.authorize-and-sign.outputs.installed_shell_sha256 }}',
+              '-ExpectedNativeHostSha256', '${{ needs.authorize-and-sign.outputs.native_host_sha256 }}',
+              '-ExpectedNodeSha256', '${{ needs.authorize-and-sign.outputs.node_sha256 }}',
+              '-ExpectedVersion', '${{ needs.authorize-and-sign.outputs.version }}',
+              '-ExpectedSourceCommit', '${{ needs.authorize-and-sign.outputs.source_commit }}',
+              '-ExpectedRunId', '${{ needs.authorize-and-sign.outputs.source_run_id }}',
+              '-ExpectedRunAttempt', '${{ needs.authorize-and-sign.outputs.source_run_attempt }}',
+              '-ExpectedArtifactId', '${{ needs.authorize-and-sign.outputs.source_artifact_id }}',
+              '-ExpectedSigningRunId', '${{ github.run_id }}',
+              '-ExpectedSigningRunAttempt', '${{ github.run_attempt }}'
+            )
+            & $launcher @arguments
+            if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) {
+              throw "Installed candidate Medium smoke failed: $LASTEXITCODE"
+            }
+          } finally {
+            if (Test-Path -LiteralPath $toolRoot) {
+              $toolItem = Get-Item -LiteralPath $toolRoot -Force
+              if (($toolItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  -not [IO.Path]::GetFullPath($toolItem.FullName).StartsWith($runnerRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Medium token launcher cleanup target changed; runner teardown owns it.'
+              }
+              Remove-Item -LiteralPath $toolRoot -Recurse -Force
+            }
+          }
       - name: Upload bounded candidate installation evidence
         if: always()
         uses: actions/upload-artifact@v4
