@@ -398,7 +398,10 @@ try {
         throw "Installed uninstall failed with exit code $($uninstall.ExitCode); stderr: $($uninstall.Stderr); retain candidate state under: $script:targetRoot"
     }
     $finalizerWatch = [Diagnostics.Stopwatch]::StartNew()
-    $finalizerDeadline = [DateTime]::UtcNow.AddSeconds(125)
+    # The signed candidate has about 13,000 owned files. Run 36173004213
+    # observed active deletion at 125 seconds (10,338 files still present),
+    # then another 841 files removed over the next 6.3 seconds.
+    $finalizerDeadline = [DateTime]::UtcNow.AddSeconds(300)
     $finalizerReceipt = $null
     while ([DateTime]::UtcNow -lt $finalizerDeadline) {
         $newReceipts = @(Get-ChildItem -LiteralPath $runnerTemp -Filter "$receiptPrefix*.json" -File -ErrorAction SilentlyContinue | Where-Object { -not $beforeReceipts.ContainsKey($_.Name) })
@@ -443,6 +446,7 @@ try {
         $script:result.finalizerDiagnostics = @($first, $second)
         throw "No bounded DELETED finalizer receipt; preserve state under: $script:targetRoot"
     }
+    $script:result.finalizerElapsedSeconds = [Math]::Round($finalizerWatch.Elapsed.TotalSeconds, 1)
     $receiptRecord = Get-Content -LiteralPath $finalizerReceipt.FullName -Raw | ConvertFrom-Json
     if ($receiptRecord.schema -cne 'gogoke.uninstall-result.v1' -or
         $receiptRecord.state -cne 'DELETED' -or
@@ -464,7 +468,16 @@ try {
     }
     if (Test-Path -LiteralPath $script:targetRoot) {
         $tree = Get-PhysicalTree $script:targetRoot
-        if ($tree.Files.Count -ne 0) { throw "Owned candidate install files remain; preserve root: $script:targetRoot" }
+        if ($tree.Files.Count -ne 0) {
+            $relative = @($tree.Files | ForEach-Object {
+                $_.Substring($script:targetRoot.Length + 1).Replace('\', '/')
+            } | Sort-Object)
+            $script:result.remainingInstallFiles = [ordered]@{
+                count = $relative.Count
+                first = @($relative | Select-Object -First 12)
+            }
+            throw "Candidate install files remain after DELETED receipt; preserve root: $script:targetRoot"
+        }
         foreach ($directory in @($tree.Directories | Sort-Object Length -Descending)) {
             Remove-Item -LiteralPath $directory -Force
         }
