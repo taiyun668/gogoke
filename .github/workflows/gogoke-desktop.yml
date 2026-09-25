@@ -385,6 +385,14 @@ jobs:
           foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md')) {
             Copy-Item -LiteralPath $name -Destination (Join-Path $installedRoot $name)
           }
+          # Tauri's NSIS bundle installs this existing daemon next to gogoke.exe.
+          # Include its exact built bytes in the signed installed-file inventory
+          # so product verification and --uninstall own the same file.
+          $daemon = 'src-tauri/target/release/gogoke_daemon.exe'
+          if (-not (Test-Path -LiteralPath $daemon -PathType Leaf)) {
+            throw 'Tauri bundled daemon is missing from the release build.'
+          }
+          Copy-Item -LiteralPath $daemon -Destination (Join-Path $installedRoot 'gogoke_daemon.exe')
           Copy-Item -LiteralPath generated/npm-production-notices.html -Destination (Join-Path $installedRoot 'npm-production-notices.html')
           Copy-Item -LiteralPath generated/rust-dependency-notices.html -Destination (Join-Path $installedRoot 'rust-dependency-notices.html')
           $installedService = Join-Path $installedRoot 'gogoke-service'
