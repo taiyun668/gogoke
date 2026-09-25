@@ -1,0 +1,55 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-087",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "d7408226603ea640d3b18cb843b3eac3d2f7ceb0",
+  "recorded_utc": "2026-09-25T07:33:16Z",
+  "reason": "R2_06_SECOND_DUAL_WINDOWS_RESULT_AND_BATCHED_NEXT_EXACT_HEAD",
+  "current_main": "56536f4ab850bc8b962456f95f5d0f2162d0c43a",
+  "authorization": "Current main retains v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac. Authorization remains current.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "pr34": "OPEN_NOT_MERGED; R2-05 remains WIP under the Owner's hold.",
+  "pr37": "OPEN_DRAFT_NOT_MERGED; trusted signer head b032caefcc801f6d71457b56418b065c4fd1847a. F7/F8 repair is pushed; its exact-head CI and fresh review are pending. No real candidate signature exists.",
+  "wip_implemented_since_mc086": [
+    "The next two-lane build used one release codegen unit and /Brepro. It made both executable .text sections byte-identical but did not yet make complete executable bytes identical across different Windows runner images.",
+    "The next execution commit pins a common MSVC 14.44 toolset and Windows SDK 10.0.26100.0 in both cloud Windows lanes and verifies the selected compiler/linker before build. This pin has not run in CI yet.",
+    "Trusted signer PR #37 and the execution verifier now reject hidden native extension names such as frontend/.exe and static files occupying installation receipt, active resource pointer, resource-set, generation, or their partial-file namespaces. The product reader also rejects those paths case-insensitively; its new Rust test awaits cloud execution.",
+    "The fixed embedded uninstall finalizer now receives its script through private stdin behind a short 840-character encoded bootstrap, preserving the same JSON handoff. It pins ancestors, checks root/owned file identities and SHA-256 on opened handles, deletes inventoried files by handle, preserves unknown files, and writes a bounded result receipt. A cloud-only Windows behavior test is wired into both desktop build lanes. This is WIP until cloud behavior and independent review execute.",
+    "The uninstall handoff limit was raised from 1 MiB to a bounded 16 MiB after actual frozen index inspection showed 12,975 installed files and an estimated 4.2 MiB JSON handoff. The product parent exits after a confirmed inherited-lock READY; the finalizer outcome remains in its receipt."
+  ],
+  "executed_evidence": {
+    "desktop_ci_old_sha": "Run 36103415870 at 66f21236344d5f587c013dc3be18b2248d4d1780: browser PASS, dependency notices PASS, independent frozen/repro Windows builds PASS, byte comparison FAIL at gogoke-portable.exe. This is not a candidate PASS.",
+    "source_hygiene_old_sha": "Run 36103415852 at the same SHA: PASS.",
+    "frozen_artifact": "Run 36103415870 artifact 10851092758; downloaded outer archive SHA-256 5ef742268deb68f3b0b5d422617541051de71c8f51132233706d306222fd6195 matched GitHub; 121711516 bytes.",
+    "repro_artifact": "Run 36103415870 artifact 10850967594; downloaded outer archive SHA-256 87cd9af9d1d28a2e729589c635a5ebb03537c7eb911eddf84a3f2527327e949c matched GitHub; 121723571 bytes.",
+    "byte_diagnosis": "The second run's raw shell .text bytes match exactly; its .rdata differs at 68 bytes and total file at 425 bytes, including PE timestamps/debug IDs. Native-host .text also matches, with 62 differing .rdata bytes and 91 total differing bytes. Resource pack and Node are byte-identical. Frozen/repro jobs ran different pinned-host image revisions 20260907.229 and 20260922.246 despite the same Rust versions. The MSVC/SDK pin is the next hypothesis to test, not an established fix.",
+    "actual_inventory": "The downloaded resource-index.json has 12975 installedFiles, 2896929 index bytes. The next signer verifier accepted this actual frozen pack/index with 12975 files. A representative absolute-path/identity handoff measured 4235442 JSON characters, within the new 16 MiB limit; actual product handoff remains NOT_RUN.",
+    "local_script_checks": "Signer branch at b032caef: 27 candidate/resource/frozen Python tests PASS, 0 fail, 0 skip. Execution branch current WIP: 27 resource/frozen Python tests PASS, 0 fail, 0 skip; PowerShell and Python AST PASS; public-source scan 24493 files, 0 leaks. No local native build or native test was used.",
+    "signer_review": "Fresh all-axis risk audit of prior signer 7ec0f5a found F7 hidden native filename and F8 reserved install path mismatches; both are fixed on b032caef. A new focused review and fresh final all-axis audit of b032caef have NOT_RUN.",
+    "uninstall_cloud_behavior": "NOT_RUN on the new execution head; local AST and test construction do not prove actual deletion or SAC behavior.",
+    "trusted_candidate_signature_and_installed_smoke": "NOT_RUN",
+    "owner_win11_sac_candidate": "NOT_RUN",
+    "full_update_and_final_uninstall": "NOT_VERIFIED"
+  },
+  "open_findings": [
+    "The pinned toolchain, changed product Rust reader, and embedded uninstall finalizer need exact-head cloud compilation and behavior tests; old-SHA PASS does not transfer.",
+    "Trusted candidate signer is still Draft and not on main. Exact b032caef CI and focused/final risk audit remain; external Claude review is required before main merge. No candidate signature or installed candidate smoke is yet possible.",
+    "Uninstall leaves shortcuts because installer does not yet record their exact created identities. It also leaves empty directories. Product-data and unknown-file preservation is intentional; final uninstall closure remains NOT_VERIFIED.",
+    "Full update coordinator still has a lifecycle-lock custody gap across NSIS and retains the old backup after success; this axis is NOT_VERIFIED.",
+    "Formal Owner-signed install, resource-only update failure/crash smoke, Owner Win11 SAC, and R2-05 final gates remain NOT_RUN. PR #34 stays open."
+  ],
+  "path_first_reflection": "The first dual build showed large executable .text differences. One codegen unit plus /Brepro removed those .text differences, while exact artifact comparison exposed remaining metadata differences and two distinct runner images; pinning the common cloud MSVC/SDK is the next bounded test. Reading the actual frozen index also showed the old 1 MiB uninstall handoff could never carry the 12975-file inventory, so the fixed script and short stdin bootstrap were batched with the toolchain retry. A complete read of product-created installation paths preceded the F8 fix, covering the receipt, active pointer, resource sets, generation tree, and temporary namespaces in one update rather than another piecemeal path exception.",
+  "retained_custody": [
+    "Controller execution worktree remains the R2-06 WIP checkout; no locally built native binary exists.",
+    "Separate PR #37 signer worktree remains for exact-head review and trusted workflow landing; it is not an execution integration writer.",
+    "%TEMP%/gogoke-r206-repro-36100213297 and %TEMP%/gogoke-r206-repro-36103415870 contain downloaded public CI artifact ZIPs whose SHA-256 values matched GitHub. Retained for the next cross-run byte comparison, then clean after exact-path custody verification.",
+    "MC-085's prior temporary paths remain under their recorded custody because automatic cleanup review rejected removal; no bypass was attempted."
+  ],
+  "external_action": "NO_CANDIDATE_SIGNATURE; NO_OWNER_KEY_USE; NO_MAIN_MERGE; NO_PR34_MERGE; NO_RELEASE; NEXT_EXECUTION_PUSH_PENDING",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "next_action": "Push this checkpoint and the three local execution commits once exact remote HEAD is confirmed, then read the new source-hygiene and two-lane Windows CI first failure or reproducibility result. Run focused then fresh final all-axis audit on PR #37 b032caef, retaining Draft until external Claude review. Continue remaining uninstall/complete-update paths only after cloud behavior evidence, without treating any WIP or old SHA as accepted."
+}
