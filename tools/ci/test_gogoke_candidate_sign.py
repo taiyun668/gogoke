@@ -36,7 +36,7 @@ class CandidateSigningBoundaryTests(unittest.TestCase):
             root = Path(temporary)
             marker = root / "injected-statement.txt"
             hostile = (
-                "0123456789abcdef0123456789abcdef01234567'; "
+                "0123456789abcdef0123456789abcdef01234567';\n"
                 f"[IO.File]::WriteAllText('{marker.as_posix()}', 'executed'); #"
             )
             event = root / "event.json"
