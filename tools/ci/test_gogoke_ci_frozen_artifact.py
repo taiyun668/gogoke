@@ -157,5 +157,26 @@ class FrozenArtifactTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("index.files item.length", result.stderr)
 
+    def test_frozen_verify_rejects_oversize_index_with_updated_hash(self) -> None:
+        frozen = self.root / "frozen"
+        self.stage("frozen", frozen)
+        index_path = frozen / "resource-index.json"
+        content = index_path.read_bytes()
+        index_path.write_bytes(content + b" " * ((4 << 20) + 1 - len(content)))
+        metadata_path = frozen / "frozen-build.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["files"]["resource-index.json"] = {
+            "length": index_path.stat().st_size,
+            "sha256": hashlib.sha256(index_path.read_bytes()).hexdigest(),
+        }
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        result = self.run_tool(
+            FREEZE_TOOL, "verify", "--directory", frozen,
+            "--source-commit", SOURCE, "--run-id", 42, "--run-attempt", 3,
+            "--lane", "frozen", check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("4194304 bytes", result.stderr)
+
 if __name__ == "__main__":
     unittest.main()

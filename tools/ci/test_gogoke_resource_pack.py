@@ -142,6 +142,45 @@ class GogokeResourcePackTests(unittest.TestCase):
                 self.assertNotEqual(rejected.returncode, 0)
                 self.assertIn("index.files item.length", rejected.stderr)
 
+    def test_verify_rejects_index_larger_than_product_limit(self) -> None:
+        self.assertEqual(self.build_pack(self.pack).returncode, 0)
+        self.assertEqual(self.build_index().returncode, 0)
+        content = self.index.read_bytes()
+        self.index.write_bytes(content + b" " * ((4 << 20) + 1 - len(content)))
+        rejected = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("4194304 bytes", rejected.stderr)
+
+    def test_verify_rejects_unrepresentable_installed_file_records(self) -> None:
+        self.assertEqual(self.build_pack(self.pack).returncode, 0)
+        self.assertEqual(self.build_index().returncode, 0)
+        original = json.loads(self.index.read_text(encoding="utf-8"))
+        edits = (
+            ("length", 1 << 64, "unsigned 64-bit integer"),
+            ("path", "gogoke-service/" + "x" * 260, "Windows-safe ASCII"),
+        )
+        for field, value, expected in edits:
+            with self.subTest(field=field):
+                edited = json.loads(json.dumps(original))
+                edited["installedFiles"][0][field] = value
+                self.index.write_text(json.dumps(edited), encoding="utf-8")
+                rejected = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn(expected, rejected.stderr)
+
+    def test_verify_rejects_installed_file_ancestor_conflict(self) -> None:
+        self.assertEqual(self.build_pack(self.pack).returncode, 0)
+        self.assertEqual(self.build_index().returncode, 0)
+        edited = json.loads(self.index.read_text(encoding="utf-8"))
+        child = dict(edited["installedFiles"][0])
+        child["path"] += "/child"
+        edited["installedFiles"].append(child)
+        edited["installedFiles"].sort(key=lambda record: record["path"])
+        self.index.write_text(json.dumps(edited), encoding="utf-8")
+        rejected = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("ancestor of another file", rejected.stderr)
+
     def test_index_rejects_nul_in_original_zip_entry_name(self) -> None:
         with zipfile.ZipFile(self.pack, "w") as archive:
             for name, data in (("frontend/index.html", b"<main>ok</main>"),
@@ -162,6 +201,21 @@ class GogokeResourcePackTests(unittest.TestCase):
         rejected = self.build_index()
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("NUL in its original ZIP name", rejected.stderr)
+
+    def test_index_rejects_nonphysical_resource_path_set(self) -> None:
+        for extra, expected in (
+            ("dist/bin.mjs/child.js", "ancestor of another file"),
+            ("dist/" + "x" * 256, "Windows-safe ASCII"),
+        ):
+            with self.subTest(extra=extra), zipfile.ZipFile(self.pack, "w") as archive:
+                for name in ("frontend/index.html", "dist/bin.mjs", extra):
+                    info = zipfile.ZipInfo(name)
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFREG | 0o644) << 16
+                    archive.writestr(info, b"x")
+            rejected = self.build_index()
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn(expected, rejected.stderr)
 
     def test_pack_requires_frontend_index_and_dist_bin(self) -> None:
         (self.frontend / "index.html").unlink()
