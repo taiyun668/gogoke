@@ -347,13 +347,21 @@ function Invoke-OwnedBackupCleanup([object]$inventory, [string]$newInstance) {
             # it as a separator before applying the strict absolute/path
             # traversal checks; object IDs and hashes still bind the target.
             $source = ([string]$entry.path).Replace('/', '\')
-            if (-not $source.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
-                -not [string]::Equals([IO.Path]::GetFullPath($source), $source,
-                    [StringComparison]::OrdinalIgnoreCase) -or
-                [string]$entry.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                [string]$entry.identity.volumeSerialNumber -cnotmatch '^[0-9]+$' -or
-                [string]$entry.identity.fileId -cnotmatch '^[0-9a-f]{32}$' -or
-                -not $seen.Add($source)) { throw 'old backup inventory entry is invalid' }
+            if (-not $source.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'old backup inventory path is outside the old root'
+            }
+            if (-not [string]::Equals([IO.Path]::GetFullPath($source), $source,
+                [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'old backup inventory path is not normalized'
+            }
+            if ([string]$entry.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+                throw 'old backup inventory hash is invalid'
+            }
+            if ([string]$entry.identity.volumeSerialNumber -cnotmatch '^[0-9]+$' -or
+                [string]$entry.identity.fileId -cnotmatch '^[0-9a-f]{32}$') {
+                throw 'old backup inventory object identity is invalid'
+            }
+            if (-not $seen.Add($source)) { throw 'old backup inventory path is duplicated' }
             $relative = $source.Substring($prefix.Length)
             if ($relative.Split([char]'\') | Where-Object { $_ -in @('', '.', '..') }) {
                 throw 'old backup inventory path is unsafe'
