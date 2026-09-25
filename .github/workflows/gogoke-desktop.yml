@@ -81,6 +81,11 @@ jobs:
           }
       - run: npm run typecheck
       - run: npm test
+      - name: Exercise embedded uninstall finalizer on clean cloud Windows
+        shell: pwsh
+        run: |
+          python ../../tools/ci/test_gogoke_uninstall_finalizer_cloud.py -v
+          if ($LASTEXITCODE -ne 0) { throw "uninstall finalizer cloud test failed: $LASTEXITCODE" }
       - run: npm run build
 
   licenses:
@@ -282,11 +287,6 @@ jobs:
             python -m unittest tools.ci.test_gogoke_resource_pack tools.ci.test_gogoke_ci_frozen_artifact
             if ($LASTEXITCODE -ne 0) { throw "resource pack tests failed: $LASTEXITCODE" }
           } finally { Pop-Location }
-      - name: Exercise embedded uninstall finalizer on clean cloud Windows
-        shell: pwsh
-        run: |
-          python ../../tools/ci/test_gogoke_uninstall_finalizer_cloud.py -v
-          if ($LASTEXITCODE -ne 0) { throw "uninstall finalizer cloud test failed: $LASTEXITCODE" }
       - name: Build and deploy actual T3 server from pinned lockfile
         shell: pwsh
         working-directory: third_party/t3code
