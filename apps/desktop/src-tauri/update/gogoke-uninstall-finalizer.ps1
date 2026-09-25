@@ -1,10 +1,10 @@
 # Embedded in gogoke.exe. Never load an installed or updateable script.
 # Only the inherited lifecycle-lock handle may authorize this handoff.
 $ErrorActionPreference = 'Stop'
-$data = $null
-$receiptAllowed = $false
-$receiptStream = $null
-$pinned = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+$script:data = $null
+$script:receiptAllowed = $false
+$script:receiptStream = $null
+$script:pinned = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
 
 function Fail([string]$code) { throw $code }
 function Same([string]$a, [string]$b) {
@@ -247,7 +247,7 @@ try {
     $line = [Console]::In.ReadLine()
     if (-not $line -or $line.Length -gt 16777216) { Fail 'GOGOKE_UNINSTALL_HANDOFF_INVALID' }
     $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line))
-    $data = $payload | ConvertFrom-Json
+    $script:data = $payload | ConvertFrom-Json
     if ($data.registryKey -cnotin @('gogoke','gogoke-candidate') -or
         $data.files.Count -lt 1 -or $data.files.Count -gt 100000 -or
         [string]$data.nonce -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
@@ -290,7 +290,7 @@ try {
     # ancestor. Holding no-delete-sharing handles prevents a junction swap
     # between a check and a later path open.
     Pin-Ancestors $data.root $data.rootIdentity
-    $script:rootPin = $pinned.Count - 1
+    $script:rootPin = $script:pinned.Count - 1
     $lockHandle = [GogokeUninstallNative]::GetStdHandle(-12) # inherited stderr handle
     if ($lockHandle -eq [IntPtr]::Zero -or $lockHandle.ToInt64() -eq -1) {
         Fail 'GOGOKE_UNINSTALL_LOCK_HANDLE_MISSING'
@@ -343,6 +343,6 @@ try {
     try { Write-Receipt 'FAILED' ([string]$_.Exception.Message) } catch { }
     exit 1
 } finally {
-    if ($receiptStream) { $receiptStream.Dispose() }
-    foreach ($handle in $pinned) { $handle.Dispose() }
+    if ($script:receiptStream) { $script:receiptStream.Dispose() }
+    foreach ($handle in $script:pinned) { $handle.Dispose() }
 }
