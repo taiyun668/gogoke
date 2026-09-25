@@ -5,8 +5,10 @@ use crate::resource_trust;
 use base64::Engine;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::path::{Path, PathBuf};
@@ -18,6 +20,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FileIdInfo, GetFileInformationByHandleEx, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
 };
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const REPARSE_POINT: u32 = 0x400;
@@ -278,10 +281,18 @@ pub(crate) fn run() -> Result<(), String> {
     }
     let payload = serde_json::to_string(&input)
         .map_err(|_| "GOGOKE_UNINSTALL_HANDOFF_SERIALIZE".to_string())?;
-    let system_root =
-        std::env::var_os("SystemRoot").ok_or_else(|| "GOGOKE_UNINSTALL_SYSTEM_ROOT".to_string())?;
-    let powershell =
-        PathBuf::from(system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut system_directory = [0u16; 32768];
+    let system_length = unsafe {
+        GetSystemDirectoryW(
+            system_directory.as_mut_ptr(),
+            system_directory.len() as u32,
+        )
+    } as usize;
+    if system_length == 0 || system_length >= system_directory.len() {
+        return Err("GOGOKE_UNINSTALL_SYSTEM_DIRECTORY".to_string());
+    }
+    let powershell = PathBuf::from(OsString::from_wide(&system_directory[..system_length]))
+        .join("WindowsPowerShell/v1.0/powershell.exe");
     no_reparse_ancestors(&powershell)?;
     let encoded = encoded_bootstrap();
     let mut child = Command::new(powershell)
@@ -300,10 +311,11 @@ pub(crate) fn run() -> Result<(), String> {
 
     let mut stdin = child.stdin.take().ok_or("GOGOKE_UNINSTALL_HANDOFF_STDIN")?;
     let embedded = base64::engine::general_purpose::STANDARD.encode(FINALIZER.as_bytes());
+    let encoded_payload = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
     stdin
         .write_all(embedded.as_bytes())
         .and_then(|_| stdin.write_all(b"\n"))
-        .and_then(|_| stdin.write_all(payload.as_bytes()))
+        .and_then(|_| stdin.write_all(encoded_payload.as_bytes()))
         .and_then(|_| stdin.write_all(b"\n"))
         .map_err(|_| "GOGOKE_UNINSTALL_HANDOFF_WRITE_FAILED".to_string())?;
     drop(stdin);

@@ -68,7 +68,14 @@ def identity(path: Path) -> dict[str, str]:
         kernel32.CloseHandle(handle)
 
 
+def require_cloud() -> None:
+    if (os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true"
+            or not os.environ.get("GITHUB_RUN_ID") or not os.environ.get("RUNNER_TEMP")):
+        raise RuntimeError("Windows GitHub Actions only; never run deletion locally")
+
+
 def parent_helper(payload_path: Path) -> int:
+    require_cloud()
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     payload["parentPid"] = os.getpid()
     parent_source = RUST_PARENT.read_text(encoding="utf-8")
@@ -98,7 +105,10 @@ def parent_helper(payload_path: Path) -> int:
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         child.stdin.write(embedded + b"\n")
-        child.stdin.write((json.dumps(payload, separators=(",", ":")) + "\n").encode())
+        encoded_payload = base64.b64encode(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        child.stdin.write(encoded_payload + b"\n")
         child.stdin.close()
         lines: list[bytes] = []
         reader = threading.Thread(target=lambda: lines.append(child.stdout.readline()), daemon=True)
@@ -122,9 +132,7 @@ def parent_helper(payload_path: Path) -> int:
 class CloudFinalizerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if (os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true"
-                or not os.environ.get("GITHUB_RUN_ID") or not os.environ.get("RUNNER_TEMP")):
-            raise RuntimeError("Windows GitHub Actions only; never run deletion locally")
+        require_cloud()
         try:
             winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY).Close()
         except FileNotFoundError:
@@ -135,7 +143,7 @@ class CloudFinalizerTest(unittest.TestCase):
     def test_owned_files_only_and_stale_identity(self):
         with tempfile.TemporaryDirectory(prefix="gogoke-finalizer-ci-") as temporary:
             base = Path(temporary)
-            root = base / "gogoke-candidate"
+            root = base / "项目-gogoke-candidate"
             root.mkdir()
             exe = root / "gogoke.exe"
             owned = root / "owned.bin"

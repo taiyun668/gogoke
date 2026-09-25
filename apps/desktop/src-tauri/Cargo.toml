@@ -65,7 +65,7 @@ objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMedia
 block2 = "0.6"
 
 [target."cfg(target_os = \"windows\")".dependencies]
-windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 winreg = "0.55.0"
 zip = { version = "2.4.2", default-features = false }
 

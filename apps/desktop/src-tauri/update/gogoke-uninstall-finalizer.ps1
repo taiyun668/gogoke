@@ -31,10 +31,24 @@ $builder = $module.DefineType('GogokeUninstallNative',
 $methodFlags = [Reflection.MethodAttributes]::Public -bor
     [Reflection.MethodAttributes]::Static -bor [Reflection.MethodAttributes]::PinvokeImpl
 function Native-Method([string]$name, [Type]$result, [Type[]]$arguments) {
-    $null = $builder.DefinePInvokeMethod($name, 'kernel32.dll', $methodFlags,
-        [Reflection.CallingConventions]::Standard, $result, $arguments,
-        [Runtime.InteropServices.CallingConvention]::Winapi,
-        [Runtime.InteropServices.CharSet]::Unicode)
+    $method = $builder.DefineMethod($name, $methodFlags, $result, $arguments)
+    $attribute = [Runtime.InteropServices.DllImportAttribute]
+    $constructor = $attribute.GetConstructor([Type[]]@([string]))
+    $fields = [Reflection.FieldInfo[]]@(
+        $attribute.GetField('SetLastError'),
+        $attribute.GetField('CharSet'),
+        $attribute.GetField('ExactSpelling'),
+        $attribute.GetField('CallingConvention'))
+    $values = [object[]]@(
+        $true,
+        [Runtime.InteropServices.CharSet]::Unicode,
+        $true,
+        [Runtime.InteropServices.CallingConvention]::Winapi)
+    $method.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new(
+        $constructor, [object[]]@('kernel32.dll'), $fields, $values))
+    $method.SetImplementationFlags(
+        [Reflection.MethodImplAttributes]($method.GetMethodImplementationFlags() -bor
+            [Reflection.MethodImplAttributes]::PreserveSig))
 }
 Native-Method 'CreateFileW' ([IntPtr]) @([string],[uint32],[uint32],[IntPtr],[uint32],[uint32],[IntPtr])
 Native-Method 'GetFileInformationByHandleEx' ([bool]) @([IntPtr],[int],[IntPtr],[uint32])
@@ -42,14 +56,13 @@ Native-Method 'GetFinalPathNameByHandleW' ([uint32]) @([IntPtr],[Text.StringBuil
 Native-Method 'SetFileInformationByHandle' ([bool]) @([IntPtr],[int],[IntPtr],[uint32])
 Native-Method 'GetStdHandle' ([IntPtr]) @([int])
 Native-Method 'GetFileAttributesW' ([uint32]) @([string])
-Native-Method 'GetLastError' ([uint32]) @()
 $null = $builder.CreateType()
 
 function Open-Object([string]$path, [bool]$directory, [bool]$delete) {
     # OPEN_REPARSE_POINT prevents following the final component. Every
     # ancestor is opened and retained separately before a descendant opens.
     $access = [uint32]0x80 # FILE_READ_ATTRIBUTES
-    if (-not $directory) { $access = $access -bor [uint32]0x80000000 } # GENERIC_READ
+    if (-not $directory) { $access = $access -bor [uint32]2147483648 } # GENERIC_READ
     if ($delete) { $access = $access -bor [uint32]0x10000 } # DELETE
     $flags = [uint32]0x200000 # FILE_FLAG_OPEN_REPARSE_POINT
     if ($directory) { $flags = $flags -bor [uint32]0x2000000 } # BACKUP_SEMANTICS
@@ -171,7 +184,7 @@ function Delete-Opened([Microsoft.Win32.SafeHandles.SafeFileHandle]$handle) {
 function Path-State([string]$path) {
     $attributes = [GogokeUninstallNative]::GetFileAttributesW($path)
     if ($attributes -ne [uint32]::MaxValue) { return 'PRESENT' }
-    $errorCode = [GogokeUninstallNative]::GetLastError()
+    $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     if ($errorCode -eq 2) { return 'MISSING' } # ERROR_FILE_NOT_FOUND
     if ($errorCode -eq 3) { return 'PARENT_MISSING' }
     Fail 'GOGOKE_UNINSTALL_DELETE_CHECK_FAILED'
@@ -227,7 +240,8 @@ try {
     # hashes, and file IDs need several MiB in the handoff.
     $line = [Console]::In.ReadLine()
     if (-not $line -or $line.Length -gt 16777216) { Fail 'GOGOKE_UNINSTALL_HANDOFF_INVALID' }
-    $data = $line | ConvertFrom-Json
+    $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line))
+    $data = $payload | ConvertFrom-Json
     if ($data.registryKey -cnotin @('gogoke','gogoke-candidate') -or
         $data.files.Count -lt 1 -or $data.files.Count -gt 100000 -or
         [string]$data.nonce -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
@@ -279,6 +293,7 @@ try {
     Assert-Root
     $parent = [Diagnostics.Process]::GetProcessById([int]$data.parentPid)
     $null = $parent.Handle
+    Reserve-Receipt
     $marker = [Text.Encoding]::ASCII.GetBytes('LOCK:' + $data.nonce + "`n")
     $lockStream = [Console]::OpenStandardError()
     $lockStream.Write($marker, 0, $marker.Length)
@@ -287,7 +302,6 @@ try {
     [Console]::Out.Flush()
     if (-not $parent.WaitForExit(120000)) { Fail 'GOGOKE_UNINSTALL_PARENT_STILL_RUNNING' }
     Assert-Root
-    Reserve-Receipt
     foreach ($entry in $data.files) {
         # Pin and reject every intermediate subdirectory without following
         # any reparse point. These handles remain open through deletion.
