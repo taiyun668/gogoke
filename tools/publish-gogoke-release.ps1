@@ -43,7 +43,7 @@ function Read-Manifest([string]$Path, [string]$ManifestVersion, [string]$Type, [
             $headers[$key] = $Matches[2]
             continue
         }
-        if ($line -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$') {
+        if ($line -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9._+-]+)$') {
             throw "Manifest contains a malformed checksum entry."
         }
         $name = $Matches[2]
@@ -71,8 +71,11 @@ function Read-Manifest([string]$Path, [string]$ManifestVersion, [string]$Type, [
     return @{ Text = $text; Headers = $headers; Hashes = $hashes; AssetNames = $expected }
 }
 
-function ConvertFrom-Hex([string]$Value) {
-    if ($Value -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'P-256 key/signature hex has invalid shape.' }
+function ConvertFrom-Hex([string]$Value, [int]$ExpectedHexLength) {
+    if ($ExpectedHexLength -notin @(64, 128) -or $Value.Length -ne $ExpectedHexLength -or
+        $Value -cnotmatch '^[0-9A-Fa-f]+$') {
+        throw 'P-256 key/signature hex has invalid shape.'
+    }
     $bytes = New-Object byte[] ($Value.Length / 2)
     for ($index = 0; $index -lt $bytes.Length; $index++) {
         $bytes[$index] = [Convert]::ToByte($Value.Substring($index * 2, 2), 16)
@@ -124,17 +127,61 @@ if ($ReleaseType -ceq "full") {
         throw "$installerName is not the expected unsigned community artifact"
     }
 
+    $expectedPortable = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $expectedPortable.Add('gogoke.exe', $index.executables.portableShell)
+    $expectedPortable.Add('gogoke-native-host.exe', $index.executables.nativeHost)
+    $expectedPortable.Add('gogoke-service/runtime/node.exe', $index.executables.node)
+    $expectedPortable.Add($packName, $index.pack)
+    $expectedPortable.Add($indexName, [pscustomobject]@{
+        length = (Get-Item -LiteralPath $indexPath).Length
+        sha256 = $before.Hashes[$indexName]
+    })
+    foreach ($file in $index.installedFiles) {
+        $expectedPortable.Add([string]$file.path, $file)
+    }
+    foreach ($file in $index.files) {
+        $expectedPortable.Add("gogoke-service/generations/$($index.generationId)/$($file.path)", $file)
+    }
+
     $portableInspect = Join-Path ([IO.Path]::GetTempPath()) ("gogoke-portable-inspect-" + [Guid]::NewGuid().ToString("N"))
     try {
-        Expand-Archive -LiteralPath $portable -DestinationPath $portableInspect
-        $expectedPortableFiles = @("gogoke.exe", "LICENSE", "THIRD_PARTY_NOTICES.md")
-        $actualPortableFiles = @(Get-ChildItem -LiteralPath $portableInspect -File -Recurse |
-            ForEach-Object { $_.FullName.Substring($portableInspect.Length + 1).Replace('\', '/') } |
-            Sort-Object)
-        if (($actualPortableFiles -join "`n") -ne (($expectedPortableFiles | Sort-Object) -join "`n")) {
-            throw "Portable archive contents do not match the expected gogoke payload"
+        New-Item -ItemType Directory -Path $portableInspect | Out-Null
+        $portableExe = Join-Path $portableInspect 'gogoke.exe'
+        $archive = [IO.Compression.ZipFile]::OpenRead($portable)
+        try {
+            $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($entry in $archive.Entries) {
+                if (-not $expectedPortable.ContainsKey($entry.FullName) -or -not $seen.Add($entry.FullName) -or
+                    ((($entry.ExternalAttributes -shr 16) -band 0xF000) -ne 0x8000)) {
+                    throw "Portable archive contains an unexpected, duplicate, or non-file entry"
+                }
+                $record = $expectedPortable[$entry.FullName]
+                if ($entry.Length -ne [long]$record.length) {
+                    throw "Portable archive file length does not match resource index: $($entry.FullName)"
+                }
+                $stream = $entry.Open()
+                try {
+                    if ($entry.FullName -ceq 'gogoke.exe') {
+                        $output = [IO.File]::Open($portableExe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+                        try { $stream.CopyTo($output) } finally { $output.Dispose() }
+                        $actualHash = (Get-FileHash -LiteralPath $portableExe -Algorithm SHA256).Hash.ToLowerInvariant()
+                    } else {
+                        $hasher = [Security.Cryptography.SHA256]::Create()
+                        try {
+                            $actualHash = [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+                        } finally { $hasher.Dispose() }
+                    }
+                } finally { $stream.Dispose() }
+                if ($actualHash -cne [string]$record.sha256) {
+                    throw "Portable archive file does not match resource index: $($entry.FullName)"
+                }
+            }
+            if ($seen.Count -ne $expectedPortable.Count) {
+                throw "Portable archive is missing indexed product files"
+            }
+        } finally {
+            $archive.Dispose()
         }
-        $portableExe = Join-Path $portableInspect "gogoke.exe"
         if ((Get-AuthenticodeSignature -LiteralPath $portableExe).Status -ne 'NotSigned') {
             throw "$portableName contains an executable outside the unsigned community trust boundary"
         }
@@ -156,16 +203,17 @@ $signed = Read-Manifest $manifest $version $ReleaseType -RequireHeaders
 $publicHex = ([IO.File]::ReadAllText(
     (Join-Path $root "apps\desktop\src-tauri\gogoke-release-public-key.txt"), [Text.Encoding]::ASCII)).Trim()
 $signatureHex = ([IO.File]::ReadAllText($signature, [Text.Encoding]::ASCII)).Trim()
+if ($publicHex.Length -ne 128) { throw "Embedded release public key has invalid shape" }
 $parameters = [System.Security.Cryptography.ECParameters]::new()
 $parameters.Curve = [System.Security.Cryptography.ECCurve]::CreateFromFriendlyName('nistP256')
 $point = [System.Security.Cryptography.ECPoint]::new()
-$point.X = ConvertFrom-Hex $publicHex.Substring(0, 64)
-$point.Y = ConvertFrom-Hex $publicHex.Substring(64, 64)
+$point.X = ConvertFrom-Hex $publicHex.Substring(0, 64) 64
+$point.Y = ConvertFrom-Hex $publicHex.Substring(64, 64) 64
 $parameters.Q = $point
 $verifier = [System.Security.Cryptography.ECDsa]::Create($parameters)
 if (-not $verifier.VerifyData(
     [IO.File]::ReadAllBytes($manifest),
-    (ConvertFrom-Hex $signatureHex),
+    (ConvertFrom-Hex $signatureHex 128),
     [Security.Cryptography.HashAlgorithmName]::SHA256)) {
     throw "Release manifest signature does not match the public key embedded in gogoke"
 }

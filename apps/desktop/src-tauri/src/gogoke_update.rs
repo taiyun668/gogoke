@@ -262,6 +262,9 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     if value.len() % 2 != 0 {
         return Err("release signature has invalid hex length".to_string());
     }
+    if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("release signature is not hexadecimal".to_string());
+    }
     (0..value.len())
         .step_by(2)
         .map(|index| {
@@ -1276,6 +1279,7 @@ mod tests {
         let last = mutated.len() - 1;
         mutated[last] ^= 1;
         assert!(verify_manifest(&mutated, signature).is_err());
+        assert!(verify_manifest(manifest, "😀".as_bytes()).is_err());
     }
 
     fn readiness_test_directory() -> PathBuf {

@@ -41,6 +41,8 @@ class FrozenArtifactTests(unittest.TestCase):
         (self.installed_root / "gogoke-service" / "node_modules" / "package.json").write_text(
             "{}\n", encoding="utf-8"
         )
+        (self.installed_root / "LICENSE").write_bytes(b"test license\n")
+        (self.installed_root / "THIRD_PARTY_NOTICES.md").write_bytes(b"test notices\n")
         self.pack = self.root / "gogoke-resources.windows.zip"
         self.index = self.root / "resource-index.json"
         self.run_tool(PACK_TOOL, "pack", "--frontend-dir", self.frontend,
@@ -97,24 +99,62 @@ class FrozenArtifactTests(unittest.TestCase):
     def test_portable_archive_uses_exact_frozen_shell_and_fixed_zip_metadata(self) -> None:
         frozen = self.root / "frozen"
         self.stage("frozen", frozen)
-        license_path = self.root / "LICENSE"
-        notices_path = self.root / "THIRD_PARTY_NOTICES.md"
-        license_path.write_bytes(b"test license\n")
-        notices_path.write_bytes(b"test notices\n")
         name = "gogoke-1.2.3-windows-x64-unsigned-portable.zip"
         outputs = (self.root / "first" / name, self.root / "second" / name)
         for output in outputs:
             self.run_tool(
                 FREEZE_TOOL, "portable", "--frozen", frozen,
-                "--license", license_path, "--notices", notices_path,
+                "--installed-root", self.installed_root,
                 "--source-commit", SOURCE, "--run-id", 42, "--run-attempt", 3,
                 "--output", output,
             )
         self.assertEqual(outputs[0].read_bytes(), outputs[1].read_bytes())
         with zipfile.ZipFile(outputs[0]) as archive:
-            self.assertEqual(archive.namelist(), ["gogoke.exe", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+            index = json.loads((frozen / "resource-index.json").read_text(encoding="utf-8"))
+            generation_prefix = f"gogoke-service/generations/{index['generationId']}/"
+            expected_names = {
+                "gogoke.exe",
+                "gogoke-native-host.exe",
+                "gogoke-service/runtime/node.exe",
+                "resource-index.json",
+                "gogoke-resources.windows.zip",
+                "LICENSE",
+                "THIRD_PARTY_NOTICES.md",
+                "gogoke-service/node_modules/package.json",
+                *(generation_prefix + record["path"] for record in index["files"]),
+            }
+            self.assertEqual(archive.namelist(), sorted(expected_names))
             self.assertEqual(archive.read("gogoke.exe"), (frozen / "gogoke-portable.exe").read_bytes())
+            self.assertEqual(archive.read("gogoke-native-host.exe"), (frozen / "gogoke-native-host.exe").read_bytes())
+            self.assertEqual(archive.read("gogoke-service/runtime/node.exe"), (frozen / "node.exe").read_bytes())
+            self.assertEqual(archive.read("resource-index.json"), (frozen / "resource-index.json").read_bytes())
+            self.assertEqual(archive.read("gogoke-resources.windows.zip"), (frozen / "gogoke-resources.windows.zip").read_bytes())
+            self.assertEqual(archive.read("LICENSE"), (self.installed_root / "LICENSE").read_bytes())
+            self.assertEqual(archive.read("THIRD_PARTY_NOTICES.md"), (self.installed_root / "THIRD_PARTY_NOTICES.md").read_bytes())
+            for record in index["files"]:
+                data = archive.read(generation_prefix + record["path"])
+                self.assertEqual(len(data), record["length"])
+                self.assertEqual(hashlib.sha256(data).hexdigest(), record["sha256"])
+            for record in index["installedFiles"]:
+                data = archive.read(record["path"])
+                self.assertEqual(len(data), record["length"])
+                self.assertEqual(hashlib.sha256(data).hexdigest(), record["sha256"])
+            self.assertFalse(any(name.endswith((".sig", ".windows")) for name in archive.namelist()))
             self.assertTrue(all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist()))
+
+    def test_portable_archive_rejects_installed_static_bytes_that_do_not_match_index(self) -> None:
+        frozen = self.root / "frozen"
+        self.stage("frozen", frozen)
+        (self.installed_root / "LICENSE").write_bytes(b"changed after indexing\n")
+        result = self.run_tool(
+            FREEZE_TOOL, "portable", "--frozen", frozen,
+            "--installed-root", self.installed_root,
+            "--source-commit", SOURCE, "--run-id", 42, "--run-attempt", 3,
+            "--output", self.root / "gogoke-1.2.3-windows-x64-unsigned-portable.zip",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("portable installed static identity mismatch: LICENSE", result.stderr)
 
     def test_compare_rejects_one_byte_native_difference(self) -> None:
         frozen = self.root / "frozen"

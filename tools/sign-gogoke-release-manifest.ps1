@@ -67,7 +67,7 @@ function ConvertTo-CanonicalManifest([string]$Text, [string]$ManifestVersion, [s
             $headers[$name] = $Matches[2]
             continue
         }
-        if ($line -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$') {
+        if ($line -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9._+-]+)$') {
             throw "Manifest contains a malformed checksum entry."
         }
         $name = $Matches[2]

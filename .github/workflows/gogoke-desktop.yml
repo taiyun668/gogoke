@@ -431,9 +431,10 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installedRoot = Join-Path $env:RUNNER_TEMP 'gogoke-installed-static'
           $portable = Join-Path 'portable-artifact' "gogoke-$version-windows-x64-unsigned-portable.zip"
           python ../../tools/ci/gogoke_ci_frozen_artifact.py portable `
-            --frozen frozen-artifact --license LICENSE --notices THIRD_PARTY_NOTICES.md `
+            --frozen frozen-artifact --installed-root $installedRoot `
             --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --run-id '${{ github.run_id }}' `
             --run-attempt '${{ github.run_attempt }}' --output $portable
           if ($LASTEXITCODE -ne 0) { throw "portable ZIP packaging failed: $LASTEXITCODE" }

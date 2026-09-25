@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import stat
 import sys
@@ -18,6 +19,7 @@ from gogoke_resource_pack import (
     INSTALLED_TOKEN,
     ResourcePackError,
     ZIP_EPOCH,
+    _is_reparse_point,
     verify_pack,
 )
 
@@ -164,6 +166,38 @@ def _copy(source: Path, destination: Path) -> None:
         raise FrozenArtifactError(f"copy changed bytes: {destination.name}")
 
 
+def _physical_tree_files(root: Path) -> set[str]:
+    try:
+        root_info = root.lstat()
+    except OSError as exc:
+        raise FrozenArtifactError(f"cannot inspect portable static root: {exc}") from exc
+    if _is_reparse_point(root_info) or not stat.S_ISDIR(root_info.st_mode):
+        raise FrozenArtifactError("portable installed static root is not a physical directory")
+    files: set[str] = set()
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError as exc:
+            raise FrozenArtifactError(f"cannot scan portable static root: {exc}") from exc
+        for child in children:
+            path = Path(child.path)
+            try:
+                info = path.lstat()
+            except OSError as exc:
+                raise FrozenArtifactError(f"cannot inspect portable static file: {exc}") from exc
+            if _is_reparse_point(info):
+                raise FrozenArtifactError("portable installed static root contains a symbolic link")
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(path)
+            elif stat.S_ISREG(info.st_mode):
+                files.add(path.relative_to(root).as_posix())
+            else:
+                raise FrozenArtifactError("portable installed static root contains a non-file entry")
+    return files
+
+
 def stage(args: argparse.Namespace) -> None:
     if not SHA_RE.fullmatch(args.source_commit) or args.run_id <= 0 or args.run_attempt <= 0:
         raise FrozenArtifactError("invalid source run identity")
@@ -276,14 +310,85 @@ def portable(args: argparse.Namespace) -> None:
     expected_name = f"gogoke-{version}-windows-x64-unsigned-portable.zip"
     if args.output.name != expected_name or args.output.exists():
         raise FrozenArtifactError("portable ZIP output must be a fresh exact versioned name")
-    entries = (
-        ("gogoke.exe", _bytes(args.frozen / "gogoke-portable.exe")),
-        ("LICENSE", _bytes(args.license)),
-        ("THIRD_PARTY_NOTICES.md", _bytes(args.notices)),
-    )
+
+    index_path = args.frozen / "resource-index.json"
+    pack_path = args.frozen / "gogoke-resources.windows.zip"
+    index_bytes = _bytes(index_path)
+    index = _load_index(index_path)
+    indexed_files = index.get("files")
+    installed_files = index.get("installedFiles")
+    if not isinstance(indexed_files, list) or not isinstance(installed_files, list):
+        raise FrozenArtifactError("portable resource index inventory is unavailable")
+
+    entries: dict[str, bytes] = {
+        "gogoke.exe": _bytes(args.frozen / "gogoke-portable.exe"),
+        "gogoke-native-host.exe": _bytes(args.frozen / "gogoke-native-host.exe"),
+        "gogoke-service/runtime/node.exe": _bytes(args.frozen / "node.exe"),
+        "resource-index.json": index_bytes,
+        "gogoke-resources.windows.zip": _bytes(pack_path),
+    }
+    generation_id = index.get("generationId")
+    if not isinstance(generation_id, str) or not re.fullmatch(r"[0-9a-f]{64}", generation_id):
+        raise FrozenArtifactError("portable resource generation identity is invalid")
+
+    try:
+        with zipfile.ZipFile(pack_path, "r") as resource_pack:
+            pack_names = resource_pack.namelist()
+            expected_pack_names = [record["path"] for record in indexed_files]
+            if pack_names != expected_pack_names:
+                raise FrozenArtifactError("portable resource pack inventory does not match the resource index")
+            for record in indexed_files:
+                name = record["path"]
+                data = resource_pack.read(name)
+                if len(data) != record["length"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+                    raise FrozenArtifactError(f"portable resource identity mismatch: {name}")
+                archive_name = f"gogoke-service/generations/{generation_id}/{name}"
+                entries[archive_name] = data
+    except (OSError, zipfile.BadZipFile, KeyError, TypeError) as exc:
+        raise FrozenArtifactError(f"cannot read verified portable resource pack: {exc}") from exc
+
+    installed_root = args.installed_root
+    indexed_installed_paths = {record["path"] for record in installed_files}
+    if _physical_tree_files(installed_root) != indexed_installed_paths:
+        raise FrozenArtifactError("portable installed static root inventory does not match the resource index")
+    for record in installed_files:
+        name = record["path"]
+        if not isinstance(name, str) or name.startswith("/") or "\\" in name or ".." in name.split("/"):
+            raise FrozenArtifactError("portable installed static path is unsafe")
+        source = installed_root.joinpath(*name.split("/"))
+        data = _bytes(source)
+        if len(data) != record["length"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+            raise FrozenArtifactError(f"portable installed static identity mismatch: {name}")
+        if name in entries:
+            raise FrozenArtifactError(f"portable path collides with runtime file: {name}")
+        entries[name] = data
+    if "LICENSE" not in entries or "THIRD_PARTY_NOTICES.md" not in entries:
+        raise FrozenArtifactError("portable installed static inventory must include LICENSE and THIRD_PARTY_NOTICES.md")
+
+    executable_records = index.get("executables", {})
+    for key, source in (
+        ("portableShell", args.frozen / "gogoke-portable.exe"),
+        ("nativeHost", args.frozen / "gogoke-native-host.exe"),
+        ("node", args.frozen / "node.exe"),
+    ):
+        if executable_records.get(key) != _record(source):
+            raise FrozenArtifactError(f"portable executable identity mismatch: {key}")
+
+    expected_names = {
+        "gogoke.exe",
+        "gogoke-native-host.exe",
+        "gogoke-service/runtime/node.exe",
+        "resource-index.json",
+        "gogoke-resources.windows.zip",
+        *(f"gogoke-service/generations/{generation_id}/{record['path']}" for record in indexed_files),
+        *(record["path"] for record in installed_files),
+    }
+    if set(entries) != expected_names:
+        raise FrozenArtifactError("portable runtime inventory is not exact")
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
-        for name, data in entries:
+        for name, data in sorted(entries.items()):
             info = zipfile.ZipInfo(name, date_time=ZIP_EPOCH)
             info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3
@@ -318,8 +423,7 @@ def parser() -> argparse.ArgumentParser:
 
     portable_command = commands.add_parser("portable")
     portable_command.add_argument("--frozen", type=Path, required=True)
-    portable_command.add_argument("--license", type=Path, required=True)
-    portable_command.add_argument("--notices", type=Path, required=True)
+    portable_command.add_argument("--installed-root", type=Path, required=True)
     portable_command.add_argument("--source-commit", required=True)
     portable_command.add_argument("--run-id", type=int, required=True)
     portable_command.add_argument("--run-attempt", type=int, required=True)
