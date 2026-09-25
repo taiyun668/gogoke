@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
+use std::os::windows::ffi::OsStrExt;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
 use std::os::windows::ffi::OsStringExt;
