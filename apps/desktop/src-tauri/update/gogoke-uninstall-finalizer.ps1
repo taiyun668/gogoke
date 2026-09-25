@@ -12,9 +12,17 @@ function Same([string]$a, [string]$b) {
 }
 function Full-Path([string]$path) {
     if ($path -cnotmatch '^[A-Za-z]:\\' -or $path -match '[\x00-\x1f]' -or
-        $path.Substring(2) -match ':') { Fail 'GOGOKE_UNINSTALL_PATH_INVALID' }
+        $path.Substring(2) -match ':') {
+        if ($env:GITHUB_ACTIONS -ceq 'true') {
+            $script:ciPathFailure = 'input=' + $path + ' guard=prefix/control/colon'
+        }
+        Fail 'GOGOKE_UNINSTALL_PATH_INVALID'
+    }
     $full = [IO.Path]::GetFullPath($path)
     if (-not (Same $full $path) -or $full -match '[\\/]\.\.?([\\/]|$)') {
+        if ($env:GITHUB_ACTIONS -ceq 'true') {
+            $script:ciPathFailure = 'input=' + $path + ' full=' + $full + ' guard=normalize/dot'
+        }
         Fail 'GOGOKE_UNINSTALL_PATH_INVALID'
     }
     return $full
@@ -331,6 +339,9 @@ try {
     if ($env:GITHUB_ACTIONS -ceq 'true') {
         $detail = ('{0} line={1} {2}' -f $_.Exception.GetType().Name,
             $_.InvocationInfo.ScriptLineNumber, $_.Exception.Message) -replace '[\r\n]', ' '
+        if ($script:ciPathFailure) {
+            $detail += ' ' + ($script:ciPathFailure -replace '[\r\n]', ' ')
+        }
         [Console]::Out.WriteLine('CI_FINALIZER_ERROR ' + $detail.Substring(0, [Math]::Min($detail.Length, 512)))
         [Console]::Out.Flush()
     }
