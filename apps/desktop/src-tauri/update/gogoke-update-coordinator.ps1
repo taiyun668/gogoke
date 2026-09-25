@@ -27,6 +27,7 @@ $backup = "$TargetDir.update-backup"
 $newProcess = $null
 $targetMoved = $false
 $installStarted = $false
+$installerCompletionUnknown = $false
 $oldApplicationStopped = $false
 $hadUninstallRegistration = $false
 $oldInstallInstanceId = $null
@@ -122,7 +123,142 @@ function Acquire-LifecycleLock {
             Start-Sleep -Milliseconds 100
         }
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "gogoke install lifecycle lock was not reacquired"
+    throw "gogoke install lifecycle lock is unavailable"
+}
+
+# The coordinator and NSIS must hold the same file object continuously. The
+# handle list gives only the installer created here a duplicate; a copied
+# command line cannot borrow the coordinator's exclusive lock.
+function Invoke-LockedInstaller([string]$path, [string]$target, [bool]$silent,
+    [IO.FileStream]$heldLock) {
+    if ([IntPtr]::Size -ne 8 -or $target.IndexOfAny([char[]]@('"', [char]13, [char]10)) -ge 0) {
+        throw "unsupported installer handoff path or process architecture"
+    }
+    $assemblyName = [Reflection.AssemblyName]::new('GogokeUpdateNative')
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+        $assemblyName, [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $module = $assembly.DefineDynamicModule('GogokeUpdateNative')
+    $builder = $module.DefineType('GogokeUpdateNative',
+        [Reflection.TypeAttributes]::Public -bor [Reflection.TypeAttributes]::Sealed)
+    $methodFlags = [Reflection.MethodAttributes]::Public -bor
+        [Reflection.MethodAttributes]::Static -bor [Reflection.MethodAttributes]::PinvokeImpl
+    function Native-Method([string]$name, [Type]$result, [Type[]]$arguments) {
+        $method = $builder.DefineMethod($name, $methodFlags, $result, $arguments)
+        $attribute = [Runtime.InteropServices.DllImportAttribute]
+        $constructor = $attribute.GetConstructor([Type[]]@([string]))
+        $fields = [Reflection.FieldInfo[]]@(
+            $attribute.GetField('SetLastError'), $attribute.GetField('CharSet'),
+            $attribute.GetField('ExactSpelling'), $attribute.GetField('CallingConvention'))
+        $values = [object[]]@($true, [Runtime.InteropServices.CharSet]::Unicode,
+            $true, [Runtime.InteropServices.CallingConvention]::Winapi)
+        $method.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new(
+            $constructor, [object[]]@('kernel32.dll'), $fields, $values))
+        $method.SetImplementationFlags(
+            [Reflection.MethodImplAttributes]($method.GetMethodImplementationFlags() -bor
+                [Reflection.MethodImplAttributes]::PreserveSig))
+    }
+    Native-Method 'GetCurrentProcess' ([IntPtr]) @()
+    Native-Method 'DuplicateHandle' ([bool]) @([IntPtr],[IntPtr],[IntPtr],[IntPtr],[uint32],[bool],[uint32])
+    Native-Method 'InitializeProcThreadAttributeList' ([bool]) @([IntPtr],[uint32],[uint32],[IntPtr])
+    Native-Method 'UpdateProcThreadAttribute' ([bool]) @([IntPtr],[uint32],[IntPtr],[IntPtr],[IntPtr],[IntPtr],[IntPtr])
+    Native-Method 'DeleteProcThreadAttributeList' ([void]) @([IntPtr])
+    Native-Method 'CreateProcessW' ([bool]) @([string],[IntPtr],[IntPtr],[IntPtr],[bool],[uint32],[IntPtr],[string],[IntPtr],[IntPtr])
+    Native-Method 'WaitForSingleObject' ([uint32]) @([IntPtr],[uint32])
+    Native-Method 'GetExitCodeProcess' ([bool]) @([IntPtr],[IntPtr])
+    Native-Method 'CloseHandle' ([bool]) @([IntPtr])
+    $null = $builder.CreateType()
+
+    $duplicateAddress = [IntPtr]::Zero
+    $sizeAddress = [IntPtr]::Zero
+    $attributes = [IntPtr]::Zero
+    $handleList = [IntPtr]::Zero
+    $startup = [IntPtr]::Zero
+    $processInfo = [IntPtr]::Zero
+    $command = [IntPtr]::Zero
+    $duplicate = [IntPtr]::Zero
+    $process = [IntPtr]::Zero
+    $thread = [IntPtr]::Zero
+    $attributesInitialized = $false
+    try {
+        $duplicateAddress = [Runtime.InteropServices.Marshal]::AllocHGlobal(8)
+        [Runtime.InteropServices.Marshal]::WriteIntPtr($duplicateAddress, [IntPtr]::Zero)
+        $self = [GogokeUpdateNative]::GetCurrentProcess()
+        if (-not [GogokeUpdateNative]::DuplicateHandle($self,
+            $heldLock.SafeFileHandle.DangerousGetHandle(), $self, $duplicateAddress,
+            [uint32]0, $true, [uint32]2)) {
+            throw "installer lifecycle handle duplication failed"
+        }
+        $duplicate = [Runtime.InteropServices.Marshal]::ReadIntPtr($duplicateAddress)
+        if ($duplicate -eq [IntPtr]::Zero -or $duplicate.ToInt64() -eq -1) {
+            throw "installer lifecycle duplicate is invalid"
+        }
+        $handleList = [Runtime.InteropServices.Marshal]::AllocHGlobal(8)
+        [Runtime.InteropServices.Marshal]::WriteIntPtr($handleList, $duplicate)
+        $sizeAddress = [Runtime.InteropServices.Marshal]::AllocHGlobal(8)
+        [Runtime.InteropServices.Marshal]::WriteInt64($sizeAddress, 0)
+        $null = [GogokeUpdateNative]::InitializeProcThreadAttributeList(
+            [IntPtr]::Zero, [uint32]1, [uint32]0, $sizeAddress)
+        $size = [Runtime.InteropServices.Marshal]::ReadInt64($sizeAddress)
+        if ($size -le 0 -or $size -gt 4096) { throw "installer attribute list size is invalid" }
+        $attributes = [Runtime.InteropServices.Marshal]::AllocHGlobal([int]$size)
+        if (-not [GogokeUpdateNative]::InitializeProcThreadAttributeList(
+            $attributes, [uint32]1, [uint32]0, $sizeAddress)) {
+            throw "installer attribute list initialization failed"
+        }
+        $attributesInitialized = $true
+        if (-not [GogokeUpdateNative]::UpdateProcThreadAttribute($attributes,
+            [uint32]0, [IntPtr]0x00020002, $handleList, [IntPtr]8,
+            [IntPtr]::Zero, [IntPtr]::Zero)) {
+            throw "installer lifecycle handle list failed"
+        }
+
+        # STARTUPINFOEXW is 112 bytes on x64; its attribute pointer is at 104.
+        # PROCESS_INFORMATION holds two handles followed by two DWORD IDs.
+        $startup = [Runtime.InteropServices.Marshal]::AllocHGlobal(112)
+        [Runtime.InteropServices.Marshal]::Copy([byte[]]::new(112), 0, $startup, 112)
+        [Runtime.InteropServices.Marshal]::WriteInt32($startup, 112)
+        [Runtime.InteropServices.Marshal]::WriteIntPtr($startup, 104, $attributes)
+        $processInfo = [Runtime.InteropServices.Marshal]::AllocHGlobal(24)
+        [Runtime.InteropServices.Marshal]::Copy([byte[]]::new(24), 0, $processInfo, 24)
+        $commandLine = '"' + $path + '"'
+        if ($silent) { $commandLine += ' /S' }
+        $commandLine += " /GOGOKE_LOCK_HANDLE=$($duplicate.ToInt64()) /D=$target"
+        $command = [Runtime.InteropServices.Marshal]::StringToHGlobalUni($commandLine)
+        if (-not [GogokeUpdateNative]::CreateProcessW($path, $command,
+            [IntPtr]::Zero, [IntPtr]::Zero, $true, [uint32]0x00080000,
+            [IntPtr]::Zero, (Split-Path -Parent $path), $startup, $processInfo)) {
+            throw "installer creation with lifecycle handle failed"
+        }
+        $script:installerCompletionUnknown = $true
+        $process = [Runtime.InteropServices.Marshal]::ReadIntPtr($processInfo)
+        $thread = [Runtime.InteropServices.Marshal]::ReadIntPtr($processInfo, 8)
+        $null = [GogokeUpdateNative]::CloseHandle($duplicate)
+        $duplicate = [IntPtr]::Zero
+        if ([GogokeUpdateNative]::WaitForSingleObject($process, [uint32]::MaxValue) -ne 0) {
+            throw "installer process wait failed; target and backup require recovery"
+        }
+        $script:installerCompletionUnknown = $false
+        $exitAddress = [Runtime.InteropServices.Marshal]::AllocHGlobal(4)
+        try {
+            if (-not [GogokeUpdateNative]::GetExitCodeProcess($process, $exitAddress)) {
+                throw "installer exit status is unavailable"
+            }
+            return [Runtime.InteropServices.Marshal]::ReadInt32($exitAddress)
+        } finally {
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($exitAddress)
+        }
+    } finally {
+        if ($thread -ne [IntPtr]::Zero) { $null = [GogokeUpdateNative]::CloseHandle($thread) }
+        if ($process -ne [IntPtr]::Zero) { $null = [GogokeUpdateNative]::CloseHandle($process) }
+        if ($duplicate -ne [IntPtr]::Zero) { $null = [GogokeUpdateNative]::CloseHandle($duplicate) }
+        if ($attributesInitialized) { [GogokeUpdateNative]::DeleteProcThreadAttributeList($attributes) }
+        foreach ($address in @($command, $processInfo, $startup, $handleList,
+                $attributes, $sizeAddress, $duplicateAddress)) {
+            if ($address -ne [IntPtr]::Zero) {
+                [Runtime.InteropServices.Marshal]::FreeHGlobal($address)
+            }
+        }
+    }
 }
 
 function Invoke-Reg([string[]]$arguments) {
@@ -234,17 +370,9 @@ try {
     }
 
     Set-Phase "install"
-    $installerArgs = @()
-    if ($Silent) { $installerArgs += "/S" }
-    $installerArgs += ("/D=" + $TargetDir)
     $installStarted = $true
-    # NSIS takes the same sibling lock before it touches the target. Keep the
-    # update-cache lock while ownership transfers, then recheck instance identity.
-    $lifecycleLock.Dispose()
-    $lifecycleLock = $null
-    $installerProcess = Start-Process -FilePath $Installer -ArgumentList $installerArgs -Wait -PassThru
-    $lifecycleLock = Acquire-LifecycleLock
-    if ($installerProcess.ExitCode -ne 0) { throw "installer exited with code $($installerProcess.ExitCode)" }
+    $installerExitCode = Invoke-LockedInstaller $Installer $targetFull ([bool]$Silent) $lifecycleLock
+    if ($installerExitCode -ne 0) { throw "installer exited with code $installerExitCode" }
     if ($targetMoved -and -not (Test-Path -LiteralPath $backup -PathType Container)) {
         throw "old gogoke installation backup changed during installer handoff"
     }
@@ -308,6 +436,10 @@ try {
 } catch {
     $initialError = $_.Exception.Message
     Write-Failure $initialError
+    if ($installerCompletionUnknown) {
+        Write-Failure "$initialError`r`ninstaller completion is unknown; target and backup retained for recovery"
+        exit 1
+    }
     if (Test-Path -LiteralPath $RetentionNoticeFile) {
         Remove-Item -LiteralPath $RetentionNoticeFile -Force -ErrorAction SilentlyContinue
     }

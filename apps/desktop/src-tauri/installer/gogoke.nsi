@@ -291,6 +291,77 @@ FunctionEnd
 
 Function AcquireGogokeLifecycleLock
   ${GetParent} "$INSTDIR" $0
+  ${GetOptions} $CMDLINE "/GOGOKE_LOCK_HANDLE=" $1
+  ${IfNot} ${Errors}
+    ; The update coordinator passes one inherited duplicate of its already
+    ; exclusive file object. A copied command line has no usable handle.
+    ${If} $1 == ""
+      Abort "The Gogoke update lifecycle handle is missing."
+    ${EndIf}
+    System::Call 'kernel32::GetHandleInformation(p $1, *i .r2) i .r3'
+    ${If} $3 == 0
+      Abort "The Gogoke update lifecycle handle is not inherited."
+    ${EndIf}
+    System::Call 'kernel32::GetFinalPathNameByHandleW(p $1, w .r2, i ${NSIS_MAX_STRLEN}, i 0) i .r3'
+    ${If} $3 == 0
+    ${OrIf} $3 >= ${NSIS_MAX_STRLEN}
+      Abort "The Gogoke update lifecycle handle has no bounded path."
+    ${EndIf}
+    ; Open and pin the physical parent before comparing the handle's final
+    ; path. A reparse parent or lock file never authorizes target mutation.
+    System::Call 'kernel32::CreateFileW(w "$0", i 0x80, i 1, p 0, i 3, i 0x02200000, p 0) p .r4'
+    ${If} $4 == -1
+      Abort "The Gogoke installation parent cannot be pinned."
+    ${EndIf}
+    System::Call 'kernel32::GetFinalPathNameByHandleW(p $4, w .r5, i ${NSIS_MAX_STRLEN}, i 0) i .r6'
+    ${If} $6 == 0
+    ${OrIf} $6 >= ${NSIS_MAX_STRLEN}
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke installation parent has no bounded path."
+    ${EndIf}
+    StrCpy $6 $5 1 -1
+    ${If} $6 == "\"
+      StrCpy $5 "$5gogoke-install-lifecycle.lock"
+    ${Else}
+      StrCpy $5 "$5\gogoke-install-lifecycle.lock"
+    ${EndIf}
+    System::Call 'kernel32::lstrcmpiW(w "$2", w "$5") i .r6'
+    ${If} $6 != 0
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke update lifecycle handle points outside this installation."
+    ${EndIf}
+    System::Alloc 8
+    Pop $5
+    System::Call 'kernel32::GetFileInformationByHandleEx(p $4, i 9, p $5, i 8) i .r6'
+    ${If} $6 == 0
+      System::Free $5
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke installation parent identity is unavailable."
+    ${EndIf}
+    System::Call '*$5(i .r6, i .r7)'
+    IntOp $6 $6 & 0x400
+    ${If} $6 != 0
+      System::Free $5
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke installation parent is a reparse point."
+    ${EndIf}
+    System::Call 'kernel32::GetFileInformationByHandleEx(p $1, i 9, p $5, i 8) i .r6'
+    ${If} $6 == 0
+      System::Free $5
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke lifecycle file identity is unavailable."
+    ${EndIf}
+    System::Call '*$5(i .r6, i .r7)'
+    IntOp $6 $6 & 0x400
+    System::Free $5
+    ${If} $6 != 0
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke lifecycle file is a reparse point."
+    ${EndIf}
+    System::Call 'kernel32::CloseHandle(p $4)'
+    StrCpy $GogokeLifecycleLockHandle $1
+    Return
+  ${EndIf}
   System::Call 'kernel32::CreateFileW(w "$0\gogoke-install-lifecycle.lock", i 0xC0000000, i 0, p 0, i 4, i 0x80, p 0) p .r0'
   ${If} $0 == -1
     Abort "Another Gogoke install, update, or uninstall operation holds the lifecycle lock."
