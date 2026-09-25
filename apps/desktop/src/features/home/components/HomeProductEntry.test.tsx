@@ -58,3 +58,36 @@ it("reads the merged test result through the product entry without another draft
   });
   expect(await screen.findByText(/Test result accepted Git fact verified · PR #42/u)).toBeTruthy();
 });
+
+it("reads the previously verified test result without rerunning an occupied task slot", async () => {
+  const mergeCommit = "e".repeat(40);
+  probe.mockResolvedValueOnce({
+    ledgerMerge: {
+      state: "PR_MERGE_ACCEPTED_FACT_VERIFIED",
+      pullNumber: 43,
+      mergeCommit,
+      mergedBy: "taiyun668",
+    },
+  });
+  render(<HomeProductEntry />);
+  expect(screen.getByText(/prior test result d2e210a79876/u)).toBeTruthy();
+  fireEvent.change(screen.getByRole("textbox", { name: "Test result PR number" }), {
+    target: { value: "43" },
+  });
+  fireEvent.change(screen.getByRole("textbox", { name: "Test result merge commit" }), {
+    target: { value: mergeCommit },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Read accepted test fact" }));
+  await waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
+  expect(probe.mock.calls[0]?.[0]).toEqual({
+    goal: { id: "goal-r2-01", title: "Verify the Gogoke product entry reaches native Product Authority" },
+    ledger: {
+      repository: "taiyun668/gogoke",
+      commit: mergeCommit,
+      path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-product-5625a8791dcf4ed8151a8b9590722718.json",
+      contentHash: "sha256:911063402683f63834f21df6d923b2102de32a591300f9efeda775f114ac8b95",
+    },
+    ledgerMergePullNumber: 43,
+  });
+  expect(await screen.findByText(/Test result accepted Git fact verified · PR #43/u)).toBeTruthy();
+});

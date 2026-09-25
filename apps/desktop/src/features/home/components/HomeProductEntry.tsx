@@ -18,6 +18,15 @@ export const R2_GOAL_FIXTURE: GogokeProductGoalRequest = Object.freeze({
   }),
 });
 
+// A public, test-only result already verified on the Owner machine in MC-078.
+// Its execution provenance remains 985e17d1; reading its later PR merge does not rerun that task.
+const R2_REVIEWED_TEST_RESULT = Object.freeze({
+  repository: "taiyun668/gogoke",
+  draftCommit: "d2e210a798767273b1b120fa26feeca79ed5c512",
+  path: "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-product-5625a8791dcf4ed8151a8b9590722718.json",
+  contentHash: "sha256:911063402683f63834f21df6d923b2102de32a591300f9efeda775f114ac8b95",
+});
+
 export function HomeProductEntry() {
   const [result, setResult] = useState<GogokeProductGoalView | null>(null);
   const [accepted, setAccepted] = useState<GogokeProductGoalView["ledgerMerge"] | null>(null);
@@ -48,9 +57,9 @@ export function HomeProductEntry() {
   };
 
   const readAccepted = async () => {
-    const draft = result?.testLedgerDraft;
+    const draft = result?.testLedgerDraft ?? R2_REVIEWED_TEST_RESULT;
     const number = Number(pullNumber);
-    if (running !== null || draft === undefined ||
+    if (running !== null ||
         !Number.isSafeInteger(number) || number <= 0 ||
         !/^[0-9a-f]{40}$/u.test(mergeCommit)) return;
     setRunning("accepted");
@@ -201,41 +210,44 @@ export function HomeProductEntry() {
         </div>
       ) : null}
       {result?.testLedgerDraft ? (
-        <>
-          <div className="home-product-entry-result" role="status" aria-atomic="true">
-            Test ledger draft {result.testLedgerDraft.commit.slice(0, 12)} verified at {result.testLedgerDraft.path} · not adopted
-          </div>
-          <div className="home-product-entry-actions" aria-label="Accepted test fact readback">
-            <input
-              aria-label="Test result PR number"
-              className="home-product-entry-button"
-              inputMode="numeric"
-              onChange={(event) => setPullNumber(event.target.value)}
-              placeholder="Merged PR number"
-              type="text"
-              value={pullNumber}
-            />
-            <input
-              aria-label="Test result merge commit"
-              className="home-product-entry-button"
-              onChange={(event) => setMergeCommit(event.target.value.trim().toLowerCase())}
-              placeholder="Merge commit SHA"
-              type="text"
-              value={mergeCommit}
-            />
-            <button
-              className="home-product-entry-button"
-              data-tauri-drag-region="false"
-              disabled={running !== null || !Number.isSafeInteger(Number(pullNumber)) ||
-                Number(pullNumber) <= 0 || !/^[0-9a-f]{40}$/u.test(mergeCommit)}
-              onClick={() => void readAccepted()}
-              type="button"
-            >
-              {running === "accepted" ? "Reading accepted fact…" : "Read accepted test fact"}
-            </button>
-          </div>
-        </>
+        <div className="home-product-entry-result" role="status" aria-atomic="true">
+          Test ledger draft {result.testLedgerDraft.commit.slice(0, 12)} verified at {result.testLedgerDraft.path} · not adopted
+        </div>
       ) : null}
+      <div className="home-product-entry-result">
+        {result?.testLedgerDraft
+          ? `Read-only adoption check for current test draft ${result.testLedgerDraft.commit.slice(0, 12)}`
+          : `Read-only adoption check for prior test result ${R2_REVIEWED_TEST_RESULT.draftCommit.slice(0, 12)} · execution provenance 985e17d1`} · Goal Acceptance separate
+      </div>
+      <div className="home-product-entry-actions" aria-label="Accepted test fact readback">
+        <input
+          aria-label="Test result PR number"
+          className="home-product-entry-button"
+          inputMode="numeric"
+          onChange={(event) => setPullNumber(event.target.value)}
+          placeholder="Merged PR number"
+          type="text"
+          value={pullNumber}
+        />
+        <input
+          aria-label="Test result merge commit"
+          className="home-product-entry-button"
+          onChange={(event) => setMergeCommit(event.target.value.trim().toLowerCase())}
+          placeholder="Merge commit SHA"
+          type="text"
+          value={mergeCommit}
+        />
+        <button
+          className="home-product-entry-button"
+          data-tauri-drag-region="false"
+          disabled={running !== null || !Number.isSafeInteger(Number(pullNumber)) ||
+            Number(pullNumber) <= 0 || !/^[0-9a-f]{40}$/u.test(mergeCommit)}
+          onClick={() => void readAccepted()}
+          type="button"
+        >
+          {running === "accepted" ? "Reading accepted fact…" : "Read accepted test fact"}
+        </button>
+      </div>
       {accepted ? (
         <div className="home-product-entry-result" role="status" aria-atomic="true">
           Test result accepted Git fact verified · PR #{accepted.pullNumber} · merge {accepted.mergeCommit.slice(0, 12)} · merged by {accepted.mergedBy}; Goal Acceptance remains separate
