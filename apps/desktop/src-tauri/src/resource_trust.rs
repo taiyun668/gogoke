@@ -748,6 +748,37 @@ fn indexed_files(index: &ResourceIndex) -> Result<HashMap<String, ByteRecord>, S
     Ok(expected)
 }
 
+fn reserved_installed_path(folded: &str) -> bool {
+    const FIXED_FILES: &[&str] = &[
+        "gogoke.exe",
+        "gogoke-native-host.exe",
+        "gogoke-service/runtime/node.exe",
+        "resource-index.json",
+        "gogoke-resources.windows.zip",
+        "sha256sums.windows",
+        "sha256sums.windows.sig",
+        "candidate-resources.windows",
+        "candidate-resources.windows.sig",
+        "gogoke-current-resource-set",
+        "gogoke-install-receipt.ini",
+        "uninstall.exe",
+    ];
+    FIXED_FILES.iter().any(|fixed| {
+        folded
+            .strip_prefix(*fixed)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }) || matches!(folded, "gogoke-service" | "gogoke-service/runtime")
+        || ["gogoke-resource-sets", "gogoke-service/generations"]
+            .iter()
+            .any(|directory| {
+                folded
+                    .strip_prefix(*directory)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            })
+        || folded.starts_with(".gogoke-current-resource-set.")
+        || folded.starts_with(".gogoke-install-receipt.ini.")
+}
+
 fn installed_files(index: &ResourceIndex) -> Result<HashMap<String, ByteRecord>, String> {
     if index.installed_files.is_empty() {
         return Err("GOGOKE_INSTALL_FILE_LIST_EMPTY".to_string());
@@ -755,23 +786,11 @@ fn installed_files(index: &ResourceIndex) -> Result<HashMap<String, ByteRecord>,
     let mut expected = HashMap::new();
     let mut folded = HashSet::new();
     for file in &index.installed_files {
+        let folded_path = file.path.to_ascii_lowercase();
         if !safe_relative_path(&file.path)
             || !lowercase_sha(&file.sha256, 64)
-            || matches!(
-                file.path.as_str(),
-                "gogoke.exe"
-                    | "gogoke-native-host.exe"
-                    | "gogoke-service/runtime/node.exe"
-                    | "resource-index.json"
-                    | "gogoke-resources.windows.zip"
-                    | "SHA256SUMS.windows"
-                    | "SHA256SUMS.windows.sig"
-                    | "CANDIDATE-RESOURCES.windows"
-                    | "CANDIDATE-RESOURCES.windows.sig"
-                    | "uninstall.exe"
-            )
-            || file.path.starts_with("gogoke-service/generations/")
-            || !folded.insert(file.path.to_ascii_lowercase())
+            || reserved_installed_path(&folded_path)
+            || !folded.insert(folded_path)
         {
             return Err("GOGOKE_INSTALL_FILE_LIST_INVALID".to_string());
         }
@@ -1478,5 +1497,52 @@ mod tests {
                 "unsafe path was accepted: {path}"
             );
         }
+    }
+
+    #[test]
+    fn installed_inventory_preserves_product_created_install_paths() {
+        let bytes = || ByteRecord {
+            length: 0,
+            sha256: HASH.to_string(),
+        };
+        let mut index = ResourceIndex {
+            schema: "gogoke.resource-index.v1".to_string(),
+            source_commit: "0".repeat(40),
+            version: "1.2.3".to_string(),
+            generation_id: HASH.to_string(),
+            pack: PackRecord {
+                file_name: RESOURCE_PACK.to_string(),
+                length: 0,
+                sha256: HASH.to_string(),
+            },
+            files: vec![],
+            installed_files: vec![IndexedFile {
+                path: String::new(),
+                length: 0,
+                sha256: HASH.to_string(),
+            }],
+            executables: Executables {
+                portable_shell: bytes(),
+                installed_shell: bytes(),
+                native_host: bytes(),
+                node: bytes(),
+            },
+        };
+        for path in [
+            "gogoke.exe/child",
+            "gogoke-install-receipt.ini",
+            "gogoke-current-resource-set",
+            "gogoke-resource-sets",
+            "gogoke-resource-sets/set/file",
+            "GOGOKE-service/Generations",
+            "GOGOKE-service/Generations/child",
+            ".gogoke-current-resource-set.fake.part",
+            ".gogoke-install-receipt.ini.fake.part",
+        ] {
+            index.installed_files[0].path = path.to_string();
+            assert!(installed_files(&index).is_err(), "reserved path accepted: {path}");
+        }
+        index.installed_files[0].path = "gogoke-service/node_modules/package.json".to_string();
+        assert!(installed_files(&index).is_ok());
     }
 }
