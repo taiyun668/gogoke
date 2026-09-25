@@ -778,6 +778,11 @@ fn current_version(app: &AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub fn gogoke_product_version(app: AppHandle) -> Result<String, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Ok(app.package_info().version.to_string());
+    }
+    #[cfg(target_os = "windows")]
     current_version(&app)
 }
 
