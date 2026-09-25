@@ -34,8 +34,10 @@ export function collectProductionNotices(sbom, desktopRoot = ROOT) {
   const notices = [];
   let rootCount = 0;
   for (const entry of sbom.packages) {
-    if (entry.name === rootPackage.name && entry.versionInfo === rootPackage.version &&
-        entry.packageFileName === "") {
+    if (entry.name === rootPackage.name && entry.packageFileName === "") {
+      if (entry.versionInfo !== rootPackage.version) {
+        throw new Error("FAIL_INSTRUMENT: gogoke root SPDX identity differs from package.json");
+      }
       rootCount += 1;
       continue;
     }
