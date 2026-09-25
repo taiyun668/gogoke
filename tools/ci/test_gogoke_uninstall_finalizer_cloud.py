@@ -118,7 +118,18 @@ def parent_helper(payload_path: Path) -> int:
             child.kill()
             return 3
         if lines != [f"READY:{payload['nonce']}\r\n".encode()]:
-            child.kill()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+            print(f"first finalizer output={lines[:1]!r}; exit={child.returncode}", file=sys.stderr)
+            receipt = Path(payload["receipt"])
+            if receipt.exists():
+                try:
+                    print(f"first finalizer receipt={receipt.read_text(encoding='utf-8')[:512]}", file=sys.stderr)
+                except OSError as error:
+                    print(f"first finalizer receipt unreadable: {type(error).__name__}", file=sys.stderr)
             return 4
         lock_file.seek(0)
         if lock_file.read(len(payload["nonce"]) + 6) != f"LOCK:{payload['nonce']}\n".encode():

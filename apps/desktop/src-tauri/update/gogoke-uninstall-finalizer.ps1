@@ -326,6 +326,14 @@ try {
     Write-Receipt 'DELETED' 'owned files removed; unknown files and user data retained'
     exit 0
 } catch {
+    # Temporary cloud diagnostic for the first real process failure. Remove
+    # after the failing operation has been identified and repaired.
+    if ($env:GITHUB_ACTIONS -ceq 'true') {
+        $detail = ('{0} line={1} {2}' -f $_.Exception.GetType().Name,
+            $_.InvocationInfo.ScriptLineNumber, $_.Exception.Message) -replace '[\r\n]', ' '
+        [Console]::Out.WriteLine('CI_FINALIZER_ERROR ' + $detail.Substring(0, [Math]::Min($detail.Length, 512)))
+        [Console]::Out.Flush()
+    }
     try { Write-Receipt 'FAILED' ([string]$_.Exception.Message) } catch { }
     exit 1
 } finally {
