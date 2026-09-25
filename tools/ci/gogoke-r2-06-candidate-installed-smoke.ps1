@@ -94,20 +94,64 @@ function Get-PhysicalTree([string]$Root) {
     return [pscustomobject]@{ Directories = $directories; Files = $files }
 }
 
-function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMilliseconds, [bool]$Hidden) {
+function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMilliseconds, [bool]$Hidden, [bool]$CaptureStderr = $false) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $FilePath
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $Hidden
+    $start.RedirectStandardError = $CaptureStderr
     $start.WindowStyle = if ($Hidden) { [Diagnostics.ProcessWindowStyle]::Hidden } else { [Diagnostics.ProcessWindowStyle]::Normal }
     foreach ($argument in $Arguments) { [void]$start.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     if (-not $process.Start()) { throw "Process did not start: $FilePath" }
-    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-        return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null }
+    if (-not $CaptureStderr) {
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null; Stderr = '' }
+        }
+        return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode; Stderr = '' }
     }
-    return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode }
+    $stream = $process.StandardError.BaseStream
+    $buffer = [byte[]]::new(4096)
+    $saved = [byte[]]::new(2048)
+    $savedCount = 0
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $exitedAt = $null
+    $read = $stream.ReadAsync($buffer, 0, $buffer.Length)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($read.Wait(100)) {
+            $count = $read.Result
+            if ($count -eq 0) { break }
+            $take = [Math]::Min($count, $saved.Length - $savedCount)
+            if ($take -gt 0) {
+                [Array]::Copy($buffer, 0, $saved, $savedCount, $take)
+                $savedCount += $take
+            }
+            $read = $stream.ReadAsync($buffer, 0, $buffer.Length)
+        }
+        if ($process.HasExited) {
+            if ($null -eq $exitedAt) { $exitedAt = [DateTime]::UtcNow }
+            if (([DateTime]::UtcNow - $exitedAt).TotalMilliseconds -ge 1500) { break }
+        }
+    }
+    $remaining = [Math]::Max(0, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+    if (-not $process.WaitForExit($remaining)) {
+        return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null; Stderr = '' }
+    }
+    $stream.Close()
+    $stderr = ''
+    if ($savedCount -gt 0) {
+        $stderr = [Text.Encoding]::UTF8.GetString($saved, 0, $savedCount)
+        $stderr = $stderr -replace '(?i)\bgh[pousr]_[A-Za-z0-9_]+\b', '[REDACTED]'
+        $stderr = $stderr -replace '(?i)\bgithub_pat_[A-Za-z0-9_]+\b', '[REDACTED]'
+        $stderr = $stderr -replace '(?i)(Bearer\s+)[^\s"'']+', '$1[REDACTED]'
+        $published = [Text.Encoding]::UTF8.GetBytes($stderr)
+        if ($published.Length -gt 2048) {
+            # Leave room for one replacement character if the cut meets a UTF-8 sequence.
+            $stderr = [Text.Encoding]::UTF8.GetString($published, 0, 2045)
+        }
+    }
+    return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode; Stderr = $stderr }
 }
 
 function Assert-RegistryRegistration {
@@ -305,9 +349,13 @@ try {
     $beforeReceipts = @{}
     Get-ChildItem -LiteralPath $runnerTemp -Filter "$receiptPrefix*.json" -File -ErrorAction SilentlyContinue | ForEach-Object { $beforeReceipts[$_.Name] = $true }
     $script:uninstallInvoked = $true
-    $uninstall = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true
+    $uninstall = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
     if ($uninstall.TimedOut) { throw "Installed uninstall exceeded parent bound; retain candidate state under: $script:targetRoot" }
-    if ($uninstall.ExitCode -ne 0) { throw "Installed uninstall failed with exit code $($uninstall.ExitCode); retain candidate state under: $script:targetRoot" }
+    if ($uninstall.ExitCode -ne 0) {
+        $script:result.uninstallExitCode = $uninstall.ExitCode
+        $script:result.uninstallStderr = $uninstall.Stderr
+        throw "Installed uninstall failed with exit code $($uninstall.ExitCode); stderr: $($uninstall.Stderr); retain candidate state under: $script:targetRoot"
+    }
     $finalizerDeadline = [DateTime]::UtcNow.AddSeconds(125)
     $finalizerReceipt = $null
     while ([DateTime]::UtcNow -lt $finalizerDeadline) {
