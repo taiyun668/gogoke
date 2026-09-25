@@ -123,19 +123,9 @@ def parent_helper(payload_path: Path) -> int:
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait(timeout=5)
-            print(f"first finalizer output={lines[:1]!r}; exit={child.returncode}", file=sys.stderr)
-            receipt = Path(payload["receipt"])
-            if receipt.exists():
-                try:
-                    print(f"first finalizer receipt={receipt.read_text(encoding='utf-8')[:512]}", file=sys.stderr)
-                except OSError as error:
-                    print(f"first finalizer receipt unreadable: {type(error).__name__}", file=sys.stderr)
             return 4
         lock_file.seek(0)
-        observed = lock_file.read(1024)
-        if not observed.startswith(f"LOCK:{payload['nonce']}\n".encode()):
-            print(f"lock witness head={observed[:128]!r}; length={len(observed)}; "
-                  f"marker_offset={observed.find(b'LOCK:')}", file=sys.stderr)
+        if lock_file.read(len(payload["nonce"]) + 6) != f"LOCK:{payload['nonce']}\n".encode():
             child.kill()
             return 5
         # The finalizer now owns the inherited lock handle and waits for this
@@ -214,6 +204,7 @@ class CloudFinalizerTest(unittest.TestCase):
                     self.assertIsNotNone(terminal, "finalizer did not finish its bounded receipt")
                     if negative:
                         self.assertEqual(terminal["state"], "FAILED")
+                        self.assertEqual(terminal["detail"], "GOGOKE_UNINSTALL_OBJECT_CHANGED")
                         self.assertTrue(exe.exists())
                         self.assertTrue(owned.exists())
                         continue
