@@ -47,7 +47,22 @@ EXTERNAL_SIDECARS = {
     "CANDIDATE-RESOURCES.windows",
     "CANDIDATE-RESOURCES.windows.sig",
 }
-NATIVE_EXECUTABLE_SUFFIXES = {".exe", ".dll", ".node", ".sys", ".msi", ".msix", ".com", ".scr", ".cpl", ".ocx", ".bat", ".cmd", ".ps1"}
+RUNTIME_RESERVED_PATHS = {
+    "gogoke-current-resource-set",
+    "gogoke-install-receipt.ini",
+    "gogoke-resource-sets",
+    "gogoke-service/generations",
+}
+RUNTIME_PARTIAL_PREFIXES = (
+    ".gogoke-current-resource-set.",
+    ".gogoke-install-receipt.ini.",
+)
+NATIVE_EXECUTABLE_EXTENSIONS = {"exe", "dll", "node", "sys", "msi", "msix", "com", "scr", "cpl", "ocx", "bat", "cmd", "ps1"}
+
+
+def _is_native_executable_path(name: str) -> bool:
+    # Match the product's index consumer, including hidden names like .exe.
+    return name.rsplit(".", 1)[-1].lower() in NATIVE_EXECUTABLE_EXTENSIONS
 
 
 class ResourcePackError(ValueError):
@@ -146,7 +161,7 @@ def _scan_tree(root: Path, prefix: str) -> list[tuple[str, bytes]]:
             if not stat.S_ISREG(info.st_mode):
                 raise ResourcePackError(f"not a regular physical file: {child}")
             archive_name = _normalized_relative(f"{prefix}/{child_relative.as_posix()}" if prefix else child_relative.as_posix())
-            if prefix in ("frontend", "dist") and PurePosixPath(archive_name).suffix.lower() in NATIVE_EXECUTABLE_SUFFIXES:
+            if prefix in ("frontend", "dist") and _is_native_executable_path(archive_name):
                 raise ResourcePackError(f"native executable is not allowed in resource pack: {archive_name}")
             result.append((archive_name, _physical_file(child)))
     return result
@@ -154,10 +169,8 @@ def _scan_tree(root: Path, prefix: str) -> list[tuple[str, bytes]]:
 
 def _installed_files(installed_root: Path) -> list[dict[str, Any]]:
     entries = _scan_tree(installed_root, "")
-    paths = [name for name, _ in entries]
-    _check_casefold_unique(paths)
-    if any(name in EXTERNAL_SIDECARS or name == "uninstall.exe" or name.startswith("gogoke-service/generations/") for name in paths):
-        raise ResourcePackError("staged install root contains sidecar, generation, or NSIS uninstaller")
+    paths = sorted(name for name, _ in entries if name not in SEPARATELY_INDEXED)
+    _validate_installed_layout(paths)
     return [
         {"path": name, "length": len(data), "sha256": sha256(data)}
         for name, data in sorted(entries)
@@ -181,6 +194,19 @@ def _check_file_ancestors(paths: list[str]) -> None:
         parts = name.casefold().split("/")
         if any("/".join(parts[:end]) in files for end in range(1, len(parts))):
             raise ResourcePackError(f"file path is also an ancestor of another file: {name}")
+
+
+def _validate_installed_layout(paths: list[str]) -> None:
+    reserved = SEPARATELY_INDEXED | EXTERNAL_SIDECARS | RUNTIME_RESERVED_PATHS | {"uninstall.exe"}
+    if paths != sorted(paths) or any(
+        any(folded == fixed or folded.startswith(fixed + "/") for fixed in RUNTIME_RESERVED_PATHS)
+        or any(folded.startswith(prefix) for prefix in RUNTIME_PARTIAL_PREFIXES)
+        for folded in (name.casefold() for name in paths)
+    ):
+        raise ResourcePackError("installed file inventory is not canonical")
+    complete_layout = paths + sorted(reserved)
+    _check_casefold_unique(complete_layout)
+    _check_file_ancestors(complete_layout)
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -284,7 +310,7 @@ def _read_pack_files(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
     _check_file_ancestors(names)
     files: list[dict[str, Any]] = []
     for info, name in zip(infos, names):
-        if PurePosixPath(name).suffix.lower() in NATIVE_EXECUTABLE_SUFFIXES:
+        if _is_native_executable_path(name):
             raise ResourcePackError(f"native executable is not allowed in resource pack: {name}")
         if info.is_dir():
             raise ResourcePackError(f"directory ZIP entry is not allowed: {name}")
@@ -382,15 +408,7 @@ def verify_pack(pack_path: Path, index_path: Path) -> None:
             raise ResourcePackError("installed file path must be a string")
         installed_paths.append(_normalized_relative(record["path"]))
         _validate_record({"length": record["length"], "sha256": record["sha256"]}, "index.installedFiles item")
-    complete_layout = installed_paths + sorted(SEPARATELY_INDEXED | EXTERNAL_SIDECARS | {"uninstall.exe"})
-    _check_casefold_unique(complete_layout)
-    _check_file_ancestors(complete_layout)
-    if installed_paths != sorted(installed_paths) or any(
-        name in SEPARATELY_INDEXED or name in EXTERNAL_SIDECARS or name == "uninstall.exe"
-        or name == "gogoke-service/generations" or name.startswith("gogoke-service/generations/")
-        for name in installed_paths
-    ):
-        raise ResourcePackError("installed file inventory is not canonical")
+    _validate_installed_layout(installed_paths)
     executable_meta = _expect_object(index["executables"], {"portableShell", "installedShell", "nativeHost", "node"}, "index.executables")
     for key, value in executable_meta.items():
         _validate_record(value, f"index.executables.{key}")
