@@ -42,6 +42,14 @@ gogoke 的事实账本沿用 Git 与 GitHub，本机数据库只负责活跃协�
 
 向 GitHub 等远端写入（建分支、推送、提交文件、开 PR、写评论）可能暂时失败，例如 `403 Resource not accessible by integration`、超时或 5xx。遇到时不能一次失败就停下交还：先重新读取远端，确认这次写入是否其实已经生效；未生效就间隔递增地重试。只有反复重试仍失败，才如实上报，并附上可以直接续接的提交内容。若确认是持续的权限不足而不是暂时故障，报告 Owner 处理授权，不用重试掩盖。
 
+## 合并进 main
+
+main 不设分支保护，能写入 main 的就是受信代码，所以合并前的复核就是信任边界。施工方可以自行合并自己的 PR，但必须先有规定的复核通过：
+
+- 一般 PR：按 [docs/model-routing.md](docs/model-routing.md) 完成 fresh 复核。
+- 改动 AGENTS.md、治理文件、计划，或候选签名信任路径（`.github/workflows/gogoke-candidate-sign.yml`、`tools/ci/gogoke-candidate-sign.ps1`、`tools/ci/gogoke_ci_frozen_artifact.py`、`tools/ci/gogoke_resource_pack.py`、`apps/desktop/src-tauri/gogoke-candidate-public-key.txt`）的 PR：须外部 Claude 复核通过；前三类还须 Owner 本人合并。
+- 临时排查代码不进 main。需要在 main 上运行的受信流程只做签名这类必须受信的动作，排查与实测在施工分支完成。
+
 ## 先算路径，再动手
 
 施工里最贵的不是写代码，而是往返：一次云端构建、一次交接、一次找 Owner。每次动手前先想清楚：拿到这个答案最少要几次往返？能不能一次拿到、几路同时拿到，或者根本不必拿？选往返最少的走法，而不是最先想到的走法。
