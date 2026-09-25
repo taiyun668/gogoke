@@ -161,10 +161,15 @@ function Pin-Ancestors([string]$path, [object]$rootIdentity) {
 function Assert-Instance {
     $key = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $data.registryKey
     $record = Get-ItemProperty -LiteralPath $key -ErrorAction Stop
+    $command = [string]$record.UninstallString
+    if ($command -cnotmatch '^"([^"]+)" --uninstall$') {
+        Fail 'GOGOKE_UNINSTALL_INSTANCE_CHANGED'
+    }
+    $commandExe = Full-Path $Matches[1]
     if (-not (Same (Full-Path ([string]$record.InstallLocation)) $data.root) -or
         -not (Same ([string]$record.InstallInstanceId) ([string]$data.instance)) -or
         [string]$record.InstallDomain -cne [string]$data.domain -or
-        -not (Same ([string]$record.UninstallString) ('"' + $data.root + '\gogoke.exe" --uninstall'))) {
+        -not (Same $commandExe ([IO.Path]::Combine($data.root, 'gogoke.exe')))) {
         Fail 'GOGOKE_UNINSTALL_INSTANCE_CHANGED'
     }
 }
