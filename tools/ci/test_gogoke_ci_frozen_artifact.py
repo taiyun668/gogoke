@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -92,6 +93,28 @@ class FrozenArtifactTests(unittest.TestCase):
             (frozen / "gogoke-installed-shell.nsis.exe").read_bytes(),
             b"head__TAURI_BUNDLE_TYPE_VAR_NSStail",
         )
+
+    def test_portable_archive_uses_exact_frozen_shell_and_fixed_zip_metadata(self) -> None:
+        frozen = self.root / "frozen"
+        self.stage("frozen", frozen)
+        license_path = self.root / "LICENSE"
+        notices_path = self.root / "THIRD_PARTY_NOTICES.md"
+        license_path.write_bytes(b"test license\n")
+        notices_path.write_bytes(b"test notices\n")
+        name = "gogoke-1.2.3-windows-x64-unsigned-portable.zip"
+        outputs = (self.root / "first" / name, self.root / "second" / name)
+        for output in outputs:
+            self.run_tool(
+                FREEZE_TOOL, "portable", "--frozen", frozen,
+                "--license", license_path, "--notices", notices_path,
+                "--source-commit", SOURCE, "--run-id", 42, "--run-attempt", 3,
+                "--output", output,
+            )
+        self.assertEqual(outputs[0].read_bytes(), outputs[1].read_bytes())
+        with zipfile.ZipFile(outputs[0]) as archive:
+            self.assertEqual(archive.namelist(), ["gogoke.exe", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+            self.assertEqual(archive.read("gogoke.exe"), (frozen / "gogoke-portable.exe").read_bytes())
+            self.assertTrue(all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist()))
 
     def test_compare_rejects_one_byte_native_difference(self) -> None:
         frozen = self.root / "frozen"

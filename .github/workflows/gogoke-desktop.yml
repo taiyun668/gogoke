@@ -335,6 +335,25 @@ jobs:
             --run-attempt '${{ github.run_attempt }}' --lane '${{ matrix.lane }}' `
             --output frozen-artifact
           if ($LASTEXITCODE -ne 0) { throw "frozen artifact staging failed: $LASTEXITCODE" }
+      - name: Package formal unsigned portable ZIP from frozen shell
+        if: matrix.lane == 'frozen'
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $portable = Join-Path 'portable-artifact' "gogoke-$version-windows-x64-unsigned-portable.zip"
+          python ../../tools/ci/gogoke_ci_frozen_artifact.py portable `
+            --frozen frozen-artifact --license LICENSE --notices THIRD_PARTY_NOTICES.md `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --run-id '${{ github.run_id }}' `
+            --run-attempt '${{ github.run_attempt }}' --output $portable
+          if ($LASTEXITCODE -ne 0) { throw "portable ZIP packaging failed: $LASTEXITCODE" }
+      - name: Upload formal unsigned portable ZIP
+        if: matrix.lane == 'frozen'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-windows-portable-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
+          path: apps/desktop/portable-artifact/*
+          if-no-files-found: error
+          retention-days: 30
       - name: Select immutable artifact name
         id: artifact-name
         shell: pwsh

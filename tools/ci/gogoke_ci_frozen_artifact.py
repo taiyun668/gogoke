@@ -7,7 +7,9 @@ import argparse
 import hashlib
 import json
 import re
+import stat
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ from gogoke_resource_pack import (
     INSTALL_TOKEN,
     INSTALLED_TOKEN,
     ResourcePackError,
+    ZIP_EPOCH,
     verify_pack,
 )
 
@@ -265,6 +268,29 @@ def compare(args: argparse.Namespace) -> None:
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
+def portable(args: argparse.Namespace) -> None:
+    verify_frozen_directory(
+        args.frozen, args.source_commit, args.run_id, args.run_attempt, "frozen"
+    )
+    version = _load_index(args.frozen / "resource-index.json")["version"]
+    expected_name = f"gogoke-{version}-windows-x64-unsigned-portable.zip"
+    if args.output.name != expected_name or args.output.exists():
+        raise FrozenArtifactError("portable ZIP output must be a fresh exact versioned name")
+    entries = (
+        ("gogoke.exe", _bytes(args.frozen / "gogoke-portable.exe")),
+        ("LICENSE", _bytes(args.license)),
+        ("THIRD_PARTY_NOTICES.md", _bytes(args.notices)),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
+        for name, data in entries:
+            info = zipfile.ZipInfo(name, date_time=ZIP_EPOCH)
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(info, data)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
@@ -290,6 +316,15 @@ def parser() -> argparse.ArgumentParser:
     compare_command.add_argument("--run-attempt", type=int, required=True)
     compare_command.add_argument("--output", type=Path, required=True)
 
+    portable_command = commands.add_parser("portable")
+    portable_command.add_argument("--frozen", type=Path, required=True)
+    portable_command.add_argument("--license", type=Path, required=True)
+    portable_command.add_argument("--notices", type=Path, required=True)
+    portable_command.add_argument("--source-commit", required=True)
+    portable_command.add_argument("--run-id", type=int, required=True)
+    portable_command.add_argument("--run-attempt", type=int, required=True)
+    portable_command.add_argument("--output", type=Path, required=True)
+
     verify_command = commands.add_parser("verify")
     verify_command.add_argument("--directory", type=Path, required=True)
     verify_command.add_argument("--source-commit", required=True)
@@ -306,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
             stage(args)
         elif args.command == "compare":
             compare(args)
+        elif args.command == "portable":
+            portable(args)
         else:
             verify_frozen_directory(
                 args.directory, args.source_commit, args.run_id, args.run_attempt, args.lane
