@@ -324,7 +324,10 @@ try {
                 continue
             }
             if ($candidateReceipt.state -ceq 'FAILED') { throw "Uninstall finalizer failed: $([string]$candidateReceipt.detail). Receipt: $($newReceipts[0].FullName)" }
-            if ($candidateReceipt.state -ceq 'DELETED') { $finalizerReceipt = $newReceipts[0]; break }
+            if ($candidateReceipt.state -ceq 'DELETED' -and [DateTime]::UtcNow -lt $finalizerDeadline) {
+                $finalizerReceipt = $newReceipts[0]
+                break
+            }
         }
         Start-Sleep -Milliseconds 250
     }
