@@ -62,7 +62,7 @@ class GogokeResourcePackTests(unittest.TestCase):
             "--output", str(output),
         )
 
-    def build_index(self) -> subprocess.CompletedProcess[str]:
+    def build_index(self, version: str = "1.2.3-rc.1+build.7") -> subprocess.CompletedProcess[str]:
         return self.run_tool(
             "index",
             "--pack", str(self.pack),
@@ -70,7 +70,7 @@ class GogokeResourcePackTests(unittest.TestCase):
             "--native-host", str(self.native_host),
             "--node", str(self.node),
             "--source-commit", "0123456789abcdef0123456789abcdef01234567",
-            "--version", "1.2.3-rc.1+build.7",
+            "--version", version,
             "--installed-root", str(self.installed_root),
             "--output", str(self.index),
         )
@@ -180,6 +180,64 @@ class GogokeResourcePackTests(unittest.TestCase):
         rejected = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("ancestor of another file", rejected.stderr)
+
+    def test_verify_rejects_conflicts_with_fixed_installed_files_and_directories(self) -> None:
+        self.assertEqual(self.build_pack(self.pack).returncode, 0)
+        self.assertEqual(self.build_index().returncode, 0)
+        original = json.loads(self.index.read_text(encoding="utf-8"))
+        for path, expected in (
+            ("gogoke.exe/child", "ancestor of another file"),
+            ("gogoke-service/runtime/node.exe/child", "ancestor of another file"),
+            ("resource-index.json/child", "ancestor of another file"),
+            ("gogoke-service", "ancestor of another file"),
+            ("gogoke-service/generations", "installed file inventory is not canonical"),
+        ):
+            with self.subTest(path=path):
+                edited = json.loads(json.dumps(original))
+                edited["installedFiles"][0]["path"] = path
+                self.index.write_text(json.dumps(edited), encoding="utf-8")
+                rejected = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn(expected, rejected.stderr)
+
+    def test_semver_core_rejects_numbers_outside_u64(self) -> None:
+        self.assertEqual(self.build_pack(self.pack).returncode, 0)
+        self.assertEqual(self.build_index().returncode, 0)
+        original = json.loads(self.index.read_text(encoding="utf-8"))
+        for version in (
+            "18446744073709551616.0.0",
+            "1.18446744073709551616.0",
+            "1.0.18446744073709551616",
+        ):
+            with self.subTest(version=version):
+                produced = self.build_index(version)
+                self.assertNotEqual(produced.returncode, 0)
+                self.assertIn("semantic version", produced.stderr)
+                edited = json.loads(json.dumps(original))
+                edited["version"] = version
+                self.index.write_text(json.dumps(edited), encoding="utf-8")
+                rejected = self.run_tool("verify", "--pack", str(self.pack), "--index", str(self.index))
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("index version is invalid", rejected.stderr)
+
+    def test_index_matches_consumer_zip_file_type_semantics(self) -> None:
+        for system, attributes, valid in (
+            (3, (stat.S_IFREG | 0o644) << 16, True),
+            (0, 0x20, True),
+            (3, 0x20, False),
+            (0, ((stat.S_IFREG | 0o644) << 16) | 0x10, False),
+        ):
+            with self.subTest(system=system, attributes=attributes):
+                with zipfile.ZipFile(self.pack, "w") as archive:
+                    for name in ("frontend/index.html", "dist/bin.mjs"):
+                        info = zipfile.ZipInfo(name)
+                        info.create_system = system
+                        info.external_attr = attributes
+                        archive.writestr(info, b"x")
+                result = self.build_index()
+                self.assertEqual(result.returncode == 0, valid, result.stderr)
+                if not valid:
+                    self.assertIn("non-regular ZIP entry", result.stderr)
 
     def test_index_rejects_nul_in_original_zip_entry_name(self) -> None:
         with zipfile.ZipFile(self.pack, "w") as archive:

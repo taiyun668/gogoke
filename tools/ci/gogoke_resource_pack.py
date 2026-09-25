@@ -62,6 +62,8 @@ def _is_semver(value: str) -> bool:
     match = SEMVER_RE.fullmatch(value)
     if match is None:
         return False
+    if any(len(part) > 20 or int(part) > MAX_U64 for part in match.group(1, 2, 3)):
+        return False
     prerelease = match.group(4)
     if prerelease is None:
         return True
@@ -288,8 +290,13 @@ def _read_pack_files(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
             raise ResourcePackError(f"directory ZIP entry is not allowed: {name}")
         if info.compress_type != zipfile.ZIP_STORED or info.file_size != info.compress_size:
             raise ResourcePackError(f"resource pack entry is not stored verbatim: {name}")
-        mode = (info.external_attr >> 16) & 0xFFFF
-        if stat.S_ISLNK(mode) or (mode and not stat.S_ISREG(mode)):
+        mode = None
+        if info.external_attr:
+            if info.create_system == 3:
+                mode = info.external_attr >> 16
+            elif info.create_system == 0:
+                mode = (stat.S_IFDIR | 0o775) if info.external_attr & 0x10 else (stat.S_IFREG | 0o664)
+        if mode is not None and not stat.S_ISREG(mode):
             raise ResourcePackError(f"non-regular ZIP entry is not allowed: {name}")
         if not (name.startswith("frontend/") or name.startswith("dist/")):
             raise ResourcePackError(f"unexpected ZIP entry path: {name}")
@@ -375,11 +382,12 @@ def verify_pack(pack_path: Path, index_path: Path) -> None:
             raise ResourcePackError("installed file path must be a string")
         installed_paths.append(_normalized_relative(record["path"]))
         _validate_record({"length": record["length"], "sha256": record["sha256"]}, "index.installedFiles item")
-    _check_casefold_unique(installed_paths)
-    _check_file_ancestors(installed_paths)
+    complete_layout = installed_paths + sorted(SEPARATELY_INDEXED | EXTERNAL_SIDECARS | {"uninstall.exe"})
+    _check_casefold_unique(complete_layout)
+    _check_file_ancestors(complete_layout)
     if installed_paths != sorted(installed_paths) or any(
         name in SEPARATELY_INDEXED or name in EXTERNAL_SIDECARS or name == "uninstall.exe"
-        or name.startswith("gogoke-service/generations/")
+        or name == "gogoke-service/generations" or name.startswith("gogoke-service/generations/")
         for name in installed_paths
     ):
         raise ResourcePackError("installed file inventory is not canonical")
