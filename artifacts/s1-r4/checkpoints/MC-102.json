@@ -1,0 +1,26 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-102",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "eabdad6313566de8750358388f4c6f7aac534483",
+  "recorded_utc": "2026-09-25T21:44:20Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-101.json",
+  "current_main": "49795652fcc8bdb692b313be2be0579a8f42cad9",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain unchanged. Main drift since MC-101 is research documentation only. Owner split remains 06a, then R2-05, then 06b. Local formal manifest signing is authorized; -Publish remains Owner-controlled.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "pr_state": "PR27 OPEN/DRAFT; PR34 OPEN/Owner-held; no merge, release, adoption or Goal Acceptance.",
+  "executed_evidence": {
+    "source_02b1f872": "Scoped formal shortcut ownership writer committed: explicit installer lifecycle handle inheritance, same-handle .lnk creation and identity record, instance-bound finalizer deletion; old or user-replaced links preserved. Local non-native diff, Rust formatting, PowerShell parser, Python AST and locked offline Cargo metadata checks passed. Exact-head source hygiene run 36191468273 PASS. Desktop run 36191456772 Browser and dependency-notice jobs PASS; the repro Windows job failed in native compilation because std::os::windows::ffi::OsStrExt was not imported for encode_wide. The new run cancelled its still-running frozen lane; this is not a native PASS.",
+    "source_eabdad63": "Added the missing Windows OsStrExt import only. Exact-head desktop run 36192817727 and source hygiene run 36192821200 dispatched. Hygiene PASS. Desktop remains IN_PROGRESS at this checkpoint; no native or installer conclusion is inherited from the earlier SHA."
+  },
+  "blocked_or_not_run": "Exact-head Windows build/repro comparison, signed candidate installed smoke, actual formal shortcut creation/AppUserModelId readback and uninstall, fresh complete risk audit, candidate freeze, Owner Win11/SAC formal test and local formal manifest signing remain NOT_RUN or IN_PROGRESS. R2-05 is Owner-held WIP; 06b update/rollback/crash recovery WIP remains NOT_ACCEPTED/DEFERRED. No publication.",
+  "path_first_reflection": "The first cloud round exercised Browser and finalizer axes but stopped at a single missing Rust trait import before installer compilation. The compiler's first error identified the cause; the next round changes exactly that import. No warning sweep or unrelated refactor was added. Formal shortcut behavior requires a real installed formal-domain test after the exact-head native build; a handcrafted finalizer fixture is not a substitute.",
+  "retained_custody": "Execution worktree was clean after eabdad63 before this checkpoint. Public temporary read-only cloud log copy under %TEMP%/gogoke-36191456772-repro.log was used to locate the first compiler failure; earlier retained temporary evidence copies and the automatic cleanup-policy rejection remain as recorded in MC-101. No private key or release material was copied into this worktree.",
+  "external_action": "PR27_DRAFT; PR34_OWNER_HELD; DESKTOP_36191456772_CANCELLED_AFTER_REPRO_COMPILE_FAIL; HYGIENE_36191468273_PASS; DESKTOP_36192817727_IN_PROGRESS; HYGIENE_36192821200_PASS; NO_FORMAL_SIGNATURE; NO_PUBLISH; NO_RELEASE",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Observe exact-head desktop run 36192817727. On the first real failure repair the narrow cause and rerun; on PASS verify frozen/repro exe bytes and signed branch installed smoke. Then test actual formal shortcut creation, AppUserModelId and bounded uninstall on the authorized Win11 formal installation path after local formal signing, with SAC stop-on-block and rollback custody. Complete fresh all-axis review before freezing candidate."
+}
