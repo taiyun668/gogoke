@@ -1,0 +1,79 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-083",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "ffa1e98f8a46d5c14998ee918fa71306a432faec",
+  "recorded_utc": "2026-09-25T01:57:53Z",
+  "reason": "OWNER_AUTHORIZED_SAME_CANDIDATE_PORTABLE_PROBE_SAC_BLOCKED",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "owner_new_instruction": "After the 041a4966 installer block, use only the same candidate portable ZIP, verify its hash, extract and run gogoke.exe for product readback; if any executable is blocked, record event and hash, then stop without bypass. Keep PR34 open until readback is possible."
+  },
+  "package": "R2-05_IN_PROGRESS_NOT_ACCEPTED",
+  "source_candidate": "041a49660ffe3ecc6e061ef3b20fd54e2ec47535",
+  "prior_installer_block": "MC-082: exact 041a4966 unsigned NSIS installer SHA256 917ae878985c840d056ee74fe9670236e1fe2f0effbff21f02bc7db843d3d720 was blocked before execution, Code Integrity 3033 record 7072 and 3077 record 7074. No retry occurred.",
+  "portable_package": {
+    "cloud_desktop_run": "36081448198 SUCCESS at exact 041a4966 source SHA",
+    "zip_name": "gogoke-0.1.2-windows-x64-unsigned-portable.zip",
+    "zip_sha256": "3e8269369cbd0a3f263a8dd2deb66530e94484b1030d510e7de9fc8aa59f1dcc",
+    "checksum_match": "Downloaded ZIP SHA256 matched SHA256SUMS.windows from the same cloud artifact; all 13047 ZIP entries were checked for absolute/traversal paths before extraction.",
+    "extraction_root": "%TEMP%/gk041",
+    "max_output_path_length": 163,
+    "extracted_hashes_match_zip": true,
+    "extracted_files_sha256": {
+      "gogoke.exe": "4eb782721c0703856599e12285205308acf9e92d3f3bafdf2aecf5576a50e351",
+      "gogoke-native-host.exe": "d9286fa9bbc530e23051544a92cbe60d8add35ed8b7ef63fbd064cb10053a4bc",
+      "gogoke-service/runtime/node.exe": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50",
+      "gogoke-service/dist/bin.mjs": "88846659b3a4ed5b1918e7e5ab46916685a2ee05ec75b5d4a340c9cad939d662"
+    }
+  },
+  "portable_start": {
+    "result": "BLOCKED_BY_SMART_APP_CONTROL_BEFORE_GOGOKE_EXE_EXECUTION",
+    "attempt_started_utc": "2026-09-25T01:57:11.4038707Z",
+    "blocked_object": "portable gogoke.exe itself, not the NSIS installer, native-host or Node",
+    "blocked_file_length_bytes": 33444864,
+    "blocked_file_sha256": "4eb782721c0703856599e12285205308acf9e92d3f3bafdf2aecf5576a50e351",
+    "event_log": "Microsoft-Windows-CodeIntegrity/Operational",
+    "event_target_nt_path_redacted": "\\Device\\HarddiskVolume4\\Users\\<local-user>\\AppData\\Local\\Temp\\gk041\\gogoke.exe",
+    "event_target_windows_path_normalized": "%TEMP%\\gk041\\gogoke.exe",
+    "event_caller_nt_path_redacted": "\\Device\\HarddiskVolume4\\Users\\<local-user>\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe",
+    "path_redaction": "The public checkpoint redacts the local account name; exact raw paths remain retrievable through the listed event record IDs in the local Code Integrity log.",
+    "events": [
+      {
+        "id": 3033,
+        "record_id": 7077,
+        "time_utc": "2026-09-25T01:57:13.8183982Z",
+        "message_meaning": "portable gogoke.exe did not meet Enterprise signing level requirements"
+      },
+      {
+        "id": 3077,
+        "record_id": 7079,
+        "time_utc": "2026-09-25T01:57:13.9281337Z",
+        "policy_id": "0283ac0f-fff1-49ae-ada1-8a933130cad6",
+        "message_meaning": "portable gogoke.exe did not meet signing level requirements or violated code integrity policy"
+      }
+    ],
+    "start_process_error": "An Application Control policy has blocked this file; no numerical 4551 result was independently captured.",
+    "portable_process_count_after_attempt": 0,
+    "downstream_executables": "native-host and bundled Node were not launched; their Smart App Control outcome is NOT_RUN",
+    "retry_or_bypass": "NONE"
+  },
+  "product_readback": "NOT_RUN because portable Gogoke never started; the pre-merge product readback condition was not reached and no accepted Git fact readback can be claimed.",
+  "plan_deviation": "PLAN.md R2-05 requires the Owner to use the exact candidate's formal NSIS installer on Win11 Smart App Control enforce, including product-managed launch, restart and result readback. The Owner explicitly authorized this one portable-format diagnostic after the installer was blocked. Portable execution cannot satisfy or replace that formal-installer condition; it too was blocked before execution.",
+  "pr34": "OPEN_CLEAN_ALL_CHECKS_SUCCESS_NOT_MERGED; Owner merge was not requested because product readback was impossible; keep open",
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "test_ledger_branch": "s1-r4-ledger-test/r2-02 at d2e210a798767273b1b120fa26feeca79ed5c512; no new write",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "candidate_state": "CLOUD_AXES_PASS_OWNER_MACHINE_INSTALLER_AND_PORTABLE_MAIN_EXECUTION_BLOCKED; NOT_ACCEPTED_NOT_RELEASED",
+  "workspace": {
+    "tracked_diff_before_checkpoint": "NONE",
+    "untracked_screenshot_copy": "artifacts/s1-r4/R2-05-owner-win11-novel-985e17d1.png",
+    "retained_local_paths": ["%TEMP%/gk041", "%TEMP%/gogoke-r205-candidate-041a4966"],
+    "retention_reason": "Exact blocked bytes and event evidence; prior automatic approval review blocked local cleanup. No cleanup workaround was attempted."
+  },
+  "external_action": "NO_PORTABLE_PRODUCT_EXECUTION_NO_MERGE_NO_ACCEPTED_FACT_READBACK_NO_RELEASE_NO_RETRY_NO_SECURITY_SETTING_CHANGE",
+  "next_action": "STOP after pushing this checkpoint, per Owner's explicit block condition. Keep PR34 open. Await new Owner direction; do not retry either executable, use an alternate launcher, or modify security settings."
+}
