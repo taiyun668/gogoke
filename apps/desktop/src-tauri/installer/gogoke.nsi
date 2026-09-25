@@ -616,6 +616,14 @@ Function .onInstSuccess
   ${EndIf}
 FunctionEnd
 
+Function Skip
+  Abort
+FunctionEnd
+
+Function SkipIfPassive
+  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
+FunctionEnd
+
 Function CreateOrUpdateStartMenuShortcut
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
