@@ -1,0 +1,421 @@
+name: gogoke candidate resource signing
+
+on:
+  workflow_run:
+    workflows: ["gogoke desktop CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact successful controlled build commit
+        required: true
+        type: string
+      run_id:
+        description: Successful gogoke desktop CI run ID
+        required: true
+        type: number
+      run_attempt:
+        description: Exact source run attempt
+        required: true
+        type: number
+      artifact_id:
+        description: Exact frozen Windows artifact ID
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || 'manual-main' }}
+  cancel-in-progress: true
+
+jobs:
+  authorize-and-sign:
+    name: Verify source run and sign candidate resource bytes
+    if: >-
+      github.repository == 'taiyun668/gogoke' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == 'taiyun668/gogoke' &&
+        github.event.workflow_run.head_branch == 'gpt/s1-r4-r2-execution-r1'))
+    timeout-minutes: 20
+    runs-on: windows-latest
+    environment: candidate-resource-signing
+    outputs:
+      source_commit: ${{ steps.identity.outputs.source_commit }}
+      source_run_id: ${{ steps.identity.outputs.run_id }}
+      source_run_attempt: ${{ steps.identity.outputs.run_attempt }}
+      source_artifact_id: ${{ steps.identity.outputs.artifact_id }}
+      version: ${{ steps.hashes.outputs.version }}
+      setup_sha256: ${{ steps.hashes.outputs.setup_sha256 }}
+      installed_shell_sha256: ${{ steps.hashes.outputs.installed_shell_sha256 }}
+      native_host_sha256: ${{ steps.hashes.outputs.native_host_sha256 }}
+      node_sha256: ${{ steps.hashes.outputs.node_sha256 }}
+      signed_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout trusted default-branch verifier only
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Prove this workflow and verifier are running from main
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -cne 'refs/heads/main') {
+            throw 'Candidate signing workflow is not running from the trusted default branch.'
+          }
+          $checkedOut = (git rev-parse HEAD).Trim()
+          $remoteMain = (git ls-remote origin refs/heads/main).Split("`t")[0]
+          if ($checkedOut -cne $remoteMain -or $checkedOut -cne $env:GITHUB_SHA) {
+            throw 'Trusted verifier checkout is not the exact current main workflow revision.'
+          }
+      - name: Resolve exact controlled source run and artifact identity
+        id: identity
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_run') {
+            $sourceCommit = [string]$event.workflow_run.head_sha
+            $runId = [long]$event.workflow_run.id
+            $runAttempt = 0
+            if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $runId -le 0) {
+              throw 'workflow_run source identity is malformed.'
+            }
+            $expectedName = "gogoke-windows-frozen-$sourceCommit-$runId"
+            $inventory = gh api "repos/taiyun668/gogoke/actions/runs/$runId/artifacts?per_page=100" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Source artifact inventory is unavailable.' }
+            $matches = @($inventory.artifacts | Where-Object {
+              $_.name -ceq $expectedName -and -not $_.expired -and $_.size_in_bytes -gt 0
+            })
+            if ($matches.Count -ne 1) { throw 'Frozen source artifact identity is ambiguous or unavailable.' }
+            $artifactId = [long]$matches[0].id
+          } else {
+            $sourceCommit = [string]$event.inputs.source_commit
+            $runId = [long]$event.inputs.run_id
+            $runAttempt = [int]$event.inputs.run_attempt
+            $artifactId = [long]$event.inputs.artifact_id
+          }
+          if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $runId -le 0 -or $artifactId -le 0) {
+            throw 'Candidate signing identity is malformed.'
+          }
+          $run = gh api "repos/taiyun668/gogoke/actions/runs/$runId" | ConvertFrom-Json
+          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_run') {
+            $runAttempt = [int]$run.run_attempt
+          }
+          if ($LASTEXITCODE -ne 0 -or $run.repository.full_name -cne 'taiyun668/gogoke' -or
+              $run.head_repository.full_name -cne 'taiyun668/gogoke' -or
+              $run.head_branch -cne 'gpt/s1-r4-r2-execution-r1' -or
+              $run.head_sha -cne $sourceCommit -or $run.run_attempt -ne $runAttempt -or
+              $run.conclusion -cne 'success' -or $run.name -cne 'gogoke desktop CI' -or
+              $run.path -cne '.github/workflows/gogoke-desktop.yml' -or $runAttempt -le 0) {
+            throw 'Candidate source run is not the exact successful controlled build.'
+          }
+          $jobs = gh api "repos/taiyun668/gogoke/actions/runs/$runId/jobs?filter=latest&per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate source build job inventory is unavailable.' }
+          foreach ($requiredName in @(
+            'Browser build and tests',
+            'Generate locked dependency notices',
+            'Clean Windows build (frozen)',
+            'Clean Windows build (repro)',
+            'Compare independent Windows executable bytes'
+          )) {
+            $jobMatches = @($jobs.jobs | Where-Object {
+              $_.name -ceq $requiredName -and $_.status -ceq 'completed' -and
+              $_.conclusion -ceq 'success' -and $_.run_attempt -eq $runAttempt
+            })
+            if ($jobMatches.Count -ne 1) {
+              throw "Required successful source build job is missing or ambiguous: $requiredName"
+            }
+          }
+          $expectedName = "gogoke-windows-frozen-$sourceCommit-$runId"
+          $inventory = gh api "repos/taiyun668/gogoke/actions/runs/$runId/artifacts?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate source artifact inventory is unavailable.' }
+          $matches = @($inventory.artifacts | Where-Object {
+            $_.id -eq $artifactId -and $_.name -ceq $expectedName -and -not $_.expired -and
+            $_.size_in_bytes -gt 0 -and $_.size_in_bytes -le 1073741824
+          })
+          if ($matches.Count -ne 1) { throw 'Candidate frozen artifact identity or size is invalid.' }
+          "source_commit=$sourceCommit" >> $env:GITHUB_OUTPUT
+          "run_id=$runId" >> $env:GITHUB_OUTPUT
+          "run_attempt=$runAttempt" >> $env:GITHUB_OUTPUT
+          "artifact_id=$artifactId" >> $env:GITHUB_OUTPUT
+          "artifact_name=gogoke-windows-frozen-$sourceCommit-$runId" >> $env:GITHUB_OUTPUT
+      - name: Download exact frozen archive by ID and require uploaded digest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_ID: ${{ steps.identity.outputs.artifact_id }}
+          SOURCE_RUN_ID: ${{ steps.identity.outputs.run_id }}
+          SOURCE_COMMIT: ${{ steps.identity.outputs.source_commit }}
+          ARTIFACT_NAME: ${{ steps.identity.outputs.artifact_name }}
+        run: |
+          $artifactId = [long]$env:ARTIFACT_ID
+          $runId = [long]$env:SOURCE_RUN_ID
+          $artifact = gh api "repos/taiyun668/gogoke/actions/artifacts/$artifactId" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $artifact.id -ne $artifactId -or
+              $artifact.name -cne $env:ARTIFACT_NAME -or $artifact.workflow_run.id -ne $runId -or
+              $artifact.workflow_run.head_sha -cne $env:SOURCE_COMMIT -or $artifact.expired -or
+              $artifact.size_in_bytes -le 0 -or $artifact.size_in_bytes -gt 1073741824 -or
+              $artifact.digest -cnotmatch '^sha256:([0-9a-f]{64})$') {
+            throw 'Exact frozen archive metadata or uploaded SHA-256 is invalid.'
+          }
+          $expectedDigest = [string]$artifact.digest.Substring(7)
+          $archive = Join-Path $env:RUNNER_TEMP "gogoke-frozen-$artifactId.zip"
+          if (Test-Path -LiteralPath $archive) { throw 'Frozen archive temporary path already exists.' }
+          $endpoint = "https://api.github.com/repos/taiyun668/gogoke/actions/artifacts/$artifactId/zip"
+          Invoke-WebRequest -Uri $endpoint -Headers @{Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'} `
+            -MaximumRedirection 5 -OutFile $archive
+          if ((Get-Item -LiteralPath $archive).Length -ne $artifact.size_in_bytes -or
+              (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedDigest) {
+            throw 'Downloaded frozen archive does not match the uploaded artifact digest.'
+          }
+          if (Test-Path -LiteralPath candidate-input) { throw 'Candidate input directory already exists.' }
+          New-Item -ItemType Directory -Path candidate-input | Out-Null
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $fixedNames = @(
+              'frozen-build.json', 'gogoke-package-hashes.json', 'gogoke-portable.exe',
+              'gogoke-installed-shell.nsis.exe', 'gogoke-native-host.exe', 'node.exe',
+              'gogoke-resources.windows.zip', 'resource-index.json'
+            )
+            $total = 0L
+            foreach ($entry in $zip.Entries) {
+              if (($fixedNames -cnotcontains $entry.FullName -and
+                   $entry.FullName -cnotmatch '^gogoke-[0-9A-Za-z.+-]+-windows-x64-unsigned-setup\.exe$') -or
+                  -not $seen.Add($entry.FullName) -or $entry.Length -lt 0 -or $entry.Length -gt 1073741824) {
+                throw 'Frozen archive contains an unsafe or duplicate entry name.'
+              }
+              $total += $entry.Length
+              if ($seen.Count -gt 20 -or $total -gt 1073741824) {
+                throw 'Frozen archive exceeds the bounded extracted file set.'
+              }
+              $source = $entry.Open()
+              try {
+                $target = [IO.File]::Open((Join-Path 'candidate-input' $entry.FullName), [IO.FileMode]::CreateNew)
+                try {
+                  $copied = 0L
+                  $buffer = [byte[]]::new(65536)
+                  while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $copied += $read
+                    if ($copied -gt $entry.Length) { throw 'Frozen archive entry exceeded its declared length.' }
+                    $target.Write($buffer, 0, $read)
+                  }
+                  if ($copied -ne $entry.Length) { throw 'Frozen archive entry ended before its declared length.' }
+                } finally { $target.Dispose() }
+              } finally { $source.Dispose() }
+            }
+            if ($seen.Count -ne 9) { throw 'Frozen archive has an incomplete file set.' }
+          } finally { $zip.Dispose() }
+      - name: Verify complete frozen artifact byte inventory with trusted main code
+        shell: pwsh
+        run: |
+          python ./tools/ci/gogoke_ci_frozen_artifact.py verify `
+            --directory candidate-input `
+            --source-commit '${{ steps.identity.outputs.source_commit }}' `
+            --run-id '${{ steps.identity.outputs.run_id }}' `
+            --run-attempt '${{ steps.identity.outputs.run_attempt }}' `
+            --lane frozen
+          if ($LASTEXITCODE -ne 0) { throw "Frozen candidate byte inventory verification failed: $LASTEXITCODE" }
+      - name: Export verified byte identities for isolated product smoke
+        id: hashes
+        shell: pwsh
+        run: |
+          $metadata = Get-Content -LiteralPath candidate-input/frozen-build.json -Raw | ConvertFrom-Json -AsHashtable
+          $index = Get-Content -LiteralPath candidate-input/resource-index.json -Raw | ConvertFrom-Json
+          $setupName = "gogoke-$($index.version)-windows-x64-unsigned-setup.exe"
+          if (-not $metadata.files.ContainsKey($setupName)) { throw 'Verified frozen setup hash is missing.' }
+          "version=$($index.version)" >> $env:GITHUB_OUTPUT
+          "setup_sha256=$($metadata.files[$setupName].sha256)" >> $env:GITHUB_OUTPUT
+          "installed_shell_sha256=$($index.executables.installedShell.sha256)" >> $env:GITHUB_OUTPUT
+          "native_host_sha256=$($index.executables.nativeHost.sha256)" >> $env:GITHUB_OUTPUT
+          "node_sha256=$($index.executables.node.sha256)" >> $env:GITHUB_OUTPUT
+      - name: Sign only the verified pack and index
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOGOKE_CANDIDATE_P256_KEY: ${{ secrets.GOGOKE_CANDIDATE_P256_KEY }}
+        run: |
+          & ./tools/ci/gogoke-candidate-sign.ps1 `
+            -ArtifactDirectory candidate-input `
+            -SourceCommit '${{ steps.identity.outputs.source_commit }}' `
+            -RunId '${{ steps.identity.outputs.run_id }}' `
+            -RunAttempt '${{ steps.identity.outputs.run_attempt }}' `
+            -ArtifactId '${{ steps.identity.outputs.artifact_id }}'
+          if ($LASTEXITCODE -ne 0) { throw "Candidate resource signing failed: $LASTEXITCODE" }
+      - name: Remove unsigned duplicate metadata not consumed by the product
+        shell: pwsh
+        run: |
+          foreach ($name in @('frozen-build.json', 'gogoke-installed-shell.nsis.exe')) {
+            Remove-Item -LiteralPath (Join-Path 'candidate-input' $name) -Force
+          }
+      - name: Upload signed candidate set without executing source bytes
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-windows-candidate-${{ steps.identity.outputs.source_commit }}-${{ steps.identity.outputs.run_id }}
+          path: candidate-input/*
+          if-no-files-found: error
+          retention-days: 30
+
+  candidate-installed-smoke:
+    name: Install signed candidate on an isolated Windows runner
+    needs: authorize-and-sign
+    timeout-minutes: 15
+    runs-on: windows-latest
+    steps:
+      - name: Checkout the same trusted workflow revision without signer secret
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove isolated smoke uses the signed workflow revision
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -cne 'refs/heads/main' -or
+              (git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
+            throw 'Isolated candidate smoke did not load the signed trusted workflow revision.'
+          }
+      - name: Download exact signed candidate artifact and check uploaded digest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNED_ARTIFACT_ID: ${{ needs.authorize-and-sign.outputs.signed_artifact_id }}
+          SOURCE_COMMIT: ${{ needs.authorize-and-sign.outputs.source_commit }}
+          SOURCE_RUN_ID: ${{ needs.authorize-and-sign.outputs.source_run_id }}
+          CANDIDATE_VERSION: ${{ needs.authorize-and-sign.outputs.version }}
+        run: |
+          $artifactId = [long]$env:SIGNED_ARTIFACT_ID
+          $runId = [long]$env:SOURCE_RUN_ID
+          $version = $env:CANDIDATE_VERSION
+          if ($artifactId -le 0 -or $runId -le 0 -or
+              $env:SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$' -or
+              $version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            throw 'Signed candidate download identity is malformed.'
+          }
+          $name = "gogoke-windows-candidate-$($env:SOURCE_COMMIT)-$runId"
+          $artifact = gh api "repos/taiyun668/gogoke/actions/artifacts/$artifactId" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $artifact.id -ne $artifactId -or
+              $artifact.name -cne $name -or $artifact.workflow_run.id -ne [long]$env:GITHUB_RUN_ID -or
+              $artifact.workflow_run.head_sha -cne $env:GITHUB_SHA -or $artifact.expired -or
+              $artifact.size_in_bytes -le 0 -or $artifact.size_in_bytes -gt 1073741824 -or
+              $artifact.digest -cnotmatch '^sha256:([0-9a-f]{64})$') {
+            throw 'Signed candidate artifact identity or uploaded digest is invalid.'
+          }
+          $expectedDigest = [string]$artifact.digest.Substring(7)
+          $archive = Join-Path $env:RUNNER_TEMP "gogoke-candidate-$artifactId.zip"
+          if (Test-Path -LiteralPath $archive) { throw 'Signed candidate archive path already exists.' }
+          Invoke-WebRequest -Uri "https://api.github.com/repos/taiyun668/gogoke/actions/artifacts/$artifactId/zip" `
+            -Headers @{Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'} `
+            -MaximumRedirection 5 -OutFile $archive
+          if ((Get-Item -LiteralPath $archive).Length -ne $artifact.size_in_bytes -or
+              (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedDigest) {
+            throw 'Downloaded candidate archive differs from the uploaded artifact digest.'
+          }
+          $destination = Join-Path $env:RUNNER_TEMP "gogoke-candidate-input-$artifactId"
+          if (Test-Path -LiteralPath $destination) { throw 'Signed candidate extraction path already exists.' }
+          New-Item -ItemType Directory -Path $destination | Out-Null
+          $fixed = @(
+            'gogoke-package-hashes.json', 'gogoke-portable.exe', 'gogoke-native-host.exe',
+            'node.exe', 'gogoke-resources.windows.zip', 'resource-index.json',
+            'CANDIDATE-RESOURCES.windows', 'CANDIDATE-RESOURCES.windows.sig',
+            "gogoke-$version-windows-x64-unsigned-setup.exe"
+          )
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $total = 0L
+            foreach ($entry in $zip.Entries) {
+              if ($fixed -cnotcontains $entry.FullName -or -not $seen.Add($entry.FullName) -or
+                  $entry.Length -lt 0 -or $entry.Length -gt 1073741824) {
+                throw 'Signed candidate archive contains an unsafe or duplicate entry.'
+              }
+              $total += $entry.Length
+              if ($seen.Count -gt 9 -or $total -gt 1073741824) {
+                throw 'Signed candidate archive exceeds the bounded file set.'
+              }
+              $source = $entry.Open()
+              try {
+                $target = [IO.File]::Open((Join-Path $destination $entry.FullName), [IO.FileMode]::CreateNew)
+                try {
+                  $copied = 0L
+                  $buffer = [byte[]]::new(65536)
+                  while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $copied += $read
+                    if ($copied -gt $entry.Length) { throw 'Signed entry exceeded its declared length.' }
+                    $target.Write($buffer, 0, $read)
+                  }
+                  if ($copied -ne $entry.Length) { throw 'Signed entry ended before its declared length.' }
+                } finally { $target.Dispose() }
+              } finally { $source.Dispose() }
+            }
+            if ($seen.Count -ne $fixed.Count) { throw 'Signed candidate archive has an incomplete file set.' }
+          } finally { $zip.Dispose() }
+          "CANDIDATE_INPUT=$destination" >> $env:GITHUB_ENV
+      - name: Exercise actual installed candidate product and uninstall
+        shell: pwsh
+        run: |
+          # The hosted runner starts elevated; WebView2 product smoke uses the
+          # same pinned Medium token launcher as the existing installed smoke.
+          $toolRoot = Join-Path $env:RUNNER_TEMP "gogoke-candidate-medium-${{ github.run_id }}-${{ github.run_attempt }}"
+          $runnerRoot = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+          if (-not [IO.Path]::GetFullPath($toolRoot).StartsWith($runnerRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+              (Test-Path -LiteralPath $toolRoot)) {
+            throw 'Medium token launcher path is not a fresh runner temporary child.'
+          }
+          New-Item -ItemType Directory -Path $toolRoot | Out-Null
+          try {
+            $archive = Join-Path $toolRoot 'gsudo.portable.zip'
+            Invoke-WebRequest -Uri 'https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip' -OutFile $archive
+            $expected = '21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44'
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) {
+              throw 'Pinned Medium token launcher archive digest mismatch.'
+            }
+            Expand-Archive -LiteralPath $archive -DestinationPath $toolRoot
+            $launcher = Join-Path $toolRoot 'x64/gsudo.exe'
+            if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+              throw 'Pinned Medium token launcher is missing.'
+            }
+            $smokeScript = (Resolve-Path -LiteralPath './tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1').Path
+            $arguments = @(
+              '--integrity', 'Medium', '--direct', (Join-Path $PSHOME 'pwsh.exe'),
+              '-NoProfile', '-File', $smokeScript,
+              '-ArtifactDirectory', $env:CANDIDATE_INPUT,
+              '-ExpectedSetupSha256', '${{ needs.authorize-and-sign.outputs.setup_sha256 }}',
+              '-ExpectedInstalledShellSha256', '${{ needs.authorize-and-sign.outputs.installed_shell_sha256 }}',
+              '-ExpectedNativeHostSha256', '${{ needs.authorize-and-sign.outputs.native_host_sha256 }}',
+              '-ExpectedNodeSha256', '${{ needs.authorize-and-sign.outputs.node_sha256 }}',
+              '-ExpectedVersion', '${{ needs.authorize-and-sign.outputs.version }}',
+              '-ExpectedSourceCommit', '${{ needs.authorize-and-sign.outputs.source_commit }}',
+              '-ExpectedRunId', '${{ needs.authorize-and-sign.outputs.source_run_id }}',
+              '-ExpectedRunAttempt', '${{ needs.authorize-and-sign.outputs.source_run_attempt }}',
+              '-ExpectedArtifactId', '${{ needs.authorize-and-sign.outputs.source_artifact_id }}',
+              '-ExpectedSigningRunId', '${{ github.run_id }}',
+              '-ExpectedSigningRunAttempt', '${{ github.run_attempt }}'
+            )
+            & $launcher @arguments
+            if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) {
+              throw "Installed candidate Medium smoke failed: $LASTEXITCODE"
+            }
+          } finally {
+            if (Test-Path -LiteralPath $toolRoot) {
+              $toolItem = Get-Item -LiteralPath $toolRoot -Force
+              if (($toolItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  -not [IO.Path]::GetFullPath($toolItem.FullName).StartsWith($runnerRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Medium token launcher cleanup target changed; runner teardown owns it.'
+              }
+              Remove-Item -LiteralPath $toolRoot -Recurse -Force
+            }
+          }
+      - name: Upload bounded candidate installation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-candidate-installed-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-r2-06-candidate-smoke-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: ignore
+          retention-days: 30
