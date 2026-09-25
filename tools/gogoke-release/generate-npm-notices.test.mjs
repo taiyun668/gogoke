@@ -8,7 +8,8 @@ import { collectProductionNotices, renderNotices } from "./generate-npm-notices.
 test("production notice generator rejects missing text, unknown license and path escape", () => {
   const root = mkdtempSync(join(tmpdir(), "gogoke-npm-notice-test-"));
   try {
-    const packages = [{ name: "gogoke", versionInfo: "0.1.2" }];
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "gogoke", version: "0.1.3" }));
+    const packages = [{ name: "gogoke", versionInfo: "0.1.3", packageFileName: "" }];
     for (let index = 0; index < 100; index += 1) {
       const name = `fixture-${index}`;
       const packageFileName = `node_modules/${name}`;
@@ -21,6 +22,10 @@ test("production notice generator rejects missing text, unknown license and path
     const notices = collectProductionNotices(sbom, root);
     assert.equal(notices.length, 100);
     assert.match(renderNotices(notices, "abc"), /Copyright fixture 99/);
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "gogoke", version: "0.1.4" }));
+    assert.throws(() => collectProductionNotices(sbom, root), /root SPDX identity/);
+    packages[0].versionInfo = "0.1.4";
+    assert.equal(collectProductionNotices(sbom, root).length, 100);
 
     unlinkSync(join(root, "node_modules/fixture-0/LICENSE"));
     assert.throws(() => collectProductionNotices(sbom, root), /license\/copyright text missing/);
