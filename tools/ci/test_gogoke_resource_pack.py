@@ -306,6 +306,22 @@ class GogokeResourcePackTests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn(expected, rejected.stderr)
 
+    def test_index_rejects_directory_component_case_aliases(self) -> None:
+        with zipfile.ZipFile(self.pack, "w") as archive:
+            for name in (
+                "dist/bin.mjs",
+                "frontend/index.html",
+                "frontend/Assets/one.js",
+                "frontend/assets/two.js",
+            ):
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                archive.writestr(info, b"x")
+        rejected = self.build_index()
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("case-insensitive path collision", rejected.stderr)
+
     def test_pack_requires_frontend_index_and_dist_bin(self) -> None:
         (self.frontend / "index.html").unlink()
         missing_frontend = self.build_pack(self.pack)
