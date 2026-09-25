@@ -685,7 +685,10 @@ try {
     $newExe = Join-Path $TargetDir "gogoke.exe"
     if (-not (Test-Path -LiteralPath $newExe -PathType Leaf)) { throw "installed gogoke executable is missing" }
     if (Test-Path -LiteralPath $ReadyFile) { Remove-Item -LiteralPath $ReadyFile -Force }
-    $newProcess = Start-Process -FilePath $newExe -ArgumentList @("--gogoke-update-ready=$ReadyFile") -PassThru
+    # Windows PowerShell joins -ArgumentList arrays without quoting each item.
+    # Keep the entire readiness argument together when the temp path has spaces.
+    $readyArgument = '"--gogoke-update-ready=' + $ReadyFile + '"'
+    $newProcess = Start-Process -FilePath $newExe -ArgumentList $readyArgument -PassThru
 
     Set-Phase "wait-ready"
     $deadline = [DateTime]::UtcNow.AddSeconds(30)

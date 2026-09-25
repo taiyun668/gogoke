@@ -74,6 +74,10 @@ jobs:
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -ne 0) { throw "Candidate installed smoke has $($errors.Count) PowerShell parse errors." }
+      - name: Verify full-update readiness argument quoting on cloud Windows
+        shell: powershell
+        run: |
+          & ../../tools/ci/test_gogoke_update_ready_argument_cloud.ps1 -Source src-tauri/update/gogoke-update-coordinator.ps1
       - name: Check release trust boundary
         shell: pwsh
         run: |
