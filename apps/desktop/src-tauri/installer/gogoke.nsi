@@ -693,6 +693,9 @@ Function SkipIfPassive
 FunctionEnd
 
 Function CreateOrUpdateStartMenuShortcut
+  ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
+    Return
+  ${EndIf}
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   StrCpy $R0 0
@@ -735,6 +738,9 @@ Function CreateOrUpdateStartMenuShortcut
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
+  ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
+    Return
+  ${EndIf}
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
