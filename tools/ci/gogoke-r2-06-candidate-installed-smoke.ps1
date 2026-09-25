@@ -28,6 +28,11 @@ $script:installInvoked = $false
 $script:uninstallInvoked = $false
 $script:instanceId = $null
 $script:finalizerReceiptPath = $null
+$script:diagnosticSinkInitialized = $false
+$script:productStarted = $false
+$script:productStdoutCapture = $null
+$script:productStderrCapture = $null
+$product = $null
 $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
@@ -395,6 +400,7 @@ try {
     $product = [Diagnostics.Process]::new()
     $product.StartInfo = $start
     if (-not $product.Start()) { throw 'Installed Gogoke did not start' }
+    $script:productStarted = $true
     $script:productStdoutCapture = Start-BoundedCapture $product.StandardOutput.BaseStream
     $script:productStderrCapture = Start-BoundedCapture $product.StandardError.BaseStream
     $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
@@ -497,7 +503,7 @@ try {
     $message = [string]$_.Exception.Message
     if ($script:stage -ceq 'sentinel-and-product-readiness') {
         try {
-            if ($product -and -not $product.HasExited) {
+            if ($script:productStarted -and $product -and -not $product.HasExited) {
                 $product.Kill()
                 $null = $product.WaitForExit(5000)
             }
