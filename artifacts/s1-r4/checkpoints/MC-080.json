@@ -1,0 +1,64 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-080",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "041a49660ffe3ecc6e061ef3b20fd54e2ec47535",
+  "recorded_utc": "2026-09-25T01:21:21Z",
+  "reason": "R2_05_ONE_RESULT_OWNER_ADOPTION_PR_OPEN_AND_INSTALLED_ROOT_DIAGNOSIS",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "owner_f1_instruction": "One PR may bring one test result to main for Owner taiyun668 personal merge, followed by installed-product accepted fact readback. Construction Controller must not merge or release."
+  },
+  "package": "R2-05_F1_F5_IN_PROGRESS_NOT_ACCEPTED",
+  "source_candidate": "041a49660ffe3ecc6e061ef3b20fd54e2ec47535",
+  "source_change": "Home read-only acceptance control now selects the already verified MC-078 test result when no new draft is in memory; it preserves the original 985e17d1 execution provenance and never reruns an occupied task slot. Local Home tests 7/7 and desktop TypeScript noEmit passed after repairing ignored local npm dependencies with npm ci.",
+  "cloud": {
+    "prior_source": "6c06568a6260f2304458e0e6bed18d066597e401",
+    "prior_native_server_run": "36078272498 SUCCESS; native library 402/402, two real process axes 1/1 each, six focused probes 1/1 each; server 51 files, 593/593, zero skip",
+    "prior_desktop_run": "36078285197 SUCCESS; Browser, dependency notices and unsigned NSIS jobs, update/readiness/rollback and installed read-only product smoke all succeeded",
+    "current_native_server_run": "36081440017 exact 041a4966 IN_PROGRESS; no final claim",
+    "current_desktop_run": "36081448198 exact 041a4966 IN_PROGRESS; no final package claim"
+  },
+  "owner_machine": {
+    "prior_installed_candidate": "6c06568a installed from cloud run 36078285197 after setup and portable hashes matched SHA256SUMS.windows; app, native-host, Node and service hashes matched cloud package inventory. Code Integrity 4551/3077/3033 relevant event count was 0 during installation and diagnosis.",
+    "observed_ui_failure": "Owner clicked new open fixture driver once. Home displayed GOGOKE_PRODUCT_SERVICE_FAILED:1, not a new draft; test ledger branch remained d2e210a7 and native journal still contained only the two old bound draft rows. No blind resend occurred.",
+    "direct_same_root": "Using the identical installed Node, service entry, cwd, native-host and Windows KnownFolder app data root in a Medium process, a read-only source probe passed. A controlled task without Git draft exited 1; stdout identified NativeHostClient.prepareR2TestDelegation ERR AccessDenied. Stderr contained only Node's SQLite experimental warning.",
+    "fresh_root_control": "The same installed components and controlled task without Git draft succeeded on one fresh %TEMP% root. No test Git branch write was made.",
+    "verified_cause": "The existing fixed R2 test grant was unrevoked but expired at 2026-09-25T00:27:23Z; current native authority correctly rejects its active reuse. Existing fixed and novel task slots were already exercised under MC-078. A different novel driver on the occupied root is also deliberately rejected by the existing contract. No DB reset, grant extension, security bypass, or new task identity was introduced.",
+    "current_process": "The 6c06568a installed Gogoke remained open for diagnosis; do not treat the failed new task as a candidate PASS."
+  },
+  "adoption_pr": {
+    "number": 34,
+    "url": "https://github.com/taiyun668/gogoke/pull/34",
+    "state": "OPEN_NOT_DRAFT_NOT_MERGED; CHECKS_IN_PROGRESS",
+    "head_branch": "codex/s1-r4-r2-05-test-result-adoption",
+    "head_sha": "dacd466e1a870c1820aed0854a676ec23a2d1613",
+    "parent_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+    "file_count": 1,
+    "test_ledger_source_commit": "d2e210a798767273b1b120fa26feeca79ed5c512",
+    "test_result_path": "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-product-5625a8791dcf4ed8151a8b9590722718.json",
+    "git_blob": "a0d69d4d1834bbc3a9ac878709ca0d6acb19dd87",
+    "sha256": "911063402683f63834f21df6d923b2102de32a591300f9efeda775f114ac8b95",
+    "evidence_meaning": "Test-only result from the prior 985e17d1 Owner installed execution. The PR adds exactly this file to main for Owner review; it does not merge the test ledger branch, grant Goal Acceptance, accept the source candidate or release."
+  },
+  "parallel_inbox": {
+    "observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+    "new_entries_since_mc079": 0
+  },
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "f5_cleanup": "MC-079 verified every old leftover path/hash and byte-for-byte AppData restoration before the new install. Automatic approval review blocked removal of the exact screenshot copy and old candidate stage; all MC-078 leftovers remain. The fresh diagnostic root under %TEMP% and 6c06568a downloaded candidate stage are Controller-created and need cleanup when permitted.",
+  "external_action": "PR34_OPEN_ONE_FILE; OWNER_MERGE_NOT_RUN; ACCEPTED_FACT_READBACK_NOT_RUN; NO_MAIN_WRITE_BY_CONTROLLER; NO_RELEASE",
+  "architecture_blocker": "NO_CONFIRMED_ARCHITECTURE_BLOCKER",
+  "candidate_state": "041a4966_CLOUD_VALIDATION_PENDING; NOT_ACCEPTED",
+  "workspace": {
+    "tracked_diff_before_checkpoint": "NONE",
+    "untracked_novel_screenshot_copy": "artifacts/s1-r4/R2-05-owner-win11-novel-985e17d1.png",
+    "retained_local_directories": ["%TEMP%/gogoke-r205-probe-fresh-6c06568a", "%TEMP%/gogoke-r205-candidate-6c06568a"],
+    "cleanup_condition": "After installed candidate/readback evidence is secured, remove through a permitted exact-path action; never delete the original product AppData root."
+  },
+  "next_action": "Finish exact 041a4966 cloud axes and focused review. Verify/download its package, then replace installed 6c06568a candidate only after exact hashes and rollback custody. Once PR34 checks are green, request Owner personal merge; verify merge actor and commit, then use the newly installed Home read-only control to verify accepted Git fact without rerunning either occupied task slot. Recheck Parallel Inbox and F5 cleanup policy, record final evidence and request fresh review."
+}
