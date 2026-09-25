@@ -243,7 +243,7 @@ jobs:
           "CC=$(Join-Path $bin 'cl.exe')" >> $env:GITHUB_ENV
           "CXX=$(Join-Path $bin 'cl.exe')" >> $env:GITHUB_ENV
           Write-Output "Pinned Windows toolchain: MSVC $($vars['VCToolsVersion']); SDK $($vars['WindowsSDKVersion'])"
-      - name: Prove the pinned compiler and linker are active
+      - name: Prove the pinned MSVC C tools are selected
         shell: pwsh
         run: |
           $bin = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64'
@@ -315,6 +315,13 @@ jobs:
         run: |
           $node = (Resolve-Path -LiteralPath 'src-tauri/resources/gogoke-service/runtime/node.exe').Path
           if ($env:GOGOKE_CONTROLLED_NODE_PATH -cne $node) { throw 'Native build Node binding differs from staged runtime' }
+          $sysroot = (& rustc +1.85.1 --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the pinned native-host Rust sysroot.' }
+          $linker = Join-Path $sysroot 'lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "Pinned native-host linker missing: $linker" }
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Resolve-Path -LiteralPath $linker).Path
+          $env:RUSTFLAGS = '-C linker-flavor=lld-link -C link-arg=/Brepro'
+          Write-Output "Native-host linker: $linker; SHA-256 $((Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash)"
           cargo +1.85.1 build --locked --manifest-path native-host/Cargo.toml --bin gogoke-native-host --release --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw "native host build failed: $LASTEXITCODE" }
           New-Item -ItemType Directory -Force 'src-tauri/binaries' | Out-Null
@@ -334,7 +341,17 @@ jobs:
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
       - name: Build unsigned shell and NSIS installer
-        run: npm run tauri:build:win:unsigned
+        shell: pwsh
+        run: |
+          $sysroot = (& rustc +1.89.0 --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the pinned shell Rust sysroot.' }
+          $linker = Join-Path $sysroot 'lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "Pinned shell linker missing: $linker" }
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Resolve-Path -LiteralPath $linker).Path
+          $env:RUSTFLAGS = '-C linker-flavor=lld-link -C link-arg=/Brepro'
+          Write-Output "Shell linker: $linker; SHA-256 $((Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash)"
+          npm run tauri:build:win:unsigned
+          if ($LASTEXITCODE -ne 0) { throw "shell or installer build failed: $LASTEXITCODE" }
       - name: Freeze resource pack, index, and executable identities
         shell: pwsh
         run: |
