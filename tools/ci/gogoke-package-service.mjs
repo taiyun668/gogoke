@@ -601,6 +601,14 @@ if (mode === 'stage') {
   copy(path.join(repo, 'apps/desktop/test-fixtures/s1-r4/ledger/controlled-pi.mjs'), path.join(service, 'fixtures/controlled-pi.mjs'));
   copy(path.join(repo, 'third_party/t3code/LICENSE'), path.join(service, 'T3-LICENSE'));
   assertPhysicalRuntime(path.join(service, 'node_modules'), true);
+  // pnpm's deployment bookkeeping contains its pruning time and local store
+  // path. Node resolves the physical package directories, not this file.
+  const pnpmMetadata = path.join(service, 'node_modules/.modules.yaml');
+  const metadata = fs.lstatSync(pnpmMetadata, { throwIfNoEntry: false });
+  if (metadata) {
+    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('pnpm deployment metadata is not a physical file');
+    fs.rmSync(pnpmMetadata);
+  }
   externalRoots();
 } else if (mode === 'seal') {
   await writeManifest();
