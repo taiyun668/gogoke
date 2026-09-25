@@ -195,6 +195,7 @@ const zhCNTextTranslations: Record<string, string> = {
   "Installing update…": "正在安装更新…",
   "Restarting…": "正在重启…",
   "Update failed.": "更新失败。",
+  "Update finalization needs attention.": "更新收尾需要处理。",
   "Mobile Setup Required": "需要移动端设置",
   "Connect to your desktop backend": "连接到你的桌面后端",
   "Loading…": "加载中…",

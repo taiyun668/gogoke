@@ -38,7 +38,7 @@ $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encodedSc
 & ([ScriptBlock]::Create($source))
 "#;
 
-#[derive(Serialize)]
+#[derive(Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenedObjectIdentity {
     // Keep the 64-bit value as text so the JSON handoff cannot round it.
@@ -51,6 +51,54 @@ struct OwnedFile {
     path: String,
     sha256: String,
     identity: OpenedObjectIdentity,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOwnedInventory {
+    schema: &'static str,
+    root: String,
+    root_identity: OpenedObjectIdentity,
+    instance: String,
+    version: String,
+    files: Vec<OwnedFile>,
+}
+
+/// Called by the coordinator while it owns the install lifecycle lock and the
+/// old registration still names this root. The installed shell authenticates
+/// the old index with its own compiled Owner key before naming any old bytes.
+pub(crate) fn write_update_owned_inventory() -> Result<(), String> {
+    let verified = resource_trust::verify_bootstrap()?;
+    if verified.domain != resource_trust::Domain::Formal {
+        return Err("GOGOKE_UPDATE_INVENTORY_FORMAL_ONLY".to_string());
+    }
+    let root = &verified.install_root;
+    let instance = verified.registered_instance()?;
+    let root_identity = opened_root_identity(root)?;
+    // NSIS consumes and deletes its temporary install receipt before the
+    // installation is usable. Only the verified signed inventory persists.
+    let files = verified.owned_files_for_uninstall()?
+        .into_iter()
+        .map(|(path, sha256)| owned_file_with_identity(path, sha256))
+        .collect::<Result<Vec<_>, String>>()?;
+    if opened_root_identity(root)? != root_identity {
+        return Err("GOGOKE_UPDATE_INVENTORY_ROOT_CHANGED".to_string());
+    }
+    let inventory = UpdateOwnedInventory {
+        schema: "gogoke.update-owned-inventory.v1",
+        root: path_text(root)?,
+        root_identity,
+        instance,
+        version: verified.version,
+        files,
+    };
+    let payload = serde_json::to_string(&inventory)
+        .map_err(|_| "GOGOKE_UPDATE_INVENTORY_SERIALIZE".to_string())?;
+    if payload.len() > 16 * 1024 * 1024 {
+        return Err("GOGOKE_UPDATE_INVENTORY_TOO_LARGE".to_string());
+    }
+    println!("{payload}");
+    Ok(())
 }
 
 #[derive(Serialize)]

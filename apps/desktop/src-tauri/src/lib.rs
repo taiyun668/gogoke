@@ -79,6 +79,15 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     {
         let arguments: Vec<String> = std::env::args().skip(1).collect();
+        if arguments.iter().any(|argument| argument == "--gogoke-update-owned-inventory") {
+            let result = if arguments.len() == 1 {
+                gogoke_uninstall::write_update_owned_inventory()
+            } else {
+                Err("GOGOKE_UPDATE_INVENTORY_ARGUMENTS_INVALID".to_string())
+            };
+            if let Err(error) = &result { eprintln!("{error}"); }
+            std::process::exit(if result.is_ok() { 0 } else { 1 });
+        }
         if arguments.iter().any(|argument| argument == "--uninstall") {
             if !(arguments.len() == 1 && arguments[0] == "--uninstall"
                 || arguments.len() == 2 && arguments[0] == "--uninstall" && arguments[1] == "--quiet") {

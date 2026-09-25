@@ -1144,8 +1144,13 @@ export async function signalGogokeUpdateReady(): Promise<void> {
   return invoke<void>("gogoke_update_signal_ready", { resourceSetId });
 }
 
-export async function takeGogokeUpdateFailure(): Promise<string | null> {
-  return invoke<string | null>("gogoke_update_take_failure");
+export type GogokeUpdateFailureNotice = {
+  kind: "failure" | "cleanup_pending";
+  message: string;
+};
+
+export async function takeGogokeUpdateFailure(): Promise<GogokeUpdateFailureNotice | null> {
+  return invoke<GogokeUpdateFailureNotice | null>("gogoke_update_take_failure");
 }
 
 export async function sendNotification(

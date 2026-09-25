@@ -23,7 +23,8 @@ $ErrorActionPreference = "Stop"
 $phase = "initialize"
 $lock = $null
 $lifecycleLock = $null
-$backup = "$TargetDir.update-backup"
+$backupTag = [Guid]::NewGuid().ToString('N')
+$backup = $null
 $newProcess = $null
 $targetMoved = $false
 $installStarted = $false
@@ -33,6 +34,8 @@ $hadUninstallRegistration = $false
 $oldInstallInstanceId = $null
 $newInstallInstanceId = $null
 $oldExeSha256 = $null
+$oldInventory = $null
+$newInstallCommitted = $false
 $uninstallKey = "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke"
 $uninstallRegistryPath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke"
 $registryBackup = "$FailureLog.registry.reg"
@@ -83,23 +86,68 @@ function Assert-PhysicalDirectory([string]$path, [string]$label) {
     }
 }
 
-function Write-RetainedBackupState {
+function Write-UpdateState([string]$status, [string]$message) {
     $state = [IO.File]::ReadAllText($StateFile) | ConvertFrom-Json -ErrorAction Stop
-    if ($state.offer.version -cne $ExpectedVersion) {
+    if ($state.offer.version -cne $ExpectedVersion -or
+        $state.status -cnotin @('applying', 'installed_cleanup_pending',
+            'installed_backup_retained', 'installed')) {
         throw "prepared update state changed before completion"
     }
-    [IO.File]::WriteAllText($RetentionNoticeFile,
-        "The update is ready. The previous installation remains at $backup for owned-file cleanup.`r`n",
-        [Text.UTF8Encoding]::new($false))
-    $state.status = "installed_backup_retained"
-    $state.lastError = "Previous installation retained for owned-file cleanup: $backup"
+    $state.status = $status
+    $state.lastError = if ($message) { $message } else { $null }
     $partial = "$StateFile.$([Guid]::NewGuid().ToString('N')).part"
     $payload = $state | ConvertTo-Json -Depth 10
-    [IO.File]::WriteAllText($partial, $payload, [Text.UTF8Encoding]::new($false))
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($payload)
+    $partialStream = [IO.FileStream]::new($partial, [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
     try {
-        [IO.File]::Replace($partial, $StateFile, $null)
+        $partialStream.Write($bytes, 0, $bytes.Length)
+        $partialStream.Flush($true)
+    } finally { $partialStream.Dispose() }
+    try {
+        # The payload bytes are flushed before the single atomic replacement.
+        [IO.File]::Replace($partial, $StateFile, [NullString]::Value)
     } finally {
         if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+    }
+}
+
+function Get-OldOwnedInventory {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $CurrentExe
+    $start.Arguments = '--gogoke-update-owned-inventory'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $start.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $process = [Diagnostics.Process]::Start($start)
+    if (-not $process) { throw 'old inventory process did not start' }
+    try {
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(120000)) { throw 'old inventory process timed out' }
+        $output = $outputTask.GetAwaiter().GetResult()
+        $errorText = $errorTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "old installed shell could not attest its owned inventory: $errorText"
+        }
+        if ($output.Length -gt 16777216) { throw 'old owned inventory is too large' }
+        $record = $output | ConvertFrom-Json -ErrorAction Stop
+        if ($record.schema -cne 'gogoke.update-owned-inventory.v1' -or
+            -not [string]::Equals([IO.Path]::GetFullPath([string]$record.root).TrimEnd('\'),
+                $targetFull, [StringComparison]::OrdinalIgnoreCase) -or
+            $record.instance -cne $oldInstallInstanceId -or
+            $record.files.Count -lt 1 -or $record.files.Count -gt 100000 -or
+            [string]$record.rootIdentity.volumeSerialNumber -cnotmatch '^[0-9]+$' -or
+            [string]$record.rootIdentity.fileId -cnotmatch '^[0-9a-f]{32}$') {
+            throw 'old owned inventory identity is invalid'
+        }
+        return $record
+    } finally {
+        if (-not $process.HasExited) { $process.Kill(); $null = $process.WaitForExit(5000) }
+        $process.Dispose()
     }
 }
 
@@ -124,6 +172,228 @@ function Acquire-LifecycleLock {
         }
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "gogoke install lifecycle lock is unavailable"
+}
+
+function Initialize-BackupNative {
+    if ($script:backupNativeInitialized) { return }
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+        [Reflection.AssemblyName]::new('GogokeBackupNative'),
+        [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $module = $assembly.DefineDynamicModule('GogokeBackupNative')
+    $builder = $module.DefineType('GogokeBackupNative',
+        [Reflection.TypeAttributes]::Public -bor [Reflection.TypeAttributes]::Sealed)
+    $flags = [Reflection.MethodAttributes]::Public -bor
+        [Reflection.MethodAttributes]::Static -bor [Reflection.MethodAttributes]::PinvokeImpl
+    function Add-Native([string]$name, [Type]$result, [Type[]]$arguments) {
+        $method = $builder.DefineMethod($name, $flags, $result, $arguments)
+        $attribute = [Runtime.InteropServices.DllImportAttribute]
+        $constructor = $attribute.GetConstructor([Type[]]@([string]))
+        $fields = [Reflection.FieldInfo[]]@(
+            $attribute.GetField('SetLastError'), $attribute.GetField('CharSet'),
+            $attribute.GetField('ExactSpelling'), $attribute.GetField('CallingConvention'))
+        $values = [object[]]@($true, [Runtime.InteropServices.CharSet]::Unicode,
+            $true, [Runtime.InteropServices.CallingConvention]::Winapi)
+        $method.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new(
+            $constructor, [object[]]@('kernel32.dll'), $fields, $values))
+        $method.SetImplementationFlags(
+            [Reflection.MethodImplAttributes]($method.GetMethodImplementationFlags() -bor
+                [Reflection.MethodImplAttributes]::PreserveSig))
+    }
+    Add-Native 'CreateFileW' ([IntPtr]) @([string],[uint32],[uint32],[IntPtr],[uint32],[uint32],[IntPtr])
+    Add-Native 'GetFileInformationByHandleEx' ([bool]) @([IntPtr],[int],[IntPtr],[uint32])
+    Add-Native 'GetFinalPathNameByHandleW' ([uint32]) @([IntPtr],[Text.StringBuilder],[uint32],[uint32])
+    Add-Native 'SetFileInformationByHandle' ([bool]) @([IntPtr],[int],[IntPtr],[uint32])
+    $null = $builder.CreateType()
+    $script:backupNativeInitialized = $true
+}
+
+function Open-BackupObject([string]$path, [bool]$directory, [bool]$delete) {
+    $access = [uint32]0x80
+    if (-not $directory) { $access = $access -bor [uint32]2147483648 }
+    if ($delete) { $access = $access -bor [uint32]0x10000 }
+    $flags = [uint32]0x200000 # OPEN_REPARSE_POINT
+    if ($directory) { $flags = $flags -bor [uint32]0x2000000 }
+    $raw = [GogokeBackupNative]::CreateFileW($path, $access, [uint32]1,
+        [IntPtr]::Zero, [uint32]3, $flags, [IntPtr]::Zero)
+    if ($raw -eq [IntPtr]::Zero -or $raw.ToInt64() -eq -1) {
+        throw "old backup object could not be opened: $path"
+    }
+    return [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($raw, $true)
+}
+
+function Backup-Info([IntPtr]$handle, [int]$kind, [int]$length) {
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($length)
+    try {
+        if (-not [GogokeBackupNative]::GetFileInformationByHandleEx($handle, $kind,
+            $buffer, [uint32]$length)) { throw 'old backup handle information unavailable' }
+        $bytes = [byte[]]::new($length)
+        [Runtime.InteropServices.Marshal]::Copy($buffer, $bytes, 0, $length)
+        return ,$bytes
+    } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer) }
+}
+
+function Backup-Identity([IntPtr]$handle) {
+    $bytes = Backup-Info $handle 18 24
+    $id = ([BitConverter]::ToString($bytes, 8, 16)).Replace('-', '').ToLowerInvariant()
+    if ($id -ceq ('0' * 32)) { throw 'old backup file ID unavailable' }
+    return @{ volumeSerialNumber = [BitConverter]::ToUInt64($bytes, 0).ToString(); fileId = $id }
+}
+
+function Assert-BackupOpened([IntPtr]$handle, [string]$path, [bool]$directory,
+    [object]$expected) {
+    $attributes = [BitConverter]::ToUInt32((Backup-Info $handle 9 8), 0)
+    $name = [Text.StringBuilder]::new(32768)
+    $count = [GogokeBackupNative]::GetFinalPathNameByHandleW($handle, $name,
+        [uint32]$name.Capacity, [uint32]0)
+    if ($count -eq 0 -or $count -ge $name.Capacity -or
+        -not $name.ToString().StartsWith('\\?\', [StringComparison]::Ordinal) -or
+        ($attributes -band [uint32]0x400) -ne 0 -or
+        ((($attributes -band [uint32]0x10) -ne 0) -ne $directory) -or
+        -not [string]::Equals($name.ToString().Substring(4), $path,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "old backup opened object is unsafe: $path"
+    }
+    $actual = Backup-Identity $handle
+    if ($expected -and ($actual.volumeSerialNumber -cne [string]$expected.volumeSerialNumber -or
+            $actual.fileId -cne [string]$expected.fileId)) {
+        throw "old backup object identity changed: $path"
+    }
+    return $actual
+}
+
+function Pin-BackupDirectory([string]$path, [object]$expected) {
+    if ($script:backupPins.ContainsKey($path)) {
+        $pin = $script:backupPins[$path]
+        $null = Assert-BackupOpened $pin.handle.DangerousGetHandle() $path $true $expected
+        return
+    }
+    $handle = Open-BackupObject $path $true $false
+    try {
+        $identity = Assert-BackupOpened $handle.DangerousGetHandle() $path $true $expected
+        $script:backupPins.Add($path, @{ handle = $handle; identity = $identity })
+    } catch { $handle.Dispose(); throw }
+}
+
+function Pin-BackupAncestors([string]$path, [object]$rootIdentity) {
+    $full = [IO.Path]::GetFullPath($path)
+    if ($full -cnotmatch '^[A-Za-z]:\\') { throw 'old backup path must be drive absolute' }
+    $current = $full.Substring(0, 3)
+    Pin-BackupDirectory $current $null
+    foreach ($part in $full.Substring(3).Split([char]'\')) {
+        if (-not $part) { continue }
+        $current = [IO.Path]::Combine($current, $part)
+        Pin-BackupDirectory $current $(if ([string]::Equals($current, $backup,
+            [StringComparison]::OrdinalIgnoreCase)) { $rootIdentity } else { $null })
+    }
+}
+
+function Assert-BackupCustody([object]$inventory, [string]$newInstance) {
+    if (-not $lifecycleLock -or $lifecycleLock.SafeFileHandle.IsClosed -or
+        $lifecycleLock.SafeFileHandle.IsInvalid) { throw 'install lifecycle custody lost' }
+    Assert-InstallRegistration $newInstance
+    $rootPin = $script:backupPins[$backup]
+    if (-not $rootPin) { throw 'old backup root is not pinned' }
+    $null = Assert-BackupOpened $rootPin.handle.DangerousGetHandle() $backup $true `
+        $inventory.rootIdentity
+}
+
+function Verify-BackupFile([object]$entry, [bool]$delete, [object]$inventory,
+    [string]$newInstance) {
+    Assert-BackupCustody $inventory $newInstance
+    $handle = Open-BackupObject $entry.backupPath $false $delete
+    $stream = $null
+    try {
+        $raw = $handle.DangerousGetHandle()
+        $null = Assert-BackupOpened $raw $entry.backupPath $false $entry.identity
+        $stream = [IO.FileStream]::new($handle, [IO.FileAccess]::Read)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        if ($hash -cne [string]$entry.sha256) { throw "old backup file bytes changed: $($entry.backupPath)" }
+        $null = Assert-BackupOpened $raw $entry.backupPath $false $entry.identity
+        Assert-BackupCustody $inventory $newInstance
+        if ($delete) { Delete-BackupOpened $handle }
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        $handle.Dispose()
+    }
+    if ($delete -and (Test-Path -LiteralPath $entry.backupPath)) {
+        throw "old backup deletion unconfirmed: $($entry.backupPath)"
+    }
+}
+
+function Delete-BackupOpened([Microsoft.Win32.SafeHandles.SafeFileHandle]$handle) {
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal(1)
+    try {
+        [Runtime.InteropServices.Marshal]::WriteByte($buffer, 0, 1)
+        if (-not [GogokeBackupNative]::SetFileInformationByHandle(
+            $handle.DangerousGetHandle(), 4, $buffer, [uint32]1)) {
+            throw "old backup handle deletion failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+        }
+    } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer) }
+}
+
+function Invoke-OwnedBackupCleanup([object]$inventory, [string]$newInstance) {
+    Initialize-BackupNative
+    $script:backupPins = [System.Collections.Generic.Dictionary[string,object]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    $mapped = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $prefix = $targetFull.TrimEnd('\') + '\'
+    try {
+        Pin-BackupAncestors $backup $inventory.rootIdentity
+        foreach ($entry in $inventory.files) {
+            # Rust PathBuf may retain '/' inside a relative component. Treat
+            # it as a separator before applying the strict absolute/path
+            # traversal checks; object IDs and hashes still bind the target.
+            $source = ([string]$entry.path).Replace('/', '\')
+            if (-not $source.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals([IO.Path]::GetFullPath($source), $source,
+                    [StringComparison]::OrdinalIgnoreCase) -or
+                [string]$entry.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                [string]$entry.identity.volumeSerialNumber -cnotmatch '^[0-9]+$' -or
+                [string]$entry.identity.fileId -cnotmatch '^[0-9a-f]{32}$' -or
+                -not $seen.Add($source)) { throw 'old backup inventory entry is invalid' }
+            $relative = $source.Substring($prefix.Length)
+            if ($relative.Split([char]'\') | Where-Object { $_ -in @('', '.', '..') }) {
+                throw 'old backup inventory path is unsafe'
+            }
+            $destination = [IO.Path]::Combine($backup, $relative)
+            $parent = [IO.Path]::GetDirectoryName($destination)
+            Pin-BackupAncestors $parent $inventory.rootIdentity
+            $mapped.Add(@{ backupPath = $destination; sha256 = $entry.sha256;
+                identity = $entry.identity })
+        }
+        foreach ($entry in $mapped) { Verify-BackupFile $entry $false $inventory $newInstance }
+        foreach ($entry in $mapped) { Verify-BackupFile $entry $true $inventory $newInstance }
+        # Empty directories only. Unknown/user files make disposition fail and
+        # leave their containing directories and the unique retained root.
+        $directories = @($script:backupPins.Keys | Where-Object {
+            $_.StartsWith($backup, [StringComparison]::OrdinalIgnoreCase)
+        } | Sort-Object Length -Descending)
+        foreach ($directory in $directories) {
+            Assert-InstallRegistration $newInstance
+            $pin = $script:backupPins[$directory]
+            $pin.handle.Dispose()
+            $null = $script:backupPins.Remove($directory)
+            $handle = Open-BackupObject $directory $true $true
+            try {
+                $null = Assert-BackupOpened $handle.DangerousGetHandle() $directory $true $pin.identity
+                $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal(1)
+                try {
+                    [Runtime.InteropServices.Marshal]::WriteByte($buffer, 0, 1)
+                    if (-not [GogokeBackupNative]::SetFileInformationByHandle(
+                        $handle.DangerousGetHandle(), 4, $buffer, [uint32]1)) {
+                        $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                        if ($code -ne 145) { throw "old backup directory deletion failed: $code" }
+                    }
+                } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer) }
+            } finally { $handle.Dispose() }
+        }
+    } finally {
+        foreach ($pin in $script:backupPins.Values) { $pin.handle.Dispose() }
+        $script:backupPins.Clear()
+    }
 }
 
 # The coordinator and NSIS must hold the same file object continuously. The
@@ -296,6 +566,7 @@ try {
     }
     if ($ExpectedGenerationId -cnotmatch '^[0-9a-f]{64}$') { throw "ExpectedGenerationId is invalid" }
     $targetFull = [IO.Path]::GetFullPath($TargetDir).TrimEnd('\')
+    $backup = "$targetFull.update-backup-$backupTag"
     $targetRoot = [IO.Path]::GetPathRoot($targetFull).TrimEnd('\')
     if ([string]::Equals($targetFull, $targetRoot, [StringComparison]::OrdinalIgnoreCase)) {
         throw "target directory cannot be a volume root"
@@ -344,9 +615,7 @@ try {
         ((Get-Item -LiteralPath $TargetDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "target directory is a reparse point"
     }
-    if (Test-Path -LiteralPath $backup) {
-        throw "previous installation backup is retained for owned-file cleanup; full update deferred"
-    }
+    if (Test-Path -LiteralPath $backup) { throw 'new backup custody path is occupied' }
     $hadUninstallRegistration = (Invoke-Reg @("query", $uninstallKey)) -eq 0
     if (-not $hadUninstallRegistration) { throw "old gogoke install registration is missing" }
     if ($hadUninstallRegistration) {
@@ -365,8 +634,15 @@ try {
         $owned = Test-Path -LiteralPath (Join-Path $TargetDir "gogoke.exe") -PathType Leaf
         if (-not $owned) { throw "target directory is not owned by gogoke" }
         $oldExeSha256 = Get-Sha256Hex (Join-Path $TargetDir "gogoke.exe")
+        $oldInventory = Get-OldOwnedInventory
         Move-Item -LiteralPath $TargetDir -Destination $backup
         $targetMoved = $true
+        Initialize-BackupNative
+        $oldRoot = Open-BackupObject $backup $true $false
+        try {
+            $null = Assert-BackupOpened $oldRoot.DangerousGetHandle() $backup $true `
+                $oldInventory.rootIdentity
+        } finally { $oldRoot.Dispose() }
     }
 
     Set-Phase "install"
@@ -417,7 +693,18 @@ try {
                 $ready.generationId -cne $ExpectedGenerationId) {
                 throw "new application reported the wrong version or resource generation"
             }
-            Write-RetainedBackupState
+            Write-UpdateState 'installed_cleanup_pending' "new install committed; old owned cleanup pending at $backup"
+            $newInstallCommitted = $true
+            Set-Phase "cleanup-old-owned"
+            Invoke-OwnedBackupCleanup $oldInventory $newInstallInstanceId
+            if (Test-Path -LiteralPath $backup) {
+                [IO.File]::AppendAllText($RetentionNoticeFile,
+                    "The new installation is ready. Unlisted files remain at $backup.`r`n",
+                    [Text.UTF8Encoding]::new($false))
+                Write-UpdateState 'installed_backup_retained' "unlisted old backup files retained at $backup"
+            } else {
+                Write-UpdateState 'installed' ''
+            }
             Set-Phase "complete"
             Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
             if (Test-Path -LiteralPath $registryBackup) {
@@ -436,12 +723,20 @@ try {
 } catch {
     $initialError = $_.Exception.Message
     Write-Failure $initialError
+    if ($newInstallCommitted) {
+        # New readiness was committed before any possible old-file deletion.
+        # A partially deleted backup can never serve as a rollback source.
+        try {
+            Write-UpdateState 'installed_backup_retained' "old owned cleanup incomplete at $backup : $initialError"
+            [IO.File]::AppendAllText($RetentionNoticeFile,
+                "The new installation is ready. Old backup cleanup stopped at $backup : $initialError`r`n",
+                [Text.UTF8Encoding]::new($false))
+        } catch { Write-Failure "committed install cleanup state could not be recorded: $($_.Exception.Message)" }
+        exit 1
+    }
     if ($installerCompletionUnknown) {
         Write-Failure "$initialError`r`ninstaller completion is unknown; target and backup retained for recovery"
         exit 1
-    }
-    if (Test-Path -LiteralPath $RetentionNoticeFile) {
-        Remove-Item -LiteralPath $RetentionNoticeFile -Force -ErrorAction SilentlyContinue
     }
     if ($newProcess -and -not $newProcess.HasExited) {
         Stop-Process -Id $newProcess.Id -Force -ErrorAction SilentlyContinue

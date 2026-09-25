@@ -371,32 +371,102 @@ fn update_state_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(update_directory(app)?.join("update-state.json"))
 }
 
-fn consume_update_failure(app: &AppHandle) -> Result<Option<String>, String> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateNotice {
+    kind: &'static str,
+    message: String,
+}
+
+async fn wait_for_update_finalization(app: &AppHandle) -> Result<bool, String> {
+    if ready_path_from_args()?.is_none() {
+        return Ok(true);
+    }
+    let state_path = update_state_path(app)?;
+    // The same readiness command is also used by isolated installed-product
+    // smoke. Only a coordinator-owned applying state requires this wait.
+    if !state_path.is_file() {
+        return Ok(true);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        if let Ok(payload) = std::fs::read(&state_path) {
+            if let Ok(state) = serde_json::from_slice::<PreparedUpdateState>(&payload) {
+                if state.schema == 1
+                    && matches!(
+                        state.status.as_str(),
+                        "installed" | "installed_backup_retained" | "failed"
+                    )
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+fn consume_update_failure(app: &AppHandle) -> Result<Option<UpdateNotice>, String> {
     let directory = update_directory(app)?;
     let failure = directory.join("update-failure.log");
-    if !failure.is_file() {
-        return Ok(None);
-    }
-    let bytes = std::fs::read(&failure)
-        .map_err(|error| format!("could not read the previous update failure: {error}"))?;
-    let bounded = &bytes[..bytes.len().min(8 * 1024)];
-    let message = String::from_utf8_lossy(bounded).trim().to_string();
-    let reported = directory.join("update-failure.reported.log");
-    if reported.exists() {
-        std::fs::remove_file(&reported)
-            .map_err(|error| format!("could not rotate the update failure log: {error}"))?;
-    }
-    std::fs::rename(failure, reported)
-        .map_err(|error| format!("could not preserve the update failure log: {error}"))?;
+    let failure_message = if failure.is_file() {
+        let bytes = std::fs::read(&failure)
+            .map_err(|error| format!("could not read the previous update failure: {error}"))?;
+        let bounded = &bytes[..bytes.len().min(8 * 1024)];
+        let message = String::from_utf8_lossy(bounded).trim().to_string();
+        let reported = directory.join("update-failure.reported.log");
+        if reported.exists() {
+            std::fs::remove_file(&reported)
+                .map_err(|error| format!("could not rotate the update failure log: {error}"))?;
+        }
+        std::fs::rename(failure, reported)
+            .map_err(|error| format!("could not preserve the update failure log: {error}"))?;
+        Some(message)
+    } else {
+        None
+    };
     let state_path = update_state_path(app)?;
     if let Ok(payload) = std::fs::read(&state_path) {
         if let Ok(mut state) = serde_json::from_slice::<PreparedUpdateState>(&payload) {
-            state.status = "failed".to_string();
-            state.last_error = Some(message.clone());
-            let _ = write_update_state(app, &state);
+            // The coordinator commits a ready installation before it starts
+            // deleting owned files from the old backup. A cleanup error may
+            // be reported, but it cannot turn that installation into a
+            // failed update or make a partially deleted backup rollbackable.
+            if matches!(
+                state.status.as_str(),
+                "installed_cleanup_pending" | "installed_backup_retained"
+            ) {
+                let detail = failure_message
+                    .as_deref()
+                    .or(state.last_error.as_deref())
+                    .unwrap_or("old installation cleanup has not completed");
+                return Ok(Some(UpdateNotice {
+                    kind: "cleanup_pending",
+                    message: format!(
+                        "The new gogoke installation is active; cleanup of the previous installation is incomplete: {detail}"
+                    ),
+                }));
+            }
+            // The coordinator publishes installed before it removes any
+            // previous failure log. Rotate that old log above, but never
+            // announce a failed update for a committed successful install.
+            if state.status == "installed" {
+                return Ok(None);
+            }
+            if state.status != "installed" && failure_message.is_some() {
+                state.status = "failed".to_string();
+                state.last_error = failure_message.clone();
+                let _ = write_update_state(app, &state);
+            }
         }
     }
-    Ok(Some(message))
+    Ok(failure_message.map(|message| UpdateNotice {
+        kind: "failure",
+        message: format!("The previous gogoke update needs attention: {message}"),
+    }))
 }
 
 fn write_update_state(app: &AppHandle, state: &PreparedUpdateState) -> Result<(), String> {
@@ -655,8 +725,16 @@ pub async fn gogoke_update_signal_ready(
 }
 
 #[tauri::command]
-pub fn gogoke_update_take_failure(app: AppHandle) -> Result<Option<String>, String> {
-    consume_update_failure(&app)
+pub async fn gogoke_update_take_failure(app: AppHandle) -> Result<Option<UpdateNotice>, String> {
+    let settled = wait_for_update_finalization(&app).await?;
+    let notice = consume_update_failure(&app)?;
+    if notice.is_some() || settled {
+        return Ok(notice);
+    }
+    Ok(Some(UpdateNotice {
+        kind: "cleanup_pending",
+        message: "The gogoke update finalization is still pending; the installed version has not yet been confirmed.".to_string(),
+    }))
 }
 
 async fn release_identity(
