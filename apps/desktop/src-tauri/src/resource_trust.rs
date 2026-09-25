@@ -244,7 +244,7 @@ fn read_verified_file(
             bytes.extend_from_slice(&buffer[..size]);
         }
     }
-    if count != expected.length || format!("{:x}", digest) != expected.sha256 {
+    if count != expected.length || format!("{:x}", digest.finalize()) != expected.sha256 {
         return Err("GOGOKE_RESOURCE_FILE_IDENTITY_MISMATCH".to_string());
     }
     Ok(bytes)
@@ -512,9 +512,15 @@ fn active_set_dir(root: &Path) -> Result<PathBuf, String> {
 }
 
 fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<PathBuf, String> {
-    physical_directory_or_create(&root.join(RESOURCE_SETS))?;
-    let destination = root.join(RESOURCE_SETS).join(&signed.set_id);
+    let sets = root.join(RESOURCE_SETS);
+    physical_directory_or_create(&sets)?;
+    let destination = sets.join(&signed.set_id);
     if destination.exists() {
+        let metadata = fs::symlink_metadata(&destination)
+            .map_err(|_| "GOGOKE_RESOURCE_SET_UNREADABLE".to_string())?;
+        if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
+            return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
+        }
         let current = signed_index(&destination)?;
         if current.domain != signed.domain
             || current.binding.hashes != signed.binding.hashes
@@ -524,7 +530,8 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
         }
         return Ok(destination);
     }
-    physical_directory_or_create(&destination)?;
+    let temporary = sets.join(format!(".stage-{}", uuid::Uuid::new_v4()));
+    physical_directory_or_create(&temporary)?;
     let manifest_name = if signed.domain == Domain::Candidate {
         CANDIDATE_MANIFEST
     } else {
@@ -536,16 +543,18 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
         manifest_name.to_string(),
         format!("{manifest_name}.sig"),
     ] {
-        fs::copy(source.join(&name), destination.join(&name))
+        fs::copy(source.join(&name), temporary.join(&name))
             .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_FAILED".to_string())?;
     }
-    let staged = signed_index(&destination)?;
+    let staged = signed_index(&temporary)?;
     if staged.domain != signed.domain
         || staged.binding.hashes != signed.binding.hashes
         || staged.index.source_commit != signed.index.source_commit
     {
         return Err("GOGOKE_RESOURCE_SET_STAGE_MISMATCH".to_string());
     }
+    fs::rename(&temporary, &destination)
+        .map_err(|_| "GOGOKE_RESOURCE_SET_PUBLISH_FAILED".to_string())?;
     Ok(destination)
 }
 
@@ -629,7 +638,27 @@ fn validate_install_registration(root: &Path, domain: Domain) -> Result<String, 
     {
         return Err("GOGOKE_INSTALL_REGISTRATION_INVALID".to_string());
     }
+    reject_opposite_registered_root(root, domain)?;
     Ok(instance)
+}
+
+fn reject_opposite_registered_root(root: &Path, domain: Domain) -> Result<(), String> {
+    let opposite = if domain == Domain::Candidate { "gogoke" } else { "gogoke-candidate" };
+    let other = RegKey::predef(HKEY_CURRENT_USER).open_subkey(format!(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{opposite}"
+    ));
+    let Ok(other) = other else { return Ok(()); };
+    let location: String = other.get_value("InstallLocation")
+        .map_err(|_| "GOGOKE_INSTALL_OPPOSITE_REGISTRATION_INVALID".to_string())?;
+    let other_root = Path::new(&location);
+    let same = if other_root.exists() {
+        other_root.canonicalize().map_err(|_| "GOGOKE_INSTALL_OPPOSITE_REGISTRATION_INVALID")?
+            == root.canonicalize().map_err(|_| "GOGOKE_INSTALL_ROOT_UNAVAILABLE")?
+    } else {
+        other_root.to_string_lossy().eq_ignore_ascii_case(&root.to_string_lossy())
+    };
+    if same { return Err("GOGOKE_INSTALL_DOMAIN_ROOT_COLLISION".to_string()); }
+    Ok(())
 }
 
 fn collect_files(root: &Path, relative: &str, found: &mut HashSet<String>) -> Result<(), String> {
@@ -871,6 +900,8 @@ pub(crate) fn verify_install_target(source: &Path, target: &Path) -> Result<(), 
         return Err("GOGOKE_INSTALL_TARGET_INVALID".to_string());
     }
     let signed = signed_index(source)?;
+    let verifier = std::env::current_exe().map_err(|_| "GOGOKE_EXE_PATH_UNAVAILABLE")?;
+    file_sha256(&verifier, &signed.index.executables.portable_shell)?;
     let parent = target.parent().ok_or("GOGOKE_INSTALL_TARGET_INVALID")?;
     for path in parent.ancestors() {
         if !path.exists() { return Err("GOGOKE_INSTALL_PARENT_MISSING".to_string()); }
@@ -989,7 +1020,7 @@ fn extract_generation(
         output
             .sync_all()
             .map_err(|_| "GOGOKE_RESOURCE_EXTRACT_WRITE_FAILED".to_string())?;
-        if length != record.length || format!("{:x}", digest) != record.sha256 {
+        if length != record.length || format!("{:x}", digest.finalize()) != record.sha256 {
             return Err("GOGOKE_RESOURCE_PACK_ENTRY_HASH".to_string());
         }
     }
@@ -1005,6 +1036,7 @@ pub(crate) fn install_resources(source: &Path) -> Result<(), String> {
     let executable =
         std::env::current_exe().map_err(|_| "GOGOKE_EXE_PATH_UNAVAILABLE".to_string())?;
     let root = executable.parent().ok_or("GOGOKE_EXE_PATH_UNAVAILABLE")?;
+    reject_opposite_registered_root(root, source_signed.domain)?;
     let installed_signed = signed_index(root)?;
     if source_signed.domain != installed_signed.domain
         || source_signed.binding.hashes != installed_signed.binding.hashes

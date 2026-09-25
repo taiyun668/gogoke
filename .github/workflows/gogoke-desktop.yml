@@ -46,6 +46,19 @@ jobs:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bind browser build to exact source commit and date
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          if ($commit -cne '${{ github.event.pull_request.head.sha || github.sha }}') { throw 'Browser checkout differs from source head' }
+          "GIT_COMMIT=$commit" >> $env:GITHUB_ENV
+          $branch = if ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF } else { $env:GITHUB_REF_NAME }
+          "GIT_BRANCH=$branch" >> $env:GITHUB_ENV
+          $epoch = (git show -s --format=%ct HEAD).Trim()
+          if ($epoch -notmatch '^[0-9]+$') { throw 'Source commit timestamp is unavailable' }
+          "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
@@ -79,6 +92,8 @@ jobs:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
@@ -136,7 +151,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gogoke-license-notices-${{ github.sha }}-${{ github.run_id }}
+          name: gogoke-license-notices-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
           path: |
             apps/desktop/generated/npm-production.spdx.json
             apps/desktop/generated/npm-production-notices.html
@@ -161,7 +176,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Bind Windows build to exact source commit and date
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          if ($commit -cne '${{ github.event.pull_request.head.sha || github.sha }}') { throw 'Windows checkout differs from source head' }
+          "GIT_COMMIT=$commit" >> $env:GITHUB_ENV
+          $branch = if ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF } else { $env:GITHUB_REF_NAME }
+          "GIT_BRANCH=$branch" >> $env:GITHUB_ENV
+          $epoch = (git show -s --format=%ct HEAD).Trim()
+          if ($epoch -notmatch '^[0-9]+$') { throw 'Source commit timestamp is unavailable' }
+          "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
@@ -175,7 +202,7 @@ jobs:
       - name: Download notices from this exact workflow run
         uses: actions/download-artifact@v4
         with:
-          name: gogoke-license-notices-${{ github.sha }}-${{ github.run_id }}
+          name: gogoke-license-notices-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
           path: apps/desktop/generated
       - name: Require clean independent native outputs and notices
         shell: pwsh
@@ -285,7 +312,7 @@ jobs:
             --portable-shell src-tauri/target/release/gogoke.exe `
             --native-host src-tauri/binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe `
             --node src-tauri/resources/gogoke-service/runtime/node.exe `
-            --source-commit '${{ github.sha }}' --version $version `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --version $version `
             --installed-root $installedRoot --output $index
           if ($LASTEXITCODE -ne 0) { throw "resource index creation failed: $LASTEXITCODE" }
           python ../../tools/ci/gogoke_resource_pack.py verify --pack $pack --index $index
@@ -304,7 +331,7 @@ jobs:
             --node src-tauri/resources/gogoke-service/runtime/node.exe `
             --installer $installers[0].FullName `
             --package-inventory generated/gogoke-package-hashes.json `
-            --source-commit '${{ github.sha }}' --run-id '${{ github.run_id }}' `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --run-id '${{ github.run_id }}' `
             --run-attempt '${{ github.run_attempt }}' --lane '${{ matrix.lane }}' `
             --output frozen-artifact
           if ($LASTEXITCODE -ne 0) { throw "frozen artifact staging failed: $LASTEXITCODE" }
@@ -313,9 +340,9 @@ jobs:
         shell: pwsh
         run: |
           $name = if ('${{ matrix.lane }}' -ceq 'frozen') {
-            'gogoke-windows-frozen-${{ github.sha }}-${{ github.run_id }}'
+            'gogoke-windows-frozen-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}'
           } else {
-            'gogoke-windows-repro-${{ github.sha }}-${{ github.run_id }}'
+            'gogoke-windows-repro-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}'
           }
           "name=$name" >> $env:GITHUB_OUTPUT
       - name: Upload immutable build lane
@@ -334,28 +361,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: gogoke-windows-frozen-${{ github.sha }}-${{ github.run_id }}
+          name: gogoke-windows-frozen-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
           path: comparison/frozen
       - uses: actions/download-artifact@v4
         with:
-          name: gogoke-windows-repro-${{ github.sha }}-${{ github.run_id }}
+          name: gogoke-windows-repro-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
           path: comparison/repro
       - name: Require byte-identical raw shell, NSIS-patched shell, host, Node, pack, and index
         shell: pwsh
         run: |
           python tools/ci/gogoke_ci_frozen_artifact.py compare `
             --frozen comparison/frozen --repro comparison/repro `
-            --source-commit '${{ github.sha }}' --run-id '${{ github.run_id }}' `
+            --source-commit '${{ github.event.pull_request.head.sha || github.sha }}' --run-id '${{ github.run_id }}' `
             --run-attempt '${{ github.run_attempt }}' `
             --output comparison/gogoke-r2-06-reproducibility.json
           if ($LASTEXITCODE -ne 0) { throw "independent Windows byte comparison failed: $LASTEXITCODE" }
       - name: Upload reproducibility evidence
         uses: actions/upload-artifact@v4
         with:
-          name: gogoke-windows-reproducibility-${{ github.sha }}-${{ github.run_id }}
+          name: gogoke-windows-reproducibility-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
           path: comparison/gogoke-r2-06-reproducibility.json
           if-no-files-found: error
           retention-days: 30

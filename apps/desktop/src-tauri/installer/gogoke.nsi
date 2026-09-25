@@ -270,6 +270,7 @@ Function SelectSignedInstallDomain
     StrCpy $GogokeUninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate"
     StrCpy $GogokeProductKey "Software\gogoke\gogoke-candidate"
     StrCpy $GogokeDefaultRoot "$LOCALAPPDATA\gogoke-candidate"
+    StrCpy $NoShortcutMode 1
     Return
   ${EndIf}
   ${If} $0 = 0
@@ -331,9 +332,10 @@ SectionEnd
 
 Section SignedInstallSetPreflight
   ; Verify the sibling set with the bundled shell before touching an existing install.
+  InitPluginsDir
   SetOutPath "$PLUGINSDIR\gogoke-preflight"
   File /oname=gogoke.exe "${MAINBINARYSRCPATH}"
-  ExecWait '"$PLUGINSDIR\gogoke-preflight\gogoke.exe" "--gogoke-verify-install-set=$EXEDIR"' $0
+  ExecWait '"$PLUGINSDIR\gogoke-preflight\gogoke.exe" "--gogoke-verify-install-set=$EXEDIR" "--gogoke-install-target=$INSTDIR"' $0
   ${If} $0 != 0
     Abort "The signed Gogoke installer sibling set could not be verified."
   ${EndIf}
@@ -562,8 +564,6 @@ install_set_verified:
   StrCmp $R0 $GogokeInstallInstanceId 0 install_registration_failed
   ReadRegStr $R0 HKCU "$GogokeUninstallKey" "UninstallString"
   StrCmp $R0 "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --uninstall" 0 install_registration_failed
-  ; A legacy uninstaller is retired only after verified resources and registration.
-  Delete "$INSTDIR\uninstall.exe"
   Goto install_registration_verified
 install_registration_failed:
   Abort "The Gogoke install registration could not be written and read back."

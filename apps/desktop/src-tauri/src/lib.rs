@@ -103,12 +103,22 @@ pub fn run() {
     }
 
     #[cfg(target_os = "windows")]
-    if let Some(path) = std::env::args().find_map(|argument| {
-        argument
-            .strip_prefix("--gogoke-verify-install-set=")
-            .map(std::path::PathBuf::from)
-    }) {
-        let result = resource_trust::verify_install_set(&path);
+    if std::env::args().any(|argument| argument.starts_with("--gogoke-verify-install-set=")) {
+        let arguments: Vec<String> = std::env::args().skip(1).collect();
+        let result = if arguments.len() == 2 {
+            match (
+                arguments[0].strip_prefix("--gogoke-verify-install-set="),
+                arguments[1].strip_prefix("--gogoke-install-target="),
+            ) {
+                (Some(source), Some(target)) => resource_trust::verify_install_target(
+                    std::path::Path::new(source),
+                    std::path::Path::new(target),
+                ),
+                _ => Err("GOGOKE_INSTALL_PREFLIGHT_ARGUMENTS_INVALID".to_string()),
+            }
+        } else {
+            Err("GOGOKE_INSTALL_PREFLIGHT_ARGUMENTS_INVALID".to_string())
+        };
         if let Err(error) = &result { eprintln!("{error}"); }
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
@@ -225,7 +235,7 @@ pub fn run() {
                         .expect("fixed gogoke resource URL"),
                 );
                 app.manage(resources.clone());
-                tauri::WebviewWindowBuilder::from_config(&app.handle(), &main_config)?.build()?;
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &main_config)?.build()?;
             }
             #[cfg(target_os = "macos")]
             {
