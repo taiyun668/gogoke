@@ -196,7 +196,7 @@ function Finish-BoundedCapture([object]$Capture) {
     return (Redact-Diagnostic ([Text.Encoding]::UTF8.GetString($Capture.sink.Snapshot())))
 }
 
-function Get-WebviewSnapshot([int]$Port) {
+function Get-WebviewSnapshot([int]$Port, [bool]$ProbeReadiness = $false) {
     $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 3
     $pages = [Collections.Generic.List[object]]::new()
     foreach ($target in $targets) {
@@ -223,13 +223,20 @@ function Get-WebviewSnapshot([int]$Port) {
         return [pscustomobject]@{ pages = $reportedPages.ToArray() }
     }
     $socket = [Net.WebSockets.ClientWebSocket]::new()
-    $timeout = [Threading.CancellationTokenSource]::new(3000)
+    $timeoutMilliseconds = if ($ProbeReadiness) { 25000 } else { 3000 }
+    $timeout = [Threading.CancellationTokenSource]::new([int]$timeoutMilliseconds)
     try {
         $null = $socket.ConnectAsync([Uri]$page.webSocketDebuggerUrl,
             $timeout.Token).GetAwaiter().GetResult()
-        $expression = '({href:location.href,readyState:document.readyState,tauriInternals:!!window.__TAURI_INTERNALS__,rootChildren:document.getElementById("root")?.childElementCount ?? -1,rootTextLength:document.getElementById("root")?.textContent?.length ?? -1,scriptUrls:[...document.scripts].map(s=>s.src).slice(0,4)})'
-        $request = @{ id = 1; method = 'Runtime.evaluate'; params = @{
-            expression = $expression; returnByValue = $true } } | ConvertTo-Json -Compress -Depth 4
+        $expression = if ($ProbeReadiness) {
+            '(async()=>{try{await window.__TAURI_INTERNALS__.invoke("gogoke_update_signal_ready",{resourceSetId:null});return {ok:true}}catch(e){return {ok:false,error:String(e).slice(0,512)}}})()'
+        } else {
+            '({href:location.href,readyState:document.readyState,tauriInternals:!!window.__TAURI_INTERNALS__,rootChildren:document.getElementById("root")?.childElementCount ?? -1,rootTextLength:document.getElementById("root")?.textContent?.length ?? -1,scriptUrls:[...document.scripts].map(s=>s.src).slice(0,4)})'
+        }
+        $parameters = @{ expression = $expression; returnByValue = $true }
+        if ($ProbeReadiness) { $parameters.awaitPromise = $true }
+        $request = @{ id = 1; method = 'Runtime.evaluate'; params = $parameters } |
+            ConvertTo-Json -Compress -Depth 4
         $bytes = [Text.Encoding]::UTF8.GetBytes($request)
         $null = $socket.SendAsync([ArraySegment[byte]]::new($bytes),
             [Net.WebSockets.WebSocketMessageType]::Text, $true,
@@ -586,6 +593,17 @@ try {
     $message = [string]$_.Exception.Message
     if ($script:stage -ceq 'sentinel-and-product-readiness') {
         try {
+            $actualRoot = Join-Path $script:appDataRoot 'product-authority'
+            Write-Output ("DIAG_PRODUCT_ROOT_BEFORE_READY_PROBE=" +
+                (Test-Path -LiteralPath $actualRoot -PathType Container))
+            $tempSpellings = [pscustomobject]@{
+                argParent = [IO.Path]::GetDirectoryName($script:ownedReadyReceipt)
+                tmp = [string]$env:TMP
+                temp = [string]$env:TEMP
+                dotnet = [IO.Path]::GetTempPath()
+            }
+            Write-Output ("DIAG_TEMP_SPELLINGS=" +
+                (Redact-Diagnostic ($tempSpellings | ConvertTo-Json -Compress)))
             if ($script:productStarted -and $script:webviewDebugPort -and
                 $product -and -not $product.HasExited) {
                 try {
@@ -594,6 +612,14 @@ try {
                     Write-Output ("DIAG_WEBVIEW=" + (Redact-Diagnostic $snapshot))
                 } catch {
                     Write-Output ("DIAG_WEBVIEW_FAILED=" +
+                        (Redact-Diagnostic ([string]$_.Exception.Message)))
+                }
+                try {
+                    $readyProbe = (Get-WebviewSnapshot $script:webviewDebugPort $true) |
+                        ConvertTo-Json -Depth 5 -Compress
+                    Write-Output ("DIAG_READY_INVOKE=" + (Redact-Diagnostic $readyProbe))
+                } catch {
+                    Write-Output ("DIAG_READY_INVOKE_FAILED=" +
                         (Redact-Diagnostic ([string]$_.Exception.Message)))
                 }
             }
@@ -607,7 +633,6 @@ try {
             if ($script:productStdoutCapture) {
                 Write-Output ("DIAG_PRODUCT_STDOUT=" + (Finish-BoundedCapture $script:productStdoutCapture))
             }
-            $actualRoot = Join-Path $script:appDataRoot 'product-authority'
             Write-Output ("DIAG_PRODUCT_ROOT_EXISTS=" + (Test-Path -LiteralPath $actualRoot -PathType Container))
             $formalRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)) 'app.gogoke.desktop\product-authority'
             Write-Output ("DIAG_FORMAL_ROOT_EXISTS=" + (Test-Path -LiteralPath $formalRoot -PathType Container))
