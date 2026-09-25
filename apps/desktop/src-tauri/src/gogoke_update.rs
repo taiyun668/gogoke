@@ -409,60 +409,80 @@ async fn wait_for_update_finalization(app: &AppHandle) -> Result<bool, String> {
     }
 }
 
+fn notice_state(path: &Path) -> Option<PreparedUpdateState> {
+    let payload = std::fs::read(path).ok()?;
+    serde_json::from_slice(&payload).ok()
+}
+
+fn rotate_read_failure_log(
+    failure: &Path,
+    reported: &Path,
+    message: String,
+) -> Result<Option<String>, String> {
+    match std::fs::remove_file(reported) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("could not rotate the update failure log: {error}")),
+    }
+    match std::fs::rename(failure, reported) {
+        Ok(()) => Ok(Some(message)),
+        // The coordinator can remove a stale log after publishing installed.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("could not preserve the update failure log: {error}")),
+    }
+}
+
 fn consume_update_failure(app: &AppHandle) -> Result<Option<UpdateNotice>, String> {
     let directory = update_directory(app)?;
-    let failure = directory.join("update-failure.log");
-    let failure_message = if failure.is_file() {
-        let bytes = std::fs::read(&failure)
-            .map_err(|error| format!("could not read the previous update failure: {error}"))?;
-        let bounded = &bytes[..bytes.len().min(8 * 1024)];
-        let message = String::from_utf8_lossy(bounded).trim().to_string();
-        let reported = directory.join("update-failure.reported.log");
-        if reported.exists() {
-            std::fs::remove_file(&reported)
-                .map_err(|error| format!("could not rotate the update failure log: {error}"))?;
-        }
-        std::fs::rename(failure, reported)
-            .map_err(|error| format!("could not preserve the update failure log: {error}"))?;
-        Some(message)
-    } else {
-        None
-    };
     let state_path = update_state_path(app)?;
-    if let Ok(payload) = std::fs::read(&state_path) {
-        if let Ok(mut state) = serde_json::from_slice::<PreparedUpdateState>(&payload) {
-            // The coordinator commits a ready installation before it starts
-            // deleting owned files from the old backup. A cleanup error may
-            // be reported, but it cannot turn that installation into a
-            // failed update or make a partially deleted backup rollbackable.
-            if matches!(
-                state.status.as_str(),
-                "installed_cleanup_pending" | "installed_backup_retained"
-            ) {
-                let detail = failure_message
-                    .as_deref()
-                    .or(state.last_error.as_deref())
-                    .unwrap_or("old installation cleanup has not completed");
-                return Ok(Some(UpdateNotice {
-                    kind: "cleanup_pending",
-                    message: format!(
-                        "The new gogoke installation is active; cleanup of the previous installation is incomplete: {detail}"
-                    ),
-                }));
-            }
-            // The coordinator publishes installed before it removes any
-            // previous failure log. Rotate that old log above, but never
-            // announce a failed update for a committed successful install.
-            if state.status == "installed" {
-                return Ok(None);
-            }
-            if state.status != "installed" && failure_message.is_some() {
-                state.status = "failed".to_string();
-                state.last_error = failure_message.clone();
-                let _ = write_update_state(app, &state);
-            }
+    if matches!(
+        notice_state(&state_path).as_ref().map(|state| state.status.as_str()),
+        Some("installed")
+    ) {
+        return Ok(None);
+    }
+    let failure = directory.join("update-failure.log");
+    let failure_message_result = match std::fs::read(&failure) {
+        Ok(bytes) => {
+            let bounded = &bytes[..bytes.len().min(8 * 1024)];
+            let message = String::from_utf8_lossy(bounded).trim().to_string();
+            rotate_read_failure_log(
+                &failure,
+                &directory.join("update-failure.reported.log"),
+                message,
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("could not read the previous update failure: {error}")),
+    };
+    // Re-read after log rotation: the coordinator may have committed installed
+    // and removed the old log while this command was consuming it.
+    if let Some(state) = notice_state(&state_path) {
+        if state.status == "installed" {
+            return Ok(None);
+        }
+        // The coordinator commits a ready installation before it starts
+        // deleting owned files from the old backup. A cleanup error may
+        // be reported, but it cannot turn that installation into a
+        // failed update or make a partially deleted backup rollbackable.
+        if matches!(
+            state.status.as_str(),
+            "installed_cleanup_pending" | "installed_backup_retained"
+        ) {
+            let detail = state
+                .last_error
+                .as_deref()
+                .filter(|detail| !detail.is_empty())
+                .unwrap_or("old installation cleanup has not completed");
+            return Ok(Some(UpdateNotice {
+                kind: "cleanup_pending",
+                message: format!(
+                    "The new gogoke installation is active; cleanup of the previous installation is incomplete: {detail}"
+                ),
+            }));
         }
     }
+    let failure_message = failure_message_result?;
     Ok(failure_message.map(|message| UpdateNotice {
         kind: "failure",
         message: format!("The previous gogoke update needs attention: {message}"),
@@ -1251,6 +1271,43 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).expect("create readiness test directory");
         directory
+    }
+
+    #[test]
+    fn failure_log_removed_after_read_is_not_reported_as_update_failure() {
+        let directory = readiness_test_directory();
+        let failure = directory.join("update-failure.log");
+        let reported = directory.join("update-failure.reported.log");
+        std::fs::write(&failure, b"stale failure").expect("write old failure log");
+        let message = std::fs::read_to_string(&failure).expect("read old failure log");
+        // The coordinator may delete this log after publishing installed.
+        std::fs::remove_file(&failure).expect("simulate coordinator removal");
+        assert_eq!(
+            rotate_read_failure_log(&failure, &reported, message)
+                .expect("removed log is not a failed update"),
+            None
+        );
+        assert!(!reported.exists());
+        std::fs::remove_dir_all(directory).expect("remove failure log test directory");
+    }
+
+    #[test]
+    fn existing_failure_log_is_preserved_and_reported() {
+        let directory = readiness_test_directory();
+        let failure = directory.join("update-failure.log");
+        let reported = directory.join("update-failure.reported.log");
+        std::fs::write(&failure, b"actual failure").expect("write failure log");
+        let message = std::fs::read_to_string(&failure).expect("read failure log");
+        assert_eq!(
+            rotate_read_failure_log(&failure, &reported, message)
+                .expect("rotate existing failure log"),
+            Some("actual failure".to_string())
+        );
+        assert_eq!(
+            std::fs::read(&reported).expect("read preserved failure log"),
+            b"actual failure"
+        );
+        std::fs::remove_dir_all(directory).expect("remove failure log test directory");
     }
 
     #[test]
