@@ -72,8 +72,8 @@ const cargoVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
 if (packageJson.name !== "gogoke") failures.push("package.json: wrong package identity");
 if (tauriConfig.productName !== "gogoke") failures.push("tauri.conf.json: wrong product identity");
 if (tauriConfig.identifier !== "app.gogoke.desktop") failures.push("tauri.conf.json: wrong app identifier");
-if (packageJson.version !== tauriConfig.version || packageJson.version !== cargoVersion) {
-  failures.push("package.json, tauri.conf.json, and Cargo.toml versions differ");
+if (tauriConfig.version !== "0.0.0" || cargoVersion !== "0.0.0") {
+  failures.push("compiled Tauri and Cargo shell versions must stay fixed at 0.0.0");
 }
 if (tauriConfig.plugins?.updater) failures.push("tauri.conf.json: inherited updater is still configured");
 

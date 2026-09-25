@@ -1,6 +1,7 @@
 [package]
 name = "gogoke"
-version = "0.1.2"
+# Stable shell identity; the product release version comes from signed resources.
+version = "0.0.0"
 description = "Native desktop shell for gogoke"
 authors = ["gogoke"]
 edition = "2021"

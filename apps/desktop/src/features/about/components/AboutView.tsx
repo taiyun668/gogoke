@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AppLanguagePreference } from "@/types";
 import { getAppSettings } from "@services/tauri";
@@ -43,7 +43,7 @@ function AboutViewContent() {
     let active = true;
     const fetchVersion = async () => {
       try {
-        const value = await getVersion();
+        const value = await invoke<string>("gogoke_product_version");
         if (active) {
           setVersion(value);
         }

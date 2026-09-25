@@ -308,6 +308,7 @@ pub fn run() {
             settings::get_app_settings,
             settings::update_app_settings,
             settings::get_codex_config_path,
+            gogoke_update::gogoke_product_version,
             gogoke_update::gogoke_update_check,
             gogoke_update::gogoke_update_install,
             gogoke_update::gogoke_update_signal_ready,

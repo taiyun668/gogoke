@@ -777,6 +777,11 @@ fn current_version(app: &AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn gogoke_product_version(app: AppHandle) -> Result<String, String> {
+    current_version(&app)
+}
+
+#[tauri::command]
 pub async fn gogoke_update_check(app: AppHandle) -> Result<Option<GogokeUpdateOffer>, String> {
     if !cfg!(target_os = "windows") {
         return Ok(None);
