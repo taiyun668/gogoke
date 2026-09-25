@@ -17,6 +17,9 @@ from typing import Any
 
 SCHEMA = "gogoke.resource-index.v1"
 ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+MAX_INDEX_BYTES = 4 << 20
+MAX_U64 = (1 << 64) - 1
+MAX_WINDOWS_COMPONENT = 255
 INSTALL_TOKEN = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
 INSTALLED_TOKEN = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -71,7 +74,7 @@ def _is_reparse_point(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
 
 
-def _physical_file(path: Path) -> bytes:
+def _physical_file(path: Path, max_bytes: int | None = None) -> bytes:
     try:
         info = path.lstat()
     except OSError as exc:
@@ -83,7 +86,10 @@ def _physical_file(path: Path) -> bytes:
             opened = os.fstat(stream.fileno())
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 raise ResourcePackError(f"file changed while opening: {path}")
-            return stream.read()
+            data = stream.read(max_bytes + 1 if max_bytes is not None else -1)
+            if max_bytes is not None and len(data) > max_bytes:
+                raise ResourcePackError(f"file exceeds {max_bytes} bytes: {path}")
+            return data
     except OSError as exc:
         raise ResourcePackError(f"cannot read file {path}: {exc}") from exc
 
@@ -97,7 +103,8 @@ def _normalized_relative(name: str) -> str:
     if path.as_posix() != name:
         raise ResourcePackError(f"non-canonical archive path: {name!r}")
     for component in path.parts:
-        if (not WINDOWS_PATH_COMPONENT_RE.fullmatch(component)
+        if (len(component) > MAX_WINDOWS_COMPONENT
+                or not WINDOWS_PATH_COMPONENT_RE.fullmatch(component)
                 or WINDOWS_FORBIDDEN_COMPONENT_RE.search(component)
                 or component.endswith((".", " "))):
             raise ResourcePackError(f"archive path component is not Windows-safe ASCII: {component!r}")
@@ -164,6 +171,14 @@ def _check_casefold_unique(paths: list[str]) -> None:
         if previous is not None:
             raise ResourcePackError(f"case-insensitive path collision: {previous!r} and {name!r}")
         seen[key] = name
+
+
+def _check_file_ancestors(paths: list[str]) -> None:
+    files = {name.casefold() for name in paths}
+    for name in paths:
+        parts = name.casefold().split("/")
+        if any("/".join(parts[:end]) in files for end in range(1, len(parts))):
+            raise ResourcePackError(f"file path is also an ancestor of another file: {name}")
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -242,6 +257,8 @@ def create_index(
         },
     }
     payload = (json.dumps(index, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if len(payload) > MAX_INDEX_BYTES:
+        raise ResourcePackError("resource index exceeds the product's 4 MiB limit")
     try:
         output.write_bytes(payload)
     except OSError as exc:
@@ -254,15 +271,17 @@ def _record_bytes(data: bytes) -> dict[str, Any]:
 
 def _read_pack_files(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
     infos = archive.infolist()
-    names = [info.filename for info in infos]
-    if len(names) != len(set(names)):
-        raise ResourcePackError("pack contains duplicate ZIP entries")
-    _check_casefold_unique(names)
-    files: list[dict[str, Any]] = []
+    names: list[str] = []
     for info in infos:
         if info.orig_filename != info.filename:
             raise ResourcePackError("resource pack entry contains a NUL in its original ZIP name")
-        name = _normalized_relative(info.filename)
+        names.append(_normalized_relative(info.filename))
+    if len(names) != len(set(names)):
+        raise ResourcePackError("pack contains duplicate ZIP entries")
+    _check_casefold_unique(names)
+    _check_file_ancestors(names)
+    files: list[dict[str, Any]] = []
+    for info, name in zip(infos, names):
         if PurePosixPath(name).suffix.lower() in NATIVE_EXECUTABLE_SUFFIXES:
             raise ResourcePackError(f"native executable is not allowed in resource pack: {name}")
         if info.is_dir():
@@ -308,8 +327,9 @@ def _expect_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
 
 def _validate_record(value: Any, label: str) -> dict[str, Any]:
     record = _expect_object(value, {"length", "sha256"}, label)
-    if not isinstance(record["length"], int) or isinstance(record["length"], bool) or record["length"] < 0:
-        raise ResourcePackError(f"{label}.length must be a non-negative integer")
+    if (not isinstance(record["length"], int) or isinstance(record["length"], bool)
+            or not 0 <= record["length"] <= MAX_U64):
+        raise ResourcePackError(f"{label}.length must be an unsigned 64-bit integer")
     if not isinstance(record["sha256"], str) or not SHA256_RE.fullmatch(record["sha256"]):
         raise ResourcePackError(f"{label}.sha256 must be a lowercase SHA-256")
     return record
@@ -317,7 +337,7 @@ def _validate_record(value: Any, label: str) -> dict[str, Any]:
 
 def verify_pack(pack_path: Path, index_path: Path) -> None:
     try:
-        index = json.loads(index_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
+        index = json.loads(_physical_file(index_path, MAX_INDEX_BYTES).decode("utf-8"), object_pairs_hook=_unique_json_object)
     except (OSError, UnicodeError, json.JSONDecodeError, ResourcePackError) as exc:
         raise ResourcePackError(f"cannot read index {index_path}: {exc}") from exc
     index = _expect_object(
@@ -356,6 +376,7 @@ def verify_pack(pack_path: Path, index_path: Path) -> None:
         installed_paths.append(_normalized_relative(record["path"]))
         _validate_record({"length": record["length"], "sha256": record["sha256"]}, "index.installedFiles item")
     _check_casefold_unique(installed_paths)
+    _check_file_ancestors(installed_paths)
     if installed_paths != sorted(installed_paths) or any(
         name in SEPARATELY_INDEXED or name in EXTERNAL_SIDECARS or name == "uninstall.exe"
         or name.startswith("gogoke-service/generations/")
