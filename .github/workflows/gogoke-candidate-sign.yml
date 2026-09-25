@@ -189,7 +189,16 @@ jobs:
               $source = $entry.Open()
               try {
                 $target = [IO.File]::Open((Join-Path 'candidate-input' $entry.FullName), [IO.FileMode]::CreateNew)
-                try { $source.CopyTo($target) } finally { $target.Dispose() }
+                try {
+                  $copied = 0L
+                  $buffer = [byte[]]::new(65536)
+                  while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $copied += $read
+                    if ($copied -gt $entry.Length) { throw 'Frozen archive entry exceeded its declared length.' }
+                    $target.Write($buffer, 0, $read)
+                  }
+                  if ($copied -ne $entry.Length) { throw 'Frozen archive entry ended before its declared length.' }
+                } finally { $target.Dispose() }
               } finally { $source.Dispose() }
             }
             if ($seen.Count -ne 9) { throw 'Frozen archive has an incomplete file set.' }
