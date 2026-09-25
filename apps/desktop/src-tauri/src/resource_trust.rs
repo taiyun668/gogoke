@@ -913,7 +913,11 @@ pub(crate) fn verify_install_target(source: &Path, target: &Path) -> Result<(), 
         if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
             return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
         }
-        if target.join("gogoke.exe").exists() {
+        if fs::read_dir(target)
+            .map_err(|_| "GOGOKE_INSTALL_TARGET_INVALID")?
+            .next()
+            .is_some()
+        {
             return Err("GOGOKE_INSTALL_EXISTING_TARGET_REQUIRES_UPDATE".to_string());
         }
         target.canonicalize().map_err(|_| "GOGOKE_INSTALL_TARGET_INVALID")?

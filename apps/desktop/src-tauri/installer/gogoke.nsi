@@ -531,12 +531,9 @@ install_set_verified:
     WriteRegStr SHCTX "$GogokeUninstallKey" $MultiUser.InstallMode 1
   !endif
 
-  ; Remove old main binary if it doesn't match new main binary name
+  ; Retain legacy main-binary identity for shortcut migration. An unknown
+  ; existing file is never removed by the new installer.
   ReadRegStr $OldMainBinaryName HKCU "$GogokeUninstallKey" "MainBinaryName"
-  ${If} $OldMainBinaryName != ""
-  ${AndIf} $OldMainBinaryName != "${MAINBINARYNAME}.exe"
-    Delete "$INSTDIR\$OldMainBinaryName"
-  ${EndIf}
 
   ; Save current MAINBINARYNAME for future updates
   WriteRegStr HKCU "$GogokeUninstallKey" "MainBinaryName" "${MAINBINARYNAME}.exe"
