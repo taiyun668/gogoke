@@ -21,6 +21,7 @@ ROOT = Path(os.environ["LOCALAPPDATA"]) / "gogoke" / "web-chatgpt-subagent"
 STATE = ROOT / "state.json"
 LOCK = ROOT / "state.lock"
 TASK_IDS = ROOT / "task-ids.jsonl"
+TRIAL_EVENTS = ROOT / "trial-events.jsonl"
 
 
 def now() -> datetime:
@@ -60,6 +61,19 @@ def sync_task_ids(data: dict, instant: datetime) -> int:
     for task in sorted(missing):
         retire_task_id(task, instant, "migration")
     return len(missing)
+
+
+def prove_unsent(data: dict, task: str) -> bool:
+    if any(e.get("task") == task and (e.get("sent_at") or e.get("outcome") in ("reply", "reply_model_unverified", "limit_no_reply")) for e in data["events"]):
+        return False
+    if any(r.get("task") == task for r in data["reservations"].values()):
+        return False
+    if any(f.get("task") == task for f in data.get("finished_web_tasks", [])):
+        return False
+    if not TRIAL_EVENTS.exists():
+        return False
+    entries = [json.loads(line) for line in TRIAL_EVENTS.read_text(encoding="utf-8").splitlines() if line]
+    return any(entry.get("task_id") == task and entry.get("event") == "web_not_sent" for entry in entries)
 
 
 @contextmanager
@@ -154,6 +168,8 @@ def main() -> int:
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("status")
     commands.add_parser("sync-task-ids")
+    prove = commands.add_parser("prove-unsent")
+    prove.add_argument("--task", required=True)
     reconcile = commands.add_parser("reconcile")
     reconcile.add_argument("--source", required=True)
     reserve = commands.add_parser("reserve")
@@ -214,6 +230,10 @@ def main() -> int:
                 print(json.dumps({"path": str(STATE), "gpt_6_pro_enabled": data["gpt_6_pro_enabled"], "active_web_task": data.get("active_web_task"), "cooldown": data.get("cooldown"), "reconciled_at": data.get("reconciliation", {}).get("at") if data.get("reconciliation") else None, "tiers": {t: {"cap_per_local_day": CAPS[t], "used_or_reserved_today": count_day(data, t, instant), "used_or_reserved_this_calendar_week": count_week(data, t, instant), "available": available(data, t, instant)[0], "reason": available(data, t, instant)[1], "blocked": data["blocked"].get(t)} for t in TIERS}}, ensure_ascii=False, indent=2))
             elif args.action == "sync-task-ids":
                 print(f"durable task ID journal synchronized: {sync_task_ids(data, instant)} added")
+            elif args.action == "prove-unsent":
+                if not prove_unsent(data, args.task):
+                    raise ValueError("unsent status is not proven; preserve any existing draft")
+                print(f"proven_unsent {args.task}; exact matching prior draft may be cleared only if the committed card authorizes it")
             elif args.action == "reconcile":
                 if data.get("active_web_task") or data["reservations"]:
                     raise ValueError("finish or account for pending sends before reconciliation")
