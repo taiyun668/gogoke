@@ -74,11 +74,17 @@ ${StrLoc}
 !system 'powershell.exe -NoProfile -NonInteractive -File "$%GOGOKE_NSIS_HASH_HELPER%" -Source "${MAINBINARYSRCPATH}" -Include "${GOGOKE_PREFLIGHT_INCLUDE}"' = 0
 !include "${GOGOKE_PREFLIGHT_INCLUDE}"
 !delfile "${GOGOKE_PREFLIGHT_INCLUDE}"
-!if "$%GOGOKE_NSIS_TEST_BARRIER%" != ""
-  !if "$%GITHUB_ACTIONS%" != "true"
-    !error "GOGOKE_NSIS_TEST_BARRIER is CI-only"
+; An unset NSIS compile-time environment expansion remains the literal
+; $%NAME%, so comparing it only with the empty string enables this test hook.
+!define GOGOKE_NSIS_TEST_BARRIER_ENV $%GOGOKE_NSIS_TEST_BARRIER%
+!define GOGOKE_NSIS_DOLLAR "$"
+!if "${GOGOKE_NSIS_TEST_BARRIER_ENV}" != "${GOGOKE_NSIS_DOLLAR}%GOGOKE_NSIS_TEST_BARRIER%"
+  !if "${GOGOKE_NSIS_TEST_BARRIER_ENV}" != ""
+    !if "$%GITHUB_ACTIONS%" != "true"
+      !error "GOGOKE_NSIS_TEST_BARRIER is CI-only"
+    !endif
+    !define GOGOKE_NSIS_TEST_BARRIER "${GOGOKE_NSIS_TEST_BARRIER_ENV}"
   !endif
-  !define GOGOKE_NSIS_TEST_BARRIER "$%GOGOKE_NSIS_TEST_BARRIER%"
 !endif
 
 Var PassiveMode
