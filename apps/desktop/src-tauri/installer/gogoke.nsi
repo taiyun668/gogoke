@@ -1106,23 +1106,14 @@ Section Install
   {{/each}}
   StrCpy $GogokeTraceStage "install-binary-directories-pinned"
   Call GogokeTraceCloudStage
-  ; Tauri's distinct resource output parents map to the same scratch tree.
-  ; Pin each parent once; scanning the retained list for every resource file
-  ; makes the signed bundle's large Node tree exceed the install bound.
-  ; Publication still checks each extracted source and creates each final leaf.
-  {{#each resources_dirs}}
-    Push "$PLUGINSDIR\gogoke-payload\\{{this}}"
-    Call GogokePinDirectory
-    Pop $9
-  {{/each}}
+  ; The signed bundle contains thousands of files. Extract to one pinned flat
+  ; scratch directory, then publish to the already-pinned output tree. This
+  ; keeps every scratch ancestor pinned without a second nested directory walk.
+  Push "$PLUGINSDIR\gogoke-payload"
+  Call GogokePinDirectory
+  Pop $9
   StrCpy $GogokeTraceStage "install-resource-scratch-directories-pinned"
   Call GogokeTraceCloudStage
-  {{#each binaries}}
-    ${GetParent} "$PLUGINSDIR\gogoke-payload\\{{this}}" $0
-    Push "$0"
-    Call GogokePinDirectory
-    Pop $9
-  {{/each}}
   StrCpy $GogokeTraceStage "install-all-directories-pinned"
   Call GogokeTraceCloudStage
   SetOutPath $INSTDIR
@@ -1169,33 +1160,43 @@ Section Install
 
   ; Copy resources
   SetOverwrite off
+  !define GOGOKE_SCRATCH_ORDINAL 0
   {{#each resources_dirs}}
     CreateDirectory "$INSTDIR\\{{this}}"
   {{/each}}
   {{#each resources}}
-    IfFileExists "$PLUGINSDIR\gogoke-payload\\{{this.[1]}}" 0 +2
+    !define /math GOGOKE_SCRATCH_NEXT ${GOGOKE_SCRATCH_ORDINAL} + 1
+    !undef GOGOKE_SCRATCH_ORDINAL
+    !define GOGOKE_SCRATCH_ORDINAL ${GOGOKE_SCRATCH_NEXT}
+    !undef GOGOKE_SCRATCH_NEXT
+    IfFileExists "$PLUGINSDIR\gogoke-payload\${GOGOKE_SCRATCH_ORDINAL}" 0 +2
       Abort "A Gogoke payload scratch leaf already exists."
     SetOutPath "$PLUGINSDIR\gogoke-payload"
     ClearErrors
-    File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
+    File /a "/oname=${GOGOKE_SCRATCH_ORDINAL}" "{{no-escape @key}}"
     IfErrors gogoke_payload_extract_failed
-    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\\{{this.[1]}}"
+    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\${GOGOKE_SCRATCH_ORDINAL}"
     StrCpy $GogokePublishTarget "$INSTDIR\\{{this.[1]}}"
     Call GogokePublishFile
   {{/each}}
 
   ; Copy external binaries
   {{#each binaries}}
-    IfFileExists "$PLUGINSDIR\gogoke-payload\\{{this}}" 0 +2
+    !define /math GOGOKE_SCRATCH_NEXT ${GOGOKE_SCRATCH_ORDINAL} + 1
+    !undef GOGOKE_SCRATCH_ORDINAL
+    !define GOGOKE_SCRATCH_ORDINAL ${GOGOKE_SCRATCH_NEXT}
+    !undef GOGOKE_SCRATCH_NEXT
+    IfFileExists "$PLUGINSDIR\gogoke-payload\${GOGOKE_SCRATCH_ORDINAL}" 0 +2
       Abort "A Gogoke payload scratch leaf already exists."
     SetOutPath "$PLUGINSDIR\gogoke-payload"
     ClearErrors
-    File /a "/oname={{this}}" "{{no-escape @key}}"
+    File /a "/oname=${GOGOKE_SCRATCH_ORDINAL}" "{{no-escape @key}}"
     IfErrors gogoke_payload_extract_failed
-    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\\{{this}}"
+    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\${GOGOKE_SCRATCH_ORDINAL}"
     StrCpy $GogokePublishTarget "$INSTDIR\\{{this}}"
     Call GogokePublishFile
   {{/each}}
+  !undef GOGOKE_SCRATCH_ORDINAL
   SetOverwrite on
 
   ; Copy the already-signed sibling set without embedding or rewriting its sidecars.
