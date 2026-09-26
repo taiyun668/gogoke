@@ -1118,7 +1118,9 @@ mod tests {
             "gogoke-module-guard-test-{}", uuid::Uuid::new_v4().simple()
         ));
         let dist = root.join("service/generations/signed/dist");
-        let poison = root.join("service/generations/signed/node_modules/@ff-labs/fff-node");
+        // Node searches this ancestor after the selected generation but
+        // before the signed service-level node_modules directory.
+        let poison = root.join("service/generations/node_modules/@ff-labs/fff-node");
         fs::create_dir_all(&dist).expect("owned service directory");
         fs::create_dir_all(&poison).expect("owned poison directory");
         let marker = root.join("poison-executed.txt");

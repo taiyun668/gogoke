@@ -434,8 +434,33 @@ const smokeRequest = {
   runControlledTask: true,
 };
 
-async function smokeTauri(installed, request, negativeComponent = null) {
+async function smokeTauri(installed, request, negativeComponent = null, candidate = null) {
   if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true') throw new Error('installed Tauri smoke is cloud Windows only');
+  let poisonRoot = null;
+  const poisonDirectories = [];
+  const poisonFiles = new Map();
+  if (candidate) {
+    if (negativeComponent || !/^[0-9a-f]{64}$/.test(candidate.generationId) ||
+        !/^[0-9a-f]{40}$/.test(candidate.sourceCommit)) throw new Error('candidate service smoke identity invalid');
+    const index = JSON.parse(fs.readFileSync(ensure(path.join(installed, 'resource-index.json')), 'utf8'));
+    if (index.schema !== 'gogoke.resource-index.v1' || index.generationId !== candidate.generationId ||
+        index.sourceCommit !== candidate.sourceCommit || index.version !== candidate.version ||
+        !Array.isArray(index.files) || !Array.isArray(index.installedFiles) ||
+        index.files.some((file) => file.path.startsWith('node_modules/')) ||
+        !index.installedFiles.some((file) => file.path.startsWith('gogoke-service/node_modules/@ff-labs/fff-node/'))) {
+      throw new Error('candidate service generation differs from the signed index');
+    }
+    const generation = path.join(installed, 'gogoke-service', 'generations', candidate.generationId);
+    ensure(path.join(generation, 'dist', 'bin.mjs'));
+    ensure(path.join(installed, 'gogoke-service', 'node_modules', '@ff-labs', 'fff-node', 'package.json'));
+    for (const directory of [installed, path.join(installed, 'gogoke-service'),
+      path.join(installed, 'gogoke-service', 'generations'), generation]) {
+      const stat = fs.lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('candidate generation path is not physical');
+    }
+    poisonRoot = path.join(installed, 'gogoke-service', 'generations', 'node_modules');
+    if (fs.existsSync(poisonRoot)) throw new Error('candidate test poison root is not fresh');
+  }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'gogoke-ui-smoke-'));
   const updateReceipt = path.join(os.tmpdir(), `gogoke-update-${randomUUID().replaceAll('-', '')}.ready`);
   const canary = path.join(temp, 'node-options-canary.cjs');
@@ -534,14 +559,62 @@ async function smokeTauri(installed, request, negativeComponent = null) {
     }
     const readyDeadline = Date.now() + 30000;
     while (!fs.existsSync(updateReceipt) && Date.now() < readyDeadline) await delay(100);
-    const expectedVersion = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8')).version;
-    if (!fs.existsSync(updateReceipt) || fs.readFileSync(updateReceipt, 'utf8') !== expectedVersion) {
+    const expectedVersion = candidate?.version ?? JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8')).version;
+    if (!fs.existsSync(updateReceipt)) {
+      throw new Error('installed product did not publish version-bound readiness after native Controller admission');
+    }
+    if (candidate) {
+      const ready = JSON.parse(fs.readFileSync(updateReceipt, 'utf8'));
+      if (ready.version !== expectedVersion || ready.generationId !== candidate.generationId ||
+          ready.setId !== digest(path.join(installed, 'resource-index.json'))) {
+        throw new Error('installed candidate readiness is not bound to its signed generation');
+      }
+    } else if (fs.readFileSync(updateReceipt, 'utf8') !== expectedVersion) {
       throw new Error('installed product did not publish version-bound readiness after native Controller admission');
     }
     if (fs.existsSync(canaryMarker)) throw new Error('Tauri-launched Node executed injected NODE_OPTIONS preload');
     const response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
     assertSmokeResponse(response, request);
     if (fs.existsSync(canaryMarker)) throw new Error('installed product request executed injected NODE_OPTIONS preload');
+    if (candidate) {
+      // The signed package is under gogoke-service/node_modules. Node resolves
+      // this test-only generations-ancestor package first; the embedded guard must
+      // reject its unleased entry before the sentinel body can run.
+      fs.rmSync(updateReceipt);
+      const poisonPackage = path.join(poisonRoot, '@ff-labs', 'fff-node');
+      for (const directory of [poisonRoot, path.dirname(poisonPackage), poisonPackage]) {
+        fs.mkdirSync(directory);
+        poisonDirectories.push(directory);
+      }
+      const marker = path.join(temp, 'poison-executed');
+      for (const [name, content] of [
+        ['package.json', '{"main":"index.cjs"}\n'],
+        ['index.cjs', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed');\n`],
+      ]) {
+        const file = path.join(poisonPackage, name);
+        const bytes = Buffer.from(content);
+        fs.writeFileSync(file, bytes, { flag: 'wx' });
+        poisonFiles.set(file, bytes);
+      }
+      const rejection = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}}).then(() => 'UNEXPECTED_SUCCESS', error => String(error))`);
+      if (rejection !== 'GOGOKE_PRODUCT_SERVICE_FAILED:78') {
+        throw new Error(`poisoned installed candidate did not return service exit 78: ${rejection}`);
+      }
+      if (fs.existsSync(marker) || fs.existsSync(updateReceipt) || fs.existsSync(canaryMarker)) {
+        throw new Error('poisoned installed candidate executed sentinel, published readiness, or ran NODE_OPTIONS');
+      }
+      return { schema: 'gogoke.r2-06-candidate-service-smoke.v1', state: 'PASS',
+        platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11', sourceCommit: candidate.sourceCommit,
+        generationId: candidate.generationId, smokeRunId: process.env.GITHUB_RUN_ID,
+        smokeRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+        installedShellSha256: digest(path.join(installed, 'gogoke.exe')),
+        positive: { invocation: 'gogoke_r2_goal_probe', state: 'VALIDATED_TEST_RESULT_NOT_ADOPTED',
+          nativeController: 'ADMITTED', readinessSetId: digest(path.join(installed, 'resource-index.json')),
+          acceptance: response.acceptance, adoption: false },
+        negative: { invocation: 'gogoke_r2_goal_probe', rejection,
+          poisonPath: 'gogoke-service/generations/node_modules/@ff-labs/fff-node',
+          poisonExecuted: false, readinessReceipt: 'ABSENT', adoption: false } };
+    }
     const installedSmoke = { state: 'PASS', platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11',
       runId: process.env.GITHUB_RUN_ID, sourceSha: process.env.GITHUB_SHA,
       entry: 'installed gogoke.exe Home -> gogoke_r2_goal_probe -> installed dist/bin.mjs -> native-host',
@@ -558,6 +631,20 @@ async function smokeTauri(installed, request, negativeComponent = null) {
       for (let i = 0; i < 20 && !exited; i += 1) await delay(250);
     }
     if (!exited && !spawnError) throw new Error('owned cloud smoke process exit unconfirmed; temp retained');
+    for (const [file, bytes] of [...poisonFiles].reverse()) {
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || !fs.readFileSync(file).equals(bytes)) {
+        throw new Error('candidate test poison file changed; retain installed candidate');
+      }
+      fs.unlinkSync(file);
+    }
+    for (const directory of poisonDirectories.reverse()) {
+      const stat = fs.lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('candidate test poison directory changed; retain installed candidate');
+      }
+      fs.rmdirSync(directory);
+    }
     if (fs.existsSync(updateReceipt)) fs.rmSync(updateReceipt);
     const resolved = fs.realpathSync(temp);
     if (!within(fs.realpathSync(os.tmpdir()), resolved) || !path.basename(resolved).startsWith('gogoke-ui-smoke-')) throw new Error('unsafe cloud smoke temp cleanup');
@@ -627,9 +714,28 @@ if (mode === 'stage') {
   if (!['node', 'native-host', 'service'].includes(other)) throw new Error('installed negative smoke component is invalid');
   const negativeSmoke = await smokeTauri(ensureDir(root), smokeRequest, other);
   writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'PASS', negativeSmoke });
+} else if (mode === 'candidate-installed-service') {
+  const [expectedSourceCommit, expectedVersion, evidenceFile] = process.argv.slice(5);
+  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'taiyun668/gogoke' ||
+      !process.env.RUNNER_TEMP || !process.env.GITHUB_RUN_ID || !process.env.GITHUB_RUN_ATTEMPT ||
+      !evidenceFile) throw new Error('candidate service smoke requires exact hosted-run identity');
+  const tempRoot = fs.realpathSync(process.env.RUNNER_TEMP);
+  const resolvedEvidence = path.resolve(evidenceFile);
+  if (fs.realpathSync(path.dirname(resolvedEvidence)) !== tempRoot ||
+      path.basename(resolvedEvidence) !== `gogoke-r2-06-service-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}.json` ||
+      fs.existsSync(resolvedEvidence)) throw new Error('candidate service evidence path is not fresh runner temp');
+  const result = await smokeTauri(ensureDir(root), smokeRequest, null,
+    { generationId: other, sourceCommit: expectedSourceCommit, version: expectedVersion });
+  const poisonRoot = path.join(root, 'gogoke-service', 'generations', 'node_modules');
+  if (fs.lstatSync(poisonRoot, { throwIfNoEntry: false })) {
+    throw new Error('candidate test poison remains before uninstall');
+  }
+  result.negative.poisonRemoved = true;
+  fs.writeFileSync(resolvedEvidence, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
+  console.log('PASS installed candidate service positive and poisoned-module negative');
 } else if (mode === 'record-smoke') {
   recordSmokeReceipt(ensure(root), process.argv.slice(4).map(ensure));
- } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | smoke-negative <installed-dir> | record-smoke <positive-receipt> [negative-receipt]');
+ } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | smoke-negative <installed-dir> | candidate-installed-service <installed-dir> <generation-id> <source-commit> <version> <evidence-file> | record-smoke <positive-receipt> [negative-receipt]');
 } catch (error) {
   let message = String(error?.message ?? error);
   for (const value of [process.env.GITHUB_TOKEN, process.env.GH_TOKEN, repo, os.tmpdir(), process.env.RUNNER_TEMP, root, other]) {
@@ -650,7 +756,7 @@ if (mode === 'stage') {
       console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
       console.error('::error::installed smoke failure receipt could not be written');
     }
-  } else if ((mode === 'smoke' || mode === 'smoke-negative') && process.env.GOGOKE_R2_SMOKE_RECEIPT) {
+  } else if (mode === 'candidate-installed-service' || ((mode === 'smoke' || mode === 'smoke-negative') && process.env.GOGOKE_R2_SMOKE_RECEIPT)) {
     console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
   } else {
     fs.mkdirSync(path.dirname(manifestPath), { recursive: true });

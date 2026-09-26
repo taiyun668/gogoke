@@ -30,6 +30,7 @@ $script:installInvoked = $false
 $script:uninstallInvoked = $false
 $script:instanceId = $null
 $script:finalizerReceiptPath = $null
+$script:serviceEvidencePath = $null
 $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
@@ -301,6 +302,61 @@ try {
         throw "Installed UI did not exit after close request; preserve candidate root: $script:targetRoot"
     }
 
+    $script:stage = 'installed-product-service-positive-and-poison-negative'
+    $script:result.stage = $script:stage
+    if ($index.generationId -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Signed candidate generation identity is invalid'
+    }
+    $nodeCommand = Join-Path $script:targetRoot 'gogoke-service/runtime/node.exe'
+    $serviceTool = Join-Path $PSScriptRoot 'gogoke-package-service.mjs'
+    if (-not (Test-Path -LiteralPath $serviceTool -PathType Leaf)) {
+        throw 'Candidate installed service smoke tool is missing'
+    }
+    $script:serviceEvidencePath = Join-Path $runnerTemp "gogoke-r2-06-service-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.json"
+    if (Test-Path -LiteralPath $script:serviceEvidencePath) {
+        throw 'Candidate installed service evidence path is not fresh'
+    }
+    $serviceSmoke = Start-OneShot $nodeCommand @(
+        $serviceTool, 'candidate-installed-service', $script:targetRoot,
+        [string]$index.generationId, $ExpectedSourceCommit, $ExpectedVersion, $script:serviceEvidencePath
+    ) 240000 $true
+    if ($serviceSmoke.TimedOut) {
+        $kill = Start-OneShot 'taskkill.exe' @('/PID', [string]$serviceSmoke.Process.Id, '/T', '/F') 15000 $true
+        if ($kill.TimedOut -or $kill.ExitCode -ne 0 -or -not $serviceSmoke.Process.WaitForExit(5000)) {
+            throw 'Candidate service smoke timed out and process-tree settlement is unconfirmed; retain install'
+        }
+        throw 'Candidate service smoke exceeded its bound; retain install'
+    }
+    if ($serviceSmoke.ExitCode -ne 0 -or
+        -not (Test-Path -LiteralPath $script:serviceEvidencePath -PathType Leaf)) {
+        throw "Candidate installed service smoke failed with exit code $($serviceSmoke.ExitCode); retain install"
+    }
+    $serviceEvidence = Get-Content -LiteralPath $script:serviceEvidencePath -Raw | ConvertFrom-Json
+    if ($serviceEvidence.schema -cne 'gogoke.r2-06-candidate-service-smoke.v1' -or
+        $serviceEvidence.state -cne 'PASS' -or
+        $serviceEvidence.platform -cne 'WINDOWS_CLOUD_NOT_OWNER_WIN11' -or
+        $serviceEvidence.sourceCommit -cne $ExpectedSourceCommit -or
+        $serviceEvidence.generationId -cne $index.generationId -or
+        $serviceEvidence.smokeRunId -cne [string]$ExpectedSmokeRunId -or
+        $serviceEvidence.smokeRunAttempt -cne [string]$ExpectedSmokeRunAttempt -or
+        $serviceEvidence.installedShellSha256 -cne $ExpectedInstalledShellSha256 -or
+        $serviceEvidence.positive.invocation -cne 'gogoke_r2_goal_probe' -or
+        $serviceEvidence.positive.state -cne 'VALIDATED_TEST_RESULT_NOT_ADOPTED' -or
+        $serviceEvidence.positive.nativeController -cne 'ADMITTED' -or
+        $serviceEvidence.positive.readinessSetId -cne $indexHash -or
+        $serviceEvidence.positive.acceptance -cne 'TEST_FIXTURE_NOT_ADOPTED' -or
+        $serviceEvidence.positive.adoption -cne $false -or
+        $serviceEvidence.negative.invocation -cne 'gogoke_r2_goal_probe' -or
+        $serviceEvidence.negative.rejection -cne 'GOGOKE_PRODUCT_SERVICE_FAILED:78' -or
+        $serviceEvidence.negative.poisonPath -cne 'gogoke-service/generations/node_modules/@ff-labs/fff-node' -or
+        $serviceEvidence.negative.poisonExecuted -cne $false -or
+        $serviceEvidence.negative.poisonRemoved -cne $true -or
+        $serviceEvidence.negative.readinessReceipt -cne 'ABSENT' -or
+        $serviceEvidence.negative.adoption -cne $false) {
+        throw 'Candidate installed service smoke evidence did not prove both product invocations'
+    }
+    $script:result.productService = $serviceEvidence
+
     $script:stage = 'uninstall-once-and-finalizer-receipt'
     $script:result.stage = $script:stage
     Assert-RegistryRegistration
@@ -395,6 +451,7 @@ try {
     $script:result.retainedAppDataSentinel = if ($script:ownedSentinel -and (Test-Path -LiteralPath $script:ownedSentinel)) { $script:ownedSentinel } else { $null }
     $script:result.readinessReceiptPath = if ($script:ownedReadyReceipt) { $script:ownedReadyReceipt } else { $null }
     $script:result.finalizerReceiptPath = $script:finalizerReceiptPath
+    $script:result.productServiceEvidencePath = $script:serviceEvidencePath
     if ($env:RUNNER_TEMP -and (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) {
         $script:evidencePath = Join-Path $env:RUNNER_TEMP ("gogoke-r2-06-candidate-smoke-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.json")
         try { $script:result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:evidencePath -Encoding utf8 }

@@ -71,7 +71,7 @@ ${StrLoc}
   !error "GOGOKE_NSIS_HASH_HELPER is required for the Windows installer build"
 !endif
 !tempfile GOGOKE_PREFLIGHT_INCLUDE
-!system 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$%GOGOKE_NSIS_HASH_HELPER%" -Source "${MAINBINARYSRCPATH}" -Include "${GOGOKE_PREFLIGHT_INCLUDE}"' = 0
+!system 'powershell.exe -NoProfile -NonInteractive -File "$%GOGOKE_NSIS_HASH_HELPER%" -Source "${MAINBINARYSRCPATH}" -Include "${GOGOKE_PREFLIGHT_INCLUDE}"' = 0
 !include "${GOGOKE_PREFLIGHT_INCLUDE}"
 !delfile "${GOGOKE_PREFLIGHT_INCLUDE}"
 !if "$%GOGOKE_NSIS_TEST_BARRIER%" != ""

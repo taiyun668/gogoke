@@ -22,7 +22,14 @@ $frozen = Get-Item -LiteralPath $snapshot
 if ($frozen.Length -le 0 -or $frozen.Length -ge 2147483648) {
     throw 'NSIS shell payload length is outside the bounded verifier range.'
 }
-$hash = (Get-FileHash -LiteralPath $snapshot -Algorithm SHA256).Hash.ToLowerInvariant()
+$hashStream = [System.IO.File]::Open($snapshot, 'Open', 'Read', 'Read')
+try {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try { $hashBytes = $sha256.ComputeHash($hashStream) }
+    finally { $sha256.Dispose() }
+}
+finally { $hashStream.Dispose() }
+$hash = [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant()
 if ($hash -cnotmatch '^[0-9a-f]{64}$') { throw 'NSIS shell payload hash is invalid.' }
 if ($snapshot.Contains('"') -or $snapshot.Contains('$')) {
     throw 'NSIS shell payload snapshot path cannot be embedded safely.'
