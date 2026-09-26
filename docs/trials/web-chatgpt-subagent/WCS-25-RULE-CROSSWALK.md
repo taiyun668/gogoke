@@ -23,11 +23,11 @@ The Controller can use `.agents/skills/web-chatgpt-subagent/SKILL.md` alone. The
 | New chat, model check, paste, one Send, proof of submission | §4 steps 2–3 |
 | Sent requires content-page navigation plus a new user turn; new-chat URL means pre-Send failure; uncertainty only after navigation | §3 first paragraph; §4 step 3 |
 | Clear and verify abandoned draft before release | §4 step 3 |
-| Keep tab after Send; page-only read patrol about every five minutes; GitHub watcher | §4 steps 3–4 |
+| Keep tab after Send; Controller polls page and GitHub about every five minutes | §4 steps 3–4; Owner later withdrew the watcher/queue/hook plan |
 | GPT's active GitHub write retry is normal; stopped generation without later action is interruption | §4 step 4 |
 | Interruption: no Retry/Continue/buttons, record failure and return to Codex | §4 step 4; §3 |
 | Close tab only after verified GitHub result | §4 step 5 |
-| Controller context below 272,000; compact before dispatch near cap | §1, economic paragraph |
+| Former 272,000-token hard gate | Superseded by Owner; §1 now retains the economic comparison without a context-size gate |
 | Luna and script-era page lessons retained without Luna courier | §4, final “Page lessons” paragraph |
 | Serial web task | §4 step 1; §5 opening |
 | Suspicious activity/security verification, 24-hour durable cooldown, Owner notice | §5, first paragraph |

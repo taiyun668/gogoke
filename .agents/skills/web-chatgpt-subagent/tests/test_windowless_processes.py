@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import importlib.util
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
-from unittest import mock
 from pathlib import Path
 
 
@@ -47,59 +44,6 @@ class WindowlessProcessTests(unittest.TestCase):
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["console_window_present"])
 
-    def test_github_watcher_starts_without_console_window(self):
-        code = self.run_hidden(
-            str(SCRIPTS / "watch_github_result.py"),
-            "--task", "WINDOW-TEST", "--tier", "gpt-6-pro", "--repo", "example/example", "--branch", "gpt/example",
-            "--path", "result.md", "--base-sha", "a" * 40,
-            "--thread", "00000000-0000-0000-0000-000000000000", "--max-hours", "0",
-        )
-        self.assertEqual(code, 3)
-        started = json.loads((self.root / "watch-WINDOW-TEST-process.json").read_text(encoding="utf-8"))
-        self.assertFalse(started["console_window_present"])
-        ended = json.loads((self.root / "watch-WINDOW-TEST.json").read_text(encoding="utf-8"))
-        self.assertEqual(ended["status"], "watch_deadline_exceeded")
-
-    def test_watcher_uses_slow_pro_interval(self):
-        spec = importlib.util.spec_from_file_location("watch_github_result", SCRIPTS / "watch_github_result.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        self.assertEqual(module.poll_seconds("gpt-6-pro", 0), 90)
-        self.assertEqual(module.poll_seconds("gpt-6-pro", 1201), 300)
-        self.assertEqual(module.next_sleep_seconds("gpt-6-pro", 0, 300), 90)
-        self.assertEqual(module.next_sleep_seconds("gpt-6-pro", 270, 300), 30)
-        self.assertEqual(module.next_sleep_seconds("gpt-6-pro", 1201, 1500), 299)
-        with mock.patch.object(module.subprocess, "run") as run:
-            run.return_value.returncode = 0
-            self.assertIsNone(module.queue_notice("thread", "read-only patrol"))
-            self.assertEqual(run.call_args.args[0], ["codex", "queue", "--thread", "thread", "--message", "read-only patrol"])
-            self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
-        with self.assertRaises(ValueError):
-            module.poll_seconds("medium", 0)
-
-    def test_result_wake_repeats_every_30_seconds_until_controller_ack(self):
-        spec = importlib.util.spec_from_file_location("watch_github_result", SCRIPTS / "watch_github_result.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        receipt = Path(self.tmp.name) / "result.json"
-        ack = Path(self.tmp.name) / "ack.txt"
-        found = {"task": "TEST", "repository": "example/example", "branch": "gpt/test", "head_sha": "a" * 40, "path": "result.md", "status": "candidate_requires_controller_verification"}
-        calls = []
-
-        def notify(_thread, _message):
-            calls.append(_message)
-            if len(calls) == 2:
-                ack.write_text(found["head_sha"], encoding="utf-8")
-            return None
-
-        with mock.patch.object(module, "queue_notice", side_effect=notify), mock.patch.object(module.time, "sleep") as sleep:
-            module.notify_result_until_ack(found, "thread", receipt, ack)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(sleep.call_args_list, [mock.call(30), mock.call(30)])
-        saved = json.loads(receipt.read_text(encoding="utf-8"))
-        self.assertEqual(saved["result_notice_count"], 2)
-        self.assertIn("wake_acknowledged_at", saved)
-
     def test_powershell_ledger_wrapper_propagates_failure_and_has_no_console(self):
         pwsh = shutil.which("pwsh")
         self.assertIsNotNone(pwsh)
@@ -118,24 +62,6 @@ class WindowlessProcessTests(unittest.TestCase):
         receipt = json.loads(reconciled.stdout)
         self.assertEqual(receipt["exit_code"], 0)
         self.assertFalse(receipt["console_window_present"])
-
-    def test_powershell_watcher_wrapper_starts_windowless_process(self):
-        pwsh = shutil.which("pwsh")
-        self.assertIsNotNone(pwsh)
-        wrapper = SCRIPTS / "Start-WatcherHidden.ps1"
-        started = subprocess.run(
-            [pwsh, "-NoProfile", "-File", str(wrapper), "-Task", "WINDOW-PS", "-Tier", "gpt-6-pro", "-Repo", "example/example", "-Branch", "gpt/example", "-Path", "result.md", "-BaseSha", "a" * 40, "-Thread", "00000000-0000-0000-0000-000000000000", "-MaxHours", "0"],
-            env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        self.assertEqual(started.returncode, 0, started.stderr)
-        self.assertEqual(json.loads(started.stdout)["console"], "pythonw")
-        receipt = self.root / "watch-WINDOW-PS-process.json"
-        for _ in range(100):
-            if receipt.is_file():
-                break
-            time.sleep(0.05)
-        self.assertTrue(receipt.is_file())
-        self.assertFalse(json.loads(receipt.read_text(encoding="utf-8"))["console_window_present"])
 
 if __name__ == "__main__":
     unittest.main()
