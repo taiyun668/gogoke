@@ -15,7 +15,7 @@
 | **Gas Town**（[gastownhall/gastown](https://github.com/gastownhall/gastown)，Steve Yegge） | 18.2k★，MIT | 有 **Mayor**：你只跟它说话，它是全局协调者。项目叫 Rig。按角色分工：Polecat 是临时工人，Crew 是长期协作者，Witness 负责监督，Refinery 管合并队列。它明确主张"**会话是牲口，身份长期存在**"，所有状态（身份、派工、编排）都放在 Git 里的 Beads 上。跟我们的"会话是缓存，席位是身份，事实在 Git"几乎一样 | E1 E2 E3 E9 E10 E14 |
 | **Paperclip**（[paperclipai/paperclip](https://github.com/paperclipai/paperclip)） | 85.8k★，MIT | 定位是"零人公司"的控制面。有组织架构图和角色，**人和 agent 的权限、边界**，按公司、agent、项目、目标、厂商、模型分别设预算，超支时硬停。靠心跳驱动，同一任务的上下文在两次心跳之间延续。任何运行时的 agent，只要能接收心跳就能加入 | E2 E4 E11 E12 E13 |
 | **Multica**（[multica-ai/multica](https://github.com/multica-ai/multica)） | 51.4k★，许可待核（业务底稿记录的是 Apache 加托管和品牌限制） | 让人和 agent 作为一个团队协作，业务调研里 Ravenopus 用它来协调 | E2 E3 E4 |
-| **Orca**（[stablyai/orca](https://github.com/stablyai/orca)） | 78.6k★，MIT | 管一队并行 agent 的桌面工作台。多账号托管，**额度预警后自动切换账号**（按"最紧的窗口到 N%"提前切，见其 issue #20512）。守护进程带冷恢复和检查点 | E5 E10 E11 |
+| **Orca**（[stablyai/orca](https://github.com/stablyai/orca)） | 78.6k★，MIT | 管一队并行 agent 的桌面工作台。多账号托管、读各家额度。**更正**：之前写的"额度预警后自动切换账号"是一个还开着的功能请求（issue #20512），代码里没有。守护进程带冷恢复和检查点 | E5 E10 E11 |
 | **Paseo**（[getpaseo/paseo](https://github.com/getpaseo/paseo)） | 18.6k★，自有代码 Apache-2.0 | 已查到架构层（[执行层对照](2026-09-26-execution-layer-capability-table.md) §3b），作为对照基线 | E10 E11 |
 | **Claude Code agent teams**（[官方文档](https://code.claude.com/docs/en/agent-teams)） | 闭源，实验功能 | 一个队长加几个队友，共享任务清单，队友之间可以直接发消息。**人可以直接找任何一个队友**，这一点跟我们"席位不直接找你"的规矩正好相反，值得对照 | E3 E4 E14 |
 
@@ -47,7 +47,7 @@
 - **Amp Handoff**（闭源）：9 月 23 日报告引用过，还没核实。
 
 ### E11 多厂商、额度调度
-- **Orca**：见上。自动切换账号是一个可选策略。
+- **Orca**：多账号和读额度已经有了；自动切换账号只是一个还开着的功能请求（#20512），代码里没有。
 - **neomax-orchestrator**（[NeotaskInc/neomax-orchestrator](https://github.com/NeotaskInc/neomax-orchestrator)，1★，MIT，很新）：自称按额度余量选账号，同等时优先用快要重置的额度。星数极少，只能当思路参考。
 - **claude-code-router**（[musistudio/claude-code-router](https://github.com/musistudio/claude-code-router)，37.4k★，MIT）：本地控制面，在多个模型之间路由。
 - **Paperclip**：按多个维度设预算并硬停，是花费这一侧的对标。
