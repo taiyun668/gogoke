@@ -453,15 +453,16 @@ Function GogokePinDirectory
   StrCpy $2 $GogokePinnedDirectoryList
 gogoke_find_pinned_directory:
   ${If} $2 == ""
+  ${OrIf} $2 == 0
     Goto gogoke_pin_new_directory
   ${EndIf}
-  IntOp $3 ${NSIS_PTR_SIZE} * 2
-  IntOp $3 $3 + $2
-  System::Call 'kernel32::lstrcmpiW(w "$9", p $3) i .r4'
-  ${If} $4 == 0
+  ; System owns the pointer-sized field layout and materializes the path as
+  ; an NSIS string. No integer arithmetic on address values is required.
+  System::Call '*$2(p .r3, p .r2, &w${NSIS_MAX_STRLEN} .r4)'
+  System::Call 'kernel32::lstrcmpiW(w "$9", w "$4") i .r3'
+  ${If} $3 == 0
     Goto gogoke_pin_done
   ${EndIf}
-  System::Call '*$2(p .r3, p .r2)'
   Goto gogoke_find_pinned_directory
 gogoke_pin_new_directory:
   ; Walk from the volume root down. A missing component is created before
@@ -507,20 +508,11 @@ gogoke_pin_new_directory:
     System::Call 'kernel32::CloseHandle(p $1)'
     Abort "A Gogoke installation directory is not a plain directory."
   ${EndIf}
-  IntOp $3 ${NSIS_MAX_STRLEN} * 2
-  IntOp $3 $3 + 2
-  IntOp $4 ${NSIS_PTR_SIZE} * 2
-  IntOp $3 $3 + $4
-  System::Alloc $3
-  Pop $2
+  System::Call '*(p $1, p $GogokePinnedDirectoryList, &w${NSIS_MAX_STRLEN} "$9") p .r2'
   ${If} $2 == 0
     System::Call 'kernel32::CloseHandle(p $1)'
     Abort "A Gogoke installation directory cannot be retained."
   ${EndIf}
-  System::Call '*$2(p $1, p $GogokePinnedDirectoryList)'
-  IntOp $3 ${NSIS_PTR_SIZE} * 2
-  IntOp $3 $3 + $2
-  System::Call 'kernel32::lstrcpyW(p $3, w "$9") p'
   StrCpy $GogokePinnedDirectoryList $2
 gogoke_pin_done:
   Pop $4
@@ -534,9 +526,10 @@ FunctionEnd
 Function GogokeReleasePinnedDirectories
 gogoke_release_next_directory:
   ${If} $GogokePinnedDirectoryList == ""
+  ${OrIf} $GogokePinnedDirectoryList == 0
     Return
   ${EndIf}
-  System::Call '*$GogokePinnedDirectoryList(p .r0, p .r1)'
+  System::Call '*$GogokePinnedDirectoryList(p .r0, p .r1, &w${NSIS_MAX_STRLEN} .r3)'
   System::Call 'kernel32::CloseHandle(p $0)'
   StrCpy $2 $GogokePinnedDirectoryList
   StrCpy $GogokePinnedDirectoryList $1
