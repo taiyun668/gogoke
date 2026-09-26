@@ -302,5 +302,6 @@ D07（远程控制、公开托管分享、账号轮换、桌面宠物、并发�
 - **角色体系要完善，可以借鉴"三省六部"**（[cft0808/edict](https://github.com/cft0808/edict)，MIT）：分拣、规划、审核封驳、派发、执行，分权制衡。
 - **同一个实例可以开多个会话，同时服务多个角色或多个项目**，做好隔离就行。参考 ChatGPT 的 Project：项目独享自己的上下文。
 - **做法是"拼 + 补全"**：拿开源内核来拼、来改，内核整体也好，零件也好，都可以；拼不上的缺口自己补全。不局限于只拿成熟整体，也不必从零写。（2026-09-26 Owner）
+- **沿用 gogoke 现在的 Tauri 壳**，界面和 Rust 宿主都保留。借来的零件拼进这个壳：TypeScript 写的可以作为 Node 进程挂在宿主下面运行。不换成 Orca、Emdash 这类 Electron 应用。（2026-09-26 Owner）
 - **可以拿几个开源内核来拼、来改，不必从零写。**Orca（[stablyai/orca](https://github.com/stablyai/orca)，MIT）和 Hermes Agent（[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)，MIT）只是候选之一，哪个更像、更合适要先研究，还没有选定。
 - **外部调研找到的东西不是拿来直接用的。**开源协议允许的，可以借内核、搬代码，也可以只借思路；不能因为外部材料怎么写，就把我们自己的用途收窄。
