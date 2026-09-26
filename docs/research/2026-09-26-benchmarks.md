@@ -22,6 +22,7 @@
 ## 2. 按效果补充的对标
 
 ### E1 侧聊与递话
+- **Codex `/side` 和 `/fork`**（v0.122.0 起，桌面端是分栏界面）：`/side` 是一个存在内存里的 fork，把当前对话当只读参考；`/fork` 是真正分叉出去。Owner 指定这就是要的形态，只是把模型换成角色加实例。已知的限制：旁聊不持久，见 openai/codex #26227、#22001。开源实现可以参考 t3code 的 PR #9437（side chat 和 fork 界面），t3code 已随本仓库放在 `third_party/`。
 - **Cursor Side Chats**（[更新日志](https://cursor.com/changelog/side-chat)，v3.11，2026-07）：侧聊是一条可以长期保留的完整对话，不打断主对话，事后用 @ 把它拉回主对话。这跟"递话"最接近。
 - **Claude Code `/btw`**：能读当前对话，但不写进主对话的历史，也不打断主任务。
 - **VS Code `/btw`**：侧聊**和主对话共用提示词缓存**，这点直接对应"共享上下文而不重算"。
@@ -29,11 +30,13 @@
 - Gas Town 的 Mayor：对应全局秘书长。
 
 ### E2 角色与实例解耦
+- **三省六部 Edict**（[cft0808/edict](https://github.com/cft0808/edict)，16.9k★，MIT）：12 个角色。太子负责分拣，中书省规划，门下省审核并可以封驳，尚书省派发，六部加吏部并行执行；有实时看板，全程留审计记录。依赖 OpenClaw，后端是 Python。Owner 指定的角色体系借鉴对象。
 - **Codex custom agents**（`.codex/agents/*.toml`）和 **Claude Code subagents**（`.claude/agents/`）：角色文件里写着模型和推理强度，角色和实例部分解耦。本仓库的路由文档已经在用前者。
 - **oh-my-codex**（[Yeachan-Heo/oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex)，33.4k★，MIT）和 **oh-my-claudecode**（39.4k★）：在单一厂商上组团队、定角色。
 - **Untrivial agent-orchestrator**（[Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)，12.4k★，Apache-2.0）：从规划一直管到合并，号称能接任何一种 agent。
 
-### E3 只跟主控说话 / E4 主控自主拉席位
+### E15 秘书长 / E3 只跟主控说话 / E4 主控自主拉席位
+- **Grok Bot 幕僚长**（xAI，2026-08-11 发布 beta）：可以同时跑几个 Bot，指定其中一个当幕僚长，通过共享线程协调各个专职 Bot。Owner 指定的秘书长对标对象。
 - **agentchattr**（[bcurts/agentchattr](https://github.com/bcurts/agentchattr)，1.5k★，MIT）：本地聊天室，agent 之间可以互相 @。它是设计 22 的来源之一，对应 @ 路由和房间。
 - **cumora**（[yetone/cumora](https://github.com/yetone/cumora)，3.9k★，MIT）：团队聊天，agent 是一等成员。
 - **AgentTeams**（[agentscope-ai/AgentTeams](https://github.com/agentscope-ai/AgentTeams)，5.7k★，Apache-2.0）：强调"人在环中"的任务协调。
