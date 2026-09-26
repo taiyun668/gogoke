@@ -1,0 +1,23 @@
+{
+  "task_id": "WCS-23",
+  "tier": "gpt-6-pro",
+  "luna_action": "You are the courier, not the auditor. Read .agents/skills/web-chatgpt-subagent/SKILL.md in this repository and follow its Luna browser/ledger procedure. Do not audit repository files, create the assigned result branch, write the result file, or push a result yourself. Your only GitHub action is read-only verification of this card at its immutable commit. Use the in-app browser to send web_starter_message_template exactly once after replacing {CARD_SHA} with this card's full Git commit SHA. Return one JSON status line. If blocked, stop and return raw state. The Controller, not you, verifies the GitHub result and CI.",
+  "skill_path": ".agents/skills/web-chatgpt-subagent/SKILL.md",
+  "repository": "taiyun668/gogoke",
+  "card_branch": "codex/web-chatgpt-subagent-channel",
+  "assigned_branch": "gpt/web-chatgpt-wcs23-governance-audit",
+  "base_sha": "b76d5386de2a2b54830063dda5b90169d52a5c6c",
+  "review_sha": "b76d5386de2a2b54830063dda5b90169d52a5c6c",
+  "original_codex_seat": "astra",
+  "economic_reason": "Independent cross-document governance review would ordinarily use Astra at roughly $4.1 median, clearly above the observed $0.72 web overhead; it is self-contained, non-local, non-urgent, and GitHub-verifiable.",
+  "web_starter_message_template": "Task WCS-23. Repository taiyun668/gogoke. Read the complete task card at branch codex/web-chatgpt-subagent-channel, immutable commit {CARD_SHA}, path docs/trials/web-chatgpt-subagent/WCS-23.json. Follow that card, not this short message if fields differ. Perform one independent audit of the fixed review commit b76d5386de2a2b54830063dda5b90169d52a5c6c. Compare AGENTS.md, docs/model-routing.md, docs/directions/2026-09-26-web-chatgpt-subagent-channel.md, and .agents/skills/web-chatgpt-subagent/SKILL.md for governance/authority conflicts: whether this draft route can be mistaken for enabled routing, whether Owner gates and independent acceptance remain intact, and whether the newer one-shot 6 Pro decision is identified without silently rewriting historical evidence. Identify up to five actionable findings with file:line evidence, or state no findings and limits. Do not ask questions or wait for follow-up. If any information or GitHub permission is missing, write the blocker in the assigned result file, commit if possible, then stop. Create only branch gpt/web-chatgpt-wcs23-governance-audit from b76d5386de2a2b54830063dda5b90169d52a5c6c and commit only docs/trials/web-chatgpt-subagent/WCS-23-RESULT.md. The report must name the exact reviewed commit and distinguish static review from live validation. Do not edit reviewed files, push or merge main, touch another branch, publish, release, tag, sign, or access secrets. Stop after one result commit. A real CI run with more than zero executed tests on the result commit is required for Controller acceptance; the Controller may trigger that workflow after your commit.",
+  "allowed_read_paths": ["AGENTS.md", "docs/model-routing.md", "docs/directions/2026-09-26-web-chatgpt-subagent-channel.md", ".agents/skills/web-chatgpt-subagent/SKILL.md"],
+  "allowed_write_paths": ["docs/trials/web-chatgpt-subagent/WCS-23-RESULT.md"],
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-23-RESULT.md",
+  "success_criteria": "One result-file commit on the assigned branch, exact fixed-SHA findings or explicit no-findings, and Controller-verified real CI with executed tests > 0.",
+  "deadline_minutes": 45,
+  "one_message_only": true,
+  "no_questions": true,
+  "permission_boundary": "Only the assigned branch and result file; no main push/merge, publication, release, tag, keys, secrets, or signing.",
+  "stop_condition": "Stop after one result commit or documented connector blocker; no follow-up or second task ID for the same audit."
+}
