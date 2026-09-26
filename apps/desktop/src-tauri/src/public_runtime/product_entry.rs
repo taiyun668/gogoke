@@ -402,6 +402,10 @@ mod managed_service {
         JobObjectExtendedLimitInformation, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    #[cfg(test)]
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectBasicProcessIdList, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    };
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
@@ -423,6 +427,37 @@ mod managed_service {
     #[cfg(test)]
     static TEST_FIRST_SETTLED_CHILD_WAIT: std::sync::atomic::AtomicU32 =
         std::sync::atomic::AtomicU32::new(u32::MAX);
+    #[cfg(test)]
+    static TEST_FIRST_SETTLED_PIDS: std::sync::Mutex<Option<String>> =
+        std::sync::Mutex::new(None);
+
+    #[cfg(test)]
+    pub(super) fn test_job_process_ids(job: HANDLE) -> Result<Vec<usize>, String> {
+        let mut capacity = 64usize;
+        loop {
+            let bytes = 8 + capacity * size_of::<usize>();
+            let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    job, JobObjectBasicProcessIdList, storage.as_mut_ptr().cast(),
+                    bytes as u32, null_mut(),
+                )
+            };
+            if ok != 0 {
+                let info = unsafe { &*(storage.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST) };
+                let assigned = info.NumberOfAssignedProcesses as usize;
+                let count = info.NumberOfProcessIdsInList as usize;
+                if count == assigned && count <= capacity {
+                    let ids = unsafe { std::slice::from_raw_parts(info.ProcessIdList.as_ptr(), count) };
+                    return Ok(ids.to_vec());
+                }
+            }
+            if capacity >= 4096 {
+                return Err(format!("INCOMPLETE_JOB_PID_LIST:{}", unsafe { GetLastError() }));
+            }
+            capacity *= 2;
+        }
+    }
 
     #[cfg(test)]
     pub(super) fn test_job_handle() -> HANDLE {
@@ -437,6 +472,11 @@ mod managed_service {
     #[cfg(test)]
     pub(super) fn test_first_settled_child_wait() -> u32 {
         TEST_FIRST_SETTLED_CHILD_WAIT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_first_settled_pids() -> Option<String> {
+        TEST_FIRST_SETTLED_PIDS.lock().expect("probe state").clone()
     }
 
     fn send_reply(
@@ -730,11 +770,14 @@ mod managed_service {
             let child = TEST_CHILD_HANDLE.load(std::sync::atomic::Ordering::SeqCst) as HANDLE;
             if !child.is_null() {
                 let wait = unsafe { WaitForSingleObject(child, 0) };
-                let _ = TEST_FIRST_SETTLED_CHILD_WAIT.compare_exchange(
+                if TEST_FIRST_SETTLED_CHILD_WAIT.compare_exchange(
                     u32::MAX, wait,
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
-                );
+                ).is_ok() {
+                    *TEST_FIRST_SETTLED_PIDS.lock().expect("probe state") =
+                        Some(format!("{:?}", test_job_process_ids(raw(&process.job))));
+                }
             }
         }
         Ok(done)
@@ -1152,6 +1195,7 @@ mod tests {
             std::ptr::null_mut()) }, 0);
         let active_before_release = accounting.ActiveProcesses;
         let total_before_release = accounting.TotalProcesses;
+        let pids_before_release = managed_service::test_job_process_ids(job);
         let root_wait_before = unsafe { WaitForSingleObject(root_handle.as_raw_handle() as _, 0) };
         let child_wait_before = unsafe { WaitForSingleObject(child.as_raw_handle() as _, 0) };
         let lease_held_before = weak.upgrade().is_some();
@@ -1160,6 +1204,7 @@ mod tests {
         fs::write(&release, b"release").expect("release owned root barrier");
         owner.join().expect("process owner settles after cancelling reply");
         let child_wait_at_first_settled = managed_service::test_first_settled_child_wait();
+        let pids_at_first_settled = managed_service::test_first_settled_pids();
         managed_service::test_observe_child(std::ptr::null_mut());
         let child_wait_after = unsafe { WaitForSingleObject(child.as_raw_handle() as _, 0) };
         let lease_released_after = weak.upgrade().is_none();
@@ -1169,7 +1214,7 @@ mod tests {
             unsafe { TerminateProcess(child.as_raw_handle() as _, 1) };
             let _ = unsafe { WaitForSingleObject(child.as_raw_handle() as _, 5000) };
         }
-        eprintln!("JOB_CUSTODY_PROBE root_in={root_in_job} child_in={child_in_job} active_before={active_before_release} total_before={total_before_release} root_before={root_wait_before} child_before={child_wait_before} child_at_settled={child_wait_at_first_settled} child_after={child_wait_after} child_after_1s={child_wait_bounded} lease_before={lease_held_before} gate_before={gate_held_before} lease_after={lease_released_after} gate_after={gate_released_after}");
+        eprintln!("JOB_CUSTODY_PROBE root_in={root_in_job} child_in={child_in_job} active_before={active_before_release} total_before={total_before_release} pids_before={pids_before_release:?} pids_at_settled={pids_at_first_settled:?} child_pid={child_pid} root_before={root_wait_before} child_before={child_wait_before} child_at_settled={child_wait_at_first_settled} child_after={child_wait_after} child_after_1s={child_wait_bounded} lease_before={lease_held_before} gate_before={gate_held_before} lease_after={lease_released_after} gate_after={gate_released_after}");
         drop(child);
         drop(root_handle);
         fs::remove_file(&marker).expect("remove owned PID marker");
