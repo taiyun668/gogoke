@@ -2,7 +2,7 @@
 
 This is trial evidence for PR #48, not adoption of `docs/model-routing.md` or acceptance of a web seat as an existing high-risk auditor. The route and GPT-6 Pro remain disabled for routine use. The initial requirement source was `main@5ec3d643a6015de34ef582b5d047e7cc7e46da43`; main later added the serial-dispatch and security-cooldown rules at `138c4c0547ac39996c8033011dce92d0b3891158`. The work used an isolated branch and did not change R2-06a.
 
-**Current procedure:** Owner withdrew the background watcher, queued notifications, and hook plan after WCS-26. The Controller now polls the existing ChatGPT tab and assigned GitHub branch directly about every five minutes while keeping the turn active. Earlier watcher observations below are historical trial evidence only.
+**Current procedure:** Owner withdrew the background watcher, queued notifications, and hook plan after WCS-26. The Controller keeps its turn active, continues normal construction, and checks the existing ChatGPT tab and assigned GitHub branch at natural pauses about every five minutes. The web task must not block the critical path; only if no other useful work exists may the Controller wait solely for a poll. Earlier watcher observations below are historical trial evidence only.
 
 | Trial | GitHub result | Observation |
 | --- | --- | --- |
