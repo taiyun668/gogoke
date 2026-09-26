@@ -3,7 +3,7 @@ import { registerHooks, isBuiltin } from 'node:module';
 import { readFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, resolve, toNamespacedPath } from 'node:path';
 
 function installGuard(policyPath, expectedHash) {
   const bytes = readFileSync(policyPath);
@@ -16,10 +16,13 @@ function installGuard(policyPath, expectedHash) {
     throw new Error('GOGOKE_MODULE_POLICY_INVALID');
   }
   const key = (path) => resolve(path).toLowerCase();
-  const allowed = new Set(entries.map(key));
-  if (allowed.size !== entries.length) {
+  const entryKeys = entries.map(key);
+  if (new Set(entryKeys).size !== entries.length) {
     throw new Error('GOGOKE_MODULE_POLICY_DUPLICATE');
   }
+  // Windows Node may pass a namespaced path to dlopen for the very same
+  // verified .node file. Only derive exact aliases from signed, leased paths.
+  const allowed = new Set(entries.flatMap((path) => [key(path), key(toNamespacedPath(path))]));
   function deny() {
     writeSync(2, 'GOGOKE_MODULE_NOT_LISTED\n');
     process.exit(78);
