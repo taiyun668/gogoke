@@ -942,7 +942,7 @@ mod managed_service {
         });
         let stderr_reader = std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            File::from(stderr).read_to_end(&mut bytes)
+            File::from(stderr).read_to_end(&mut bytes).map(|_| bytes)
         });
         let writer = std::thread::spawn(move || File::from(stdin).write_all(&request));
         let failure = match unsafe {
