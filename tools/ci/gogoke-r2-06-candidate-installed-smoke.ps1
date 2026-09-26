@@ -31,6 +31,7 @@ $script:uninstallInvoked = $false
 $script:instanceId = $null
 $script:finalizerReceiptPath = $null
 $script:serviceEvidencePath = $null
+$script:nsisTracePath = $null
 $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
@@ -236,7 +237,15 @@ try {
     $script:stage = 'install-once'
     $script:result.stage = $script:stage
     $script:installInvoked = $true
-    $install = Start-OneShot $setup @('/S', "/D=$script:targetRoot") 300000 $true
+    $script:nsisTracePath = Join-Path $runnerTemp "gogoke-nsis-phase-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.txt"
+    if (Test-Path -LiteralPath $script:nsisTracePath) { throw 'NSIS trace path is not fresh runner temp' }
+    $previousTrace = [Environment]::GetEnvironmentVariable('GOGOKE_NSIS_TRACE_PATH')
+    try {
+        [Environment]::SetEnvironmentVariable('GOGOKE_NSIS_TRACE_PATH', $script:nsisTracePath)
+        $install = Start-OneShot $setup @('/S', "/D=$script:targetRoot") 300000 $true
+    } finally {
+        [Environment]::SetEnvironmentVariable('GOGOKE_NSIS_TRACE_PATH', $previousTrace)
+    }
     if ($install.TimedOut) { throw "NSIS install exceeded bound; retain target: $script:targetRoot" }
     if ($install.ExitCode -ne 0) { throw "NSIS install failed with exit code $($install.ExitCode); retain target: $script:targetRoot" }
     Assert-RegistryRegistration
@@ -452,6 +461,12 @@ try {
     $script:result.readinessReceiptPath = if ($script:ownedReadyReceipt) { $script:ownedReadyReceipt } else { $null }
     $script:result.finalizerReceiptPath = $script:finalizerReceiptPath
     $script:result.productServiceEvidencePath = $script:serviceEvidencePath
+    if ($script:nsisTracePath -and (Test-Path -LiteralPath $script:nsisTracePath -PathType Leaf)) {
+        $traceFile = Get-Item -LiteralPath $script:nsisTracePath -Force
+        if ($traceFile.Length -le 4096) {
+            $script:result.nsisTrace = @(Get-Content -LiteralPath $script:nsisTracePath | Select-Object -Last 24)
+        }
+    }
     if ($script:stage -ceq 'install-once' -and $script:targetRoot -and
         $env:RUNNER_TEMP -and
         [IO.Path]::GetFullPath($script:targetRoot).StartsWith(

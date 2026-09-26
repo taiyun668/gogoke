@@ -128,6 +128,9 @@ Var GogokeSourcePackHandle
 Var GogokeSourceIndexHandle
 Var GogokeSourceManifestHandle
 Var GogokeSourceSignatureHandle
+Var GogokeTraceStage
+Var GogokeTracePath
+Var GogokeTraceHandle
 
 !if ${NSIS_PTR_SIZE} > 4
   !define GOGOKE_STARTUP_EX_SIZE 112
@@ -617,6 +620,25 @@ Function GogokeReleaseSourcePins
   ${EndIf}
 FunctionEnd
 
+Function GogokeTraceCloudStage
+  ; Bounded CI-only diagnosis. The caller selects a fresh runner-temp path;
+  ; no product authority or install decision reads this observation.
+  Push $0
+  ReadEnvStr $0 "GITHUB_ACTIONS"
+  ${If} $0 == "true"
+    ReadEnvStr $GogokeTracePath "GOGOKE_NSIS_TRACE_PATH"
+    ${If} $GogokeTracePath != ""
+      ClearErrors
+      FileOpen $GogokeTraceHandle "$GogokeTracePath" a
+      ${IfNot} ${Errors}
+        FileWrite $GogokeTraceHandle "$GogokeTraceStage$\r$\n"
+        FileClose $GogokeTraceHandle
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Pop $0
+FunctionEnd
+
 Function GogokePinReadableSource
   ; Keep the exact sibling object in place from signed preflight through copy.
   ; Callers retain the returned handle until the installer closes.
@@ -842,6 +864,8 @@ FunctionEnd
 
 Section EarlyChecks
   Call AcquireGogokeLifecycleLock
+  StrCpy $GogokeTraceStage "lifecycle-locked"
+  Call GogokeTraceCloudStage
   ; Abort silent installer if downgrades is disabled
   !if "${ALLOWDOWNGRADES}" == "false"
   ${If} ${Silent}
@@ -865,12 +889,18 @@ Section SignedInstallSetPreflight
   Push "$EXEDIR"
   Call GogokePinDirectory
   Pop $9
+  StrCpy $GogokeTraceStage "source-directory-pinned"
+  Call GogokeTraceCloudStage
   StrCpy $GogokePinSourcePath "$EXEDIR\gogoke-resources.windows.zip"
   Call GogokePinReadableSource
   StrCpy $GogokeSourcePackHandle $GogokePinnedSourceHandle
+  StrCpy $GogokeTraceStage "source-pack-pinned"
+  Call GogokeTraceCloudStage
   StrCpy $GogokePinSourcePath "$EXEDIR\resource-index.json"
   Call GogokePinReadableSource
   StrCpy $GogokeSourceIndexHandle $GogokePinnedSourceHandle
+  StrCpy $GogokeTraceStage "source-index-pinned"
+  Call GogokeTraceCloudStage
   ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
     StrCpy $GogokePinSourcePath "$EXEDIR\CANDIDATE-RESOURCES.windows"
     Call GogokePinReadableSource
@@ -882,26 +912,38 @@ Section SignedInstallSetPreflight
     StrCpy $GogokeSourceManifestHandle $GogokePinnedSourceHandle
     StrCpy $GogokePinSourcePath "$EXEDIR\SHA256SUMS.windows.sig"
   ${EndIf}
+  StrCpy $GogokeTraceStage "source-manifest-pinned"
+  Call GogokeTraceCloudStage
   Call GogokePinReadableSource
   StrCpy $GogokeSourceSignatureHandle $GogokePinnedSourceHandle
+  StrCpy $GogokeTraceStage "source-signature-pinned"
+  Call GogokeTraceCloudStage
   InitPluginsDir
   SetOutPath "$PLUGINSDIR\gogoke-preflight"
   Push "$PLUGINSDIR\gogoke-preflight"
   Call GogokePinDirectory
   Pop $9
+  StrCpy $GogokeTraceStage "preflight-scratch-pinned"
+  Call GogokeTraceCloudStage
   IfFileExists "$PLUGINSDIR\gogoke-preflight\gogoke.exe" 0 +2
     Abort "The Gogoke preflight scratch leaf already exists."
   SetOverwrite off
   ClearErrors
   File /oname=gogoke.exe "${GOGOKE_PREFLIGHT_SNAPSHOT}"
   IfErrors gogoke_preflight_extract_failed
+  StrCpy $GogokeTraceStage "preflight-shell-extracted"
+  Call GogokeTraceCloudStage
   StrCpy $GogokeVerifierPath "$PLUGINSDIR\gogoke-preflight\gogoke.exe"
   Call GogokeVerifyShellFile
   StrCpy $GogokePreflightHandle $GogokeVerifiedHandle
+  StrCpy $GogokeTraceStage "preflight-shell-hash-verified"
+  Call GogokeTraceCloudStage
   ExecWait '"$PLUGINSDIR\gogoke-preflight\gogoke.exe" "--gogoke-verify-install-set=$EXEDIR" "--gogoke-install-target=$INSTDIR"' $0
   ${If} $0 != 0
     Abort "The signed Gogoke installer sibling set could not be verified."
   ${EndIf}
+  StrCpy $GogokeTraceStage "signed-install-set-preflight-complete"
+  Call GogokeTraceCloudStage
   SetOverwrite on
   Goto gogoke_preflight_done
 gogoke_preflight_extract_failed:
