@@ -38,6 +38,30 @@ const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const MAX_INDEX_BYTES: u64 = 4 << 20;
 const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 
+// Temporary cloud-only installer diagnosis. Remove after the first failing
+// installed invocation is identified; this is never an authority input.
+pub(crate) fn write_ci_install_error_once(message: &str) {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return;
+    }
+    let (Ok(run), Ok(attempt)) = (
+        std::env::var("GITHUB_RUN_ID"),
+        std::env::var("GITHUB_RUN_ATTEMPT"),
+    ) else {
+        return;
+    };
+    if !run.bytes().all(|byte| byte.is_ascii_digit())
+        || !attempt.bytes().all(|byte| byte.is_ascii_digit())
+        || message.len() > 256
+    {
+        return;
+    }
+    let path = std::env::temp_dir().join(format!("gogoke-install-error-{run}-{attempt}.txt"));
+    if let Ok(mut output) = fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        let _ = output.write_all(message.as_bytes());
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Domain {
     Candidate,
@@ -160,10 +184,24 @@ impl RuntimeLease {
                 .share_mode(FILE_SHARE_READ)
                 .custom_flags(OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
                 .open(ancestor)
-                .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string())?;
+                .map_err(|error: std::io::Error| {
+                    write_ci_install_error_once(&format!(
+                        "pin-ancestor-open:{}:{}",
+                        ancestor.file_name().and_then(|name| name.to_str()).unwrap_or("root"),
+                        error.raw_os_error().unwrap_or(0)
+                    ));
+                    "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string()
+                })?;
             let metadata = directory
                 .metadata()
-                .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string())?;
+                .map_err(|error: std::io::Error| {
+                    write_ci_install_error_once(&format!(
+                        "pin-ancestor-metadata:{}:{}",
+                        ancestor.file_name().and_then(|name| name.to_str()).unwrap_or("root"),
+                        error.raw_os_error().unwrap_or(0)
+                    ));
+                    "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string()
+                })?;
             if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
                 return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
             }
@@ -775,6 +813,10 @@ fn rename_owned_stage_no_replace(stage: &fs::File, destination: &Path) -> Result
         )
     };
     if success == 0 {
+        write_ci_install_error_once(&format!(
+            "rename-owned-stage:{}",
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        ));
         return Err("GOGOKE_RESOURCE_SET_PUBLISH_FAILED".to_string());
     }
     Ok(())

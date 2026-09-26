@@ -31,6 +31,7 @@ $script:uninstallInvoked = $false
 $script:instanceId = $null
 $script:finalizerReceiptPath = $null
 $script:serviceEvidencePath = $null
+$script:installDiagnosticPath = $null
 $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
@@ -236,6 +237,14 @@ try {
     $script:stage = 'install-once'
     $script:result.stage = $script:stage
     $script:installInvoked = $true
+    if ([string]::IsNullOrWhiteSpace($env:TMP) -or
+        -not [IO.Path]::IsPathFullyQualified($env:TMP)) {
+        throw 'Candidate TMP is unavailable for the first installer error receipt'
+    }
+    $script:installDiagnosticPath = Join-Path $env:TMP "gogoke-install-error-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.txt"
+    if (Test-Path -LiteralPath $script:installDiagnosticPath) {
+        throw 'First installer error receipt path is not fresh'
+    }
     $install = Start-OneShot $setup @('/S', "/D=$script:targetRoot") 300000 $true
     if ($install.TimedOut) {
         # Diagnostic only: retain the original 300-second acceptance bound and
@@ -558,6 +567,13 @@ try {
     $script:result.readinessReceiptPath = if ($script:ownedReadyReceipt) { $script:ownedReadyReceipt } else { $null }
     $script:result.finalizerReceiptPath = $script:finalizerReceiptPath
     $script:result.productServiceEvidencePath = $script:serviceEvidencePath
+    if ($script:installDiagnosticPath -and (Test-Path -LiteralPath $script:installDiagnosticPath -PathType Leaf)) {
+        $diagnostic = Get-Item -LiteralPath $script:installDiagnosticPath -Force
+        if (($diagnostic.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
+            $diagnostic.Length -le 256) {
+            $script:result.firstInstallError = (Get-Content -LiteralPath $script:installDiagnosticPath -Raw).Trim()
+        }
+    }
     if ($script:stage -ceq 'install-once' -and $script:targetRoot -and
         $env:RUNNER_TEMP -and
         [IO.Path]::GetFullPath($script:targetRoot).StartsWith(

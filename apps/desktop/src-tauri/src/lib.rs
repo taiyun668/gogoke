@@ -112,7 +112,10 @@ pub fn run() {
             .map(std::path::PathBuf::from)
     }) {
         let result = resource_trust::install_resources(&path);
-        if let Err(error) = &result { eprintln!("{error}"); }
+        if let Err(error) = &result {
+            resource_trust::write_ci_install_error_once(error);
+            eprintln!("{error}");
+        }
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
 

@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-111",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "e5f8568fa33a5b72aba22c1c8f18ce3cd575023d",
+  "recorded_utc": "2026-09-26T17:22:44Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-110.json",
+  "current_main": "4b2858b5903591e4a31336c43d3bc7a80789fdf2",
+  "authorization": "Current main MANIFEST 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a continues as WIP; release remains unauthorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "At branch smoke revision ab73670b, reused signed production source 7e7dc066 and artifact 10910537240. Cloud run 36257117114 FAIL: installer exceeded 300 seconds, later exited 2; a .stage directory remained and post-failure direct product replay returned GOGOKE_RESOURCE_DIRECTORY_UNREADABLE. Hygiene 36257122580 PASS. At revision 7a9efe8b, cloud run 36257764099 FAIL within 300 seconds with NSIS exit 2 and installed signed sidecars but no receipt; the then-current script measured stage only after timeouts, so it recorded no stage count. Hygiene 36257770536 PASS. At revision e5f8568f, cloud run 36258062549 FAIL: 6,643 files at 300 seconds; same installer later exited 2 with one stage directory containing exactly 1,234/1,234 indexed generation files and no missing path. Shell/native-host/resource pack/index/candidate sidecars had expected hashes; install receipt, active set and resource-set directory were absent. Post-failure replay again returned GOGOKE_RESOURCE_DIRECTORY_UNREADABLE. Hygiene 36258071184 PASS. The first installed product invocation's stderr remains unobserved; replay error is not first-run evidence. Product service and uninstall NOT_RUN.",
+  "current_change": "Temporary CI-only first-error receipt added to the installed product path without changing NSIS ExecWait launch semantics. The first failure in ancestor open/metadata or owned-stage rename records a bounded stage label and Win32 error; otherwise the final install_resources error is recorded. The error file uses a fixed run-id/run-attempt name in the runner temp directory and create_new. Branch smoke reads it into machine evidence. This instrumentation must be removed after root-cause repair and cannot be used as product authority or acceptance.",
+  "main_drift": "main changed only unrelated research/design documents since MC-110. AGENTS.md, routing, R2-06a contract, MANIFEST and authorization bytes remain unchanged; no production merge is warranted.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "First-run resource error, successful installed product service, uninstall/data preservation, deterministic installer leaf-insertion barrier, formal signed install, Owner Win11/SAC, final all-axis and heterogeneous review remain NOT_RUN. PR #27 Draft; PR #34 and #49 Owner-held OPEN; R2-06b deferred; no release.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Push the temporary first-error receipt, run exact-head desktop and hygiene axes, then trusted main signer and branch installed smoke. Read the first invocation's captured error and Win32 stage; fix only the evidenced root cause. Remove temporary diagnostics, rebuild/sign/retest final bytes, and keep 300-second timing evidence distinct from product install failure."
+}
