@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -65,8 +66,39 @@ class WindowlessProcessTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertEqual(module.poll_seconds("gpt-6-pro", 0), 90)
         self.assertEqual(module.poll_seconds("gpt-6-pro", 1201), 300)
+        self.assertEqual(module.next_sleep_seconds("gpt-6-pro", 0, 300), 90)
+        self.assertEqual(module.next_sleep_seconds("gpt-6-pro", 270, 300), 30)
+        self.assertEqual(module.next_sleep_seconds("gpt-6-pro", 1201, 1500), 299)
+        with mock.patch.object(module.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            self.assertIsNone(module.queue_notice("thread", "read-only patrol"))
+            self.assertEqual(run.call_args.args[0], ["codex", "queue", "--thread", "thread", "--message", "read-only patrol"])
+            self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
         with self.assertRaises(ValueError):
             module.poll_seconds("medium", 0)
+
+    def test_result_wake_repeats_every_30_seconds_until_controller_ack(self):
+        spec = importlib.util.spec_from_file_location("watch_github_result", SCRIPTS / "watch_github_result.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        receipt = Path(self.tmp.name) / "result.json"
+        ack = Path(self.tmp.name) / "ack.txt"
+        found = {"task": "TEST", "repository": "example/example", "branch": "gpt/test", "head_sha": "a" * 40, "path": "result.md", "status": "candidate_requires_controller_verification"}
+        calls = []
+
+        def notify(_thread, _message):
+            calls.append(_message)
+            if len(calls) == 2:
+                ack.write_text(found["head_sha"], encoding="utf-8")
+            return None
+
+        with mock.patch.object(module, "queue_notice", side_effect=notify), mock.patch.object(module.time, "sleep") as sleep:
+            module.notify_result_until_ack(found, "thread", receipt, ack)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleep.call_args_list, [mock.call(30), mock.call(30)])
+        saved = json.loads(receipt.read_text(encoding="utf-8"))
+        self.assertEqual(saved["result_notice_count"], 2)
+        self.assertIn("wake_acknowledged_at", saved)
 
     def test_powershell_ledger_wrapper_propagates_failure_and_has_no_console(self):
         pwsh = shutil.which("pwsh")
