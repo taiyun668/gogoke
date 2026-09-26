@@ -37,11 +37,21 @@
       if (!/^https:\/\/chatgpt\.com\/?(?:\?.*)?$/.test(freshURL || "") || await tab.playwright.locator('[data-message-author-role="user"], [data-message-author-role="assistant"]').count() !== 0) {
         throw new Error("not an empty new Chat conversation outside Projects");
       }
-      const composer = indexOf(ax, /^\s*(\d+) text entry area \(settable\) (?:Description: )?与 ChatGPT 聊天(?:, ID: prompt-textarea)?/m, "composer");
+      const composerPattern = /^\s*(\d+) text entry area \(settable\) (?:Description: )?与 ChatGPT 聊天(?:, ID: prompt-textarea)?/m;
+      let composer = indexOf(ax, composerPattern, "composer");
+      const oldDraft = (await tab.playwright.locator("#prompt-textarea").innerText()).trim();
+      if (oldDraft) {
+        if (!/^WCS-\d+；角色：.*仓库：taiyun668\/gogoke。/.test(oldDraft)) throw new Error("another unsent draft exists; preserve it and stop");
+        await tab.playwright.locator("#prompt-textarea").fill("");
+        ax = await fullAX();
+        composer = indexOf(ax, composerPattern, "composer");
+      }
       await tab.paste(composer, cfg.starter, { format: "text" });
       ax = await fullAX();
       const staged = await tab.playwright.locator("#prompt-textarea").innerText();
       if (staged.trim() !== cfg.starter.trim()) throw new Error("staged prompt differs from committed task routing fields");
+      await tab.playwright.getByRole("button", { name: /^(?:5\.6\s*)?(?:中|高|极高|Pro)$/ }).waitFor({ state: "visible", timeoutMs: 15000 });
+      ax = await fullAX();
       const pillPattern = /^\s*(\d+) pop up button \(collapsed\) (?:5\.6\s*)?(?:中|高|极高|Pro), ID: radix-/m;
       if (!pillPattern.test(ax)) {
         const controls = ax.split("\n").filter((line) => /pop up button|模型|能力|5\.6|发送提示词/.test(line)).slice(0, 12).join(" | ");
