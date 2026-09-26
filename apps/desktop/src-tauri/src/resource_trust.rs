@@ -1806,6 +1806,9 @@ mod tests {
         ));
         let stage = root.join("stage");
         let published = root.join("published");
+        fs::create_dir(&root).expect("owned parent directory");
+        let mut parent_lease = RuntimeLease::default();
+        parent_lease.pin_ancestors(&stage).expect("hold actual parent as in publish path");
         fs::create_dir_all(stage.join("dist")).expect("owned stage directory");
         fs::write(stage.join("dist/bin.mjs"), b"signed service").expect("owned stage leaf");
         let expected = HashMap::from([(
@@ -1831,6 +1834,7 @@ mod tests {
             b"signed service"
         );
         drop(stage_handle);
+        drop(parent_lease);
         let resolved_root = root.canonicalize().expect("owned fixture root");
         let resolved_temp = std::env::temp_dir().canonicalize().expect("test temp root");
         assert!(
