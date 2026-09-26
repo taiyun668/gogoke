@@ -1092,14 +1092,14 @@ Section Install
   ; Tauri's resources_dirs contains the resource output parents. Pin each
   ; distinct directory before the first bundled payload write.
   {{#each resources_dirs}}
-    Push "$INSTDIR\{{this}}"
+    Push "$INSTDIR\\{{this}}"
     Call GogokePinDirectory
     Pop $9
   {{/each}}
   StrCpy $GogokeTraceStage "install-resource-directories-pinned"
   Call GogokeTraceCloudStage
   {{#each binaries}}
-    ${GetParent} "$INSTDIR\{{this}}" $0
+    ${GetParent} "$INSTDIR\\{{this}}" $0
     Push "$0"
     Call GogokePinDirectory
     Pop $9
@@ -1110,7 +1110,7 @@ Section Install
   ; scratch replacement; it does not prove that NSIS extracted a raced leaf.
   ; Publication checks the source object and creates each final leaf atomically.
   {{#each resources}}
-    ${GetParent} "$PLUGINSDIR\gogoke-payload\{{this.[1]}}" $0
+    ${GetParent} "$PLUGINSDIR\gogoke-payload\\{{this.[1]}}" $0
     Push "$0"
     Call GogokePinDirectory
     Pop $9
@@ -1118,7 +1118,7 @@ Section Install
   StrCpy $GogokeTraceStage "install-resource-scratch-directories-pinned"
   Call GogokeTraceCloudStage
   {{#each binaries}}
-    ${GetParent} "$PLUGINSDIR\gogoke-payload\{{this}}" $0
+    ${GetParent} "$PLUGINSDIR\gogoke-payload\\{{this}}" $0
     Push "$0"
     Call GogokePinDirectory
     Pop $9
@@ -1173,27 +1173,27 @@ Section Install
     CreateDirectory "$INSTDIR\\{{this}}"
   {{/each}}
   {{#each resources}}
-    IfFileExists "$PLUGINSDIR\gogoke-payload\{{this.[1]}}" 0 +2
+    IfFileExists "$PLUGINSDIR\gogoke-payload\\{{this.[1]}}" 0 +2
       Abort "A Gogoke payload scratch leaf already exists."
     SetOutPath "$PLUGINSDIR\gogoke-payload"
     ClearErrors
     File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
     IfErrors gogoke_payload_extract_failed
-    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\{{this.[1]}}"
-    StrCpy $GogokePublishTarget "$INSTDIR\{{this.[1]}}"
+    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\\{{this.[1]}}"
+    StrCpy $GogokePublishTarget "$INSTDIR\\{{this.[1]}}"
     Call GogokePublishFile
   {{/each}}
 
   ; Copy external binaries
   {{#each binaries}}
-    IfFileExists "$PLUGINSDIR\gogoke-payload\{{this}}" 0 +2
+    IfFileExists "$PLUGINSDIR\gogoke-payload\\{{this}}" 0 +2
       Abort "A Gogoke payload scratch leaf already exists."
     SetOutPath "$PLUGINSDIR\gogoke-payload"
     ClearErrors
     File /a "/oname={{this}}" "{{no-escape @key}}"
     IfErrors gogoke_payload_extract_failed
-    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\{{this}}"
-    StrCpy $GogokePublishTarget "$INSTDIR\{{this}}"
+    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\\{{this}}"
+    StrCpy $GogokePublishTarget "$INSTDIR\\{{this}}"
     Call GogokePublishFile
   {{/each}}
   SetOverwrite on
