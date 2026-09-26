@@ -1,7 +1,7 @@
 # Antigravity CLI（agy）：已知和未知
 
 - 日期：2026-09-26
-- 为什么写：2026-09-17 的[要做的和不做的 §三点七](../design/GOGO-要做的和不做的.md)依据 AionUi 的源码注释，判断 Antigravity "一次调用一个进程，中途插话不可能、上下文不累积，只能当一次性席位"。Owner 指出这一块没有摸清。本文把能查到的事实分成已核实、有冲突、未知三类。**本机目前没有安装 agy**（只有 Antigravity 和 Antigravity IDE 两个桌面应用），所以下面没有一条经过本机实测。
+- 为什么写：2026-09-17 的[要做的和不做的 §三点七](../design/GOGO-要做的和不做的.md)依据 AionUi 的源码注释，判断 Antigravity "一次调用一个进程，中途插话不可能、上下文不累积，只能当一次性席位"。Owner 指出这一块没有摸清。本文把能查到的事实分成已核实、有冲突、未知三类。**2026-09-26 已在本机实测，结果见文末 §实测结果（agy 1.2.11）。**
 
 ## 已核实（有源码或官方文档）
 
@@ -47,3 +47,23 @@
 2. 双向流能不能在一个进程里持续做多轮，能不能在回合进行中写入新消息。
 3. `--conversation` 续接后，上下文是不是真的在。
 4. Windows 11 智能应用控制下，`agy` 和 `agy_acp_server` 能不能运行。
+
+## 实测结果（agy 1.2.11，Windows 11，2026-09-26）
+
+安装：Owner 同意后，按官方安装脚本的步骤手动执行。先从 Google 的更新服务读取清单，再下载 `agy.exe`（约 200 MB），SHA512 校验通过，放到 `%LOCALAPPDATA%gyin`。没有执行 `agy install`，所以没有改动 PATH 和 shell 配置。**文件带有 Google LLC 的有效 Authenticode 签名**，运行时没有被智能应用控制拦下。已登录（沿用本机的 Antigravity 账号，`agy models` 能列出模型）。测试都在临时目录里进行，用的是 `gemini-3.8-flash-low`。
+
+| 问题 | 结果 |
+|---|---|
+| 参数（`agy --help`） | 有 `--input-format stream-json`（从 stdin 一行读一条 NDJSON 消息，每条跑一回合）、`--output-format stream-json`、`--conversation`、`--continue`、`--mode (accept-edits\|plan)`、`--sandbox`、`--effort`、`--model`、`--agent`、`--add-dir`、`--print-timeout`、`--dangerously-skip-permissions`。**没有 ACP 模式** |
+| stdin 消息格式 | `{"event":"user","message":{"role":"user","content":"..."}}`。不加 `-p`，直接用 `--input-format stream-json --output-format stream-json` |
+| 输出事件 | `init`（带 conversation_id、模型、工具清单）、`step_update`（每一步：user_input、agent_response 带文本增量、tool 带工具名和参数、system_message；带 usage）、`result`（status、response、num_turns、usage，其中含 thinking 和 cache_read） |
+| **一个进程里连续多轮** | **可以**，上下文保留。第一轮让它记住 BLUE-42，第二轮它答出 BLUE-42 |
+| **回合进行中写入新消息** | **会排队，不会插进去**：第 4 秒写入的第二条消息，要等第一回合结束（约 22 秒）后才处理 |
+| **`--conversation` 续接** | **可以**：新起一个进程，带上之前的 conversation id，能答出 BLUE-42，turns 继续累计 |
+| **`--mode plan` 能不能拦住写文件** | **拦不住**：无头模式下，它先写了一份计划到自己的目录（`~/.gemini/antigravity-cli/brain/<id>/`），随后收到一条 system_message，接着就把文件写进了工作区 |
+| **`--mode plan --sandbox` 能不能拦住写文件** | **也拦不住**：文件照样被写出来 |
+| 状态目录 | 会写入 `~/.gemini/antigravity-cli/brain/<conversation_id>/`。做隔离时要换掉家目录 |
+
+**结论**：
+- agy 可以当常驻会话用，能连续多轮、能续接。它能不能当主控，剩下的问题只在于**不能在回合中途插话**，而且这一点跟 Grok 的 ACP 一样。
+- **agy 的无头模式没有可靠的只读方式**。旁聊、审计这类只读场景，**只读必须由我们的宿主在操作系统层面保证**，比如给它一个用完即丢的工作区副本、用只读权限的令牌运行，不能靠 CLI 自己的模式参数。这一条对所有厂商都适用：每家都要实测它的只读参数到底拦不拦得住，拦不住就走操作系统层面的办法。
