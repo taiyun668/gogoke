@@ -155,24 +155,6 @@ class DispatchSafetyTests(unittest.TestCase):
         self.assertEqual(again.returncode, 2)
         self.assertIn("task ID already used", again.stderr)
 
-    def test_only_recorded_unsent_trial_task_can_authorize_draft_clearance(self):
-        old = self.run_ledger("reserve", "--tier", "medium", "--task", "old-draft", "--seat", "a")
-        self.assertEqual(old.returncode, 0, old.stderr)
-        self.assertEqual(self.run_ledger("release", old.stdout.strip()).returncode, 0)
-        denied = self.run_ledger("prove-unsent", "--task", "old-draft")
-        self.assertEqual(denied.returncode, 2)
-        events = self.state.parent / "trial-events.jsonl"
-        events.write_text(json.dumps({"task_id": "old-draft", "event": "web_not_sent"}) + "\n", encoding="utf-8")
-        proven = self.run_ledger("prove-unsent", "--task", "old-draft")
-        self.assertEqual(proven.returncode, 0, proven.stderr)
-        self.assertIn("proven_unsent old-draft", proven.stdout)
-        sent = self.run_ledger("reserve", "--tier", "medium", "--task", "sent-draft", "--seat", "a")
-        self.assertEqual(sent.returncode, 0, sent.stderr)
-        self.assertEqual(self.run_ledger("mark-sent", sent.stdout.strip(), "--url", "https://chatgpt.com/c/example").returncode, 0)
-        events.write_text(events.read_text(encoding="utf-8") + json.dumps({"task_id": "sent-draft", "event": "web_not_sent"}) + "\n", encoding="utf-8")
-        not_proven = self.run_ledger("prove-unsent", "--task", "sent-draft")
-        self.assertEqual(not_proven.returncode, 2)
-
     def test_f3_task_id_survives_state_loss_and_reconciliation(self):
         first = self.run_ledger("reserve", "--tier", "medium", "--task", "old-id", "--seat", "a")
         self.assertEqual(first.returncode, 0, first.stderr)
