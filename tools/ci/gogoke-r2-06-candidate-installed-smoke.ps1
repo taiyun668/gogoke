@@ -30,6 +30,7 @@ $script:installInvoked = $false
 $script:uninstallInvoked = $false
 $script:instanceId = $null
 $script:finalizerReceiptPath = $null
+$script:installStartedAt = $null
 $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
@@ -235,6 +236,7 @@ try {
     $script:stage = 'install-once'
     $script:result.stage = $script:stage
     $script:installInvoked = $true
+    $script:installStartedAt = [DateTime]::UtcNow
     $install = Start-OneShot $setup @('/S', "/D=$script:targetRoot") 300000 $true
     if ($install.TimedOut) { throw "NSIS install exceeded bound; retain target: $script:targetRoot" }
     if ($install.ExitCode -ne 0) { throw "NSIS install failed with exit code $($install.ExitCode); retain target: $script:targetRoot" }
@@ -395,6 +397,31 @@ try {
     $script:result.retainedAppDataSentinel = if ($script:ownedSentinel -and (Test-Path -LiteralPath $script:ownedSentinel)) { $script:ownedSentinel } else { $null }
     $script:result.readinessReceiptPath = if ($script:ownedReadyReceipt) { $script:ownedReadyReceipt } else { $null }
     $script:result.finalizerReceiptPath = $script:finalizerReceiptPath
+    if ($script:stage -ceq 'install-once' -and $script:installStartedAt) {
+        $script:result.installCrashProbe = [ordered]@{
+            targetExists = Test-Path -LiteralPath $script:targetRoot
+            lockExists = Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'gogoke-install-lifecycle.lock')
+            topLevelNames = @()
+            applicationErrors = @()
+        }
+        if (Test-Path -LiteralPath $script:targetRoot -PathType Container) {
+            $script:result.installCrashProbe.topLevelNames = @(
+                Get-ChildItem -LiteralPath $script:targetRoot -Force -ErrorAction SilentlyContinue |
+                    Select-Object -First 20 -ExpandProperty Name
+            )
+        }
+        try {
+            $script:result.installCrashProbe.applicationErrors = @(
+                Get-WinEvent -FilterHashtable @{
+                    LogName = 'Application'
+                    Id = @(1000, 1001)
+                    StartTime = $script:installStartedAt.AddSeconds(-2)
+                } -ErrorAction Stop |
+                    Where-Object { $_.Message -match [regex]::Escape($setupName) } |
+                    Select-Object -First 3 -Property TimeCreated, Id, Message
+            )
+        } catch { }
+    }
     if ($env:RUNNER_TEMP -and (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) {
         $script:evidencePath = Join-Path $env:RUNNER_TEMP ("gogoke-r2-06-candidate-smoke-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.json")
         try { $script:result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:evidencePath -Encoding utf8 }
