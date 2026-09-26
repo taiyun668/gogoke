@@ -426,46 +426,13 @@ Function AcquireGogokeLifecycleLock
     Abort "Another Gogoke install, update, or uninstall operation holds the lifecycle lock."
   ${EndIf}
   StrCpy $GogokeLifecycleLockHandle $0
-  System::Alloc 8
-  Pop $5
-  ${If} $5 == 0
-    Abort "The Gogoke lifecycle file cannot be inspected."
-  ${EndIf}
-  System::Call 'kernel32::GetFileInformationByHandleEx(p $GogokeLifecycleLockHandle, i 9, p $5, i 8) i .r6'
-  ${If} $6 == 0
-    System::Free $5
-    Abort "The Gogoke lifecycle file identity is unavailable."
-  ${EndIf}
-  System::Call '*$5(i .r6, i .r7)'
-  System::Free $5
-  IntOp $6 $6 & 0x410
-  ${If} $6 != 0
-    Abort "The Gogoke lifecycle file is not a plain file."
-  ${EndIf}
-  System::Call 'kernel32::CreateFileW(w "$GogokeInstallParent", i 0x80, i 3, p 0, i 3, i 0x02200000, p 0) p .r4'
-  ${If} $4 == -1
-    Abort "The Gogoke installation parent cannot be opened."
-  ${EndIf}
-  System::Call 'kernel32::GetFinalPathNameByHandleW(p $4, w .r5, i ${NSIS_MAX_STRLEN}, i 0) i .r6'
-  System::Call 'kernel32::CloseHandle(p $4)'
-  ${If} $6 == 0
-  ${OrIf} $6 >= ${NSIS_MAX_STRLEN}
-    Abort "The Gogoke installation parent has no bounded path."
-  ${EndIf}
-  StrCpy $6 $5 1 -1
-  ${If} $6 == "\"
-    StrCpy $5 "$5gogoke-install-lifecycle.lock"
-  ${Else}
-    StrCpy $5 "$5\gogoke-install-lifecycle.lock"
-  ${EndIf}
-  System::Call 'kernel32::GetFinalPathNameByHandleW(p $GogokeLifecycleLockHandle, w .r2, i ${NSIS_MAX_STRLEN}, i 0) i .r3'
-  ${If} $3 == 0
-  ${OrIf} $3 >= ${NSIS_MAX_STRLEN}
-    Abort "The Gogoke lifecycle file has no bounded path."
-  ${EndIf}
-  System::Call 'kernel32::lstrcmpiW(w "$2", w "$5") i .r6'
-  ${If} $6 != 0
-    Abort "The Gogoke lifecycle file points outside this installation."
+  ; The parent is already pinned physically. This no-follow lock is opened
+  ; with no sharing, so its named leaf cannot be replaced during this check.
+  System::Call 'kernel32::GetFileAttributesW(w "$GogokeInstallParent\gogoke-install-lifecycle.lock") i .r6'
+  IntOp $7 $6 & 0x410
+  ${If} $6 == -1
+  ${OrIf} $7 != 0
+    Abort "The Gogoke lifecycle path is not a plain file."
   ${EndIf}
 gogoke_lock_acquired:
   StrCpy $GogokeAllowDirectoryCreation 1
