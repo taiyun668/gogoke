@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-113",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "7374ede7f27d24cfe886f7a9283ee073052cc5db",
+  "recorded_utc": "2026-09-26T20:45:52Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-112.json",
+  "current_main": "b7849b4fc8f3b70602846f0734539c5a715f4fbe",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a remains authorized WIP; release remains unauthorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Desktop run 36266462038 PASS all five jobs at ec8505b1, including both Windows native-test lanes and independent executable-byte comparison. Trusted main signing run 36268440681 PASS; signed artifact 10914706805 binds source ec8505b1 and source run 36266462038. Installed smoke 36268531741 FAIL after successful NSIS install and installed shell/native-host/Node hash checks: no real-bootstrap readiness receipt within 45 seconds. Installed smoke 36269571426 FAIL at product service stage but its PowerShell parent did not capture the child error. At script revision 0437327a, installed smoke 36270063835 FAIL after the same successful installation and byte checks: the existing WebView2 smoke could not find its product page, so no product IPC ran. Inspection of the signed-resource product setup shows Home now uses gogoke-resource://localhost/<set-id>/index.html; the smoke matched only legacy tauri.localhost. Script-only revision 7374ede7 now matches both exact page forms. Node syntax and diff checks PASS. Installed smoke 36270617198, using the same signed artifact, is IN_PROGRESS; no result inherited from previous revisions.",
+  "path_reflection": "The prior round spent a cloud invocation capturing the child error after the parent had discarded it; this exposed that the smoke was observing the obsolete page identity. Comparing the running target expected by the test with the product's actual CustomProtocol URL provided a direct, falsifiable correction without rebuilding signed native bytes. The current single replay should test the real product IPC and poisoned-module negative axis if the page match was the only test-instrument defect. Temporary diagnostic output remains until the product path passes; final candidate requires its removal and a new exact-byte build/sign/smoke chain.",
+  "main_drift": "Main advanced only in design/research documents and one model-routing paragraph allowing the qualified web GPT-6 Pro route for Astra-class tasks. AGENTS.md, R2-06a contract, MANIFEST and authorization bytes are unchanged. No production merge is required.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "Successful installed service/readiness, poisoned-module negative, uninstall/data preservation, successful 06a cloud installed smoke, Owner Win11/SAC, final candidate review remain NOT_RUN. PR #27 Draft; PR #34 and #49 Owner-held OPEN; R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "GitHub branch and workflow dispatch were read back by exact identity. Run 36270617198 is the named active external object. No merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Read installed smoke 36270617198 at exact workflow revision 7374ede7 and signed source ec8505b1. If it fails, classify the first product or test-instrument failure and repair the minimum seam. If it passes, remove temporary first-error/replay diagnostics, rebuild/sign/retest final candidate bytes, then proceed to R2-06a review and authorized Owner-machine Win11 installed test."
+}
