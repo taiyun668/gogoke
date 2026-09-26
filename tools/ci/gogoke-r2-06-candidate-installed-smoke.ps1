@@ -367,59 +367,7 @@ try {
     Assert-Hash (Join-Path $script:targetRoot 'gogoke-native-host.exe') $ExpectedNativeHostSha256 'Installed native host'
     Assert-Hash (Join-Path $script:targetRoot 'gogoke-service\runtime\node.exe') $ExpectedNodeSha256 'Installed Node runtime'
 
-    $script:stage = 'sentinel-and-product-readiness'
-    $script:result.stage = $script:stage
-    New-Item -ItemType Directory -Path $script:appDataRoot | Out-Null
-    $sentinelName = "r2-06-candidate-$ExpectedRunId-$ExpectedRunAttempt.sentinel"
-    $script:ownedSentinel = Join-Path $script:appDataRoot $sentinelName
-    $sentinelBytes = [Text.Encoding]::UTF8.GetBytes("gogoke-r2-06-candidate-appdata-sentinel`n$ExpectedSourceCommit`n$ExpectedRunId`n$ExpectedRunAttempt`n")
-    [IO.File]::WriteAllBytes($script:ownedSentinel, $sentinelBytes)
-    $readyName = 'gogoke-update-r2-06-' + [Guid]::NewGuid().ToString('N') + '.ready'
-    # Rust's Windows temp_dir uses GetTempPath2W, which preserves the raw TMP
-    # spelling. .NET GetTempPath expands 8.3 aliases on hosted Windows runners.
-    $rawTemp = [string]$env:TMP
-    if ([string]::IsNullOrWhiteSpace($rawTemp) -or
-        -not [IO.Path]::IsPathFullyQualified($rawTemp) -or
-        -not (Test-Path -LiteralPath $rawTemp -PathType Container)) {
-        throw 'Candidate TMP is not an existing absolute directory'
-    }
-    Assert-NoReparseAncestors $rawTemp
-    $script:ownedReadyReceipt = [IO.Path]::Combine($rawTemp, $readyName)
-    if (Test-Path -LiteralPath $script:ownedReadyReceipt) { throw 'Readiness receipt path is not fresh' }
-    $productExe = Join-Path $script:targetRoot 'gogoke.exe'
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $productExe
-    $start.UseShellExecute = $false
-    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
-    [void]$start.ArgumentList.Add("--gogoke-update-ready=$script:ownedReadyReceipt")
-    $product = [Diagnostics.Process]::new()
-    $product.StartInfo = $start
-    if (-not $product.Start()) { throw 'Installed Gogoke did not start' }
-    $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
-    while ([DateTime]::UtcNow -lt $readyDeadline) {
-        if (Test-Path -LiteralPath $script:ownedReadyReceipt -PathType Leaf) { break }
-        if ($product.HasExited) { throw "Installed product exited before readiness: $($product.ExitCode)" }
-        Start-Sleep -Milliseconds 250
-    }
-    if (-not (Test-Path -LiteralPath $script:ownedReadyReceipt -PathType Leaf)) {
-        throw "Installed product produced no version-bound real-bootstrap readiness receipt: $script:ownedReadyReceipt"
-    }
-    $ready = Get-Content -LiteralPath $script:ownedReadyReceipt -Raw | ConvertFrom-Json
     $indexHash = (Get-FileHash -LiteralPath (Join-Path $script:targetRoot 'resource-index.json') -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($ready.version -cne $ExpectedVersion -or
-        $ready.generationId -cne $index.generationId -or
-        $ready.setId -cne $indexHash) {
-        throw 'Installed product readiness receipt identity mismatch'
-    }
-    if (-not ($manifestText -split "`n" | Where-Object { $_.TrimEnd("`r") -ceq "$indexHash  resource-index.json" })) {
-        throw 'Installed resource index is not the exact resource index bound by the signed candidate sidecar'
-    }
-    $script:result.readiness = [ordered]@{ version = $ready.version; generationId = $ready.generationId; setId = $ready.setId }
-    [void]$product.CloseMainWindow()
-    if (-not $product.WaitForExit(15000)) {
-        throw "Installed UI did not exit after close request; preserve candidate root: $script:targetRoot"
-    }
-
     $script:stage = 'installed-product-service-positive-and-poison-negative'
     $script:result.stage = $script:stage
     if ($index.generationId -cnotmatch '^[0-9a-f]{64}$') {
@@ -474,6 +422,58 @@ try {
         throw 'Candidate installed service smoke evidence did not prove both product invocations'
     }
     $script:result.productService = $serviceEvidence
+
+    $script:stage = 'sentinel-and-product-readiness'
+    $script:result.stage = $script:stage
+    New-Item -ItemType Directory -Path $script:appDataRoot | Out-Null
+    $sentinelName = "r2-06-candidate-$ExpectedRunId-$ExpectedRunAttempt.sentinel"
+    $script:ownedSentinel = Join-Path $script:appDataRoot $sentinelName
+    $sentinelBytes = [Text.Encoding]::UTF8.GetBytes("gogoke-r2-06-candidate-appdata-sentinel`n$ExpectedSourceCommit`n$ExpectedRunId`n$ExpectedRunAttempt`n")
+    [IO.File]::WriteAllBytes($script:ownedSentinel, $sentinelBytes)
+    $readyName = 'gogoke-update-r2-06-' + [Guid]::NewGuid().ToString('N') + '.ready'
+    # Rust's Windows temp_dir uses GetTempPath2W, which preserves the raw TMP
+    # spelling. .NET GetTempPath expands 8.3 aliases on hosted Windows runners.
+    $rawTemp = [string]$env:TMP
+    if ([string]::IsNullOrWhiteSpace($rawTemp) -or
+        -not [IO.Path]::IsPathFullyQualified($rawTemp) -or
+        -not (Test-Path -LiteralPath $rawTemp -PathType Container)) {
+        throw 'Candidate TMP is not an existing absolute directory'
+    }
+    Assert-NoReparseAncestors $rawTemp
+    $script:ownedReadyReceipt = [IO.Path]::Combine($rawTemp, $readyName)
+    if (Test-Path -LiteralPath $script:ownedReadyReceipt) { throw 'Readiness receipt path is not fresh' }
+    $productExe = Join-Path $script:targetRoot 'gogoke.exe'
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $productExe
+    $start.UseShellExecute = $false
+    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
+    [void]$start.ArgumentList.Add("--gogoke-update-ready=$script:ownedReadyReceipt")
+    $product = [Diagnostics.Process]::new()
+    $product.StartInfo = $start
+    if (-not $product.Start()) { throw 'Installed Gogoke did not start' }
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    while ([DateTime]::UtcNow -lt $readyDeadline) {
+        if (Test-Path -LiteralPath $script:ownedReadyReceipt -PathType Leaf) { break }
+        if ($product.HasExited) { throw "Installed product exited before readiness: $($product.ExitCode)" }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not (Test-Path -LiteralPath $script:ownedReadyReceipt -PathType Leaf)) {
+        throw "Installed product produced no version-bound real-bootstrap readiness receipt: $script:ownedReadyReceipt"
+    }
+    $ready = Get-Content -LiteralPath $script:ownedReadyReceipt -Raw | ConvertFrom-Json
+    if ($ready.version -cne $ExpectedVersion -or
+        $ready.generationId -cne $index.generationId -or
+        $ready.setId -cne $indexHash) {
+        throw 'Installed product readiness receipt identity mismatch'
+    }
+    if (-not ($manifestText -split "`n" | Where-Object { $_.TrimEnd("`r") -ceq "$indexHash  resource-index.json" })) {
+        throw 'Installed resource index is not the exact resource index bound by the signed candidate sidecar'
+    }
+    $script:result.readiness = [ordered]@{ version = $ready.version; generationId = $ready.generationId; setId = $ready.setId }
+    [void]$product.CloseMainWindow()
+    if (-not $product.WaitForExit(15000)) {
+        throw "Installed UI did not exit after close request; preserve candidate root: $script:targetRoot"
+    }
 
     $script:stage = 'uninstall-once-and-finalizer-receipt'
     $script:result.stage = $script:stage

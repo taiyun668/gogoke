@@ -561,7 +561,11 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
     while (!fs.existsSync(updateReceipt) && Date.now() < readyDeadline) await delay(100);
     const expectedVersion = candidate?.version ?? JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8')).version;
     if (!fs.existsSync(updateReceipt)) {
-      throw new Error('installed product did not publish version-bound readiness after native Controller admission');
+      // Existing WebView session, same installed product and same command.
+      // This diagnostic invocation is made only after bootstrap failed to
+      // publish; its outcome is not accepted as bootstrap readiness.
+      const directResult = await evaluate("window.__TAURI_INTERNALS__.invoke('gogoke_update_signal_ready').then(() => 'DIRECT_INVOKE_SUCCEEDED', error => String(error))");
+      throw new Error(`installed product bootstrap did not publish readiness; direct IPC result: ${directResult}`);
     }
     if (candidate) {
       const ready = JSON.parse(fs.readFileSync(updateReceipt, 'utf8'));
