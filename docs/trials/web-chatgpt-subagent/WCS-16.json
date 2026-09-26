@@ -1,0 +1,16 @@
+{
+  "task_id": "WCS-16",
+  "tier": "medium",
+  "repository": "taiyun668/gogoke",
+  "assigned_branch": "gpt/web-chatgpt-wcs16-recovery-audit",
+  "base_sha": "3a4a2ac08cfde7c74cee9fd355fd55f926994157",
+  "role": "independent read-only reviewer of the web-channel recovery and result-close sequence",
+  "goal": "At the exact base SHA, review .agents/skills/web-chatgpt-subagent/scripts/ledger.py, scripts/Wait-ControllerApproval.ps1, .agents/skills/web-chatgpt-subagent/SKILL.md, and relevant Windows tests. Focus on task-ID uniqueness after state loss/reconcile, approval of an exact GitHub result SHA, and the stated wait-then-check-model-then-close tab sequence. Report concrete source-level or test gaps only; do not edit the reviewed candidate or treat this as adoption.",
+  "success_criteria": "Commit one result file naming the exact reviewed SHA, with up to five file-and-line findings or an explicit no-finding result. State what was exercised only by tests and what browser/runtime behavior remains unverified.",
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-16-RESULT.md",
+  "allowed_write_paths": [
+    "docs/trials/web-chatgpt-subagent/WCS-16-RESULT.md"
+  ],
+  "stop_condition": "Stop after one result commit, or immediately if the GitHub connector cannot write the assigned branch. Do not modify any other file, merge main, publish, sign, or access secrets."
+}
+
