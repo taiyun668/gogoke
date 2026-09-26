@@ -1,6 +1,7 @@
 {
  "schema": "gogoke.37.plan-validation.v1",
+ "meaning": "named structural checks only; no evidence, code or Owner-machine result is confirmed",
  "errors": [],
- "self_test_missed": [],
- "ok": true
+ "self_test_mutations_missed": [],
+ "structural_checks_passed": true
 }
