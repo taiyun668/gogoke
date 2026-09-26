@@ -24,7 +24,7 @@
     if (!iab) throw new Error("Codex in-app browser unavailable");
     const chatTabs = iab.tabs.filter((t) => /^https:\/\/chatgpt\.com(?:\/|$)/.test(t.url || ""));
     if (chatTabs.length !== 0) throw new Error(`ChatGPT tab count ${chatTabs.length}; finish and close it before dispatch`);
-    tab = await cua.createBrowserTab("iab", "https://chatgpt.com/", { visible: true });
+    tab = await cua.createBrowserTab("iab", "https://chatgpt.com/", { visible: false });
     let ax = await fullAX();
     if (/登录|注册|验证码|安全验证|可疑活动|Log in|Sign up|Verify|suspicious activity/i.test(ax) && !/与 ChatGPT 聊天/.test(ax)) {
       result.status = /安全验证|可疑活动|Verify|suspicious activity/i.test(ax) ? "security_verification" : "needs_login";

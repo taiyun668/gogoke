@@ -1,0 +1,17 @@
+{
+  "task_id": "WCS-09",
+  "tier": "medium",
+  "repository": "taiyun668/gogoke",
+  "assigned_branch": "gpt/web-chatgpt-wcs09-single-dispatch",
+  "base_sha": "138c4c0547ac39996c8033011dce92d0b3891158",
+  "role": "independent read-only reviewer of the updated web-channel direction",
+  "goal": "Review the complete docs/directions/2026-09-26-web-chatgpt-subagent-channel.md at the exact base SHA. Check whether the economics gate, single-task serial rule, local accounting boundary, security cooldown, GitHub handoff, and trial acceptance can be applied together without contradictory instructions. Do not treat this as adoption or acceptance of the skill PR.",
+  "success_criteria": "Write one result file naming the exact reviewed SHA, with up to five concrete file-and-line findings or an explicit no-finding result, explain the practical effect of each finding, and state what was not verified. The result must be a GitHub commit on the assigned branch.",
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-09-RESULT.md",
+  "allowed_write_paths": [
+    "docs/trials/web-chatgpt-subagent/WCS-09-RESULT.md"
+  ],
+  "stop_condition": "Stop after one result commit, or immediately if the GitHub connector cannot write the assigned branch. Do not modify any other file, merge main, publish, sign, or access secrets."
+}
+
+
