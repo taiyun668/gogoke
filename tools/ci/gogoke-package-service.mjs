@@ -475,9 +475,13 @@ function replayDeniedModule(installed, candidate) {
       });
       const stderr = String(result.stderr ?? result.error?.message ?? '')
         .replaceAll(root, '[root]').replaceAll(os.homedir(), '[user-home]');
-      return `status=${result.status ?? 'null'} stderr=${stderr.slice(-400)}`;
+      const stdout = String(result.stdout ?? '')
+        .replaceAll(root, '[root]').replaceAll(os.homedir(), '[user-home]');
+      return `status=${result.status ?? 'null'} stdout=${stdout.slice(-400)} stderr=${stderr.slice(-400)}`;
     };
-    return `sameRoot=${invoke(candidate.productRoot)} freshRoot=${invoke(path.join(replayRoot, 'fresh-root'))}`;
+    const freshRoot = path.join(replayRoot, 'fresh-root');
+    fs.mkdirSync(freshRoot);
+    return `sameRoot=${invoke(candidate.productRoot)} freshRoot=${invoke(freshRoot)}`;
   } finally {
     fs.rmSync(replayRoot, { recursive: true, force: true });
   }
