@@ -582,8 +582,16 @@ try {
     if ($script:installDiagnosticPath -and (Test-Path -LiteralPath $script:installDiagnosticPath -PathType Leaf)) {
         $diagnostic = Get-Item -LiteralPath $script:installDiagnosticPath -Force
         if (($diagnostic.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
-            $diagnostic.Length -le 256) {
-            $script:result.firstInstallError = (Get-Content -LiteralPath $script:installDiagnosticPath -Raw).Trim()
+            $diagnostic.Length -le 4096) {
+            $firstError = (Get-Content -LiteralPath $script:installDiagnosticPath -Raw).Trim()
+            $firstError = $firstError -replace '(?i)(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+', '[redacted-token]'
+            $firstError = $firstError -replace '(?i)Bearer\s+\S+', 'Bearer [redacted-token]'
+            foreach ($privatePath in @($env:USERPROFILE, $env:RUNNER_TEMP, $script:targetRoot, $script:appDataRoot)) {
+                if (-not [string]::IsNullOrWhiteSpace($privatePath)) {
+                    $firstError = $firstError.Replace($privatePath, '[private-path]')
+                }
+            }
+            $script:result.firstInstallError = $firstError
         }
     }
     if ($script:stage -ceq 'install-once' -and $script:targetRoot -and

@@ -52,7 +52,7 @@ pub(crate) fn write_ci_install_error_once(message: &str) {
     };
     if !run.bytes().all(|byte| byte.is_ascii_digit())
         || !attempt.bytes().all(|byte| byte.is_ascii_digit())
-        || message.len() > 256
+        || message.len() > 4096
     {
         return;
     }

@@ -972,9 +972,20 @@ mod managed_service {
         let output = stdout_reader.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
             .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string()));
-        let _ = stderr_reader.join();
+        let stderr_output = stderr_reader.join().ok().and_then(Result::ok).unwrap_or_default();
         let mut exit_code = 0;
         let exit_code_available = unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
+        if exit_code_available && exit_code != 0 {
+            // Temporary cloud-only first failure evidence from the actual
+            // managed child. Remove with the installer diagnosis after repair.
+            let stdout = output.as_ref().map(Vec::as_slice).unwrap_or_default();
+            let message = format!(
+                "GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}; stdout={}; stderr={}",
+                String::from_utf8_lossy(stdout), String::from_utf8_lossy(&stderr_output),
+            );
+            let bounded: String = message.chars().take(1000).collect();
+            crate::resource_trust::write_ci_install_error_once(&bounded);
+        }
         let result = if let Some(error) = failure {
             Err(error)
         } else if !exit_code_available {
