@@ -61,6 +61,19 @@
 
 ---
 
+## 2b. 外部整理补充的对标（2026-09-26 核实）
+
+Owner 转来一份外部整理，是按"编码 CLI 的岗位运行时"这个思路找的对标，其中好几个是上面漏掉的。核实结果如下：
+
+| 对象 | 核实结果 | 对应 |
+|---|---|---|
+| **claw-orchestrator**（[Enderfga/claw-orchestrator](https://github.com/Enderfga/claw-orchestrator)） | 582★，MIT，2026-01 创建，12 名贡献者。源码里确实有：命名会话（`session-manager.ts`）；跨会话收件箱（`inbox-manager.ts`，对方空闲就立即投递，正忙就排队，与"递话排队"相同）；跨引擎交接（`handoff.ts`）；八家常驻会话适配：Claude、Codex（两种）、Cursor、OpenCode、Grok、Antigravity、Gemini、自定义；另有 council、fanout、预算、熔断、人工闸节点、文件锁。**交接是把用户与助手的文字对话重放进新引擎，上限约 6 万 token，工具轨迹和推理不带**，源码注释明说不去改对方的原生会话文件。Windows 支持未见说明，安装脚本是 bash | **E1 E2 E9 E10 的核心对标**，上面漏掉了 |
+| OpenClaw（[openclaw/openclaw](https://github.com/openclaw/openclaw)） | 39 万★，MIT（OpenClaw Foundation），TypeScript。它是通用的 AI 助手网关，不是编码工作台。claw-orchestrator 能作为它的插件装进去 | E1 秘书长的对标 |
+| Emdash（[generalaction/emdash](https://github.com/generalaction/emdash)） | 5.8k★，Apache-2.0，YC W26。多 CLI、worktree、diff；树里有 12 个带 win 字样的路径 | E5 E14 舞台层 |
+| agent-git（[Einsia/agent-git](https://github.com/Einsia/agent-git)） | 364★，MIT。把 agent 会话做成可以版本化的对象 | E10 |
+| 交接和信箱类小库：waybill（95★，Apache）、agents-can-communicate（104★，MIT）、claude-codex-handoff（40★，MIT）、handoff（20★）、magents（6★）、shiftlog（0★）、plano（6★） | 都存在，但星数很小，只能当思路 | E9 E1 |
+| AgentsRoom | 商业闭源桌面应用。GitHub 上同名的 `agents-room`（6★）是另一个项目 | 只能看产品形态 |
+
 ## 3. 建议先读哪几个
 
 读架构最省力的，是一个对象能回答很多个效果。建议先读四个：
