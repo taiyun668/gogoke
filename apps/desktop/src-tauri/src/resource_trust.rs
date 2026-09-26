@@ -755,6 +755,7 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
     let stage_handle = stage_lease.directories.remove(&temporary)
         .ok_or("GOGOKE_RESOURCE_SET_PUBLISH_FAILED")?;
     drop(stage_lease);
+    drop(parent_lease); // Windows cannot rename the child while its parent lease denies delete sharing.
     rename_owned_stage_no_replace(&stage_handle, &destination)?;
     Ok(destination)
 }
@@ -1408,6 +1409,7 @@ fn publish_generation_from_pack(
     let stage_handle = directories.directories.remove(&temporary)
         .ok_or("GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED")?;
     drop(directories); // Nested directory handles must close before parent rename.
+    drop(parent_lease); // The retained stage handle identifies the verified object during rename.
     rename_owned_stage_no_replace(&stage_handle, destination)
         .map_err(|_| "GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED".to_string())?;
     Ok(())
@@ -1827,6 +1829,7 @@ mod tests {
             .expect("verify through the retained stage handle");
         let stage_handle = lease.directories.remove(&stage).expect("retained stage handle");
         drop(lease);
+        drop(parent_lease);
         rename_owned_stage_no_replace(&stage_handle, &published)
             .expect("publish verified stage without replacement");
         assert_eq!(
@@ -1834,7 +1837,6 @@ mod tests {
             b"signed service"
         );
         drop(stage_handle);
-        drop(parent_lease);
         let resolved_root = root.canonicalize().expect("owned fixture root");
         let resolved_temp = std::env::temp_dir().canonicalize().expect("test temp root");
         assert!(
