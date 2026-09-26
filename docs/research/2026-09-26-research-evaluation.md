@@ -164,6 +164,8 @@
 
 ## 4. 执行层：自建还是借底座
 
+> **2026-09-26 补注：本节的结论不能作为决定依据。**它只比到了适配层，没有调研到架构层；"前三家已经有了"这句也不准。见[执行层能力对照](2026-09-26-execution-layer-capability-table.md)和[从效果倒推的问题与覆盖](2026-09-26-effect-decomposition-and-coverage.md)。另外，[会话架构报告](../directions/2026-09-23-session-memory-dream-architecture.md) §12 说 Paseo 有"跨家交接与续接"，这是错的：它的交接只是让模型写一份简报。
+
 **事实**（底座拆解）：
 - Paseo 在 Claude 上走 Agent SDK，在 Codex 上走 app-server，其余家走 ACP。gogoke 的 `seat-runtime` 用的是**同一组协议**：Codex 走 app-server，Claude 走 stream-json，Grok 走 ACP。代码约 5,000 行，是我们自己的。
 - Paseo 能通过两条一票否决：驱动现成 CLI、走订阅额度，也可以交互接管。它多出来的是：35 家以上的驱动、跨家交接、远程与手机、社区维护、额度读取器。
