@@ -1,0 +1,19 @@
+# Web ChatGPT subagent channel: trial summary
+
+This is trial evidence for PR #48, not adoption of `docs/model-routing.md` or acceptance of a web seat as an existing high-risk auditor. The route and GPT-6 Pro remain disabled for routine use. The fixed requirement source was `main@5ec3d643a6015de34ef582b5d047e7cc7e46da43`. The work used an isolated branch and did not change R2-06a.
+
+| Trial | GitHub result | Observation |
+| --- | --- | --- |
+| WCS-01, independent document audit | `gpt/web-chatgpt-wcs01-audit@14a4854e007f96e2749a87dab1d76601747f5152` | One result file; parent is the reviewed main SHA. It identified routing and authority questions, not acceptance. |
+| WCS-02, narrow test construction | `gpt/web-chatgpt-wcs02-tests@622b8f8db2763f19db46d642c6085d518130c296` | Only a test file and checkpoint changed. [Actions run 36209063759](https://github.com/taiyun668/gogoke/actions/runs/36209063759) on that exact head succeeded; raw logs show five executed tests, all `ok`. |
+| WCS-03, expired-before-send fallback | No web result; local event and Codex subagent handoff | The deadline was already expired, no web Send occurred, and the subagent returned a read-only finding. This is a negative control, not a completed web task. |
+| WCS-04, connector log access | `gpt/web-chatgpt-wcs04-actions@eea17043a8c84c8e49c293a4165fe9e6326fb205` | Web seat reported reading run metadata and individual raw log lines for [run 36208879407](https://github.com/taiyun668/gogoke/actions/runs/36208879407), including three executed test names. Codex independently checked the same run and log count. |
+| WCS-05, fresh skill review | Pending | GPT-5.6 Sol Pro trial of the fixed PR commit; result must be checked from GitHub. |
+
+The page-reported thinking times observed after completion were High **3m 13s**, Extra High **3m 17s**, and Medium **59s**. These are UI thinking indicators, not precise send-to-result wall times. The pre-send composer explicitly showed GPT-5.6 and the selected tier each time. After completion it still showed the same tier, with no visible downgrade or limit notice. The UI did **not** expose a distinct per-reply served-model field in these trials, so exact backend model identity remains unverified. No GPT-6 Pro message was sent.
+
+The in-app browser session remained signed in across multiple new, saved Chat conversations during this trial. Its expiry time was not measured; a single continuous session only proves a lower bound. No credential, account-usage number, or conversation URL is in this repository. The local ledger and trial event log live under `%LOCALAPPDATA%\gogoke\web-chatgpt-subagent`.
+
+OpenAI's [Terms of Use](https://openai.com/policies/row-terms-of-use/) say users may not “Automatically or programmatically extract data or Output.” They also prohibit circumventing rate limits or restrictions. The workflow reads GitHub artifacts as its result and stops at local caps, but the applicability of the extraction clause to automated UI model checks and dispatch requires Owner judgment before enablement. The [ChatGPT model-limit article](https://help.openai.com/en/articles/20001354-gpt-56-and-gpt-6-pro-in-chatgpt) documents possible fallback and says reset time appears when available; the trial did not deliberately exhaust an allowance.
+
+The trial did not establish the web seat's exact account-wide remaining allowance, other Chat seat consumption before ledger initialization, unpublished tier limits, a verified provider reset time, or reliable per-task Codex token accounting. These remain explicit limits on cost comparison and formal route adoption. The skill's path was moved to `.agents/skills` based on the [current Codex skill discovery documentation](https://learn.chatgpt.com/docs/build-skills); the older `.codex/skills` path in fixed trial cards describes the already-executed historical commits.
