@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-117",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "7f1c7d92c6414fef2d3b1a760d40676ecf7fd125",
+  "recorded_utc": "2026-09-26T23:30:35Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-116.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a WIP authorized; formal release not authorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Diagnostic cloud run 36276680595 at 114799b1 failed Rust E0308 because stderr read_to_end returned usize; frozen lane was canceled on corrected rerun. Corrected source e9f9cda21d504878e702ca208d471bc267863364 passed desktop run 36277378754 all five jobs, including two Windows native build/test lanes and byte-identical executable comparison. Frozen artifact 10917798581; trusted main signing run 36279099483 PASS and signed candidate artifact 10917828207. Branch installed smoke 36279169415 at e9f9cda2 FAIL after install/hash/Home; actual managed service IPC GOGOKE_PRODUCT_SERVICE_FAILED:1. Existing and created-fresh-root direct replays both PASS. The bounded first managed-child receipt contains stdout Effect.tryPromise UnknownError stack, but its first 1000 characters omit the original cause; product service positive/negative and uninstall remain unexecuted. Revision 7f1c7d92 now puts the original error in CI-only stderr and prioritizes 3000 receipt characters; JS syntax and diff checks PASS. Desktop cloud run 36279650918 at this exact revision is IN_PROGRESS.",
+  "path_reflection": "The first attempt to capture stderr had a compile-type error, caught by the cloud native lane. After fixing it, the actual managed child emitted only a generic Effect wrapper in the truncated receipt; direct Node replay remained successful, so the Job/environment boundary is still unproven. One further bounded diagnostic build now records the original cause before the wrapper. It uses the same signed install path and existing first-error receipt, with no new error classifications. Repair only the demonstrated cause, remove all temporary diagnostics, rebuild/sign/smoke cleaned bytes.",
+  "main_drift": "Current main remains d0e739be; no new governance, authorization or contract byte is implicated and no production merge is needed.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "Installed positive service/readiness, poisoned-module negative, uninstall/data preservation, Owner Win11/SAC and final review remain FAIL or NOT_RUN. PR #27 OPEN/DRAFT at 7f1c7d92; PR #34 Owner-held OPEN. R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "Execution pushes and run identities read back. Run 36279650918 is the named active cloud build; no merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Read desktop run 36279650918 at 7f1c7d92. On exact-head PASS, verify trusted main signer source/frozen artifact and run branch installed smoke. Read first managed-child original cause, repair only that seam, remove temporary diagnosis, then rerun full cloud axes on cleaned candidate bytes."
+}
