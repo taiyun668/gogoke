@@ -41,6 +41,8 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         saved = self.run_ledger("complete", first.stdout.strip(), "--actual-tier", "medium", "--switched")
         self.assertEqual(saved.returncode, 0, saved.stderr)
+        finished = self.run_ledger("finish-task", "--task", "t", "--result-commit", "a" * 40)
+        self.assertEqual(finished.returncode, 0, finished.stderr)
         later = self.run_ledger("reserve", "--tier", "high", "--task", "t2", "--seat", "trial")
         self.assertEqual(later.returncode, 2)
         self.assertIn("exhausted", later.stderr)

@@ -59,7 +59,7 @@ class ReservationCapacityTests(unittest.TestCase):
             "reserve", "--tier", "high", "--task", "blocked", "--seat", "seat-b"
         )
         self.assertEqual(blocked.returncode, 2)
-        self.assertIn("daily cap", blocked.stderr)
+        self.assertIn("still active", blocked.stderr)
 
         released = self.run_ledger("release", held.stdout.strip())
         self.assertEqual(released.returncode, 0, released.stderr)
@@ -92,7 +92,7 @@ class ReservationCapacityTests(unittest.TestCase):
 
         self.assertCountEqual([result.returncode for result in results], [0, 2])
         failed = next(result for result in results if result.returncode == 2)
-        self.assertIn("daily cap", failed.stderr)
+        self.assertIn("still active", failed.stderr)
 
         data = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(len(data["events"]), 19)
