@@ -170,7 +170,8 @@ jobs:
             @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
             @{ id = 'job-assign-cleanup'; filter = 'failed_launch_cleanup_retains_exact_handles_on_timeout_or_failed_wait' },
             @{ id = 'job-already-exited'; filter = 'already_signaled_child_is_confirmed_even_if_terminate_reports_failure' },
-            @{ id = 'record-before-activate'; filter = 'failed_production_prepared_record_does_not_activate_child' }
+            @{ id = 'record-before-activate'; filter = 'failed_production_prepared_record_does_not_activate_child' },
+            @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
           $results = @()
           foreach ($probe in $probes) {

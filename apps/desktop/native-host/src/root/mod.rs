@@ -588,6 +588,13 @@ mod platform {
 
     impl RootLock {
         pub fn acquire(path: &Path) -> Result<Self, RootLockError> {
+            Self::acquire_after_precheck(path, |_| {})
+        }
+
+        pub(super) fn acquire_after_precheck(
+            path: &Path,
+            after_precheck: impl FnOnce(&RootIdentity),
+        ) -> Result<Self, RootLockError> {
             // The shared preflight lets a contender identify an already-held
             // physical root. The mutex is acquired before the exclusive path
             // binding, then the identity is read again from the pinned handle.
@@ -599,6 +606,7 @@ mod platform {
                     identity: observed.identity,
                 });
             }
+            after_precheck(&observed.identity);
             let identity = observed.identity.clone();
             let name = identity.lock_name();
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -654,6 +662,16 @@ mod platform {
                 let _ = release_tx.send(LockThreadCommand::Release);
                 let _ = lock_thread.join();
                 return Err(error);
+            }
+
+            // The first check is only a fast rejection. A prior holder can
+            // publish poison while this contender waits for the OS mutex;
+            // recheck the bound physical identity before publishing the lock.
+            if root_is_poisoned(&open.canonical.identity) {
+                let identity = open.canonical.identity.clone();
+                let _ = release_tx.send(LockThreadCommand::Release);
+                let _ = lock_thread.join();
+                return Err(RootLockError::Poisoned { identity });
             }
 
             Ok(Self {
@@ -1621,6 +1639,34 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn poison_published_after_precheck_blocks_same_physical_root_before_lock_publication() {
+        use std::sync::mpsc::sync_channel;
+        let root = TempRoot::new("poison-after-precheck");
+        let first = RootLock::acquire(root.path()).expect("first physical root owner");
+        let identity = first.canonical_root().identity.clone();
+        let path = root.path().to_path_buf();
+        let (checked_tx, checked_rx) = sync_channel(0);
+        let (resume_tx, resume_rx) = sync_channel(0);
+        let contender = std::thread::spawn(move || {
+            RootLock::acquire_after_precheck(&path, |_| {
+                checked_tx.send(()).expect("precheck observed");
+                resume_rx.recv().expect("prior holder settled");
+            }).map(drop)
+        });
+        checked_rx.recv().expect("contender completed unpoisoned precheck");
+        RootLock::poison_identity(&identity);
+        drop(first); // Production close failure publishes poison before dropping this lock.
+        resume_tx.send(()).expect("release contender to acquire OS mutex");
+        assert!(matches!(contender.join().expect("contender settled"),
+            Err(RootLockError::Poisoned { identity: found }) if found == identity));
+        assert!(matches!(RootLock::acquire(root.path()),
+            Err(RootLockError::Poisoned { identity: found }) if found == identity));
+        let unrelated = TempRoot::new("unpoisoned-control");
+        let other = RootLock::acquire(unrelated.path()).expect("unrelated root remains eligible");
+        drop(other);
     }
 
     fn create_junction(alias: &Path, target: &Path) {
