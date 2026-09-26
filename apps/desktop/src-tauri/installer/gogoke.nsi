@@ -65,6 +65,22 @@ ${StrLoc}
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
 
+; Tauri patches MAINBINARYSRCPATH to its NSIS (NSS) bytes before makensis.
+; Freeze that exact input for File and bind its hash into this installer.
+!if "$%GOGOKE_NSIS_HASH_HELPER%" == ""
+  !error "GOGOKE_NSIS_HASH_HELPER is required for the Windows installer build"
+!endif
+!tempfile GOGOKE_PREFLIGHT_INCLUDE
+!system 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$%GOGOKE_NSIS_HASH_HELPER%" -Source "${MAINBINARYSRCPATH}" -Include "${GOGOKE_PREFLIGHT_INCLUDE}"' = 0
+!include "${GOGOKE_PREFLIGHT_INCLUDE}"
+!delfile "${GOGOKE_PREFLIGHT_INCLUDE}"
+!if "$%GOGOKE_NSIS_TEST_BARRIER%" != ""
+  !if "$%GITHUB_ACTIONS%" != "true"
+    !error "GOGOKE_NSIS_TEST_BARRIER is CI-only"
+  !endif
+  !define GOGOKE_NSIS_TEST_BARRIER "$%GOGOKE_NSIS_TEST_BARRIER%"
+!endif
+
 Var PassiveMode
 Var UpdateMode
 Var NoShortcutMode
@@ -92,6 +108,26 @@ Var GogokeShortcutCommand
 Var GogokeShortcutProcess
 Var GogokeShortcutThread
 Var GogokeShortcutChildUnknown
+Var GogokeVerifierPath
+Var GogokeVerifiedHandle
+Var GogokePreflightHandle
+Var GogokeInstalledShellHandle
+Var GogokeHashAlgorithm
+Var GogokeHashHandle
+Var GogokeHashBuffer
+Var GogokeHashDigest
+Var GogokeHashHex
+Var GogokePublishSource
+Var GogokePublishTarget
+Var GogokePublishSourceHandle
+Var GogokePublishTargetHandle
+Var GogokePublishBuffer
+Var GogokePinSourcePath
+Var GogokePinnedSourceHandle
+Var GogokeSourcePackHandle
+Var GogokeSourceIndexHandle
+Var GogokeSourceManifestHandle
+Var GogokeSourceSignatureHandle
 
 !if ${NSIS_PTR_SIZE} > 4
   !define GOGOKE_STARTUP_EX_SIZE 112
@@ -545,8 +581,262 @@ Function ReleaseGogokeLifecycleLock
 FunctionEnd
 
 Function .onGUIEnd
+  Call GogokeReleaseVerifiedShells
+  Call GogokeReleaseSourcePins
   Call ReleaseGogokeLifecycleLock
   Call GogokeReleasePinnedDirectories
+FunctionEnd
+
+Function GogokeReleaseVerifiedShells
+  ${If} $GogokeInstalledShellHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeInstalledShellHandle)'
+    StrCpy $GogokeInstalledShellHandle ""
+  ${EndIf}
+  ${If} $GogokePreflightHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokePreflightHandle)'
+    StrCpy $GogokePreflightHandle ""
+  ${EndIf}
+FunctionEnd
+
+Function GogokeReleaseSourcePins
+  ${If} $GogokeSourceSignatureHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeSourceSignatureHandle)'
+    StrCpy $GogokeSourceSignatureHandle ""
+  ${EndIf}
+  ${If} $GogokeSourceManifestHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeSourceManifestHandle)'
+    StrCpy $GogokeSourceManifestHandle ""
+  ${EndIf}
+  ${If} $GogokeSourceIndexHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeSourceIndexHandle)'
+    StrCpy $GogokeSourceIndexHandle ""
+  ${EndIf}
+  ${If} $GogokeSourcePackHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeSourcePackHandle)'
+    StrCpy $GogokeSourcePackHandle ""
+  ${EndIf}
+FunctionEnd
+
+Function GogokePinReadableSource
+  ; Keep the exact sibling object in place from signed preflight through copy.
+  ; Callers retain the returned handle until the installer closes.
+  StrCpy $GogokePinnedSourceHandle ""
+  System::Call 'kernel32::CreateFileW(w "$GogokePinSourcePath", i 0x80000000, i 1, p 0, i 3, i 0x00200080, p 0) p .r0'
+  ${If} $0 == -1
+    Abort "A Gogoke signed-set source file is unavailable."
+  ${EndIf}
+  StrCpy $GogokePinnedSourceHandle $0
+  System::Alloc 8
+  Pop $1
+  ${If} $1 == 0
+    System::Call 'kernel32::CloseHandle(p $GogokePinnedSourceHandle)'
+    StrCpy $GogokePinnedSourceHandle ""
+    Abort "A Gogoke signed-set source could not be inspected."
+  ${EndIf}
+  System::Call 'kernel32::GetFileInformationByHandleEx(p $GogokePinnedSourceHandle, i 9, p $1, i 8) i .r2'
+  ${If} $2 == 0
+    System::Free $1
+    System::Call 'kernel32::CloseHandle(p $GogokePinnedSourceHandle)'
+    StrCpy $GogokePinnedSourceHandle ""
+    Abort "A Gogoke signed-set source could not be inspected."
+  ${EndIf}
+  System::Call '*$1(i .r2, i .r3)'
+  IntOp $2 $2 & 0x410
+  System::Free $1
+  ${If} $2 != 0
+    System::Call 'kernel32::CloseHandle(p $GogokePinnedSourceHandle)'
+    StrCpy $GogokePinnedSourceHandle ""
+    Abort "A Gogoke signed-set source is not a plain file."
+  ${EndIf}
+FunctionEnd
+
+Function GogokeReleaseHashState
+  ${If} $GogokeHashHandle != ""
+    System::Call 'bcrypt::BCryptDestroyHash(p $GogokeHashHandle) i'
+    StrCpy $GogokeHashHandle ""
+  ${EndIf}
+  ${If} $GogokeHashAlgorithm != ""
+    System::Call 'bcrypt::BCryptCloseAlgorithmProvider(p $GogokeHashAlgorithm, i 0) i'
+    StrCpy $GogokeHashAlgorithm ""
+  ${EndIf}
+  ${If} $GogokeHashBuffer != ""
+    System::Free $GogokeHashBuffer
+    StrCpy $GogokeHashBuffer ""
+  ${EndIf}
+  ${If} $GogokeHashDigest != ""
+    System::Free $GogokeHashDigest
+    StrCpy $GogokeHashDigest ""
+  ${EndIf}
+  ${If} $GogokeHashHex != ""
+    System::Free $GogokeHashHex
+    StrCpy $GogokeHashHex ""
+  ${EndIf}
+FunctionEnd
+
+Function GogokeVerifyShellFile
+  ; The handle denies writes and deletion until preflight or installed-shell
+  ; execution has returned. A same-name replacement after File cannot pass.
+  StrCpy $GogokeVerifiedHandle ""
+  StrCpy $GogokeHashAlgorithm ""
+  StrCpy $GogokeHashHandle ""
+  StrCpy $GogokeHashBuffer ""
+  StrCpy $GogokeHashDigest ""
+  StrCpy $GogokeHashHex ""
+  System::Call 'kernel32::CreateFileW(w "$GogokeVerifierPath", i 0x80000000, i 1, p 0, i 3, i 0x00200080, p 0) p .r0'
+  ${If} $0 == -1
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  StrCpy $GogokeVerifiedHandle $0
+  System::Alloc 65536
+  Pop $GogokeHashBuffer
+  ${If} $GogokeHashBuffer == 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call 'kernel32::GetFileInformationByHandleEx(p $GogokeVerifiedHandle, i 9, p $GogokeHashBuffer, i 8) i .r0'
+  ${If} $0 == 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call '*$GogokeHashBuffer(i .r0, i .r1)'
+  IntOp $0 $0 & 0x410
+  ${If} $0 != 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call 'kernel32::GetFileSizeEx(p $GogokeVerifiedHandle, p $GogokeHashBuffer) i .r0'
+  ${If} $0 == 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call '*$GogokeHashBuffer(i .r0, i .r1)'
+  ${If} $1 != 0
+  ${OrIf} $0 != ${GOGOKE_PREFLIGHT_LENGTH}
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call 'bcrypt::BCryptOpenAlgorithmProvider(*p .r0, w "SHA256", p 0, i 0) i .r1'
+  ${If} $1 != 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  StrCpy $GogokeHashAlgorithm $0
+  System::Call 'bcrypt::BCryptCreateHash(p $GogokeHashAlgorithm, *p .r0, p 0, i 0, p 0, i 0, i 0) i .r1'
+  ${If} $1 != 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  StrCpy $GogokeHashHandle $0
+gogoke_verify_shell_read:
+  System::Call 'kernel32::ReadFile(p $GogokeVerifiedHandle, p $GogokeHashBuffer, i 65536, *i .r0, p 0) i .r1'
+  ${If} $1 == 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  ${If} $0 == 0
+    Goto gogoke_verify_shell_finish
+  ${EndIf}
+  System::Call 'bcrypt::BCryptHashData(p $GogokeHashHandle, p $GogokeHashBuffer, i $0, i 0) i .r1'
+  ${If} $1 != 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  Goto gogoke_verify_shell_read
+gogoke_verify_shell_finish:
+  System::Alloc 32
+  Pop $GogokeHashDigest
+  ${If} $GogokeHashDigest == 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call 'bcrypt::BCryptFinishHash(p $GogokeHashHandle, p $GogokeHashDigest, i 32, i 0) i .r0'
+  ${If} $0 != 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Alloc 130
+  Pop $GogokeHashHex
+  ${If} $GogokeHashHex == 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call 'crypt32::CryptBinaryToStringW(p $GogokeHashDigest, i 32, i 0x4000000C, p $GogokeHashHex, *i 65) i .r0'
+  ${If} $0 == 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  System::Call '*$GogokeHashHex(&w65 .r0)'
+  System::Call 'kernel32::lstrcmpiW(w "$0", w "${GOGOKE_PREFLIGHT_SHA256}") i .r1'
+  ${If} $1 != 0
+    Goto gogoke_verify_shell_failed
+  ${EndIf}
+  Call GogokeReleaseHashState
+  Return
+gogoke_verify_shell_failed:
+  Call GogokeReleaseHashState
+  ${If} $GogokeVerifiedHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeVerifiedHandle)'
+    StrCpy $GogokeVerifiedHandle ""
+  ${EndIf}
+  Abort "The bundled Gogoke verifier does not match the installer payload bytes."
+FunctionEnd
+
+Function GogokePublishFile
+  ; All final product leaves are opened with CREATE_NEW and no reparse follow.
+  ; An ordinary leaf or dangling symlink at the final name makes this fail.
+  StrCpy $GogokePublishSourceHandle ""
+  StrCpy $GogokePublishTargetHandle ""
+  StrCpy $GogokePublishBuffer ""
+  System::Call 'kernel32::CreateFileW(w "$GogokePublishSource", i 0x80000000, i 1, p 0, i 3, i 0x00200080, p 0) p .r0'
+  ${If} $0 == -1
+    Goto gogoke_publish_failed
+  ${EndIf}
+  StrCpy $GogokePublishSourceHandle $0
+  System::Alloc 65536
+  Pop $GogokePublishBuffer
+  ${If} $GogokePublishBuffer == 0
+    Goto gogoke_publish_failed
+  ${EndIf}
+  System::Call 'kernel32::GetFileInformationByHandleEx(p $GogokePublishSourceHandle, i 9, p $GogokePublishBuffer, i 8) i .r0'
+  ${If} $0 == 0
+    Goto gogoke_publish_failed
+  ${EndIf}
+  System::Call '*$GogokePublishBuffer(i .r0, i .r1)'
+  IntOp $0 $0 & 0x410
+  ${If} $0 != 0
+    Goto gogoke_publish_failed
+  ${EndIf}
+  System::Call 'kernel32::CreateFileW(w "$GogokePublishTarget", i 0x40000000, i 0, p 0, i 1, i 0x00200080, p 0) p .r0'
+  ${If} $0 == -1
+    Goto gogoke_publish_failed
+  ${EndIf}
+  StrCpy $GogokePublishTargetHandle $0
+gogoke_publish_read:
+  System::Call 'kernel32::ReadFile(p $GogokePublishSourceHandle, p $GogokePublishBuffer, i 65536, *i .r0, p 0) i .r1'
+  ${If} $1 == 0
+    Goto gogoke_publish_failed
+  ${EndIf}
+  ${If} $0 == 0
+    Goto gogoke_publish_done
+  ${EndIf}
+  System::Call 'kernel32::WriteFile(p $GogokePublishTargetHandle, p $GogokePublishBuffer, i $0, *i .r1, p 0) i .r2'
+  ${If} $2 == 0
+  ${OrIf} $1 != $0
+    Goto gogoke_publish_failed
+  ${EndIf}
+  Goto gogoke_publish_read
+gogoke_publish_done:
+  System::Call 'kernel32::FlushFileBuffers(p $GogokePublishTargetHandle) i .r0'
+  ${If} $0 == 0
+    Goto gogoke_publish_failed
+  ${EndIf}
+  Call GogokeReleasePublishState
+  Return
+gogoke_publish_failed:
+  Call GogokeReleasePublishState
+  Abort "A Gogoke installation leaf already exists or could not be published."
+FunctionEnd
+
+Function GogokeReleasePublishState
+  ${If} $GogokePublishTargetHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokePublishTargetHandle)'
+    StrCpy $GogokePublishTargetHandle ""
+  ${EndIf}
+  ${If} $GogokePublishSourceHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokePublishSourceHandle)'
+    StrCpy $GogokePublishSourceHandle ""
+  ${EndIf}
+  ${If} $GogokePublishBuffer != ""
+    System::Free $GogokePublishBuffer
+    StrCpy $GogokePublishBuffer ""
+  ${EndIf}
 FunctionEnd
 
 
@@ -572,14 +862,53 @@ SectionEnd
 
 Section SignedInstallSetPreflight
   ; Verify the sibling set with the bundled shell before touching an existing install.
+  Push "$EXEDIR"
+  Call GogokePinDirectory
+  Pop $9
+  StrCpy $GogokePinSourcePath "$EXEDIR\gogoke-resources.windows.zip"
+  Call GogokePinReadableSource
+  StrCpy $GogokeSourcePackHandle $GogokePinnedSourceHandle
+  StrCpy $GogokePinSourcePath "$EXEDIR\resource-index.json"
+  Call GogokePinReadableSource
+  StrCpy $GogokeSourceIndexHandle $GogokePinnedSourceHandle
+  ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
+    StrCpy $GogokePinSourcePath "$EXEDIR\CANDIDATE-RESOURCES.windows"
+    Call GogokePinReadableSource
+    StrCpy $GogokeSourceManifestHandle $GogokePinnedSourceHandle
+    StrCpy $GogokePinSourcePath "$EXEDIR\CANDIDATE-RESOURCES.windows.sig"
+  ${Else}
+    StrCpy $GogokePinSourcePath "$EXEDIR\SHA256SUMS.windows"
+    Call GogokePinReadableSource
+    StrCpy $GogokeSourceManifestHandle $GogokePinnedSourceHandle
+    StrCpy $GogokePinSourcePath "$EXEDIR\SHA256SUMS.windows.sig"
+  ${EndIf}
+  Call GogokePinReadableSource
+  StrCpy $GogokeSourceSignatureHandle $GogokePinnedSourceHandle
   InitPluginsDir
   SetOutPath "$PLUGINSDIR\gogoke-preflight"
-  File /oname=gogoke.exe "${MAINBINARYSRCPATH}"
+  Push "$PLUGINSDIR\gogoke-preflight"
+  Call GogokePinDirectory
+  Pop $9
+  IfFileExists "$PLUGINSDIR\gogoke-preflight\gogoke.exe" 0 +2
+    Abort "The Gogoke preflight scratch leaf already exists."
+  SetOverwrite off
+  ClearErrors
+  File /oname=gogoke.exe "${GOGOKE_PREFLIGHT_SNAPSHOT}"
+  IfErrors gogoke_preflight_extract_failed
+  StrCpy $GogokeVerifierPath "$PLUGINSDIR\gogoke-preflight\gogoke.exe"
+  Call GogokeVerifyShellFile
+  StrCpy $GogokePreflightHandle $GogokeVerifiedHandle
   ExecWait '"$PLUGINSDIR\gogoke-preflight\gogoke.exe" "--gogoke-verify-install-set=$EXEDIR" "--gogoke-install-target=$INSTDIR"' $0
   ${If} $0 != 0
     Abort "The signed Gogoke installer sibling set could not be verified."
   ${EndIf}
+  SetOverwrite on
+  Goto gogoke_preflight_done
+gogoke_preflight_extract_failed:
+  Abort "The bundled Gogoke verifier could not be extracted."
+gogoke_preflight_done:
 SectionEnd
+!delfile "${GOGOKE_PREFLIGHT_SNAPSHOT}"
 
 Section WebView2
   ; Check if Webview2 is already installed and skip this section
@@ -687,6 +1016,21 @@ Section Install
     Call GogokePinDirectory
     Pop $9
   {{/each}}
+  ; Scratch parents are also pinned. SetOverwrite off avoids intentional
+  ; scratch replacement; it does not prove that NSIS extracted a raced leaf.
+  ; Publication checks the source object and creates each final leaf atomically.
+  {{#each resources}}
+    ${GetParent} "$PLUGINSDIR\gogoke-payload\{{this.[1]}}" $0
+    Push "$0"
+    Call GogokePinDirectory
+    Pop $9
+  {{/each}}
+  {{#each binaries}}
+    ${GetParent} "$PLUGINSDIR\gogoke-payload\{{this}}" $0
+    Push "$0"
+    Call GogokePinDirectory
+    Pop $9
+  {{/each}}
   SetOutPath $INSTDIR
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
@@ -695,67 +1039,109 @@ Section Install
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
-  ; Copy main executable
-  File "${MAINBINARYSRCPATH}"
+  ; Publish the exact NSS shell already verified and pinned for preflight.
+  !ifdef GOGOKE_NSIS_TEST_BARRIER
+    ; A dedicated cloud mutation build can insert a closed-handle leaf after
+    ; all preflight checks, immediately before the first CREATE_NEW publish.
+    ClearErrors
+    FileOpen $0 "${GOGOKE_NSIS_TEST_BARRIER}.ready" w
+    IfErrors gogoke_test_barrier_failed
+    FileClose $0
+    StrCpy $0 0
+  gogoke_test_barrier_wait:
+    IfFileExists "${GOGOKE_NSIS_TEST_BARRIER}.go" gogoke_test_barrier_done
+    Sleep 100
+    IntOp $0 $0 + 1
+    ${If} $0 >= 1200
+      Goto gogoke_test_barrier_failed
+    ${EndIf}
+    Goto gogoke_test_barrier_wait
+  gogoke_test_barrier_failed:
+    Abort "The CI installation leaf barrier was not released."
+  gogoke_test_barrier_done:
+  !endif
+  StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-preflight\gogoke.exe"
+  StrCpy $GogokePublishTarget "$INSTDIR\${MAINBINARYNAME}.exe"
+  Call GogokePublishFile
+  StrCpy $GogokeVerifierPath "$INSTDIR\${MAINBINARYNAME}.exe"
+  Call GogokeVerifyShellFile
+  StrCpy $GogokeInstalledShellHandle $GogokeVerifiedHandle
 
   ; Copy resources
+  SetOverwrite off
   {{#each resources_dirs}}
     CreateDirectory "$INSTDIR\\{{this}}"
   {{/each}}
   {{#each resources}}
+    IfFileExists "$PLUGINSDIR\gogoke-payload\{{this.[1]}}" 0 +2
+      Abort "A Gogoke payload scratch leaf already exists."
+    SetOutPath "$PLUGINSDIR\gogoke-payload"
+    ClearErrors
     File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
+    IfErrors gogoke_payload_extract_failed
+    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\{{this.[1]}}"
+    StrCpy $GogokePublishTarget "$INSTDIR\{{this.[1]}}"
+    Call GogokePublishFile
   {{/each}}
 
   ; Copy external binaries
   {{#each binaries}}
+    IfFileExists "$PLUGINSDIR\gogoke-payload\{{this}}" 0 +2
+      Abort "A Gogoke payload scratch leaf already exists."
+    SetOutPath "$PLUGINSDIR\gogoke-payload"
+    ClearErrors
     File /a "/oname={{this}}" "{{no-escape @key}}"
+    IfErrors gogoke_payload_extract_failed
+    StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-payload\{{this}}"
+    StrCpy $GogokePublishTarget "$INSTDIR\{{this}}"
+    Call GogokePublishFile
   {{/each}}
+  SetOverwrite on
 
   ; Copy the already-signed sibling set without embedding or rewriting its sidecars.
-  ClearErrors
-  CopyFiles /SILENT "$EXEDIR\gogoke-resources.windows.zip" "$INSTDIR\gogoke-resources.windows.zip"
-  IfErrors install_sidecar_copy_failed
-  CopyFiles /SILENT "$EXEDIR\resource-index.json" "$INSTDIR\resource-index.json"
-  IfErrors install_sidecar_copy_failed
+  StrCpy $GogokePublishSource "$EXEDIR\gogoke-resources.windows.zip"
+  StrCpy $GogokePublishTarget "$INSTDIR\gogoke-resources.windows.zip"
+  Call GogokePublishFile
+  StrCpy $GogokePublishSource "$EXEDIR\resource-index.json"
+  StrCpy $GogokePublishTarget "$INSTDIR\resource-index.json"
+  Call GogokePublishFile
   ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
-    CopyFiles /SILENT "$EXEDIR\CANDIDATE-RESOURCES.windows" "$INSTDIR\CANDIDATE-RESOURCES.windows"
-    IfErrors install_sidecar_copy_failed
-    CopyFiles /SILENT "$EXEDIR\CANDIDATE-RESOURCES.windows.sig" "$INSTDIR\CANDIDATE-RESOURCES.windows.sig"
-    IfErrors install_sidecar_copy_failed
+    StrCpy $GogokePublishSource "$EXEDIR\CANDIDATE-RESOURCES.windows"
+    StrCpy $GogokePublishTarget "$INSTDIR\CANDIDATE-RESOURCES.windows"
+    Call GogokePublishFile
+    StrCpy $GogokePublishSource "$EXEDIR\CANDIDATE-RESOURCES.windows.sig"
+    StrCpy $GogokePublishTarget "$INSTDIR\CANDIDATE-RESOURCES.windows.sig"
+    Call GogokePublishFile
   ${Else}
-    CopyFiles /SILENT "$EXEDIR\SHA256SUMS.windows" "$INSTDIR\SHA256SUMS.windows"
-    IfErrors install_sidecar_copy_failed
-    CopyFiles /SILENT "$EXEDIR\SHA256SUMS.windows.sig" "$INSTDIR\SHA256SUMS.windows.sig"
-    IfErrors install_sidecar_copy_failed
+    StrCpy $GogokePublishSource "$EXEDIR\SHA256SUMS.windows"
+    StrCpy $GogokePublishTarget "$INSTDIR\SHA256SUMS.windows"
+    Call GogokePublishFile
+    StrCpy $GogokePublishSource "$EXEDIR\SHA256SUMS.windows.sig"
+    StrCpy $GogokePublishTarget "$INSTDIR\SHA256SUMS.windows.sig"
+    Call GogokePublishFile
   ${EndIf}
 
-  Delete "$INSTDIR\gogoke-install-receipt.ini"
   ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" "--gogoke-install-resources=$EXEDIR"' $0
   ${If} $0 != 0
-    Delete "$INSTDIR\gogoke-install-receipt.ini"
     Abort "The signed Gogoke install set could not be verified and installed."
   ${EndIf}
   ReadINIStr $GogokeVersion "$INSTDIR\gogoke-install-receipt.ini" "Gogoke" "Version"
   ReadINIStr $GogokeReceiptDomain "$INSTDIR\gogoke-install-receipt.ini" "Gogoke" "Domain"
   ${If} $GogokeVersion == ""
-    Delete "$INSTDIR\gogoke-install-receipt.ini"
     Abort "The Gogoke installer did not produce a verified version receipt."
   ${EndIf}
   ${If} $GogokeReceiptDomain != $GogokeInstallDomain
-    Delete "$INSTDIR\gogoke-install-receipt.ini"
     Abort "The verified Gogoke set domain does not match the selected install root."
   ${EndIf}
   ClearErrors
   GetTempFileName $GogokeInstallInstanceId "$TEMP"
   IfErrors install_instance_id_failed
   Delete "$GogokeInstallInstanceId"
-  Delete "$INSTDIR\gogoke-install-receipt.ini"
   Goto install_set_verified
 
-install_sidecar_copy_failed:
-  Abort "Could not copy the signed Gogoke install set into the installation root."
+gogoke_payload_extract_failed:
+  Abort "Could not extract a bundled Gogoke payload into scratch space."
 install_instance_id_failed:
-  Delete "$INSTDIR\gogoke-install-receipt.ini"
   Abort "Could not create a unique Gogoke installation instance id."
 install_set_verified:
 

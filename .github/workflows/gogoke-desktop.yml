@@ -370,6 +370,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (@($custody | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed' }).Count -eq 1)) {
             throw "Product process custody test failed or did not execute exactly one test: $LASTEXITCODE"
           }
+          $poisonedModule = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_product_launch_rejects_poisoned_generation_module --lib 2>&1
+          $poisonedModule | Out-Host
+          if ($LASTEXITCODE -ne 0 -or
+              @($poisonedModule | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1 -or
+              @($poisonedModule | Where-Object { $_ -match '^test .*managed_product_launch_rejects_poisoned_generation_module \.\.\. ok$' }).Count -ne 1) {
+            throw "Poisoned generation module test failed, skipped, or did not execute exactly once: $LASTEXITCODE"
+          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
       - name: Upload one-shot task deletion receipt
@@ -388,6 +395,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "Pinned shell linker missing: $linker" }
           $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Resolve-Path -LiteralPath $linker).Path
           $env:RUSTFLAGS = '-C linker-flavor=lld-link -C link-arg=/Brepro -C link-arg=/DEBUG:NONE'
+          $env:GOGOKE_NSIS_HASH_HELPER = (Resolve-Path -LiteralPath '../../tools/ci/gogoke-nsis-payload.ps1').Path
           Write-Output "Shell linker: $linker; SHA-256 $((Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash)"
           npm run tauri:build:win:unsigned
           if ($LASTEXITCODE -ne 0) { throw "shell or installer build failed: $LASTEXITCODE" }

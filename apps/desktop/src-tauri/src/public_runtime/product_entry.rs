@@ -374,13 +374,17 @@ async fn run_product_service(
 
 #[cfg(target_os = "windows")]
 mod managed_service {
-    use super::ProductRuntimePaths;
+    use super::{node_compatible_windows_path, ProductRuntimePaths};
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
     use std::cmp::Ordering;
     use std::ffi::{c_void, OsStr};
     use std::fs::File;
+    use std::fs::OpenOptions;
     use std::io::{Read, Write};
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::ptr::{null, null_mut};
     use std::time::{Duration, Instant};
@@ -413,6 +417,72 @@ mod managed_service {
 
     const CLEANUP_WAIT: Duration = Duration::from_secs(5);
     const RETRY_WAIT: Duration = Duration::from_secs(1);
+
+    struct ModulePolicy {
+        path: std::path::PathBuf,
+        import_specifier: String,
+        lease: Option<crate::resource_trust::RuntimeLease>,
+    }
+
+    impl ModulePolicy {
+        fn new(paths: &ProductRuntimePaths) -> Result<Option<Self>, String> {
+            let Some(resource_lease) = &paths.runtime_lease else {
+                return Ok(None); // Local debug path has no verified resource state.
+            };
+            let module_paths = resource_lease.module_file_paths();
+            if module_paths.is_empty() || !module_paths.contains(&paths.service_entry) {
+                return Err("GOGOKE_MODULE_ENTRY_NOT_LEASED".to_string());
+            }
+            let normalized = module_paths.iter()
+                .map(|path| node_compatible_windows_path(path.clone())
+                    .and_then(|path| path.to_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| "GOGOKE_MODULE_POLICY_PATH_UNSUPPORTED".to_string())))
+                .collect::<Result<Vec<_>, _>>()?;
+            let bytes = serde_json::to_vec(&normalized)
+                .map_err(|_| "GOGOKE_MODULE_POLICY_ENCODE_FAILED".to_string())?;
+            let hash = format!("{:x}", Sha256::digest(&bytes));
+            let path = paths.product_root.join(format!(
+                ".gogoke-module-policy-{}.json", uuid::Uuid::new_v4().simple()
+            ));
+            let mut output = OpenOptions::new().write(true).create_new(true)
+                .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+                .open(&path)
+                .map_err(|_| "GOGOKE_MODULE_POLICY_CREATE_FAILED".to_string())?;
+            if output.write_all(&bytes).is_err() || output.sync_all().is_err() {
+                drop(output);
+                let _ = std::fs::remove_file(&path);
+                return Err("GOGOKE_MODULE_POLICY_WRITE_FAILED".to_string());
+            }
+            drop(output);
+            let mut lease = crate::resource_trust::RuntimeLease::default();
+            if let Err(error) = lease.pin_generated_file(&path, &bytes) {
+                drop(lease);
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+            let mut policy = Self { path, import_specifier: String::new(), lease: Some(lease) };
+            let policy_path = node_compatible_windows_path(policy.path.clone())?;
+            let policy_path = policy_path.to_str()
+                .ok_or_else(|| "GOGOKE_MODULE_POLICY_PATH_UNSUPPORTED".to_string())?;
+            let path_literal = serde_json::to_string(policy_path)
+                .map_err(|_| "GOGOKE_MODULE_POLICY_ENCODE_FAILED".to_string())?;
+            let hash_literal = serde_json::to_string(&hash)
+                .map_err(|_| "GOGOKE_MODULE_POLICY_ENCODE_FAILED".to_string())?;
+            let bootstrap = format!("{}\ninstallGuard({path_literal}, {hash_literal});\n",
+                include_str!("module_guard.mjs"));
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bootstrap);
+            policy.import_specifier = format!("--import=data:text/javascript;base64,{encoded}");
+            Ok(Some(policy))
+        }
+    }
+
+    impl Drop for ModulePolicy {
+        fn drop(&mut self) {
+            self.lease.take();
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 
     #[cfg(test)]
     static TEST_JOB_HANDLE: std::sync::atomic::AtomicUsize =
@@ -496,15 +566,16 @@ mod managed_service {
         out
     }
 
-    fn command_line(paths: &ProductRuntimePaths) -> Vec<u16> {
-        let args: [&OsStr; 6] = [
-            paths.node_runtime.as_os_str(),
-            paths.service_entry.as_os_str(),
-            OsStr::new("--root"),
-            paths.product_root.as_os_str(),
-            OsStr::new("--native-host"),
+    fn command_line(paths: &ProductRuntimePaths, policy: Option<&ModulePolicy>) -> Vec<u16> {
+        let mut args: Vec<&OsStr> = vec![paths.node_runtime.as_os_str()];
+        if let Some(policy) = policy {
+            args.push(OsStr::new(policy.import_specifier.as_str()));
+        }
+        args.extend([
+            paths.service_entry.as_os_str(), OsStr::new("--root"),
+            paths.product_root.as_os_str(), OsStr::new("--native-host"),
             paths.native_host.as_os_str(),
-        ];
+        ]);
         let mut result = Vec::new();
         for (index, arg) in args.into_iter().enumerate() {
             if index != 0 {
@@ -746,6 +817,7 @@ mod managed_service {
 
     fn launch(
         paths: &ProductRuntimePaths,
+        policy: Option<&ModulePolicy>,
         identity: Option<&(String, String)>,
         reply: &mut Option<oneshot::Sender<Result<Vec<u8>, String>>>,
     ) -> Result<(ManagedProcess, OwnedHandle, OwnedHandle, OwnedHandle), String> {
@@ -765,7 +837,7 @@ mod managed_service {
         startup.StartupInfo.hStdError = inherited[2];
         startup.lpAttributeList = attributes.ptr();
         let executable = wide(paths.node_runtime.as_os_str())?;
-        let mut command = command_line(paths);
+        let mut command = command_line(paths, policy);
         let service_root = paths.service_entry.parent().and_then(std::path::Path::parent)
             .ok_or("GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE")?;
         let current_dir = wide(service_root.as_os_str())?;
@@ -848,7 +920,14 @@ mod managed_service {
             send_reply(&mut reply, Err("GOGOKE_PRODUCT_ROOT_UNAVAILABLE".to_string()));
             return;
         }
-        let (managed, stdin, stdout, stderr) = match launch(&paths, identity.as_ref(), &mut reply) {
+        let policy = match ModulePolicy::new(&paths) {
+            Ok(policy) => policy,
+            Err(error) => {
+                send_reply(&mut reply, Err(error));
+                return;
+            }
+        };
+        let (managed, stdin, stdout, stderr) = match launch(&paths, policy.as_ref(), identity.as_ref(), &mut reply) {
             Ok(value) => value,
             Err(error) => {
                 send_reply(&mut reply, Err(error));
@@ -894,19 +973,18 @@ mod managed_service {
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
             .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string()));
         let _ = stderr_reader.join();
+        let mut exit_code = 0;
+        let exit_code_available = unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
         let result = if let Some(error) = failure {
             Err(error)
+        } else if !exit_code_available {
+            Err("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
+        } else if exit_code != 0 {
+            Err(format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}"))
         } else if let Err(error) = write_result {
             Err(error)
         } else {
-            let mut exit_code = 0;
-            if unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } == 0 {
-                Err("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
-            } else if exit_code != 0 {
-                Err(format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}"))
-            } else {
-                output
-            }
+            output
         };
         let _ = managed.process_id;
         let _ = &paths.runtime_lease;
@@ -1031,6 +1109,50 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn managed_product_launch_rejects_poisoned_generation_module() {
+        use std::fs;
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud test requires the staged signed Node runtime"));
+        assert!(node.is_file());
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-module-guard-test-{}", uuid::Uuid::new_v4().simple()
+        ));
+        let dist = root.join("service/generations/signed/dist");
+        let poison = root.join("service/generations/signed/node_modules/@ff-labs/fff-node");
+        fs::create_dir_all(&dist).expect("owned service directory");
+        fs::create_dir_all(&poison).expect("owned poison directory");
+        let marker = root.join("poison-executed.txt");
+        let entry = dist.join("bin.mjs");
+        fs::write(&entry,
+            "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\ntry { require('@ff-labs/fff-node'); } catch { process.stdout.write('optional dependency skipped'); }\n"
+        ).expect("owned entry");
+        fs::write(poison.join("package.json"), b"{\"main\":\"index.cjs\"}\n")
+            .expect("owned poison metadata");
+        fs::write(poison.join("index.cjs"), format!(
+            "require('node:fs').writeFileSync({}, 'executed');\n",
+            serde_json::to_string(&marker.to_string_lossy().to_string()).expect("marker literal")
+        )).expect("owned poison module");
+        let mut lease = crate::resource_trust::RuntimeLease::default();
+        lease.pin_generated_file(&entry, &fs::read(&entry).expect("entry bytes"))
+            .expect("pin exact entry");
+        let paths = ProductRuntimePaths {
+            node_runtime: node,
+            service_entry: entry,
+            native_host: root.join("unused-native-host.exe"),
+            product_root: root.join("product"),
+            source_commit: None,
+            runtime_lease: Some(Arc::new(lease)),
+        };
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, None, reply);
+        let result = receiver.blocking_recv().expect("managed owner reply");
+        assert_eq!(result, Err("GOGOKE_PRODUCT_SERVICE_FAILED:78".to_string()));
+        assert!(!marker.exists(), "poison module body must never execute");
+        fs::remove_dir_all(&root).expect("remove owned fixture after settled Job");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn cancelled_reply_retains_job_and_lease_until_accounted_settlement() {
         use std::fs;
         use std::os::windows::io::{AsRawHandle, FromRawHandle};
@@ -1087,7 +1209,10 @@ mod tests {
              child.unref();\n\
              const hold = setInterval(() => {{ if (existsSync({release_literal})) {{ clearInterval(hold); process.exit(0); }} }}, 25);\n"
         )).expect("owned test service script");
-        let lease = Arc::new(crate::resource_trust::RuntimeLease::default());
+        let mut pinned = crate::resource_trust::RuntimeLease::default();
+        pinned.pin_generated_file(&entry, &fs::read(&entry).expect("owned service bytes"))
+            .expect("lease owned service entry");
+        let lease = Arc::new(pinned);
         let weak = Arc::downgrade(&lease);
         let paths = ProductRuntimePaths {
             node_runtime: node,

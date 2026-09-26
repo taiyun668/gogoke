@@ -798,6 +798,11 @@ pub(crate) fn run() -> Result<(), String> {
     no_reparse_ancestors(root)?;
     no_reparse_ancestors(&exe)?;
 
+    // Bootstrap retains physical ancestor handles before the first mutation
+    // of the sibling lifecycle lock. Path-only preflight cannot hold those
+    // ancestors against replacement between inspection and lock creation.
+    let verified = resource_trust::verify_bootstrap()?;
+
     // This is the same sibling lock path and share mode used by installation
     // and resource update. It remains open through the child custody handshake.
     let lock_path = parent.join("gogoke-install-lifecycle.lock");
@@ -819,7 +824,6 @@ pub(crate) fn run() -> Result<(), String> {
         .and_then(|_| lock.seek(SeekFrom::Start(0)).map(|_| ()))
         .map_err(|_| "GOGOKE_UNINSTALL_LOCK_WITNESS_FAILED".to_string())?;
 
-    let verified = resource_trust::verify_bootstrap()?;
     if verified
         .install_root
         .canonicalize()

@@ -10,12 +10,15 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{FileExt, MetadataExt, OpenOptionsExt};
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use windows_sys::Win32::Storage::FileSystem::{
-    MoveFileExW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, MOVEFILE_REPLACE_EXISTING,
-    MOVEFILE_WRITE_THROUGH,
+    CreateFileW, MoveFileExW, SetFileInformationByHandle, DELETE, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_READ,
+    FileRenameInfo, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_EXISTING,
 };
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 use zip::{CompressionMethod, ZipArchive};
 
@@ -129,6 +132,20 @@ pub(crate) struct RuntimeLease {
 }
 
 impl RuntimeLease {
+    pub(crate) fn module_file_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = self.files.keys().cloned().collect();
+        paths.sort();
+        paths
+    }
+
+    pub(crate) fn pin_generated_file(&mut self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        self.pin_file(path, &ByteRecord {
+            length: bytes.len() as u64,
+            sha256: sha256(bytes),
+        }, false)?;
+        Ok(())
+    }
+
     fn pin_ancestors(&mut self, path: &Path) -> Result<(), String> {
         if !path.is_absolute() {
             return Err("GOGOKE_RESOURCE_PATH_UNSAFE".to_string());
@@ -664,7 +681,13 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
         return Ok(destination);
     }
     let temporary = sets.join(format!(".stage-{}", uuid::Uuid::new_v4()));
-    physical_directory_or_create(&temporary)?;
+    // Hold the physical parent before creating any new leaf. The stage name
+    // itself is exclusive; a caller-supplied directory is never reused here.
+    let mut parent_lease = RuntimeLease::default();
+    parent_lease.pin_ancestors(&temporary)?;
+    fs::create_dir(&temporary)
+        .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED".to_string())?;
+    let stage_handle = open_owned_stage_directory(&temporary)?;
     let manifest_name = if signed.domain == Domain::Candidate {
         CANDIDATE_MANIFEST
     } else {
@@ -676,8 +699,7 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
         manifest_name.to_string(),
         format!("{manifest_name}.sig"),
     ] {
-        fs::copy(source.join(&name), temporary.join(&name))
-            .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_FAILED".to_string())?;
+        copy_stage_leaf_no_replace(&source.join(&name), &temporary.join(&name))?;
     }
     let staged = signed_index(&temporary)?;
     if staged.domain != signed.domain
@@ -686,9 +708,76 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
     {
         return Err("GOGOKE_RESOURCE_SET_STAGE_MISMATCH".to_string());
     }
-    fs::rename(&temporary, &destination)
-        .map_err(|_| "GOGOKE_RESOURCE_SET_PUBLISH_FAILED".to_string())?;
+    rename_owned_stage_no_replace(&stage_handle, &destination)?;
     Ok(destination)
+}
+
+fn open_owned_stage_directory(path: &Path) -> Result<fs::File, String> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(), DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+            std::ptr::null(), OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err("GOGOKE_RESOURCE_SET_STAGE_UNOWNED".to_string());
+    }
+    let directory = unsafe { fs::File::from_raw_handle(raw as _) };
+    let metadata = directory.metadata()
+        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_UNOWNED".to_string())?;
+    if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
+        return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
+    }
+    Ok(directory)
+}
+
+fn copy_stage_leaf_no_replace(source: &Path, target: &Path) -> Result<(), String> {
+    let mut source_file = fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
+        .custom_flags(OPEN_REPARSE_POINT).open(source)
+        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_SOURCE_FAILED".to_string())?;
+    let metadata = source_file.metadata()
+        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_SOURCE_FAILED".to_string())?;
+    if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0 {
+        return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
+    }
+    let mut target_file = fs::OpenOptions::new().write(true).create_new(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(OPEN_REPARSE_POINT).open(target)
+        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_COLLISION".to_string())?;
+    std::io::copy(&mut source_file, &mut target_file)
+        .and_then(|_| target_file.sync_all())
+        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_FAILED".to_string())?;
+    Ok(())
+}
+
+fn rename_owned_stage_no_replace(stage: &fs::File, destination: &Path) -> Result<(), String> {
+    let name: Vec<u16> = destination.as_os_str().encode_wide().collect();
+    let byte_len = name.len().checked_mul(2)
+        .ok_or("GOGOKE_RESOURCE_SET_PUBLISH_FAILED")?;
+    let total = std::mem::size_of::<FILE_RENAME_INFO>().checked_add(byte_len)
+        .ok_or("GOGOKE_RESOURCE_SET_PUBLISH_FAILED")?;
+    let words = total.div_ceil(std::mem::size_of::<usize>());
+    let mut storage = vec![0usize; words];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).RootDirectory = std::ptr::null_mut();
+        (*info).FileNameLength = byte_len as u32;
+        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
+    }
+    let success = unsafe {
+        SetFileInformationByHandle(
+            stage.as_raw_handle() as _, FileRenameInfo,
+            info.cast(), total as u32,
+        )
+    };
+    if success == 0 {
+        return Err("GOGOKE_RESOURCE_SET_PUBLISH_FAILED".to_string());
+    }
+    Ok(())
 }
 
 pub(crate) fn activate_resource_set(root: &Path, set_id: &str) -> Result<(), String> {
@@ -1162,9 +1251,16 @@ fn extract_generation(
     pack_path: &Path,
     generation_root: &Path,
     expected: &HashMap<String, ByteRecord>,
+    directories: &mut RuntimeLease,
 ) -> Result<(), String> {
-    let file =
-        fs::File::open(pack_path).map_err(|_| "GOGOKE_RESOURCE_PACK_UNREADABLE".to_string())?;
+    let file = fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
+        .custom_flags(OPEN_REPARSE_POINT).open(pack_path)
+        .map_err(|_| "GOGOKE_RESOURCE_PACK_UNREADABLE".to_string())?;
+    let pack_metadata = file.metadata()
+        .map_err(|_| "GOGOKE_RESOURCE_PACK_UNREADABLE".to_string())?;
+    if !pack_metadata.is_file() || pack_metadata.file_attributes() & REPARSE_POINT != 0 {
+        return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
+    }
     let mut zip = ZipArchive::new(file).map_err(|_| "GOGOKE_RESOURCE_PACK_INVALID".to_string())?;
     if zip.len() != expected.len() {
         return Err("GOGOKE_RESOURCE_PACK_ENTRY_COUNT".to_string());
@@ -1195,9 +1291,12 @@ fn extract_generation(
             parent.push(part);
             physical_directory_or_create(&parent)?;
         }
+        directories.pin_ancestors(&target)?;
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(OPEN_REPARSE_POINT)
             .open(&target)
             .map_err(|_| "GOGOKE_RESOURCE_EXTRACT_CREATE_FAILED".to_string())?;
         let mut digest = Sha256::new();
@@ -1228,6 +1327,30 @@ fn extract_generation(
             return Err("GOGOKE_RESOURCE_PACK_ENTRY_HASH".to_string());
         }
     }
+    Ok(())
+}
+
+fn publish_generation_from_pack(
+    pack_path: &Path,
+    generations: &Path,
+    destination: &Path,
+    expected: &HashMap<String, ByteRecord>,
+) -> Result<(), String> {
+    let temporary = generations.join(format!(".stage-{}", uuid::Uuid::new_v4()));
+    let mut parent_lease = RuntimeLease::default();
+    parent_lease.pin_ancestors(&temporary)?;
+    fs::create_dir(&temporary)
+        .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED".to_string())?;
+    let stage_handle = open_owned_stage_directory(&temporary)?;
+    let mut directories = RuntimeLease::default();
+    directories.directories.insert(temporary.clone(), stage_handle);
+    extract_generation(pack_path, &temporary, expected, &mut directories)?;
+    verify_generation(&temporary, expected)?;
+    let stage_handle = directories.directories.remove(&temporary)
+        .ok_or("GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED")?;
+    drop(directories); // Nested directory handles must close before parent rename.
+    rename_owned_stage_no_replace(&stage_handle, destination)
+        .map_err(|_| "GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED".to_string())?;
     Ok(())
 }
 
@@ -1280,12 +1403,7 @@ pub(crate) fn install_resources(source: &Path) -> Result<(), String> {
     physical_directory_or_create(&generations)?;
     let destination = generations.join(&installed_signed.index.generation_id);
     if !destination.exists() {
-        let temporary = generations.join(format!(".stage-{}", uuid::Uuid::new_v4()));
-        physical_directory_or_create(&temporary)?;
-        extract_generation(&root.join(RESOURCE_PACK), &temporary, &expected)?;
-        verify_generation(&temporary, &expected)?;
-        fs::rename(&temporary, &destination)
-            .map_err(|_| "GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED".to_string())?;
+        publish_generation_from_pack(&root.join(RESOURCE_PACK), &generations, &destination, &expected)?;
     }
     verify_generation(&destination, &expected)?;
     stage_signed_set(root, root, &installed_signed)?;
@@ -1294,26 +1412,26 @@ pub(crate) fn install_resources(source: &Path) -> Result<(), String> {
     if receipt.exists() {
         return Err("GOGOKE_INSTALL_RECEIPT_ALREADY_EXISTS".to_string());
     }
-    let domain = match installed_signed.domain {
-        Domain::Candidate => "CI_CANDIDATE_RESOURCE",
-        Domain::Formal => "OWNER_RELEASE",
-    };
-    let payload = format!(
-        "[Gogoke]\nVersion={}\nDomain={domain}\n",
-        installed_signed.index.version
-    );
-    let partial = root.join(format!(".{INSTALL_RECEIPT}.{}.part", uuid::Uuid::new_v4()));
+    let payload = install_receipt_payload(&installed_signed.index.version, installed_signed.domain);
     let mut output = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&partial)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(OPEN_REPARSE_POINT)
+        .open(&receipt)
         .map_err(|_| "GOGOKE_INSTALL_RECEIPT_CREATE_FAILED".to_string())?;
     output
         .write_all(payload.as_bytes())
         .and_then(|_| output.sync_all())
-        .map_err(|_| "GOGOKE_INSTALL_RECEIPT_WRITE_FAILED".to_string())?;
-    drop(output);
-    fs::rename(&partial, &receipt).map_err(|_| "GOGOKE_INSTALL_RECEIPT_PUBLISH_FAILED".to_string())
+        .map_err(|_| "GOGOKE_INSTALL_RECEIPT_WRITE_FAILED".to_string())
+}
+
+fn install_receipt_payload(version: &str, domain: Domain) -> String {
+    let domain = match domain {
+        Domain::Candidate => "CI_CANDIDATE_RESOURCE",
+        Domain::Formal => "OWNER_RELEASE",
+    };
+    format!("[Gogoke]\nVersion={version}\nDomain={domain}\n")
 }
 
 pub(crate) fn stage_resource_update(
@@ -1353,12 +1471,7 @@ pub(crate) fn stage_resource_update(
     physical_directory_or_create(&generations)?;
     let generation_root = generations.join(&index.generation_id);
     if !generation_root.exists() {
-        let temporary = generations.join(format!(".stage-{}", uuid::Uuid::new_v4()));
-        physical_directory_or_create(&temporary)?;
-        extract_generation(&source.join(RESOURCE_PACK), &temporary, &expected)?;
-        verify_generation(&temporary, &expected)?;
-        fs::rename(&temporary, &generation_root)
-            .map_err(|_| "GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED")?;
+        publish_generation_from_pack(&source.join(RESOURCE_PACK), &generations, &generation_root, &expected)?;
     }
     verify_generation(&generation_root, &expected)?;
     let runtime_lease = build_runtime_lease(
@@ -1444,6 +1557,23 @@ impl VerifiedResources {
             root.join("gogoke-service/runtime/node.exe"),
             self.executables.node.sha256.clone(),
         )?;
+        // New installations retain this product-created receipt until the
+        // verified uninstall removes it. Older installed candidates already
+        // deleted the receipt in NSIS, so its absence remains compatible.
+        let receipt = root.join(INSTALL_RECEIPT);
+        match fs::symlink_metadata(&receipt) {
+            Ok(_) => {
+                let payload = install_receipt_payload(&self.version, self.domain);
+                let record = ByteRecord {
+                    length: payload.len() as u64,
+                    sha256: sha256(payload.as_bytes()),
+                };
+                file_sha256(&receipt, &record)?;
+                add(receipt, record.sha256)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("GOGOKE_INSTALL_RECEIPT_UNREADABLE".to_string()),
+        }
         for (path, record) in self.installed_files.iter() {
             add(root.join(path), record.sha256.clone())?;
         }
@@ -1609,6 +1739,46 @@ mod tests {
     use std::process::Command;
 
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn stage_leaf_and_set_publication_never_replace_existing_objects() {
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-stage-no-replace-test-{}", uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir(&root).expect("owned test root");
+        let source = root.join("source.bin");
+        let target = root.join("target.bin");
+        fs::write(&source, b"signed bytes").expect("owned source");
+        fs::write(&target, b"external sentinel").expect("external target sentinel");
+        assert_eq!(
+            copy_stage_leaf_no_replace(&source, &target),
+            Err("GOGOKE_RESOURCE_SET_STAGE_COLLISION".to_string())
+        );
+        assert_eq!(fs::read(&target).expect("read sentinel"), b"external sentinel");
+
+        let linked_target = root.join("linked-target.bin");
+        fs::hard_link(&target, &linked_target).expect("insert hard-link leaf");
+        assert_eq!(
+            copy_stage_leaf_no_replace(&source, &linked_target),
+            Err("GOGOKE_RESOURCE_SET_STAGE_COLLISION".to_string())
+        );
+        assert_eq!(fs::read(&target).expect("read linked sentinel"), b"external sentinel");
+
+        let stage = root.join("stage");
+        let published = root.join("published");
+        fs::create_dir(&stage).expect("owned stage");
+        fs::create_dir(&published).expect("external empty directory");
+        fs::write(stage.join("owned.bin"), b"owned").expect("owned stage leaf");
+        let handle = open_owned_stage_directory(&stage).expect("open exact stage object");
+        assert_eq!(
+            rename_owned_stage_no_replace(&handle, &published),
+            Err("GOGOKE_RESOURCE_SET_PUBLISH_FAILED".to_string())
+        );
+        assert!(stage.join("owned.bin").is_file(), "owned source remains after refusal");
+        assert_eq!(fs::read_dir(&published).expect("read external directory").count(), 0);
+        drop(handle);
+        fs::remove_dir_all(&root).expect("remove settled owned test fixture");
+    }
 
     #[test]
     fn runtime_lease_rejects_junction_and_holds_leaf_and_ancestor_until_drop() {
