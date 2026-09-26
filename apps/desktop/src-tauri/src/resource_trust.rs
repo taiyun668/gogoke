@@ -613,6 +613,10 @@ fn frontend_request_path(path: &str) -> Result<(&str, String), String> {
 }
 
 fn signed_index(root: &Path) -> Result<SignedIndex, String> {
+    signed_index_in_lease(root, &mut RuntimeLease::default())
+}
+
+fn signed_index_in_lease(root: &Path, lease: &mut RuntimeLease) -> Result<SignedIndex, String> {
     let candidate = root.join(CANDIDATE_MANIFEST);
     let formal = root.join(OWNER_MANIFEST);
     let domain = match (candidate.exists(), formal.exists()) {
@@ -661,7 +665,7 @@ fn signed_index(root: &Path) -> Result<SignedIndex, String> {
         length: index.pack.length,
         sha256: pack_hash.to_owned(),
     };
-    file_sha256(&root.join(RESOURCE_PACK), &pack_record)?;
+    lease.pin_file(&root.join(RESOURCE_PACK), &pack_record, false)?;
     Ok(SignedIndex {
         domain,
         index,
@@ -726,6 +730,8 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
     fs::create_dir(&temporary)
         .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED".to_string())?;
     let stage_handle = open_owned_stage_directory(&temporary)?;
+    let mut stage_lease = RuntimeLease::default();
+    stage_lease.directories.insert(temporary.clone(), stage_handle);
     let manifest_name = if signed.domain == Domain::Candidate {
         CANDIDATE_MANIFEST
     } else {
@@ -739,13 +745,16 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
     ] {
         copy_stage_leaf_no_replace(&source.join(&name), &temporary.join(&name))?;
     }
-    let staged = signed_index(&temporary)?;
+    let staged = signed_index_in_lease(&temporary, &mut stage_lease)?;
     if staged.domain != signed.domain
         || staged.binding.hashes != signed.binding.hashes
         || staged.index.source_commit != signed.index.source_commit
     {
         return Err("GOGOKE_RESOURCE_SET_STAGE_MISMATCH".to_string());
     }
+    let stage_handle = stage_lease.directories.remove(&temporary)
+        .ok_or("GOGOKE_RESOURCE_SET_PUBLISH_FAILED")?;
+    drop(stage_lease);
     rename_owned_stage_no_replace(&stage_handle, &destination)?;
     Ok(destination)
 }
