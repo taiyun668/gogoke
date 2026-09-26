@@ -33,7 +33,7 @@ The Controller can use `.agents/skills/web-chatgpt-subagent/SKILL.md` alone. The
 | Suspicious activity/security verification, 24-hour durable cooldown, Owner notice | §5, first paragraph |
 | No separate visible window or console | §5, final paragraph |
 | Only assigned branch; check main and stop/report unexpected commit | §4 steps 1 and 5; §5 permission paragraph; §§6–7 templates |
-| Ledger + GitHub authority; real CI with executed tests >0 | §4 step 5; §5 permission paragraph; §7 success field |
+| Ledger + GitHub authority; construction needs real CI >0, while audit/design uses exact-SHA result-file and source-line checks | §1 condition 5; §4 step 5; §5 permission paragraph; §7 success field; Owner superseded unconditional CI |
 | Public source scan before card commit | §4 step 1 |
 | GPT starter/card fields: ID, role, repo, baseline, card path, branch/write paths, result, stop | §6 opening lines; §7 fields |
 | One-shot blocker reporting; ordinary failure continuation | §6 middle paragraph; §7 instructions |
