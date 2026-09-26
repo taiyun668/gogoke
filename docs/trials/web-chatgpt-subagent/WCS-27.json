@@ -1,0 +1,32 @@
+{
+  "task_id": "WCS-27",
+  "role": "independent fixed-commit Windows root-identity and lock-boundary auditor",
+  "repository": "taiyun668/gogoke",
+  "card_branch": "codex/web-chatgpt-subagent-channel",
+  "card_path": "docs/trials/web-chatgpt-subagent/WCS-27.json",
+  "card_sha": "supplied in the single starter message after this card is committed",
+  "base_sha": "fde3ad85cf6518e521c840ac1ca2e383e778d32e",
+  "review_sha": "fde3ad85cf6518e521c840ac1ca2e383e778d32e",
+  "assigned_branch": "gpt/web-chatgpt-wcs27-root-boundary-audit",
+  "allowed_read_paths": [
+    "AGENTS.md",
+    "docs/governance/gpt-construction-window-rules.md",
+    "apps/desktop/native-host/src/root/mod.rs",
+    "apps/desktop/native-host/src/root/lock_probe.rs",
+    "apps/desktop/native-host/src/store/authority/root_identity_tests.rs",
+    ".github/workflows/gogoke-native-host.yml"
+  ],
+  "allowed_write_paths": ["docs/trials/web-chatgpt-subagent/WCS-27-RESULT.md"],
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-27-RESULT.md",
+  "goal": "At the exact review SHA, independently audit the Windows root-identity and lock boundary: path-to-physical-identity resolution, alias/junction handling, root lock acquisition and lifetime, poison/failure cleanup, and whether the allowed root-identity tests actually falsify the claimed guarantees. Identify up to five concrete actionable findings with exact file:line evidence, the necessary preconditions, and a falsifying test idea; or explicitly report no findings and static limits. Distinguish local Rust API facts from any unverified IPC or deployment assumption. Use small targeted GitHub reads. This is a static audit only: do not run a local CLI, perform Win11 tests, sign, or modify reviewed code.",
+  "success_criteria": "One result-file commit on assigned_branch from base_sha naming review_sha, with findings or explicit no findings; Controller verifies a real CI run on the exact result commit with more than zero executed tests and checks main for unexpected commits.",
+  "deadline_minutes": 45,
+  "stop_condition": "Stop after one result commit. If a confirmed persistent GitHub permission or platform blockage prevents writing even the result file, stop with exact remote state. No chat follow-up.",
+  "original_codex_seat": "astra",
+  "economic_reason": "A cross-file root-identity and lock-authority security audit at a fixed SHA would ordinarily use an Astra subagent (historical median about $4.1), clearly above estimated direct web overhead of $1.6-1.9; this task is self-contained, non-local, non-urgent, and GitHub-verifiable.",
+  "construction_rules": "Before work read docs/governance/gpt-construction-window-rules.md sections 2, 3, 4, 5, 5a, 6, and 8. Sections 8a, 8b, and 9 are for long-running construction windows and do not apply to this one-off audit. Use small reads, make early durable GitHub progress, continue through ordinary tool/CI failures, and require real executed-test evidence. Ask no question in chat. If information is missing or a persistent permission/platform block is confirmed, write the blocker in result_path, commit if possible, and end.",
+  "remote_write_protocol": "A failed GitHub write does not prove nothing landed or that permission is absent. First reread actual remote branch, commit, and file; if landed, continue without duplicate writes. If absent, retry after increasing intervals and identify the failing layer: ChatGPT action permission, GitHub App installation scope, selected repository, repository permission, ref API, or branch state. One 403 does not prove no write permission; 422 already exists may indicate a prior success. Never repeat a side-effecting write while remote state is unknown.",
+  "permission_boundary": "Push only assigned_branch and only allowed_write_paths. Never push or merge main; do not publish, release, tag, access secrets, or sign. Do not claim project acceptance.",
+  "one_message_only": true,
+  "no_questions": true
+}
