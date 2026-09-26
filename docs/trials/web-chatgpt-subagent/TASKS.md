@@ -27,5 +27,5 @@ These cards test the route without touching R2-06a, main, release, signing, or s
 ## WCS-03 — forced fallback
 
 - Owner of the route: Codex Controller.
-- Exercise: set a trial deadline already in the past before any web send, then apply the skill's timeout path. The expected result is a local record saying `web_not_sent`, reason `deadline_expired`, and a Codex subagent route recommendation. This is a negative control; do not charge a web message or claim a web trial completed.
+- Exercise: set a trial deadline already in the past before any web send, then apply the skill's timeout path. The expected result is a local record saying `web_not_sent`, reason `deadline_expired`, and an actual Codex subagent handoff. This is a negative control; do not charge a web message or claim a web trial completed.
 - If a real web send later produces a wrong model, record the actual tier, block the requested tier, and return the task to Codex. Do not deliberately consume messages to force a provider quota switch.
