@@ -1,0 +1,15 @@
+{
+  "task_id": "WCS-12",
+  "tier": "medium",
+  "repository": "taiyun668/gogoke",
+  "assigned_branch": "gpt/web-chatgpt-wcs12-manual-luna",
+  "base_sha": "7651b1986e30ad4c54c77b7eb303f71ddac5d723",
+  "role": "independent read-only reviewer of the manual Luna and windowless helper trial candidate",
+  "goal": "At the exact base SHA, review .agents/skills/web-chatgpt-subagent/SKILL.md, scripts/ledgerw.py, scripts/Invoke-LedgerHidden.ps1, scripts/Start-WatcherHidden.ps1, scripts/watch_github_result.py, and tests/test_windowless_processes.py against the section 4 serial-dispatch, cooldown, and no-visible-window requirements. Identify concrete gaps only; do not edit the reviewed files or treat this as adoption.",
+  "success_criteria": "Write one result file naming the exact reviewed SHA, with up to five concrete file-and-line findings or an explicit no-finding result; distinguish static source inspection from live window behavior, and state what was not verified. Commit the result on the assigned branch.",
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-12-RESULT.md",
+  "allowed_write_paths": [
+    "docs/trials/web-chatgpt-subagent/WCS-12-RESULT.md"
+  ],
+  "stop_condition": "Stop after one result commit, or immediately if the GitHub connector cannot write the assigned branch. Do not modify any other file, merge main, publish, sign, or access secrets."
+}
