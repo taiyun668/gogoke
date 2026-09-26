@@ -26,10 +26,8 @@ jobs:
         run: |
           python -m unittest discover -s .agents/skills/web-chatgpt-subagent/tests -p 'test_*.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Parse dispatch and watcher scripts
+      - name: Parse windowless ledger and watcher scripts
         shell: pwsh
         run: |
-          node --check .agents/skills/web-chatgpt-subagent/scripts/dispatch_browser.js
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m py_compile .agents/skills/web-chatgpt-subagent/scripts/prepare_dispatch.py .agents/skills/web-chatgpt-subagent/scripts/finalize_dispatch.py .agents/skills/web-chatgpt-subagent/scripts/watch_github_result.py
+          python -m py_compile .agents/skills/web-chatgpt-subagent/scripts/ledgerw.py .agents/skills/web-chatgpt-subagent/scripts/watch_github_result.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

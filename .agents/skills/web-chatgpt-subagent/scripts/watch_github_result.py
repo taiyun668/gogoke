@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import json
 import os
 import re
@@ -19,7 +20,7 @@ ROOT = Path(os.environ["LOCALAPPDATA"]) / "gogoke" / "web-chatgpt-subagent"
 
 
 def gh_json(endpoint: str) -> dict | None:
-    result = subprocess.run(["gh", "api", endpoint], capture_output=True, text=True)
+    result = subprocess.run(["gh", "api", endpoint], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode:
         if "HTTP 404" in result.stderr or '"status":"404"' in result.stdout:
             return None
@@ -76,30 +77,28 @@ def main() -> int:
         parser.error("base-sha must be a full Git SHA")
     if not args.thread:
         parser.error("--thread or CODEX_THREAD_ID is required")
+    save_receipt(ROOT / f"watch-{args.task}-process.json", {"task": args.task, "console_window_present": bool(ctypes.windll.kernel32.GetConsoleWindow()), "started_at": datetime.now(timezone.utc).isoformat()})
     receipt = ROOT / f"watch-{args.task}.json"
     if receipt.exists():
         existing = json.loads(receipt.read_text(encoding="utf-8"))
         if existing.get("status") == "candidate_requires_controller_verification":
-            print(json.dumps(existing, ensure_ascii=False))
             return 0
     start = time.monotonic()
     while time.monotonic() - start < args.max_hours * 3600:
         try:
             found = candidate(args.repo, args.branch, args.path, args.base_sha, args.task)
-        except (RuntimeError, ValueError, KeyError) as error:
+        except (RuntimeError, ValueError, KeyError, OSError) as error:
             found = None
             ROOT.mkdir(parents=True, exist_ok=True)
             (ROOT / f"watch-{args.task}.log").open("a", encoding="utf-8").write(f"{datetime.now(timezone.utc).isoformat()} {error}\n")
         if found:
             save_receipt(receipt, found)
             message = f"{args.task}: GitHub result candidate at {args.repo} {args.branch}@{found['head_sha']} {args.path}. Verify commit, scope, and CI before acceptance."
-            notice = subprocess.run(["codex", "queue", "--thread", args.thread, "--message", message], capture_output=True, text=True)
+            notice = subprocess.run(["codex", "queue", "--thread", args.thread, "--message", message], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
             if notice.returncode:
                 found["notification_error"] = notice.stderr.strip() or f"codex queue exited {notice.returncode}"
                 save_receipt(receipt, found)
-                print(json.dumps(found, ensure_ascii=False))
                 return 2
-            print(json.dumps(found, ensure_ascii=False))
             return 0
         elapsed = time.monotonic() - start
         time.sleep(30 if elapsed < 20 * 60 else 300)
