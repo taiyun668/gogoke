@@ -1018,6 +1018,77 @@ pub(crate) async fn acquire_product_gate() -> tokio::sync::MutexGuard<'static, (
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cancelled_reply_keeps_descendant_in_job_until_exit_and_releases_lease_afterward() {
+        use std::fs;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud test requires the staged signed Node runtime"));
+        assert!(node.is_file(), "controlled Node must be the staged cloud executable");
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-product-job-test-{}", uuid::Uuid::new_v4().simple()
+        ));
+        let service = root.join("service");
+        let dist = service.join("dist");
+        fs::create_dir_all(&dist).expect("owned test service directory");
+        let marker = root.join("child.pid");
+        let entry = dist.join("bin.mjs");
+        let marker_literal = serde_json::to_string(&marker.to_string_lossy().to_string())
+            .expect("test marker path literal");
+        fs::write(&entry, format!(
+            "import {{ spawn }} from 'node:child_process';\n\
+             import {{ writeFileSync }} from 'node:fs';\n\
+             const child = spawn(process.execPath, ['-e', 'setInterval(()=>{{}},1000)'], {{ stdio: 'ignore' }});\n\
+             writeFileSync({marker_literal}, String(child.pid));\n\
+             child.unref();\n"
+        )).expect("owned test service script");
+        let lease = Arc::new(crate::resource_trust::RuntimeLease::default());
+        let weak = Arc::downgrade(&lease);
+        let paths = ProductRuntimePaths {
+            node_runtime: node,
+            service_entry: entry.clone(),
+            native_host: root.join("unused-native-host.exe"),
+            product_root: root.join("product"),
+            source_commit: None,
+            runtime_lease: Some(lease),
+        };
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let gate = PRODUCT_RUNTIME_GATE.try_lock().expect("owned product gate");
+        drop(receiver); // Simulate a cancelled Tauri caller before Node starts.
+        let owner = std::thread::spawn(move || {
+            managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, Some(gate), reply);
+        });
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !marker.is_file() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid: u32 = fs::read_to_string(&marker).expect("descendant started in Job")
+            .parse().expect("descendant PID");
+        assert!(weak.upgrade().is_some(), "cancelled reply must retain the resource lease");
+        assert!(PRODUCT_RUNTIME_GATE.try_lock().is_err(), "cancelled reply must retain the product gate");
+        let child = unsafe { OpenProcess(0x0010_0000, 0, pid) };
+        assert!(!child.is_null(), "descendant must still be observable");
+        let child = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(child as _) };
+        assert_eq!(unsafe { WaitForSingleObject(child.as_raw_handle() as _, 0) }, WAIT_TIMEOUT);
+        owner.join().expect("process owner settles after cancelling reply");
+        assert_eq!(unsafe { WaitForSingleObject(child.as_raw_handle() as _, 0) }, WAIT_OBJECT_0);
+        assert!(weak.upgrade().is_none(), "lease releases only after Job settlement");
+        assert!(PRODUCT_RUNTIME_GATE.try_lock().is_ok(), "gate releases after Job settlement");
+        drop(child);
+        fs::remove_file(&marker).expect("remove owned PID marker");
+        fs::remove_file(&entry).expect("remove owned service script");
+        fs::remove_dir(&dist).expect("remove owned dist directory");
+        fs::remove_dir(&service).expect("remove owned service directory");
+        fs::remove_dir(root.join("product")).expect("remove owned product root");
+        fs::remove_dir(&root).expect("remove owned fixture root");
+    }
+
     #[test]
     fn response_requires_native_controller_admission_and_non_adoption_marker() {
         let request = ProductGoalRequest {
