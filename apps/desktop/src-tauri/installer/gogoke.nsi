@@ -1106,12 +1106,12 @@ Section Install
   {{/each}}
   StrCpy $GogokeTraceStage "install-binary-directories-pinned"
   Call GogokeTraceCloudStage
-  ; Scratch parents are also pinned. SetOverwrite off avoids intentional
-  ; scratch replacement; it does not prove that NSIS extracted a raced leaf.
-  ; Publication checks the source object and creates each final leaf atomically.
-  {{#each resources}}
-    ${GetParent} "$PLUGINSDIR\gogoke-payload\\{{this.[1]}}" $0
-    Push "$0"
+  ; Tauri's distinct resource output parents map to the same scratch tree.
+  ; Pin each parent once; scanning the retained list for every resource file
+  ; makes the signed bundle's large Node tree exceed the install bound.
+  ; Publication still checks each extracted source and creates each final leaf.
+  {{#each resources_dirs}}
+    Push "$PLUGINSDIR\gogoke-payload\\{{this}}"
     Call GogokePinDirectory
     Pop $9
   {{/each}}
