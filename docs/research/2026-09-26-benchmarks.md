@@ -64,6 +64,12 @@
 
 ---
 
+## 2a. Owner 指定可以直接拿来改的内核
+
+- **Orca**（[stablyai/orca](https://github.com/stablyai/orca)，78.6k★，MIT）
+- **Hermes Agent**（[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)，MIT）
+- **Codex 旁聊机制**：直接照搬。
+
 ## 2b. 外部整理补充的对标（2026-09-26 核实）
 
 Owner 转来一份外部整理，是按"编码 CLI 的岗位运行时"这个思路找的对标，其中好几个是上面漏掉的。核实结果如下：
