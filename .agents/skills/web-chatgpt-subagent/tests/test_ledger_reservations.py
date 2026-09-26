@@ -21,6 +21,7 @@ class ReservationCapacityTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.env = {**os.environ, "LOCALAPPDATA": self.tmp.name}
         self.state = Path(self.tmp.name) / "gogoke" / "web-chatgpt-subagent" / "state.json"
+        self.assertEqual(self.run_ledger("reconcile", "--source", "unit-test-start").returncode, 0)
 
     def run_ledger(self, *args):
         return subprocess.run(
@@ -33,19 +34,9 @@ class ReservationCapacityTests(unittest.TestCase):
     def seed_high_with_one_slot_left(self):
         stamp = datetime.now(timezone.utc).astimezone().isoformat()
         self.state.parent.mkdir(parents=True, exist_ok=True)
-        self.state.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "gpt_6_pro_enabled": False,
-                    "events": [{"tier": "high", "at": stamp} for _ in range(19)],
-                    "reservations": {},
-                    "blocked": {},
-                    "resets": {},
-                }
-            ),
-            encoding="utf-8",
-        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["events"] = [{"tier": "high", "at": stamp} for _ in range(19)]
+        self.state.write_text(json.dumps(state), encoding="utf-8")
 
     def test_release_of_unsent_reservation_restores_capacity(self):
         self.seed_high_with_one_slot_left()
