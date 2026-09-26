@@ -1228,9 +1228,12 @@ mod tests {
         let gate = PRODUCT_RUNTIME_GATE.try_lock().expect("owned product gate");
         drop(receiver); // Simulate a cancelled Tauri caller before Node starts.
         let owner = std::thread::spawn(move || {
-            managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, Some(gate), reply);
+            // Cold PowerShell startup on a shared cloud runner is fixture setup,
+            // not the Job-settlement boundary under test.
+            managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(30), None, Some(gate), reply);
         });
-        let deadline = Instant::now() + Duration::from_secs(8);
+        let fixture_started = Instant::now();
+        let deadline = fixture_started + Duration::from_secs(20);
         while (!marker.is_file() || !child_ready.is_file() || managed_service::test_job_handle().is_null())
             && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
@@ -1241,6 +1244,15 @@ mod tests {
         let root_pid: u32 = fields[0].parse().expect("root PID");
         let child_pid: u32 = fields[1].parse().expect("child PID");
         assert_eq!(fields[2], nonce, "root marker nonce");
+        if !child_ready.is_file() {
+            let child_handle = unsafe { OpenProcess(0x0010_1000, 0, child_pid) };
+            let child_wait = if child_handle.is_null() { None } else {
+                let child_handle = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(child_handle as _) };
+                Some(unsafe { WaitForSingleObject(child_handle.as_raw_handle() as _, 0) })
+            };
+            panic!("child fixture did not become ready within {:?}; child_wait={child_wait:?}; job_present={}",
+                fixture_started.elapsed(), !managed_service::test_job_handle().is_null());
+        }
         assert_eq!(fs::read_to_string(&child_ready).expect("child self-ready marker"),
             format!("{nonce} {child_pid}"));
         let root_handle = unsafe { OpenProcess(0x0010_1000, 0, root_pid) };
