@@ -155,7 +155,7 @@ class LedgerTests(unittest.TestCase):
         self.assertIn("task ID already used", self.reserve("sent").stderr)
 
         uncertain_id = self.reserve("uncertain").stdout.strip()
-        self.assertEqual(self.call("mark-uncertain", uncertain_id, "--reason", "click outcome unknown").returncode, 0)
+        self.assertEqual(self.call("mark-uncertain", uncertain_id, "--reason", "click outcome unknown", "--url", "https://chatgpt.com/c/unknown").returncode, 0)
         denied_uncertain = self.call("release", uncertain_id)
         self.assertEqual(denied_uncertain.returncode, 2)
         self.assertIn("sent or uncertain", denied_uncertain.stderr)
@@ -163,6 +163,35 @@ class LedgerTests(unittest.TestCase):
         self.assertIn(uncertain_id, state["reservations"])
         self.assertEqual(state["active_web_task"]["task"], "uncertain")
         self.assertIn("still active", self.reserve("other").stderr)
+
+    def test_owner_confirmed_new_chat_corrects_uncertain_attempt_without_reusing_id(self):
+        self.reconcile_enable()
+        rid = self.reserve("pre-send").stdout.strip()
+        self.assertEqual(self.call("mark-sent", rid, "--url", "https://chatgpt.com/").returncode, 2)
+        self.assertEqual(self.call("mark-uncertain", rid, "--reason", "click no turn", "--url", "https://chatgpt.com/").returncode, 2)
+        # Model the already-finished WCS-25 record written by the older CLI.
+        legacy = json.loads(self.state.read_text(encoding="utf-8"))
+        legacy["reservations"][rid].update({"uncertain_at": datetime.now(timezone.utc).isoformat(), "uncertain_reason": "click no turn", "url": "https://chatgpt.com/"})
+        self.state.write_text(json.dumps(legacy), encoding="utf-8")
+        self.assertEqual(self.call("finish-task", "--task", "pre-send", "--fallback-agent", "codex", "--reason", "click no turn").returncode, 0)
+        self.assertEqual(json.loads(self.call("status").stdout)["tiers"]["gpt-6-pro"]["used_or_reserved_today"], 1)
+        correction = ("correct-unsent", "--task", "pre-send", "--observed-url", "https://chatgpt.com/",
+                      "--evidence", "same tab remained new chat; draft cleared and read back empty",
+                      "--owner-decision", "Owner confirmed new-chat page means no Send")
+        self.assertEqual(self.call(*correction).returncode, 0)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["events"][-1]["outcome"], "web_not_sent")
+        self.assertFalse(state["one_shot_results"][-1]["eligible_for_one_shot_rate"])
+        self.assertEqual(json.loads(self.call("status").stdout)["tiers"]["gpt-6-pro"]["used_or_reserved_today"], 0)
+        self.assertIn("task ID already used", self.reserve("pre-send").stderr)
+        self.assertEqual(self.call(*correction).returncode, 2)
+
+        sent_id = self.reserve("actually-sent").stdout.strip()
+        self.assertEqual(self.call("mark-sent", sent_id, "--url", "https://chatgpt.com/c/example").returncode, 0)
+        self.assertEqual(self.call("finish-task", "--task", "actually-sent", "--fallback-agent", "codex", "--reason", "no result").returncode, 0)
+        denied = self.call("correct-unsent", "--task", "actually-sent", "--observed-url", "https://chatgpt.com/",
+                           "--evidence", "not true", "--owner-decision", "not true")
+        self.assertEqual(denied.returncode, 2)
 
 
 if __name__ == "__main__":

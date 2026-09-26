@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import msvcrt
 
@@ -32,6 +34,11 @@ def parse_time(value: str) -> datetime:
     if result.tzinfo is None:
         raise ValueError("time must include a timezone offset")
     return result
+
+
+def is_conversation_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    return parsed.scheme == "https" and parsed.netloc == "chatgpt.com" and bool(re.fullmatch(r"/c/[A-Za-z0-9-]+", parsed.path))
 
 
 def fresh_state() -> dict:
@@ -97,7 +104,7 @@ def active_events(data: dict, tier: str) -> list[dict]:
     reset = data["resets"].get(tier)
     reconciled = data.get("reconciliation")
     since = parse_time(reconciled["at"]) if reconciled else None
-    return [e for e in data["events"] if tier in (e["tier"], e.get("actual_tier")) and (not reset or parse_time(e["at"]) >= parse_time(reset)) and (not since or parse_time(e["at"]) >= since)]
+    return [e for e in data["events"] if e.get("outcome") != "web_not_sent" and tier in (e["tier"], e.get("actual_tier")) and (not reset or parse_time(e["at"]) >= parse_time(reset)) and (not since or parse_time(e["at"]) >= since)]
 
 
 def baseline_count(data: dict, tier: str, instant: datetime, period: str) -> int:
@@ -188,7 +195,12 @@ def main() -> int:
     mark_uncertain = commands.add_parser("mark-uncertain")
     mark_uncertain.add_argument("id")
     mark_uncertain.add_argument("--reason", required=True)
-    mark_uncertain.add_argument("--url")
+    mark_uncertain.add_argument("--url", required=True)
+    correct_unsent = commands.add_parser("correct-unsent")
+    correct_unsent.add_argument("--task", required=True)
+    correct_unsent.add_argument("--observed-url", required=True)
+    correct_unsent.add_argument("--evidence", required=True)
+    correct_unsent.add_argument("--owner-decision", required=True)
     complete = commands.add_parser("complete")
     complete.add_argument("id")
     complete.add_argument("--actual-tier", required=True)
@@ -315,7 +327,7 @@ def main() -> int:
                     if held:
                         key, reservation = held[0]
                         if not reservation.get("sent_at") and not reservation.get("uncertain_at"):
-                            raise ValueError("unsent reservation must be cleared by Luna and released")
+                            raise ValueError("unsent reservation must be cleared by Controller and released")
                         data["events"].append({**reservation, "id": key, "completed_at": instant.isoformat(), "actual_tier": None, "outcome": "sent_without_accepted_result" if reservation.get("sent_at") else "uncertain_submission"})
                         del data["reservations"][key]
                 data.setdefault("finished_web_tasks", []).append({**active, "finished_at": instant.isoformat(), "result_commit": args.result_commit, "fallback_agent": args.fallback_agent, "reason": args.reason, "timed_out": args.timed_out, "one_shot_task_success": bool(args.result_commit), "served_model_status": served_model_status})
@@ -340,19 +352,43 @@ def main() -> int:
                     raise ValueError("unknown reservation")
                 if reservation.get("sent_at") or reservation.get("uncertain_at"):
                     raise ValueError("send already recorded or uncertain")
+                if not is_conversation_url(args.url):
+                    raise ValueError("Send confirmation requires a ChatGPT conversation content URL")
                 reservation["sent_at"] = instant.isoformat()
                 reservation["url"] = args.url
-                print("send confirmed by new conversation turns")
+                print("conversation URL recorded; Controller must also verify a new user turn")
             elif args.action == "mark-uncertain":
                 reservation = data["reservations"].get(args.id)
                 if reservation is None:
                     raise ValueError("unknown reservation")
                 if reservation.get("sent_at") or reservation.get("uncertain_at"):
                     raise ValueError("send already recorded or uncertain")
+                if not is_conversation_url(args.url):
+                    raise ValueError("uncertain submission requires navigation to a ChatGPT conversation URL")
                 reservation["uncertain_at"] = instant.isoformat()
                 reservation["uncertain_reason"] = args.reason
                 reservation["url"] = args.url
                 print("uncertain submission retained; never resend this task ID")
+            elif args.action == "correct-unsent":
+                if args.observed_url.rstrip("/") != "https://chatgpt.com":
+                    raise ValueError("pre-send correction requires the observed new-chat URL")
+                if not args.evidence.strip() or not args.owner_decision.strip():
+                    raise ValueError("correction requires observed evidence and Owner decision")
+                if data.get("active_web_task") and data["active_web_task"].get("task") == args.task:
+                    raise ValueError("finish the stopped task before correction")
+                events = [e for e in data["events"] if e.get("task") == args.task]
+                finished = [f for f in data.get("finished_web_tasks", []) if f.get("task") == args.task]
+                results = [r for r in data.get("one_shot_results", []) if r.get("task") == args.task]
+                if len(events) != 1 or events[0].get("outcome") != "uncertain_submission" or events[0].get("sent_at"):
+                    raise ValueError("only one uncertain, never-confirmed Send may be corrected")
+                if len(finished) != 1 or finished[0].get("result_commit") or not finished[0].get("fallback_agent") or len(results) != 1:
+                    raise ValueError("correction requires a finished Codex fallback without a web result")
+                if any(e.get("task") == args.task for e in data.get("late_results", [])):
+                    raise ValueError("task has a late result")
+                events[0].update({"outcome": "web_not_sent", "corrected_at": instant.isoformat(), "new_chat_observed_url": args.observed_url, "unsent_evidence": args.evidence, "owner_decision": args.owner_decision})
+                finished[0]["pre_send_corrected_at"] = instant.isoformat()
+                results[0].update({"success": False, "eligible_for_one_shot_rate": False, "served_model_status": "no_send"})
+                print("pre-send failure recorded; local capacity restored; task ID remains retired")
             elif args.action == "complete":
                 reservation = data["reservations"].pop(args.id, None)
                 if reservation is None:

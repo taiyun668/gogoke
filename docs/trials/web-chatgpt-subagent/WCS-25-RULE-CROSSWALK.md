@@ -21,6 +21,7 @@ The Controller can use `.agents/skills/web-chatgpt-subagent/SKILL.md` alone. The
 | Ledger records one-shot task success separately from served-model identity | §3, final paragraph |
 | Controller foreground tab; one ChatGPT tab | §4 steps 1–2; §5 opening |
 | New chat, model check, paste, one Send, proof of submission | §4 steps 2–3 |
+| Sent requires content-page navigation plus a new user turn; new-chat URL means pre-Send failure; uncertainty only after navigation | §3 first paragraph; §4 step 3 |
 | Clear and verify abandoned draft before release | §4 step 3 |
 | Keep tab after Send; page-only read patrol about every five minutes; GitHub watcher | §4 steps 3–4 |
 | GPT's active GitHub write retry is normal; stopped generation without later action is interruption | §4 step 4 |
