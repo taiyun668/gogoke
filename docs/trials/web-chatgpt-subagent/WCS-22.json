@@ -1,0 +1,28 @@
+{
+  "task_id": "WCS-22",
+  "tier": "gpt-6-pro",
+  "repository": "taiyun668/gogoke",
+  "card_branch": "codex/web-chatgpt-subagent-channel",
+  "assigned_branch": "gpt/web-chatgpt-wcs22-pro-audit",
+  "base_sha": "51f1421b6deaa586e02f2c814772e6acf8976d08",
+  "review_sha": "51f1421b6deaa586e02f2c814772e6acf8976d08",
+  "role": "independent fixed-commit audit; no implementation edits",
+  "goal": "At the exact review SHA, independently audit the current web ChatGPT skill, Windows ledger, watcher, and tests for violations of the Owner's 6 Pro-only, one-message, serial-dispatch, cooldown, task-ID, timeout, GitHub-verification, and permission boundaries. Identify up to five concrete, actionable findings with file and line evidence. Check whether the tests exercise the real code paths rather than only constants or substitutes. If no finding, say so and identify what remained unverified. Do not modify the reviewed files.",
+  "allowed_read_paths": [
+    ".agents/skills/web-chatgpt-subagent/SKILL.md",
+    ".agents/skills/web-chatgpt-subagent/scripts/ledger.py",
+    ".agents/skills/web-chatgpt-subagent/scripts/watch_github_result.py",
+    ".agents/skills/web-chatgpt-subagent/tests/test_ledger.py",
+    ".agents/skills/web-chatgpt-subagent/tests/test_windowless_processes.py",
+    ".github/workflows/web-chatgpt-subagent.yml",
+    "AGENTS.md"
+  ],
+  "allowed_write_paths": ["docs/trials/web-chatgpt-subagent/WCS-22-RESULT.md"],
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-22-RESULT.md",
+  "success_criteria": "Create the assigned branch from base_sha and commit exactly one result file naming review_sha. Include findings or explicit no-findings, static-versus-runtime limits, and the result commit SHA if available. A real Windows CI run with more than zero executed tests on the result commit is required for Controller acceptance; the Controller may trigger and verify the workflow after your result commit.",
+  "deadline_minutes": 45,
+  "one_message_only": true,
+  "no_questions": "If information is missing, the GitHub connector cannot read/write, or another blocker occurs, describe it in the result file and commit if possible, then stop. Do not ask in this conversation or wait for clarification.",
+  "permission_boundary": "Push only to gpt/web-chatgpt-wcs22-pro-audit. Do not merge or push main, change other branches, publish, release, tag, access keys or secrets, or sign. Do not modify any file except the assigned result file. Do not claim final project acceptance.",
+  "stop_condition": "Stop after one result commit or a documented connector blocker. No follow-up exchange and no second task ID for this same audit."
+}
