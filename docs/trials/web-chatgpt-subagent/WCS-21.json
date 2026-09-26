@@ -1,0 +1,14 @@
+{
+  "task_id": "WCS-21",
+  "tier": "medium",
+  "trial_kind": "negative_control_pre_send_cleanup",
+  "repository": "taiyun668/gogoke",
+  "assigned_branch": "gpt/web-chatgpt-wcs21-unused",
+  "base_sha": "0b7c3c6c0d27797a3766093d0e2a6ee3039f3103",
+  "role": "Luna pre-send cleanup verifier",
+  "goal": "On one fresh logged-in ChatGPT page, reserve Medium, enter the exact harmless draft 'WCS-21 CLEANUP CHECK — DO NOT SEND', verify it is staged, then intentionally abandon before Send. The same Luna must clear the composer, read it back as empty, release the reservation, close the tab, and confirm zero ChatGPT tabs. Never click Send or create a GitHub result.",
+  "success_criteria": "Return local evidence of staged text, empty composer before release, successful release, zero remaining ChatGPT tabs, and a web_not_sent local event. No ChatGPT user turn and no GitHub result should exist.",
+  "result_path": "none_negative_control",
+  "allowed_write_paths": [],
+  "stop_condition": "Stop immediately after confirmed pre-send cleanup, release, and tab close. If login/security appears or the own draft cannot be cleared, stop and report without releasing an uncleared reservation."
+}
