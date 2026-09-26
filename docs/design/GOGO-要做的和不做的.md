@@ -132,6 +132,8 @@ Owner 2026-09-16 定：首版适配 Claude Code、Codex、OpenCode、Grok Build�
 
 ### Antigravity 的限制（证据在 AionUi 源码注释）
 
+> **2026-09-26 补注：本节已过时，不能再当依据。**claw-orchestrator 的实测表明，agy 可以用 `--conversation <id>` 续接，上下文会累积；Google 另有一个常驻的官方 ACP 内核。能否中途插话、有没有只读模式，还要在本机实测。见 [Antigravity CLI 事实](../research/2026-09-26-antigravity-cli-facts.md)。
+
 - 事件流与 ACP 同形：*"the renderer treats it as an ACP-family conversation because the extra payload and event stream are identical"* —— 适配路径与 Grok 那个同类
 - **一次调用一个进程**：*"agy is a direct-CLI integration (one process per turn)"*
 - 因此它**中途插话纠偏不可能、上下文不累积**（`22-seat-runtime-inheritance-ledger.md` §4.2 记过这个代价）
