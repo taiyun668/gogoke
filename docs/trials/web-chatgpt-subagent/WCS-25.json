@@ -1,0 +1,31 @@
+{
+  "task_id": "WCS-25",
+  "role": "independent fixed-commit public-source-scanner security auditor",
+  "repository": "taiyun668/gogoke",
+  "card_branch": "codex/web-chatgpt-subagent-channel",
+  "card_path": "docs/trials/web-chatgpt-subagent/WCS-25.json",
+  "card_sha": "supplied in the one starter message after this card is committed",
+  "base_sha": "8b04a707b2d9f3b4163193aaa796258cb17bb946",
+  "review_sha": "8b04a707b2d9f3b4163193aaa796258cb17bb946",
+  "assigned_branch": "gpt/web-chatgpt-wcs25-source-scan-audit",
+  "allowed_read_paths": [
+    "tools/check-public-source.py",
+    "tools/tests/test_check_public_source.py",
+    ".github/workflows/gogoke-source-hygiene.yml",
+    "docs/governance/gpt-construction-window-rules.md",
+    "AGENTS.md"
+  ],
+  "allowed_write_paths": ["docs/trials/web-chatgpt-subagent/WCS-25-RESULT.md"],
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-25-RESULT.md",
+  "goal": "At the exact review SHA, independently audit the public-source scanner, its tests, and its workflow for concrete false negatives that would let a real private path or credential enter the public tree, or false positives that would block safe committed content. Use small reads and identify up to five actionable findings with exact file:line evidence and a falsifying test idea, or explicitly report no findings and static limits. Do not edit reviewed files or inspect non-committed secrets.",
+  "success_criteria": "Exactly one result file committed to the assigned branch from base_sha, naming review_sha; Controller verifies a real CI run on the result commit with more than zero executed tests and checks main for unintended commits.",
+  "deadline_minutes": 45,
+  "stop_condition": "Stop after one result commit; if confirmed persistent GitHub permission or platform blockage prevents writing even the result file, stop with exact remote state. No chat follow-up.",
+  "original_codex_seat": "astra",
+  "economic_reason": "Independent security review of scanner logic, tests, and CI at a fixed SHA would ordinarily use Astra at about $4.1 median, clearly above estimated $1.6–1.9 direct web overhead; it is self-contained, non-local, non-urgent, and GitHub-verifiable.",
+  "construction_rules": "Before work read docs/governance/gpt-construction-window-rules.md sections 2, 3, 4, 5, 5a, 6, and 8. Sections 8a, 8b, and 9 are for long-running construction windows and do not apply to this one-off task. Do small reads, make early durable GitHub progress, continue through ordinary tool/CI failures, and require real executed-test evidence. Ask no question in chat. For missing information or confirmed persistent permission/platform blockage, write the blocker in the result file, commit if possible, and end.",
+  "remote_write_protocol": "A failed GitHub write does not prove nothing landed or that permission is absent. First reread the actual remote branch, commit, and file; if landed, continue without duplicate writes. If absent, retry after increasing intervals and identify whether the failure is ChatGPT action permission, GitHub App installation scope, selected repository, repository permission, ref API, or branch state. One 403 does not prove no write permission; 422 already exists may indicate prior success. Never repeat a side-effecting write while remote state is unknown.",
+  "permission_boundary": "Push only assigned_branch and only allowed_write_paths. Never push or merge main; do not publish, release, tag, access secrets, or sign. Do not claim project acceptance.",
+  "one_message_only": true,
+  "no_questions": true
+}
