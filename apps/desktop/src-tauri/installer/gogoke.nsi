@@ -802,12 +802,12 @@ Function GogokePublishFile
   StrCpy $GogokePublishSourceHandle ""
   StrCpy $GogokePublishTargetHandle ""
   StrCpy $GogokePublishBuffer ""
-  StrCpy $GogokeTraceStage "publish-source-open"
+  StrCpy $GogokeTraceStage "publish-source-open:$GogokePublishSource"
   Call GogokeTraceCloudStage
-  System::Call 'kernel32::CreateFileW(w "$GogokePublishSource", i 0x80000000, i 1, p 0, i 3, i 0x00200080, p 0) p .r0'
+  System::Call 'kernel32::CreateFileW(w "$GogokePublishSource", i 0x80000000, i 1, p 0, i 3, i 0x00200080, p 0) p .r0 ?e'
+  Pop $1
   ${If} $0 == -1
-    System::Call 'kernel32::GetLastError() i .r1'
-    StrCpy $GogokeTraceStage "publish-source-open-failed:$1"
+    StrCpy $GogokeTraceStage "publish-source-open-failed:$1:$GogokePublishSource"
     Call GogokeTraceCloudStage
     Goto gogoke_publish_failed
   ${EndIf}
@@ -826,12 +826,12 @@ Function GogokePublishFile
   ${If} $0 != 0
     Goto gogoke_publish_failed
   ${EndIf}
-  StrCpy $GogokeTraceStage "publish-target-create"
+  StrCpy $GogokeTraceStage "publish-target-create:$GogokePublishTarget"
   Call GogokeTraceCloudStage
-  System::Call 'kernel32::CreateFileW(w "$GogokePublishTarget", i 0x40000000, i 0, p 0, i 1, i 0x00200080, p 0) p .r0'
+  System::Call 'kernel32::CreateFileW(w "$GogokePublishTarget", i 0x40000000, i 0, p 0, i 1, i 0x00200080, p 0) p .r0 ?e'
+  Pop $1
   ${If} $0 == -1
-    System::Call 'kernel32::GetLastError() i .r1'
-    StrCpy $GogokeTraceStage "publish-target-create-failed:$1"
+    StrCpy $GogokeTraceStage "publish-target-create-failed:$1:$GogokePublishTarget"
     Call GogokeTraceCloudStage
     Goto gogoke_publish_failed
   ${EndIf}
