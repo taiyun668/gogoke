@@ -465,13 +465,15 @@ function replayDeniedModule(installed, candidate) {
     fs.writeFileSync(policy, policyBytes);
     const bootstrap = `${diagnostic}\ninstallGuard(${JSON.stringify(policy)}, ${JSON.stringify(policyHash)});\n`;
     const preload = `--import=data:text/javascript;base64,${Buffer.from(bootstrap).toString('base64')}`;
-    const result = spawnSync(node, [preload, entry, '--root', replayRoot, '--native-host', nativeHost], {
+    const result = spawnSync(node, [preload, entry, '--root', candidate.productRoot, '--native-host', nativeHost], {
       cwd: generation, input: '{"operation":"readiness"}', encoding: 'utf8', timeout: 30000,
       windowsHide: true, maxBuffer: 1024 * 1024,
       env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
         !['NODE_OPTIONS', 'NODE_PATH'].includes(key.toUpperCase()))),
     });
-    return `status=${result.status ?? 'null'} stderr=${String(result.stderr ?? result.error?.message ?? '').slice(-700)}`;
+    const stderr = String(result.stderr ?? result.error?.message ?? '')
+      .replaceAll(candidate.productRoot, '[product-root]').replaceAll(os.homedir(), '[user-home]');
+    return `status=${result.status ?? 'null'} stderr=${stderr.slice(-700)}`;
   } finally {
     fs.rmSync(replayRoot, { recursive: true, force: true });
   }
@@ -611,7 +613,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       // This diagnostic invocation is made only after bootstrap failed to
       // publish; its outcome is not accepted as bootstrap readiness.
       const directResult = await evaluate("window.__TAURI_INTERNALS__.invoke('gogoke_update_signal_ready').then(() => 'DIRECT_INVOKE_SUCCEEDED', error => String(error))");
-      const replay = candidate && directResult === 'GOGOKE_PRODUCT_SERVICE_FAILED:78'
+      const replay = candidate && /^GOGOKE_PRODUCT_SERVICE_FAILED:[0-9]+$/.test(directResult)
         ? replayDeniedModule(installed, candidate) : 'NOT_RUN';
       throw new Error(`installed product bootstrap did not publish readiness; direct IPC result: ${directResult}; module replay: ${replay}`);
     }
@@ -767,17 +769,17 @@ if (mode === 'stage') {
   const negativeSmoke = await smokeTauri(ensureDir(root), smokeRequest, other);
   writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'PASS', negativeSmoke });
 } else if (mode === 'candidate-installed-service') {
-  const [expectedSourceCommit, expectedVersion, evidenceFile] = process.argv.slice(5);
+  const [expectedSourceCommit, expectedVersion, evidenceFile, productRoot] = process.argv.slice(5);
   if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'taiyun668/gogoke' ||
       !process.env.RUNNER_TEMP || !process.env.GITHUB_RUN_ID || !process.env.GITHUB_RUN_ATTEMPT ||
-      !evidenceFile) throw new Error('candidate service smoke requires exact hosted-run identity');
+      !evidenceFile || !productRoot || !path.isAbsolute(productRoot)) throw new Error('candidate service smoke requires exact hosted-run identity');
   const tempRoot = fs.realpathSync(process.env.RUNNER_TEMP);
   const resolvedEvidence = path.resolve(evidenceFile);
   if (fs.realpathSync(path.dirname(resolvedEvidence)) !== tempRoot ||
       path.basename(resolvedEvidence) !== `gogoke-r2-06-service-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}.json` ||
       fs.existsSync(resolvedEvidence)) throw new Error('candidate service evidence path is not fresh runner temp');
   const result = await smokeTauri(ensureDir(root), smokeRequest, null,
-    { generationId: other, sourceCommit: expectedSourceCommit, version: expectedVersion });
+    { generationId: other, sourceCommit: expectedSourceCommit, version: expectedVersion, productRoot });
   const poisonRoot = path.join(root, 'gogoke-service', 'generations', 'node_modules');
   if (fs.lstatSync(poisonRoot, { throwIfNoEntry: false })) {
     throw new Error('candidate test poison remains before uninstall');

@@ -389,7 +389,8 @@ try {
     }
     $serviceSmoke = Start-OneShot $nodeCommand @(
         $serviceTool, 'candidate-installed-service', $script:targetRoot,
-        [string]$index.generationId, $ExpectedSourceCommit, $ExpectedVersion, $script:serviceEvidencePath
+        [string]$index.generationId, $ExpectedSourceCommit, $ExpectedVersion, $script:serviceEvidencePath,
+        (Join-Path $script:appDataRoot 'product-authority')
     ) 240000 $true $true
     if ($serviceSmoke.TimedOut) {
         $kill = Start-OneShot 'taskkill.exe' @('/PID', [string]$serviceSmoke.Process.Id, '/T', '/F') 15000 $true
