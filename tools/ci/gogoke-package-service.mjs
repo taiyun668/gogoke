@@ -434,6 +434,49 @@ const smokeRequest = {
   runControlledTask: true,
 };
 
+// Temporary candidate replay after an installed-product exit 78. It uses the
+// signed index's exact file set and the same Node, entry, cwd and arguments.
+// The only guard change prints the denied URL before preserving its decision.
+function replayDeniedModule(installed, candidate) {
+  const index = JSON.parse(fs.readFileSync(path.join(installed, 'resource-index.json'), 'utf8'));
+  const generation = path.join(installed, 'gogoke-service', 'generations', candidate.generationId);
+  const node = path.join(installed, 'gogoke-service', 'runtime', 'node.exe');
+  const entry = path.join(generation, 'dist', 'bin.mjs');
+  const nativeHost = path.join(installed, 'gogoke-native-host.exe');
+  const files = [node, nativeHost,
+    ...index.installedFiles.map((file) => path.join(installed, file.path)),
+    ...index.files.filter((file) => file.path.startsWith('dist/'))
+      .map((file) => path.join(generation, file.path))];
+  const policyBytes = Buffer.from(JSON.stringify([...new Set(files)].sort()));
+  const policyHash = createHash('sha256').update(policyBytes).digest('hex');
+  const source = fs.readFileSync(path.join(repo, 'apps/desktop/src-tauri/src/public_runtime/module_guard.mjs'), 'utf8');
+  const diagnostic = source
+    .replace('  function deny() {', "  let deniedUrl = '';\n  function deny() {")
+    .replace("writeSync(2, 'GOGOKE_MODULE_NOT_LISTED\\n');", "writeSync(2, 'GOGOKE_MODULE_NOT_LISTED:' + deniedUrl + '\\n');")
+    .replace('  function authorize(url) {', '  function authorize(url) {\n    deniedUrl = url;')
+    .replace('  process.dlopen = function guardedDlopen(module, filename, ...args) {',
+      '  process.dlopen = function guardedDlopen(module, filename, ...args) {\n    deniedUrl = filename;');
+  if (!diagnostic.includes("GOGOKE_MODULE_NOT_LISTED:' + deniedUrl") || diagnostic === source) {
+    throw new Error('candidate module replay instrumentation did not match the embedded guard source');
+  }
+  const replayRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gogoke-module-replay-'));
+  try {
+    const policy = path.join(replayRoot, 'policy.json');
+    fs.writeFileSync(policy, policyBytes);
+    const bootstrap = `${diagnostic}\ninstallGuard(${JSON.stringify(policy)}, ${JSON.stringify(policyHash)});\n`;
+    const preload = `--import=data:text/javascript;base64,${Buffer.from(bootstrap).toString('base64')}`;
+    const result = spawnSync(node, [preload, entry, '--root', replayRoot, '--native-host', nativeHost], {
+      cwd: generation, input: '{"operation":"readiness"}', encoding: 'utf8', timeout: 30000,
+      windowsHide: true, maxBuffer: 1024 * 1024,
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+        !['NODE_OPTIONS', 'NODE_PATH'].includes(key.toUpperCase()))),
+    });
+    return `status=${result.status ?? 'null'} stderr=${String(result.stderr ?? result.error?.message ?? '').slice(-700)}`;
+  } finally {
+    fs.rmSync(replayRoot, { recursive: true, force: true });
+  }
+}
+
 async function smokeTauri(installed, request, negativeComponent = null, candidate = null) {
   if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true') throw new Error('installed Tauri smoke is cloud Windows only');
   let poisonRoot = null;
@@ -568,7 +611,9 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       // This diagnostic invocation is made only after bootstrap failed to
       // publish; its outcome is not accepted as bootstrap readiness.
       const directResult = await evaluate("window.__TAURI_INTERNALS__.invoke('gogoke_update_signal_ready').then(() => 'DIRECT_INVOKE_SUCCEEDED', error => String(error))");
-      throw new Error(`installed product bootstrap did not publish readiness; direct IPC result: ${directResult}`);
+      const replay = candidate && directResult === 'GOGOKE_PRODUCT_SERVICE_FAILED:78'
+        ? replayDeniedModule(installed, candidate) : 'NOT_RUN';
+      throw new Error(`installed product bootstrap did not publish readiness; direct IPC result: ${directResult}; module replay: ${replay}`);
     }
     if (candidate) {
       const ready = JSON.parse(fs.readFileSync(updateReceipt, 'utf8'));
