@@ -20,6 +20,8 @@
 | Grok 独立通道 | `grok-worker-pool` skill：`grok-4.6` / `high` / `standard` | 当前 Provider 只适合不要求终端、子进程和 mutation 的独立只读任务 |
 | 最终异构审查 | 外部 Claude | 不经 Codex 原生 role 自动调用；中间审查不替代 Claude / Owner 最终裁决 |
 
+原本派给 Astra 的任务，若同时满足本机网页通道 `web-chatgpt-subagent` skill 的适用条件，可优先经该 skill 交给 GPT-6 Pro（与 Astra 同一模型）处理。skill 额度用尽、不可用或结果不合格时，按上表回到 Codex 的 Astra 路由。需要运行正式命令或 mutation 的高风险首次或最终验收审计，仍由 `risk_auditor` 执行。
+
 Sol 和 Astra 属于同一 provider family；独立 agent 不自动意味着异构审计。Grok 是独立 skill route，不是 Codex subagent 默认；不得为了使用 Grok 而派发。只有当前任务明确授权的 Grok Worker 任务才能调用；授权必须写清对象、次数、profile/fallback、工作区、允许修改和停止条件。当前 Provider 禁止终端和子进程，无法独立运行正式门禁或有效 production mutation，因此不能担任本项目 PR acceptance auditor；静态检查、预期判断或 Result Capsule 的 `completed` 都不等于正式审计 PASS。重新启用 acceptance 路由需要新的 Provider 能力证据和 Owner 明确授权。
 
 ## 选择与升级
