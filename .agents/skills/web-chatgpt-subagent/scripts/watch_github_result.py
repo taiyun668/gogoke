@@ -17,16 +17,13 @@ from pathlib import Path
 
 
 ROOT = Path(os.environ["LOCALAPPDATA"]) / "gogoke" / "web-chatgpt-subagent"
-FAST_TIERS = {"medium", "high"}
-SLOW_TIERS = {"extra-high", "gpt-5.6-sol-pro"}
+SLOW_TIERS = {"gpt-6-pro"}
 
 
 def poll_seconds(tier: str, elapsed_seconds: float) -> int:
-    if tier in FAST_TIERS:
-        return 30 if elapsed_seconds < 20 * 60 else 120
     if tier in SLOW_TIERS:
         return 90 if elapsed_seconds < 20 * 60 else 300
-    raise ValueError("watcher tier must be a permitted GPT-5.6 tier")
+    raise ValueError("watcher tier must be GPT-6 Pro")
 
 
 def gh_json(endpoint: str) -> dict | None:
@@ -72,7 +69,7 @@ def candidate(repo: str, branch: str, path: str, base_sha: str, task: str) -> di
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True)
-    parser.add_argument("--tier", choices=sorted(FAST_TIERS | SLOW_TIERS), required=True)
+    parser.add_argument("--tier", choices=sorted(SLOW_TIERS), required=True)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--path", required=True)

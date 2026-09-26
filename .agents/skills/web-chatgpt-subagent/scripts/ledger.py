@@ -15,8 +15,8 @@ from pathlib import Path
 import msvcrt
 
 
-TIERS = ("gpt-6-pro", "gpt-5.6-sol-pro", "extra-high", "high", "medium")
-CAPS = dict(zip(TIERS, (25, 120, 12, 20, 30)))
+TIERS = ("gpt-6-pro",)
+CAPS = {"gpt-6-pro": 25}
 ROOT = Path(os.environ["LOCALAPPDATA"]) / "gogoke" / "web-chatgpt-subagent"
 STATE = ROOT / "state.json"
 LOCK = ROOT / "state.lock"
@@ -106,9 +106,9 @@ def baseline_count(data: dict, tier: str, instant: datetime, period: str) -> int
         return 0
     anchored = parse_time(rec["at"]).astimezone()
     if period == "day" and anchored.date() == instant.date():
-        return rec["baseline"][tier]["day"]
+        return rec.get("baseline", {}).get(tier, {}).get("day", 0)
     if period == "week" and anchored.isocalendar()[:2] == instant.isocalendar()[:2]:
-        return rec["baseline"][tier]["week"]
+        return rec.get("baseline", {}).get(tier, {}).get("week", 0)
     return 0
 
 
@@ -135,18 +135,16 @@ def available(data: dict, tier: str, instant: datetime) -> tuple[bool, str]:
         return False, f"web task {active['task']} is still active; queue or route to Codex"
     if not data.get("reconciliation"):
         return False, "unreconciled ledger; known baseline required before web dispatch"
-    if tier == "gpt-6-pro" and not data["gpt_6_pro_enabled"]:
+    if tier not in TIERS:
+        return False, "only GPT-6 Pro may be dispatched"
+    if not data["gpt_6_pro_enabled"]:
         return False, "GPT-6 Pro disabled"
     block = data["blocked"].get(tier)
     if block:
         return False, f"tier exhausted; observed reset: {block.get('reset_at') or 'unknown'}"
     if count_day(data, tier, instant) >= CAPS[tier]:
         return False, "daily cap reached"
-    if tier in TIERS[:2] and sum(count_day(data, t, instant) for t in TIERS[:2]) >= 200:
-        return False, "combined Pro daily cap reached"
-    if tier == "gpt-6-pro" and baseline_count(data, tier, instant, "week") + len(active_events(data, tier)) + sum(r["tier"] == tier for r in data["reservations"].values()) >= 200:
-        return False, "weekly vendor allowance cannot be assumed reset; record observed reset"
-    return True, "available in local ledger; reconcile other Chat seats separately"
+    return True, "available within this skill's local 25/day cap; shared account allowance unknown"
 
 
 def main() -> int:
@@ -160,6 +158,8 @@ def main() -> int:
     reserve.add_argument("--tier", choices=TIERS, required=True)
     reserve.add_argument("--task", required=True)
     reserve.add_argument("--seat", required=True)
+    reserve.add_argument("--original-seat", required=True, choices=("astra",))
+    reserve.add_argument("--economics", required=True)
     cooldown = commands.add_parser("cooldown")
     cooldown.add_argument("--reason", choices=("suspicious_activity", "security_verification", "trial_simulation"), required=True)
     clear_cooldown = commands.add_parser("clear-cooldown")
@@ -172,9 +172,14 @@ def main() -> int:
     finish_result = finish.add_mutually_exclusive_group(required=True)
     finish_result.add_argument("--result-commit")
     finish_result.add_argument("--fallback-agent")
+    finish.add_argument("--reason")
+    finish.add_argument("--timed-out", action="store_true")
     approve = commands.add_parser("approve-result")
     approve.add_argument("--task", required=True)
     approve.add_argument("--commit", required=True)
+    late = commands.add_parser("late-result")
+    late.add_argument("--task", required=True)
+    late.add_argument("--commit", required=True)
     release = commands.add_parser("release")
     release.add_argument("id")
     mark_sent = commands.add_parser("mark-sent")
@@ -186,7 +191,7 @@ def main() -> int:
     mark_uncertain.add_argument("--url")
     complete = commands.add_parser("complete")
     complete.add_argument("id")
-    complete.add_argument("--actual-tier", choices=TIERS, required=True)
+    complete.add_argument("--actual-tier", required=True)
     complete.add_argument("--url")
     complete.add_argument("--seconds", type=int)
     complete.add_argument("--switched", action="store_true")
@@ -200,6 +205,9 @@ def main() -> int:
     limit_hit = commands.add_parser("limit-hit")
     limit_hit.add_argument("id")
     limit_hit.add_argument("--reset-at")
+    block = commands.add_parser("block-tier")
+    block.add_argument("--reason", choices=("visible_limit", "visible_downgrade"), required=True)
+    block.add_argument("--reset-at")
     reset = commands.add_parser("reset-tier")
     reset.add_argument("--tier", choices=TIERS, required=True)
     reset.add_argument("--observed-at", required=True)
@@ -211,7 +219,7 @@ def main() -> int:
         with locked_state() as data:
             instant = now()
             if args.action == "status":
-                print(json.dumps({"path": str(STATE), "gpt_6_pro_enabled": data["gpt_6_pro_enabled"], "active_web_task": data.get("active_web_task"), "cooldown": data.get("cooldown"), "reconciled_at": data.get("reconciliation", {}).get("at") if data.get("reconciliation") else None, "tiers": {t: {"cap_per_local_day": CAPS[t], "used_or_reserved_today": count_day(data, t, instant), "used_or_reserved_this_calendar_week": count_week(data, t, instant), "available": available(data, t, instant)[0], "reason": available(data, t, instant)[1], "blocked": data["blocked"].get(t)} for t in TIERS}}, ensure_ascii=False, indent=2))
+                print(json.dumps({"path": str(STATE), "gpt_6_pro_enabled": data["gpt_6_pro_enabled"], "active_web_task": data.get("active_web_task"), "cooldown": data.get("cooldown"), "reconciled_at": data.get("reconciliation", {}).get("at") if data.get("reconciliation") else None, "one_shot_results": data.get("one_shot_results", []), "tiers": {t: {"cap_per_local_day": CAPS[t], "used_or_reserved_today": count_day(data, t, instant), "available": available(data, t, instant)[0], "reason": available(data, t, instant)[1], "blocked": data["blocked"].get(t)} for t in TIERS}}, ensure_ascii=False, indent=2))
             elif args.action == "sync-task-ids":
                 print(f"durable task ID journal synchronized: {sync_task_ids(data, instant)} added")
             elif args.action == "reconcile":
@@ -222,6 +230,8 @@ def main() -> int:
                 print("baseline starts now; prior and manual use unknown; future sends use this shared ledger")
             elif args.action == "reserve":
                 sync_task_ids(data, instant)
+                if not args.economics.strip():
+                    raise ValueError("economic reason must be recorded")
                 ok, reason = available(data, args.tier, instant)
                 if not ok:
                     raise ValueError(reason)
@@ -229,7 +239,7 @@ def main() -> int:
                     raise ValueError("task ID already used; never send it again")
                 identifier = str(uuid.uuid4())
                 retire_task_id(args.task, instant)
-                data["reservations"][identifier] = {"tier": args.tier, "task": args.task, "seat": args.seat, "at": instant.isoformat()}
+                data["reservations"][identifier] = {"tier": args.tier, "task": args.task, "seat": args.seat, "original_seat": args.original_seat, "economics": args.economics, "at": instant.isoformat()}
                 data.setdefault("used_task_ids", []).append(args.task)
                 data["active_web_task"] = {"task": args.task, "reservation_id": identifier, "at": instant.isoformat()}
                 print(identifier)
@@ -271,9 +281,19 @@ def main() -> int:
                     raise ValueError("result already approved")
                 if not any(r.get("task") == args.task and r.get("sent_at") for r in data["reservations"].values()) and not any(e.get("task") == args.task and e.get("sent_at") for e in data["events"]):
                     raise ValueError("cannot approve a task without a recorded Send")
+                if any(e.get("task") == args.task and (e.get("switched") or e.get("outcome") == "limit_no_reply") for e in data["events"]):
+                    raise ValueError("downgraded or limited task cannot be approved as GPT-6 Pro")
                 active["approved_result_commit"] = args.commit
                 active["approved_at"] = instant.isoformat()
                 print("GitHub result approved by Controller; close tab after model inspection")
+            elif args.action == "late-result":
+                if len(args.commit) != 40 or any(c not in "0123456789abcdefABCDEF" for c in args.commit):
+                    raise ValueError("result commit must be a full Git SHA")
+                expired = [f for f in data.get("finished_web_tasks", []) if f["task"] == args.task and f.get("timed_out")]
+                if len(expired) != 1 or any(e.get("task") == args.task for e in data.get("late_results", [])):
+                    raise ValueError("only one late result may be recorded for an expired task")
+                data.setdefault("late_results", []).append({"task": args.task, "commit": args.commit, "at": instant.isoformat(), "accepted": False})
+                print("late result recorded; never accept or merge")
             elif args.action == "finish-task":
                 active = data.get("active_web_task")
                 if not active or active["task"] != args.task:
@@ -282,9 +302,22 @@ def main() -> int:
                     raise ValueError("result commit must be a full Git SHA")
                 if args.result_commit and active.get("approved_result_commit") != args.result_commit:
                     raise ValueError("Controller must approve the exact GitHub result before finishing")
-                if args.fallback_agent and not any(e.get("task") == args.task and e.get("outcome") == "limit_no_reply" for e in data["events"]):
-                    raise ValueError("fallback finish requires a recorded no-reply limit outcome")
-                data.setdefault("finished_web_tasks", []).append({**active, "finished_at": instant.isoformat(), "result_commit": args.result_commit, "fallback_agent": args.fallback_agent})
+                if args.fallback_agent and not args.reason:
+                    raise ValueError("Codex fallback requires a reason")
+                if args.timed_out and not args.fallback_agent:
+                    raise ValueError("timeout must hand off to Codex")
+                if args.result_commit and args.fallback_agent:
+                    raise ValueError("one-shot success and fallback are mutually exclusive")
+                if args.fallback_agent:
+                    held = [(key, value) for key, value in data["reservations"].items() if value.get("task") == args.task]
+                    if held:
+                        key, reservation = held[0]
+                        if not reservation.get("sent_at") and not reservation.get("uncertain_at"):
+                            raise ValueError("unsent reservation must be cleared by Luna and released")
+                        data["events"].append({**reservation, "id": key, "completed_at": instant.isoformat(), "actual_tier": None, "outcome": "sent_without_accepted_result" if reservation.get("sent_at") else "uncertain_submission"})
+                        del data["reservations"][key]
+                data.setdefault("finished_web_tasks", []).append({**active, "finished_at": instant.isoformat(), "result_commit": args.result_commit, "fallback_agent": args.fallback_agent, "reason": args.reason, "timed_out": args.timed_out, "one_shot_success": bool(args.result_commit)})
+                data.setdefault("one_shot_results", []).append({"task": args.task, "success": bool(args.result_commit), "at": instant.isoformat(), "reason": args.reason})
                 data["active_web_task"] = None
                 print("task finished; close its ChatGPT tab before another dispatch")
             elif args.action == "release":
@@ -356,6 +389,11 @@ def main() -> int:
                 data["events"].append({**reservation, "id": args.id, "actual_tier": None, "completed_at": instant.isoformat(), "outcome": "limit_no_reply"})
                 data["blocked"][reservation["tier"]] = {"at": instant.isoformat(), "reset_at": args.reset_at}
                 print("limit without reply recorded; requested tier blocked")
+            elif args.action == "block-tier":
+                if args.reset_at:
+                    parse_time(args.reset_at)
+                data["blocked"]["gpt-6-pro"] = {"at": instant.isoformat(), "reset_at": args.reset_at, "reason": args.reason}
+                print("GPT-6 Pro blocked after visible limit or downgrade")
             elif args.action == "reset-tier":
                 parse_time(args.observed_at)
                 data["resets"][args.tier] = args.observed_at

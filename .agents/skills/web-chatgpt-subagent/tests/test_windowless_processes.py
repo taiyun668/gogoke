@@ -49,7 +49,7 @@ class WindowlessProcessTests(unittest.TestCase):
     def test_github_watcher_starts_without_console_window(self):
         code = self.run_hidden(
             str(SCRIPTS / "watch_github_result.py"),
-            "--task", "WINDOW-TEST", "--tier", "medium", "--repo", "example/example", "--branch", "gpt/example",
+            "--task", "WINDOW-TEST", "--tier", "gpt-6-pro", "--repo", "example/example", "--branch", "gpt/example",
             "--path", "result.md", "--base-sha", "a" * 40,
             "--thread", "00000000-0000-0000-0000-000000000000", "--max-hours", "0",
         )
@@ -59,21 +59,21 @@ class WindowlessProcessTests(unittest.TestCase):
         ended = json.loads((self.root / "watch-WINDOW-TEST.json").read_text(encoding="utf-8"))
         self.assertEqual(ended["status"], "watch_deadline_exceeded")
 
-    def test_watcher_interval_depends_on_tier_and_elapsed_time(self):
+    def test_watcher_uses_slow_pro_interval(self):
         spec = importlib.util.spec_from_file_location("watch_github_result", SCRIPTS / "watch_github_result.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        self.assertEqual(module.poll_seconds("medium", 0), 30)
-        self.assertEqual(module.poll_seconds("high", 1201), 120)
-        self.assertEqual(module.poll_seconds("extra-high", 0), 90)
-        self.assertEqual(module.poll_seconds("gpt-5.6-sol-pro", 1201), 300)
+        self.assertEqual(module.poll_seconds("gpt-6-pro", 0), 90)
+        self.assertEqual(module.poll_seconds("gpt-6-pro", 1201), 300)
+        with self.assertRaises(ValueError):
+            module.poll_seconds("medium", 0)
 
     def test_powershell_ledger_wrapper_propagates_failure_and_has_no_console(self):
         pwsh = shutil.which("pwsh")
         self.assertIsNotNone(pwsh)
         wrapper = SCRIPTS / "Invoke-LedgerHidden.ps1"
         denied = subprocess.run(
-            [pwsh, "-NoProfile", "-File", str(wrapper), "reserve", "--tier", "medium", "--task", "before-reconcile", "--seat", "test"],
+            [pwsh, "-NoProfile", "-File", str(wrapper), "reserve", "--tier", "gpt-6-pro", "--task", "before-reconcile", "--seat", "test", "--original-seat", "astra", "--economics", "test"],
             env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self.assertNotEqual(denied.returncode, 0)
@@ -92,7 +92,7 @@ class WindowlessProcessTests(unittest.TestCase):
         self.assertIsNotNone(pwsh)
         wrapper = SCRIPTS / "Start-WatcherHidden.ps1"
         started = subprocess.run(
-            [pwsh, "-NoProfile", "-File", str(wrapper), "-Task", "WINDOW-PS", "-Tier", "medium", "-Repo", "example/example", "-Branch", "gpt/example", "-Path", "result.md", "-BaseSha", "a" * 40, "-Thread", "00000000-0000-0000-0000-000000000000", "-MaxHours", "0"],
+            [pwsh, "-NoProfile", "-File", str(wrapper), "-Task", "WINDOW-PS", "-Tier", "gpt-6-pro", "-Repo", "example/example", "-Branch", "gpt/example", "-Path", "result.md", "-BaseSha", "a" * 40, "-Thread", "00000000-0000-0000-0000-000000000000", "-MaxHours", "0"],
             env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self.assertEqual(started.returncode, 0, started.stderr)
