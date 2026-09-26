@@ -317,7 +317,34 @@ try {
         }
         throw "NSIS install exceeded 300-second bound; diagnostic retained target: $script:targetRoot"
     }
-    if ($install.ExitCode -ne 0) { throw "NSIS install failed with exit code $($install.ExitCode); retain target: $script:targetRoot" }
+    if ($install.ExitCode -ne 0) {
+        $script:result.installerExitCodeWithinBound = $install.ExitCode
+        $generations = Join-Path $script:targetRoot 'gogoke-service/generations'
+        if (Test-Path -LiteralPath $generations -PathType Container) {
+            try {
+                $generationEntries = @(Get-ChildItem -LiteralPath $generations -Force)
+                $script:result.generationEntriesAfterExit = @(
+                    $generationEntries | Select-Object -First 8 Name, PSIsContainer
+                )
+                foreach ($entry in $generationEntries) {
+                    if ($entry.PSIsContainer -and $entry.Name.StartsWith('.stage-', [StringComparison]::Ordinal)) {
+                        $stageTree = Get-PhysicalTree $entry.FullName
+                        $script:result.generationStageFilesAfterExit = $stageTree.Files.Count
+                        $script:result.generationExpectedFiles = @($index.files).Count
+                        $script:result.firstMissingGenerationFile = @(
+                            $index.files | Where-Object {
+                                -not (Test-Path -LiteralPath (Join-Path $entry.FullName $_.path) -PathType Leaf)
+                            } | Select-Object -First 1 -ExpandProperty path
+                        ) | Select-Object -First 1
+                        break
+                    }
+                }
+            } catch {
+                $script:result.generationInventoryError = [string]$_.Exception.Message
+            }
+        }
+        throw "NSIS install failed with exit code $($install.ExitCode); retain target: $script:targetRoot"
+    }
     Assert-RegistryRegistration
     $uninstaller = Join-Path $script:targetRoot 'uninstall.exe'
     if (Test-Path -LiteralPath $uninstaller) { throw 'Candidate install unexpectedly created uninstall.exe' }
