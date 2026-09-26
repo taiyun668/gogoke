@@ -38,11 +38,11 @@ fn failed_production_prepared_record_does_not_activate_child() {
             },
             launch,
         };
-        let first = super::session::prepare_recorded_process(
+        let first = crate::store::session::prepare_recorded_process(
             &mut product.connection, &mut product.process_custodian,
             "same-operation", &request,
         ).expect("first prepared row committed");
-        assert!(super::session::prepare_recorded_process(
+        assert!(crate::store::session::prepare_recorded_process(
             &mut product.connection, &mut product.process_custodian,
             "same-operation", &request,
         ).is_err(), "second coordination write must fail on the unique operation");
