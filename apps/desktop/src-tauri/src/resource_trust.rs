@@ -1083,8 +1083,16 @@ fn verify_generation(
     generation_root: &Path,
     expected: &HashMap<String, ByteRecord>,
 ) -> Result<(), String> {
+    verify_generation_in_lease(generation_root, expected, &mut RuntimeLease::default())
+}
+
+fn verify_generation_in_lease(
+    generation_root: &Path,
+    expected: &HashMap<String, ByteRecord>,
+    lease: &mut RuntimeLease,
+) -> Result<(), String> {
     for (path, record) in expected {
-        file_sha256(&generation_root.join(path), record)?;
+        lease.pin_file(&generation_root.join(path), record, false)?;
     }
     let mut actual = HashSet::new();
     collect_files(generation_root, "", &mut actual)?;
@@ -1387,7 +1395,7 @@ fn publish_generation_from_pack(
     let mut directories = RuntimeLease::default();
     directories.directories.insert(temporary.clone(), stage_handle);
     extract_generation(pack_path, &temporary, expected, &mut directories)?;
-    verify_generation(&temporary, expected)?;
+    verify_generation_in_lease(&temporary, expected, &mut directories)?;
     let stage_handle = directories.directories.remove(&temporary)
         .ok_or("GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED")?;
     drop(directories); // Nested directory handles must close before parent rename.
@@ -1781,6 +1789,51 @@ mod tests {
     use std::process::Command;
 
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn held_stage_verifies_and_publishes_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-stage-verify-test-{}", uuid::Uuid::new_v4().simple()
+        ));
+        let stage = root.join("stage");
+        let published = root.join("published");
+        fs::create_dir_all(stage.join("dist")).expect("owned stage directory");
+        fs::write(stage.join("dist/bin.mjs"), b"signed service").expect("owned stage leaf");
+        let expected = HashMap::from([(
+            "dist/bin.mjs".to_string(),
+            ByteRecord {
+                length: 14,
+                sha256: sha256(b"signed service"),
+            },
+        )]);
+        let mut lease = RuntimeLease::default();
+        lease.directories.insert(
+            stage.clone(),
+            open_owned_stage_directory(&stage).expect("hold exact stage object"),
+        );
+        verify_generation_in_lease(&stage, &expected, &mut lease)
+            .expect("verify through the retained stage handle");
+        let stage_handle = lease.directories.remove(&stage).expect("retained stage handle");
+        drop(lease);
+        rename_owned_stage_no_replace(&stage_handle, &published)
+            .expect("publish verified stage without replacement");
+        assert_eq!(
+            fs::read(published.join("dist/bin.mjs")).expect("read published bytes"),
+            b"signed service"
+        );
+        drop(stage_handle);
+        let resolved_root = root.canonicalize().expect("owned fixture root");
+        let resolved_temp = std::env::temp_dir().canonicalize().expect("test temp root");
+        assert!(
+            resolved_root.starts_with(&resolved_temp)
+                && root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("gogoke-stage-verify-test-")),
+            "recursive cleanup must stay inside the owned test fixture"
+        );
+        fs::remove_dir_all(&root).expect("remove owned test fixture");
+    }
 
     #[test]
     fn stage_leaf_and_set_publication_never_replace_existing_objects() {
