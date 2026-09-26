@@ -29,3 +29,13 @@ These cards test the route without touching R2-06a, main, release, signing, or s
 - Owner of the route: Codex Controller.
 - Exercise: set a trial deadline already in the past before any web send, then apply the skill's timeout path. The expected result is a local record saying `web_not_sent`, reason `deadline_expired`, and an actual Codex subagent handoff. This is a negative control; do not charge a web message or claim a web trial completed.
 - If a real web send later produces a wrong model, record the actual tier, block the requested tier, and return the task to Codex. Do not deliberately consume messages to force a provider quota switch.
+
+## WCS-04 — GitHub Actions connector readability
+
+- Role: read-only GitHub Actions evidence checker.
+- Repository: `taiyun668/gogoke`.
+- Run: `36208879407`, workflow `web ChatGPT subagent skill`, from PR #48's first CI run.
+- Read: run summary and its `ledger` job log via the GitHub connector. Do not infer log access from a green badge.
+- Write: only branch `gpt/web-chatgpt-wcs04-actions`, file `docs/trials/web-chatgpt-subagent/WCS-04-RESULT.md`.
+- Result: exact run/job IDs, conclusion, number of executed tests, and whether individual log lines were actually accessible. If logs cannot be read, say so without inventing a count. Include the source commit SHA and one result commit.
+- Stop: after one result commit, or immediately on connector permission failure. Do not change any other file.
