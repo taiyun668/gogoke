@@ -330,6 +330,9 @@ jobs:
           $node = (Resolve-Path -LiteralPath "$service/runtime/node.exe").Path
           if ((Get-AuthenticodeSignature -LiteralPath $node).Status -ne 'Valid') { throw 'Staged Node runtime is not Authenticode-valid' }
           "GOGOKE_CONTROLLED_NODE_PATH=$node" >> $env:GITHUB_ENV
+          $holder = (Get-Command powershell.exe -ErrorAction Stop).Source
+          if ((Get-AuthenticodeSignature -LiteralPath $holder).Status -ne 'Valid') { throw 'Controlled file-holding child is not Authenticode-valid' }
+          "GOGOKE_CONTROLLED_HOLD_CHILD_PATH=$holder" >> $env:GITHUB_ENV
       - name: Build native host for exact staged Node
         shell: pwsh
         run: |
@@ -355,6 +358,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "staged resources failed byte check: $LASTEXITCODE" }
       - name: Test native release and resource trust paths
         shell: pwsh
+        env:
+          GOGOKE_BUILD_LANE: ${{ matrix.lane }}
         run: |
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
@@ -367,6 +372,13 @@ jobs:
           }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
+      - name: Upload one-shot task deletion receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-job-custody-delete-${{ matrix.lane }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gogoke-job-custody-delete-${{ matrix.lane }}.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Build unsigned shell and NSIS installer
         shell: pwsh
         run: |

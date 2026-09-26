@@ -1046,33 +1046,43 @@ mod tests {
         let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
             .expect("cloud test requires the staged signed Node runtime"));
         assert!(node.is_file(), "controlled Node must be the staged cloud executable");
+        let holder = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_HOLD_CHILD_PATH")
+            .expect("cloud test requires the signed file-holding child"));
+        assert!(holder.is_file(), "controlled child must be a cloud executable");
         let root = std::env::temp_dir().join(format!(
             "gogoke-product-job-test-{}", uuid::Uuid::new_v4().simple()
         ));
         let service = root.join("service");
         let dist = service.join("dist");
         fs::create_dir_all(&dist).expect("owned test service directory");
+        let task_dir = root.join("task");
+        fs::create_dir(&task_dir).expect("owned task directory");
+        let held_file = task_dir.join("held.bin");
+        fs::write(&held_file, b"task bytes held by child").expect("owned task file");
         let marker = root.join("processes.txt");
         let child_ready = root.join("child-ready.txt");
         let release = root.join("release.txt");
         let entry = dist.join("bin.mjs");
         let marker_literal = serde_json::to_string(&marker.to_string_lossy().to_string())
             .expect("test marker path literal");
-        let ready_literal = serde_json::to_string(&child_ready.to_string_lossy().to_string())
-            .expect("child ready path literal");
         let release_literal = serde_json::to_string(&release.to_string_lossy().to_string())
             .expect("release path literal");
         let nonce = uuid::Uuid::new_v4().simple().to_string();
         let nonce_literal = serde_json::to_string(&nonce).expect("test nonce literal");
+        let ps_quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "''"));
         let child_script = format!(
-            "require('node:fs').writeFileSync({ready_literal}, {nonce_literal} + ' ' + process.pid);\n\
-             setInterval(()=>{{}},1000);\n"
+            "$stream = [IO.FileStream]::new({}, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read);\n\
+             [IO.File]::WriteAllText({}, '{}' + ' ' + $PID);\n\
+             while ($true) {{ Start-Sleep -Seconds 1 }}\n",
+            ps_quote(&held_file), ps_quote(&child_ready), nonce
         );
         let child_literal = serde_json::to_string(&child_script).expect("child script literal");
+        let holder_literal = serde_json::to_string(&holder.to_string_lossy().to_string())
+            .expect("controlled holder path literal");
         fs::write(&entry, format!(
             "import {{ spawn }} from 'node:child_process';\n\
              import {{ writeFileSync, existsSync }} from 'node:fs';\n\
-             const child = spawn(process.execPath, ['-e', {child_literal}], {{ stdio: 'ignore' }});\n\
+             const child = spawn({holder_literal}, ['-NoProfile', '-NonInteractive', '-Command', {child_literal}], {{ stdio: 'ignore', windowsHide: true }});\n\
              writeFileSync({marker_literal}, String(process.pid) + ' ' + String(child.pid) + ' ' + {nonce_literal});\n\
              child.unref();\n\
              const hold = setInterval(() => {{ if (existsSync({release_literal})) {{ clearInterval(hold); process.exit(0); }} }}, 25);\n"
@@ -1126,8 +1136,16 @@ mod tests {
         let child_wait_before = unsafe { WaitForSingleObject(child.as_raw_handle() as _, 0) };
         let lease_held_before = weak.upgrade().is_some();
         let gate_held_before = PRODUCT_RUNTIME_GATE.try_lock().is_err();
+        let held_open_probe = fs::OpenOptions::new().write(true).open(&held_file);
+        let held_open_denied = held_open_probe.as_ref().err()
+            .and_then(std::io::Error::raw_os_error) == Some(32);
+        drop(held_open_probe);
         fs::write(&release, b"release").expect("release owned root barrier");
         owner.join().expect("process owner settles after cancelling reply");
+        // These are the two acceptance operations. Each is attempted exactly
+        // once, immediately after owner settlement, with no retry or sleep.
+        let file_delete = fs::remove_file(&held_file);
+        let dir_delete = fs::remove_dir(&task_dir);
         let root_wait_after = unsafe { WaitForSingleObject(root_handle.as_raw_handle() as _, 0) };
         let child_wait_after = unsafe { WaitForSingleObject(child.as_raw_handle() as _, 0) };
         let lease_released_after = weak.upgrade().is_none();
@@ -1136,7 +1154,10 @@ mod tests {
             unsafe { TerminateProcess(child.as_raw_handle() as _, 1) };
             let _ = unsafe { WaitForSingleObject(child.as_raw_handle() as _, 5000) };
         }
-        eprintln!("JOB_CUSTODY_EVIDENCE root_in={root_in_job} child_in={child_in_job} active_before={active_before_release} root_before={root_wait_before} child_before={child_wait_before} root_after={root_wait_after} child_after={child_wait_after} lease_before={lease_held_before} gate_before={gate_held_before} lease_after={lease_released_after} gate_after={gate_released_after}");
+        eprintln!("JOB_CUSTODY_EVIDENCE root_in={root_in_job} child_in={child_in_job} active_before={active_before_release} root_before={root_wait_before} child_before={child_wait_before} root_after={root_wait_after} child_after={child_wait_after} held_open_denied={held_open_denied} file_delete={file_delete:?} dir_delete={dir_delete:?} lease_before={lease_held_before} gate_before={gate_held_before} lease_after={lease_released_after} gate_after={gate_released_after}");
+        if file_delete.is_err() || dir_delete.is_err() {
+            panic!("task file/directory one-shot delete failed after owner settlement; retained owned fixture: {}", root.display());
+        }
         drop(child);
         drop(root_handle);
         fs::remove_file(&marker).expect("remove owned PID marker");
@@ -1152,9 +1173,33 @@ mod tests {
         assert!(active_before_release >= 2, "Job must contain active root and child");
         assert_eq!(root_wait_before, WAIT_TIMEOUT);
         assert_eq!(child_wait_before, WAIT_TIMEOUT);
+        assert!(held_open_denied, "child file holder must deny mutation before release");
         assert!(lease_held_before && gate_held_before, "cancelled caller cannot release custody while Job active");
         assert_eq!(root_wait_after, WAIT_OBJECT_0, "owned root handle must signal before settlement");
         assert!(lease_released_after && gate_released_after, "owner releases custody after settlement");
+        let lane = std::env::var("GOGOKE_BUILD_LANE").expect("cloud build lane");
+        assert!(lane == "frozen" || lane == "repro", "controlled build lane");
+        let receipt = serde_json::json!({
+            "schema": "gogoke.r2-06a.job-custody-delete.v1",
+            "sourceCommit": std::env::var("GITHUB_SHA").expect("exact cloud source SHA"),
+            "runId": std::env::var("GITHUB_RUN_ID").expect("exact cloud run ID"),
+            "runAttempt": std::env::var("GITHUB_RUN_ATTEMPT").expect("exact cloud run attempt"),
+            "lane": lane.clone(),
+            "state": "PASS",
+            "rootInExactJob": true,
+            "childInExactJob": true,
+            "childHeldTaskFileBeforeSettlement": true,
+            "oneShotFileDeleteAfterOwner": true,
+            "oneShotDirectoryDeleteAfterOwner": true,
+            "rootHandleSignaledAtOwnerReturn": true,
+            "childHandleWaitAtOwnerReturn": child_wait_after,
+            "leaseHeldWhileJobActive": true,
+            "gateHeldWhileJobActive": true,
+        });
+        let receipt_path = PathBuf::from(std::env::var_os("RUNNER_TEMP").expect("cloud runner temp"))
+            .join(format!("gogoke-job-custody-delete-{lane}.json"));
+        fs::write(receipt_path, serde_json::to_vec_pretty(&receipt).expect("receipt JSON"))
+            .expect("write cloud custody receipt");
     }
 
     #[test]
