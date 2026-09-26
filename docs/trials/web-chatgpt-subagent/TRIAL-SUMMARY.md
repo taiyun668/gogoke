@@ -139,3 +139,9 @@ Controller token accounting below uses the session's per-response `last_token_us
 | Dispatch and confirmed Send | 26 | 1,843,799 | 1,809,920 | 3,514 |
 | Patrol and active-turn waiting | 23 | 2,053,003 | 2,041,472 | 3,394 |
 | Result/CI verification plus wakeup-method repair | 32 | 3,922,136 | 3,868,416 | 14,141 |
+
+## WCS-27 Controller polling trial: in progress
+
+The next real task is an independent, fixed-commit Windows root-identity and lock-boundary audit. It was screened as otherwise Astra-class, self-contained, non-local, non-urgent, and GitHub-verifiable; the economic reason and original seat were recorded in the private reservation. `WCS-27.json` passed the public-source scanner's positive control and per-file check **before commit** (`leaks=0`), then was pinned at `codex/web-chatgpt-subagent-channel@440f81c551c7048c179109fb1d8630b2fffb7f7d`. Its result branch did not exist before dispatch, and main was `138c4c0547ac39996c8033011dce92d0b3891158`.
+
+Controller opened the only foreground IAB ChatGPT tab at a blank new chat, observed the resolved `6 Pro` composer label, staged the complete single starter, then pressed Return once. The URL changed to a conversation content page and a new WCS-27 user turn appeared with `Pro 思考中`. The real ledger recorded Send at **2026-09-26 07:38:30.771587Z**. No watcher, `codex queue`, notification hook, or background GitHub process was launched. While the web task runs, the Controller continues PR checks and trial documentation, checking the page and assigned branch at natural pauses about every five minutes. The result, CI, main recheck, served reply model, and final one-shot outcome remain pending verification.
