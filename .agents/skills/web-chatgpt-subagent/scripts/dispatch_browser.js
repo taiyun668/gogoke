@@ -33,8 +33,21 @@
     } else {
       await tab.playwright.locator("#prompt-textarea").waitFor({ state: "visible", timeoutMs: 15000 });
       ax = await fullAX();
-      if (!/radio button 聊天, Value: 1/.test(ax) || /chatgpt\.com\/g\//.test(ax)) throw new Error("not a fresh saved Chat conversation outside Projects");
-      const pill = indexOf(ax, /^\s*(\d+) pop up button \(collapsed\) (?:5\.6\s*)?(?:中|高|极高|Pro), ID: radix-/m, "model pill");
+      const freshURL = await tab.url();
+      if (!/^https:\/\/chatgpt\.com\/?(?:\?.*)?$/.test(freshURL || "") || await tab.playwright.locator('[data-message-author-role="user"], [data-message-author-role="assistant"]').count() !== 0) {
+        throw new Error("not an empty new Chat conversation outside Projects");
+      }
+      const composer = indexOf(ax, /^\s*(\d+) text entry area \(settable\) (?:Description: )?与 ChatGPT 聊天(?:, ID: prompt-textarea)?/m, "composer");
+      await tab.paste(composer, cfg.starter, { format: "text" });
+      ax = await fullAX();
+      const staged = await tab.playwright.locator("#prompt-textarea").innerText();
+      if (staged.trim() !== cfg.starter.trim()) throw new Error("staged prompt differs from committed task routing fields");
+      const pillPattern = /^\s*(\d+) pop up button \(collapsed\) (?:5\.6\s*)?(?:中|高|极高|Pro), ID: radix-/m;
+      if (!pillPattern.test(ax)) {
+        const controls = ax.split("\n").filter((line) => /pop up button|模型|能力|5\.6|发送提示词/.test(line)).slice(0, 12).join(" | ");
+        throw new Error(`model pill unavailable after staged prompt; controls: ${controls}`);
+      }
+      const pill = indexOf(ax, pillPattern, "model pill");
       await tab.pressKey(pill, "Return");
       ax = await fullAX();
       const modelSelector = indexOf(ax, /^\s*(\d+) \(collapsed\) Description: 选择模型/m, "model selector");
@@ -66,11 +79,6 @@
       if (ax.includes("6 Pro") && !ax.includes("5.6 Pro")) throw new Error("GPT-6 Pro selected; dispatch forbidden");
       const selected = new RegExp(`pop up button \\(collapsed\\) ${labels[cfg.tier].text.replace(".", "\\.")}, ID: radix-`);
       if (!selected.test(ax)) throw new Error(`selected composer tier differs from ${labels[cfg.tier].text}`);
-      const composer = indexOf(ax, /^\s*(\d+) text entry area \(settable\) Description: 与 ChatGPT 聊天, ID: prompt-textarea/m, "composer");
-      await tab.paste(composer, cfg.starter, { format: "text" });
-      ax = await fullAX();
-      const staged = await tab.playwright.locator("#prompt-textarea").innerText();
-      if (staged.trim() !== cfg.starter.trim()) throw new Error("staged prompt differs from committed task routing fields");
       const justBeforeSend = await cua.getState({ emit: false });
       const currentIab = justBeforeSend.browsers.find((b) => b.type === "iab");
       const currentChatTabs = currentIab.tabs.filter((t) => /^https:\/\/chatgpt\.com(?:\/|$)/.test(t.url || ""));
