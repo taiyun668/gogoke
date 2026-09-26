@@ -821,10 +821,8 @@ gogoke_publish_read:
   ${EndIf}
   Goto gogoke_publish_read
 gogoke_publish_done:
-  System::Call 'kernel32::FlushFileBuffers(p $GogokePublishTargetHandle) i .r0'
-  ${If} $0 == 0
-    Goto gogoke_publish_failed
-  ${EndIf}
+  ; CREATE_NEW and the retained parent handles protect the final namespace.
+  ; Close each completed leaf without a synchronous flush for every dependency.
   Call GogokeReleasePublishState
   Return
 gogoke_publish_failed:
