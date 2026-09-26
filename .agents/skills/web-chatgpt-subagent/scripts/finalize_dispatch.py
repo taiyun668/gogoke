@@ -78,9 +78,9 @@ def main() -> int:
             output["owner_notification_required"] = True
         if status == "limit_no_reply":
             output["codex_fallback_required"] = True
-        print(json.dumps(output, ensure_ascii=False))
+        print(json.dumps(output, ensure_ascii=True))
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-        print(json.dumps({"task": args.task, "status": "finalize_failed", "reason": str(error)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"task": args.task, "status": "finalize_failed", "reason": str(error)}, ensure_ascii=True), file=sys.stderr)
         return 2
     return 0
 

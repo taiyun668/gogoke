@@ -102,9 +102,9 @@ def main() -> int:
         except OSError:
             command(sys.executable, str(LEDGER), "release", reservation)
             raise
-        print(json.dumps({"task": args.task, "tier": args.tier, "reservation_id": reservation, "browser_code": script}, ensure_ascii=False))
+        print(json.dumps({"task": args.task, "tier": args.tier, "reservation_id": reservation, "browser_code": script, "status": "prepared"}, ensure_ascii=True))
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-        print(json.dumps({"task": args.task, "status": "prepare_failed", "reason": str(error)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"task": args.task, "status": "prepare_failed", "reason": str(error)}, ensure_ascii=True), file=sys.stderr)
         return 2
     return 0
 
