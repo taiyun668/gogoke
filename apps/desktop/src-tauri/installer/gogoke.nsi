@@ -629,7 +629,7 @@ Function GogokeTraceCloudStage
     ReadEnvStr $GogokeTracePath "GOGOKE_NSIS_TRACE_PATH"
     ${If} $GogokeTracePath != ""
       ClearErrors
-      FileOpen $GogokeTraceHandle "$GogokeTracePath" a
+      FileOpen $GogokeTraceHandle "$GogokeTracePath" w
       ${IfNot} ${Errors}
         FileWrite $GogokeTraceHandle "$GogokeTraceStage$\r$\n"
         FileClose $GogokeTraceHandle
@@ -796,8 +796,13 @@ Function GogokePublishFile
   StrCpy $GogokePublishSourceHandle ""
   StrCpy $GogokePublishTargetHandle ""
   StrCpy $GogokePublishBuffer ""
+  StrCpy $GogokeTraceStage "publish-source-open"
+  Call GogokeTraceCloudStage
   System::Call 'kernel32::CreateFileW(w "$GogokePublishSource", i 0x80000000, i 1, p 0, i 3, i 0x00200080, p 0) p .r0'
   ${If} $0 == -1
+    System::Call 'kernel32::GetLastError() i .r1'
+    StrCpy $GogokeTraceStage "publish-source-open-failed:$1"
+    Call GogokeTraceCloudStage
     Goto gogoke_publish_failed
   ${EndIf}
   StrCpy $GogokePublishSourceHandle $0
@@ -815,11 +820,18 @@ Function GogokePublishFile
   ${If} $0 != 0
     Goto gogoke_publish_failed
   ${EndIf}
+  StrCpy $GogokeTraceStage "publish-target-create"
+  Call GogokeTraceCloudStage
   System::Call 'kernel32::CreateFileW(w "$GogokePublishTarget", i 0x40000000, i 0, p 0, i 1, i 0x00200080, p 0) p .r0'
   ${If} $0 == -1
+    System::Call 'kernel32::GetLastError() i .r1'
+    StrCpy $GogokeTraceStage "publish-target-create-failed:$1"
+    Call GogokeTraceCloudStage
     Goto gogoke_publish_failed
   ${EndIf}
   StrCpy $GogokePublishTargetHandle $0
+  StrCpy $GogokeTraceStage "publish-copy"
+  Call GogokeTraceCloudStage
 gogoke_publish_read:
   System::Call 'kernel32::ReadFile(p $GogokePublishSourceHandle, p $GogokePublishBuffer, i 65536, *i .r0, p 0) i .r1'
   ${If} $1 == 0
@@ -835,6 +847,8 @@ gogoke_publish_read:
   ${EndIf}
   Goto gogoke_publish_read
 gogoke_publish_done:
+  StrCpy $GogokeTraceStage "publish-flush"
+  Call GogokeTraceCloudStage
   System::Call 'kernel32::FlushFileBuffers(p $GogokePublishTargetHandle) i .r0'
   ${If} $0 == 0
     Goto gogoke_publish_failed
