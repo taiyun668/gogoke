@@ -9,11 +9,12 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use windows_sys::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MoveFileExW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, MOVEFILE_REPLACE_EXISTING,
+    MOVEFILE_WRITE_THROUGH,
 };
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 use zip::{CompressionMethod, ZipArchive};
@@ -111,11 +112,89 @@ pub(crate) struct VerifiedResources {
     pub(crate) install_root: PathBuf,
     pub(crate) native_host_path: PathBuf,
     pub(crate) node_runtime_path: PathBuf,
-    native_host: ByteRecord,
-    node: ByteRecord,
     executables: Executables,
     files: Arc<HashMap<String, ByteRecord>>,
     installed_files: Arc<HashMap<String, ByteRecord>>,
+    runtime_lease: Arc<RuntimeLease>,
+}
+
+/// Physical path custody for bytes used by a running resource generation.
+/// Directory handles prevent an ancestor being replaced with a junction after
+/// verification; leaf handles deny write/delete sharing until the last lease
+/// holder drops them. Paths remain useful to Node, which needs path arguments.
+#[derive(Default)]
+pub(crate) struct RuntimeLease {
+    directories: HashMap<PathBuf, fs::File>,
+    files: HashMap<PathBuf, (fs::File, ByteRecord)>,
+}
+
+impl RuntimeLease {
+    fn pin_ancestors(&mut self, path: &Path) -> Result<(), String> {
+        if !path.is_absolute() {
+            return Err("GOGOKE_RESOURCE_PATH_UNSAFE".to_string());
+        }
+        let parent = path.parent().ok_or("GOGOKE_RESOURCE_PATH_UNSAFE")?;
+        for ancestor in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            if self.directories.contains_key(ancestor) {
+                continue;
+            }
+            let directory = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+                .open(ancestor)
+                .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string())?;
+            let metadata = directory
+                .metadata()
+                .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string())?;
+            if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
+                return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
+            }
+            self.directories.insert(ancestor.to_path_buf(), directory);
+        }
+        Ok(())
+    }
+
+    fn pin_file(
+        &mut self,
+        path: &Path,
+        expected: &ByteRecord,
+        retain_bytes: bool,
+    ) -> Result<Vec<u8>, String> {
+        self.pin_ancestors(path)?;
+        if let Some((file, prior)) = self.files.get(path) {
+            if prior != expected {
+                return Err("GOGOKE_RESOURCE_FILE_IDENTITY_MISMATCH".to_string());
+            }
+            return read_verified_open_file(file, expected, retain_bytes);
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|_| "GOGOKE_RESOURCE_FILE_UNREADABLE".to_string())?;
+        let metadata = file
+            .metadata()
+            .map_err(|_| "GOGOKE_RESOURCE_FILE_UNREADABLE".to_string())?;
+        if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0 {
+            return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
+        }
+        if metadata.len() != expected.length {
+            return Err("GOGOKE_RESOURCE_FILE_IDENTITY_MISMATCH".to_string());
+        }
+        let bytes = read_verified_open_file(&file, expected, retain_bytes)?;
+        self.files
+            .insert(path.to_path_buf(), (file, expected.clone()));
+        Ok(bytes)
+    }
+
+    fn reverify(&self) -> Result<(), String> {
+        for (file, expected) in self.files.values() {
+            read_verified_open_file(file, expected, false)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -226,28 +305,14 @@ fn read_verified_file(
     expected: &ByteRecord,
     retain_bytes: bool,
 ) -> Result<Vec<u8>, String> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|_| "GOGOKE_RESOURCE_FILE_MISSING".to_string())?;
-    if !metadata.is_file()
-        || metadata.file_attributes() & REPARSE_POINT != 0
-        || metadata.len() != expected.length
-    {
-        return Err("GOGOKE_RESOURCE_FILE_IDENTITY_MISMATCH".to_string());
-    }
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(OPEN_REPARSE_POINT)
-        .open(path)
-        .map_err(|_| "GOGOKE_RESOURCE_FILE_UNREADABLE".to_string())?;
-    if file
-        .metadata()
-        .map_err(|_| "GOGOKE_RESOURCE_FILE_UNREADABLE".to_string())?
-        .file_attributes()
-        & REPARSE_POINT
-        != 0
-    {
-        return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
-    }
+    RuntimeLease::default().pin_file(path, expected, retain_bytes)
+}
+
+fn read_verified_open_file(
+    file: &fs::File,
+    expected: &ByteRecord,
+    retain_bytes: bool,
+) -> Result<Vec<u8>, String> {
     let mut digest = Sha256::new();
     let mut count = 0u64;
     let mut buffer = [0u8; 64 * 1024];
@@ -258,7 +323,7 @@ fn read_verified_file(
     };
     loop {
         let size = file
-            .read(&mut buffer)
+            .seek_read(&mut buffer, count)
             .map_err(|_| "GOGOKE_RESOURCE_FILE_UNREADABLE".to_string())?;
         if size == 0 {
             break;
@@ -898,6 +963,45 @@ fn verify_generation(
     Ok(())
 }
 
+fn build_runtime_lease(
+    install_root: &Path,
+    generation_root: &Path,
+    native_host_path: &Path,
+    node_runtime_path: &Path,
+    native_host: &ByteRecord,
+    node: &ByteRecord,
+    installed_files: &HashMap<String, ByteRecord>,
+    generation_files: &HashMap<String, ByteRecord>,
+) -> Result<Arc<RuntimeLease>, String> {
+    let mut lease = RuntimeLease::default();
+    lease.pin_file(native_host_path, native_host, false)?;
+    lease.pin_file(node_runtime_path, node, false)?;
+    for (path, record) in installed_files {
+        lease.pin_file(&install_root.join(path), record, false)?;
+    }
+    if !generation_files.contains_key("dist/bin.mjs") {
+        return Err("GOGOKE_RESOURCE_ENTRY_MISSING".to_string());
+    }
+    for (path, record) in generation_files
+        .iter()
+        .filter(|(path, _)| path.starts_with("dist/"))
+    {
+        lease.pin_file(&generation_root.join(path), record, false)?;
+    }
+    // This check runs while the generation ancestor is held, so the directory
+    // enumerated here is the one whose listed service bytes were just opened.
+    let mut actual = HashSet::new();
+    collect_files(generation_root, "", &mut actual)?;
+    if actual.len() != generation_files.len()
+        || actual
+            .iter()
+            .any(|path| !generation_files.contains_key(path))
+    {
+        return Err("GOGOKE_RESOURCE_GENERATION_EXTRA_FILE".to_string());
+    }
+    Ok(Arc::new(lease))
+}
+
 pub(crate) fn verify_bootstrap() -> Result<VerifiedResources, String> {
     let executable =
         std::env::current_exe().map_err(|_| "GOGOKE_EXE_PATH_UNAVAILABLE".to_string())?;
@@ -935,6 +1039,16 @@ pub(crate) fn verify_bootstrap() -> Result<VerifiedResources, String> {
     verify_generation(&generation_root, &expected)?;
     let static_files = installed_files(&index)?;
     verify_installed_files(root, &static_files)?;
+    let runtime_lease = build_runtime_lease(
+        root,
+        &generation_root,
+        &native_host_path,
+        &node_runtime_path,
+        &index.executables.native_host,
+        &index.executables.node,
+        &static_files,
+        &expected,
+    )?;
     Ok(VerifiedResources {
         domain,
         version: index.version,
@@ -946,11 +1060,10 @@ pub(crate) fn verify_bootstrap() -> Result<VerifiedResources, String> {
         install_root: root.to_path_buf(),
         native_host_path,
         node_runtime_path,
-        native_host: index.executables.native_host.clone(),
-        node: index.executables.node.clone(),
         executables: index.executables,
         files: Arc::new(expected),
         installed_files: Arc::new(static_files),
+        runtime_lease,
     })
 }
 
@@ -1248,6 +1361,16 @@ pub(crate) fn stage_resource_update(
             .map_err(|_| "GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED")?;
     }
     verify_generation(&generation_root, &expected)?;
+    let runtime_lease = build_runtime_lease(
+        &current.install_root,
+        &generation_root,
+        &current.native_host_path,
+        &current.node_runtime_path,
+        &index.executables.native_host,
+        &index.executables.node,
+        &static_files,
+        &expected,
+    )?;
     // A normally named signed set must never point at an absent generation.
     stage_signed_set(source, &current.install_root, &signed)?;
     Ok(VerifiedResources {
@@ -1261,15 +1384,18 @@ pub(crate) fn stage_resource_update(
         install_root: current.install_root.clone(),
         native_host_path: current.native_host_path.clone(),
         node_runtime_path: current.node_runtime_path.clone(),
-        native_host: index.executables.native_host.clone(),
-        node: index.executables.node.clone(),
         executables: index.executables.clone(),
         files: Arc::new(expected),
         installed_files: Arc::new(static_files),
+        runtime_lease,
     })
 }
 
 impl VerifiedResources {
+    pub(crate) fn runtime_lease(&self) -> Arc<RuntimeLease> {
+        Arc::clone(&self.runtime_lease)
+    }
+
     pub(crate) fn registered_instance(&self) -> Result<String, String> {
         let exe = std::env::current_exe().map_err(|_| "GOGOKE_EXE_PATH_UNAVAILABLE")?;
         let installed = self.install_root.join("gogoke.exe");
@@ -1440,20 +1566,7 @@ impl VerifiedResources {
     }
 
     pub(crate) fn verify_runtime_files(&self) -> Result<(), String> {
-        file_sha256(&self.native_host_path, &self.native_host)?;
-        file_sha256(&self.node_runtime_path, &self.node)?;
-        let root = self
-            .service_root
-            .parent()
-            .ok_or("GOGOKE_INSTALL_ROOT_UNAVAILABLE")?;
-        verify_installed_files(root, &self.installed_files)?;
-        if !self.files.contains_key("dist/bin.mjs") {
-            return Err("GOGOKE_RESOURCE_ENTRY_MISSING".to_string());
-        }
-        for (path, record) in self.files.iter().filter(|(path, _)| path.starts_with("dist/")) {
-            file_sha256(&self.generation_root.join(path), record)?;
-        }
-        Ok(())
+        self.runtime_lease.reverify()
     }
 
     pub(crate) fn read_frontend(&self, request_path: &str) -> Result<Vec<u8>, String> {
@@ -1493,8 +1606,72 @@ pub(crate) fn content_type(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn runtime_lease_rejects_junction_and_holds_leaf_and_ancestor_until_drop() {
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-resource-lease-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let physical = root.join("physical");
+        let outside = root.join("outside");
+        fs::create_dir_all(&physical).expect("physical test directory");
+        fs::create_dir_all(&outside).expect("outside test directory");
+        let leaf = physical.join("bin.mjs");
+        fs::write(&leaf, b"signed service").expect("test service bytes");
+        fs::write(outside.join("bin.mjs"), b"other service").expect("outside bytes");
+        let record = ByteRecord {
+            length: 14,
+            sha256: sha256(b"signed service"),
+        };
+
+        let junction = root.join("junction");
+        let status = Command::new("cmd")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .status()
+            .expect("junction command");
+        assert!(status.success(), "junction fixture must be real");
+        let mut rejected = RuntimeLease::default();
+        assert_eq!(
+            rejected.pin_file(&junction.join("bin.mjs"), &record, false),
+            Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string())
+        );
+        drop(rejected);
+        assert!(read_verified_file(&junction.join("bin.mjs"), &record, true).is_err());
+
+        let mut lease = RuntimeLease::default();
+        lease
+            .pin_file(&leaf, &record, false)
+            .expect("verified lease");
+        let lease = Arc::new(lease);
+        let retained = Arc::clone(&lease);
+        assert!(fs::write(&leaf, b"mutated service").is_err());
+        assert!(fs::rename(&physical, root.join("swapped")).is_err());
+        lease.reverify().expect("open leaf remains verified");
+        drop(lease);
+        assert!(fs::write(&leaf, b"mutated service").is_err());
+        drop(retained);
+        fs::write(&leaf, b"mutated service").expect("drop releases leaf");
+        fs::rename(&physical, root.join("swapped")).expect("drop releases ancestor");
+        assert!(read_verified_file(&root.join("swapped/bin.mjs"), &record, false).is_err());
+        fs::remove_dir(&junction).expect("remove owned junction");
+        let resolved_root = root.canonicalize().expect("owned fixture root");
+        let resolved_temp = std::env::temp_dir().canonicalize().expect("test temp root");
+        assert!(
+            resolved_root.starts_with(&resolved_temp)
+                && root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("gogoke-resource-lease-test-")),
+            "recursive cleanup must stay inside the owned test fixture"
+        );
+        fs::remove_dir_all(&root).expect("remove owned fixture");
+    }
 
     #[test]
     fn frontend_request_decodes_one_url_layer_and_rejects_ambiguous_paths() {
@@ -1551,8 +1728,6 @@ mod tests {
                 install_root: root.clone(),
                 native_host_path: root.join("native-host.exe"),
                 node_runtime_path: root.join("node.exe"),
-                native_host: executable.clone(),
-                node: executable.clone(),
                 executables: Executables {
                     portable_shell: executable.clone(),
                     installed_shell: executable.clone(),
@@ -1561,6 +1736,7 @@ mod tests {
                 },
                 files: Arc::new(HashMap::from([("frontend/index.html".to_string(), record)])),
                 installed_files: Arc::new(HashMap::new()),
+                runtime_lease: Arc::new(RuntimeLease::default()),
             }
         };
         let old = resources(&old_id, b"old generation");

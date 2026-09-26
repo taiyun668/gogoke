@@ -75,6 +75,9 @@ Var GogokeVersion
 Var GogokeReceiptDomain
 Var GogokeInstallInstanceId
 Var GogokeLifecycleLockHandle
+Var GogokeInstallParent
+Var GogokePinnedDirectoryList
+Var GogokeAllowDirectoryCreation
 Var GogokeShortcutKind
 Var GogokeShortcutFolder
 Var GogokeShortcutMode
@@ -309,7 +312,30 @@ install_domain_selected:
 FunctionEnd
 
 Function AcquireGogokeLifecycleLock
+  ; Pin the full physical ancestor chain before preflight or path-based writes.
+  ; NSIS GetFullPathName rejects a not-yet-created target; the Win32 call
+  ; performs lexical normalization without requiring the target to exist.
+  System::Call 'kernel32::GetFullPathNameW(w "$INSTDIR", i ${NSIS_MAX_STRLEN}, w .r0, p 0) i .r1'
+  ${If} $1 == 0
+  ${OrIf} $1 >= ${NSIS_MAX_STRLEN}
+    Abort "The Gogoke installation path is invalid."
+  ${EndIf}
+  StrCpy $INSTDIR $0
+  ${GetRoot} "$INSTDIR" $1
+  ${If} $1 == ""
+  ${OrIf} $INSTDIR == $1
+  ${OrIf} $INSTDIR == "$1\"
+    Abort "The Gogoke installation root cannot be a volume root."
+  ${EndIf}
   ${GetParent} "$INSTDIR" $0
+  ${If} $0 == $1
+    StrCpy $0 "$1\"
+  ${EndIf}
+  StrCpy $GogokeInstallParent $0
+  StrCpy $GogokeAllowDirectoryCreation 0
+  Push "$0"
+  Call GogokePinDirectory
+  Pop $9
   ${GetOptions} $CMDLINE "/GOGOKE_LOCK_HANDLE=" $1
   ${IfNot} ${Errors}
     ; The update coordinator passes one inherited duplicate of its already
@@ -326,9 +352,9 @@ Function AcquireGogokeLifecycleLock
     ${OrIf} $3 >= ${NSIS_MAX_STRLEN}
       Abort "The Gogoke update lifecycle handle has no bounded path."
     ${EndIf}
-    ; Open and pin the physical parent before comparing the handle's final
-    ; path. A reparse parent or lock file never authorizes target mutation.
-    System::Call 'kernel32::CreateFileW(w "$0", i 0x80, i 1, p 0, i 3, i 0x02200000, p 0) p .r4'
+    ; Reopen only the already-pinned parent to derive its physical path. The
+    ; coordinator's exclusive inherited lock cannot itself be reopened.
+    System::Call 'kernel32::CreateFileW(w "$0", i 0x80, i 3, p 0, i 3, i 0x02200000, p 0) p .r4'
     ${If} $4 == -1
       Abort "The Gogoke installation parent cannot be pinned."
     ${EndIf}
@@ -351,6 +377,10 @@ Function AcquireGogokeLifecycleLock
     ${EndIf}
     System::Alloc 8
     Pop $5
+    ${If} $5 == 0
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke lifecycle file cannot be inspected."
+    ${EndIf}
     System::Call 'kernel32::GetFileInformationByHandleEx(p $4, i 9, p $5, i 8) i .r6'
     ${If} $6 == 0
       System::Free $5
@@ -371,21 +401,180 @@ Function AcquireGogokeLifecycleLock
       Abort "The Gogoke lifecycle file identity is unavailable."
     ${EndIf}
     System::Call '*$5(i .r6, i .r7)'
-    IntOp $6 $6 & 0x400
+    IntOp $6 $6 & 0x410
     System::Free $5
     ${If} $6 != 0
       System::Call 'kernel32::CloseHandle(p $4)'
-      Abort "The Gogoke lifecycle file is a reparse point."
+      Abort "The Gogoke lifecycle handle is not a plain file."
+    ${EndIf}
+    ; The named leaf must also be plain. The exclusive inherited file cannot
+    ; be removed after this check because it denied delete sharing.
+    System::Call 'kernel32::GetFileAttributesW(w "$GogokeInstallParent\gogoke-install-lifecycle.lock") i .r6'
+    IntOp $7 $6 & 0x410
+    ${If} $6 == -1
+    ${OrIf} $7 != 0
+      System::Call 'kernel32::CloseHandle(p $4)'
+      Abort "The Gogoke lifecycle path is not a plain file."
     ${EndIf}
     System::Call 'kernel32::CloseHandle(p $4)'
     StrCpy $GogokeLifecycleLockHandle $1
-    Return
+    Goto gogoke_lock_acquired
   ${EndIf}
-  System::Call 'kernel32::CreateFileW(w "$0\gogoke-install-lifecycle.lock", i 0xC0000000, i 0, p 0, i 4, i 0x80, p 0) p .r0'
+  ; Ordinary acquisition binds custody to the no-follow opened leaf.
+  System::Call 'kernel32::CreateFileW(w "$0\gogoke-install-lifecycle.lock", i 0xC0000000, i 0, p 0, i 4, i 0x00200080, p 0) p .r0'
   ${If} $0 == -1
     Abort "Another Gogoke install, update, or uninstall operation holds the lifecycle lock."
   ${EndIf}
   StrCpy $GogokeLifecycleLockHandle $0
+  System::Alloc 8
+  Pop $5
+  ${If} $5 == 0
+    Abort "The Gogoke lifecycle file cannot be inspected."
+  ${EndIf}
+  System::Call 'kernel32::GetFileInformationByHandleEx(p $GogokeLifecycleLockHandle, i 9, p $5, i 8) i .r6'
+  ${If} $6 == 0
+    System::Free $5
+    Abort "The Gogoke lifecycle file identity is unavailable."
+  ${EndIf}
+  System::Call '*$5(i .r6, i .r7)'
+  System::Free $5
+  IntOp $6 $6 & 0x410
+  ${If} $6 != 0
+    Abort "The Gogoke lifecycle file is not a plain file."
+  ${EndIf}
+  System::Call 'kernel32::CreateFileW(w "$GogokeInstallParent", i 0x80, i 3, p 0, i 3, i 0x02200000, p 0) p .r4'
+  ${If} $4 == -1
+    Abort "The Gogoke installation parent cannot be opened."
+  ${EndIf}
+  System::Call 'kernel32::GetFinalPathNameByHandleW(p $4, w .r5, i ${NSIS_MAX_STRLEN}, i 0) i .r6'
+  System::Call 'kernel32::CloseHandle(p $4)'
+  ${If} $6 == 0
+  ${OrIf} $6 >= ${NSIS_MAX_STRLEN}
+    Abort "The Gogoke installation parent has no bounded path."
+  ${EndIf}
+  StrCpy $6 $5 1 -1
+  ${If} $6 == "\"
+    StrCpy $5 "$5gogoke-install-lifecycle.lock"
+  ${Else}
+    StrCpy $5 "$5\gogoke-install-lifecycle.lock"
+  ${EndIf}
+  System::Call 'kernel32::GetFinalPathNameByHandleW(p $GogokeLifecycleLockHandle, w .r2, i ${NSIS_MAX_STRLEN}, i 0) i .r3'
+  ${If} $3 == 0
+  ${OrIf} $3 >= ${NSIS_MAX_STRLEN}
+    Abort "The Gogoke lifecycle file has no bounded path."
+  ${EndIf}
+  System::Call 'kernel32::lstrcmpiW(w "$2", w "$5") i .r6'
+  ${If} $6 != 0
+    Abort "The Gogoke lifecycle file points outside this installation."
+  ${EndIf}
+gogoke_lock_acquired:
+  StrCpy $GogokeAllowDirectoryCreation 1
+  Push "$INSTDIR"
+  Call GogokePinDirectory
+  Pop $9
+FunctionEnd
+
+Function GogokePinDirectory
+  Exch $9
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  ; The bundle can contain many files under the same output directory. Keep
+  ; one handle per path rather than one handle per template expansion.
+  StrCpy $2 $GogokePinnedDirectoryList
+gogoke_find_pinned_directory:
+  ${If} $2 == ""
+    Goto gogoke_pin_new_directory
+  ${EndIf}
+  IntOp $3 ${NSIS_PTR_SIZE} * 2
+  IntOp $3 $3 + $2
+  System::Call 'kernel32::lstrcmpiW(w "$9", p $3) i .r4'
+  ${If} $4 == 0
+    Goto gogoke_pin_done
+  ${EndIf}
+  System::Call '*$2(p .r3, p .r2)'
+  Goto gogoke_find_pinned_directory
+gogoke_pin_new_directory:
+  ; Walk from the volume root down. A missing component is created before
+  ; its no-follow handle is inspected and kept without delete sharing.
+  ${GetRoot} "$9" $0
+  ${If} $0 == ""
+    Abort "A Gogoke installation path has no volume root."
+  ${EndIf}
+  StrCpy $1 "$0\"
+  ${If} $9 != $0
+  ${AndIf} $9 != $1
+    ${GetParent} "$9" $2
+    ${If} $2 == $0
+      StrCpy $2 $1
+    ${EndIf}
+    Push "$2"
+    Call GogokePinDirectory
+    Pop $2
+  ${EndIf}
+  ${If} $GogokeAllowDirectoryCreation == 1
+    System::Call 'kernel32::CreateDirectoryW(w "$9", p 0) i .r0'
+  ${EndIf}
+  System::Call 'kernel32::CreateFileW(w "$9", i 0x80, i 3, p 0, i 3, i 0x02200000, p 0) p .r1'
+  ${If} $1 == -1
+    Abort "A Gogoke installation directory cannot be pinned."
+  ${EndIf}
+  System::Alloc 8
+  Pop $2
+  ${If} $2 == 0
+    System::Call 'kernel32::CloseHandle(p $1)'
+    Abort "A Gogoke installation directory cannot be inspected."
+  ${EndIf}
+  System::Call 'kernel32::GetFileInformationByHandleEx(p $1, i 9, p $2, i 8) i .r3'
+  ${If} $3 == 0
+    System::Free $2
+    System::Call 'kernel32::CloseHandle(p $1)'
+    Abort "A Gogoke installation directory has no file attributes."
+  ${EndIf}
+  System::Call '*$2(i .r3, i .r4)'
+  System::Free $2
+  IntOp $4 $3 & 0x410
+  ${If} $4 != 16
+    System::Call 'kernel32::CloseHandle(p $1)'
+    Abort "A Gogoke installation directory is not a plain directory."
+  ${EndIf}
+  IntOp $3 ${NSIS_MAX_STRLEN} * 2
+  IntOp $3 $3 + 2
+  IntOp $4 ${NSIS_PTR_SIZE} * 2
+  IntOp $3 $3 + $4
+  System::Alloc $3
+  Pop $2
+  ${If} $2 == 0
+    System::Call 'kernel32::CloseHandle(p $1)'
+    Abort "A Gogoke installation directory cannot be retained."
+  ${EndIf}
+  System::Call '*$2(p $1, p $GogokePinnedDirectoryList)'
+  IntOp $3 ${NSIS_PTR_SIZE} * 2
+  IntOp $3 $3 + $2
+  System::Call 'kernel32::lstrcpyW(p $3, w "$9") p'
+  StrCpy $GogokePinnedDirectoryList $2
+gogoke_pin_done:
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+  Exch $9
+FunctionEnd
+
+Function GogokeReleasePinnedDirectories
+gogoke_release_next_directory:
+  ${If} $GogokePinnedDirectoryList == ""
+    Return
+  ${EndIf}
+  System::Call '*$GogokePinnedDirectoryList(p .r0, p .r1)'
+  System::Call 'kernel32::CloseHandle(p $0)'
+  StrCpy $2 $GogokePinnedDirectoryList
+  StrCpy $GogokePinnedDirectoryList $1
+  System::Free $2
+  Goto gogoke_release_next_directory
 FunctionEnd
 
 Function ReleaseGogokeLifecycleLock
@@ -397,6 +586,7 @@ FunctionEnd
 
 Function .onGUIEnd
   Call ReleaseGogokeLifecycleLock
+  Call GogokeReleasePinnedDirectories
 FunctionEnd
 
 
@@ -524,6 +714,19 @@ Section WebView2
 SectionEnd
 
 Section Install
+  ; Tauri's resources_dirs contains the resource output parents. Pin each
+  ; distinct directory before the first bundled payload write.
+  {{#each resources_dirs}}
+    Push "$INSTDIR\{{this}}"
+    Call GogokePinDirectory
+    Pop $9
+  {{/each}}
+  {{#each binaries}}
+    ${GetParent} "$INSTDIR\{{this}}" $0
+    Push "$0"
+    Call GogokePinDirectory
+    Pop $9
+  {{/each}}
   SetOutPath $INSTDIR
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
