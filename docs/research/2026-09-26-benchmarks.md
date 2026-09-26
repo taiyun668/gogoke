@@ -64,11 +64,15 @@
 
 ---
 
-## 2a. Owner 指定可以直接拿来改的内核
+## 2a. 可以拿来拼、拿来改的内核（候选，未选定）
+
+Owner 2026-09-26：可以拿几个开源内核来拼、来改。哪个更像我们要的、更合适，要研究之后才定。已点名的候选有：
 
 - **Orca**（[stablyai/orca](https://github.com/stablyai/orca)，78.6k★，MIT）
-- **Hermes Agent**（[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)，MIT）
-- **Codex 旁聊机制**：直接照搬。
+- **Hermes Agent**（[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)，24.9 万★，MIT，Python）
+- 以及本清单里其他许可允许改的对象：Gas Town、Paperclip、claw-orchestrator、Paseo、Emdash、三省六部等。
+
+旁聊机制照搬 Codex 的侧边聊天。
 
 ## 2b. 外部整理补充的对标（2026-09-26 核实）
 
