@@ -23,4 +23,5 @@ if (-not (Test-Path -LiteralPath $receipt)) { throw 'Windowless ledger process w
 $result = Get-Content -LiteralPath $receipt -Raw -Encoding utf8 | ConvertFrom-Json
 if ($result.console_window_present) { throw 'Ledger process unexpectedly had a console window.' }
 if ($process.ExitCode -ne $result.exit_code) { throw 'Ledger exit code differs from its receipt.' }
+if ($result.exit_code -ne 0) { throw "Ledger command failed: $($result.stderr)" }
 $result | ConvertTo-Json -Compress -Depth 5

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -55,6 +57,43 @@ class WindowlessProcessTests(unittest.TestCase):
         self.assertFalse(started["console_window_present"])
         ended = json.loads((self.root / "watch-WINDOW-TEST.json").read_text(encoding="utf-8"))
         self.assertEqual(ended["status"], "watch_deadline_exceeded")
+
+    def test_powershell_ledger_wrapper_propagates_failure_and_has_no_console(self):
+        pwsh = shutil.which("pwsh")
+        self.assertIsNotNone(pwsh)
+        wrapper = SCRIPTS / "Invoke-LedgerHidden.ps1"
+        denied = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(wrapper), "reserve", "--tier", "medium", "--task", "before-reconcile", "--seat", "test"],
+            env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("Ledger command failed", denied.stderr)
+        reconciled = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(wrapper), "reconcile", "--source", "windowless-wrapper-test"],
+            env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        self.assertEqual(reconciled.returncode, 0, reconciled.stderr)
+        receipt = json.loads(reconciled.stdout)
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertFalse(receipt["console_window_present"])
+
+    def test_powershell_watcher_wrapper_starts_windowless_process(self):
+        pwsh = shutil.which("pwsh")
+        self.assertIsNotNone(pwsh)
+        wrapper = SCRIPTS / "Start-WatcherHidden.ps1"
+        started = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(wrapper), "-Task", "WINDOW-PS", "-Repo", "example/example", "-Branch", "gpt/example", "-Path", "result.md", "-BaseSha", "a" * 40, "-Thread", "00000000-0000-0000-0000-000000000000", "-MaxHours", "0"],
+            env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertEqual(json.loads(started.stdout)["console"], "pythonw")
+        receipt = self.root / "watch-WINDOW-PS-process.json"
+        for _ in range(100):
+            if receipt.is_file():
+                break
+            time.sleep(0.05)
+        self.assertTrue(receipt.is_file())
+        self.assertFalse(json.loads(receipt.read_text(encoding="utf-8"))["console_window_present"])
 
 
 if __name__ == "__main__":
