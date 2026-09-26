@@ -452,6 +452,33 @@ try {
     $script:result.readinessReceiptPath = if ($script:ownedReadyReceipt) { $script:ownedReadyReceipt } else { $null }
     $script:result.finalizerReceiptPath = $script:finalizerReceiptPath
     $script:result.productServiceEvidencePath = $script:serviceEvidencePath
+    if ($script:stage -ceq 'install-once' -and $script:targetRoot -and
+        $env:RUNNER_TEMP -and
+        [IO.Path]::GetFullPath($script:targetRoot).StartsWith(
+            [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\',
+            [StringComparison]::OrdinalIgnoreCase) -and
+        (Test-Path -LiteralPath $script:targetRoot -PathType Container)) {
+        $names = @(
+            'gogoke.exe', 'gogoke-native-host.exe', 'gogoke-resources.windows.zip',
+            'resource-index.json', 'CANDIDATE-RESOURCES.windows',
+            'CANDIDATE-RESOURCES.windows.sig', 'gogoke-install-receipt.ini',
+            'gogoke-current-resource-set', 'gogoke-service', 'gogoke-resource-sets'
+        )
+        $script:result.installFailureInventory = @($names | ForEach-Object {
+            $item = Get-Item -LiteralPath (Join-Path $script:targetRoot $_) -Force -ErrorAction SilentlyContinue
+            if ($null -eq $item) {
+                [ordered]@{ name = $_; state = 'ABSENT' }
+            } else {
+                $kind = if ($item.PSIsContainer) { 'DIRECTORY' } else { 'FILE' }
+                $entry = [ordered]@{ name = $_; state = $kind }
+                if (-not $item.PSIsContainer) {
+                    $entry.length = $item.Length
+                    $entry.sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+                $entry
+            }
+        })
+    }
     if ($env:RUNNER_TEMP -and (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) {
         $script:evidencePath = Join-Path $env:RUNNER_TEMP ("gogoke-r2-06-candidate-smoke-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.json")
         try { $script:result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:evidencePath -Encoding utf8 }
