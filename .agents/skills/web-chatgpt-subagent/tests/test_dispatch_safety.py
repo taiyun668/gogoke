@@ -60,6 +60,11 @@ class DispatchSafetyTests(unittest.TestCase):
         still_denied = self.run_ledger("reserve", "--tier", "high", "--task", "blocked", "--seat", "a")
         self.assertEqual(still_denied.returncode, 2)
         self.assertIn("manual clearance after 24 hours required", still_denied.stderr)
+        observed = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+        cleared = self.run_ledger("clear-cooldown", "--observed-at", observed, "--evidence", "safe page after simulated expiry")
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        resumed = self.run_ledger("reserve", "--tier", "high", "--task", "after-clear", "--seat", "a")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
 
     def test_security_verification_requires_owner_notification(self):
         activated = self.run_ledger("cooldown", "--reason", "security_verification")
