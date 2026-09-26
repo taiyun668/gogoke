@@ -134,9 +134,6 @@ Var GogokeSourcePackHandle
 Var GogokeSourceIndexHandle
 Var GogokeSourceManifestHandle
 Var GogokeSourceSignatureHandle
-Var GogokeTraceStage
-Var GogokeTracePath
-Var GogokeTraceHandle
 
 !if ${NSIS_PTR_SIZE} > 4
   !define GOGOKE_STARTUP_EX_SIZE 112
@@ -626,25 +623,6 @@ Function GogokeReleaseSourcePins
   ${EndIf}
 FunctionEnd
 
-Function GogokeTraceCloudStage
-  ; Bounded CI-only diagnosis. The caller selects a fresh runner-temp path;
-  ; no product authority or install decision reads this observation.
-  Push $0
-  ReadEnvStr $0 "GITHUB_ACTIONS"
-  ${If} $0 == "true"
-    ReadEnvStr $GogokeTracePath "GOGOKE_NSIS_TRACE_PATH"
-    ${If} $GogokeTracePath != ""
-      ClearErrors
-      FileOpen $GogokeTraceHandle "$GogokeTracePath" w
-      ${IfNot} ${Errors}
-        FileWrite $GogokeTraceHandle "$GogokeTraceStage$\r$\n"
-        FileClose $GogokeTraceHandle
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
-  Pop $0
-FunctionEnd
-
 Function GogokePinReadableSource
   ; Keep the exact sibling object in place from signed preflight through copy.
   ; Callers retain the returned handle until the installer closes.
@@ -802,13 +780,9 @@ Function GogokePublishFile
   StrCpy $GogokePublishSourceHandle ""
   StrCpy $GogokePublishTargetHandle ""
   StrCpy $GogokePublishBuffer ""
-  StrCpy $GogokeTraceStage "publish-source-open:$GogokePublishSource"
-  Call GogokeTraceCloudStage
   System::Call 'kernel32::CreateFileW(w "$GogokePublishSource", i 0x80000000, i 1, p 0, i 3, i 0x00200080, p 0) p .r0 ?e'
   Pop $1
   ${If} $0 == -1
-    StrCpy $GogokeTraceStage "publish-source-open-failed:$1:$GogokePublishSource"
-    Call GogokeTraceCloudStage
     Goto gogoke_publish_failed
   ${EndIf}
   StrCpy $GogokePublishSourceHandle $0
@@ -826,18 +800,12 @@ Function GogokePublishFile
   ${If} $0 != 0
     Goto gogoke_publish_failed
   ${EndIf}
-  StrCpy $GogokeTraceStage "publish-target-create:$GogokePublishTarget"
-  Call GogokeTraceCloudStage
   System::Call 'kernel32::CreateFileW(w "$GogokePublishTarget", i 0x40000000, i 0, p 0, i 1, i 0x00200080, p 0) p .r0 ?e'
   Pop $1
   ${If} $0 == -1
-    StrCpy $GogokeTraceStage "publish-target-create-failed:$1:$GogokePublishTarget"
-    Call GogokeTraceCloudStage
     Goto gogoke_publish_failed
   ${EndIf}
   StrCpy $GogokePublishTargetHandle $0
-  StrCpy $GogokeTraceStage "publish-copy"
-  Call GogokeTraceCloudStage
 gogoke_publish_read:
   System::Call 'kernel32::ReadFile(p $GogokePublishSourceHandle, p $GogokePublishBuffer, i 65536, *i .r0, p 0) i .r1'
   ${If} $1 == 0
@@ -853,8 +821,6 @@ gogoke_publish_read:
   ${EndIf}
   Goto gogoke_publish_read
 gogoke_publish_done:
-  StrCpy $GogokeTraceStage "publish-flush"
-  Call GogokeTraceCloudStage
   System::Call 'kernel32::FlushFileBuffers(p $GogokePublishTargetHandle) i .r0'
   ${If} $0 == 0
     Goto gogoke_publish_failed
@@ -884,8 +850,6 @@ FunctionEnd
 
 Section EarlyChecks
   Call AcquireGogokeLifecycleLock
-  StrCpy $GogokeTraceStage "lifecycle-locked"
-  Call GogokeTraceCloudStage
   ; Abort silent installer if downgrades is disabled
   !if "${ALLOWDOWNGRADES}" == "false"
   ${If} ${Silent}
@@ -909,18 +873,12 @@ Section SignedInstallSetPreflight
   Push "$EXEDIR"
   Call GogokePinDirectory
   Pop $9
-  StrCpy $GogokeTraceStage "source-directory-pinned"
-  Call GogokeTraceCloudStage
   StrCpy $GogokePinSourcePath "$EXEDIR\gogoke-resources.windows.zip"
   Call GogokePinReadableSource
   StrCpy $GogokeSourcePackHandle $GogokePinnedSourceHandle
-  StrCpy $GogokeTraceStage "source-pack-pinned"
-  Call GogokeTraceCloudStage
   StrCpy $GogokePinSourcePath "$EXEDIR\resource-index.json"
   Call GogokePinReadableSource
   StrCpy $GogokeSourceIndexHandle $GogokePinnedSourceHandle
-  StrCpy $GogokeTraceStage "source-index-pinned"
-  Call GogokeTraceCloudStage
   ${If} $GogokeInstallDomain == "CI_CANDIDATE_RESOURCE"
     StrCpy $GogokePinSourcePath "$EXEDIR\CANDIDATE-RESOURCES.windows"
     Call GogokePinReadableSource
@@ -932,38 +890,26 @@ Section SignedInstallSetPreflight
     StrCpy $GogokeSourceManifestHandle $GogokePinnedSourceHandle
     StrCpy $GogokePinSourcePath "$EXEDIR\SHA256SUMS.windows.sig"
   ${EndIf}
-  StrCpy $GogokeTraceStage "source-manifest-pinned"
-  Call GogokeTraceCloudStage
   Call GogokePinReadableSource
   StrCpy $GogokeSourceSignatureHandle $GogokePinnedSourceHandle
-  StrCpy $GogokeTraceStage "source-signature-pinned"
-  Call GogokeTraceCloudStage
   InitPluginsDir
   SetOutPath "$PLUGINSDIR\gogoke-preflight"
   Push "$PLUGINSDIR\gogoke-preflight"
   Call GogokePinDirectory
   Pop $9
-  StrCpy $GogokeTraceStage "preflight-scratch-pinned"
-  Call GogokeTraceCloudStage
   IfFileExists "$PLUGINSDIR\gogoke-preflight\gogoke.exe" 0 +2
     Abort "The Gogoke preflight scratch leaf already exists."
   SetOverwrite off
   ClearErrors
   File /oname=gogoke.exe "${GOGOKE_PREFLIGHT_SNAPSHOT}"
   IfErrors gogoke_preflight_extract_failed
-  StrCpy $GogokeTraceStage "preflight-shell-extracted"
-  Call GogokeTraceCloudStage
   StrCpy $GogokeVerifierPath "$PLUGINSDIR\gogoke-preflight\gogoke.exe"
   Call GogokeVerifyShellFile
   StrCpy $GogokePreflightHandle $GogokeVerifiedHandle
-  StrCpy $GogokeTraceStage "preflight-shell-hash-verified"
-  Call GogokeTraceCloudStage
   ExecWait '"$PLUGINSDIR\gogoke-preflight\gogoke.exe" "--gogoke-verify-install-set=$EXEDIR" "--gogoke-install-target=$INSTDIR"' $0
   ${If} $0 != 0
     Abort "The signed Gogoke installer sibling set could not be verified."
   ${EndIf}
-  StrCpy $GogokeTraceStage "signed-install-set-preflight-complete"
-  Call GogokeTraceCloudStage
   SetOverwrite on
   Goto gogoke_preflight_done
 gogoke_preflight_extract_failed:
@@ -973,8 +919,6 @@ SectionEnd
 !delfile "${GOGOKE_PREFLIGHT_SNAPSHOT}"
 
 Section WebView2
-  StrCpy $GogokeTraceStage "webview2-check-entered"
-  Call GogokeTraceCloudStage
   ; Check if Webview2 is already installed and skip this section
   ${If} ${RunningX64}
     ReadRegStr $4 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
@@ -985,31 +929,18 @@ Section WebView2
     ReadRegStr $4 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${EndIf}
   ${If} $4 == ""
-    StrCpy $GogokeTraceStage "webview2-runtime-absent"
-  ${Else}
-    StrCpy $GogokeTraceStage "webview2-runtime-present"
-  ${EndIf}
-  Call GogokeTraceCloudStage
-
-  ${If} $4 == ""
     ; Webview2 installation
     ;
     ; Skip if updating
     ${If} $UpdateMode <> 1
       !if "${INSTALLWEBVIEW2MODE}" == "downloadBootstrapper"
-        StrCpy $GogokeTraceStage "webview2-bootstrapper-download-start"
-        Call GogokeTraceCloudStage
         Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         DetailPrint "$(webview2Downloading)"
         NSISdl::download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         Pop $0
         ${If} $0 == "success"
-          StrCpy $GogokeTraceStage "webview2-bootstrapper-download-complete"
-          Call GogokeTraceCloudStage
           DetailPrint "$(webview2DownloadSuccess)"
         ${Else}
-          StrCpy $GogokeTraceStage "webview2-bootstrapper-download-failed"
-          Call GogokeTraceCloudStage
           DetailPrint "$(webview2DownloadError)"
           Abort "$(webview2AbortError)"
         ${EndIf}
@@ -1036,18 +967,12 @@ Section WebView2
       Goto webview2_done
 
       install_webview2:
-        StrCpy $GogokeTraceStage "webview2-install-start"
-        Call GogokeTraceCloudStage
         DetailPrint "$(installingWebview2)"
         ; $6 holds the path to the webview2 installer
         ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
         ${If} $1 = 0
-          StrCpy $GogokeTraceStage "webview2-install-complete"
-          Call GogokeTraceCloudStage
           DetailPrint "$(webview2InstallSuccess)"
         ${Else}
-          StrCpy $GogokeTraceStage "webview2-install-failed"
-          Call GogokeTraceCloudStage
           DetailPrint "$(webview2InstallError)"
           Abort "$(webview2AbortError)"
         ${EndIf}
@@ -1082,13 +1007,9 @@ Section WebView2
       ${EndIf}
     !endif
   ${EndIf}
-  StrCpy $GogokeTraceStage "webview2-section-complete"
-  Call GogokeTraceCloudStage
 SectionEnd
 
 Section Install
-  StrCpy $GogokeTraceStage "install-entered"
-  Call GogokeTraceCloudStage
   ; Tauri's resources_dirs contains the resource output parents. Pin each
   ; distinct directory before the first bundled payload write.
   {{#each resources_dirs}}
@@ -1096,26 +1017,18 @@ Section Install
     Call GogokePinDirectory
     Pop $9
   {{/each}}
-  StrCpy $GogokeTraceStage "install-resource-directories-pinned"
-  Call GogokeTraceCloudStage
   {{#each binaries}}
     ${GetParent} "$INSTDIR\\{{this}}" $0
     Push "$0"
     Call GogokePinDirectory
     Pop $9
   {{/each}}
-  StrCpy $GogokeTraceStage "install-binary-directories-pinned"
-  Call GogokeTraceCloudStage
   ; The signed bundle contains thousands of files. Extract to one pinned flat
   ; scratch directory, then publish to the already-pinned output tree. This
   ; keeps every scratch ancestor pinned without a second nested directory walk.
   Push "$PLUGINSDIR\gogoke-payload"
   Call GogokePinDirectory
   Pop $9
-  StrCpy $GogokeTraceStage "install-resource-scratch-directories-pinned"
-  Call GogokeTraceCloudStage
-  StrCpy $GogokeTraceStage "install-all-directories-pinned"
-  Call GogokeTraceCloudStage
   SetOutPath $INSTDIR
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
@@ -1123,8 +1036,6 @@ Section Install
   !endif
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-  StrCpy $GogokeTraceStage "install-app-running-check-complete"
-  Call GogokeTraceCloudStage
 
   ; Publish the exact NSS shell already verified and pinned for preflight.
   !ifdef GOGOKE_NSIS_TEST_BARRIER
@@ -1149,11 +1060,7 @@ Section Install
   !endif
   StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-preflight\gogoke.exe"
   StrCpy $GogokePublishTarget "$INSTDIR\${MAINBINARYNAME}.exe"
-  StrCpy $GogokeTraceStage "install-first-leaf-publish-start"
-  Call GogokeTraceCloudStage
   Call GogokePublishFile
-  StrCpy $GogokeTraceStage "install-first-leaf-publish-complete"
-  Call GogokeTraceCloudStage
   StrCpy $GogokeVerifierPath "$INSTDIR\${MAINBINARYNAME}.exe"
   Call GogokeVerifyShellFile
   StrCpy $GogokeInstalledShellHandle $GogokeVerifiedHandle
