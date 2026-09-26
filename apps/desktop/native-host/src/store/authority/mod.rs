@@ -90,6 +90,17 @@ pub(crate) use execution_recipe::{
     RecipeJsonString, RecipeJsonValue, CURRENTNESS_STATUS,
 };
 
+mod native_binding;
+pub(crate) use native_binding::{
+    append_runtime_instance_identity, commit_native_binding, initialize_native_binding_schema,
+    read_native_binding, read_runtime_instance_identity, AccountRefSnapshot,
+    AppendRuntimeInstanceIdentity, CommitNativeBinding, NativeBindingIdentity,
+    NativeBindingReceipt, NativeBindingVersion, RuntimeInstanceIdentityReceipt,
+    RuntimeInstanceIdentitySnapshot,
+};
+#[cfg(test)]
+mod native_binding_tests;
+
 pub(crate) use bootstrap::OwnerIssuer;
 pub(crate) use catalog::{
     delegate_owner_grant, issue_owner_grant, revise_owner_grant, revoke_owner_grant,

@@ -11,7 +11,9 @@ use super::authority::{
     DelegationGrantInput, DelegationGrantSnapshot, DurableDecisionReplay, GrantRef, GrantSpec,
     GranteeContextReadRequest, OwnerIssuer, OwnerOutcomeAppend, PrepareAuthorizedTaskPackage,
     AppendDreamProposal, AppendDreamRun, AppendEvaluation, AppendObjectiveOutcome, DreamReceipt,
-    EvaluationReceipt, ExecutionRecipeReceipt,
+    EvaluationReceipt, ExecutionRecipeReceipt, AppendRuntimeInstanceIdentity,
+    CommitNativeBinding, NativeBindingIdentity, NativeBindingReceipt, NativeBindingVersion,
+    RuntimeInstanceIdentityReceipt, RuntimeInstanceIdentitySnapshot,
     ExecutionRecipeVersion, ObjectiveOutcomeVersion,
     PromotionRequest, SessionLineageCommand, SessionLineageReceipt, SessionSnapshot,
     TaskContextRequirements, TaskContextRequirementsReceipt, TaskMaterialReceipt,
@@ -47,6 +49,7 @@ impl<'root> ProductDatabase<'root> {
         authority::initialize_authorized_task_package_schema(&mut connection)?;
         authority::initialize_session_lineage_schema(&mut connection)?;
         authority::initialize_execution_recipe_schema(&mut connection)?;
+        authority::initialize_native_binding_schema(&mut connection)?;
         // Reopen the already-persisted bootstrap identity, not a second owner or
         // grant store. initialize_profile checks the exact retained database pin.
         let owner = authority::initialize_profile(&mut connection, root)?;
@@ -424,6 +427,36 @@ impl<'root> ProductDatabase<'root> {
             recipe_id,
             revision,
         )
+    }
+
+    pub(crate) fn append_runtime_instance_identity(
+        &mut self,
+        input: &AppendRuntimeInstanceIdentity,
+    ) -> Result<RuntimeInstanceIdentityReceipt> {
+        authority::append_runtime_instance_identity(&mut self.connection, &self.owner, input)
+    }
+
+    pub(crate) fn read_runtime_instance_identity(
+        &mut self,
+        domain_id: &str,
+        instance_id: &str,
+        version: &str,
+    ) -> Result<Option<RuntimeInstanceIdentitySnapshot>> {
+        authority::read_runtime_instance_identity(&mut self.connection, &self.owner, domain_id, instance_id, version)
+    }
+
+    pub(crate) fn commit_native_binding(
+        &mut self,
+        input: &CommitNativeBinding,
+    ) -> Result<NativeBindingReceipt> {
+        authority::commit_native_binding(&mut self.connection, &self.owner, input)
+    }
+
+    pub(crate) fn read_native_binding(
+        &mut self,
+        identity: &NativeBindingIdentity,
+    ) -> Result<Option<NativeBindingVersion>> {
+        authority::read_native_binding(&mut self.connection, &self.owner, identity)
     }
 }
 
