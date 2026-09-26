@@ -360,8 +360,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
-          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_keeps_descendant_in_job --lib
-          if ($LASTEXITCODE -ne 0) { throw "product process custody test failed: $LASTEXITCODE" }
+          $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
+          $custody | Out-Host
+          if ($LASTEXITCODE -ne 0 -or -not (@($custody | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed' }).Count -eq 1)) {
+            throw "Product process custody test failed or did not execute exactly one test: $LASTEXITCODE"
+          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
       - name: Build unsigned shell and NSIS installer
