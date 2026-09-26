@@ -55,6 +55,22 @@
   - 插话失败时"打断后替换"的逻辑在 `agent-manager.ts` 的 `steerOrReplaceActiveTurn`；
   - Grok 的启动命令在 `packages/app/src/data/acp-provider-catalog.ts`。
 
+## 2b. 会话管理
+
+续接和分叉之外，会话本身怎么管：
+
+| 能力 | 我们 | Paseo |
+|---|---|---|
+| 列出已有会话 | gogoke Codex ✓ `thread/list`；seat-runtime ✗ | Codex、Claude、OpenCode ✓；ACP 家在 CLI 声明 `sessionCapabilities.list` 时 ✓ |
+| 接管在 CLI 里自己开的会话 | gogoke Codex ✓（CodexMonitor 列出本机全部 thread）；其余 ✗ | ✓ 每家都有 `importSession`（Claude 直接读 `~/.claude/projects/*.jsonl`） |
+| 读取历史 | gogoke Codex ✓ `thread/read`；seat-runtime 只有自己写的 transcript | ✓ 恢复会话时区分"继续驱动"和"只读历史"两种用途 |
+| 重启后接回原会话 | gogoke Codex ✓；seat-runtime △（写了 `state.json` 和 transcript，但没有续接，接不回原生会话） | ✓ 持久化句柄 + 各家续接 |
+| 上下文压缩信号 | gogoke Codex ✓（`thread/compact/start`、用量事件）；seat-runtime ✗ | Codex、Claude、OpenCode ✓ |
+| 回退（撤回几轮对话或文件改动） | ✗ | Claude 对话和文件都能回退；Codex 能回退对话；OpenCode 能同时回退 |
+| 跨厂商转移会话 | ✗ | ✗（这需要 CASR 这类单独的零件） |
+
+会话管理上差距更大。除了 Codex，我们在会话管理上几乎是空白；Paseo 在它原生支持的三家上是完整的。
+
 ## 3. 结论
 
 **第一个条件成立：Paseo 在五家上明显更全。**
