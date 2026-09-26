@@ -1,8 +1,10 @@
 {
   "task_id": "WCS-23",
   "tier": "gpt-6-pro",
-  "luna_action": "You are the courier, not the auditor. Read .agents/skills/web-chatgpt-subagent/SKILL.md in this repository and follow its Luna browser/ledger procedure. Do not audit repository files, create the assigned result branch, write the result file, or push a result yourself. Your only GitHub action is read-only verification of this card at its immutable commit. Use the in-app browser to send web_starter_message_template exactly once after replacing {CARD_SHA} with this card's full Git commit SHA. Return one JSON status line. If blocked, stop and return raw state. The Controller, not you, verifies the GitHub result and CI.",
+  "luna_action": "You are the courier, not the auditor. Read .agents/skills/web-chatgpt-subagent/SKILL.md in this repository and follow its Luna browser/ledger procedure. The ledger and watcher wrappers are at the exact absolute paths given below, under .agents/skills/web-chatgpt-subagent/scripts/, not repository-root scripts/. Do not audit repository files, create the assigned result branch, write the result file, or push a result yourself. Your only GitHub action is read-only verification of this card at its immutable commit. Use the in-app browser to send web_starter_message_template exactly once after replacing {CARD_SHA} with this card's full Git commit SHA. Return one JSON status line. If blocked, stop and return raw state. The Controller, not you, verifies the GitHub result and CI.",
   "skill_path": ".agents/skills/web-chatgpt-subagent/SKILL.md",
+  "ledger_wrapper_absolute_path": "C:\\Users\\Ayun\\Documents\\Codex\\2026-09-25\\web-chatgpt-subagent-channel\\work\\gogoke-web-channel\\.agents\\skills\\web-chatgpt-subagent\\scripts\\Invoke-LedgerHidden.ps1",
+  "watcher_wrapper_absolute_path": "C:\\Users\\Ayun\\Documents\\Codex\\2026-09-25\\web-chatgpt-subagent-channel\\work\\gogoke-web-channel\\.agents\\skills\\web-chatgpt-subagent\\scripts\\Start-WatcherHidden.ps1",
   "repository": "taiyun668/gogoke",
   "card_branch": "codex/web-chatgpt-subagent-channel",
   "assigned_branch": "gpt/web-chatgpt-wcs23-governance-audit",
