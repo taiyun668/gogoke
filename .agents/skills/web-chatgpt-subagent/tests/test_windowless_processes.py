@@ -95,6 +95,30 @@ class WindowlessProcessTests(unittest.TestCase):
         self.assertTrue(receipt.is_file())
         self.assertFalse(json.loads(receipt.read_text(encoding="utf-8"))["console_window_present"])
 
+    def test_waiter_wakes_on_controller_approval_without_browser_polling(self):
+        pwsh = shutil.which("pwsh")
+        self.assertIsNotNone(pwsh)
+        ledger = SCRIPTS / "ledger.py"
+        def command(*args):
+            return subprocess.run([sys.executable, str(ledger), *args], env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(command("reconcile", "--source", "waiter-test").returncode, 0)
+        held = command("reserve", "--tier", "medium", "--task", "wait-test", "--seat", "web-channel")
+        self.assertEqual(held.returncode, 0, held.stderr)
+        self.assertEqual(command("mark-sent", held.stdout.strip(), "--url", "https://chatgpt.com/c/example").returncode, 0)
+        waiter = subprocess.Popen(
+            [pwsh, "-NoProfile", "-File", str(SCRIPTS / "Wait-ControllerApproval.ps1"), "-Task", "wait-test", "-TimeoutMinutes", "1", "-PollSeconds", "1"],
+            env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            self.assertEqual(command("approve-result", "--task", "wait-test", "--commit", "a" * 40).returncode, 0)
+            stdout, stderr = waiter.communicate(timeout=10)
+            self.assertEqual(waiter.returncode, 0, stderr)
+            self.assertEqual(json.loads(stdout)["approved_result_commit"], "a" * 40)
+        finally:
+            if waiter.poll() is None:
+                waiter.kill()
+
 
 if __name__ == "__main__":
     unittest.main()

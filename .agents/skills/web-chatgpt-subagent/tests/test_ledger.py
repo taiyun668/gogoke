@@ -42,8 +42,10 @@ class LedgerTests(unittest.TestCase):
     def test_switched_reply_blocks_requested_tier(self):
         first = self.run_ledger("reserve", "--tier", "high", "--task", "t", "--seat", "trial")
         self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(self.run_ledger("mark-sent", first.stdout.strip(), "--url", "https://chatgpt.com/c/example").returncode, 0)
         saved = self.run_ledger("complete", first.stdout.strip(), "--actual-tier", "medium", "--switched")
         self.assertEqual(saved.returncode, 0, saved.stderr)
+        self.assertEqual(self.run_ledger("approve-result", "--task", "t", "--commit", "a" * 40).returncode, 0)
         finished = self.run_ledger("finish-task", "--task", "t", "--result-commit", "a" * 40)
         self.assertEqual(finished.returncode, 0, finished.stderr)
         later = self.run_ledger("reserve", "--tier", "high", "--task", "t2", "--seat", "trial")

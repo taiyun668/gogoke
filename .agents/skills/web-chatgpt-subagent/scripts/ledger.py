@@ -20,6 +20,7 @@ CAPS = dict(zip(TIERS, (25, 120, 12, 20, 30)))
 ROOT = Path(os.environ["LOCALAPPDATA"]) / "gogoke" / "web-chatgpt-subagent"
 STATE = ROOT / "state.json"
 LOCK = ROOT / "state.lock"
+TASK_IDS = ROOT / "task-ids.jsonl"
 
 
 def now() -> datetime:
@@ -35,6 +36,30 @@ def parse_time(value: str) -> datetime:
 
 def fresh_state() -> dict:
     return {"version": 1, "gpt_6_pro_enabled": False, "events": [], "reservations": {}, "used_task_ids": [], "blocked": {}, "resets": {}, "active_web_task": None, "cooldown": None, "reconciliation": None}
+
+
+def durable_task_ids() -> set[str]:
+    if not TASK_IDS.exists():
+        return set()
+    return {json.loads(line)["task"] for line in TASK_IDS.read_text(encoding="utf-8").splitlines() if line}
+
+
+def retire_task_id(task: str, instant: datetime, source: str = "reserve") -> None:
+    with TASK_IDS.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"task": task, "recorded_at": instant.isoformat(), "source": source}, ensure_ascii=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def sync_task_ids(data: dict, instant: datetime) -> int:
+    known = set(data.get("used_task_ids", []))
+    known.update(r["task"] for r in data["reservations"].values() if r.get("task"))
+    known.update(e["task"] for e in data["events"] if e.get("task"))
+    known.update(f["task"] for f in data.get("finished_web_tasks", []) if f.get("task"))
+    missing = known - durable_task_ids()
+    for task in sorted(missing):
+        retire_task_id(task, instant, "migration")
+    return len(missing)
 
 
 @contextmanager
@@ -128,6 +153,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("status")
+    commands.add_parser("sync-task-ids")
     reconcile = commands.add_parser("reconcile")
     reconcile.add_argument("--source", required=True)
     reserve = commands.add_parser("reserve")
@@ -146,6 +172,9 @@ def main() -> int:
     finish_result = finish.add_mutually_exclusive_group(required=True)
     finish_result.add_argument("--result-commit")
     finish_result.add_argument("--fallback-agent")
+    approve = commands.add_parser("approve-result")
+    approve.add_argument("--task", required=True)
+    approve.add_argument("--commit", required=True)
     release = commands.add_parser("release")
     release.add_argument("id")
     mark_sent = commands.add_parser("mark-sent")
@@ -183,6 +212,8 @@ def main() -> int:
             instant = now()
             if args.action == "status":
                 print(json.dumps({"path": str(STATE), "gpt_6_pro_enabled": data["gpt_6_pro_enabled"], "active_web_task": data.get("active_web_task"), "cooldown": data.get("cooldown"), "reconciled_at": data.get("reconciliation", {}).get("at") if data.get("reconciliation") else None, "tiers": {t: {"cap_per_local_day": CAPS[t], "used_or_reserved_today": count_day(data, t, instant), "used_or_reserved_this_calendar_week": count_week(data, t, instant), "available": available(data, t, instant)[0], "reason": available(data, t, instant)[1], "blocked": data["blocked"].get(t)} for t in TIERS}}, ensure_ascii=False, indent=2))
+            elif args.action == "sync-task-ids":
+                print(f"durable task ID journal synchronized: {sync_task_ids(data, instant)} added")
             elif args.action == "reconcile":
                 if data.get("active_web_task") or data["reservations"]:
                     raise ValueError("finish or account for pending sends before reconciliation")
@@ -190,12 +221,14 @@ def main() -> int:
                 data["reconciliation"] = {"at": instant.isoformat(), "source": args.source, "baseline": baseline, "prior_usage": "unknown", "scope": "skill_and_web_construction_seat_only"}
                 print("baseline starts now; prior and manual use unknown; future sends use this shared ledger")
             elif args.action == "reserve":
+                sync_task_ids(data, instant)
                 ok, reason = available(data, args.tier, instant)
                 if not ok:
                     raise ValueError(reason)
-                if args.task in data.get("used_task_ids", []) or any(r.get("task") == args.task for r in data["reservations"].values()) or any(e.get("task") == args.task for e in data["events"]) or any(f.get("task") == args.task for f in data.get("finished_web_tasks", [])):
+                if args.task in durable_task_ids() or args.task in data.get("used_task_ids", []) or any(r.get("task") == args.task for r in data["reservations"].values()) or any(e.get("task") == args.task for e in data["events"]) or any(f.get("task") == args.task for f in data.get("finished_web_tasks", [])):
                     raise ValueError("task ID already used; never send it again")
                 identifier = str(uuid.uuid4())
+                retire_task_id(args.task, instant)
                 data["reservations"][identifier] = {"tier": args.tier, "task": args.task, "seat": args.seat, "at": instant.isoformat()}
                 data.setdefault("used_task_ids", []).append(args.task)
                 data["active_web_task"] = {"task": args.task, "reservation_id": identifier, "at": instant.isoformat()}
@@ -228,12 +261,27 @@ def main() -> int:
                 data.setdefault("cooldown_history", []).append({**current, "cleared_at": instant.isoformat(), "evidence": args.evidence, "trial_early_clear": True})
                 data["cooldown"] = None
                 print("trial simulation cooldown cleared")
+            elif args.action == "approve-result":
+                active = data.get("active_web_task")
+                if not active or active["task"] != args.task:
+                    raise ValueError("task is not the active web task")
+                if len(args.commit) != 40 or any(c not in "0123456789abcdefABCDEF" for c in args.commit):
+                    raise ValueError("result commit must be a full Git SHA")
+                if active.get("approved_result_commit"):
+                    raise ValueError("result already approved")
+                if not any(r.get("task") == args.task and r.get("sent_at") for r in data["reservations"].values()) and not any(e.get("task") == args.task and e.get("sent_at") for e in data["events"]):
+                    raise ValueError("cannot approve a task without a recorded Send")
+                active["approved_result_commit"] = args.commit
+                active["approved_at"] = instant.isoformat()
+                print("GitHub result approved by Controller; close tab after model inspection")
             elif args.action == "finish-task":
                 active = data.get("active_web_task")
                 if not active or active["task"] != args.task:
                     raise ValueError("task is not the active web task")
                 if args.result_commit and (len(args.result_commit) != 40 or any(c not in "0123456789abcdefABCDEF" for c in args.result_commit)):
                     raise ValueError("result commit must be a full Git SHA")
+                if args.result_commit and active.get("approved_result_commit") != args.result_commit:
+                    raise ValueError("Controller must approve the exact GitHub result before finishing")
                 if args.fallback_agent and not any(e.get("task") == args.task and e.get("outcome") == "limit_no_reply" for e in data["events"]):
                     raise ValueError("fallback finish requires a recorded no-reply limit outcome")
                 data.setdefault("finished_web_tasks", []).append({**active, "finished_at": instant.isoformat(), "result_commit": args.result_commit, "fallback_agent": args.fallback_agent})
