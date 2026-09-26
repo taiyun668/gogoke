@@ -258,6 +258,49 @@ try {
             } catch {
                 $script:result.installInventoryAfterExitError = [string]$_.Exception.Message
             }
+            $generations = Join-Path $script:targetRoot 'gogoke-service/generations'
+            if (Test-Path -LiteralPath $generations -PathType Container) {
+                try {
+                    $script:result.generationEntriesAfterExit = @(
+                        Get-ChildItem -LiteralPath $generations -Force |
+                            Select-Object -First 8 Name, PSIsContainer
+                    )
+                } catch {
+                    $script:result.generationInventoryError = [string]$_.Exception.Message
+                }
+            }
+            if ($install.Process.ExitCode -ne 0) {
+                # A diagnostic replay observes the error string after the
+                # first installer process has exited. It is not first-run
+                # evidence or a successful installation retry.
+                $replay = [Diagnostics.Process]::new()
+                try {
+                    $replay.StartInfo.FileName = Join-Path $script:targetRoot 'gogoke.exe'
+                    $replay.StartInfo.UseShellExecute = $false
+                    $replay.StartInfo.CreateNoWindow = $true
+                    $replay.StartInfo.RedirectStandardError = $true
+                    [void]$replay.StartInfo.ArgumentList.Add("--gogoke-install-resources=$artifactRoot")
+                    if (-not $replay.Start()) { throw 'Installed resource diagnostic did not start' }
+                    if (-not $replay.WaitForExit(180000)) {
+                        $replay.Kill($true)
+                        if (-not $replay.WaitForExit(10000)) {
+                            throw 'Installed resource diagnostic exit is unconfirmed'
+                        }
+                        $script:result.resourceDiagnosticTimedOut = $true
+                    } else {
+                        $script:result.resourceDiagnosticExitCode = $replay.ExitCode
+                    }
+                    $diagnosticError = $replay.StandardError.ReadToEnd().Trim()
+                    if ($diagnosticError.Length -gt 512) {
+                        $diagnosticError = $diagnosticError.Substring(0, 512)
+                    }
+                    $script:result.resourceDiagnosticStderr = $diagnosticError
+                } catch {
+                    $script:result.resourceDiagnosticError = [string]$_.Exception.Message
+                } finally {
+                    $replay.Dispose()
+                }
+            }
         }
         throw "NSIS install exceeded 300-second bound; diagnostic retained target: $script:targetRoot"
     }
