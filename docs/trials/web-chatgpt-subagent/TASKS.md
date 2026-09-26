@@ -39,3 +39,14 @@ These cards test the route without touching R2-06a, main, release, signing, or s
 - Write: only branch `gpt/web-chatgpt-wcs04-actions`, file `docs/trials/web-chatgpt-subagent/WCS-04-RESULT.md`.
 - Result: exact run/job IDs, conclusion, number of executed tests, and whether individual log lines were actually accessible. If logs cannot be read, say so without inventing a count. Include the source commit SHA and one result commit.
 - Stop: after one result commit, or immediately on connector permission failure. Do not change any other file.
+
+## WCS-05 — fresh skill review on GPT-5.6 Sol Pro
+
+- Role: independent, read-only reviewer of the draft skill PR. This is trial evidence, not acceptance.
+- Repository: `taiyun668/gogoke`; PR #48.
+- Review commit: `29f7f434c7d24893edc25861f3c8de7b5f4d7193`.
+- Read: the PR diff and the requirements at `docs/directions/2026-09-26-web-chatgpt-subagent-channel.md`, root `AGENTS.md`, and existing `docs/model-routing.md`.
+- Question: find actionable defects in dispatch safety, model verification, GitHub-only handoff, private ledger semantics, and CI coverage. Distinguish implementation failures from unverified trial questions. Do not treat the web seat as a high-risk acceptance auditor.
+- Write: only branch `gpt/web-chatgpt-wcs05-skill-audit`, file `docs/trials/web-chatgpt-subagent/WCS-05-RESULT.md`.
+- Result: exact reviewed commit, file/line findings, and unverified points. One result commit required.
+- Stop: after one result commit, or immediately on connector permission failure. No code change, merge, publish, secret, or signing action.
