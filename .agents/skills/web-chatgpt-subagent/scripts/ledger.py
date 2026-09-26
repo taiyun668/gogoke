@@ -308,6 +308,8 @@ def main() -> int:
                     raise ValueError("timeout must hand off to Codex")
                 if args.result_commit and args.fallback_agent:
                     raise ValueError("one-shot success and fallback are mutually exclusive")
+                model_events = [e for e in data["events"] if e.get("task") == args.task]
+                served_model_status = ("unverified" if any(e.get("outcome") == "reply_model_unverified" for e in model_events) else "verified" if any(e.get("actual_tier") == "gpt-6-pro" for e in model_events) else "no_reply_identity")
                 if args.fallback_agent:
                     held = [(key, value) for key, value in data["reservations"].items() if value.get("task") == args.task]
                     if held:
@@ -316,8 +318,8 @@ def main() -> int:
                             raise ValueError("unsent reservation must be cleared by Luna and released")
                         data["events"].append({**reservation, "id": key, "completed_at": instant.isoformat(), "actual_tier": None, "outcome": "sent_without_accepted_result" if reservation.get("sent_at") else "uncertain_submission"})
                         del data["reservations"][key]
-                data.setdefault("finished_web_tasks", []).append({**active, "finished_at": instant.isoformat(), "result_commit": args.result_commit, "fallback_agent": args.fallback_agent, "reason": args.reason, "timed_out": args.timed_out, "one_shot_success": bool(args.result_commit)})
-                data.setdefault("one_shot_results", []).append({"task": args.task, "success": bool(args.result_commit), "at": instant.isoformat(), "reason": args.reason})
+                data.setdefault("finished_web_tasks", []).append({**active, "finished_at": instant.isoformat(), "result_commit": args.result_commit, "fallback_agent": args.fallback_agent, "reason": args.reason, "timed_out": args.timed_out, "one_shot_task_success": bool(args.result_commit), "served_model_status": served_model_status})
+                data.setdefault("one_shot_results", []).append({"task": args.task, "success": bool(args.result_commit), "served_model_status": served_model_status, "at": instant.isoformat(), "reason": args.reason})
                 data["active_web_task"] = None
                 print("task finished; close its ChatGPT tab before another dispatch")
             elif args.action == "release":

@@ -141,6 +141,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.call("finish-task", "--task", "one", "--result-commit", SHA).returncode, 0)
         state = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertTrue(state["one_shot_results"][-1]["success"])
+        self.assertEqual(state["one_shot_results"][-1]["served_model_status"], "unverified")
         self.assertEqual(state["reservations"], {})
 
 
