@@ -402,7 +402,7 @@ try {
     if ($serviceSmoke.ExitCode -ne 0 -or
         -not (Test-Path -LiteralPath $script:serviceEvidencePath -PathType Leaf)) {
         if ($serviceSmoke.StdErr) {
-            $script:result.productServiceStderr = $serviceSmoke.StdErr.Substring(0, [Math]::Min(512, $serviceSmoke.StdErr.Length))
+            $script:result.productServiceStderr = $serviceSmoke.StdErr.Substring(0, [Math]::Min(1500, $serviceSmoke.StdErr.Length))
         }
         throw "Candidate installed service smoke failed with exit code $($serviceSmoke.ExitCode); retain install"
     }

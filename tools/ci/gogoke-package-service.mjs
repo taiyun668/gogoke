@@ -463,17 +463,21 @@ function replayDeniedModule(installed, candidate) {
   try {
     const policy = path.join(replayRoot, 'policy.json');
     fs.writeFileSync(policy, policyBytes);
-    const bootstrap = `${diagnostic}\ninstallGuard(${JSON.stringify(policy)}, ${JSON.stringify(policyHash)});\n`;
+    const guard = candidate.failureCode === 78 ? diagnostic : source;
+    const bootstrap = `${guard}\ninstallGuard(${JSON.stringify(policy)}, ${JSON.stringify(policyHash)});\n`;
     const preload = `--import=data:text/javascript;base64,${Buffer.from(bootstrap).toString('base64')}`;
-    const result = spawnSync(node, [preload, entry, '--root', candidate.productRoot, '--native-host', nativeHost], {
-      cwd: generation, input: '{"operation":"readiness"}', encoding: 'utf8', timeout: 30000,
-      windowsHide: true, maxBuffer: 1024 * 1024,
-      env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-        !['NODE_OPTIONS', 'NODE_PATH'].includes(key.toUpperCase()))),
-    });
-    const stderr = String(result.stderr ?? result.error?.message ?? '')
-      .replaceAll(candidate.productRoot, '[product-root]').replaceAll(os.homedir(), '[user-home]');
-    return `status=${result.status ?? 'null'} stderr=${stderr.slice(-700)}`;
+    const invoke = (root) => {
+      const result = spawnSync(node, [preload, entry, '--root', root, '--native-host', nativeHost], {
+        cwd: generation, input: '{"operation":"readiness"}', encoding: 'utf8', timeout: 30000,
+        windowsHide: true, maxBuffer: 1024 * 1024,
+        env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+          !['NODE_OPTIONS', 'NODE_PATH'].includes(key.toUpperCase()))),
+      });
+      const stderr = String(result.stderr ?? result.error?.message ?? '')
+        .replaceAll(root, '[root]').replaceAll(os.homedir(), '[user-home]');
+      return `status=${result.status ?? 'null'} stderr=${stderr.slice(-400)}`;
+    };
+    return `sameRoot=${invoke(candidate.productRoot)} freshRoot=${invoke(path.join(replayRoot, 'fresh-root'))}`;
   } finally {
     fs.rmSync(replayRoot, { recursive: true, force: true });
   }
@@ -613,8 +617,9 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       // This diagnostic invocation is made only after bootstrap failed to
       // publish; its outcome is not accepted as bootstrap readiness.
       const directResult = await evaluate("window.__TAURI_INTERNALS__.invoke('gogoke_update_signal_ready').then(() => 'DIRECT_INVOKE_SUCCEEDED', error => String(error))");
-      const replay = candidate && /^GOGOKE_PRODUCT_SERVICE_FAILED:[0-9]+$/.test(directResult)
-        ? replayDeniedModule(installed, candidate) : 'NOT_RUN';
+      const failureCode = /^GOGOKE_PRODUCT_SERVICE_FAILED:([0-9]+)$/.exec(directResult)?.[1];
+      const replay = candidate && failureCode
+        ? replayDeniedModule(installed, { ...candidate, failureCode: Number(failureCode) }) : 'NOT_RUN';
       throw new Error(`installed product bootstrap did not publish readiness; direct IPC result: ${directResult}; module replay: ${replay}`);
     }
     if (candidate) {
