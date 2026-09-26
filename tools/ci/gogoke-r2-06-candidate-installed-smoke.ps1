@@ -100,20 +100,25 @@ function Get-PhysicalTree([string]$Root) {
     return [pscustomobject]@{ Directories = $directories; Files = $files }
 }
 
-function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMilliseconds, [bool]$Hidden) {
+function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMilliseconds, [bool]$Hidden, [bool]$CaptureError = $false) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $FilePath
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $Hidden
     $start.WindowStyle = if ($Hidden) { [Diagnostics.ProcessWindowStyle]::Hidden } else { [Diagnostics.ProcessWindowStyle]::Normal }
+    $start.RedirectStandardError = $CaptureError
     foreach ($argument in $Arguments) { [void]$start.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     if (-not $process.Start()) { throw "Process did not start: $FilePath" }
+    $errorTask = if ($CaptureError) { $process.StandardError.ReadToEndAsync() } else { $null }
     if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-        return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null }
+        return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null; ErrorTask = $errorTask }
     }
-    return [pscustomobject]@{ Process = $process; TimedOut = $false; ExitCode = $process.ExitCode }
+    return [pscustomobject]@{
+        Process = $process; TimedOut = $false; ExitCode = $process.ExitCode
+        StdErr = if ($errorTask) { $errorTask.GetAwaiter().GetResult() } else { $null }
+    }
 }
 
 function Assert-RegistryRegistration {
@@ -385,7 +390,7 @@ try {
     $serviceSmoke = Start-OneShot $nodeCommand @(
         $serviceTool, 'candidate-installed-service', $script:targetRoot,
         [string]$index.generationId, $ExpectedSourceCommit, $ExpectedVersion, $script:serviceEvidencePath
-    ) 240000 $true
+    ) 240000 $true $true
     if ($serviceSmoke.TimedOut) {
         $kill = Start-OneShot 'taskkill.exe' @('/PID', [string]$serviceSmoke.Process.Id, '/T', '/F') 15000 $true
         if ($kill.TimedOut -or $kill.ExitCode -ne 0 -or -not $serviceSmoke.Process.WaitForExit(5000)) {
@@ -395,6 +400,9 @@ try {
     }
     if ($serviceSmoke.ExitCode -ne 0 -or
         -not (Test-Path -LiteralPath $script:serviceEvidencePath -PathType Leaf)) {
+        if ($serviceSmoke.StdErr) {
+            $script:result.productServiceStderr = $serviceSmoke.StdErr.Substring(0, [Math]::Min(512, $serviceSmoke.StdErr.Length))
+        }
         throw "Candidate installed service smoke failed with exit code $($serviceSmoke.ExitCode); retain install"
     }
     $serviceEvidence = Get-Content -LiteralPath $script:serviceEvidencePath -Raw | ConvertFrom-Json
