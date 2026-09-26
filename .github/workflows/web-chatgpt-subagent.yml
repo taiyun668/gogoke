@@ -1,0 +1,28 @@
+name: web ChatGPT subagent skill
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".codex/skills/web-chatgpt-subagent/**"
+      - ".github/workflows/web-chatgpt-subagent.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate local ledger behavior
+        shell: pwsh
+        run: |
+          python -m unittest discover -s .codex/skills/web-chatgpt-subagent/tests -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
