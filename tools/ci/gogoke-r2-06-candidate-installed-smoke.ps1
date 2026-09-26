@@ -237,7 +237,30 @@ try {
     $script:result.stage = $script:stage
     $script:installInvoked = $true
     $install = Start-OneShot $setup @('/S', "/D=$script:targetRoot") 300000 $true
-    if ($install.TimedOut) { throw "NSIS install exceeded bound; retain target: $script:targetRoot" }
+    if ($install.TimedOut) {
+        # Diagnostic only: retain the original 300-second acceptance bound and
+        # observe the same installer process once more without restarting it.
+        $script:result.installExceededBound = $true
+        try {
+            $atBound = Get-PhysicalTree $script:targetRoot
+            $script:result.installedFilesAtBound = $atBound.Files.Count
+            $script:result.installedDirectoriesAtBound = $atBound.Directories.Count
+        } catch {
+            $script:result.installInventoryAtBoundError = [string]$_.Exception.Message
+        }
+        $script:result.installerExitedWithinAdditionalTenMinutes = $install.Process.WaitForExit(600000)
+        if ($script:result.installerExitedWithinAdditionalTenMinutes) {
+            $script:result.installerExitCodeAfterBound = $install.Process.ExitCode
+            try {
+                $afterBound = Get-PhysicalTree $script:targetRoot
+                $script:result.installedFilesAfterExit = $afterBound.Files.Count
+                $script:result.installedDirectoriesAfterExit = $afterBound.Directories.Count
+            } catch {
+                $script:result.installInventoryAfterExitError = [string]$_.Exception.Message
+            }
+        }
+        throw "NSIS install exceeded 300-second bound; diagnostic retained target: $script:targetRoot"
+    }
     if ($install.ExitCode -ne 0) { throw "NSIS install failed with exit code $($install.ExitCode); retain target: $script:targetRoot" }
     Assert-RegistryRegistration
     $uninstaller = Join-Path $script:targetRoot 'uninstall.exe'
