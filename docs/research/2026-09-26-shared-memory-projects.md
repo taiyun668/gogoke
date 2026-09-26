@@ -42,3 +42,31 @@
   - 事实采用 Graphiti 式的有效期加出处；
   - 秘书长的全局记忆和各项目的记忆物理上分开存放；
   - 整理由一个空闲时运行的后台任务来做，边界同上。
+
+---
+
+## 5. 补充：专门做会话汇总和转换的一类项目（2026-09-26）
+
+Owner 注意到 Codex 能把 Claude 的上下文拉过去。查下来，这一类项目分两种。
+
+### 5.1 转换：把一家的会话改写成另一家的原生格式，然后用原生续接接着跑
+
+| 项目 | 规模和许可 | 做法 |
+|---|---|---|
+| **Codex 官方的外部 agent 导入**（openai/codex 的 `codex-rs/external-agent-migration`） | Apache-2.0，Rust | 能读 **Claude Code**（`records_cla.rs`）和 **Cursor**（`records_cur.rs`）的会话记录，导入成 Codex 线程，导入后在 Codex App 或 TUI 里能接着聊。有 `append.rs`（往已有线程追加）和 `ledger.rs`（导入记录）。同一个模块还能导入配置、钩子、MCP、记忆、子 agent 设置 |
+| CASR（Dicklesworthstone/cross_agent_session_resumer） | 122★，Rust，许可证是"MIT 加附加限制" | 有一套统一的中间格式，覆盖十几家的读写器 |
+| sessport（lanternsmith/sessport） | 2★，MIT，TS | 在 Claude Code、Codex、Gemini 之间搬会话 |
+| authsec-bridge | 未核 | 从磁盘读会话，改写成目标 CLI 的格式放进它的会话目录 |
+
+### 5.2 汇总：把各家 CLI 存在本机的会话历史收进一个索引，统一检索
+
+| 项目 | 规模和许可 | 做法 |
+|---|---|---|
+| **cass**（Dicklesworthstone/coding_agent_session_search） | 1.1k★，Rust，许可证同样是"MIT 加 OpenAI/Anthropic 附加限制" | 11 家以上会话历史的统一索引和检索（TUI 加 CLI），另有社区做的 MCP 封装 |
+| **Agent Sessions**（jazzyalex/agent-sessions） | 878★，MIT，Swift（macOS） | 本地优先，浏览、检索、分析、续接各家会话历史 |
+
+### 5.3 对我们的用处
+
+- **跨厂商换实例**：设计 37 的通用做法是用账本文字重放。**转换**做得好的话，能带上工具调用这类原生回合，比文字重放损失更小，可以当作**优化**，前提是行为跟通用机制一致。其中 **Codex 官方的导入器是 Apache-2.0、用 Rust 写的，跟我们的 Rust 宿主同语言**，它解析 Claude Code 会话记录的部分最值得借。CASR 和 cass 的附加限制，跟我们公开的 MIT 仓库不兼容，只借思路。
+- **把已有会话收进席位**：汇总类项目的"各家会话记录读取器"，可以用来把 Owner 在 CLI 里自己开的会话，导入成某个席位的账本（Paseo 也有 `importSession`）。
+- **席位账本本身就是我们自己的汇总层**：区别在于，它按"作用域 × 席位"来组织，并且受权限管控；这些项目是按厂商、按会话组织的，也不做隔离。

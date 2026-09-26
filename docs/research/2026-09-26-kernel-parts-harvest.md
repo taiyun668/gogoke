@@ -50,6 +50,7 @@
 | 把账本变成参考材料，并控制长度 | **claw-orchestrator** 的 `Transcript` 和 `renderHandoff`（MIT）：保留开头的请求，从最近的回合往前填，超出上限就截断并注明省略了什么 | 直接搬 |
 | 从各家 CLI 自己存的会话文件把历史读回来（兜底） | **CASR**（Rust）的规范中间格式：会话、消息、工具调用、工具结果，每家一个读写器，覆盖 Claude、Codex、Gemini、Grok、Antigravity、OpenCode 等十几家 | **只借思路**。许可证是"MIT 加附加限制"，禁止授权给 OpenAI、Anthropic 及其关联方，不是标准 MIT，不能搬进我们的公开 MIT 仓库 |
 | 向前任会话追问 | Gas Town 的 `seance` | 借思路 |
+| 跨厂商原生转换（优化，不是通用路径） | **Codex 官方的外部 agent 导入**（`codex-rs/external-agent-migration`，Apache-2.0，Rust）：读 Claude Code 和 Cursor 的会话记录，导入成 Codex 线程 | 解析 Claude Code 会话记录的部分**可以改后搬**，跟我们的 Rust 宿主同语言 |
 
 **真正要自己写的**：
 - 账本挂在谁名下：挂在席位身份上，不挂在实例或会话上；
