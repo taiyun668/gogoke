@@ -1,0 +1,17 @@
+{
+  "task_id": "WCS-19",
+  "tier": "medium",
+  "repository": "taiyun668/gogoke",
+  "assigned_branch": "gpt/web-chatgpt-wcs19-watcher-review",
+  "base_sha": "dfd5af8d124541e743896acabafd7ce073ada135",
+  "role": "independent read-only reviewer of the revised Luna-to-GitHub return route",
+  "goal": "At the exact base SHA, review .agents/skills/web-chatgpt-subagent/SKILL.md, scripts/Start-WatcherHidden.ps1, scripts/watch_github_result.py, and tests/test_windowless_processes.py. Check whether Medium/High versus slower GPT-5.6 tiers have distinct watcher intervals, whether no-visible-window startup is supported, and whether the documented Send-once and result-verification sequence is internally consistent. Identify concrete gaps only, without editing the reviewed files or treating this as adoption.",
+  "success_criteria": "Commit one result file naming the exact reviewed SHA, with up to five file-and-line findings or an explicit no-finding result; state what was checked only statically and what runtime behavior remains unverified.",
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-19-RESULT.md",
+  "allowed_write_paths": [
+    "docs/trials/web-chatgpt-subagent/WCS-19-RESULT.md"
+  ],
+  "stop_condition": "Stop after one result commit, or immediately if the GitHub connector cannot write the assigned branch. Do not modify any other file, merge main, publish, sign, or access secrets.",
+  "clear_prior_unsent_draft": "WCS-16"
+}
+
