@@ -1,0 +1,23 @@
+{
+  "task_id": "WCS-24",
+  "tier": "gpt-6-pro",
+  "luna_action": "You are only the Luna courier. Read .agents/skills/web-chatgpt-subagent/SKILL.md and this card. Use the hidden wrappers under .agents/skills/web-chatgpt-subagent/scripts/ relative to repository root. Use cua.createBrowserTab('iab', 'https://chatgpt.com/', {visible:false}) for the one background ChatGPT tab; never visible:true. Do not audit source files, create the result branch, write the result, or push code yourself. Verify the card on its branch at the full remote commit SHA, substitute that SHA for {CARD_SHA}, select and verify the final composer label 6 Pro, and send web_starter_message_template exactly once. A pre-Send card/path error may be corrected and rechecked without asking web GPT. If stopped before Send, report raw state; if you staged text, clear and verify empty before release/close. Return one JSON status line. Controller verifies GitHub and CI.",
+  "skill_path": ".agents/skills/web-chatgpt-subagent/SKILL.md",
+  "repository": "taiyun668/gogoke",
+  "card_branch": "codex/web-chatgpt-subagent-channel",
+  "assigned_branch": "gpt/web-chatgpt-wcs24-source-scan-audit",
+  "base_sha": "afe2736f18a51585c92254a496d90deab4bddc0e",
+  "review_sha": "afe2736f18a51585c92254a496d90deab4bddc0e",
+  "original_codex_seat": "astra",
+  "economic_reason": "Independent review of the public-source scanner, test fixtures, and workflow at a fixed commit would otherwise merit an Astra security audit at roughly $4.1 median, above the measured $0.72 web overhead; it is non-local, non-urgent, self-contained, and GitHub-verifiable.",
+  "web_starter_message_template": "Task WCS-24. Repository taiyun668/gogoke. Read the full task card at branch codex/web-chatgpt-subagent-channel, immutable commit {CARD_SHA}, path docs/trials/web-chatgpt-subagent/WCS-24.json. Perform one independent security audit of fixed commit afe2736f18a51585c92254a496d90deab4bddc0e. Review tools/check-public-source.py, tools/tests/test_check_public_source.py, .github/workflows/gogoke-source-hygiene.yml, and the scanner's committed allowlist/configuration if any. Find up to five concrete cases where a real private path or credential could pass the scanner, or safe public material could be falsely blocked, with file:line evidence and a falsifying test idea. Focus on the scanner's actual parsing and the workflow that invokes it; do not perform live secret scanning beyond committed public files. If no finding, say so with static limits. Create only branch gpt/web-chatgpt-wcs24-source-scan-audit from afe2736f18a51585c92254a496d90deab4bddc0e and commit only docs/trials/web-chatgpt-subagent/WCS-24-RESULT.md. The report must name the exact reviewed commit. Do not edit reviewed files. Do not ask questions or wait for a second message. If GitHub connector read/write or needed information is blocked, put the blocker in the result file and commit if possible, then stop. Do not push or merge main, touch any other branch, publish, release, tag, sign, or access keys/secrets. Stop after one result commit. Controller will verify a real CI run with more than zero executed tests on the result commit.",
+  "allowed_read_paths": ["tools/check-public-source.py", "tools/tests/test_check_public_source.py", ".github/workflows/gogoke-source-hygiene.yml"],
+  "allowed_write_paths": ["docs/trials/web-chatgpt-subagent/WCS-24-RESULT.md"],
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-24-RESULT.md",
+  "success_criteria": "One result-file commit on the assigned branch naming the fixed review SHA, plus Controller-verified real CI with executed tests > 0.",
+  "deadline_minutes": 45,
+  "one_message_only": true,
+  "no_questions": true,
+  "permission_boundary": "Only assigned branch and result file; no main push/merge, release, tag, publication, keys, secrets, or signing.",
+  "stop_condition": "Stop after one result commit or documented GitHub connector blocker. No web follow-up after Send."
+}
