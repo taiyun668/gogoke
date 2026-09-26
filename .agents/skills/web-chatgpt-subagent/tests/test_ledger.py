@@ -144,6 +144,26 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(state["one_shot_results"][-1]["served_model_status"], "unverified")
         self.assertEqual(state["reservations"], {})
 
+    def test_sent_or_uncertain_reservation_cannot_be_released_for_resend(self):
+        self.reconcile_enable()
+        sent_id = self.reserve("sent").stdout.strip()
+        self.assertEqual(self.call("mark-sent", sent_id, "--url", "https://chatgpt.com/c/example").returncode, 0)
+        denied_sent = self.call("release", sent_id)
+        self.assertEqual(denied_sent.returncode, 2)
+        self.assertIn("sent or uncertain", denied_sent.stderr)
+        self.assertEqual(self.call("finish-task", "--task", "sent", "--fallback-agent", "codex", "--reason", "no accepted result").returncode, 0)
+        self.assertIn("task ID already used", self.reserve("sent").stderr)
+
+        uncertain_id = self.reserve("uncertain").stdout.strip()
+        self.assertEqual(self.call("mark-uncertain", uncertain_id, "--reason", "click outcome unknown").returncode, 0)
+        denied_uncertain = self.call("release", uncertain_id)
+        self.assertEqual(denied_uncertain.returncode, 2)
+        self.assertIn("sent or uncertain", denied_uncertain.stderr)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn(uncertain_id, state["reservations"])
+        self.assertEqual(state["active_web_task"]["task"], "uncertain")
+        self.assertIn("still active", self.reserve("other").stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

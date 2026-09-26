@@ -72,10 +72,32 @@ The WCS-22 Codex audit observed that the ledger approved a `reply_model_unverifi
 
 Raw browser states at the WCS-23 stop were: Luna `{"apps":[],"browsers":[{"id":"1","metadata":{"codexSessionId":"01a0dc3c-e04d-7bb3-aeeb-7bbcf5935377"},"name":"Codex In-app Browser","type":"iab","tabs":[]}]}`; Controller `{"apps":[],"browsers":[{"id":"1","metadata":{"codexSessionId":"01a0db4d-9881-7672-9c32-6ed2201d99c3"},"name":"Codex In-app Browser","type":"iab","tabs":[]}]}`. The latest Owner ambient context had one focused ChatGPT homepage tab, while both direct CUA inventories at dispatch time showed zero tabs; no claim is made that the background browser was visible to Owner. No suspicious-activity or verification page appeared because no ChatGPT tab opened.
 
-Consequently the authorized 6 Pro trial did **not** verify GitHub connector read/write, send-to-result duration, per-reply served model, memory banner, or Controller/Luna token cost for a real web task. No 6 Pro message was charged. WCS-23's distinct governance audit was handed to a Codex Astra subagent without any web retry. The public record excludes account usage counts and conversation links. A future 6 Pro send requires a **new Owner decision**, since this one-shot trial has stopped and WCS-23 cannot be reused.
+Consequently the authorized 6 Pro trial did **not** verify GitHub connector read/write, send-to-result duration, per-reply served model, memory banner, or Controller/Luna token cost for a real web task. No 6 Pro message was charged. WCS-23's distinct governance audit was handed to a Codex Astra subagent without any web retry. The public record excludes account usage counts and conversation links. The Owner clarified that the original 6 Pro trial authorization **remains valid** because WCS-22 and WCS-23 stopped before Send; a new task ID can be used for the actual trial. Pre-Send task-card/path corrections are not prohibited follow-ups.
 
 The Codex fallback's fixed-SHA findings and scope are in [WCS-23-CODEX-FALLBACK.md](WCS-23-CODEX-FALLBACK.md). It found an ambiguous Controller browser authority line and a reference to a foreground rule absent from the repository `AGENTS.md`; both are corrected in the draft skill. That fallback is separate from the web trial and is not counted as one-shot web success. Required hidden-process receipts for the WCS-23 reservation/release reported no console window, and no IAB tab opened; this does not independently prove that the Owner's desktop had no unrelated brief window, so a full no-popup live web run remains unverified.
 
 The public source hygiene run on an intermediate WCS-23 card [failed](https://github.com/taiyun668/gogoke/actions/runs/36221591334) because the card included two local user-profile paths. Those fields were removed from the current tree; Luna now resolves the wrappers from repository-relative paths at runtime. The intermediate public commit existed and remains a historical exposure even though the current tree is corrected.
 
 At corrected code/card commit `5795e59c610d0fd2796533dd8922ba120e761f93`, [Windows skill run 36221913385](https://github.com/taiyun668/gogoke/actions/runs/36221913385) passed with **13 executed tests** in the raw log, and [public source hygiene run 36221913387](https://github.com/taiyun668/gogoke/actions/runs/36221913387) passed with **zero current-tree leaks**. Both are real cloud runs on that exact SHA. The latter does not erase the intermediate commit's historical exposure. The web trial itself still has no Send or GitHub connector result, so these checks do not substitute for a successful 6 Pro run.
+
+## Script-to-manual Luna pitfall check
+
+The current skill was checked against each WCS-01–WCS-21 observation before another 6 Pro dispatch:
+
+| Trial(s) | Operational lesson | Current skill coverage |
+| --- | --- | --- |
+| 01–05 | Exact pre-Send tier; a future Retry choice does not identify the served reply model; commit and CI are the result evidence. | Composer `6 Pro` gate, read-only served-model check, GitHub/real executed-test verification. |
+| 01/02/04, 06 | Early overlapping sends; persistent security cooldown and Codex fallback. | One active ledger task and one ChatGPT tab; 24-hour manual-clear cooldown. |
+| 07 | Console encoding failure in the removed preparation script. | No preparation/browser script; hidden `pythonw` ledger receipts checked for failure and console presence. |
+| 08 | Visible IAB tab rejected in subagent thread. | Explicit background `createBrowserTab(...,{visible:false})`; never `visible:true`. |
+| 09 | New blank chat lacks the old Chat radio control. | Check actual new-chat URL and zero message turns instead. |
+| 10 | Model pill may be absent from the first accessibility snapshot. | Let page settle, reread, then verify stable pill before Send. |
+| 11–12, 14 | GitHub-card tab handoff did not preserve ChatGPT conversation; even a conversation handoff may vanish. | Mark conversation tab after Send; if gone, served model and explicit close stay unverified. |
+| 13 | Card was searched at review SHA/result branch rather than its own branch. | Read card at verified immutable commit on card branch. |
+| 15 | Hypothetical login page was mistaken for an actual login block. | Zero-tab IAB may be opened; stop only if the displayed page is sensitive. |
+| 16 | `中` did not itself prove model family. | Expand the pill, inspect nested model/strength controls, require resolved `6 Pro` label. |
+| 17, 19, 21 | Leftover drafts and premature release; one-time `prove-unsent` path removed. | Preserve unrelated draft; same Luna clears its own text and confirms empty before release/close. |
+| 18 | Subagent IAB availability differed from Controller. | Record both raw states and stop without changing task ID to evade the failure. |
+| 20 | Watcher terminal notice could fail silently. | Controller inspects one watcher receipt at deadline for candidate/error/expiry. |
+
+The removed 20-test suite also covered a sent or uncertain reservation refusing `release`; the 13-test revision lost that check. A Windows CLI test now exercises both states against the real `ledger.py` and checks that the slot remains held and task ID cannot be reused. The intermediate public-path exposure is accepted by Owner as historical; no history rewrite is planned. Every future task card must pass `tools/check-public-source.py` **before** its commit.
