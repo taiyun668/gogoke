@@ -4,7 +4,7 @@
 <p>Generated from the locked desktop Cargo dependency graph. This report is not a legal conclusion.</p>
 {{#each licenses}}
 <section><h2>{{name}}</h2><ul>
-{{#each used_by}}<li>{{crate.name}} {{crate.version}}</li>{{/each}}
+{{#each used_by}}<li>{{crate.name}} {{crate.version}} — source: <a href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">crates.io version</a></li>{{/each}}
 </ul><pre>{{text}}</pre></section>
 {{/each}}
 </html>
