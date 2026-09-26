@@ -516,7 +516,8 @@ mod managed_service {
     }
 
     fn environment_key(entry: &[u16]) -> Result<&[u16], String> {
-        // Windows keeps drive-current-directory variables as =C:=C:\... .
+        // Windows drive-current-directory entries begin with '='; their name
+        // ends at the second equals sign.
         // Their name ends at the second equals sign, not the first.
         let start = usize::from(entry.first() == Some(&(b'=' as u16)));
         let end = entry[start..].iter().position(|unit| *unit == b'=' as u16)
