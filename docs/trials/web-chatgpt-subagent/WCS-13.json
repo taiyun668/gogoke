@@ -1,0 +1,15 @@
+{
+  "task_id": "WCS-13",
+  "tier": "medium",
+  "repository": "taiyun668/gogoke",
+  "assigned_branch": "gpt/web-chatgpt-wcs13-ledger-review",
+  "base_sha": "b7a2e7a89fe29bac658ca85376001cb97ab55138",
+  "role": "independent read-only reviewer of the repaired local web-channel ledger",
+  "goal": "At the exact base SHA, review .agents/skills/web-chatgpt-subagent/scripts/ledger.py and its Windows tests for the WCS-05 F1-F3 requirements: switched actual-tier accounting and limit-no-reply terminal outcome, new/lost ledger reconciliation baseline, and one-send task ID uniqueness across seats. Identify concrete correctness gaps only; do not edit reviewed files or treat the trial as adoption.",
+  "success_criteria": "Write one result file naming the reviewed SHA, with at most five concrete file-and-line findings or an explicit no-finding result; distinguish what the tests exercise from unverified runtime behavior. Commit it on the assigned branch.",
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-13-RESULT.md",
+  "allowed_write_paths": [
+    "docs/trials/web-chatgpt-subagent/WCS-13-RESULT.md"
+  ],
+  "stop_condition": "Stop after one result commit, or immediately if the GitHub connector cannot write the assigned branch. Do not modify any other file, merge main, publish, sign, or access secrets."
+}
