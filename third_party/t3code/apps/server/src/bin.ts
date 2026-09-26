@@ -80,7 +80,13 @@ if (
     runtimeMain: import.meta.main,
   })
 ) {
-  Effect.tryPromise(() => runGogokeProductProcess(process.argv.slice(2))).pipe(
+  Effect.tryPromise(() => runGogokeProductProcess(process.argv.slice(2)).catch((error: unknown) => {
+    // Temporary cloud-only first-error diagnosis; remove after repair.
+    if (process.env.GITHUB_ACTIONS === "true") {
+      console.error(`GOGOKE_CI_PRODUCT_ORIGINAL_ERROR:${String(error)}`);
+    }
+    throw error;
+  })).pipe(
     NodeRuntime.runMain,
   );
 }
