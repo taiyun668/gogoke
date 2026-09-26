@@ -1,0 +1,32 @@
+{
+  "task_id": "WCS-26",
+  "role": "independent fixed-commit Windows native process-launch boundary auditor",
+  "repository": "taiyun668/gogoke",
+  "card_branch": "codex/web-chatgpt-subagent-channel",
+  "card_path": "docs/trials/web-chatgpt-subagent/WCS-26.json",
+  "card_sha": "supplied in the one starter message after this card is committed",
+  "base_sha": "ef01e5e35f80e6bdffd4ef0eb657652522ac388d",
+  "review_sha": "ef01e5e35f80e6bdffd4ef0eb657652522ac388d",
+  "assigned_branch": "gpt/web-chatgpt-wcs26-process-audit",
+  "allowed_read_paths": [
+    "AGENTS.md",
+    "docs/governance/gpt-construction-window-rules.md",
+    "apps/desktop/native-host/src/process/windows.rs",
+    "apps/desktop/native-host/src/process/mod.rs",
+    "apps/desktop/native-host/src/root/mod.rs",
+    ".github/workflows/gogoke-native-host.yml"
+  ],
+  "allowed_write_paths": ["docs/trials/web-chatgpt-subagent/WCS-26-RESULT.md"],
+  "result_path": "docs/trials/web-chatgpt-subagent/WCS-26-RESULT.md",
+  "goal": "At the exact review SHA, independently audit the Windows native process-launch boundary across process/windows.rs, process/mod.rs, and root/mod.rs. Focus on command-line quoting, executable identity, inherited handles/environment, suspended creation and resume/custody transitions, and whether a caller can bypass the intended permission/authority checks. Identify up to five concrete, actionable findings with exact file:line evidence and a falsifying test idea, or explicitly report no findings and static limits. Use small targeted reads. This is a static GitHub-file audit only: do not run local CLI, perform Win11 tests, sign, or modify the reviewed candidate.",
+  "success_criteria": "One result-file commit on the assigned branch from base_sha naming review_sha, with findings or explicit no findings; Controller verifies a real CI run on the result commit with more than zero executed tests and checks main for unintended commits.",
+  "deadline_minutes": 45,
+  "stop_condition": "Stop after one result commit. If a confirmed persistent GitHub permission or platform blockage prevents writing even the result file, stop with exact remote state. No chat follow-up.",
+  "original_codex_seat": "astra",
+  "economic_reason": "Cross-file Windows process-launch security review at fixed SHA would ordinarily use an Astra audit, around $4.1 median versus estimated $1.6-1.9 direct web overhead; it is self-contained, non-local static review, non-urgent, and GitHub-verifiable.",
+  "construction_rules": "Before work read docs/governance/gpt-construction-window-rules.md sections 2, 3, 4, 5, 5a, 6, and 8. Sections 8a, 8b, and 9 are only for long-running construction windows and do not apply to this one-off audit. Use small reads, make early durable GitHub progress, continue through ordinary tool/CI failures, and require real executed-test evidence. Ask no question in chat. If information is missing or a persistent permission/platform block is confirmed, write the blocker in result_path, commit if possible, and end.",
+  "remote_write_protocol": "A failed GitHub write does not prove nothing landed or that permission is absent. First reread actual remote branch, commit, and file; if landed, continue without duplicate writes. If absent, retry after increasing intervals and identify the failing layer: ChatGPT action permission, GitHub App installation scope, selected repository, repository permission, ref API, or branch state. One 403 does not prove no write permission; 422 already exists may indicate prior success. Never repeat a side-effecting write while remote state is unknown.",
+  "permission_boundary": "Push only assigned_branch and only allowed_write_paths. Never push or merge main; do not publish, release, tag, access secrets, or sign. Do not claim project acceptance.",
+  "one_message_only": true,
+  "no_questions": true
+}
