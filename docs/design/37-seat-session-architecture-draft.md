@@ -210,8 +210,8 @@
 ## 12b. 实测结果（2026-09-26）
 
 - 实验 2、3 已跑，见[五家 CLI 实测](../research/2026-09-26-cli-readonly-injection-probe.md)。
-- 只读：Claude、Codex、Grok 的只读模式拦住了写文件，agy 拦不住，OpenCode 没测成。**只读由宿主在操作系统层面保证**这一条成立。
-- 参考不执行：Claude、Codex、Grok 都没执行埋进去的指令。
+- 只读：Claude、Codex、Grok、OpenCode 的只读模式拦住了写文件，agy 拦不住。**只读由宿主在操作系统层面保证**这一条成立。
+- 参考不执行：Claude、Codex、Grok、OpenCode 都没执行埋进去的指令。
 - 输出能统一成账本事件。
 - 新增一条规则：**宿主传给 CLI 的内容一律走 stdin 或文件**。多行参数经过 npm 的 `.cmd` 包装会被截断、打乱。CLI 的可执行文件由宿主固定版本，不靠 PATH。
 
