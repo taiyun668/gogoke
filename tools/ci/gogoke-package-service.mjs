@@ -504,7 +504,10 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
         const reply = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) });
         if (reply.ok) {
           const pages = await reply.json();
-          target = pages.find((page) => page.type === 'page' && /^(https?:\/\/tauri\.localhost|tauri:\/\/localhost)(\/|$)/.test(page.url));
+          target = pages.find((page) => page.type === 'page' && (
+            /^(https?:\/\/tauri\.localhost|tauri:\/\/localhost)(\/|$)/.test(page.url) ||
+            /^(https?:\/\/gogoke-resource\.localhost|gogoke-resource:\/\/localhost)\/[0-9a-f]{64}\/index\.html([?#]|$)/.test(page.url)
+          ));
         }
       } catch { /* Startup-only read retry; product invoke below is never retried. */ }
       if (!target) await delay(250);
