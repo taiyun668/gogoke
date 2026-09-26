@@ -364,6 +364,11 @@ pub(crate) fn install_shortcut(args: &[String]) -> Result<(), String> {
         )
         .map_err(|_| "GOGOKE_SHORTCUT_REGISTRY_OPEN_FAILED".to_string())?;
     let previous = recorded_shortcut(&registry, value)?;
+    // An optional shortcut that has never been owned does not require the
+    // corresponding known folder to exist merely to skip creation.
+    if !create && previous.is_none() {
+        return Ok(());
+    }
     if !create && !desktop {
         if let Some((_, old)) = &previous {
             if old.schema == SHORTCUT_SCHEMA && old.root == path_text(root)? && old.slot == "start"
