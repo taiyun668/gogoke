@@ -261,10 +261,23 @@ try {
             $generations = Join-Path $script:targetRoot 'gogoke-service/generations'
             if (Test-Path -LiteralPath $generations -PathType Container) {
                 try {
+                    $generationEntries = @(Get-ChildItem -LiteralPath $generations -Force)
                     $script:result.generationEntriesAfterExit = @(
-                        Get-ChildItem -LiteralPath $generations -Force |
-                            Select-Object -First 8 Name, PSIsContainer
+                        $generationEntries | Select-Object -First 8 Name, PSIsContainer
                     )
+                    foreach ($entry in $generationEntries) {
+                        if ($entry.PSIsContainer -and $entry.Name.StartsWith('.stage-', [StringComparison]::Ordinal)) {
+                            $stageTree = Get-PhysicalTree $entry.FullName
+                            $script:result.generationStageFilesAfterExit = $stageTree.Files.Count
+                            $script:result.generationExpectedFiles = @($index.files).Count
+                            $script:result.firstMissingGenerationFile = @(
+                                $index.files | Where-Object {
+                                    -not (Test-Path -LiteralPath (Join-Path $entry.FullName $_.path) -PathType Leaf)
+                                } | Select-Object -First 1 -ExpandProperty path
+                            ) | Select-Object -First 1
+                            break
+                        }
+                    }
                 } catch {
                     $script:result.generationInventoryError = [string]$_.Exception.Message
                 }
