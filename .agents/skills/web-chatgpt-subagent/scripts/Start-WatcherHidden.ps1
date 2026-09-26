@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][string] $Task,
+    [Parameter(Mandatory = $true)][string] $Tier,
     [Parameter(Mandatory = $true)][string] $Repo,
     [Parameter(Mandatory = $true)][string] $Branch,
     [Parameter(Mandatory = $true)][string] $Path,
@@ -15,7 +16,7 @@ $start = [System.Diagnostics.ProcessStartInfo]::new($pythonw)
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-foreach ($argument in @($entry, '--task', $Task, '--repo', $Repo, '--branch', $Branch, '--path', $Path, '--base-sha', $BaseSha, '--thread', $Thread, '--max-hours', [string]$MaxHours)) {
+foreach ($argument in @($entry, '--task', $Task, '--tier', $Tier, '--repo', $Repo, '--branch', $Branch, '--path', $Path, '--base-sha', $BaseSha, '--thread', $Thread, '--max-hours', [string]$MaxHours)) {
     [void] $start.ArgumentList.Add($argument)
 }
 $process = [System.Diagnostics.Process]::Start($start)

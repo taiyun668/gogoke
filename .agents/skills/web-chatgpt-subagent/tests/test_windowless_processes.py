@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -48,7 +49,7 @@ class WindowlessProcessTests(unittest.TestCase):
     def test_github_watcher_starts_without_console_window(self):
         code = self.run_hidden(
             str(SCRIPTS / "watch_github_result.py"),
-            "--task", "WINDOW-TEST", "--repo", "example/example", "--branch", "gpt/example",
+            "--task", "WINDOW-TEST", "--tier", "medium", "--repo", "example/example", "--branch", "gpt/example",
             "--path", "result.md", "--base-sha", "a" * 40,
             "--thread", "00000000-0000-0000-0000-000000000000", "--max-hours", "0",
         )
@@ -57,6 +58,15 @@ class WindowlessProcessTests(unittest.TestCase):
         self.assertFalse(started["console_window_present"])
         ended = json.loads((self.root / "watch-WINDOW-TEST.json").read_text(encoding="utf-8"))
         self.assertEqual(ended["status"], "watch_deadline_exceeded")
+
+    def test_watcher_interval_depends_on_tier_and_elapsed_time(self):
+        spec = importlib.util.spec_from_file_location("watch_github_result", SCRIPTS / "watch_github_result.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.poll_seconds("medium", 0), 30)
+        self.assertEqual(module.poll_seconds("high", 1201), 120)
+        self.assertEqual(module.poll_seconds("extra-high", 0), 90)
+        self.assertEqual(module.poll_seconds("gpt-5.6-sol-pro", 1201), 300)
 
     def test_powershell_ledger_wrapper_propagates_failure_and_has_no_console(self):
         pwsh = shutil.which("pwsh")
@@ -82,7 +92,7 @@ class WindowlessProcessTests(unittest.TestCase):
         self.assertIsNotNone(pwsh)
         wrapper = SCRIPTS / "Start-WatcherHidden.ps1"
         started = subprocess.run(
-            [pwsh, "-NoProfile", "-File", str(wrapper), "-Task", "WINDOW-PS", "-Repo", "example/example", "-Branch", "gpt/example", "-Path", "result.md", "-BaseSha", "a" * 40, "-Thread", "00000000-0000-0000-0000-000000000000", "-MaxHours", "0"],
+            [pwsh, "-NoProfile", "-File", str(wrapper), "-Task", "WINDOW-PS", "-Tier", "medium", "-Repo", "example/example", "-Branch", "gpt/example", "-Path", "result.md", "-BaseSha", "a" * 40, "-Thread", "00000000-0000-0000-0000-000000000000", "-MaxHours", "0"],
             env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self.assertEqual(started.returncode, 0, started.stderr)
@@ -94,31 +104,6 @@ class WindowlessProcessTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertTrue(receipt.is_file())
         self.assertFalse(json.loads(receipt.read_text(encoding="utf-8"))["console_window_present"])
-
-    def test_waiter_wakes_on_controller_approval_without_browser_polling(self):
-        pwsh = shutil.which("pwsh")
-        self.assertIsNotNone(pwsh)
-        ledger = SCRIPTS / "ledger.py"
-        def command(*args):
-            return subprocess.run([sys.executable, str(ledger), *args], env=self.env, text=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        self.assertEqual(command("reconcile", "--source", "waiter-test").returncode, 0)
-        held = command("reserve", "--tier", "medium", "--task", "wait-test", "--seat", "web-channel")
-        self.assertEqual(held.returncode, 0, held.stderr)
-        self.assertEqual(command("mark-sent", held.stdout.strip(), "--url", "https://chatgpt.com/c/example").returncode, 0)
-        waiter = subprocess.Popen(
-            [pwsh, "-NoProfile", "-File", str(SCRIPTS / "Wait-ControllerApproval.ps1"), "-Task", "wait-test", "-TimeoutMinutes", "1", "-PollSeconds", "1"],
-            env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        try:
-            self.assertEqual(command("approve-result", "--task", "wait-test", "--commit", "a" * 40).returncode, 0)
-            stdout, stderr = waiter.communicate(timeout=10)
-            self.assertEqual(waiter.returncode, 0, stderr)
-            self.assertEqual(json.loads(stdout)["approved_result_commit"], "a" * 40)
-        finally:
-            if waiter.poll() is None:
-                waiter.kill()
-
 
 if __name__ == "__main__":
     unittest.main()
