@@ -27,7 +27,7 @@ use super::authority::{
 use super::atomic::{Json as NativeJson, JsonString as NativeJsonString, Parser as NativeJsonParser};
 use super::same_open::{create_new, open_existing, VerifiedDatabaseConnection};
 use crate::ipc::PrivatePipeConnection;
-use crate::process::{controlled_fixture_request, DurableStopConfirmation, ProcessCustodian, StopBudgets};
+use crate::process::{controlled_fixture_request, DurableStopConfirmation, PrepareRequest, PreparedCustody, ProcessCustodian, StopBudgets};
 use crate::root::RootLock;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -642,6 +642,24 @@ const ACTION_PREPARE_FIELDS: [&str; 13] = [
     "packageOperationId", "parentGrantRef", "payload", "recipeId", "reservationId", "sessionId", "taskId",
 ];
 
+// The two production fixture paths share this exact transaction boundary.
+// A failed coordination write aborts the still-suspended child before either
+// caller can request activation. This does not turn the coordination row into
+// an accepted Git fact.
+pub(crate) fn prepare_recorded_process(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    custodian: &mut ProcessCustodian,
+    operation_id: &str,
+    launch: &PrepareRequest,
+) -> Result<PreparedCustody, OrchestrationError> {
+    let prepared = custodian.prepare(launch)?;
+    if let Err(error) = authority::record_prepared_process(connection, operation_id, &prepared) {
+        let _ = custodian.abort_prepared(&prepared);
+        return Err(error);
+    }
+    Ok(prepared)
+}
+
 fn run_controlled_fixture_probe(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
@@ -669,11 +687,7 @@ fn run_controlled_fixture_probe(
     };
     let identity = admit(connection)?;
     let launch = controlled_fixture_request(&identity.profile_id, "domain-r2-02-test", "1")?;
-    let prepared = custodian.prepare(&launch)?;
-    if let Err(error) = authority::record_prepared_process(connection, operation_id, &prepared) {
-        let _ = custodian.abort_prepared(&prepared);
-        return Err(error);
-    }
+    let prepared = prepare_recorded_process(connection, custodian, operation_id, &launch)?;
     if let Err(error) = custodian.activate(&prepared) {
         let _ = authority::mark_process_unknown(connection, operation_id, &prepared);
         return Err(error.into());
@@ -1004,11 +1018,7 @@ pub(crate) fn run_controlled_fixture_action(
             != selected.launch_digest_sha256 {
         return Err(OrchestrationError::AccessDenied);
     }
-    let prepared = custodian.prepare(&launch)?;
-    if let Err(error) = authority::record_prepared_process(connection, &references.operation_id, &prepared) {
-        let _ = custodian.abort_prepared(&prepared);
-        return Err(error);
-    }
+    let prepared = prepare_recorded_process(connection, custodian, &references.operation_id, &launch)?;
     if let Err(error) = custodian.activate(&prepared) {
         let _ = authority::mark_process_unknown(connection, &references.operation_id, &prepared);
         return Err(error.into());

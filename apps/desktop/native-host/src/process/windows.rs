@@ -21,6 +21,7 @@ const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
 const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
 const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
+const PROC_THREAD_ATTRIBUTE_JOB_LIST: usize = 0x0002_000d;
 const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS: i32 = 1;
@@ -188,6 +189,7 @@ extern "system" {
         return_length: *mut u32,
     ) -> i32;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+    fn IsProcessInJob(process: Handle, job: Handle, result: *mut i32) -> i32;
     fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
     fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
     fn ResumeThread(thread: Handle) -> u32;
@@ -232,6 +234,7 @@ pub enum ProcessCustodyError {
     ProtocolPipe(io::Error),
     ProtocolAttribute(io::Error),
     ProtocolEnvironment(io::Error),
+    LaunchCleanup { cause: Box<ProcessCustodyError>, detail: String },
 }
 
 impl fmt::Display for ProcessCustodyError {
@@ -262,6 +265,7 @@ impl fmt::Display for ProcessCustodyError {
             Self::ProtocolPipe(source) => write!(f, "PROCESS_PROTOCOL_PIPE_FAILED: {source}"),
             Self::ProtocolAttribute(source) => write!(f, "PROCESS_PROTOCOL_ATTRIBUTE_FAILED: {source}"),
             Self::ProtocolEnvironment(source) => write!(f, "PROCESS_PROTOCOL_ENVIRONMENT_FAILED: {source}"),
+            Self::LaunchCleanup { cause, detail } => write!(f, "{cause}; PROCESS_LAUNCH_CLEANUP_UNCONFIRMED: {detail}"),
         }
     }
 }
@@ -566,23 +570,32 @@ struct AttributeList {
 }
 
 impl AttributeList {
-    fn handles(handles: &mut [Handle]) -> Result<Self, ProcessCustodyError> {
+    fn for_launch(job: &mut [Handle], handles: Option<&mut [Handle]>) -> Result<Self, ProcessCustodyError> {
         let mut size = 0usize;
-        unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size); }
+        let count = if handles.is_some() { 2 } else { 1 };
+        unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut size); }
         if size == 0 {
             return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
         }
         let mut storage = vec![0usize; size.div_ceil(size_of::<usize>())];
         let list = storage.as_mut_ptr().cast();
-        if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut size) } == 0 {
+        if unsafe { InitializeProcThreadAttributeList(list, count, 0, &mut size) } == 0 {
             return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
         }
         let result = Self { storage };
         if unsafe {
-            UpdateProcThreadAttribute(result.raw(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                handles.as_mut_ptr().cast(), size_of_val(handles), ptr::null_mut(), ptr::null_mut())
+            UpdateProcThreadAttribute(result.raw(), 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                job.as_mut_ptr().cast(), size_of_val(job), ptr::null_mut(), ptr::null_mut())
         } == 0 {
             return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
+        }
+        if let Some(handles) = handles {
+            if unsafe {
+                UpdateProcThreadAttribute(result.raw(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                    handles.as_mut_ptr().cast(), size_of_val(handles), ptr::null_mut(), ptr::null_mut())
+            } == 0 {
+                return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
+            }
         }
         Ok(result)
     }
@@ -594,6 +607,81 @@ impl Drop for AttributeList {
     fn drop(&mut self) { unsafe { DeleteProcThreadAttributeList(self.raw()); } }
 }
 
+struct PostCreateFailure {
+    cause: ProcessCustodyError,
+    process: OwnedHandle,
+    initial_thread: OwnedHandle,
+}
+
+enum SuspendedCreateError {
+    Before(ProcessCustodyError),
+    After(PostCreateFailure),
+}
+
+impl From<ProcessCustodyError> for SuspendedCreateError {
+    fn from(error: ProcessCustodyError) -> Self { Self::Before(error) }
+}
+
+// An unconfirmed cleanup stays attached to the exact handles and Job while
+// the custodian lives; dropping the custodian closes its kill-on-close Job.
+struct LaunchFailureCustody {
+    _process: OwnedHandle,
+    _initial_thread: OwnedHandle,
+    _job: OwnedHandle,
+}
+
+fn reject_suspended_child_with<T, W>(
+    cause: ProcessCustodyError,
+    process: OwnedHandle,
+    initial_thread: OwnedHandle,
+    job: OwnedHandle,
+    retained: &mut Vec<LaunchFailureCustody>,
+    terminate: T,
+    wait: W,
+) -> ProcessCustodyError
+where
+    T: FnOnce(Handle) -> io::Result<()>,
+    W: FnOnce(Handle) -> io::Result<u32>,
+{
+    let termination = terminate(process.raw());
+    let observation = wait(process.raw());
+    if matches!(observation.as_ref(), Ok(result) if *result == WAIT_OBJECT_0) {
+        return cause;
+    }
+    let detail = format!(
+        "exact process/job handles retained; terminate={}; wait={}",
+        termination.map_or_else(|error| error.to_string(), |_| "ok".to_owned()),
+        observation.map_or_else(|error| error.to_string(), |result| format!("0x{result:08x}")),
+    );
+    retained.push(LaunchFailureCustody {
+        _process: process,
+        _initial_thread: initial_thread,
+        _job: job,
+    });
+    ProcessCustodyError::LaunchCleanup { cause: Box::new(cause), detail }
+}
+
+fn reject_suspended_child(
+    cause: ProcessCustodyError,
+    process: OwnedHandle,
+    initial_thread: OwnedHandle,
+    job: OwnedHandle,
+    retained: &mut Vec<LaunchFailureCustody>,
+) -> ProcessCustodyError {
+    reject_suspended_child_with(cause, process, initial_thread, job, retained,
+        |process| {
+            if unsafe { TerminateProcess(process, STOP_REFUSED_EXIT_CODE) } == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        },
+        |process| {
+            let result = unsafe { WaitForSingleObject(process, 1_000) };
+            if result == WAIT_FAILED { Err(io::Error::last_os_error()) } else { Ok(result) }
+        })
+}
+
 struct PreparedProcess {
     process: OwnedHandle,
     initial_thread: OwnedHandle,
@@ -603,19 +691,21 @@ struct PreparedProcess {
 }
 
 impl PreparedProcess {
-    fn prepare(launch: &ProcessLaunch) -> Result<Self, ProcessCustodyError> {
+    fn prepare(launch: &ProcessLaunch, retained: &mut Vec<LaunchFailureCustody>) -> Result<Self, ProcessCustodyError> {
         validate_launch(launch)?;
         let job = create_kill_on_close_job()?;
-        let (process, initial_thread, pid, protocol) = create_suspended(launch)?;
+        let (process, initial_thread, pid, protocol) = match create_suspended(launch, job.raw()) {
+            Ok(created) => created,
+            Err(SuspendedCreateError::Before(error)) => return Err(error),
+            Err(SuspendedCreateError::After(failure)) => {
+                return Err(reject_suspended_child(failure.cause, failure.process,
+                    failure.initial_thread, job, retained));
+            }
+        };
         if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
             let source = io::Error::last_os_error();
-            // The exact process handle is still suspended, so this cannot hit
-            // a reused PID and the child has never had an instruction run.
-            unsafe {
-                TerminateProcess(process.raw(), STOP_REFUSED_EXIT_CODE);
-                WaitForSingleObject(process.raw(), 1_000);
-            }
-            return Err(ProcessCustodyError::AssignJob(source));
+            return Err(reject_suspended_child(ProcessCustodyError::AssignJob(source),
+                process, initial_thread, job, retained));
         }
         process
             .clear_inherit()
@@ -680,7 +770,8 @@ fn prepare_and_activate<F>(
 where
     F: FnOnce(&ProcessIdentity) -> Result<(), String>,
 {
-    let prepared = PreparedProcess::prepare(launch)?;
+    let mut retained = Vec::new();
+    let prepared = PreparedProcess::prepare(launch, &mut retained)?;
     if !prepared.handles_are_non_inheritable()? {
         return Err(ProcessCustodyError::HandlePolicy(io::Error::new(
             io::ErrorKind::Other,
@@ -700,6 +791,7 @@ pub struct ProcessCustodian {
     active: HashMap<ProcessTicket, (PreparedCustody, ManagedProcess)>,
     pending_stop: HashMap<ProcessTicket, NativeStopProof>,
     tombstones: HashSet<ProcessTicket>,
+    failed_launches: Vec<LaunchFailureCustody>,
 }
 
 impl ProcessCustodian {
@@ -710,6 +802,7 @@ impl ProcessCustodian {
             active: HashMap::new(),
             pending_stop: HashMap::new(),
             tombstones: HashSet::new(),
+            failed_launches: Vec::new(),
         })
     }
 
@@ -722,7 +815,7 @@ impl ProcessCustodian {
         if request.binding.binary_digest_sha256 != actual_digest {
             return Err(ProcessCustodyError::BindingMismatch("binaryDigestSha256"));
         }
-        let prepared = PreparedProcess::prepare(&request.launch)?;
+        let prepared = PreparedProcess::prepare(&request.launch, &mut self.failed_launches)?;
         let launched_digest = file_sha256(&prepared.identity.image_path)?;
         if request.binding.binary_digest_sha256 != launched_digest {
             return Err(ProcessCustodyError::BindingMismatch(
@@ -756,7 +849,7 @@ impl ProcessCustodian {
 
     /// Activates only the exact identity which the service says it durably
     /// saved. A mismatch leaves the original suspended process in custody.
-    pub fn activate(
+    pub(crate) fn activate(
         &mut self,
         durable: &PreparedCustody,
     ) -> Result<PreparedCustody, ProcessCustodyError> {
@@ -1262,10 +1355,13 @@ fn create_kill_on_close_job() -> Result<OwnedHandle, ProcessCustodyError> {
 
 fn create_suspended(
     launch: &ProcessLaunch,
-) -> Result<(OwnedHandle, OwnedHandle, u32, Option<ProtocolPipes>), ProcessCustodyError> {
+    job: Handle,
+) -> Result<(OwnedHandle, OwnedHandle, u32, Option<ProtocolPipes>), SuspendedCreateError> {
     if launch.protocol_stdio {
-        return create_suspended_protocol(launch);
+        return create_suspended_protocol(launch, job);
     }
+    let mut jobs = [job];
+    let attributes = AttributeList::for_launch(&mut jobs, None)?;
     let application = wide_null(launch.application.as_os_str());
     let mut command_line = wide_null(OsStr::new(&build_command_line(
         launch.application.as_os_str(),
@@ -1275,10 +1371,11 @@ fn create_suspended(
         .current_directory
         .as_ref()
         .map(|path| wide_null(path.as_os_str()));
-    let mut startup: StartupInfoW = unsafe { zeroed() };
-    startup.cb = size_of::<StartupInfoW>() as u32;
+    let mut startup: StartupInfoExW = unsafe { zeroed() };
+    startup.startup.cb = size_of::<StartupInfoExW>() as u32;
+    startup.attributes = attributes.raw();
     let mut info: ProcessInformation = unsafe { zeroed() };
-    let flags = CREATE_SUSPENDED
+    let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT
         | if launch.hide_window {
             CREATE_NO_WINDOW
         } else {
@@ -1296,14 +1393,14 @@ fn create_suspended(
             current_directory
                 .as_ref()
                 .map_or(ptr::null(), |value| value.as_ptr()),
-            &mut startup,
+            &mut startup.startup,
             &mut info,
         )
     };
     if created == 0 {
         return Err(ProcessCustodyError::CreateProcess(
             io::Error::last_os_error(),
-        ));
+        ).into());
     }
     let process =
         OwnedHandle::new(info.process).expect("CreateProcessW returned null process handle");
@@ -1314,16 +1411,18 @@ fn create_suspended(
 
 fn create_suspended_protocol(
     launch: &ProcessLaunch,
-) -> Result<(OwnedHandle, OwnedHandle, u32, Option<ProtocolPipes>), ProcessCustodyError> {
+    job: Handle,
+) -> Result<(OwnedHandle, OwnedHandle, u32, Option<ProtocolPipes>), SuspendedCreateError> {
     let pipes = ChildProtocolHandles::open()?;
     let stderr = OpenOptions::new().write(true).open("NUL")
         .map_err(ProcessCustodyError::ProtocolPipe)?;
     let stderr_handle = stderr.as_raw_handle().cast();
     if unsafe { SetHandleInformation(stderr_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
-        return Err(ProcessCustodyError::HandlePolicy(io::Error::last_os_error()));
+        return Err(ProcessCustodyError::HandlePolicy(io::Error::last_os_error()).into());
     }
     let mut inherited = [pipes.stdin_read.raw(), pipes.stdout_write.raw(), stderr_handle];
-    let attributes = AttributeList::handles(&mut inherited)?;
+    let mut jobs = [job];
+    let attributes = AttributeList::for_launch(&mut jobs, Some(&mut inherited))?;
     let application = wide_null(launch.application.as_os_str());
     let mut command_line = wide_null(OsStr::new(&build_command_line(
         launch.application.as_os_str(), &launch.arguments,
@@ -1348,13 +1447,14 @@ fn create_suspended_protocol(
     };
     let create_error = if created == 0 { Some(io::Error::last_os_error()) } else { None };
     let cleared = unsafe { SetHandleInformation(stderr_handle, HANDLE_FLAG_INHERIT, 0) };
-    if let Some(error) = create_error { return Err(ProcessCustodyError::CreateProcess(error)); }
+    if let Some(error) = create_error { return Err(ProcessCustodyError::CreateProcess(error).into()); }
     let process = OwnedHandle::new(info.process).expect("CreateProcessW returned null process handle");
     let initial_thread = OwnedHandle::new(info.thread).expect("CreateProcessW returned null thread handle");
     if cleared == 0 {
         let error = io::Error::last_os_error();
-        unsafe { TerminateProcess(process.raw(), STOP_REFUSED_EXIT_CODE); }
-        return Err(ProcessCustodyError::HandlePolicy(error));
+        return Err(SuspendedCreateError::After(PostCreateFailure {
+            cause: ProcessCustodyError::HandlePolicy(error), process, initial_thread,
+        }));
     }
     let ChildProtocolHandles { stdin_read, stdout_write, parent } = pipes;
     drop(stdin_read);
@@ -1739,6 +1839,76 @@ mod tests {
                 generation: "1".to_owned(),
             },
         }
+    }
+
+    #[test]
+    fn both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign() {
+        for protocol_stdio in [false, true] {
+            let job = create_kill_on_close_job().expect("kill-on-close job");
+            let mut launch = ProcessLaunch::new(system_cmd());
+            launch.arguments = vec!["/D".into(), "/C".into(), "exit 0".into()];
+            launch.protocol_stdio = protocol_stdio;
+            let (process, initial_thread, _, protocol) =
+                match create_suspended(&launch, job.raw()) {
+                    Ok(created) => created,
+                    Err(_) => panic!("suspended CreateProcess with JOB_LIST failed: protocol_stdio={protocol_stdio}"),
+                };
+            let mut member = 0;
+            assert_ne!(unsafe { IsProcessInJob(process.raw(), job.raw(), &mut member) }, 0);
+            assert_eq!(member, 1, "JOB_LIST must contain child before explicit assign");
+            assert_ne!(unsafe { AssignProcessToJobObject(job.raw(), process.raw()) }, 0,
+                "explicit same-Job assign required by C07 must succeed");
+            // A forced invalid assign exercises the post-create rejection path
+            // while the child remains in its exact creation-time Job.
+            assert_eq!(unsafe { AssignProcessToJobObject(ptr::null_mut(), process.raw()) }, 0);
+            let source = io::Error::last_os_error();
+            let mut retained = Vec::new();
+            let error = reject_suspended_child(ProcessCustodyError::AssignJob(source),
+                process, initial_thread, job, &mut retained);
+            assert!(matches!(&error, ProcessCustodyError::AssignJob(_)),
+                "real kernel cleanup must confirm child exit: {error}");
+            assert!(retained.is_empty());
+            drop(protocol);
+        }
+    }
+
+    #[test]
+    fn failed_launch_cleanup_retains_exact_handles_on_timeout_or_failed_wait() {
+        for wait_result in [Ok(WAIT_TIMEOUT), Err(io::Error::from_raw_os_error(6))] {
+            let process = create_kill_on_close_job().expect("mock process handle");
+            let initial_thread = create_kill_on_close_job().expect("mock thread handle");
+            let job = create_kill_on_close_job().expect("mock job handle");
+            let exact_process = process.raw();
+            let exact_job = job.raw();
+            let mut retained = Vec::new();
+            let error = reject_suspended_child_with(
+                ProcessCustodyError::InvalidLaunch("forced assign failure"),
+                process, initial_thread, job, &mut retained,
+                |handle| { assert_eq!(handle, exact_process); Err(io::Error::from_raw_os_error(5)) },
+                |handle| { assert_eq!(handle, exact_process); wait_result },
+            );
+            assert!(matches!(&error, ProcessCustodyError::LaunchCleanup { .. }));
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0]._process.raw(), exact_process);
+            assert_eq!(retained[0]._job.raw(), exact_job);
+            assert!(error.to_string().contains("exact process/job handles retained"));
+        }
+    }
+
+    #[test]
+    fn already_signaled_child_is_confirmed_even_if_terminate_reports_failure() {
+        let process = create_kill_on_close_job().expect("mock process handle");
+        let initial_thread = create_kill_on_close_job().expect("mock thread handle");
+        let job = create_kill_on_close_job().expect("mock job handle");
+        let mut retained = Vec::new();
+        let error = reject_suspended_child_with(
+            ProcessCustodyError::InvalidLaunch("forced assign failure"),
+            process, initial_thread, job, &mut retained,
+            |_| Err(io::Error::from_raw_os_error(5)),
+            |_| Ok(WAIT_OBJECT_0),
+        );
+        assert!(matches!(error, ProcessCustodyError::InvalidLaunch(_)));
+        assert!(retained.is_empty());
     }
 
     #[test]

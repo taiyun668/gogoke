@@ -11,6 +11,52 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[test]
+fn failed_production_prepared_record_does_not_activate_child() {
+    use crate::process::{NativeBinding, PrepareRequest, ProcessLaunch};
+    fixture(|_, product| {
+        let command = std::env::var_os("WINDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+            .join("System32").join("cmd.exe");
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let marker = std::env::temp_dir().join(format!(
+            "gogoke-prepared-record-failure-{}-{nonce}.txt", std::process::id()
+        ));
+        assert!(!marker.exists(), "fresh controlled marker");
+        let mut launch = ProcessLaunch::new(&command);
+        launch.arguments = vec![
+            "/D".into(), "/C".into(),
+            format!("echo started>\"{}\"", marker.display()),
+        ];
+        let request = PrepareRequest {
+            binding: NativeBinding {
+                binary_digest_sha256: content_hash(&std::fs::read(&command).unwrap()),
+                profile_id: "profile-test".into(),
+                domain_id: "domain-r2-02-test".into(),
+                generation: "1".into(),
+            },
+            launch,
+        };
+        let first = super::session::prepare_recorded_process(
+            &mut product.connection, &mut product.process_custodian,
+            "same-operation", &request,
+        ).expect("first prepared row committed");
+        assert!(super::session::prepare_recorded_process(
+            &mut product.connection, &mut product.process_custodian,
+            "same-operation", &request,
+        ).is_err(), "second coordination write must fail on the unique operation");
+        assert_eq!(scalar(product,
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE operation_id='same-operation' AND state='PREPARED'"), "1");
+        assert!(product.process_custodian.active(&first.ticket).is_none(),
+            "the committed first child remains suspended");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert!(!marker.exists(), "failed write cannot resume a child or run its marker");
+        product.process_custodian.abort_prepared(&first).unwrap();
+        authority::mark_process_unknown(&mut product.connection, "same-operation", &first).unwrap();
+    });
+}
+
 fn fixture(run: impl FnOnce(&RootLock, &mut ProductDatabase<'_>)) {
     let _guard = route_b_test_guard();
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();

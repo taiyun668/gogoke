@@ -166,7 +166,11 @@ jobs:
             @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
-            @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' }
+            @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
+            @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
+            @{ id = 'job-assign-cleanup'; filter = 'failed_launch_cleanup_retains_exact_handles_on_timeout_or_failed_wait' },
+            @{ id = 'job-already-exited'; filter = 'already_signaled_child_is_confirmed_even_if_terminate_reports_failure' },
+            @{ id = 'record-before-activate'; filter = 'failed_production_prepared_record_does_not_activate_child' }
           )
           $results = @()
           foreach ($probe in $probes) {

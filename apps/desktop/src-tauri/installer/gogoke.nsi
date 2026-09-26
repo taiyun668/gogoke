@@ -953,6 +953,8 @@ SectionEnd
 !delfile "${GOGOKE_PREFLIGHT_SNAPSHOT}"
 
 Section WebView2
+  StrCpy $GogokeTraceStage "webview2-check-entered"
+  Call GogokeTraceCloudStage
   ; Check if Webview2 is already installed and skip this section
   ${If} ${RunningX64}
     ReadRegStr $4 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
@@ -962,6 +964,12 @@ Section WebView2
   ${If} $4 == ""
     ReadRegStr $4 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${EndIf}
+  ${If} $4 == ""
+    StrCpy $GogokeTraceStage "webview2-runtime-absent"
+  ${Else}
+    StrCpy $GogokeTraceStage "webview2-runtime-present"
+  ${EndIf}
+  Call GogokeTraceCloudStage
 
   ${If} $4 == ""
     ; Webview2 installation
@@ -969,13 +977,19 @@ Section WebView2
     ; Skip if updating
     ${If} $UpdateMode <> 1
       !if "${INSTALLWEBVIEW2MODE}" == "downloadBootstrapper"
+        StrCpy $GogokeTraceStage "webview2-bootstrapper-download-start"
+        Call GogokeTraceCloudStage
         Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         DetailPrint "$(webview2Downloading)"
         NSISdl::download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         Pop $0
         ${If} $0 == "success"
+          StrCpy $GogokeTraceStage "webview2-bootstrapper-download-complete"
+          Call GogokeTraceCloudStage
           DetailPrint "$(webview2DownloadSuccess)"
         ${Else}
+          StrCpy $GogokeTraceStage "webview2-bootstrapper-download-failed"
+          Call GogokeTraceCloudStage
           DetailPrint "$(webview2DownloadError)"
           Abort "$(webview2AbortError)"
         ${EndIf}
@@ -1002,12 +1016,18 @@ Section WebView2
       Goto webview2_done
 
       install_webview2:
+        StrCpy $GogokeTraceStage "webview2-install-start"
+        Call GogokeTraceCloudStage
         DetailPrint "$(installingWebview2)"
         ; $6 holds the path to the webview2 installer
         ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
         ${If} $1 = 0
+          StrCpy $GogokeTraceStage "webview2-install-complete"
+          Call GogokeTraceCloudStage
           DetailPrint "$(webview2InstallSuccess)"
         ${Else}
+          StrCpy $GogokeTraceStage "webview2-install-failed"
+          Call GogokeTraceCloudStage
           DetailPrint "$(webview2InstallError)"
           Abort "$(webview2AbortError)"
         ${EndIf}
@@ -1042,9 +1062,13 @@ Section WebView2
       ${EndIf}
     !endif
   ${EndIf}
+  StrCpy $GogokeTraceStage "webview2-section-complete"
+  Call GogokeTraceCloudStage
 SectionEnd
 
 Section Install
+  StrCpy $GogokeTraceStage "install-entered"
+  Call GogokeTraceCloudStage
   ; Tauri's resources_dirs contains the resource output parents. Pin each
   ; distinct directory before the first bundled payload write.
   {{#each resources_dirs}}
@@ -1052,12 +1076,16 @@ Section Install
     Call GogokePinDirectory
     Pop $9
   {{/each}}
+  StrCpy $GogokeTraceStage "install-resource-directories-pinned"
+  Call GogokeTraceCloudStage
   {{#each binaries}}
     ${GetParent} "$INSTDIR\{{this}}" $0
     Push "$0"
     Call GogokePinDirectory
     Pop $9
   {{/each}}
+  StrCpy $GogokeTraceStage "install-binary-directories-pinned"
+  Call GogokeTraceCloudStage
   ; Scratch parents are also pinned. SetOverwrite off avoids intentional
   ; scratch replacement; it does not prove that NSIS extracted a raced leaf.
   ; Publication checks the source object and creates each final leaf atomically.
@@ -1067,12 +1095,16 @@ Section Install
     Call GogokePinDirectory
     Pop $9
   {{/each}}
+  StrCpy $GogokeTraceStage "install-resource-scratch-directories-pinned"
+  Call GogokeTraceCloudStage
   {{#each binaries}}
     ${GetParent} "$PLUGINSDIR\gogoke-payload\{{this}}" $0
     Push "$0"
     Call GogokePinDirectory
     Pop $9
   {{/each}}
+  StrCpy $GogokeTraceStage "install-all-directories-pinned"
+  Call GogokeTraceCloudStage
   SetOutPath $INSTDIR
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
@@ -1080,6 +1112,8 @@ Section Install
   !endif
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  StrCpy $GogokeTraceStage "install-app-running-check-complete"
+  Call GogokeTraceCloudStage
 
   ; Publish the exact NSS shell already verified and pinned for preflight.
   !ifdef GOGOKE_NSIS_TEST_BARRIER
@@ -1104,7 +1138,11 @@ Section Install
   !endif
   StrCpy $GogokePublishSource "$PLUGINSDIR\gogoke-preflight\gogoke.exe"
   StrCpy $GogokePublishTarget "$INSTDIR\${MAINBINARYNAME}.exe"
+  StrCpy $GogokeTraceStage "install-first-leaf-publish-start"
+  Call GogokeTraceCloudStage
   Call GogokePublishFile
+  StrCpy $GogokeTraceStage "install-first-leaf-publish-complete"
+  Call GogokeTraceCloudStage
   StrCpy $GogokeVerifierPath "$INSTDIR\${MAINBINARYNAME}.exe"
   Call GogokeVerifyShellFile
   StrCpy $GogokeInstalledShellHandle $GogokeVerifiedHandle
