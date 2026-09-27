@@ -1,0 +1,27 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-153",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "2652166dbcb283788dff289f71f82839e4e61e44",
+  "recorded_utc": "2026-09-27T19:58:11Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-152.json",
+  "parallel_inbox_observed_head": "8d231004bd996daa95330046d8fd26613942cc01",
+  "g4_cleanup": {
+    "basis": "artifacts/s1-r4/reviews/R2-06a-G4-cleanup-audit.md and its ordinary-view supplement; no Gogoke process was found before each removal",
+    "deleted_and_same_view_absent": [
+      "nine fully matched audited r206a temporary trees, excluding r206a-3bd-audit-evidence",
+      "packaged old candidate install root after full manifest and candidate registration identity check",
+      "packaged candidate HKCU uninstall key after exact domain, instance and location check",
+      "packaged candidate data root after both file hashes and shape check",
+      "packaged candidate registration and lifecycle locks after hash and exclusive-open check",
+      "packaged r206a-win11-b025 raw evidence tree after full manifest check",
+      "MC-122 two-file evidence copy after exact names, counts and SHA-256 check"
+    ],
+    "retained": "r206a-3bd-audit-evidence: a local cleanup instrument incorrectly treated its parent directory's expected mtime change after deleting two files as external mutation. It stopped with 22 files, 2 directories, 4006506 bytes and manifest SHA-256 8d16f871e919c73f277b94f6ec5c15346bc51101897a316573e5ba1041bd863a. No further deletion was attempted for this now mismatched item. r206a-g4-readonly and all unaudited directories remain KEEP.",
+    "ordinary_view_pending": "Old empty candidate root, receipt, candidate data and two locks have not yet been deleted in the ordinary Interactive/Limited view. These remain subject to immediate item checks and same-view readback.",
+    "formal_safety": "A new ordinary-view pre-cleanup snapshot was produced by Interactive/Limited task, local raw SHA-256 9529372a2647ae32c7f9f40925d005b0e28b03027ca7b532354a788f0b381a77. Formal install, formal data, formal registry and shortcuts match old ordinary-after-formal-launch by exact path/value and per-file hash. The formal tree digest differs solely because the current snapshot instrument orders entries differently; comparing keyed entries confirms equality. No formal object was deleted."
+  },
+  "cloud": "No workflow was triggered automatically by the execution-branch push; desktop workflow push trigger is main-only. Run workflow_dispatch on the exact new checkpoint HEAD, then hygiene, trusted signing and installed smoke. The older 58deb795 desktop run remains in progress and is not the next source candidate.",
+  "next_action": "Run exact-head cloud checks. Complete ordinary-view audited residue cleanup using ordinary Interactive/Limited task, then same-view formal snapshot comparison. Continue R2-06a Win11 candidate test on final bytes. Retain mismatched partial item and report it, without treating it as cleanup PASS."
+}
