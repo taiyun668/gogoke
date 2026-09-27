@@ -1,0 +1,14 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-135",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "68cd022e06a003bcfe9328fc6f85f5ede55af498",
+  "recorded_utc": "2026-09-27T08:34:26Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-134.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "candidate_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "first_local_product_probe": {"state": "INVALID_MEASUREMENT_NOT_PRODUCT_PASS_OR_FAIL", "process_id": 29940, "started_utc": "2026-09-27T08:32:00Z", "ended_utc": "2026-09-27T08:32:49Z", "observed_webview": "Exact signed set-id resource URL loaded and Home was found; no readiness receipt was written", "instrument_error": "The local probe supplied a readiness filename in the task subdirectory with prefix gogoke-first. Production gogoke_update.rs ready_path_from_args requires direct parent std::env::temp_dir(), prefix gogoke-update- and suffix .ready. The probe therefore could not measure bootstrap readiness.", "local_receipt": "%LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-b025\\product-first.json", "code_integrity_events_after_baseline": 0, "application_crash_events_1000_1001_in_window": 0, "process_after_probe": "EXITED"},
+  "instrument_falsification": "Read production ready_path_from_args and compared signed Node os.tmpdir() with the raw TEMP value; they match. The corrected local-only probe uses exactly that temp directory and gogoke-update-<random>.ready. Signed installed Node syntax check passed. Neither production source nor candidate bytes changed; no second installer run, security-setting change or code signing occurred.",
+  "next_action": "Continue the already-authorized same-final-byte Win11 product test with corrected readiness instrumentation under the existing isolated installation, preserving the invalid first receipt as evidence. If corrected probe fails, inspect direct product/system evidence and stop rather than relabeling. Then complete controlled close/reopen, exact uninstall and formal snapshot/shortcut sequence only if identity remains sound. Preserve MC-122 two-file copy; do not merge PR #34, start R2-06b, publish or self-accept."
+}
