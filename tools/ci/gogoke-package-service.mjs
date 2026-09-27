@@ -434,10 +434,10 @@ const smokeRequest = {
   runControlledTask: true,
 };
 
-// Temporary candidate replay after an installed-product exit 78. It uses the
+// Temporary candidate replay after an installed-product failure. It uses the
 // signed index's exact file set and the same Node, entry, cwd and arguments.
 // The only guard change prints the denied URL before preserving its decision.
-function replayDeniedModule(installed, candidate) {
+function replayDeniedModule(installed, candidate, productEnvironment) {
   const index = JSON.parse(fs.readFileSync(path.join(installed, 'resource-index.json'), 'utf8'));
   const generation = path.join(installed, 'gogoke-service', 'generations', candidate.generationId);
   const node = path.join(installed, 'gogoke-service', 'runtime', 'node.exe');
@@ -470,7 +470,7 @@ function replayDeniedModule(installed, candidate) {
       const result = spawnSync(node, [preload, entry, '--root', root, '--native-host', nativeHost], {
         cwd: generation, input: '{"operation":"readiness"}', encoding: 'utf8', timeout: 30000,
         windowsHide: true, maxBuffer: 1024 * 1024,
-        env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+        env: Object.fromEntries(Object.entries(productEnvironment).filter(([key]) =>
           !['NODE_OPTIONS', 'NODE_PATH'].includes(key.toUpperCase()))),
       });
       const stderr = String(result.stderr ?? result.error?.message ?? '')
@@ -485,6 +485,22 @@ function replayDeniedModule(installed, candidate) {
   } finally {
     fs.rmSync(replayRoot, { recursive: true, force: true });
   }
+}
+
+// Test-only inventory. Include the running installed Node as a positive
+// control; an empty/failed query cannot prove that no competing process exists.
+function installedProcessInventory(installed) {
+  const command = `$root=[IO.Path]::GetFullPath($env:GOGOKE_DIAG_INSTALLED).TrimEnd('\\')+'\\'; ` +
+    `$rows=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('gogoke.exe','gogoke-native-host.exe','node.exe') -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root,[StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.Name+':'+$_.ProcessId+'/'+$_.ParentProcessId }); ` +
+    `$rows -join ','`;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(command, 'utf16le').toString('base64')], {
+    env: { ...process.env, GOGOKE_DIAG_INSTALLED: installed },
+    encoding: 'utf8', timeout: 15000, windowsHide: true,
+  });
+  if (result.error || result.status !== 0) return `INVALID_QUERY:${result.status ?? 'null'}`;
+  const rows = result.stdout.trim();
+  return rows.includes(`node.exe:${process.pid}/`) ? rows : `INVALID_CONTROL:${rows}`;
 }
 
 async function smokeTauri(installed, request, negativeComponent = null, candidate = null) {
@@ -538,12 +554,14 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
   await new Promise((resolve) => listener.close(resolve));
   // Microsoft WebView2 documented per-process diagnostic flags. No registry,
   // product configuration, security policy, or Owner-machine setting is changed.
+  const productEnvironment = { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
+    NODE_OPTIONS: nodeOptions, NODE_PATH: temp,
+    WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` };
+  const beforeLaunchProcesses = candidate ? installedProcessInventory(installed) : 'NOT_RUN';
   const child = spawn(ensure(path.join(installed, 'gogoke.exe')), [`--gogoke-update-ready=${updateReceipt}`], {
     cwd: temp, stdio: 'ignore', windowsHide: false,
-    env: { ...process.env, APPDATA: path.join(temp, 'roaming'), LOCALAPPDATA: path.join(temp, 'local'),
-      NODE_OPTIONS: nodeOptions, NODE_PATH: temp,
-      WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'webview'),
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` },
+    env: productEnvironment,
   });
   let spawnError, exited = false, socket;
   child.once('error', (error) => { spawnError = error; });
@@ -622,9 +640,10 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       // publish; its outcome is not accepted as bootstrap readiness.
       const directResult = await evaluate("window.__TAURI_INTERNALS__.invoke('gogoke_update_signal_ready').then(() => 'DIRECT_INVOKE_SUCCEEDED', error => String(error))");
       const failureCode = /^GOGOKE_PRODUCT_SERVICE_FAILED:([0-9]+)$/.exec(directResult)?.[1];
+      const liveProcesses = candidate ? installedProcessInventory(installed) : 'NOT_RUN';
       const replay = candidate && failureCode
-        ? replayDeniedModule(installed, { ...candidate, failureCode: Number(failureCode) }) : 'NOT_RUN';
-      throw new Error(`installed product bootstrap did not publish readiness; direct IPC result: ${directResult}; module replay: ${replay}`);
+        ? replayDeniedModule(installed, { ...candidate, failureCode: Number(failureCode) }, productEnvironment) : 'NOT_RUN';
+      throw new Error(`installed product bootstrap did not publish readiness; direct IPC result: ${directResult}; installed process inventory before=${beforeLaunchProcesses} live=${liveProcesses}; matched-environment module replay: ${replay}`);
     }
     if (candidate) {
       const ready = JSON.parse(fs.readFileSync(updateReceipt, 'utf8'));
