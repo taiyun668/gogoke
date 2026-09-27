@@ -1,0 +1,30 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-121",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "cfbb1ba7e8a492387e02752d2591c62223dff16b",
+  "recorded_utc": "2026-09-27T03:20:01Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-120.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a repair and validation remain within the authorized package; release is not authorized.",
+  "parallel_inbox_observed_head": "8d231004bd996daa95330046d8fd26613942cc01",
+  "parallel_inbox_new_entries": 1,
+  "parallel_inbox_entry": "claude-r2-06a-7e1b4f8c-preliminary: external Claude CLI read-only report was transported verbatim by the Controller to artifacts/s1-r4/control/reviews/claude-r2-06a-7e1b4f8c-preliminary.md on the control branch, report SHA-256 d6ffaf02f2fac5be0165e960f77ec9beaf6901e67238e83de2bd54e9a07482bd. Claude verified source mapping and key production code but its restricted run could not independently read GitHub run/artifact data; it did not find the separate installer-registration and outer Job windows. This is preliminary review, not final heterogeneous acceptance.",
+  "package": "R2-06A_REVIEW_FINDINGS_REPAIR_IN_PROGRESS",
+  "reviewed_source_commit": "7e1b4f8c915c64dd5d6a6afb6759ee323c5f650f",
+  "reviewed_test_workflow_commit": "8f4b0a27cd637f04ec025c0b6fde6cab88f7ef18",
+  "executed_evidence": "Cloud source 7e1b4f8c remains desktop PASS run 36287202820, hygiene PASS 36287640351, main candidate signing PASS 36288886778, branch installed smoke PASS 36289400367 at test workflow 8f4b0a27. Fresh read-only risk_auditor independently checked exact Git/Actions job/log identities, nonzero Windows test groups and uploaded artifact hashes. It did not run dynamic mutation, new native tests, local install or formal Owner-signed install. MC-120 PASS remains evidence for its exact source, not acceptance of newly identified negative axes.",
+  "review_findings": {
+    "R3_registration_race": "STILL_PRESENT, P2 static finding in R2-06a. NSIS lifecycle lock is target-parent-local; resource_trust.rs rejects an already registered same-domain other root at preflight; gogoke.nsi writes the shared domain HKCU registration much later. Two first installs at different parents may both pass preflight and later overwrite one another's registration. Deterministic cloud A/B barrier: both reach post-preflight, then finish A and B; require B rejection and A registration unchanged. Actual reproduction NOT_RUN. Fix requires domain registration custody held from before preflight through registration readback, retaining target-parent physical lock.",
+    "R4_outer_job_creation": "STILL_PRESENT, P2 static finding in R2-06a. Tauri managed_service in product_entry.rs creates suspended Node before AssignProcessToJobObject; a hard owner exit in that window can leave an uncontained suspended child. Native-host inner process creation was separately fixed and does not close this outer path. Cloud test must pause after CreateProcess and kill exact owner, then observe exact Node handle exit; reproduction NOT_RUN. Fix is creation-time same-Job assignment while preserving existing lease and cleanup semantics.",
+    "R3_leaf_insertion": "NOT_RUN required negative axis. NSIS defines a CI-only post-preflight leaf barrier, but no current cloud workflow/script invokes it; MC-108/110/111 required this test before freeze. Cloud test must insert a target leaf after preflight, then resume and require installer failure with leaf bytes unchanged. Existing happy-path install and CREATE_NEW source inspection do not substitute.",
+    "R4_held_file": "ALREADY_TESTED at MC-107 under Owner's narrowed C07 criterion: cloud frozen/repro lanes each removed the child-held task file and task directory once immediately after owner return, with no retry or sleep. A 258 child signal sample alone was not treated as a resource-release failure."
+  },
+  "path_reflection": "The first frozen-candidate review was requested before the installer leaf negative and outer service Job crash window were independently audited. The next cloud cycle will combine the two narrow production repairs and all three falsifiable Windows negative axes, followed by exact-source desktop, hygiene, candidate signing and installed smoke. This avoids treating a successful installed happy path as proof of absent concurrency faults or paying separate build round trips per axis.",
+  "blocked_or_not_run": "The old 7e1b4f8c candidate is not R2-06a accepted. New R3/R4 negative tests, formal Owner-signed install, Owner Win11/SAC, final fresh risk audit and final external Claude review remain NOT_RUN. R2-05 and PR #34 remain held; R2-06b remains deferred. PR #27 remains Draft. No architecture blocker; both findings fit the frozen contract.",
+  "candidate_state": "R2_06A_OLD_FROZEN_SOURCE_REVIEW_INCOMPLETE_REPAIR_REQUIRED",
+  "external_action_state": "Preliminary Claude report was durably added to Parallel Inbox commit 8d231004 with exact remote readback. No product install, formal signing, merge, release, adoption or Goal Acceptance occurred at this boundary.",
+  "architecture_blocker": "NO",
+  "next_action": "Implement the minimum R2-06a domain registration custody and outer Node creation-time Job assignment; add cloud falsifiable tests for first-install cross-parent race, owner-hard-exit child containment and preflight-to-publish leaf insertion. Run all affected cloud axes on one new exact source, then freeze, fresh focused and all-axis review, final external Claude review and authorized Owner Win11 installed test. Keep PR #34 Owner-held and 06b deferred."
+}
