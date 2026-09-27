@@ -70,7 +70,8 @@ jobs:
         shell: pwsh
         run: |
           foreach ($name in @('gogoke-candidate-installed-preflight.ps1',
-                              'gogoke-r2-06-candidate-installed-smoke.ps1')) {
+                              'gogoke-r2-06-candidate-installed-smoke.ps1',
+                              'gogoke-r206a-installer-negative.ps1')) {
             $path = (Resolve-Path "../../tools/ci/$name").Path
             $tokens = $null
             $errors = $null
@@ -370,6 +371,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (@($custody | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed' }).Count -eq 1)) {
             throw "Product process custody test failed or did not execute exactly one test: $LASTEXITCODE"
           }
+          $outerJob = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml outer_job_owner_hard_exit_kills_suspended_node --lib 2>&1
+          $outerJob | Out-Host
+          if ($LASTEXITCODE -ne 0 -or
+              @($outerJob | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1 -or
+              @($outerJob | Where-Object { $_ -match '^test .*outer_job_owner_hard_exit_kills_suspended_node \.\.\. ok$' }).Count -ne 1) {
+            throw "Outer Job hard-owner-exit test failed, skipped, or did not execute exactly once: $LASTEXITCODE"
+          }
           $poisonedModule = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_product_launch_rejects_poisoned_generation_module --lib 2>&1
           $poisonedModule | Out-Host
           if ($LASTEXITCODE -ne 0 -or
@@ -497,6 +505,46 @@ jobs:
         with:
           name: ${{ steps.artifact-name.outputs.name }}
           path: apps/desktop/frozen-artifact/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Build separate CI-barrier installer for negative installation axes
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $sysroot = (& rustc +1.89.0 --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned shell Rust sysroot unavailable for test installer.' }
+          $linker = Join-Path $sysroot 'lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw 'Pinned shell linker unavailable for test installer.' }
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Resolve-Path -LiteralPath $linker).Path
+          $env:RUSTFLAGS = '-C linker-flavor=lld-link -C link-arg=/Brepro -C link-arg=/DEBUG:NONE'
+          $env:GOGOKE_NSIS_HASH_HELPER = (Resolve-Path -LiteralPath '../../tools/ci/gogoke-nsis-payload.ps1').Path
+          # This is compiled into a separate CI-only setup. The frozen setup
+          # uploaded above never contains a test barrier.
+          $env:GOGOKE_NSIS_TEST_BARRIER = '$TEMP\gogoke-r206a-test-barrier'
+          $expectedShell = (Get-FileHash -LiteralPath 'frozen-artifact/gogoke-portable.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          npm run tauri:build:win:unsigned
+          if ($LASTEXITCODE -ne 0) { throw "CI-barrier installer build failed: $LASTEXITCODE" }
+          $actualShell = (Get-FileHash -LiteralPath 'src-tauri/target/release/gogoke.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualShell -cne $expectedShell) { throw 'CI-barrier build changed frozen production shell bytes.' }
+          $setups = @(Get-Item 'src-tauri/target/release/bundle/nsis/*.exe')
+          if ($setups.Count -ne 1) { throw 'CI-barrier build did not produce exactly one setup.' }
+          $directory = 'nsis-negative-artifact'
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          Copy-Item -LiteralPath $setups[0].FullName -Destination (Join-Path $directory 'gogoke-r206a-test-setup.exe')
+          $testHash = (Get-FileHash -LiteralPath (Join-Path $directory 'gogoke-r206a-test-setup.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $frozenSetup = Join-Path 'frozen-artifact' "gogoke-$version-windows-x64-unsigned-setup.exe"
+          if ($testHash -ceq (Get-FileHash -LiteralPath $frozenSetup -Algorithm SHA256).Hash.ToLowerInvariant()) {
+            throw 'CI-barrier setup is identical to the frozen production setup.'
+          }
+          [ordered]@{schema='gogoke.r2-06a.nsis-negative-instrument.v1';sourceCommit='${{ github.event.pull_request.head.sha || github.sha }}';runId='${{ github.run_id }}';runAttempt='${{ github.run_attempt }}';setupSha256=$testHash;productionShellSha256=$expectedShell;barrier='CI_ONLY'} |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $directory 'instrument.json') -Encoding utf8
+      - name: Upload separate CI-barrier installer
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-nsis-negative-${{ github.sha }}-${{ github.run_id }}
+          path: apps/desktop/nsis-negative-artifact/*
           if-no-files-found: error
           retention-days: 30
 

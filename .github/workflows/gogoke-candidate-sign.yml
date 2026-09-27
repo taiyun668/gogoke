@@ -33,7 +33,7 @@ concurrency:
 jobs:
   candidate-installed-smoke:
     name: Verify and install signed candidate on an isolated Windows runner
-    timeout-minutes: 30
+    timeout-minutes: 60
     runs-on: windows-latest
     steps:
       - name: Checkout the exact execution branch workflow revision
@@ -62,10 +62,18 @@ jobs:
             -SigningRunAttempt '${{ inputs.run_attempt }}' `
             -SignedArtifactId '${{ inputs.artifact_id }}'
           if ($LASTEXITCODE -ne 0) { throw "Signed candidate preflight failed: $LASTEXITCODE" }
+      - name: Download separate CI-only negative installer from the exact source run
+        uses: actions/download-artifact@v4
+        with:
+          name: gogoke-nsis-negative-${{ inputs.source_commit }}-${{ steps.preflight.outputs.source_run_id }}
+          run-id: ${{ steps.preflight.outputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/gogoke-r206a-negative-installer-input
       - name: Exercise actual installed candidate product and uninstall
         shell: pwsh
         env:
           CANDIDATE_INPUT: ${{ steps.preflight.outputs.artifact_directory }}
+          NEGATIVE_INSTALLER_INPUT: ${{ runner.temp }}/gogoke-r206a-negative-installer-input
         run: |
           # The hosted runner starts elevated; WebView2 product smoke uses a
           # pinned launcher to run the actual product under a Medium token.
@@ -111,6 +119,26 @@ jobs:
             if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) {
               throw "Installed candidate Medium smoke failed: $LASTEXITCODE"
             }
+            $negativeScript = (Resolve-Path -LiteralPath './tools/ci/gogoke-r206a-installer-negative.ps1').Path
+            $negativeArguments = @(
+              '--integrity', 'Medium', '--direct', (Join-Path $PSHOME 'pwsh.exe'),
+              '-NoProfile', '-File', $negativeScript,
+              '-SignedArtifactDirectory', $env:CANDIDATE_INPUT,
+              '-InstrumentArtifactDirectory', $env:NEGATIVE_INSTALLER_INPUT,
+              '-ExpectedProductionSetupSha256', '${{ steps.preflight.outputs.setup_sha256 }}',
+              '-ExpectedInstalledShellSha256', '${{ steps.preflight.outputs.installed_shell_sha256 }}',
+              '-ExpectedSourceArtifactId', '${{ steps.preflight.outputs.source_artifact_id }}',
+              '-ExpectedVersion', '${{ steps.preflight.outputs.version }}',
+              '-ExpectedSourceCommit', '${{ inputs.source_commit }}',
+              '-ExpectedRunId', '${{ steps.preflight.outputs.source_run_id }}',
+              '-ExpectedRunAttempt', '${{ steps.preflight.outputs.source_run_attempt }}',
+              '-ExpectedSmokeRunId', '${{ github.run_id }}',
+              '-ExpectedSmokeRunAttempt', '${{ github.run_attempt }}'
+            )
+            & $launcher @negativeArguments
+            if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) {
+              throw "CI-only negative installation axes failed: $LASTEXITCODE"
+            }
           } finally {
             if (Test-Path -LiteralPath $toolRoot) {
               $toolItem = Get-Item -LiteralPath $toolRoot -Force
@@ -127,5 +155,13 @@ jobs:
         with:
           name: gogoke-candidate-installed-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/gogoke-r2-06-candidate-smoke-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Upload bounded CI-only installer negative evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-r206a-installer-negative-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-r206a-installer-negative-${{ github.run_id }}-${{ github.run_attempt }}.json
           if-no-files-found: ignore
           retention-days: 30

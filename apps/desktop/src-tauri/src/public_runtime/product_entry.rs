@@ -416,7 +416,8 @@ mod managed_service {
         InitializeProcThreadAttributeList, ResumeThread, TerminateProcess,
         UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
         CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+        STARTF_USESTDHANDLES, STARTUPINFOEXW,
     };
 
     const CLEANUP_WAIT: Duration = Duration::from_secs(5);
@@ -705,9 +706,9 @@ mod managed_service {
     }
 
     impl AttributeList {
-        fn new(handles: &[HANDLE; 3]) -> Result<Self, String> {
+        fn new(handles: &[HANDLE; 3], job: &HANDLE) -> Result<Self, String> {
             let mut bytes = 0usize;
-            unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut bytes) };
+            unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut bytes) };
             if bytes == 0 {
                 return Err("GOGOKE_PRODUCT_SERVICE_HANDLE_LIST_FAILED".to_string());
             }
@@ -715,7 +716,7 @@ mod managed_service {
                 storage: vec![0; bytes.div_ceil(size_of::<usize>())],
                 initialized: false,
             };
-            if unsafe { InitializeProcThreadAttributeList(result.ptr(), 1, 0, &mut bytes) } == 0 {
+            if unsafe { InitializeProcThreadAttributeList(result.ptr(), 2, 0, &mut bytes) } == 0 {
                 return Err("GOGOKE_PRODUCT_SERVICE_HANDLE_LIST_FAILED".to_string());
             }
             result.initialized = true;
@@ -726,6 +727,14 @@ mod managed_service {
                 )
             } == 0 {
                 return Err("GOGOKE_PRODUCT_SERVICE_HANDLE_LIST_FAILED".to_string());
+            }
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    result.ptr(), 0, PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                    (job as *const HANDLE).cast(), size_of::<HANDLE>(), null_mut(), null(),
+                )
+            } == 0 {
+                return Err("GOGOKE_PRODUCT_SERVICE_JOB_FAILED".to_string());
             }
             Ok(result)
         }
@@ -833,22 +842,6 @@ mod managed_service {
         for handle in [&stdin_write, &stdout_read, &stderr_read] {
             parent_end_not_inherited(handle)?;
         }
-        let inherited = [raw(&stdin_read), raw(&stdout_write), raw(&stderr_write)];
-        let mut attributes = AttributeList::new(&inherited)?;
-        let mut startup = STARTUPINFOEXW::default();
-        startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        startup.StartupInfo.hStdInput = inherited[0];
-        startup.StartupInfo.hStdOutput = inherited[1];
-        startup.StartupInfo.hStdError = inherited[2];
-        startup.lpAttributeList = attributes.ptr();
-        let executable = wide(paths.node_runtime.as_os_str())?;
-        let mut command = command_line(paths, policy);
-        let service_root = paths.service_entry.parent().and_then(std::path::Path::parent)
-            .ok_or("GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE")?;
-        let current_dir = wide(service_root.as_os_str())?;
-        let environment = environment(identity)?;
-
         let job = unsafe { CreateJobObjectW(null(), null()) };
         if job.is_null() {
             return Err("GOGOKE_PRODUCT_SERVICE_JOB_FAILED".to_string());
@@ -865,6 +858,23 @@ mod managed_service {
         } == 0 {
             return Err("GOGOKE_PRODUCT_SERVICE_JOB_FAILED".to_string());
         }
+        let inherited = [raw(&stdin_read), raw(&stdout_write), raw(&stderr_write)];
+        let job_handle = raw(&job);
+        let mut attributes = AttributeList::new(&inherited, &job_handle)?;
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = inherited[0];
+        startup.StartupInfo.hStdOutput = inherited[1];
+        startup.StartupInfo.hStdError = inherited[2];
+        startup.lpAttributeList = attributes.ptr();
+        let executable = wide(paths.node_runtime.as_os_str())?;
+        let mut command = command_line(paths, policy);
+        let service_root = paths.service_entry.parent().and_then(std::path::Path::parent)
+            .ok_or("GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE")?;
+        let current_dir = wide(service_root.as_os_str())?;
+        let environment = environment(identity)?;
+
         let mut info = PROCESS_INFORMATION::default();
         let created = unsafe {
             CreateProcessW(
@@ -881,8 +891,14 @@ mod managed_service {
         let process = owned(info.hProcess);
         let thread = owned(info.hThread);
         let mut managed = ManagedProcess { process, job, process_id: info.dwProcessId, assigned: false };
-        // No request is sent, and the primary thread cannot execute, until
-        // the whole future process tree is under this no-breakaway Job.
+        #[cfg(test)]
+        if std::env::var_os("GOGOKE_TEST_OUTER_JOB_CREATE_PAUSE").is_some() {
+            println!("GOGOKE_OUTER_JOB_CREATED:{}", managed.process_id);
+            std::io::stdout().flush().expect("flush exact Node PID to test parent");
+            loop { std::thread::park(); }
+        }
+        // JOB_LIST already contains the suspended child when CreateProcess returns.
+        // Retain the existing explicit same-Job check before its thread can run.
         if unsafe { AssignProcessToJobObject(raw(&managed.job), raw(&managed.process)) } == 0 {
             terminate(&managed);
             if unsafe { WaitForSingleObject(raw(&managed.process), CLEANUP_WAIT.as_millis() as u32) }
@@ -909,6 +925,22 @@ mod managed_service {
         drop(stdout_write);
         drop(stderr_write);
         Ok((managed, stdin_write, stdout_read, stderr_read))
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_launch_paused(node: std::path::PathBuf, root: std::path::PathBuf) {
+        let paths = ProductRuntimePaths {
+            node_runtime: node,
+            service_entry: root.join("service/dist/bin.mjs"),
+            native_host: root.join("unused-native-host.exe"),
+            product_root: root.join("product"),
+            source_commit: None,
+            runtime_lease: None,
+        };
+        let mut reply = None;
+        let _ = launch(&paths, None, None, &mut reply)
+            .expect("test Node launch reaches post-CreateProcess pause");
+        panic!("post-CreateProcess pause returned unexpectedly");
     }
 
     pub(super) fn run(
@@ -1115,6 +1147,114 @@ pub(crate) async fn acquire_product_gate() -> tokio::sync::MutexGuard<'static, (
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn outer_job_creation_owner_helper() {
+        if std::env::var("GOGOKE_TEST_OUTER_JOB_CREATE_PAUSE").as_deref() != Ok("1") {
+            return; // The parent test activates this helper in a separate process.
+        }
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud test requires the staged signed Node runtime"));
+        let root = PathBuf::from(std::env::var_os("GOGOKE_TEST_OUTER_JOB_ROOT")
+            .expect("parent-owned fixture root"));
+        managed_service::test_launch_paused(node, root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn outer_job_owner_hard_exit_kills_suspended_node() {
+        use std::io::{BufRead, BufReader};
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use std::process::{Child, Command, Stdio};
+        use std::sync::mpsc;
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, WaitForSingleObject,
+            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+
+        struct ExactProcessCleanup {
+            owner: Child,
+            node: Option<OwnedHandle>,
+            node_pid: Option<u32>,
+            owner_reaped: bool,
+        }
+
+        impl Drop for ExactProcessCleanup {
+            fn drop(&mut self) {
+                if self.node.is_none() && !self.owner_reaped {
+                    if let Some(pid) = self.node_pid {
+                        // The owner still holds its process handle here, so
+                        // this PID cannot have been reused for another process.
+                        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+                        if !handle.is_null() {
+                            self.node = Some(unsafe { OwnedHandle::from_raw_handle(handle as _) });
+                        }
+                    }
+                }
+                if !self.owner_reaped {
+                    let _ = self.owner.kill();
+                    let _ = self.owner.wait();
+                }
+                if let Some(node) = &self.node {
+                    let handle = node.as_raw_handle() as _;
+                    if unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT {
+                        unsafe { TerminateProcess(handle, 1) };
+                        let _ = unsafe { WaitForSingleObject(handle, 5000) };
+                    }
+                }
+            }
+        }
+
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud test requires the staged signed Node runtime"));
+        assert!(node.is_file(), "controlled Node must be the staged cloud executable");
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-outer-job-exit-{}", uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(root.join("service/dist"))
+            .expect("parent-owned service directory for Node current directory");
+        let owner = Command::new(std::env::current_exe().expect("current cloud test binary"))
+            .args(["outer_job_creation_owner_helper", "--nocapture"])
+            .env("GOGOKE_TEST_OUTER_JOB_CREATE_PAUSE", "1")
+            .env("GOGOKE_TEST_OUTER_JOB_ROOT", &root)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn exact owning test process");
+        let mut cleanup = ExactProcessCleanup {
+            owner, node: None, node_pid: None, owner_reaped: false,
+        };
+        let stdout = cleanup.owner.stdout.take().expect("owner stdout pipe");
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let marker = BufReader::new(stdout).lines()
+                .filter_map(Result::ok)
+                .find_map(|line| line.split_once("GOGOKE_OUTER_JOB_CREATED:")
+                    .and_then(|(_, pid)| pid.split_whitespace().next())
+                    .and_then(|pid| pid.parse::<u32>().ok()));
+            let _ = sender.send(marker);
+        });
+        let pid = receiver.recv_timeout(Duration::from_secs(30))
+            .expect("one bounded wait for post-CreateProcess marker")
+            .expect("owner must report exact suspended Node PID");
+        cleanup.node_pid = Some(pid);
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+        assert!(!handle.is_null(), "open exact suspended Node before owner termination");
+        cleanup.node = Some(unsafe { OwnedHandle::from_raw_handle(handle as _) });
+        let node_handle = cleanup.node.as_ref().expect("exact Node handle").as_raw_handle() as _;
+        assert_eq!(unsafe { WaitForSingleObject(node_handle, 0) }, WAIT_TIMEOUT,
+            "Node must still be suspended when owner is terminated");
+        cleanup.owner.kill().expect("hard-terminate exact owning test process");
+        let owner_status = cleanup.owner.wait().expect("confirm owner process exit");
+        cleanup.owner_reaped = true;
+        assert!(!owner_status.success(), "owner must exit by termination");
+        let node_wait = unsafe { WaitForSingleObject(node_handle, 5000) };
+        drop(cleanup); // On failure, terminate and reap the exact Node before asserting.
+        std::fs::remove_dir_all(&root).expect("remove parent-owned test fixture");
+        assert_eq!(node_wait, WAIT_OBJECT_0,
+            "closing the hard-terminated owner's kill-on-close Job must exit exact Node");
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

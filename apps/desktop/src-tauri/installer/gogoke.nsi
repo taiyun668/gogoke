@@ -97,6 +97,8 @@ Var GogokeVersion
 Var GogokeReceiptDomain
 Var GogokeInstallInstanceId
 Var GogokeLifecycleLockHandle
+Var GogokeRegistrationLockHandle
+Var GogokeRegistrationLockPath
 Var GogokeInstallParent
 Var GogokePinnedDirectoryList
 Var GogokeAllowDirectoryCreation
@@ -375,6 +377,24 @@ Function AcquireGogokeLifecycleLock
   ${EndIf}
   StrCpy $GogokeInstallParent $0
   StrCpy $GogokeAllowDirectoryCreation 0
+  ; Different target parents may still write the same per-user, per-domain
+  ; uninstall registration. Hold this physical file from before signed
+  ; preflight through the final registration readback.
+  Push "$LOCALAPPDATA"
+  Call GogokePinDirectory
+  Pop $9
+  StrCpy $GogokeRegistrationLockPath "$LOCALAPPDATA\gogoke-registration-$GogokeInstallDomain.lock"
+  System::Call 'kernel32::CreateFileW(w "$GogokeRegistrationLockPath", i 0xC0000000, i 0, p 0, i 4, i 0x00200080, p 0) p .r2'
+  ${If} $2 == -1
+    Abort "Another Gogoke install for this registration domain is active."
+  ${EndIf}
+  StrCpy $GogokeRegistrationLockHandle $2
+  System::Call 'kernel32::GetFileAttributesW(w "$GogokeRegistrationLockPath") i .r6'
+  IntOp $7 $6 & 0x410
+  ${If} $6 == -1
+  ${OrIf} $7 != 0
+    Abort "The Gogoke registration lifecycle path is not a plain file."
+  ${EndIf}
   Push "$0"
   Call GogokePinDirectory
   Pop $9
@@ -583,6 +603,10 @@ Function ReleaseGogokeLifecycleLock
   ${If} $GogokeLifecycleLockHandle != ""
     System::Call 'kernel32::CloseHandle(p $GogokeLifecycleLockHandle)'
     StrCpy $GogokeLifecycleLockHandle ""
+  ${EndIf}
+  ${If} $GogokeRegistrationLockHandle != ""
+    System::Call 'kernel32::CloseHandle(p $GogokeRegistrationLockHandle)'
+    StrCpy $GogokeRegistrationLockHandle ""
   ${EndIf}
 FunctionEnd
 
