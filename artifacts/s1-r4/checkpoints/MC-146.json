@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-146",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "cf0504a4a82c7832b0014163e9cb0b821920a089",
+  "recorded_utc": "2026-09-27T09:49:00Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-145.json",
+  "parallel_inbox_observed_head": "c0c67c89bf8c2ab1e1ef629fa6a17ede2b96c292",
+  "inbox_entry": "claude-r2-06a-b025ba44",
+  "inbox_report": "artifacts/s1-r4/control/reviews/claude-r2-06a-b025ba44.md",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "candidate_state": "FROZEN_TEST_ONLY_NOT_ACCEPTED; NEW_G1_G2_REPAIR_PENDING",
+  "inbox_classification_at_b025_bytes": {
+    "G1": "STILL_PRESENT: install has no package-context preflight and accepts the redirected Codex-view target; shell uninstall has no package-context preflight, and fixed finalizer rejects a redirected ancestor. The current Codex-descended PowerShell process returned GetCurrentPackageFullName=15700 while seeing the redirected candidate and private registry, so package-identity API alone is not a sufficient detector in this observed process tree. Keep physical path checks; add an earlier no-mutation path-view check as well as the package-identity check.",
+    "G2": "STILL_PRESENT: finalizer Acquire-RegistrationLock maps all CreateFileW failures to GOGOKE_UNINSTALL_REGISTRATION_LOCK_UNAVAILABLE, despite SetLastError=true.",
+    "G3": "NEEDS_REVIEW with corrected premise: ordinary-before formalRegistry is null, but packaged-view formal-before uses the field registry and contains the 0.1.2 HKCU uninstall entry including InstallLocation and UninstallString. The current Codex-descended process also reads this key. Need establish precise formal install/uninstall route before R2-05 without touching formal bytes.",
+    "G4": "STILL_PRESENT: itemized size/reference/view-specific cleanup plan is not yet written. All residue remains preserved; no deletion authorized."
+  },
+  "direct_observations": "Existing external-context probes recorded the same user SID and different logical file/HKCU views for Codex-descended and Task Scheduler processes. A read-only current-process GetCurrentPackageFullName probe returned 15700 although candidate path and private registration were visible. Existing finalizer diagnostic observed logical LocalAppData/gogoke-agent-tmp open physically through Codex Package LocalCache, producing OPENED_OBJECT_UNSAFE. The package API is insufficient as a sole guard for this specific inherited context.",
+  "next_action": "Repair G1/G2 within R2-06a, including a testable no-product-mutation rejection branch and no weakening of no-follow physical path checking. Investigate G3 direct source and snapshots; inventory G4 with locations, bytes, references and view-specific cleanup. Under Owner's later explicit instruction, commit and push redacted evidence, obtain a new independent read-only audit of each item, then delete only approved items and read back absence; retain any unapproved or auto-review-rejected item. Rerun affected exact-source cloud build, hygiene, trusted candidate binding and installed negatives; redo affected ordinary Win11/SAC install, product, uninstall and formal before/after comparisons only for final bytes. Before testing machine-check Gogoke processes. Stop and preserve state if SAC blocks a new component, formal bytes/data/shortcuts/registry change, G3 requires modifying formal, or the security/scope boundary must change. Do not merge PR34, enter R2-06b, publish, code sign or alter security settings."
+}

@@ -292,6 +292,7 @@ FunctionEnd
 {{/each}}
 
 Function .onInit
+  Call RejectRedirectedInstallContext
   Call SelectSignedInstallDomain
 
   ${GetOptions} $CMDLINE "/P" $PassiveMode
@@ -326,6 +327,57 @@ Function .onInit
   !if "${INSTALLMODE}" == "both"
     !insertmacro MULTIUSER_INIT
   !endif
+FunctionEnd
+
+Function RejectRedirectedInstallContext
+  ; A packaged process has a package identity. Some children of a packaged
+  ; process have no identity of their own but still receive redirected AppData,
+  ; so the identity check alone cannot establish the physical write view.
+  StrCpy $0 0
+  System::Call 'kernel32::GetCurrentPackageFullName(*i .r0, p 0) i .r1'
+  !ifdef GOGOKE_NSIS_TEST_BARRIER
+    ${GetOptions} $CMDLINE "/GOGOKE_CI_PACKAGE_STATUS=" $2
+    ${IfNot} ${Errors}
+      StrCpy $1 $2
+    ${EndIf}
+  !endif
+  ${If} $1 != 15700
+    !insertmacro GogokeCIStage package-rejected
+    Abort "Gogoke installation must be run directly, outside a packaged application (Windows package status $1)."
+  ${EndIf}
+
+  ; Probe the actual write view with a unique, delete-on-close plain file.
+  ; This leaves no persistent file and runs before any installation mutation.
+  System::Call 'kernel32::GetCurrentProcessId() i .r1'
+  System::Call 'kernel32::GetTickCount() i .r2'
+  StrCpy $0 "$LOCALAPPDATA\.gogoke-view-probe-$1-$2"
+  System::Call 'kernel32::CreateFileW(w "$0", i 0xC0010000, i 0, p 0, i 1, i 0x04200100, p 0) p .r3 ?e'
+  Pop $6
+  ${If} $3 == -1
+    Abort "Gogoke could not verify the installation write view (Windows error $6)."
+  ${EndIf}
+  System::Call 'kernel32::GetFinalPathNameByHandleW(p $3, w .r4, i ${NSIS_MAX_STRLEN}, i 0) i .r5'
+  System::Call 'kernel32::CloseHandle(p $3) i .r6'
+  ${If} $6 == 0
+    Abort "Gogoke could not close its temporary write-view probe."
+  ${EndIf}
+  ${If} $5 == 0
+  ${OrIf} $5 >= ${NSIS_MAX_STRLEN}
+    Abort "Gogoke could not resolve the installation write view."
+  ${EndIf}
+  System::Call 'kernel32::lstrcmpiW(w "$4", w "\\?\$0") i .r6'
+  !ifdef GOGOKE_NSIS_TEST_BARRIER
+    ${GetOptions} $CMDLINE "/GOGOKE_CI_REDIRECTED_VIEW=" $2
+    ${IfNot} ${Errors}
+      ${If} $2 == 1
+        StrCpy $6 1
+      ${EndIf}
+    ${EndIf}
+  !endif
+  ${If} $6 != 0
+    !insertmacro GogokeCIStage view-rejected
+    Abort "Gogoke installation must be run directly, outside a redirected application view."
+  ${EndIf}
 FunctionEnd
 
 Function SelectSignedInstallDomain

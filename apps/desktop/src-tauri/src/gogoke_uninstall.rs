@@ -30,18 +30,22 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Variant::VT_BSTR;
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_Programs, IShellLinkW, SHGetKnownFolderPath, ShellLink,
+    FOLDERID_Desktop, FOLDERID_LocalAppData, FOLDERID_Programs, IShellLinkW, SHGetKnownFolderPath,
+    ShellLink,
 };
 use windows_sys::Win32::Foundation::GetHandleInformation;
 use windows_sys::Win32::Foundation::{
-    DuplicateHandle, DUPLICATE_SAME_ACCESS, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    CloseHandle, DuplicateHandle, APPMODEL_ERROR_NO_PACKAGE, DUPLICATE_SAME_ACCESS, GENERIC_READ,
+    GENERIC_WRITE, HANDLE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FileAttributeTagInfo, FileDispositionInfoEx, FileIdInfo, GetFileInformationByHandleEx,
-    GetFinalPathNameByHandleW, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_DISPOSITION_FLAG_ON_CLOSE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+    CreateFileW, FileAttributeTagInfo, FileDispositionInfoEx, FileIdInfo,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, SetFileInformationByHandle, DELETE,
+    FILE_ATTRIBUTE_TAG_INFO, FILE_ATTRIBUTE_TEMPORARY, FILE_DISPOSITION_FLAG_ON_CLOSE,
+    FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_DELETE_ON_CLOSE,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
 };
+use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
@@ -61,6 +65,78 @@ if (-not $encodedScript -or $encodedScript.Length -gt 131072) {
 $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encodedScript))
 & ([ScriptBlock]::Create($source))
 "#;
+
+fn require_unpacked_status(package_status: u32) -> Result<(), String> {
+    if package_status != APPMODEL_ERROR_NO_PACKAGE {
+        return Err(format!("GOGOKE_UNINSTALL_PACKAGED_CONTEXT_{package_status}"));
+    }
+    Ok(())
+}
+
+fn reject_redirected_uninstall_context() -> Result<(), String> {
+    let mut package_length = 0u32;
+    let package_status = unsafe { GetCurrentPackageFullName(&mut package_length, std::ptr::null_mut()) };
+    require_unpacked_status(package_status)?;
+
+    // A child without package identity can still inherit a redirected file
+    // and registry view. The temporary file is deleted when its handle closes.
+    let raw = unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, Default::default(), None) }
+        .map_err(|_| "GOGOKE_UNINSTALL_LOCAL_DATA_UNAVAILABLE".to_string())?;
+    let local_data = unsafe { raw.to_string() }
+        .map(PathBuf::from)
+        .map_err(|_| "GOGOKE_UNINSTALL_LOCAL_DATA_ENCODING".to_string());
+    unsafe { CoTaskMemFree(Some(raw.0.cast())) };
+    let probe_path = local_data?.join(format!(
+        ".gogoke-view-probe-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let wide: Vec<u16> = probe_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE | DELETE,
+            0,
+            std::ptr::null(),
+            1, // CREATE_NEW
+            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == -1isize as HANDLE {
+        return Err("GOGOKE_UNINSTALL_CONTEXT_PROBE_FAILED".to_string());
+    }
+    let actual = final_handle_path(handle).map_err(|_| "GOGOKE_UNINSTALL_CONTEXT_PROBE_PATH_FAILED".to_string());
+    let closed = unsafe { CloseHandle(handle) };
+    if closed == 0 {
+        return Err("GOGOKE_UNINSTALL_CONTEXT_PROBE_CLOSE_FAILED".to_string());
+    }
+    let actual = actual?;
+    if !actual.as_os_str().to_string_lossy().eq_ignore_ascii_case(
+        &probe_path.as_os_str().to_string_lossy(),
+    ) {
+        return Err("GOGOKE_UNINSTALL_REDIRECTED_CONTEXT".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod context_guard_tests {
+    use super::*;
+
+    #[test]
+    fn only_no_package_status_reaches_physical_view_probe() {
+        assert!(require_unpacked_status(APPMODEL_ERROR_NO_PACKAGE).is_ok());
+        assert_eq!(
+            require_unpacked_status(122).unwrap_err(),
+            "GOGOKE_UNINSTALL_PACKAGED_CONTEXT_122"
+        );
+        assert_eq!(
+            require_unpacked_status(0).unwrap_err(),
+            "GOGOKE_UNINSTALL_PACKAGED_CONTEXT_0"
+        );
+    }
+}
 
 #[derive(Eq, PartialEq, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -791,6 +867,7 @@ fn inherited_lock_stdio(lock: &File) -> Result<Stdio, String> {
 }
 
 pub(crate) fn run() -> Result<(), String> {
+    reject_redirected_uninstall_context()?;
     let exe = std::env::current_exe().map_err(|_| "GOGOKE_EXE_PATH_UNAVAILABLE".to_string())?;
     let root = exe.parent().ok_or("GOGOKE_INSTALL_ROOT_UNAVAILABLE")?;
     let parent = root.parent().ok_or("GOGOKE_INSTALL_PARENT_UNAVAILABLE")?;

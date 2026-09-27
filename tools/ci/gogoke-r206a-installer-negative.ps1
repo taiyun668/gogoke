@@ -34,6 +34,8 @@ $script:receipt = [ordered]@{
     smokeRunId = $ExpectedSmokeRunId
     smokeRunAttempt = $ExpectedSmokeRunAttempt
     productionSetupSha256 = $ExpectedProductionSetupSha256
+    packagedContext = [ordered]@{ state = 'FAIL' }
+    redirectedContext = [ordered]@{ state = 'FAIL' }
     leafInsertion = [ordered]@{ state = 'FAIL' }
     sameDomainDifferentParents = [ordered]@{ state = 'FAIL' }
     uninstallInstallInterleave = [ordered]@{ state = 'FAIL' }
@@ -77,7 +79,7 @@ function Assert-NoCandidateRegistration {
     if (Test-Path -LiteralPath $script:registration) { throw 'Candidate uninstall registration already exists or remains' }
     if (Test-Path -LiteralPath $script:productRootKey) { throw 'Candidate product-root registry key exists' }
 }
-function Start-Installer([string]$Setup, [string]$Target) {
+function Start-Installer([string]$Setup, [string]$Target, [string]$CiContext = '') {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Setup
     $start.UseShellExecute = $false
@@ -86,6 +88,7 @@ function Start-Installer([string]$Setup, [string]$Target) {
     $start.Environment['TEMP'] = $script:runnerRoot
     $start.Environment['TMP'] = $script:runnerRoot
     [void]$start.ArgumentList.Add('/S')
+    if ($CiContext) { [void]$start.ArgumentList.Add($CiContext) }
     [void]$start.ArgumentList.Add("/D=$Target")
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
@@ -223,7 +226,8 @@ try {
     $script:readyPath = Join-Path $script:runnerRoot 'gogoke-r206a-test-barrier.ready'
     $script:goPath = Join-Path $script:runnerRoot 'gogoke-r206a-test-barrier.go'
     $script:stagePaths = [ordered]@{}
-    foreach ($name in @('lock', 'lock-busy', 'preflight-start', 'preflight-end', 'install-start')) {
+    foreach ($name in @('package-rejected', 'view-rejected', 'lock', 'lock-busy',
+                         'preflight-start', 'preflight-end', 'install-start')) {
         $script:stagePaths[$name] = Join-Path $script:runnerRoot "gogoke-r206a-test-barrier.stage-$name"
     }
     foreach ($path in @($script:readyPath, $script:goPath) + @($script:stagePaths.Values)) {
@@ -298,6 +302,31 @@ try {
     if ((Get-Sha $script:stagedSetup) -cne $testHash) { throw 'Staged instrumented setup differs' }
     foreach ($name in @('SHA256SUMS.windows', 'SHA256SUMS.windows.sig')) {
         if (Test-Path -LiteralPath (Join-Path $setupRoot $name)) { throw 'Formal sidecar leaked into candidate staging' }
+    }
+
+    # The two injected values exist only in the separate CI instrumented
+    # setup. They exercise the production rejection branches without claiming
+    # that a GitHub runner reproduces a real MSIX virtualized process.
+    foreach ($case in @(
+        @{ axis='packagedContext'; argument='/GOGOKE_CI_PACKAGE_STATUS=122'; marker='package-rejected' },
+        @{ axis='redirectedContext'; argument='/GOGOKE_CI_REDIRECTED_VIEW=1'; marker='view-rejected' }
+    )) {
+        $script:stage = "reject-$($case.axis)"
+        $script:axis = $case.axis
+        $target = Join-Path $script:workRoot "reject-$($case.axis)"
+        $process = Start-Installer $script:stagedSetup $target $case.argument
+        $exit = Wait-Exit $process 30000 "Installer $($case.axis)"
+        if ($exit -eq 0 -or -not (Test-Path -LiteralPath $script:stagePaths[$case.marker] -PathType Leaf) -or
+            (Test-Path -LiteralPath $target) -or (Test-Path -LiteralPath $script:readyPath) -or
+            (Test-Path -LiteralPath $script:stagePaths['lock'])) {
+            throw "Installer $($case.axis) did not reject before product mutation"
+        }
+        Assert-NoCandidateRegistration
+        $script:receipt[$case.axis] = [ordered]@{
+            state='PASS'; installerExitCode=$exit; rejectionStage=$case.marker;
+            target='ABSENT'; registration='ABSENT'; runnerMsixContext='NOT_REPRODUCED'
+        }
+        Clear-TestMarkers
     }
 
     $script:stage = 'leaf-insertion'

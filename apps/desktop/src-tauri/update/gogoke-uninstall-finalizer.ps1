@@ -172,7 +172,11 @@ function Acquire-RegistrationLock {
         [uint32]0, [IntPtr]::Zero, [uint32]4, [uint32]0x00200080,
         [IntPtr]::Zero)
     if ($raw.ToInt64() -eq -1 -or $raw -eq [IntPtr]::Zero) {
-        Fail 'GOGOKE_UNINSTALL_REGISTRATION_LOCK_UNAVAILABLE'
+        $win32 = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($win32 -eq 32) {
+            Fail 'GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY'
+        }
+        Fail "GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_$win32"
     }
     $handle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($raw, $true)
     try {
