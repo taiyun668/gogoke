@@ -1,0 +1,28 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-140",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "734fdadc3957ae579c59bd2e1c8ba221c303c2e2",
+  "recorded_utc": "2026-09-27T09:01:44Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-139.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "ordinary_user_win11_baseline": {
+    "process_context": "same Windows user SID as Controller, interactive session 1, outside Codex package virtualization; temporary scheduled task removed after read-only snapshot",
+    "local_evidence": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary-before.json",
+    "os_version": "10.0.26200.0",
+    "smart_app_control_state": 1,
+    "gogoke_processes": 0,
+    "formal_install": "12,989 files, tree SHA-256 12718c0f75088df2e58bdda03e1bd552ce3450893c26be559bacd12b50a21515",
+    "formal_data": "2 files, tree SHA-256 a6cf031c11494970dc3d22d7ec61f2696027cd1ff7e60b4b98e97c6fac4c71a8",
+    "formal_hkcu_registration": "ABSENT in ordinary-user view; packaged view has its own formal registration. This baseline cannot claim a pre-existing ordinary-view registration.",
+    "formal_shortcuts": "Start Menu and Desktop both present and both point to ordinary %LOCALAPPDATA%\\Programs\\gogoke\\gogoke.exe; hashes recorded in local snapshot",
+    "candidate_registration_data_and_new_target": "ALL ABSENT in ordinary-user view",
+    "code_integrity_baseline_record_id": 7097,
+    "events_7090_to_7097": "four 3033 plus four correlated 3089 events identify Google Chrome's vk_swiftshader.dll and vulkan-1.dll at 2026-09-27T08:54:22-23Z; unrelated to Gogoke"
+  },
+  "decision": "Proceed with one ordinary-user installation at a fresh isolated target using the already frozen b025 signed production setup. This is a corrected environment test, not a claim that the earlier packaged-view failure was repaired or its candidate removed. The ordinary formal registry absence is recorded as a pre-existing state and must remain absent; formal files, data and shortcuts must match this ordinary baseline after candidate teardown. Keep the packaged candidate untouched.",
+  "inbox_classification_at_current_b025_bytes": {"F1": "ALREADY_FIXED with cloud interleave evidence; ordinary-user Win11 uninstall pending", "F2": "ALREADY_FIXED; non-32 dynamic branch unobserved", "F3": "ALREADY_FIXED in preparation with packaged-view residue newly documented", "F4": "NEEDS_REVIEW after ordinary-view formal comparison and shortcut launch"},
+  "next_action": "From the same ordinary-user context, recheck no Gogoke process, candidate registration/data/target absence, SAC state, and frozen setup SHA-256 2419d848017694e6819eb4e8dcd1004116e0a83e4ad4d2cde003b9d8448eb70d. Install once into a new real %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-real-install-b025 root; record process, exit, exact installed hashes, registration and Code Integrity events. Stop on discrepancy. Preserve formal installation and both evidence copies; no PR #34 merge, R2-06b, release, code signing, system-setting change or self-acceptance."
+}
