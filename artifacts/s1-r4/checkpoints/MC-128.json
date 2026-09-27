@@ -1,0 +1,18 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-128",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "9e295084c33cea0026c2d479e0cfeb697fd53941",
+  "recorded_utc": "2026-09-27T06:39:45Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-127.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "3bd831e6d60ffde67145fdc56f50957689e77435",
+  "candidate_state": "NEW_CLOUD_BUILD_AND_TRUSTED_CANDIDATE_SIGNING_PASS_INSTALLED_SMOKE_RUNNING_NOT_ACCEPTED",
+  "cloud_build": { "run_id": 36298532339, "source_commit": "3bd831e6d60ffde67145fdc56f50957689e77435", "conclusion": "success", "frozen_artifact_id": 10925064197, "frozen_artifact_archive_sha256": "851acc26557dd6114109877331b7ba78412e93cdb18d1010affbabf209f52f53", "ci_only_negative_installer_artifact_id": 10924489605, "reproducibility_artifact_id": 10925134581, "reproducibility_receipt_sha256": "99d79928e503c01ca620ff79a6bfb82cd7aa242bfd26257c61eac5cf9a79cff2", "reproducibility_state": "PASS", "six_classes": ["gogoke-portable.exe", "gogoke-installed-shell.nsis.exe", "gogoke-native-host.exe", "node.exe", "gogoke-resources.windows.zip", "resource-index.json"] },
+  "cloud_public_source_hygiene": { "run_id": 36298541071, "source_commit": "3bd831e6d60ffde67145fdc56f50957689e77435", "conclusion": "success" },
+  "trusted_main_candidate_signing": { "run_id": 36300677189, "event": "workflow_run", "trusted_main_sha": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e", "conclusion": "success", "signed_candidate_artifact_id": 10925630942, "signed_candidate_archive_sha256": "5e3262f6585055bda6443ccabb82bb8304c88ba0d411ef25e111e47df5b0d836" },
+  "installed_smoke": { "run_id": 36300743274, "workflow_revision": "9e295084c33cea0026c2d479e0cfeb697fd53941", "source_commit": "3bd831e6d60ffde67145fdc56f50957689e77435", "observed_status": "in_progress", "new_uninstall_install_interleave": "NOT_YET_OBSERVED" },
+  "owner_win11": "NOT_RUN. The former a3b6f85e setup and hashes remain superseded. Do not install until new signed bytes, cloud smoke including interleave, and refreshed local baseline are checked.",
+  "next_action": "Read original installed-smoke logs and bounded receipts for the exact signed candidate and CI-only A-uninstall/B-install negative axis. Repair failures and rerun affected cloud checks if necessary. When passed, independently reverify downloaded candidate archive, manifest signature, setup and component hashes, update Win11 prep, then perform one isolated Owner Win11/SAC install/product/uninstall and formal-shortcut launch after formal snapshot comparison. Retain MC-122 two-file copy. No PR #34 merge, R2-06b, publication, code signing, or security-setting changes."
+}
