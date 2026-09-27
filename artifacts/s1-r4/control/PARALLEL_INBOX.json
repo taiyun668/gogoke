@@ -104,6 +104,40 @@
         }
       ],
       "not_an_approval": true
+    },
+    {
+      "id": "claude-r2-06a-b025ba44",
+      "from": "Claude external heterogeneous review",
+      "recorded_utc": "2026-09-27T09:40:17Z",
+      "candidate_source_sha": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+      "reviewed_range": "a3b6f85e38ca0971fdd05096734c2e99aeee7ec4..b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+      "evidence_checkpoint": "MC-145",
+      "report": "artifacts/s1-r4/control/reviews/claude-r2-06a-b025ba44.md",
+      "report_sha256": "74d3f401548b8eb66cf59d50e22bdfba603c367bae0e3e5daac5c066d7708fa8",
+      "verdict": "F1_F2_FIXED_ORDINARY_WIN11_EVIDENCE_SUPPORTED_ONE_MEDIUM_PACKAGED_CONTEXT",
+      "findings": [
+        {
+          "id": "G1",
+          "severity": "MEDIUM",
+          "summary": "Installer accepts a virtualized (MSIX packaged) LocalAppData while the uninstall finalizer rejects it, creating an instance that installs but cannot uninstall; refuse packaged contexts before any mutation on both sides and run Owner-machine installs in the ordinary view"
+        },
+        {
+          "id": "G2",
+          "severity": "LOW",
+          "summary": "Uninstall registration-lock failure is not distinguished by Windows error; report 32 as concurrent operation and others by code"
+        },
+        {
+          "id": "G3",
+          "severity": "NEEDS_REVIEW",
+          "summary": "Formal 0.1.2 has no HKCU uninstall registration in either view; find the cause and settle the formal install and uninstall path before R2-05"
+        },
+        {
+          "id": "G4",
+          "severity": "HOUSEKEEPING",
+          "summary": "Owner-machine residue (packaged candidate, ordinary lock and data, empty dirs, MC-122 copy, evidence folder) needs an itemised cleanup plan; permanent deletion only with Owner consent"
+        }
+      ],
+      "not_an_approval": true
     }
   ]
 }
