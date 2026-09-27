@@ -1,0 +1,16 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-133",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "6d6898e37241dd1337c14a46f321c284f96e3898",
+  "recorded_utc": "2026-09-27T08:18:51Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-132.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "independent_final_risk_audit": {"report": "artifacts/s1-r4/reviews/R2-06a-b025-final-risk-audit.md", "result": "No newly confirmed P1/P2; F1 final Assert/Delete window interleave and F2 error-32 branch have actual cloud evidence. All-axis PASS and acceptance remain false because Owner Win11/SAC, formal release domain and current-source external Claude remain outstanding.", "prior_WCS26_F1": "NEEDS_REVIEW under MC-107, not raised to a proven flaw or claimed PASS"},
+  "owner_win11_preparation": {"document": "artifacts/s1-r4/R2-06a-owner-win11-isolated-prep-b025.md", "status": "READY_FOR_WIN11_TEST; NOT_RUN", "candidate_setup_sha256": "2419d848017694e6819eb4e8dcd1004116e0a83e4ad4d2cde003b9d8448eb70d", "owner_touch": "Only optional subjective Home/result view after machine checks; all observable process, installation, registry, hash, SAC event and cleanup-condition checks belong to Controller.", "formal_snapshot_instrument": "Two read-only precheck snapshots under %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-b025 match: 12,989 formal installation files, 6 formal data files, registry and two shortcuts; refresh immediately before install. No gogoke.exe or gogoke-native-host.exe process observed at the earlier precheck; SAC state 1. No candidate install has run."},
+  "inbox_classification": {"F1": "ALREADY_FIXED in source with bounded CI deletion-window evidence; Owner Win11 real environment pending", "F2": "ALREADY_FIXED; error-32 path observed, non-32 branch not dynamically triggered", "F3": "ALREADY_FIXED in fresh preparation; residual lock file, candidate data and unknown install-root files have conditions, no cleanup performed", "F4": "NEEDS_REVIEW until the required formal shortcut launch occurs after post-uninstall formal snapshot comparison"},
+  "external_heterogeneous_review_to_owner": "Request exact-source Claude review of a3b6f85e..b025ba44 including F1/F2, finalizer deletion-window CI instrument validity, candidate identity and Win11 formal-install preservation. Owner transfers; do not wait for its result to execute the already-authorized local test. Read a new inbox item only at the next natural checkpoint.",
+  "next_action": "Push checkpoint, recheck exact candidate/provenance and current process/SAC/formal/candidate state, then execute one isolated installation and product test on Owner Win11 using only production setup from signed artifact 10926871618. Record actual component hashes, registration/instance, service/native-host behavior, Code Integrity events, uninstall finalizer/data preservation, formal before-after comparison, then launch formal shortcut once. Stop and retain custody on any identity, SAC or cleanup uncertainty. Preserve MC-122 two-file copy; no PR #34 merge, R2-06b, publication, code signing, security-setting change or self-acceptance."
+}
