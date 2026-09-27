@@ -434,7 +434,10 @@ try {
 
     $script:stage = 'sentinel-and-product-readiness'
     $script:result.stage = $script:stage
-    New-Item -ItemType Directory -Path $script:appDataRoot | Out-Null
+    if (-not (Test-Path -LiteralPath $script:appDataRoot -PathType Container)) {
+        throw 'Installed product did not create candidate AppData root'
+    }
+    Assert-NoReparseAncestors $script:appDataRoot
     $sentinelName = "r2-06-candidate-$ExpectedRunId-$ExpectedRunAttempt.sentinel"
     $script:ownedSentinel = Join-Path $script:appDataRoot $sentinelName
     $sentinelBytes = [Text.Encoding]::UTF8.GetBytes("gogoke-r2-06-candidate-appdata-sentinel`n$ExpectedSourceCommit`n$ExpectedRunId`n$ExpectedRunAttempt`n")
