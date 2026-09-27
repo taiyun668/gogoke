@@ -87,6 +87,20 @@ ${StrLoc}
   !endif
 !endif
 
+!macro GogokeCIStage NAME
+  !ifdef GOGOKE_NSIS_TEST_BARRIER
+    Push $8
+    ClearErrors
+    FileOpen $8 "${GOGOKE_NSIS_TEST_BARRIER}.stage-${NAME}" w
+    ${If} ${Errors}
+      Pop $8
+      Abort "The CI installation stage marker could not be written."
+    ${EndIf}
+    FileClose $8
+    Pop $8
+  !endif
+!macroend
+
 Var PassiveMode
 Var UpdateMode
 Var NoShortcutMode
@@ -388,6 +402,7 @@ Function AcquireGogokeLifecycleLock
   Pop $6
   ${If} $2 == -1
     ${If} $6 == 32
+      !insertmacro GogokeCIStage lock-busy
       Abort "Another Gogoke install or uninstall for this registration domain is active."
     ${EndIf}
     Abort "The Gogoke registration lifecycle lock could not be opened (Windows error $6)."
@@ -876,6 +891,7 @@ FunctionEnd
 
 Section EarlyChecks
   Call AcquireGogokeLifecycleLock
+  !insertmacro GogokeCIStage lock
   ; Abort silent installer if downgrades is disabled
   !if "${ALLOWDOWNGRADES}" == "false"
   ${If} ${Silent}
@@ -932,10 +948,12 @@ Section SignedInstallSetPreflight
   StrCpy $GogokeVerifierPath "$PLUGINSDIR\gogoke-preflight\gogoke.exe"
   Call GogokeVerifyShellFile
   StrCpy $GogokePreflightHandle $GogokeVerifiedHandle
+  !insertmacro GogokeCIStage preflight-start
   ExecWait '"$PLUGINSDIR\gogoke-preflight\gogoke.exe" "--gogoke-verify-install-set=$EXEDIR" "--gogoke-install-target=$INSTDIR"' $0
   ${If} $0 != 0
     Abort "The signed Gogoke installer sibling set could not be verified."
   ${EndIf}
+  !insertmacro GogokeCIStage preflight-end
   SetOverwrite on
   Goto gogoke_preflight_done
 gogoke_preflight_extract_failed:
@@ -1061,6 +1079,7 @@ Section Install
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
+  !insertmacro GogokeCIStage install-start
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Publish the exact NSS shell already verified and pinned for preflight.

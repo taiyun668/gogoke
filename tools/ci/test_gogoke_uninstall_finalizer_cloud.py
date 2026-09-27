@@ -79,8 +79,8 @@ def require_cloud() -> None:
         raise RuntimeError("Windows GitHub Actions only; never run deletion locally")
 
 
-def parent_helper(payload_path: Path, hold_ready: Path | None = None,
-                  hold_go: Path | None = None) -> int:
+def parent_helper(payload_path: Path, delete_ready: Path | None = None,
+                  delete_go: Path | None = None) -> int:
     require_cloud()
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     payload["parentPid"] = os.getpid()
@@ -95,7 +95,32 @@ def parent_helper(payload_path: Path, hold_ready: Path | None = None,
     ).decode("ascii")
     if len(encoded_bootstrap) >= 32767:
         raise AssertionError("finalizer bootstrap exceeds CreateProcess argument limit")
-    embedded = base64.b64encode(SCRIPT.read_bytes())
+    finalizer = SCRIPT.read_bytes()
+    child_env = os.environ.copy()
+    if delete_ready is not None and delete_go is not None:
+        # CI-only in-memory barrier immediately after the final Assert-Root
+        # and before DeleteSubKey. The production embedded script is unchanged.
+        deletion = b"    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($subkey, $false)"
+        if finalizer.count(deletion) != 1:
+            raise AssertionError("finalizer deletion point is not unique")
+        pause = b"""    $ciReady = $env:GOGOKE_CI_DELETE_READY
+    $ciGo = $env:GOGOKE_CI_DELETE_GO
+    $ciMarker = [IO.File]::Open($ciReady, [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $ciBytes = [Text.Encoding]::ASCII.GetBytes('before-delete')
+        $ciMarker.Write($ciBytes, 0, $ciBytes.Length)
+    } finally { $ciMarker.Dispose() }
+    $ciDeadline = [DateTime]::UtcNow.AddMinutes(5)
+    while (-not [IO.File]::Exists($ciGo)) {
+        if ([DateTime]::UtcNow -ge $ciDeadline) { Fail 'GOGOKE_CI_DELETE_BARRIER_TIMEOUT' }
+        Start-Sleep -Milliseconds 50
+    }
+"""
+        finalizer = finalizer.replace(deletion, pause + deletion)
+        child_env["GOGOKE_CI_DELETE_READY"] = str(delete_ready)
+        child_env["GOGOKE_CI_DELETE_GO"] = str(delete_go)
+    embedded = base64.b64encode(finalizer)
     lock = kernel32.CreateFileW(
         payload["lockPath"], GENERIC_READ | GENERIC_WRITE, 0, None,
         OPEN_ALWAYS, 0x00200000, None,  # no-follow final component
@@ -108,7 +133,7 @@ def parent_helper(payload_path: Path, hold_ready: Path | None = None,
             ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
              "-EncodedCommand", encoded_bootstrap],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=lock_file,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=subprocess.CREATE_NO_WINDOW, env=child_env,
         )
         child.stdin.write(embedded + b"\n")
         encoded_payload = base64.b64encode(
@@ -134,19 +159,6 @@ def parent_helper(payload_path: Path, hold_ready: Path | None = None,
         if lock_file.read(len(payload["nonce"]) + 6) != f"LOCK:{payload['nonce']}\n".encode():
             child.kill()
             return 5
-        if hold_ready is not None and hold_go is not None:
-            # READY means the actual finalizer has acquired the registration
-            # lock and is waiting for this parent to exit. Hold that handoff
-            # while the separate CI-only installer attempts the same domain.
-            with hold_ready.open("xb") as marker:
-                marker.write(b"finalizer-ready\n")
-            deadline = time.monotonic() + 90
-            while time.monotonic() < deadline:
-                if hold_go.is_file():
-                    return 0
-                time.sleep(0.05)
-            child.kill()
-            return 6
         # The finalizer now owns the inherited lock handle and waits for this
         # exact process to exit. The supervising test checks its receipt.
         return 0
@@ -427,6 +439,6 @@ if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--prepare-interleave":
         print(prepare_interleave(Path(sys.argv[2])))
         sys.exit(0)
-    if len(sys.argv) == 5 and sys.argv[1] == "--parent-hold":
+    if len(sys.argv) == 5 and sys.argv[1] == "--parent-delete-barrier":
         sys.exit(parent_helper(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])))
     unittest.main()

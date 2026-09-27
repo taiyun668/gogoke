@@ -37,6 +37,8 @@ $script:receipt = [ordered]@{
     leafInsertion = [ordered]@{ state = 'FAIL' }
     sameDomainDifferentParents = [ordered]@{ state = 'FAIL' }
     uninstallInstallInterleave = [ordered]@{ state = 'FAIL' }
+    barrierArrivalsSeconds = [ordered]@{}
+    barrierDiagnosticsAt90Seconds = [ordered]@{}
 }
 
 function Assert-PlainFile([string]$Path) {
@@ -96,17 +98,63 @@ function Wait-Exit([Diagnostics.Process]$Process, [int]$Milliseconds, [string]$L
     return $Process.ExitCode
 }
 function Wait-Barrier([Diagnostics.Process]$Process, [string]$Label) {
-    $deadline = [DateTime]::UtcNow.AddSeconds(90)
+    # Keep the former 90-second limit as a diagnostic. The existing full
+    # setup bound is 15 minutes; a slow signed-set preflight is not a failed
+    # ownership barrier until that same bound expires.
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $deadline = [DateTime]::UtcNow.AddMinutes(15)
+    $observedOldMark = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         if (Test-Path -LiteralPath $script:readyPath -PathType Leaf) {
             [void](Assert-PlainFile $script:readyPath)
             if ($Process.HasExited) { throw "$Label exited at or immediately after the barrier" }
+            $script:receipt.barrierArrivalsSeconds[$Label] = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
             return
         }
         if ($Process.HasExited) { throw "$Label exited before the post-preflight barrier: $($Process.ExitCode)" }
+        if (-not $observedOldMark -and $watch.Elapsed.TotalSeconds -ge 90) {
+            $observedOldMark = $true
+            $stages = @($script:stagePaths.Keys | Where-Object {
+                Test-Path -LiteralPath $script:stagePaths[$_] -PathType Leaf
+            })
+            $children = try {
+                @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Process.Id)" -ErrorAction Stop |
+                    ForEach-Object { [string]$_.Name })
+            } catch { @('UNAVAILABLE') }
+            $script:receipt.barrierDiagnosticsAt90Seconds[$Label] = [ordered]@{
+                observedStages = $stages; childProcessNames = $children
+                processCpuSeconds = try { [Math]::Round((Get-Process -Id $Process.Id -ErrorAction Stop).CPU, 1) } catch { $null }
+            }
+        }
         Start-Sleep -Milliseconds 100
     }
-    throw "$Label did not reach the post-preflight barrier within 90 seconds"
+    $stages = @($script:stagePaths.Keys | Where-Object {
+        Test-Path -LiteralPath $script:stagePaths[$_] -PathType Leaf
+    })
+    throw "$Label did not reach the post-preflight barrier within the existing 15-minute setup bound; observed stages: $($stages -join ',')"
+}
+function Clear-TestMarkers {
+    foreach ($path in @($script:readyPath, $script:goPath) + @($script:stagePaths.Values)) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+}
+function Wait-RegistrationLockReleased {
+    $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    $path = Join-Path $localData 'gogoke-registration-CI_CANDIDATE_RESOURCE.lock'
+    [void](Assert-PlainFile $path)
+    $deadline = [DateTime]::UtcNow.AddSeconds(300)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None)
+            try { [void](Assert-PlainFile $path) } finally { $stream.Dispose() }
+            return
+        } catch [IO.IOException] {
+            if (($_.Exception.HResult -band 0xFFFF) -ne 32) { throw }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    throw 'Candidate registration-domain lock was not released after bounded uninstall'
 }
 function New-Go {
     if (Test-Path -LiteralPath $script:goPath) { throw 'Barrier release marker already exists' }
@@ -174,10 +222,15 @@ try {
     # $TEMP barrier therefore lands under the verified runner temporary root.
     $script:readyPath = Join-Path $script:runnerRoot 'gogoke-r206a-test-barrier.ready'
     $script:goPath = Join-Path $script:runnerRoot 'gogoke-r206a-test-barrier.go'
-    foreach ($path in @($script:readyPath, $script:goPath)) {
+    $script:stagePaths = [ordered]@{}
+    foreach ($name in @('lock', 'lock-busy', 'preflight-start', 'preflight-end', 'install-start')) {
+        $script:stagePaths[$name] = Join-Path $script:runnerRoot "gogoke-r206a-test-barrier.stage-$name"
+    }
+    foreach ($path in @($script:readyPath, $script:goPath) + @($script:stagePaths.Values)) {
         if (Test-Path -LiteralPath $path) { throw "Barrier marker is not fresh: $path" }
     }
     Assert-NoCandidateRegistration
+    Wait-RegistrationLockReleased
 
     $script:stage = 'artifact-identity'
     $signedRoot = (Resolve-Path -LiteralPath $SignedArtifactDirectory).Path
@@ -272,8 +325,8 @@ try {
         state = 'PASS'; installerExitCode = $leafExit; sentinelSha256 = (Get-Sha $sentinel)
         sentinelPath = $sentinel; registration = 'ABSENT'
     }
-    # These two markers are ours; leave the failed install tree for runner teardown.
-    Remove-Item -LiteralPath $script:readyPath, $script:goPath -Force
+    # These markers are ours; leave the failed install tree for runner teardown.
+    Clear-TestMarkers
 
     $script:stage = 'same-domain-different-parents'
     $script:axis = 'sameDomainDifferentParents'
@@ -283,12 +336,14 @@ try {
     $targetB = Join-Path $parentB 'install'
     $processA = Start-Installer $script:stagedSetup $targetA
     Wait-Barrier $processA 'Installer A'
-    # A has already written its marker. Remove that exact marker so a B arrival
-    # would create a new .ready and be observable while A is still paused.
+    # A has already written its markers. Remove only those exact test files so
+    # any new stage or .ready marker can be attributed to B while A is paused.
     Remove-Item -LiteralPath $script:readyPath -Force
+    foreach ($path in $script:stagePaths.Values) { Remove-Item -LiteralPath $path -Force }
     $processB = Start-Installer $script:stagedSetup $targetB
     $exitB = Wait-Exit $processB 30000 'Installer B'
     if ($exitB -eq 0) { throw 'Installer B unexpectedly succeeded while A held the domain lock' }
+    [void](Assert-PlainFile $script:stagePaths['lock-busy'])
     if (Test-Path -LiteralPath $script:readyPath) { throw 'Installer B reached the post-preflight barrier' }
     if (Test-Path -LiteralPath $targetB) { throw 'Installer B touched its separate target tree' }
     if ($processA.HasExited) { throw 'Installer A exited before the domain-lock observation finished' }
@@ -315,16 +370,17 @@ try {
         Start-Sleep -Milliseconds 250
     }
     Assert-NoCandidateRegistration
+    Wait-RegistrationLockReleased
     $script:receipt.sameDomainDifferentParents.uninstallExitCode = $uninstallExit
     $script:receipt.sameDomainDifferentParents.postUninstallRegistration = 'ABSENT'
     $script:receipt.sameDomainDifferentParents.state = 'PASS'
 
     $script:stage = 'uninstall-install-interleave'
     $script:axis = 'uninstallInstallInterleave'
-    # The actual embedded finalizer for fixture A pauses at its parent
-    # handoff, after it owns the registration lock and before DeleteSubKey.
-    # The CI-only setup for B must fail before its installation barrier.
-    Remove-Item -LiteralPath $script:readyPath, $script:goPath -Force
+    # A CI-only in-memory copy of the production finalizer pauses between its
+    # last Assert-Root and DeleteSubKey. Its lock code is unchanged; the pause
+    # cannot enter the production shell. B must fail before its own barrier.
+    Clear-TestMarkers
     $fixtureParent = New-FreshDirectory (Join-Path $script:workRoot 'uninstall-parent-a')
     $nextParent = New-FreshDirectory (Join-Path $script:workRoot 'uninstall-parent-b')
     $fixtureHelper = (Resolve-Path -LiteralPath './tools/ci/test_gogoke_uninstall_finalizer_cloud.py').Path
@@ -333,27 +389,38 @@ try {
         throw 'Cloud finalizer A fixture could not be prepared'
     }
     $payload = Get-Content -LiteralPath $payloadPath -Raw | ConvertFrom-Json -AsHashtable
-    $holdReady = Join-Path $script:workRoot 'uninstall-a.ready'
-    $holdGo = Join-Path $script:workRoot 'uninstall-a.go'
+    $deleteReady = Join-Path $script:workRoot 'uninstall-a-before-delete.ready'
+    $deleteGo = Join-Path $script:workRoot 'uninstall-a-before-delete.go'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Command python -ErrorAction Stop).Source
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-    foreach ($argument in @('-B', $fixtureHelper, '--parent-hold', $payloadPath, $holdReady, $holdGo)) {
+    foreach ($argument in @('-B', $fixtureHelper, '--parent-delete-barrier', $payloadPath, $deleteReady, $deleteGo)) {
         [void]$start.ArgumentList.Add($argument)
     }
     $fixtureProcess = [Diagnostics.Process]::new()
     $fixtureProcess.StartInfo = $start
     if (-not $fixtureProcess.Start()) { throw 'Cloud finalizer A fixture did not start' }
     $script:processes.Add($fixtureProcess)
-    $deadline = [DateTime]::UtcNow.AddSeconds(45)
-    while (-not (Test-Path -LiteralPath $holdReady -PathType Leaf)) {
-        if ($fixtureProcess.HasExited) { throw "Cloud finalizer A fixture exited before lock handoff: $($fixtureProcess.ExitCode)" }
-        if ([DateTime]::UtcNow -ge $deadline) { throw 'Cloud finalizer A lock handoff timed out' }
+    $fixtureExit = Wait-Exit $fixtureProcess 30000 'Cloud finalizer A parent handoff'
+    if ($fixtureExit -ne 0) { throw "Cloud finalizer A parent failed: $fixtureExit" }
+    $deadline = [DateTime]::UtcNow.AddSeconds(90)
+    while (-not (Test-Path -LiteralPath $deleteReady -PathType Leaf)) {
+        if (Test-Path -LiteralPath $payload.receipt -PathType Leaf) {
+            $earlyReceipt = Get-Content -LiteralPath $payload.receipt -Raw | ConvertFrom-Json -AsHashtable
+            if ($earlyReceipt.state -cne 'DELETED') {
+                throw "Cloud finalizer A failed before the pre-delete barrier: $($earlyReceipt.state) $($earlyReceipt.detail)"
+            }
+            throw 'Cloud finalizer A deleted registration before the pre-delete barrier'
+        }
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'Cloud finalizer A did not reach the pre-delete barrier' }
         Start-Sleep -Milliseconds 50
     }
-    [void](Assert-PlainFile $holdReady)
+    [void](Assert-PlainFile $deleteReady)
+    if ([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($deleteReady)) -cne 'before-delete') {
+        throw 'Cloud finalizer A pre-delete marker differs'
+    }
     $fixtureRegistration = Get-ItemProperty -LiteralPath $script:registration -ErrorAction Stop
     if ([string]$fixtureRegistration.InstallInstanceId -cne [string]$payload.instance -or
         [string]$fixtureRegistration.InstallLocation -cne [string]$payload.root) {
@@ -362,6 +429,7 @@ try {
     $nextTarget = Join-Path $nextParent 'install'
     $blockedB = Start-Installer $script:stagedSetup $nextTarget
     $blockedExit = Wait-Exit $blockedB 30000 'Installer B during A uninstall'
+    [void](Assert-PlainFile $script:stagePaths['lock-busy'])
     if ($blockedExit -eq 0 -or (Test-Path -LiteralPath $script:readyPath) -or
         (Test-Path -LiteralPath $nextTarget)) {
         throw 'Installer B crossed the domain lock held by finalizer A'
@@ -370,9 +438,7 @@ try {
     if ([string]$fixtureRegistration.InstallInstanceId -cne [string]$payload.instance) {
         throw 'Installer B changed fixture A registration while A held the domain lock'
     }
-    [IO.File]::WriteAllBytes($holdGo, [Text.Encoding]::ASCII.GetBytes('go'))
-    $fixtureExit = Wait-Exit $fixtureProcess 30000 'Cloud finalizer A parent'
-    if ($fixtureExit -ne 0) { throw "Cloud finalizer A parent failed: $fixtureExit" }
+    [IO.File]::WriteAllBytes($deleteGo, [Text.Encoding]::ASCII.GetBytes('go'))
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
     $finalizerReceipt = $null
     while ([DateTime]::UtcNow -lt $deadline) {
@@ -389,6 +455,7 @@ try {
         (Test-Path -LiteralPath (Join-Path $payload.root 'gogoke.exe'))) {
         throw 'Cloud finalizer A did not complete its exact deletion before B resumed'
     }
+    Wait-RegistrationLockReleased
     $resumedB = Start-Installer $script:stagedSetup $nextTarget
     Wait-Barrier $resumedB 'Installer B after A uninstall'
     New-Go
@@ -413,6 +480,7 @@ try {
         Start-Sleep -Milliseconds 250
     }
     Assert-NoCandidateRegistration
+    Wait-RegistrationLockReleased
     $script:receipt.uninstallInstallInterleave.postUninstallRegistration = 'ABSENT'
     $script:receipt.uninstallInstallInterleave.state = 'PASS'
     $script:receipt.state = 'PASS'
