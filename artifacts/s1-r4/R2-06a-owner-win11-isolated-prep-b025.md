@@ -1,6 +1,6 @@
 # R2-06a / b025ba44 Win11 隔离候选实测准备
 
-**状态：READY_FOR_FINAL_RISK_AUDIT_AND_WIN11_TEST；未运行 Owner Win11 实测，候选未接受。** 本单只对应源码 `b025ba44659da52a2747c7c0a281c5bbd7d4b732` 的云端冻结字节。先完成最终全轴风险审计；若源码、受信产物或所列哈希变化，本单失效并重新绑定。旧 `R2-06a-owner-win11-isolated-prep-a3b6.md` 已标 `SUPERSEDED`。
+**状态：READY_FOR_WIN11_TEST；未运行 Owner Win11 实测，候选未接受。** 本单只对应源码 `b025ba44659da52a2747c7c0a281c5bbd7d4b732` 的云端冻结字节。最终全轴风险审计见 `artifacts/s1-r4/reviews/R2-06a-b025-final-risk-audit.md`；若源码、受信产物或所列哈希变化，本单失效并重新绑定。旧 `R2-06a-owner-win11-isolated-prep-a3b6.md` 已标 `SUPERSEDED`。
 
 ## 精确对象与已完成证据
 
