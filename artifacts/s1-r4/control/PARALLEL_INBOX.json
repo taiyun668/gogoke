@@ -70,6 +70,40 @@
       "report_sha256": "d6ffaf02f2fac5be0165e960f77ec9beaf6901e67238e83de2bd54e9a07482bd",
       "verdict": "PRELIMINARY_SOURCE_REVIEW_NO_BLOCKER_CLOUD_EVIDENCE_NOT_INDEPENDENTLY_VERIFIED",
       "not_an_approval": true
+    },
+    {
+      "id": "claude-r2-06a-a3b6f85e",
+      "from": "Claude external heterogeneous review",
+      "recorded_utc": "2026-09-27T05:41:08Z",
+      "candidate_source_sha": "a3b6f85e38ca0971fdd05096734c2e99aeee7ec4",
+      "reviewed_range": "a8dc77f4487f3b4c08d7722e6df23413bdf3230b..a3b6f85e38ca0971fdd05096734c2e99aeee7ec4",
+      "evidence_checkpoint": "MC-124",
+      "report": "artifacts/s1-r4/control/reviews/claude-r2-06a-a3b6f85e.md",
+      "report_sha256": "e37dbcb1288e0cc3cd4889decb0ff0ca1c32e59b638cb0aae03e7408acab5afc",
+      "verdict": "NO_BLOCKER_FOR_OWNER_WIN11_ISOLATED_TEST_ONE_MEDIUM_BEFORE_ACCEPTANCE",
+      "findings": [
+        {
+          "id": "F1",
+          "severity": "MEDIUM",
+          "summary": "Registration-domain lock covers install vs install only; uninstall finalizer checks the registration then deletes it without that lock, so a concurrent same-domain install in another parent can lose its registration"
+        },
+        {
+          "id": "F2",
+          "severity": "LOW",
+          "summary": "Any failure to open the registration lock is reported as another install being active; distinguish sharing violation from other errors"
+        },
+        {
+          "id": "F3",
+          "severity": "LOW",
+          "summary": "Win11 prep should list expected residue (registration lock file, retained candidate data root, leftover install-root files) and their cleanup condition"
+        },
+        {
+          "id": "F4",
+          "severity": "NOTE",
+          "summary": "After the formal snapshot comparison, launch the formal install once to observe it still starts"
+        }
+      ],
+      "not_an_approval": true
     }
   ]
 }
