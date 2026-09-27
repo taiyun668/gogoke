@@ -1555,6 +1555,12 @@ impl VerifiedResources {
     pub(crate) fn owned_files_for_uninstall(&self) -> Result<Vec<(PathBuf, String)>, String> {
         self.registered_instance()?;
         let root = &self.install_root;
+        // A resource-only update advances the active version without changing
+        // the receipt written by the original full installation.
+        let root_signed = signed_index(root)?;
+        if root_signed.domain != self.domain || root_signed.index.executables != self.executables {
+            return Err("GOGOKE_UNINSTALL_ROOT_SET_MISMATCH".to_string());
+        }
         let mut files = std::collections::BTreeMap::<PathBuf, String>::new();
         let mut add = |path: PathBuf, hash: String| -> Result<(), String> {
             if let Some(old) = files.insert(path, hash.clone()) {
@@ -1582,7 +1588,7 @@ impl VerifiedResources {
         let receipt = root.join(INSTALL_RECEIPT);
         match fs::symlink_metadata(&receipt) {
             Ok(_) => {
-                let payload = install_receipt_payload(&self.version, self.domain);
+                let payload = install_receipt_payload(&root_signed.index.version, self.domain);
                 let record = ByteRecord {
                     length: payload.len() as u64,
                     sha256: sha256(payload.as_bytes()),
@@ -1671,10 +1677,6 @@ impl VerifiedResources {
                     };
                 add(path, hash)?;
             }
-        }
-        let root_signed = signed_index(root)?;
-        if root_signed.domain != self.domain || root_signed.index.executables != self.executables {
-            return Err("GOGOKE_UNINSTALL_ROOT_SET_MISMATCH".to_string());
         }
         let manifest = if self.domain == Domain::Candidate {
             CANDIDATE_MANIFEST
@@ -1932,6 +1934,51 @@ mod tests {
         }
         assert!(frontend_request_path("/assets/index.js").is_err());
         assert!(frontend_request_path("/not-a-set/index.html").is_err());
+    }
+
+    #[test]
+    fn startup_pointer_selection_ignores_staged_set_and_partial() {
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-resource-pointer-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let old_id = HASH.to_string();
+        let new_id = "a".repeat(64);
+        let sets = root.join(RESOURCE_SETS);
+        fs::create_dir_all(sets.join(&old_id)).expect("old set directory");
+        fs::create_dir_all(sets.join(&new_id)).expect("new staged set directory");
+        let pointer = root.join(ACTIVE_SET_POINTER);
+        fs::write(&pointer, format!("{old_id}\n")).expect("old pointer");
+        assert_eq!(active_set_dir(&root).unwrap(), sets.join(&old_id));
+
+        // A staged set and an interrupted partial pointer do not change the
+        // set chosen by the startup selector.
+        fs::write(root.join(format!(".{ACTIVE_SET_POINTER}.interrupted.part")),
+            format!("{new_id}\n")).expect("partial pointer");
+        assert_eq!(active_set_dir(&root).unwrap(), sets.join(&old_id));
+
+        fs::write(&pointer, format!("{new_id}\n")).expect("committed pointer");
+        assert_eq!(active_set_dir(&root).unwrap(), sets.join(&new_id));
+        fs::remove_dir(sets.join(&new_id)).expect("remove unavailable new set");
+        assert!(active_set_dir(&root).is_err());
+        fs::remove_dir_all(&root).expect("remove owned pointer fixture");
+    }
+
+    #[test]
+    fn lifecycle_lock_serializes_old_and_new_roots_under_one_parent() {
+        let parent = std::env::temp_dir().join(format!(
+            "gogoke-lifecycle-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir(&parent).expect("owned lifecycle parent");
+        let old_root = parent.join("old-install");
+        let new_root = parent.join("new-install");
+        let old_guard = acquire_lifecycle_lock(&old_root).expect("old instance owns lock");
+        assert!(acquire_lifecycle_lock(&new_root).is_err());
+        drop(old_guard);
+        let new_guard = acquire_lifecycle_lock(&new_root).expect("new instance takes released lock");
+        drop(new_guard);
+        fs::remove_dir_all(&parent).expect("remove owned lifecycle fixture");
     }
 
     #[test]

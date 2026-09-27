@@ -417,6 +417,59 @@ fn notice_state(path: &Path) -> Option<PreparedUpdateState> {
     serde_json::from_slice(&payload).ok()
 }
 
+#[cfg(target_os = "windows")]
+fn resource_recovery_status(
+    state: &PreparedUpdateState,
+    active_version: &str,
+    active_generation: &str,
+) -> Result<Option<&'static str>, String> {
+    if state.schema != 1 || state.status != "applying" || state.offer.release_type != "resources" {
+        return Ok(None);
+    }
+    if active_version == state.offer.version && active_generation == state.offer.sha256 {
+        return Ok(Some("installed"));
+    }
+    let active = Version::parse(active_version)
+        .map_err(|_| "GOGOKE_UPDATE_CRASH_RECOVERY_IDENTITY_MISMATCH".to_string())?;
+    let target = Version::parse(&state.offer.version)
+        .map_err(|_| "GOGOKE_UPDATE_CRASH_RECOVERY_IDENTITY_MISMATCH".to_string())?;
+    if active < target {
+        return Ok(Some("failed"));
+    }
+    Err("GOGOKE_UPDATE_CRASH_RECOVERY_IDENTITY_MISMATCH".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn reconcile_resource_update(app: &AppHandle) -> Result<(), String> {
+    let path = update_state_path(app)?;
+    let Some(mut state) = notice_state(&path) else {
+        return Ok(());
+    };
+    if state.schema != 1 || state.status != "applying" || state.offer.release_type != "resources" {
+        return Ok(());
+    }
+    let active = require_formal_domain(app)?;
+    active.verify_runtime_files()?;
+    match resource_recovery_status(&state, &active.version, &active.generation_id)? {
+        Some("installed") => {
+            // The durable pointer was committed only after a readiness event.
+            state.status = "installed".to_string();
+            state.last_error = None;
+        }
+        Some("failed") => {
+            // Startup verified the old signed set. The interrupted switch did
+            // not commit its pointer, so it can be reported as rolled back.
+            let message = "resource update was interrupted; the verified previous generation remains active";
+            state.status = "failed".to_string();
+            state.last_error = Some(message.to_string());
+            std::fs::write(update_directory(app)?.join("update-failure.log"), message)
+                .map_err(|error| format!("could not record interrupted resource update: {error}"))?;
+        }
+        _ => return Ok(()),
+    }
+    write_update_state(app, &state)
+}
+
 fn rotate_read_failure_log(
     failure: &Path,
     reported: &Path,
@@ -712,17 +765,24 @@ async fn signal_resource_ready(
     window: &WebviewWindow,
     set_id: Option<&str>,
 ) -> Result<(), String> {
-    let mut pending = RESOURCE_READY.lock().await;
-    let Some(waiter) = pending.as_ref() else {
-        return Ok(());
+    let (expected_set, expected_version, expected_generation) = {
+        let pending = RESOURCE_READY.lock().await;
+        let Some(waiter) = pending.as_ref() else {
+            return Ok(());
+        };
+        (
+            waiter.set_id.clone(),
+            waiter.version.clone(),
+            waiter.generation_id.clone(),
+        )
     };
-    if window.label() != "main" || set_id != Some(waiter.set_id.as_str()) {
+    if window.label() != "main" || set_id != Some(expected_set.as_str()) {
         return Err("GOGOKE_UPDATE_RESOURCE_PAGE_IDENTITY_MISMATCH".to_string());
     }
     let actual_url = window
         .url()
         .map_err(|_| "GOGOKE_UPDATE_WEBVIEW_URL_UNAVAILABLE".to_string())?;
-    let expected_url = resource_page_url(window, &waiter.set_id)?;
+    let expected_url = resource_page_url(window, &expected_set)?;
     if actual_url != expected_url {
         return Err("GOGOKE_UPDATE_RESOURCE_PAGE_IDENTITY_MISMATCH".to_string());
     }
@@ -731,14 +791,22 @@ async fn signal_resource_ready(
         .ok_or_else(|| "GOGOKE_UPDATE_VERIFIED_IDENTITY_UNAVAILABLE".to_string())?
         .current()?;
     if resources.domain != crate::resource_trust::Domain::Formal
-        || resources.set_id != waiter.set_id
-        || resources.version != waiter.version
-        || resources.generation_id != waiter.generation_id
+        || resources.set_id != expected_set
+        || resources.version != expected_version
+        || resources.generation_id != expected_generation
     {
         return Err("GOGOKE_UPDATE_RESOURCE_IDENTITY_MISMATCH".to_string());
     }
     resources.verify_runtime_files()?;
     crate::public_runtime::product_entry::verify_product_startup(app).await?;
+    let mut pending = RESOURCE_READY.lock().await;
+    if !matches!(pending.as_ref(), Some(waiter)
+        if waiter.set_id == expected_set
+            && waiter.version == expected_version
+            && waiter.generation_id == expected_generation)
+    {
+        return Err("GOGOKE_UPDATE_RESOURCE_RECEIPT_LOST".to_string());
+    }
     let waiter = pending
         .take()
         .ok_or_else(|| "GOGOKE_UPDATE_RESOURCE_RECEIPT_LOST".to_string())?;
@@ -763,6 +831,9 @@ pub async fn gogoke_update_signal_ready(
 
 #[tauri::command]
 pub async fn gogoke_update_take_failure(app: AppHandle) -> Result<Option<UpdateNotice>, String> {
+    let _guard = UPDATE_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    reconcile_resource_update(&app)?;
     let settled = wait_for_update_finalization(&app).await?;
     let notice = consume_update_failure(&app)?;
     if notice.is_some() || settled {
@@ -1054,9 +1125,32 @@ async fn apply_resource_update(
     .await;
     RESOURCE_READY.lock().await.take();
     if let Err(error) = outcome {
-        let state_restored = state.replace(old);
-        let page_restored = window.navigate(old_url);
-        let error = if state_restored.is_err() || page_restored.is_err() {
+        // Navigation being accepted does not prove that the old page and its
+        // product service are usable again. Require its actual readiness event.
+        let rollback = async {
+            crate::resource_trust::activate_resource_set(&old.install_root, &old.set_id)?;
+            state.replace(old.clone())?;
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            {
+                let mut pending = RESOURCE_READY.lock().await;
+                *pending = Some(ResourceReadyWaiter {
+                    set_id: old.set_id.clone(),
+                    version: old.version.clone(),
+                    generation_id: old.generation_id.clone(),
+                    sender,
+                });
+            }
+            window
+                .navigate(old_url)
+                .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NAVIGATION_FAILED".to_string())?;
+            tokio::time::timeout(std::time::Duration::from_secs(30), receiver)
+                .await
+                .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NOT_READY".to_string())?
+                .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NOT_READY".to_string())
+        }
+        .await;
+        RESOURCE_READY.lock().await.take();
+        let error = if rollback.is_err() {
             format!("{error}; GOGOKE_UPDATE_RESOURCE_ROLLBACK_INCOMPLETE")
         } else {
             error
@@ -1204,6 +1298,38 @@ pub async fn gogoke_update_install(app: AppHandle, version: String) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn interrupted_resource_update_reconciles_only_exact_signed_generation() {
+        let digest = "a".repeat(64);
+        let mut state = PreparedUpdateState {
+            schema: 1,
+            status: "applying".to_string(),
+            offer: GogokeUpdateOffer {
+                version: "1.2.4".to_string(),
+                release_type: "resources".to_string(),
+                asset: "gogoke-resources.windows.zip".to_string(),
+                sha256: digest.clone(),
+                published_at: String::new(),
+                notes_url: String::new(),
+                notes: String::new(),
+            },
+            prepared_at: String::new(),
+            last_error: None,
+        };
+        assert_eq!(
+            resource_recovery_status(&state, "1.2.4", &digest).unwrap(),
+            Some("installed")
+        );
+        assert_eq!(
+            resource_recovery_status(&state, "1.2.3", &"b".repeat(64)).unwrap(),
+            Some("failed")
+        );
+        assert!(resource_recovery_status(&state, "1.2.4", &"b".repeat(64)).is_err());
+        state.status = "installed".to_string();
+        assert_eq!(resource_recovery_status(&state, "1.2.4", &digest).unwrap(), None);
+    }
 
     #[test]
     fn formal_manifest_requires_exact_release_shape() {
