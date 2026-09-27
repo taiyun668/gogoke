@@ -21,7 +21,7 @@ test("production notice generator rejects missing text, unknown license and path
     const sbom = { packages };
     const notices = collectProductionNotices(sbom, root);
     assert.equal(notices.length, 100);
-    assert.match(renderNotices(notices, "abc"), /Copyright fixture 99/);
+    assert.match(renderNotices(notices), /Copyright fixture 99/);
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "gogoke", version: "0.1.4" }));
     assert.throws(() => collectProductionNotices(sbom, root), /root SPDX identity/);
     packages[0].versionInfo = "0.1.4";
