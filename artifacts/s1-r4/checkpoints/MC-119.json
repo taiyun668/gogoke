@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-119",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "6c412e0c6e2caa6f3add54314ee5daea095e18ac",
+  "recorded_utc": "2026-09-27T01:42:47Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-118.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a WIP authorized; formal release not authorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Source 6c412e0c cloud desktop run 36283844075 PASS all five jobs: Browser, notices, independent frozen/repro Windows build and native tests, and byte-for-byte executable comparison. Frozen artifact 10920233420. Trusted main signing run 36285682475 PASS and signed candidate artifact 10920287161 binds source/build/signing identities. Branch installed smoke 36285750967 at exact workflow source 6c412e0c FAIL after installation and installed executable hash checks, at installed-product-service-positive-and-poison-negative. Actual installed Tauri IPC returned GOGOKE_PRODUCT_SERVICE_FAILED:1 and published no bootstrap readiness. Post-failure direct Node replay with the same root and a fresh root both returned native Controller admission; this replay is diagnostic, not a successful installed-product result. No positive/poison, uninstall or data-preservation PASS was obtained.",
+  "path_reflection": "The process-local service gate did not close the installed-product failure, so root contention across two Tauri service calls is not established as the complete cause. The direct replay differs from the managed call in process custody and some inherited environment; the next measurement must observe the actual installed process rather than infer from post-failure replay. First use test-only diagnostics against the already signed candidate to capture product-process inventory and a replay with matching inherited environment. If they do not identify the cause, restore one bounded first native stderr receipt only for cloud diagnosis, then remove it with the verified fix.",
+  "main_drift": "Main and Parallel Inbox unchanged at this boundary; no new governance or contract bytes require integration.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "Installed positive service/readiness remains FAIL. Poison negative, uninstall/data preservation, Owner Win11/SAC and final review remain NOT_RUN. PR #27 OPEN/DRAFT; PR #34 Owner-held OPEN. R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "Execution source push and desktop/signing/installed-smoke run identities read back. No merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Use the existing signed candidate to run one test-only installed-smoke diagnostic at a new workflow SHA, measuring live product-process inventory and matching the managed environment in same-root direct replay. Read the first actual failure. Repair only the demonstrated cause, remove temporary diagnosis from product bytes, then rerun exact-head double build, trusted sign and installed smoke."
+}
