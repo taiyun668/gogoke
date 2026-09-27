@@ -352,6 +352,10 @@ async fn run_product_service(
 ) -> Result<Vec<u8>, String> {
     #[cfg(target_os = "windows")]
     {
+        // Every managed service call uses the same physical Product root.
+        // Keep this guard in the detached owner through process-tree exit;
+        // a cancelled caller must not admit another native-host early.
+        let service_guard = PRODUCT_SERVICE_GATE.lock().await;
         // The blocking owner outlives this caller future. Dropping the join
         // receiver cannot release the verified handles or the Job while its
         // Node/native-host consumers are still running.
@@ -359,7 +363,7 @@ async fn run_product_service(
         let identity = draft_identity.map(|(sha, hash)| (sha.to_owned(), hash.to_owned()));
         let (reply, receiver) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
-            managed_service::run(paths, request, timeout, identity, product_guard, reply);
+            managed_service::run(paths, request, timeout, identity, product_guard, service_guard, reply);
         });
         return receiver
             .await
@@ -911,6 +915,7 @@ mod managed_service {
         timeout: Duration,
         identity: Option<(String, String)>,
         _product_guard: Option<tokio::sync::MutexGuard<'static, ()>>,
+        _service_guard: tokio::sync::MutexGuard<'static, ()>,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     ) {
         let mut reply = Some(reply);
@@ -942,7 +947,7 @@ mod managed_service {
         });
         let stderr_reader = std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            File::from(stderr).read_to_end(&mut bytes).map(|_| bytes)
+            File::from(stderr).read_to_end(&mut bytes)
         });
         let writer = std::thread::spawn(move || File::from(stdin).write_all(&request));
         let failure = match unsafe {
@@ -972,20 +977,9 @@ mod managed_service {
         let output = stdout_reader.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
             .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string()));
-        let stderr_output = stderr_reader.join().ok().and_then(Result::ok).unwrap_or_default();
+        let _ = stderr_reader.join();
         let mut exit_code = 0;
         let exit_code_available = unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
-        if exit_code_available && exit_code != 0 {
-            // Temporary cloud-only first failure evidence from the actual
-            // managed child. Remove with the installer diagnosis after repair.
-            let stdout = output.as_ref().map(Vec::as_slice).unwrap_or_default();
-            let message = format!(
-                "GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}; stderr={}; stdout={}",
-                String::from_utf8_lossy(&stderr_output), String::from_utf8_lossy(stdout),
-            );
-            let bounded: String = message.chars().take(3000).collect();
-            crate::resource_trust::write_ci_install_error_once(&bounded);
-        }
         let result = if let Some(error) = failure {
             Err(error)
         } else if !exit_code_available {
@@ -1109,6 +1103,8 @@ pub(crate) async fn gogoke_r2_goal_probe(
 }
 
 static PRODUCT_RUNTIME_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+#[cfg(target_os = "windows")]
+static PRODUCT_SERVICE_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub(crate) async fn acquire_product_gate() -> tokio::sync::MutexGuard<'static, ()> {
     PRODUCT_RUNTIME_GATE.lock().await
@@ -1157,7 +1153,8 @@ mod tests {
             runtime_lease: Some(Arc::new(lease)),
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, None, reply);
+        let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
+        managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, None, service_guard, reply);
         let result = receiver.blocking_recv().expect("managed owner reply");
         assert_eq!(result, Err("GOGOKE_PRODUCT_SERVICE_FAILED:78".to_string()));
         assert!(!marker.exists(), "poison module body must never execute");
@@ -1237,11 +1234,12 @@ mod tests {
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let gate = PRODUCT_RUNTIME_GATE.try_lock().expect("owned product gate");
+        let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
         drop(receiver); // Simulate a cancelled Tauri caller before Node starts.
         let owner = std::thread::spawn(move || {
             // Cold PowerShell startup on a shared cloud runner is fixture setup,
             // not the Job-settlement boundary under test.
-            managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(30), None, Some(gate), reply);
+            managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(30), None, Some(gate), service_guard, reply);
         });
         let fixture_started = Instant::now();
         let deadline = fixture_started + Duration::from_secs(20);

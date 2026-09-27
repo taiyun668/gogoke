@@ -2160,11 +2160,6 @@ export class NativeHostClient {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    // Temporary cloud-only first-error diagnosis from the actual nested host.
-    // Its parent already captures this stderr; remove after the root cause fix.
-    if (process.env.GITHUB_ACTIONS === "true") {
-      child.stderr?.pipe(process.stderr, { end: false });
-    }
     if (child.stdout === null) {
       child.kill();
       throw new NativeHostClientError("HOST_STDIO", "native-host stdout was not created");
