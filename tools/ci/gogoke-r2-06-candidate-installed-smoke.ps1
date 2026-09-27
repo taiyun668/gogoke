@@ -495,6 +495,51 @@ try {
     $receiptPrefix = "gogoke-uninstall-$instanceTag-"
     $beforeReceipts = @{}
     Get-ChildItem -LiteralPath $runnerTemp -Filter "$receiptPrefix*.json" -File -ErrorAction SilentlyContinue | ForEach-Object { $beforeReceipts[$_.Name] = $true }
+    # Lock failures happen before the finalizer may reserve a receipt. Assert
+    # that the real installed shell propagates the exact bounded failure code.
+    $registrationLock = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'gogoke-registration-CI_CANDIDATE_RESOURCE.lock'
+    $lockItem = Get-Item -LiteralPath $registrationLock -Force -ErrorAction Stop
+    if ($lockItem.PSIsContainer -or ($lockItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Candidate registration lock is not a plain file before negative probes'
+    }
+    $heldLock = [IO.File]::Open($registrationLock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $busy = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
+        if ($busy.TimedOut -or $busy.ExitCode -ne 1 -or
+            $busy.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY') {
+            throw 'Actual installed shell did not propagate Win32 32 as the exact domain-busy code'
+        }
+    } finally { $heldLock.Dispose() }
+    Assert-RegistryRegistration
+    Assert-Hash $productExe $ExpectedInstalledShellSha256 'Shell after busy-lock rejection'
+    $lockBackup = Join-Path $runnerTemp "gogoke-registration-lock-$ExpectedSmokeRunId-$ExpectedSmokeRunAttempt.bak"
+    if (Test-Path -LiteralPath $lockBackup) { throw 'Registration lock backup path is not fresh' }
+    Move-Item -LiteralPath $registrationLock -Destination $lockBackup -ErrorAction Stop
+    try {
+        [void](New-Item -ItemType Directory -Path $registrationLock -ErrorAction Stop)
+        $non32 = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
+        if ($non32.TimedOut -or $non32.ExitCode -ne 1 -or
+            $non32.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5') {
+            throw 'Actual installed shell did not propagate non-32 CreateFileW error 5'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $registrationLock -PathType Container) {
+            Remove-Item -LiteralPath $registrationLock -Force -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $lockBackup -PathType Leaf) {
+            Move-Item -LiteralPath $lockBackup -Destination $registrationLock -ErrorAction Stop
+        }
+    }
+    Assert-RegistryRegistration
+    Assert-Hash $productExe $ExpectedInstalledShellSha256 'Shell after non-32 lock rejection'
+    $unexpectedReceipts = @(Get-ChildItem -LiteralPath $runnerTemp -Filter "$receiptPrefix*.json" -File -ErrorAction SilentlyContinue |
+        Where-Object { -not $beforeReceipts.ContainsKey($_.Name) })
+    if ($unexpectedReceipts.Count -ne 0) { throw 'A pre-handoff registration lock failure created a finalizer receipt' }
+    $script:result.registrationLockFailures = [ordered]@{
+        busy='GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY'
+        non32='GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5'
+        candidateRegistration='UNCHANGED'; candidateShell='UNCHANGED'; receipts='NONE'
+    }
     $script:uninstallInvoked = $true
     $uninstall = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true
     if ($uninstall.TimedOut) { throw "Installed uninstall exceeded parent bound; retain candidate state under: $script:targetRoot" }

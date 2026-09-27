@@ -37,6 +37,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  r206a-reparse-share-probe:
+    name: Probe pinned directory reparse semantics on Windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm exact source and probe Windows API behavior
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) { throw 'Reparse probe source is not exact workflow SHA' }
+          python -B tools/ci/gogoke-r206a-reparse-share-probe.py
+          if ($LASTEXITCODE -ne 0) { throw "Reparse share probe failed: $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-r206a-reparse-share-${{ github.sha }}
+          path: ${{ runner.temp }}/gogoke-r206a-reparse-share-*/result.json
+          if-no-files-found: error
+
   web:
     name: Browser build and tests
     timeout-minutes: 30

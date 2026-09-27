@@ -66,6 +66,21 @@ $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encodedSc
 & ([ScriptBlock]::Create($source))
 "#;
 
+fn registration_lock_failure(line: &str, nonce: &str) -> Option<String> {
+    let prefix = format!("LOCK_FAIL:{nonce}:");
+    let code = line
+        .trim_end_matches(|character| character == '\r' || character == '\n')
+        .strip_prefix(&prefix)?;
+    if code == "GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY" {
+        return Some(code.to_string());
+    }
+    let number = code.strip_prefix("GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_")?;
+    if number.is_empty() || number.len() > 10 || number.parse::<u32>().is_err() {
+        return None;
+    }
+    Some(code.to_string())
+}
+
 fn require_unpacked_status(package_status: u32) -> Result<(), String> {
     if package_status != APPMODEL_ERROR_NO_PACKAGE {
         return Err(format!("GOGOKE_UNINSTALL_PACKAGED_CONTEXT_{package_status}"));
@@ -135,6 +150,34 @@ mod context_guard_tests {
             require_unpacked_status(0).unwrap_err(),
             "GOGOKE_UNINSTALL_PACKAGED_CONTEXT_0"
         );
+    }
+
+    #[test]
+    fn registration_lock_failure_requires_exact_nonce_and_bounded_code() {
+        let nonce = "01234567-89ab-cdef-0123-456789abcdef";
+        assert_eq!(
+            registration_lock_failure(
+                &format!("LOCK_FAIL:{nonce}:GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY\r\n"),
+                nonce,
+            ),
+            Some("GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY".to_string()),
+        );
+        assert_eq!(
+            registration_lock_failure(
+                &format!("LOCK_FAIL:{nonce}:GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5\n"),
+                nonce,
+            ),
+            Some("GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5".to_string()),
+        );
+        assert!(registration_lock_failure(
+            "LOCK_FAIL:wrong:GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY\n", nonce,
+        ).is_none());
+        assert!(registration_lock_failure(
+            &format!("LOCK_FAIL:{nonce}:GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_4294967296\n"), nonce,
+        ).is_none());
+        assert!(registration_lock_failure(
+            &format!("LOCK_FAIL:{nonce}:GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5:extra\n"), nonce,
+        ).is_none());
     }
 }
 
@@ -1020,6 +1063,13 @@ pub(crate) fn run() -> Result<(), String> {
                 let _ = child.wait();
                 Err("GOGOKE_UNINSTALL_LOCK_HANDOFF_UNCONFIRMED".to_string())
             }
+        }
+        Ok(Ok(line)) => {
+            let failure = registration_lock_failure(&line, &nonce)
+                .unwrap_or_else(|| "GOGOKE_UNINSTALL_LOCK_HANDOFF_UNCONFIRMED".to_string());
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(failure)
         }
         _ => {
             let _ = child.kill();

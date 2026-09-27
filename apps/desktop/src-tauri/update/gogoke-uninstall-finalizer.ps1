@@ -411,7 +411,18 @@ try {
         Fail 'GOGOKE_UNINSTALL_LOCK_HANDLE_MISSING'
     }
     $null = Assert-Opened $lockHandle $data.lockPath $false $null
-    Acquire-RegistrationLock
+    try { Acquire-RegistrationLock } catch {
+        # No receipt is authorized before Assert-Root and Reserve-Receipt.
+        # Return only this bounded, nonce-bound lock error over the existing
+        # startup handshake; all other pre-handoff failures stay generic.
+        $lockFailure = [string]$_.Exception.Message
+        if ($lockFailure -ceq 'GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY' -or
+            $lockFailure -cmatch '^GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_[0-9]{1,10}$') {
+            [Console]::Out.WriteLine('LOCK_FAIL:' + $data.nonce + ':' + $lockFailure)
+            [Console]::Out.Flush()
+        }
+        throw
+    }
     Assert-Root
     $parent = [Diagnostics.Process]::GetProcessById([int]$data.parentPid)
     $null = $parent.Handle
