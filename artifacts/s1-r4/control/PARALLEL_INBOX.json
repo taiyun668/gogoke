@@ -58,6 +58,18 @@
         }
       ],
       "not_an_approval": true
+    },
+    {
+      "id": "claude-r2-06a-7e1b4f8c-preliminary",
+      "from": "External Claude CLI read-only review, verbatim report transported by Codex Controller",
+      "recorded_utc": "2026-09-27T03:19:04.6386531Z",
+      "candidate_source_sha": "7e1b4f8c915c64dd5d6a6afb6759ee323c5f650f",
+      "candidate_test_workflow_sha": "8f4b0a27cd637f04ec025c0b6fde6cab88f7ef18",
+      "evidence_checkpoint": "MC-120",
+      "report": "artifacts/s1-r4/control/reviews/claude-r2-06a-7e1b4f8c-preliminary.md",
+      "report_sha256": "d6ffaf02f2fac5be0165e960f77ec9beaf6901e67238e83de2bd54e9a07482bd",
+      "verdict": "PRELIMINARY_SOURCE_REVIEW_NO_BLOCKER_CLOUD_EVIDENCE_NOT_INDEPENDENTLY_VERIFIED",
+      "not_an_approval": true
     }
   ]
 }
