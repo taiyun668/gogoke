@@ -1,0 +1,32 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-141",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "b26afa875dc7144ff2f194aab7c56718f19a205a",
+  "recorded_utc": "2026-09-27T09:05:23Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-140.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "first_ordinary_view_installer_attempt": {
+    "started_utc": "2026-09-27T09:02:39Z",
+    "ended_utc": "2026-09-27T09:02:40Z",
+    "pid": 29624,
+    "setup_sha256": "2419d848017694e6819eb4e8dcd1004116e0a83e4ad4d2cde003b9d8448eb70d",
+    "exit_code": 2,
+    "state": "ABORTED_BEFORE_TARGET_OR_REGISTRATION",
+    "observer": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary-install-once.json",
+    "measured_fixture_error": "The ordinary-user view did not yet contain the chosen isolated target's parent %LOCALAPPDATA%\\gogoke-agent-tmp. NSIS AcquireGogokeLifecycleLock pins that parent before it may create the target. A read-only post-abort check found this parent absent, target absent, candidate data/registration absent, and an ordinary-domain registration lock file present. Parent absence is a sufficient explanation for the immediate abort, but NSIS did not emit a stage-specific message; confirm by creating only this task temp parent and retrying the same frozen setup."
+  },
+  "post_abort_ordinary_snapshot": {
+    "evidence": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary-after-aborted-install.json",
+    "formal_install_data_and_shortcuts": "BITWISE IDENTICAL to MC-140 ordinary baseline",
+    "formal_hkcu_registration": "ABSENT before and after",
+    "candidate_target_data_and_registration": "ABSENT",
+    "gogoke_processes": 0,
+    "code_integrity_record_id": 7097
+  },
+  "decision": "This was a preflight fixture failure, not an installed candidate or a product result. The temporary scheduled task has been unregistered. Retain the new ordinary registration-domain lock file for F3 accounting. Create the task temp parent after checking it is not a reparse point and the lock is released, then repeat the same frozen setup once into the still-fresh target. Product source and trusted bytes remain b025; no cloud rerun is due to this measurement correction.",
+  "inbox_classification_at_current_b025_bytes": {"F1": "ALREADY_FIXED in source/cloud, ordinary Win11 uninstall not run", "F2": "ALREADY_FIXED in source, non-32 dynamic branch unobserved", "F3": "ALREADY_FIXED in preparation, now includes ordinary lock residue and packaged candidate residue", "F4": "NEEDS_REVIEW after successful ordinary candidate teardown and formal comparison"},
+  "next_action": "Verify the ordinary lock is a plain, exclusively openable file; create only %LOCALAPPDATA%\\gogoke-agent-tmp as task temp parent in the ordinary view, then rerun the same signed production setup once. Preserve the original failed receipt, packaged candidate and MC-122 two-file copy. Stop on any new discrepancy; no PR #34 merge, R2-06b, publication, code signing, system-setting change, manual candidate deletion or self-acceptance."
+}
