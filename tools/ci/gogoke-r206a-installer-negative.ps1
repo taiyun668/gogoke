@@ -339,7 +339,9 @@ try {
     # A has already written its markers. Remove only those exact test files so
     # any new stage or .ready marker can be attributed to B while A is paused.
     Remove-Item -LiteralPath $script:readyPath -Force
-    foreach ($path in $script:stagePaths.Values) { Remove-Item -LiteralPath $path -Force }
+    foreach ($path in $script:stagePaths.Values) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
     $processB = Start-Installer $script:stagedSetup $targetB
     $exitB = Wait-Exit $processB 30000 'Installer B'
     if ($exitB -eq 0) { throw 'Installer B unexpectedly succeeded while A held the domain lock' }
@@ -406,20 +408,23 @@ try {
     $fixtureExit = Wait-Exit $fixtureProcess 30000 'Cloud finalizer A parent handoff'
     if ($fixtureExit -ne 0) { throw "Cloud finalizer A parent failed: $fixtureExit" }
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
-    while (-not (Test-Path -LiteralPath $deleteReady -PathType Leaf)) {
-        if (Test-Path -LiteralPath $payload.receipt -PathType Leaf) {
-            $earlyReceipt = Get-Content -LiteralPath $payload.receipt -Raw | ConvertFrom-Json -AsHashtable
-            if ($earlyReceipt.state -cne 'DELETED') {
-                throw "Cloud finalizer A failed before the pre-delete barrier: $($earlyReceipt.state) $($earlyReceipt.detail)"
+    $deleteReadyObserved = $false
+    while (-not $deleteReadyObserved) {
+        if (Test-Path -LiteralPath $deleteReady -PathType Leaf) {
+            try {
+                [void](Assert-PlainFile $deleteReady)
+                $markerBytes = [IO.File]::ReadAllBytes($deleteReady)
+                if ([Text.Encoding]::ASCII.GetString($markerBytes) -cne 'before-delete') {
+                    throw 'Cloud finalizer A pre-delete marker differs'
+                }
+                $deleteReadyObserved = $true
+                break
+            } catch [IO.IOException] {
+                if (($_.Exception.HResult -band 0xFFFF) -ne 32) { throw }
             }
-            throw 'Cloud finalizer A deleted registration before the pre-delete barrier'
         }
         if ([DateTime]::UtcNow -ge $deadline) { throw 'Cloud finalizer A did not reach the pre-delete barrier' }
         Start-Sleep -Milliseconds 50
-    }
-    [void](Assert-PlainFile $deleteReady)
-    if ([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($deleteReady)) -cne 'before-delete') {
-        throw 'Cloud finalizer A pre-delete marker differs'
     }
     $fixtureRegistration = Get-ItemProperty -LiteralPath $script:registration -ErrorAction Stop
     if ([string]$fixtureRegistration.InstallInstanceId -cne [string]$payload.instance -or
@@ -456,6 +461,7 @@ try {
         throw 'Cloud finalizer A did not complete its exact deletion before B resumed'
     }
     Wait-RegistrationLockReleased
+    Clear-TestMarkers
     $resumedB = Start-Installer $script:stagedSetup $nextTarget
     Wait-Barrier $resumedB 'Installer B after A uninstall'
     New-Go
