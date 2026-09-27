@@ -100,7 +100,23 @@ pub fn run() {
                 std::process::exit(1);
             }
             let result = gogoke_uninstall::run();
-            if let Err(error) = &result { eprintln!("{error}"); }
+            if let Err(error) = &result {
+                if error.starts_with("GOGOKE_UNINSTALL_PACKAGED_CONTEXT_")
+                    || error == "GOGOKE_UNINSTALL_REDIRECTED_CONTEXT"
+                {
+                    const GUIDANCE: &str = "Run the installed gogoke.exe directly in a normal Windows user session, then try again.";
+                    eprintln!("{error}: {GUIDANCE}");
+                    if arguments.len() == 1 {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+                        let message: Vec<u16> = format!("Gogoke cannot uninstall from a packaged or redirected app view.\n\n{GUIDANCE}")
+                            .encode_utf16().chain(Some(0)).collect();
+                        let title: Vec<u16> = "Gogoke uninstall".encode_utf16().chain(Some(0)).collect();
+                        unsafe { MessageBoxW(std::ptr::null_mut(), message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR); }
+                    }
+                } else {
+                    eprintln!("{error}");
+                }
+            }
             std::process::exit(if result.is_ok() { 0 } else { 1 });
         }
     }
