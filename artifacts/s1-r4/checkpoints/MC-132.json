@@ -1,0 +1,18 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-132",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "recorded_utc": "2026-09-27T07:53:22Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-131.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "exact_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "desktop_build": {"run_id": 36302148604, "attempt": 1, "conclusion": "success", "jobs": "browser, locked notices, frozen Windows, repro Windows, six-class byte comparison all success", "frozen_artifact_id": 10925629008, "frozen_archive_sha256": "de621b0eeae3245343d3b7a2de94ff6adb7618f8f12135f5f34c4577a5ba8731", "ci_only_negative_installer_artifact_id": 10926557839, "repro_receipt_artifact_id": 10926493216, "repro_receipt_archive_sha256": "85790eb48b40c734c64ee8c2d49933a3ce3a73db0855ac90a3bc4edd09ffb2fa", "repro_receipt_json_sha256": "904063cd027a6d4d3b24ee466d8ace8d5356ed50fb5384575fe664d52607e947", "repro_state": "PASS"},
+  "public_source_hygiene": {"run_id": 36302148207, "conclusion": "success", "committed_files_scanned": 24550, "leaks": 0},
+  "trusted_candidate_signing": {"run_id": 36304375541, "attempt": 1, "head_sha": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e", "event": "workflow_run", "conclusion": "success", "signed_artifact_id": 10926871618, "signed_archive_sha256": "79ed1d86857f04ae44a27cc5842164e857d2380a6cc7dabcaf2809995dd8f77f"},
+  "candidate_identity": {"manifest_source": "b025ba44659da52a2747c7c0a281c5bbd7d4b732", "manifest_build_run": 36302148604, "manifest_frozen_artifact_id": 10925629008, "manifest_purpose": "CI_CANDIDATE_RESOURCE", "setup_sha256": "2419d848017694e6819eb4e8dcd1004116e0a83e4ad4d2cde003b9d8448eb70d", "installed_shell_sha256": "325d7bccae248147a5eeb7d812af1b1c4dba910ac686379d04f5b8f3d878c929", "native_host_sha256": "842221cb902906e19b439123a638c50f80432edebed0788b75182e7a42c9d267", "node_sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50", "resource_index_sha256": "cd8ee1462ed49f6647b1a8010ee9cfc7569190bdb83e52f8c5e9903fc0a67451", "resource_pack_sha256": "00e5c932959e2adc5e13b8437f2819ca53ef0d8f9329991c0f760c4bb8b87ffa"},
+  "local_read_only_verification": "Downloaded repro and signed original ZIPs under separate %LOCALAPPDATA%\\gogoke-agent-tmp task roots; both raw archive hashes equal GitHub digests. Repro JSON binds six equal byte classes to exact source. Extracted signed manifest binds purpose/source/run/frozen artifact/index/pack. Offline P-256 purpose-bound signature verifies; an in-memory one-byte mutation rejects. No candidate executable was run or installed on Owner Win11.",
+  "inbox_classification": {"F1": "NEEDS_REVIEW until cloud final Assert/Delete interleave executes", "F2": "ALREADY_FIXED in source and rebuilt candidate, installed smoke pending", "F3": "NEEDS_REVIEW until fresh Win11 prep binds these hashes", "F4": "NEEDS_REVIEW until formal shortcut is launched after formal snapshot comparison"},
+  "next_action": "Dispatch execution-branch installed candidate smoke with exact source b025ba44, trusted signer 36304375541 attempt 1 and artifact 10926871618. Require positive installed product and all three CI-only negative installer axes. Preserve original receipts and diagnose any failure; do not test Owner Win11 before a full cloud pass and fresh preparation. The external Claude followup scope is a3b6f85e..b025ba44 including F1/F2 and interleave validity; Owner transfers it. No PR #34 merge, R2-06b, publication, code signing, system security change or self-acceptance."
+}
