@@ -29,7 +29,7 @@
 
 | 轴 | 实际观察 |
 | --- | --- |
-| Codex 打包视图 | 首次安装和产品探针使用了该视图的虚拟化 LocalAppData/HKCU；相同候选字节的 Home、受控结果及同根再次启动有证据。卸载父进程两次报 `GOGOKE_UNINSTALL_LOCK_HANDOFF_UNCONFIRMED`，候选登记/根/数据仍在。安全诊断副本在 `Pin-Ancestors` 观察到逻辑路径与打开句柄的 Codex 包 `LocalCache` 物理路径不一致，足以复现同型拒绝；真实卸载子进程的内部阶段未采样。此视图的卸载轴 `FAIL`，不能算普通用户候选的卸载，也不能据此弱化物理路径断言。见 MC-138、MC-139。 |
+| Codex 打包视图 | 首次安装和产品探针使用了该视图的虚拟化 LocalAppData/HKCU；相同候选字节的 Home、受控结果及同根再次启动有证据。首次卸载的 30 秒观察器超时，父进程最终退出状态未记录；第二次父进程退出 1，报 `GOGOKE_UNINSTALL_LOCK_HANDOFF_UNCONFIRMED`，候选登记/根/数据仍在。安全诊断副本在 `Pin-Ancestors` 观察到逻辑路径与打开句柄的 Codex 包 `LocalCache` 物理路径不一致，足以复现同型拒绝；真实卸载子进程的内部阶段未采样。此视图的卸载轴 `FAIL`，不能算普通用户候选的卸载，也不能据此弱化物理路径断言。见 MC-137 至 MC-139。 |
 | 普通用户视图安装 | 同一用户 SID、交互会话 1，SAC 状态 1。正式版安装根 12,989 文件、数据 2 文件和两条快捷方式先建独立基线；正式 HKCU 登记在该视图原本缺席。冻结 setup SHA-256 `2419d848017694e6819eb4e8dcd1004116e0a83e4ad4d2cde003b9d8448eb70d` 安装退出 0。安装后 shell、host、Node、索引和资源包 SHA-256 均等于上表；普通候选实例 ID 的 UTF-8 SHA-256 为 `9896485fdfec67c0deaa28592bdb0ac09b2bb6a9c75e3e0f2e7e90634337cc20`。见 MC-140 至 MC-142。 |
 | 普通用户视图产品 | 已安装且 Authenticode `Valid` 的 OpenJS Node 驱动一次实际 Home 和固定 `gogoke_r2_goal_probe`：Controller 准入、native host 可达、签名资源 readiness、Git blob `a20115fdd5acf9e7e5025c3b3ca50696001badac` 回读，受控结果 `VALIDATED_TEST_RESULT_NOT_ADOPTED`，acceptance `TEST_FIXTURE_NOT_ADOPTED`。截图 SHA-256 `ca3f84c2fedd8712fc83da2c910eba9912c3e941cc74cb21dd311651c2d71b29`；CDP 截图的黑色背景不能单独证明实际桌面画面有缺陷。普通视图没有第二次产品启动；打包视图的再次启动单列。见 MC-143。 |
 | 普通用户视图卸载与正式版 | `gogoke.exe --uninstall --quiet` 父进程退出 0，精确实例 finalizer 回执 `DELETED`；候选登记和全部文件消失，安装根只留 1,087 个空目录；候选数据 2 文件卸载前后树哈希均为 `498070a77bddc1d137cd0d5c10e30fe99cf05168709dcab0045aaf710ba4466d`。**先**比对正式根、数据、快捷方式与安装前逐字节一致，**后**从原开始菜单快捷方式启动正式版，窗口响应 5 秒并正常关闭。正式数据随后只有 `.window-state.json` 变化，不能拿启动后快照替代先前比对。见 MC-144 与下一检查点。 |
