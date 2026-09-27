@@ -1,0 +1,21 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-131",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "e5f963166501a77c697d8fa363b906f8c2a7a28f",
+  "recorded_utc": "2026-09-27T07:07:11Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-130.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "superseded_run": {"desktop_run_id": 36301943509, "source_head": "5821751ab06f5a3e3f836b1f7a4fd0db5cde6bab", "conclusion": "cancelled", "reason": "Independent static audit identified three concrete false-failure races in its CI-only negative harness before native build completion. No build or smoke PASS is inherited.", "hygiene_run_id": 36301943740, "hygiene_conclusion": "success on the superseded source only"},
+  "test_repairs": [
+    "The A-stage cleanup now checks each marker before removal; lock-busy must be absent after an uncontended A acquisition.",
+    "The harness no longer reads a PENDING finalizer receipt while the production finalizer holds it with FileShare.None.",
+    "The pre-delete marker is accepted only when its plain file is fully readable with exact before-delete bytes; sharing conflict 32 means still writing.",
+    "Completed blocked-B stage markers are cleared before resumed B starts, so diagnostic attribution is per process."
+  ],
+  "independent_static_review": "risk_auditor confirmed the CI stage macro is gated by GOGOKE_NSIS_TEST_BARRIER and the production frozen artifact precedes separate CI-only rebuilding; the Python in-memory injection round-trips to exact production finalizer bytes and parses, with its pause between final Assert-Root and unique DeleteSubKey. No further concrete static test defect found. Cloud execution remains required.",
+  "latest_exact_source_commit": "e5f963166501a77c697d8fa363b906f8c2a7a28f",
+  "claude_followup_scope_for_owner": "Heterogeneous review of a3b6f85e..e5f96316 exact source, including F1/F2 repair, CI test-only instrumentation, candidate artifact identity, and Win11 formal-install isolation; refresh scope if source changes again.",
+  "next_action": "Push, run exact-source desktop and hygiene workflows; if build and reproducibility pass, bind trusted signer and installed smoke including final Assert/Delete interleave. Diagnose actual stage evidence if any axis fails. Do not run Owner Win11 before all required checks and fresh candidate hashes. Preserve MC-122 evidence copy and formal installation; no PR #34 merge, R2-06b, publication, code signing or security-setting change."
+}
