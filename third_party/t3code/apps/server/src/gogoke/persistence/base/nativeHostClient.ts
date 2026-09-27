@@ -2160,6 +2160,9 @@ export class NativeHostClient {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    if (process.env.GITHUB_ACTIONS === "true") {
+      child.stderr?.pipe(process.stderr, { end: false });
+    }
     if (child.stdout === null) {
       child.kill();
       throw new NativeHostClientError("HOST_STDIO", "native-host stdout was not created");

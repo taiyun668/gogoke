@@ -38,6 +38,30 @@ const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const MAX_INDEX_BYTES: u64 = 4 << 20;
 const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 
+// Temporary cloud-only first failure receipt for the actual managed child.
+// Remove after the installed product passes on the corrected source bytes.
+pub(crate) fn write_ci_install_error_once(message: &str) {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return;
+    }
+    let (Ok(run), Ok(attempt)) = (
+        std::env::var("GITHUB_RUN_ID"),
+        std::env::var("GITHUB_RUN_ATTEMPT"),
+    ) else {
+        return;
+    };
+    if !run.bytes().all(|byte| byte.is_ascii_digit())
+        || !attempt.bytes().all(|byte| byte.is_ascii_digit())
+        || message.len() > 4096
+    {
+        return;
+    }
+    let path = std::env::temp_dir().join(format!("gogoke-install-error-{run}-{attempt}.txt"));
+    if let Ok(mut output) = fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        let _ = output.write_all(message.as_bytes());
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Domain {
     Candidate,
