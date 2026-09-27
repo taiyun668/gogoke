@@ -449,20 +449,30 @@ fn reconcile_resource_update(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let active = require_formal_domain(app)?;
+    let registration_guard = crate::resource_trust::acquire_registration_lock(active.domain)?;
+    let _lifecycle_guard = crate::resource_trust::acquire_lifecycle_lock(&active.install_root)?;
+    let instance = active.registered_instance()?;
     active.verify_runtime_files()?;
     match resource_recovery_status(&state, &active.version, &active.generation_id)? {
         Some("installed") => {
             // The durable pointer was committed only after a readiness event.
+            crate::resource_trust::set_formal_display_version(
+                &active.install_root, &instance, &active.version, &registration_guard,
+            )?;
             state.status = "installed".to_string();
             state.last_error = None;
         }
         Some("failed") => {
             // Startup verified the old signed set. The interrupted switch did
             // not commit its pointer, so it can be reported as rolled back.
-            let message = "resource update was interrupted; the verified previous generation remains active";
+            let message = state.last_error.clone().unwrap_or_else(||
+                "resource update was interrupted; the verified previous generation remains active".to_string());
+            crate::resource_trust::set_formal_display_version(
+                &active.install_root, &instance, &active.version, &registration_guard,
+            )?;
             state.status = "failed".to_string();
-            state.last_error = Some(message.to_string());
-            std::fs::write(update_directory(app)?.join("update-failure.log"), message)
+            state.last_error = Some(message.clone());
+            std::fs::write(update_directory(app)?.join("update-failure.log"), &message)
                 .map_err(|error| format!("could not record interrupted resource update: {error}"))?;
         }
         _ => return Ok(()),
@@ -1063,7 +1073,14 @@ async fn apply_resource_update(
         .try_state::<crate::resource_trust::ResourceState>()
         .ok_or_else(|| "GOGOKE_UPDATE_VERIFIED_IDENTITY_UNAVAILABLE".to_string())?;
     let old = require_formal_domain(app)?;
+    // NSIS and the old uninstaller use this per-domain lock even when a new
+    // installation chooses a different parent directory.
+    let registration_guard = crate::resource_trust::acquire_registration_lock(old.domain)?;
     let _lifecycle_guard = crate::resource_trust::acquire_lifecycle_lock(&old.install_root)?;
+    let instance = old.registered_instance()?;
+    if crate::resource_trust::formal_display_version(&old.install_root, &instance)? != old.version {
+        return Err("GOGOKE_UPDATE_DISPLAY_VERSION_MISMATCH".to_string());
+    }
     let new = crate::resource_trust::stage_resource_update(release_set, &old)?;
     if new.domain != crate::resource_trust::Domain::Formal
         || new.version != identity.offer.version
@@ -1114,6 +1131,9 @@ async fn apply_resource_update(
             .map_err(|_| "new resource generation did not report readiness".to_string())?
             .map_err(|_| "new resource generation readiness was cancelled".to_string())?;
         crate::resource_trust::activate_resource_set(&new.install_root, &new.set_id)?;
+        crate::resource_trust::set_formal_display_version(
+            &new.install_root, &instance, &new.version, &registration_guard,
+        )?;
         let installed = PreparedUpdateState {
             status: "installed".to_string(),
             ..applying.clone()
@@ -1126,10 +1146,15 @@ async fn apply_resource_update(
     RESOURCE_READY.lock().await.take();
     if let Err(error) = outcome {
         // Navigation being accepted does not prove that the old page and its
-        // product service are usable again. Require its actual readiness event.
-        let rollback = async {
-            crate::resource_trust::activate_resource_set(&old.install_root, &old.set_id)?;
-            state.replace(old.clone())?;
+        // product service are usable again. Restore independent surfaces even
+        // when a pointer or registry write fails, then require readiness.
+        let memory_restored = state.replace(old.clone());
+        let pointer_restored =
+            crate::resource_trust::activate_resource_set(&old.install_root, &old.set_id);
+        let registration_restored = crate::resource_trust::set_formal_display_version(
+            &old.install_root, &instance, &old.version, &registration_guard,
+        );
+        let page_restored = if memory_restored.is_ok() {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             {
                 let mut pending = RESOURCE_READY.lock().await;
@@ -1140,23 +1165,33 @@ async fn apply_resource_update(
                     sender,
                 });
             }
-            window
-                .navigate(old_url)
-                .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NAVIGATION_FAILED".to_string())?;
-            tokio::time::timeout(std::time::Duration::from_secs(30), receiver)
-                .await
-                .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NOT_READY".to_string())?
-                .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NOT_READY".to_string())
-        }
-        .await;
+            async {
+                window
+                    .navigate(old_url)
+                    .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NAVIGATION_FAILED".to_string())?;
+                tokio::time::timeout(std::time::Duration::from_secs(30), receiver)
+                    .await
+                    .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NOT_READY".to_string())?
+                    .map_err(|_| "GOGOKE_UPDATE_RESOURCE_ROLLBACK_NOT_READY".to_string())
+            }
+            .await
+        } else {
+            Err("GOGOKE_UPDATE_RESOURCE_ROLLBACK_STATE_FAILED".to_string())
+        };
         RESOURCE_READY.lock().await.take();
-        let error = if rollback.is_err() {
+        let rollback_complete = memory_restored.is_ok()
+            && pointer_restored.is_ok()
+            && registration_restored.is_ok()
+            && page_restored.is_ok();
+        let error = if !rollback_complete {
             format!("{error}; GOGOKE_UPDATE_RESOURCE_ROLLBACK_INCOMPLETE")
         } else {
             error
         };
         let failed = PreparedUpdateState {
-            status: "failed".to_string(),
+            // Keep an incomplete transaction recoverable from the verified
+            // pointer on the next startup.
+            status: if rollback_complete { "failed" } else { "applying" }.to_string(),
             last_error: Some(error.clone()),
             ..applying
         };

@@ -13,13 +13,15 @@ use std::os::windows::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, MoveFileExW, SetFileInformationByHandle, DELETE, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_READ,
     FileRenameInfo, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_EXISTING,
 };
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+use winreg::{enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE}, RegKey};
 use zip::{CompressionMethod, ZipArchive};
 
 const CANDIDATE_KEY: &str = include_str!("../gogoke-candidate-public-key.txt");
@@ -224,6 +226,49 @@ struct ResourceStateInner {
 
 pub(crate) struct LifecycleLock {
     _file: fs::File,
+}
+
+pub(crate) struct RegistrationLock {
+    _file: fs::File,
+}
+
+fn exclusive_plain_lock(path: &Path) -> Result<fs::File, String> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .share_mode(0)
+        .custom_flags(OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| match error.raw_os_error() {
+            Some(32) => "GOGOKE_REGISTRATION_DOMAIN_BUSY".to_string(),
+            Some(code) => format!("GOGOKE_REGISTRATION_LOCK_WIN32_{code}"),
+            None => "GOGOKE_REGISTRATION_LOCK_FAILED".to_string(),
+        })?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "GOGOKE_REGISTRATION_LOCK_INVALID".to_string())?;
+    if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0 {
+        return Err("GOGOKE_REGISTRATION_LOCK_INVALID".to_string());
+    }
+    Ok(file)
+}
+
+pub(crate) fn acquire_registration_lock(domain: Domain) -> Result<RegistrationLock, String> {
+    let raw = unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, Default::default(), None) }
+        .map_err(|_| "GOGOKE_LOCAL_DATA_UNAVAILABLE".to_string())?;
+    let local = unsafe { raw.to_string() }
+        .map(PathBuf::from)
+        .map_err(|_| "GOGOKE_LOCAL_DATA_UNAVAILABLE".to_string());
+    unsafe { CoTaskMemFree(Some(raw.0.cast())) };
+    let local = local?;
+    let metadata = fs::symlink_metadata(&local)
+        .map_err(|_| "GOGOKE_LOCAL_DATA_UNAVAILABLE".to_string())?;
+    if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
+        return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
+    }
+    let name = if domain == Domain::Formal { "OWNER_RELEASE" } else { "CI_CANDIDATE_RESOURCE" };
+    let path = local.join(format!("gogoke-registration-{name}.lock"));
+    Ok(RegistrationLock { _file: exclusive_plain_lock(&path)? })
 }
 
 pub(crate) fn acquire_lifecycle_lock(root: &Path) -> Result<LifecycleLock, String> {
@@ -872,6 +917,34 @@ fn validate_install_registration(root: &Path, domain: Domain) -> Result<String, 
     }
     reject_opposite_registered_root(root, domain)?;
     Ok(instance)
+}
+
+pub(crate) fn formal_display_version(root: &Path, instance: &str) -> Result<String, String> {
+    if validate_install_registration(root, Domain::Formal)? != instance {
+        return Err("GOGOKE_INSTALL_INSTANCE_CHANGED".to_string());
+    }
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\gogoke")
+        .map_err(|_| "GOGOKE_INSTALL_REGISTRATION_MISSING".to_string())?;
+    key.get_value("DisplayVersion")
+        .map_err(|_| "GOGOKE_INSTALL_DISPLAY_VERSION_INVALID".to_string())
+}
+
+pub(crate) fn set_formal_display_version(
+    root: &Path, instance: &str, version: &str, _lock: &RegistrationLock,
+) -> Result<(), String> {
+    if validate_install_registration(root, Domain::Formal)? != instance {
+        return Err("GOGOKE_INSTALL_INSTANCE_CHANGED".to_string());
+    }
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\gogoke", KEY_READ | KEY_WRITE)
+        .map_err(|_| "GOGOKE_INSTALL_REGISTRATION_MISSING".to_string())?;
+    key.set_value("DisplayVersion", &version)
+        .map_err(|_| "GOGOKE_INSTALL_DISPLAY_VERSION_WRITE_FAILED".to_string())?;
+    if formal_display_version(root, instance)? != version {
+        return Err("GOGOKE_INSTALL_DISPLAY_VERSION_WRITE_FAILED".to_string());
+    }
+    Ok(())
 }
 
 fn reject_opposite_registered_root(root: &Path, domain: Domain) -> Result<(), String> {
@@ -1979,6 +2052,22 @@ mod tests {
         let new_guard = acquire_lifecycle_lock(&new_root).expect("new instance takes released lock");
         drop(new_guard);
         fs::remove_dir_all(&parent).expect("remove owned lifecycle fixture");
+    }
+
+    #[test]
+    fn registration_file_lock_is_exclusive_until_released() {
+        let parent = std::env::temp_dir().join(format!(
+            "gogoke-registration-lock-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir(&parent).expect("owned registration fixture");
+        let path = parent.join("gogoke-registration-OWNER_RELEASE.lock");
+        let first = exclusive_plain_lock(&path).expect("first registration owner");
+        assert!(exclusive_plain_lock(&path).is_err());
+        drop(first);
+        let second = exclusive_plain_lock(&path).expect("registration lock released");
+        drop(second);
+        fs::remove_dir_all(&parent).expect("remove owned registration fixture");
     }
 
     #[test]
