@@ -1,0 +1,16 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-155",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "a649fe4b230fe9087ccc893de100eb8438612ea0",
+  "recorded_utc": "2026-09-27T20:08:51Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-154.json",
+  "parallel_inbox_observed_head": "c0c67c89bf8c2ab1e1ef629fa6a17ede2b96c292",
+  "inbox_correction": "MC-152's claim that control inbox entries had been removed is false and withdrawn. The local origin/control tracking ref was stale at 8d231004 because this checkout's remote.origin.fetch only tracks the execution branch. Initial git fetch --all --prune did not update control or main. Direct git ls-remote and explicit refspec fetch confirmed live control HEAD c0c67c89, identical to MC-151. The four current index entries remain present. MC-153 and MC-154 also recorded the stale 8d observation; this checkpoint supersedes those inbox observations. The mistake was trusting a local remote-tracking ref without checking the configured fetch refspec or live remote identity.",
+  "effective_governance": "Owner directed that origin/main governs. Explicit fetch confirmed origin/main@1ba8f6092a7e86ab2ca2c5d2e58259c57f1d2d31, merged PR #51, and its new AGENTS.md section '先查逻辑硬伤，再提风险、检查、问题和方案'. For each future finding, verify premise, inference and decision relevance before action. The local execution-branch AGENTS.md predates that merge; it does not override the effective main rule.",
+  "r2_06a_residual_diagnostic": "The retired 58deb795 diagnostic artifact 10939969005 has ZIP digest sha256:a19c5642e21746007e91ca447d32be50246276dbfc23a16921e2db321ec37b6f. Its result.json is 1332 bytes, SHA-256 b9449a31c9f431ce627309abbbce2f10f721901d6dd3d4912d95aea79f8f0601; all diagnostic variants reported the named directory reparse condition. This establishes the condition in a cloud diagnostic, not a crossed privilege boundary or product acceptance. Under currentUser/RequestExecutionLevel user, Owner designated it known residual; perMachine or elevated installation requires repair first. The diagnostic job succeeded, while its parent 58deb795 desktop run was later cancelled by the newer branch dispatch and is not a build PASS.",
+  "finding_logic_check": "Premise: the current installer and uninstaller run with the same current-user privilege, and the relevant directory is in that user's writable area. Inference: a same-user write condition does not by itself cross a privilege boundary. Decision relevance: it does not block R2-06a under the current install mode; a future elevated/perMachine mode changes that premise and requires a fix before enablement. No additional attack reproduction is planned.",
+  "cloud": "Exact e1379bb5 desktop run 36346338781 remains in progress; exact e1379bb5 public source hygiene run 36346343245 succeeded. No signed candidate or Owner Win11 new-byte run yet.",
+  "next_action": "Continue exact-source cloud evidence and then trusted signer, installed smoke and ordinary Win11 test. Use direct remote identity checks for control/main at future checkpoint boundaries. Preserve the G4 partial item and all formal objects."
+}
