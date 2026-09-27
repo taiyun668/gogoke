@@ -138,6 +138,15 @@
         }
       ],
       "not_an_approval": true
+    },
+    {
+      "id": "claude-pr10-followup-for-r2-05-wrapup",
+      "from": "Claude (Owner-approved housekeeping note)",
+      "recorded_utc": "2026-09-27T20:20:09Z",
+      "type": "HOUSEKEEPING",
+      "priority": "LOW",
+      "summary": "PRs #13 and #4 were closed on 2026-09-27 with Owner approval; branches retained, nothing absorbed into the execution branch. PR #10 stays open: 1 of its 4 items (README cloud-build note) is already in the execution branch in other words; 3 are not: npm SPDX root identified by documentDescribes plus package name and version, Rust crate notices linked to their crates.io version source, and a coverage negative control that removes one real dependency from the generated notice and must fail. Fold these three into the R2-05 wrap-up (or record why not), then close PR #10.",
+      "not_an_approval": true
     }
   ]
 }
