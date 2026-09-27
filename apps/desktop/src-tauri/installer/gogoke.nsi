@@ -384,9 +384,13 @@ Function AcquireGogokeLifecycleLock
   Call GogokePinDirectory
   Pop $9
   StrCpy $GogokeRegistrationLockPath "$LOCALAPPDATA\gogoke-registration-$GogokeInstallDomain.lock"
-  System::Call 'kernel32::CreateFileW(w "$GogokeRegistrationLockPath", i 0xC0000000, i 0, p 0, i 4, i 0x00200080, p 0) p .r2'
+  System::Call 'kernel32::CreateFileW(w "$GogokeRegistrationLockPath", i 0xC0000000, i 0, p 0, i 4, i 0x00200080, p 0) p .r2 ?e'
+  Pop $6
   ${If} $2 == -1
-    Abort "Another Gogoke install for this registration domain is active."
+    ${If} $6 == 32
+      Abort "Another Gogoke install or uninstall for this registration domain is active."
+    ${EndIf}
+    Abort "The Gogoke registration lifecycle lock could not be opened (Windows error $6)."
   ${EndIf}
   StrCpy $GogokeRegistrationLockHandle $2
   System::Call 'kernel32::GetFileAttributesW(w "$GogokeRegistrationLockPath") i .r6'

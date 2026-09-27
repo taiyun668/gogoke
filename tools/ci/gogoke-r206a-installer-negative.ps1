@@ -36,6 +36,7 @@ $script:receipt = [ordered]@{
     productionSetupSha256 = $ExpectedProductionSetupSha256
     leafInsertion = [ordered]@{ state = 'FAIL' }
     sameDomainDifferentParents = [ordered]@{ state = 'FAIL' }
+    uninstallInstallInterleave = [ordered]@{ state = 'FAIL' }
 }
 
 function Assert-PlainFile([string]$Path) {
@@ -317,6 +318,103 @@ try {
     $script:receipt.sameDomainDifferentParents.uninstallExitCode = $uninstallExit
     $script:receipt.sameDomainDifferentParents.postUninstallRegistration = 'ABSENT'
     $script:receipt.sameDomainDifferentParents.state = 'PASS'
+
+    $script:stage = 'uninstall-install-interleave'
+    $script:axis = 'uninstallInstallInterleave'
+    # The actual embedded finalizer for fixture A pauses at its parent
+    # handoff, after it owns the registration lock and before DeleteSubKey.
+    # The CI-only setup for B must fail before its installation barrier.
+    Remove-Item -LiteralPath $script:readyPath, $script:goPath -Force
+    $fixtureParent = New-FreshDirectory (Join-Path $script:workRoot 'uninstall-parent-a')
+    $nextParent = New-FreshDirectory (Join-Path $script:workRoot 'uninstall-parent-b')
+    $fixtureHelper = (Resolve-Path -LiteralPath './tools/ci/test_gogoke_uninstall_finalizer_cloud.py').Path
+    $payloadPath = & python -B $fixtureHelper --prepare-interleave $fixtureParent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
+        throw 'Cloud finalizer A fixture could not be prepared'
+    }
+    $payload = Get-Content -LiteralPath $payloadPath -Raw | ConvertFrom-Json -AsHashtable
+    $holdReady = Join-Path $script:workRoot 'uninstall-a.ready'
+    $holdGo = Join-Path $script:workRoot 'uninstall-a.go'
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = (Get-Command python -ErrorAction Stop).Source
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    foreach ($argument in @('-B', $fixtureHelper, '--parent-hold', $payloadPath, $holdReady, $holdGo)) {
+        [void]$start.ArgumentList.Add($argument)
+    }
+    $fixtureProcess = [Diagnostics.Process]::new()
+    $fixtureProcess.StartInfo = $start
+    if (-not $fixtureProcess.Start()) { throw 'Cloud finalizer A fixture did not start' }
+    $script:processes.Add($fixtureProcess)
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    while (-not (Test-Path -LiteralPath $holdReady -PathType Leaf)) {
+        if ($fixtureProcess.HasExited) { throw "Cloud finalizer A fixture exited before lock handoff: $($fixtureProcess.ExitCode)" }
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'Cloud finalizer A lock handoff timed out' }
+        Start-Sleep -Milliseconds 50
+    }
+    [void](Assert-PlainFile $holdReady)
+    $fixtureRegistration = Get-ItemProperty -LiteralPath $script:registration -ErrorAction Stop
+    if ([string]$fixtureRegistration.InstallInstanceId -cne [string]$payload.instance -or
+        [string]$fixtureRegistration.InstallLocation -cne [string]$payload.root) {
+        throw 'Cloud finalizer A registration changed before B'
+    }
+    $nextTarget = Join-Path $nextParent 'install'
+    $blockedB = Start-Installer $script:stagedSetup $nextTarget
+    $blockedExit = Wait-Exit $blockedB 30000 'Installer B during A uninstall'
+    if ($blockedExit -eq 0 -or (Test-Path -LiteralPath $script:readyPath) -or
+        (Test-Path -LiteralPath $nextTarget)) {
+        throw 'Installer B crossed the domain lock held by finalizer A'
+    }
+    $fixtureRegistration = Get-ItemProperty -LiteralPath $script:registration -ErrorAction Stop
+    if ([string]$fixtureRegistration.InstallInstanceId -cne [string]$payload.instance) {
+        throw 'Installer B changed fixture A registration while A held the domain lock'
+    }
+    [IO.File]::WriteAllBytes($holdGo, [Text.Encoding]::ASCII.GetBytes('go'))
+    $fixtureExit = Wait-Exit $fixtureProcess 30000 'Cloud finalizer A parent'
+    if ($fixtureExit -ne 0) { throw "Cloud finalizer A parent failed: $fixtureExit" }
+    $deadline = [DateTime]::UtcNow.AddSeconds(90)
+    $finalizerReceipt = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (Test-Path -LiteralPath $payload.receipt -PathType Leaf) {
+            try {
+                $observed = Get-Content -LiteralPath $payload.receipt -Raw | ConvertFrom-Json -AsHashtable
+                if ($observed.state -cin @('DELETED', 'FAILED')) { $finalizerReceipt = $observed; break }
+            } catch { }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if ($null -eq $finalizerReceipt -or $finalizerReceipt.state -cne 'DELETED' -or
+        (Test-Path -LiteralPath $script:registration) -or
+        (Test-Path -LiteralPath (Join-Path $payload.root 'gogoke.exe'))) {
+        throw 'Cloud finalizer A did not complete its exact deletion before B resumed'
+    }
+    $resumedB = Start-Installer $script:stagedSetup $nextTarget
+    Wait-Barrier $resumedB 'Installer B after A uninstall'
+    New-Go
+    $resumedExit = Wait-Exit $resumedB 900000 'Installer B after A uninstall'
+    if ($resumedExit -ne 0) { throw "Installer B failed after A released the domain lock: $resumedExit" }
+    $nextInstance = Assert-RegisteredAt $nextTarget
+    if ((Get-Sha (Join-Path $nextTarget 'gogoke.exe')) -cne $ExpectedInstalledShellSha256) {
+        throw 'Installer B did not publish the exact signed installed shell'
+    }
+    $script:receipt.uninstallInstallInterleave = [ordered]@{
+        state = 'FAIL'; finalizerAReceipt = 'DELETED'; blockedBExitCode = $blockedExit
+        blockedBBarrier = 'ABSENT'; blockedBTarget = 'ABSENT'
+        resumedBExitCode = $resumedExit; resumedBInstanceId = $nextInstance
+        registrationTarget = $nextTarget
+    }
+    $uninstallB = Start-Uninstall (Join-Path $nextTarget 'gogoke.exe')
+    $uninstallBExit = Wait-Exit $uninstallB 30000 'Installer B product uninstall'
+    if ($uninstallBExit -ne 0) { throw "Installed B uninstall failed: $uninstallBExit" }
+    $deadline = [DateTime]::UtcNow.AddSeconds(300)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (-not (Test-Path -LiteralPath $script:registration)) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    Assert-NoCandidateRegistration
+    $script:receipt.uninstallInstallInterleave.postUninstallRegistration = 'ABSENT'
+    $script:receipt.uninstallInstallInterleave.state = 'PASS'
     $script:receipt.state = 'PASS'
     $script:stage = 'complete'
 } catch {

@@ -79,7 +79,8 @@ def require_cloud() -> None:
         raise RuntimeError("Windows GitHub Actions only; never run deletion locally")
 
 
-def parent_helper(payload_path: Path) -> int:
+def parent_helper(payload_path: Path, hold_ready: Path | None = None,
+                  hold_go: Path | None = None) -> int:
     require_cloud()
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     payload["parentPid"] = os.getpid()
@@ -133,9 +134,56 @@ def parent_helper(payload_path: Path) -> int:
         if lock_file.read(len(payload["nonce"]) + 6) != f"LOCK:{payload['nonce']}\n".encode():
             child.kill()
             return 5
+        if hold_ready is not None and hold_go is not None:
+            # READY means the actual finalizer has acquired the registration
+            # lock and is waiting for this parent to exit. Hold that handoff
+            # while the separate CI-only installer attempts the same domain.
+            with hold_ready.open("xb") as marker:
+                marker.write(b"finalizer-ready\n")
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                if hold_go.is_file():
+                    return 0
+                time.sleep(0.05)
+            child.kill()
+            return 6
         # The finalizer now owns the inherited lock handle and waits for this
         # exact process to exit. The supervising test checks its receipt.
         return 0
+
+
+def prepare_interleave(parent: Path) -> Path:
+    require_cloud()
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY) as key:
+        if winreg.QueryInfoKey(key)[1] != 0:
+            raise AssertionError("Candidate registration was not fresh")
+        root = parent / "install"
+        root.mkdir()
+        exe = root / "gogoke.exe"
+        exe.write_bytes(b"cloud finalizer A fixture; not a product executable\n")
+        instance = f"ci-interleave-{uuid.uuid4()}"
+        winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(root))
+        winreg.SetValueEx(key, "InstallInstanceId", 0, winreg.REG_SZ, instance)
+        winreg.SetValueEx(key, "InstallDomain", 0, winreg.REG_SZ, "CI_CANDIDATE_RESOURCE")
+        winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ,
+                          f'"{exe}" --uninstall')
+    nonce = str(uuid.uuid4())
+    tag = hashlib.sha256(instance.encode()).hexdigest()[:16]
+    payload = {
+        "root": str(root), "rootIdentity": identity(root),
+        "lockPath": str(parent / "gogoke-install-lifecycle.lock"),
+        "registryKey": "gogoke-candidate", "instance": instance,
+        "domain": "CI_CANDIDATE_RESOURCE", "parentPid": 0,
+        "nonce": nonce,
+        "receipt": str(parent / f"gogoke-uninstall-{tag}-{nonce}.json"),
+        "files": [{"path": str(exe),
+                   "sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
+                   "identity": identity(exe)}],
+        "shortcuts": [],
+    }
+    payload_path = parent / "interleave-payload.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    return payload_path
 
 
 class CloudFinalizerTest(unittest.TestCase):
@@ -376,4 +424,9 @@ class CloudFinalizerTest(unittest.TestCase):
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--parent":
         sys.exit(parent_helper(Path(sys.argv[2])))
+    if len(sys.argv) == 3 and sys.argv[1] == "--prepare-interleave":
+        print(prepare_interleave(Path(sys.argv[2])))
+        sys.exit(0)
+    if len(sys.argv) == 5 and sys.argv[1] == "--parent-hold":
+        sys.exit(parent_helper(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])))
     unittest.main()

@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $script:data = $null
 $script:receiptAllowed = $false
 $script:receiptStream = $null
+$script:registrationLock = $null
 $script:pinned = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
 $script:missingShortcuts = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 
@@ -157,6 +158,29 @@ function Pin-Ancestors([string]$path, [object]$rootIdentity) {
         $current = [IO.Path]::Combine($current, $part)
         $expected = if (Same $current $data.root) { $rootIdentity } else { $null }
         $null = Pin-Directory $current $expected
+    }
+}
+function Acquire-RegistrationLock {
+    # NSIS holds this same per-user, per-domain file across installation and
+    # registration readback. Keep it through the finalizer's registry deletion.
+    $localData = Full-Path ([Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData))
+    Pin-Ancestors $localData $null
+    $lockPath = [IO.Path]::Combine($localData,
+        'gogoke-registration-' + [string]$data.domain + '.lock')
+    $raw = [GogokeUninstallNative]::CreateFileW($lockPath, [uint32]3221225472,
+        [uint32]0, [IntPtr]::Zero, [uint32]4, [uint32]0x00200080,
+        [IntPtr]::Zero)
+    if ($raw.ToInt64() -eq -1 -or $raw -eq [IntPtr]::Zero) {
+        Fail 'GOGOKE_UNINSTALL_REGISTRATION_LOCK_UNAVAILABLE'
+    }
+    $handle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($raw, $true)
+    try {
+        $null = Assert-Opened $handle.DangerousGetHandle() $lockPath $false $null
+        $script:registrationLock = $handle
+    } catch {
+        $handle.Dispose()
+        throw
     }
 }
 function Assert-Instance {
@@ -383,6 +407,7 @@ try {
         Fail 'GOGOKE_UNINSTALL_LOCK_HANDLE_MISSING'
     }
     $null = Assert-Opened $lockHandle $data.lockPath $false $null
+    Acquire-RegistrationLock
     Assert-Root
     $parent = [Diagnostics.Process]::GetProcessById([int]$data.parentPid)
     $null = $parent.Handle
@@ -437,5 +462,6 @@ try {
     exit 1
 } finally {
     if ($script:receiptStream) { $script:receiptStream.Dispose() }
+    if ($script:registrationLock) { $script:registrationLock.Dispose() }
     foreach ($handle in $script:pinned) { $handle.Dispose() }
 }
