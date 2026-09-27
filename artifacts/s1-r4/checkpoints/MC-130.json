@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-130",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "b9f1d0bb393309008d51d148e65bad88734bd641",
+  "recorded_utc": "2026-09-27T07:02:48Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-129.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_repair_commit": "3bd831e6d60ffde67145fdc56f50957689e77435",
+  "latest_exact_source_commit": "b9f1d0bb393309008d51d148e65bad88734bd641",
+  "independent_audit": {
+    "scope": "a3b6f85e..3bd831e6 production repair, exact source and original build/smoke bytes, R1/R3/R5/R6/R8 axes",
+    "result": "No newly confirmed production defect; F1 and F2 source repairs are sound. All-axis PASS remains prohibited because installed smoke 36300743274 failed before the new interleave axes ran.",
+    "specific_test_gaps": [
+      "A later installer can race DELETED receipt against finalizer registration-lock release; wait for the physical lock to become exclusively openable before resuming.",
+      "The first interleave probe paused at the parent handoff, not the final Assert-Root to DeleteSubKey window; it could miss an early-release mutation."
+    ]
+  },
+  "diagnostic_repair": {
+    "reason": "Original negative receipt showed a live CI-only setup and no post-preflight barrier after 90 seconds; the exact stalled stage was unknown.",
+    "changes": [
+      "CI-only NSIS setup records lock, lock-busy, preflight-start, preflight-end and install-start stages; production build does not define this hook.",
+      "The negative harness records stage and child-process evidence at the old 90-second mark, then uses the existing 15-minute setup bound.",
+      "After each uninstall, the harness waits until the known candidate registration lock can be opened exclusively.",
+      "The CI-only finalizer fixture pauses immediately before DeleteSubKey after final Assert-Root, with the production finalizer bytes loaded unchanged except for this in-memory test pause. A separate installer must be rejected with error-32 lock-busy evidence, then succeed after finalizer completion."
+    ],
+    "local_checks": "PowerShell parser, Python AST and git diff --check passed. No local native build or installation was performed."
+  },
+  "inbox_classification": {
+    "F1": "NEEDS_REVIEW: production repair is in source; exact dynamic deletion-window interleave is pending cloud execution",
+    "F2": "ALREADY_FIXED in source; cloud rebuild and smoke pending for latest exact bytes",
+    "F3": "NEEDS_REVIEW: residue instructions are in the superseded prep; rebind to final candidate bytes",
+    "F4": "NEEDS_REVIEW: formal-shortcut run after snapshot comparison is specified but not yet executed"
+  },
+  "external_heterogeneous_review_to_owner": "For the next final frozen exact source, request Claude review of a3b6f85e..that final source commit, including F1 registration lock and finalizer deletion window, F2 Win32 error mapping, CI-only interleave test validity, installer/uninstall safety, signing and artifact identity, and Win11 isolation/official-install preservation. The prior Claude review of a3b6f85e is classified above; no response wait blocks the independent audit.",
+  "next_action": "Push this checkpoint and dispatch exact-source desktop build and public-source hygiene for b9f1d0bb. After reproducibility and trusted candidate signing, run installed cloud smoke including leaf insertion, concurrent install and uninstall-install deletion-window interleave. On any failure, preserve original evidence and diagnose before repair. Only after all affected cloud checks pass, rebind hashes in a fresh Win11 isolated preparation and run one final-byte Owner-machine test. Preserve MC-122 two-file copy and formal installation; do not merge PR #34, start R2-06b, publish, code-sign, change security settings or self-accept."
+}
