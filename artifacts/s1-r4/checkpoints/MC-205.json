@@ -1,0 +1,13 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-205",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-204.json",
+  "state": "RESOURCES_0_1_13_PUBLIC_EXACT_SIGNED_BYTES_ORDINARY_DYNAMIC_TESTS_PENDING",
+  "public_release": "Owner authorized public versions needed for R2-06b. Controller directly uploaded four already frozen and locally Owner-key signed assets to public v0.1.13, without rebuild, repack, or resign. Tag target acb909d31c02acd1608a6f723d026e1d80ed0681, published 2026-09-28T18:45:09Z, latest, non-draft and non-prerelease. GitHub server asset readback: resource-index.json SHA-256 1388d6d5111c0b816b9a94f6361467d2a046885704331686df13798d318b80c0 size 2897745; gogoke-resources.windows.zip SHA-256 3c5035780a6a01152cd260d9032b7b43860dbe5bd9a85a5f8b87077464c8c926 size 49879746; SHA256SUMS.windows SHA-256 b6f57f709c4329d6dad9fc1e4eaa212c1e809b89024fac7a878277cee53fa9cc size 239; SHA256SUMS.windows.sig SHA-256 0050573c54d8a0ed8b80184079fdb27077575de15f287daabeae154dfa02d4f6 size 129. Older v0.1.12 remains published.",
+  "release_basis": "Desktop CI run 36460183342 passed five jobs at exact source acb909d31c02acd1608a6f723d026e1d80ed0681. Native/Windows run 36460188845 attempt 2 and hygiene run 36460194394 passed on the source. Exact signed full 0.1.11/resources 0.1.13 cloud smoke run 36466048804 passed. Temporary public-signature-only CI secret was deleted and candidate workflow restored in e999da21e5180fadcd7bd1acf49f9120aa749d77; subsequent hygiene run 36467146582 passed. Owner private key stayed local under the 2026-09-25 authorization.",
+  "ordinary_baseline": "Real ordinary Win11 full 0.1.11 installation with resources 0.1.12 active is the current product under test. No ordinary 0.1.13 offer, failure rollback, crash recovery, update/reinstall concurrency or successful update has yet run. Before each scenario check Gogoke processes, protected formal installation, registration, shortcuts, data and SAC state, then compare after the product closes.",
+  "inbox": "origin/control/gogoke-s1-r4-inbox remains 6108bf24705b9c02cf2350095cb700e386330d29; no new entries.",
+  "remaining": "Run public 0.1.13 offer and all real ordinary Win11 dynamic resource scenarios. Product or measurement bugs may be repaired autonomously; stop only for an unapproved act or possible unintended formal-data loss or overwrite. R2-06a remains unaccepted, PR #34 open and unmerged, and Controller does not self-accept. CurrentUser same-user reparse remains Owner-approved residual; fix before perMachine or elevated install."
+}
