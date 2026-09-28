@@ -11,7 +11,7 @@
 
 ## 一句话
 
-**Owner 的这台 Windows 开着强制模式的"智能应用控制"，它会拦截本机新编译出来的未签名程序。所以 gogoke 的原生代码一律在 GitHub 云端编译；发布不买代码签名证书，而是用 Owner 离线签名的校验清单保证完整性（Sandglass 的做法）。**
+**Owner 的这台 Windows 开着强制模式的"智能应用控制"，它会拦截本机新编译出来的未签名程序。所以 gogoke 的原生代码一律在 GitHub 云端编译；发布不买代码签名证书，而是用 Owner 私钥签署的校验清单保证完整性（Sandglass 的做法）。Controller 经授权可在本机签清单，公开发布仍须 Owner 决定。**
 
 这不是偏好，是这台机器逼出来的。忘了这一条，施工就会在本机撞墙——2026-09-22 已经撞过一次（见第九节）。
 
@@ -135,7 +135,7 @@ Owner 的立场（2026-09-15）：**像 Sandglass 一样，不用考虑签名问
 
 | 问题 | 靠什么解决 |
 |---|---|
-| **这次下载的东西是不是 Owner 发的、有没有被篡改** | Owner 离线签名的校验清单 |
+| **这次下载的东西是不是 Owner 授权的、有没有被篡改** | Owner 私钥签署的校验清单；Controller 经授权可在本机执行签署 |
 | **Windows 认不认识这个发布者** | 代码签名证书 |
 
 gogoke 自己的文档原话："**Windows publisher reputation and gogoke release authorization are different questions.**"
@@ -156,8 +156,8 @@ gogoke 自己的文档原话："**Windows publisher reputation and gogoke releas
 
 **发布**
 1. CI 在云端产出：`gogoke-<ver>-windows-x64-unsigned-setup.exe`、便携 ZIP、`SHA256SUMS.windows`
-2. Owner 在**自己机器上离线**用 `tools/sign-gogoke-release-manifest.ps1` 签清单。私钥 P-256，默认在 `%USERPROFILE%\.gogoke\release-key.txt`，**绝不进仓库、构建树、CI、发布资产**。只有公钥编译进程序（`apps/desktop/src-tauri/gogoke-release-public-key.txt`）
-3. `tools/publish-gogoke-release.ps1` 核对 CI 产物、重算哈希、签名、用内置公钥验签。**默认到此为止**，真正发布要显式加 `-Publish` 和发布说明文件——**发布是人做的动作**
+2. Owner 于 2026-09-25 授权 Controller 在本机用默认 Owner 私钥运行 `tools/sign-gogoke-release-manifest.ps1` 签清单。私钥 P-256，默认在 `%USERPROFILE%\.gogoke\release-key.txt`，**绝不进仓库、构建树、CI、日志或任何产物**。只有公钥编译进程序（`apps/desktop/src-tauri/gogoke-release-public-key.txt`）
+3. 签后重算清单哈希并用内置公钥验签；`tools/publish-gogoke-release.ps1` 的公开发布动作仍需 Owner 决定，不因 Controller 获得本机签署授权而自动执行
 
 **CI 自己也守门**：`gogoke-desktop.yml` 的 "Check release trust boundary" 步骤要求公钥是合法 P-256 格式，并且**任何像私钥的文件被 git 跟踪就直接失败**。
 
@@ -368,5 +368,5 @@ Owner 的机器开着强制模式的智能应用控制，会不可预测地拦�
 - 本仓库公开。已提交的任何文件（含检查点、计划、WIP）不得含本机绝对路径、用户名、账户用量快照、令牌或私钥；路径用仓库相对路径或 `%USERPROFILE%`、`%LOCALAPPDATA%` 占位。由流水线机械检查，不靠自觉。
 - 新增会被 gogoke 启动的子进程，引入时必须写明其在智能应用控制下的处境。发布不做代码签名，沿用现有更新链；该组件能否运行以 Owner 的 Windows 11（智能应用控制强制模式）上由正式安装包实际拉起的结果为准，被拦截时由 Owner 另行决定对策。主程序被放行不代表子进程会被放行；一个程序的放行不能外推到另一个程序或下一个版本。
 - 任何人不得关闭、绕过或修改智能应用控制或其他系统安全设置。
-- 发布不依赖代码签名证书：完整性由 Owner 离线签名的 `SHA256SUMS.windows` 保证，私钥不得进入仓库、构建树、CI 或发布资产。更新链的公钥、允许主机与协调器保持编译期常量，不得从数据或配置导入。
+- 发布不依赖代码签名证书：完整性由 Owner 私钥签署的 `SHA256SUMS.windows` 保证。Owner 已于 2026-09-25 授权 Controller 在本机用默认私钥签清单；公开发布仍须 Owner 决定。私钥不得进入仓库、构建树、CI、日志或任何产物。更新链的公钥、允许主机与协调器保持编译期常量，不得从数据或配置导入。
 ```

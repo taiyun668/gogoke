@@ -1,4 +1,4 @@
-# R2-06b Owner 离线签署输入
+# R2-06b Owner 私钥本机签署输入
 
 签署前在本仓库根目录核对下表。两份 `.input.md` 均为 ASCII、仅 LF 换行且末尾恰有一个 LF；离线副本的文件名必须是 `SHA256SUMS.windows`。本步骤只产生正式清单签名，不发布、不接受 R2-06，也不触碰正式安装。
 
@@ -23,7 +23,7 @@
 | `resource-index.json` | `c7e79b9c7d4d942401ce5ab11e79b54f0e2c5088f112a975082d2640d8b928bf` |
 | `gogoke-resources.windows.zip` | `63a33ef53cfc8587a171ac8fff7e6f596e70b74577b6ee6db56bba4cdcd7cb99` |
 
-Owner 在离线环境中，从本仓库根目录运行下列 PowerShell。脚本默认从 `%USERPROFILE%\.gogoke\release-key.txt` 读取 Owner 私钥，私钥始终留在 Owner 的离线位置；若其位置不同，由 Owner 自行给签署命令传 `-PrivateKey`，不要发送私钥或路径。不要使用 `-NewKey`。
+Owner 于 2026-09-25 授权 Controller 在本机从仓库根目录运行下列 PowerShell。脚本默认从 `%USERPROFILE%\.gogoke\release-key.txt` 读取 Owner 私钥；私钥不进入仓库、CI、日志或任何产物。不要使用 `-NewKey`。公开发布仍须 Owner 决定。
 
 ```powershell
 $repo = (Resolve-Path .).Path
@@ -53,4 +53,4 @@ if ((Get-FileHash -LiteralPath $resourcesManifest -Algorithm SHA256).Hash.ToLowe
 if (-not (Test-Path -LiteralPath "$fullManifest.sig") -or -not (Test-Path -LiteralPath "$resourcesManifest.sig")) { throw 'signature missing' }
 ```
 
-签署后保留这四个离线文件并告知 Controller 已签署；后续验签、同字节正式测试和任何发布决定分别处理。正式资源更新、失败回滚、崩溃恢复、登记投影及更新/重装并发的真实正式路径，在签署前均为 `NOT_RUN`。
+签署后保留仓库外的两份清单及两份签名；后续验签、同字节正式测试和任何发布决定分别处理。签名本身不构成 R2-06 验收或公开发布。
