@@ -136,20 +136,33 @@ pub(super) fn reserve_decision_capacity_in_transaction(tx:&mut Transaction<'_, '
  reserve_in_transaction(tx,request)
 }
 
-/// Settles only the two bounded R2 fixture leases after a native completion
+pub(super) fn r2_test_series_for_action(action_id: &str) -> Option<String> {
+ let base = match action_id {
+  "opr_22222222222222222222222222222222" => return Some("r2-02".into()),
+  "opr_33333333333333333333333333333333" => return Some("r2-03".into()),
+  value if value.starts_with("opr_2") => "r2-02",
+  value if value.starts_with("opr_3") => "r2-03",
+  _ => return None,
+ };
+ if action_id.len()!=36 { return None; }
+ let revision = u64::from_str_radix(&action_id[5..], 16).ok()?;
+ if revision < 2 || action_id != format!("opr_{}{:031x}", if base=="r2-02" { 2 } else { 3 }, revision) {
+  return None;
+ }
+ Some(format!("{base}-g{revision}"))
+}
+
+/// Settles bounded R2 fixture leases after a native completion
 /// receipt, exact transport evidence and durable STOPPED custody all agree.
 /// The release row makes completion replay unable to subtract capacity twice.
 pub(super) fn settle_r2_test_capacity_after_completion(
  tx:&mut Transaction<'_, '_>,domain:&str,action_id:&str,receipt_ref:&str,evidence_hash:&str,
 )->Result<()> {
  if domain!="domain-r2-02-test" { return Ok(()); }
- let (decision_id,candidate_id,lease_ref)=match action_id {
-  "opr_22222222222222222222222222222222" =>
-   ("decision-r2-02-test","candidate-r2-02-fixture","capacity-lease-r2-02"),
-  "opr_33333333333333333333333333333333" =>
-   ("decision-r2-03-test","candidate-r2-03-fixture","capacity-lease-r2-03"),
-  _ => return Ok(()),
- };
+ let Some(series)=r2_test_series_for_action(action_id) else { return Ok(()); };
+ let decision_id=format!("decision-{series}-test");
+ let candidate_id=format!("candidate-{series}-fixture");
+ let lease_ref=format!("capacity-lease-{series}");
  ensure_schema(tx)?;
  hash(evidence_hash)?;
  let completion=tx.query("SELECT trusted_receipt_ref,evidence_hash,disposition FROM main.gogoke_action_completion_receipts WHERE domain_id=? AND operation_id=?",&[domain,action_id],3)?;
@@ -161,10 +174,10 @@ pub(super) fn settle_r2_test_capacity_after_completion(
  if custody.len()!=1||custody[0][0]!="STOPPED"||custody[0][1]!=transport[0][2]
   ||custody[0][2]!=transport[0][3]||custody[0][3]!=transport[0][4]
   ||custody[0][4]!=transport[0][5]||custody[0][5]!=domain { return denied(); }
- let lease=tx.query("SELECT operation_id,candidate_id,resource_ref,resource_revision,CAST(units AS TEXT) FROM main.gogoke_decision_capacity_leases WHERE resource_reservation_ref=? AND action_operation_id=?",&[lease_ref,action_id],5)?;
+ let lease=tx.query("SELECT operation_id,candidate_id,resource_ref,resource_revision,CAST(units AS TEXT) FROM main.gogoke_decision_capacity_leases WHERE resource_reservation_ref=? AND action_operation_id=?",&[&lease_ref,action_id],5)?;
  if lease.len()!=1||lease[0][0]!=decision_id||lease[0][1]!=candidate_id
   ||lease[0][2]!="capacity-r2-02-fixture"||lease[0][3]!="1"||lease[0][4]!="1" { return denied(); }
- let released=tx.query("SELECT action_operation_id,receipt_ref,evidence_hash,stop_proof_hash FROM main.gogoke_coordination_r2_capacity_releases WHERE lease_ref=?",&[lease_ref],4)?;
+ let released=tx.query("SELECT action_operation_id,receipt_ref,evidence_hash,stop_proof_hash FROM main.gogoke_coordination_r2_capacity_releases WHERE lease_ref=?",&[&lease_ref],4)?;
  if !released.is_empty() {
   if released.len()!=1||released[0][0]!=action_id||released[0][1]!=receipt_ref
    ||released[0][2]!=evidence_hash||released[0][3]!=transport[0][2] { return denied(); }
@@ -175,7 +188,7 @@ pub(super) fn settle_r2_test_capacity_after_completion(
  tx.write("UPDATE main.gogoke_decision_capacity_pools SET reserved_units=0 WHERE resource_ref='capacity-r2-02-fixture' AND revision='1' AND total_units=1 AND reserved_units=1",&[])?;
  let changed=tx.query("SELECT changes()",&[],1)?;
  if changed.len()!=1||changed[0][0]!="1" { return Err(OrchestrationError::OperationConflict); }
- tx.write("INSERT INTO main.gogoke_coordination_r2_capacity_releases(lease_ref,action_operation_id,receipt_ref,evidence_hash,stop_proof_hash) VALUES(?,?,?,?,?)",&[lease_ref,action_id,receipt_ref,evidence_hash,&transport[0][2]])?;
+ tx.write("INSERT INTO main.gogoke_coordination_r2_capacity_releases(lease_ref,action_operation_id,receipt_ref,evidence_hash,stop_proof_hash) VALUES(?,?,?,?,?)",&[&lease_ref,action_id,receipt_ref,evidence_hash,&transport[0][2]])?;
  let settled=tx.query("SELECT CAST(reserved_units AS TEXT) FROM main.gogoke_decision_capacity_pools WHERE resource_ref='capacity-r2-02-fixture'",&[],1)?;
  if settled.len()!=1||settled[0][0]!="0" { return Err(OrchestrationError::OperationConflict); }
  Ok(())

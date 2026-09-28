@@ -6,6 +6,7 @@ import type {
   NativeR2TestContextGrantReceipt,
   NativeR2TestDelegationReceipt,
 } from "../../persistence/base/nativeHostClient.ts";
+import { r2TestActionId, r2TestSeries } from "../../persistence/base/nativeHostClient.ts";
 import { ContextManifestAssembler } from "./assembler.ts";
 import { createNativeContextAssemblyAuthorityPort } from "./nativeAuthorityPort.ts";
 
@@ -69,9 +70,10 @@ export async function prepareR2ControlledManifest(input: {
 }): Promise<ContextManifest> {
   const { store, basis, grant, contextGrant, source, recordedAt } = input;
   const novel = input.slot === "novel";
+  const series = r2TestSeries(input.slot, grant.revision);
   const runtimeInstanceId = input.runtimeInstanceId ?? "runtime-r2-02-fixture";
   if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
-      basis.bindingId !== (novel ? "binding-r2-03-worker" : "binding-r2-02-worker") || basis.bindingGeneration !== "1" ||
+      basis.bindingId !== `binding-${series}-worker` || basis.bindingGeneration !== "1" ||
       (novel !== (input.runtimeInstanceId !== undefined)) ||
       grant.state !== "TEST_ONLY_GRANT_PREPARED_NOT_ACTION" ||
       contextGrant.state !== "TEST_ONLY_CONTEXT_GRANT_PREPARED" ||
@@ -81,11 +83,11 @@ export async function prepareR2ControlledManifest(input: {
     throw new Error("INVALID_R2_TEST_MANIFEST_BASIS");
   }
   const snapshot = Object.freeze({
-    operationId: novel ? "r2-03-context-assembly" : "r2-02-context-assembly",
+    operationId: `${series}-context-assembly`,
     principalId: "principal-r2-02-worker",
     seatId: "seat-r2-02-worker",
-    taskId: novel ? "task-r2-03-test" : "task-r2-02-test",
-    sessionId: novel ? "session-r2-03-worker" : "session-r2-02-worker",
+    taskId: `task-${series}-test`,
+    sessionId: `session-${series}-worker`,
     domainId: "domain-r2-02-test",
     bindingId: basis.bindingId,
     bindingGeneration: basis.bindingGeneration,
@@ -95,9 +97,9 @@ export async function prepareR2ControlledManifest(input: {
     policyRevision: basis.policyRevision,
     authRevision: basis.policyRevision,
     revocationHead: grant.revocationHead,
-    selectionDecisionId: novel ? "decision-r2-03-test" : "decision-r2-02-test",
-    manifestId: novel ? "manifest-r2-03-test" : "manifest-r2-02-test",
-    admissionActionOperationId: novel ? "opr_33333333333333333333333333333333" : "opr_22222222222222222222222222222222",
+    selectionDecisionId: `decision-${series}-test`,
+    manifestId: `manifest-${series}-test`,
+    admissionActionOperationId: r2TestActionId(input.slot, grant.revision),
     admissionDigest: basis.actionDigest,
     maxContentBytes: source.bytes.length,
     maxCandidates: 1,

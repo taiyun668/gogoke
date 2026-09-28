@@ -93,18 +93,16 @@ pub(crate) fn read_r2_objective_fact_refs(
             "SELECT operation_id FROM main.gogoke_action_completion_receipts WHERE domain_id=? AND receipt_id=? AND disposition='COMPLETED'",
             &[domain, action_completion_ref], 1)?;
         if actions.len() != 1 { return denied(); }
-        let (action_id, manifest_id, decision_id) = match actions[0][0].as_str() {
-            "opr_22222222222222222222222222222222" =>
-                ("opr_22222222222222222222222222222222", "manifest-r2-02-test", "decision-r2-02-test"),
-            "opr_33333333333333333333333333333333" =>
-                ("opr_33333333333333333333333333333333", "manifest-r2-03-test", "decision-r2-03-test"),
-            _ => return denied(),
-        };
+        let action_id = actions[0][0].as_str();
+        let series = super::decision_capacity::r2_test_series_for_action(action_id)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        let manifest_id = format!("manifest-{series}-test");
+        let decision_id = format!("decision-{series}-test");
         let manifest_hash = super::context_manifest::resolve_current_manifest_in_transaction(
-            tx, domain, manifest_id)?;
+            tx, domain, &manifest_id)?;
         let (manifest_content_hash, _) = validate_manifest(
-            tx, domain, manifest_id, "1", &manifest_hash)?;
-        let decision = read_in_transaction(tx, domain, decision_id)?;
+            tx, domain, &manifest_id, "1", &manifest_hash)?;
+        let decision = read_in_transaction(tx, domain, &decision_id)?;
         if decision.decision_id != decision_id ||
             decision.object_version != "1" ||
             decision.action_intent_ref != action_id ||

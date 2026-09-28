@@ -11,7 +11,7 @@ import {
 } from "../context/assembly/r2ControlledManifest.ts";
 import type { GitFactReadback } from "../context/repository/gitFact.ts";
 import { commitR2ControlledDecision } from "../decision/r2ControlledDecision.ts";
-import type { NativeProductIdentitySnapshot } from "../persistence/base/nativeHostClient.ts";
+import { r2TestSeries, type NativeProductIdentitySnapshot } from "../persistence/base/nativeHostClient.ts";
 import type { NativeStoreSession } from "./nativeStoreService.ts";
 
 export type R2ControlledProductTaskResult =
@@ -54,7 +54,6 @@ export async function runR2ControlledProductTask(input: {
   const { store, identity, source, fixtureDriverId } = input;
   const novel = fixtureDriverId !== undefined;
   const slot = novel ? "novel" as const : undefined;
-  const series = novel ? "r2-03" : "r2-02";
   const sourceHash = createHash("sha256").update(source.bytes).digest("hex");
   const sourceBlob = createHash("sha1")
     .update(`blob ${source.bytes.length}\0`).update(source.bytes).digest("hex");
@@ -91,6 +90,9 @@ export async function runR2ControlledProductTask(input: {
   }
 
   const grant = await store.prepareR2TestDelegation!(caller);
+  const series = r2TestSeries(slot, grant.revision);
+  const scopedCaller = grant.revision === "1" ? caller :
+    { ...caller, testGrantRevision: grant.revision };
   let fixtureDriverRuntimeId: string | undefined;
   if (fixtureDriverId !== undefined) {
     if (!/^mock_novel_[0-9a-f]{16}$/u.test(fixtureDriverId) ||
@@ -98,7 +100,7 @@ export async function runR2ControlledProductTask(input: {
         typeof store.readR2TestFixtureActionBinding !== "function") {
       throw new Error("R2_NOVEL_FIXTURE_DRIVER_UNAVAILABLE");
     }
-    const registration = await store.registerR2TestFixtureDriver(caller, fixtureDriverId);
+    const registration = await store.registerR2TestFixtureDriver(scopedCaller, fixtureDriverId);
     if (registration.state !== "TEST_ONLY_FIXTURE_DRIVER_REGISTERED" ||
         registration.driverId !== fixtureDriverId ||
         registration.adapterVersion !== "1.0.0" ||
@@ -108,11 +110,11 @@ export async function runR2ControlledProductTask(input: {
     }
     fixtureDriverRuntimeId = registration.runtimeInstanceId;
   }
-  const contextGrant = await store.prepareR2TestContextGrant!(caller);
+  const contextGrant = await store.prepareR2TestContextGrant!(scopedCaller);
   await prepareR2PublicContext({
     store, source, grant: contextGrant, policyRevision: identity.policyRevision,
   });
-  const task = await store.prepareR2TestTask!(caller, slot);
+  const task = await store.prepareR2TestTask!(scopedCaller, slot);
   if (task.state !== "TEST_ONLY_TASK_PREPARED_NOT_ACTION" ||
       task.taskId !== `task-${series}-test`) throw new Error("R2_TEST_TASK_MISMATCH");
   const message = JSON.stringify({
@@ -126,15 +128,15 @@ export async function runR2ControlledProductTask(input: {
     },
   });
   const promptJson = JSON.stringify({ type: "prompt", message, id: "gogoke-pi-1" });
-  const packageReceipt = await store.prepareR2TestPackage!(caller, promptJson, slot);
-  const lineage = await store.prepareR2TestLineage!(caller, slot);
-  const recipe = await store.prepareR2TestRecipe!(caller, fixtureDriverRuntimeId, slot);
+  const packageReceipt = await store.prepareR2TestPackage!(scopedCaller, promptJson, slot);
+  const lineage = await store.prepareR2TestLineage!(scopedCaller, slot);
+  const recipe = await store.prepareR2TestRecipe!(scopedCaller, fixtureDriverRuntimeId, slot);
   if (packageReceipt.state !== "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION" ||
       lineage.state !== "TEST_ONLY_LINEAGE_PREPARED_NOT_ACTION" ||
       recipe.state !== "TEST_ONLY_RECIPE_PREPARED_NOT_ACTION") {
     throw new Error("R2_TEST_PREPARATION_MISMATCH");
   }
-  const basis = await store.readR2TestActionDecisionBasis!(caller, promptJson, slot);
+  const basis = await store.readR2TestActionDecisionBasis!(scopedCaller, promptJson, slot);
   if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
       basis.taskRevision !== task.taskRevision ||
       basis.bindingId !== lineage.bindingId ||
@@ -152,6 +154,7 @@ export async function runR2ControlledProductTask(input: {
   }
   const action = await store.prepareR2TestAction!({
     ...(slot === undefined ? {} : { slot }),
+    ...(grant.revision === "1" ? {} : { grantRevision: grant.revision }),
     grantRef: grant.grantRef,
     promptJson,
     expectedActionDigest: basis.actionDigest,
@@ -174,7 +177,7 @@ export async function runR2ControlledProductTask(input: {
   // On replay, the native host may return only its original, verified transport
   // frames. It must never prepare a second process or regain send authority.
   const recovered = replay ? await store.runControlledFixtureAction!({
-    caller,
+    caller: scopedCaller,
     domainId: "domain-r2-02-test",
     operationId: action.operationId,
     reservationId: action.reservationId,
@@ -214,7 +217,7 @@ export async function runR2ControlledProductTask(input: {
         return;
       }
       const evidence = await store.runControlledFixtureAction!({
-        caller,
+        caller: scopedCaller,
         domainId: "domain-r2-02-test",
         operationId: action.operationId,
         reservationId: action.reservationId,
@@ -231,7 +234,7 @@ export async function runR2ControlledProductTask(input: {
   if (actionCompletionRef === undefined) throw new Error("R2_TEST_ACTION_COMPLETION_MISSING");
   const result = validateControlledFixtureResult(source, observation);
   const fixtureDriverBinding = fixtureDriverId === undefined ? undefined :
-    await store.readR2TestFixtureActionBinding!(caller, actionCompletionRef);
+    await store.readR2TestFixtureActionBinding!(scopedCaller, actionCompletionRef);
   if (fixtureDriverBinding !== undefined &&
       (fixtureDriverBinding.state !== "TEST_ONLY_ACTION_BINDING" ||
        fixtureDriverBinding.driverId !== fixtureDriverId ||
@@ -239,7 +242,7 @@ export async function runR2ControlledProductTask(input: {
        fixtureDriverBinding.runtimeInstanceId !== fixtureDriverRuntimeId)) {
     throw new Error("R2_NOVEL_FIXTURE_ACTION_BINDING_MISMATCH");
   }
-  const refs = await store.readR2ObjectiveFactRefs!(caller, actionCompletionRef);
+  const refs = await store.readR2ObjectiveFactRefs!(scopedCaller, actionCompletionRef);
   if (refs.manifestHash !== manifest.manifestHash) {
     throw new Error("R2_TEST_OBJECTIVE_MANIFEST_MISMATCH");
   }
@@ -320,7 +323,7 @@ export async function runR2ControlledProductTask(input: {
       evaluationReadback.contentHash !== evaluation.contentHash) {
     throw new Error("R2_TEST_EVALUATION_READBACK_MISMATCH");
   }
-  const rollback = await store.prepareR2TestRollbackPlan!(caller, slot);
+  const rollback = await store.prepareR2TestRollbackPlan!(scopedCaller, slot);
   if (rollback.state !== "TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED" ||
       !["COMMITTED", "RECONCILED"].includes(rollback.disposition)) {
     throw new Error("R2_TEST_ROLLBACK_PLAN_NOT_PREPARED");

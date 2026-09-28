@@ -29,6 +29,8 @@ import {
   NativeHostClient,
   NativeHostClientError,
   readStartupHandshake,
+  r2TestActionId,
+  r2TestSeries,
   type NativeDelegationGrantSnapshot,
 } from "./nativeHostClient.ts";
 
@@ -108,6 +110,25 @@ test("R2 typed receipts reject cross-slot identity substitution", () => {
     assert.deepEqual(decode(JSON.stringify(record), "novel"), record);
     assert.throws(() => decode(JSON.stringify(record)), NativeHostClientError);
   }
+});
+
+test("renewed R2 grant uses distinct durable identities while old receipts remain readable", () => {
+  const hash = `sha256:${"a".repeat(64)}`;
+  const oldPackage = { state: "TEST_ONLY_PACKAGE_PREPARED_NOT_ACTION", disposition: "COMMITTED",
+    packageOperationId: "r2-02-package", packageDigest: hash };
+  const newPackage = { ...oldPackage, packageOperationId: "r2-02-g2-package" };
+  assert.equal(r2TestSeries(undefined, "2"), "r2-02-g2");
+  assert.equal(r2TestActionId(undefined, "2"), `opr_2${"0".repeat(30)}2`);
+  assert.deepEqual(decodeR2TestPackageReceipt(JSON.stringify(oldPackage)), oldPackage);
+  assert.deepEqual(decodeR2TestPackageReceipt(JSON.stringify(newPackage), undefined, "2"), newPackage);
+  assert.throws(() => decodeR2TestPackageReceipt(JSON.stringify(oldPackage), undefined, "2"), NativeHostClientError);
+  assert.throws(() => decodeR2TestPackageReceipt(JSON.stringify(newPackage)), NativeHostClientError);
+  const newAction = { kind: "reserved", reservationState: "reserved",
+    operationId: r2TestActionId(undefined, "2"), semanticDigest: hash,
+    reservationId: "reservation-r2-02-g2-controlled", packageDigest: hash,
+    authorityStatus: "PREPARATORY_CURRENT_FACTS_REQUIRED" };
+  assert.deepEqual(decodeR2TestActionPreparation(JSON.stringify(newAction), undefined, "2"), newAction);
+  assert.throws(() => decodeR2TestActionPreparation(JSON.stringify(newAction)), NativeHostClientError);
 });
 
 test("native Action transport codec keeps completion distinct from Result and replay", () => {

@@ -5,12 +5,10 @@ import type {
   NativeR2ActionDecisionBasis,
   NativeR2TestDelegationReceipt,
 } from "../persistence/base/nativeHostClient.ts";
+import { r2TestActionId, r2TestSeries } from "../persistence/base/nativeHostClient.ts";
 import type { DecisionCommitResult, DecisionRecord } from "./engine/engine.ts";
 import { createNativeDecisionCommitPort } from "./nativeAuthority.ts";
 
-const OPERATION = "decision-r2-02-test";
-const ACTION = "opr_22222222222222222222222222222222";
-const CANDIDATE = "candidate-r2-02-fixture";
 const candidateHash = `sha256:${createHash("sha256")
   .update("gogoke.s1-r4.r2-02.fixed-candidate:deterministic-fixture")
   .digest("hex")}`;
@@ -25,15 +23,16 @@ export async function commitR2ControlledDecision(input: {
 }): Promise<DecisionCommitResult> {
   const { store, basis, grant, recordedAt } = input;
   const novel = input.slot === "novel";
-  const operation = novel ? "decision-r2-03-test" : OPERATION;
-  const action = novel ? "opr_33333333333333333333333333333333" : ACTION;
-  const candidate = novel ? "candidate-r2-03-fixture" : CANDIDATE;
+  const series = r2TestSeries(input.slot, grant.revision);
+  const operation = `decision-${series}-test`;
+  const action = r2TestActionId(input.slot, grant.revision);
+  const candidate = `candidate-${series}-fixture`;
   const selectedHash = novel ? `sha256:${createHash("sha256")
     .update("gogoke.s1-r4.r2-03.novel-candidate:deterministic-fixture")
     .digest("hex")}` : candidateHash;
   const deadlineEpochMs = Number(grant.expiresAtEpochMs);
   if (basis.state !== "TEST_ONLY_DECISION_BASIS_NOT_ACTION" ||
-      basis.bindingId !== (novel ? "binding-r2-03-worker" : "binding-r2-02-worker") || basis.bindingGeneration !== "1" ||
+      basis.bindingId !== `binding-${series}-worker` || basis.bindingGeneration !== "1" ||
       grant.state !== "TEST_ONLY_GRANT_PREPARED_NOT_ACTION" ||
       !Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= Date.now() ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(recordedAt)) {
@@ -64,8 +63,8 @@ export async function commitR2ControlledDecision(input: {
     operationId: operation,
     domainId: "domain-r2-02-test",
     decisionId: operation,
-    eventId: novel ? "r2-03-decision-event" : "r2-02-decision-event",
-    receiptId: novel ? "r2-03-decision-receipt" : "r2-02-decision-receipt",
+    eventId: `${series}-decision-event`,
+    receiptId: `${series}-decision-receipt`,
     recordedAt,
     candidates: [{
       candidateId: candidate,
@@ -91,7 +90,7 @@ export async function commitR2ControlledDecision(input: {
   });
   return port.commitDecisionReservation({
     record,
-    reservation: { candidateId: candidate, resourceReservationRef: novel ? "capacity-lease-r2-03" : "capacity-lease-r2-02" },
+    reservation: { candidateId: candidate, resourceReservationRef: `capacity-lease-${series}` },
     action: { actionIntentRef: action },
   });
 }

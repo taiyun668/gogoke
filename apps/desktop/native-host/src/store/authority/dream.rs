@@ -45,10 +45,15 @@ pub(crate) struct R2TestRollbackPlan {
 /// Fixed public-fixture rollback reference for the R2 test candidate. It
 /// records a proposal reversal only; no production parameter is changed.
 pub(crate) fn prepare_r2_test_rollback_plan(
-    c:&mut VerifiedDatabaseConnection<'_>, recorded_at:&str, novel:bool,
+    c:&mut VerifiedDatabaseConnection<'_>, recorded_at:&str, tag:&str,
 )->Result<R2TestRollbackPlan>{
     let domain="domain-r2-02-test";
-    let tag=if novel { "r2-03" } else { "r2-02" };
+    if tag != "r2-02" && tag != "r2-03" &&
+        !["r2-02-g", "r2-03-g"].iter().any(|prefix|
+            tag.strip_prefix(prefix).is_some_and(|value| !value.is_empty()
+                && !value.starts_with('0') && value.bytes().all(|byte| byte.is_ascii_digit()))) {
+        return denied();
+    }
     let id=format!("rollback-{tag}-test");
     let before_hash=content_hash(format!("gogoke.{tag}.fixture.parameter.temperature=0").as_bytes());
     let after_hash=content_hash(format!("gogoke.{tag}.fixture.parameter.temperature=0.1").as_bytes());

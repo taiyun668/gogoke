@@ -129,6 +129,7 @@ export interface NativeStoreSession extends NativeDelegationGrantReader {
   ) => Promise<NativeR2TestRollbackPlan>;
   readonly prepareR2TestAction?: (input: {
     readonly slot?: "novel";
+    readonly grantRevision?: string;
     readonly grantRef: string;
     readonly promptJson: string;
     readonly expectedActionDigest: string;

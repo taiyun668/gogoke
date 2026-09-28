@@ -831,10 +831,14 @@ fn r2_test_package_recorded_at(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum R2TestSlot { Fixed, Novel }
+struct R2TestSlot { novel: bool, grant_revision: u64 }
 
 impl R2TestSlot {
-    fn tag(self) -> &'static str { match self { Self::Fixed => "r2-02", Self::Novel => "r2-03" } }
+    fn tag(self) -> String {
+        let base = if self.novel { "r2-03" } else { "r2-02" };
+        if self.grant_revision == 1 { base.into() }
+        else { format!("{base}-g{}", self.grant_revision) }
+    }
     fn operation(self, suffix: &str) -> String { format!("{}-{suffix}", self.tag()) }
     fn task_id(self) -> String { format!("task-{}-test", self.tag()) }
     fn session_id(self) -> String { format!("session-{}-worker", self.tag()) }
@@ -843,23 +847,37 @@ impl R2TestSlot {
     fn execution_id(self) -> String { format!("execution-{}-worker", self.tag()) }
     fn recipe_id(self) -> String { format!("recipe-{}-test", self.tag()) }
     fn manifest_id(self) -> String { format!("manifest-{}-test", self.tag()) }
-    fn action_id(self) -> &'static str { match self {
-        Self::Fixed => "opr_22222222222222222222222222222222",
-        Self::Novel => "opr_33333333333333333333333333333333",
-    } }
+    fn action_id(self) -> String {
+        if self.grant_revision == 1 {
+            if self.novel { "opr_33333333333333333333333333333333".into() }
+            else { "opr_22222222222222222222222222222222".into() }
+        } else { format!("opr_{}{:031x}", if self.novel { 3 } else { 2 }, self.grant_revision) }
+    }
     fn reservation_id(self) -> String { format!("reservation-{}-controlled", self.tag()) }
 }
 
-fn r2_test_slot_fields(line: &str, base: &[&str]) -> Result<(BTreeMap<String, String>, R2TestSlot), OrchestrationError> {
+fn r2_test_slot_fields(connection: &mut VerifiedDatabaseConnection<'_>, line: &str, base: &[&str]) -> Result<(BTreeMap<String, String>, R2TestSlot), OrchestrationError> {
     let fields = authority_fields(line)?;
-    let slot = match fields.get("slot").map(String::as_str) {
-        None => R2TestSlot::Fixed,
-        Some("novel") => R2TestSlot::Novel,
+    let novel = match fields.get("slot").map(String::as_str) {
+        None => false,
+        Some("novel") => true,
         _ => return Err(OrchestrationError::AccessDenied),
     };
-    let expected = base.len() + if slot == R2TestSlot::Novel { 1 } else { 0 };
+    let grant_revision = match fields.get("grantRevision") {
+        None => 1,
+        Some(value) if value.len() <= 20 && value.as_bytes().iter().all(u8::is_ascii_digit)
+            && !value.starts_with('0') => value.parse::<u64>().map_err(|_| OrchestrationError::AccessDenied)?,
+        _ => return Err(OrchestrationError::AccessDenied),
+    };
+    if grant_revision == 1 && fields.contains_key("grantRevision") { return Err(OrchestrationError::AccessDenied); }
+    let current = authority::read_current_delegation(connection,
+        &authority::r2_test_grant_id("r2-02-controlled-task")?)?;
+    if current.reference.revision != grant_revision.to_string() { return Err(OrchestrationError::AccessDenied); }
+    let slot = R2TestSlot { novel, grant_revision };
+    let expected = base.len() + usize::from(novel) + usize::from(grant_revision > 1);
     if fields.len() != expected || fields.keys().any(|key|
-        !base.contains(&key.as_str()) && !(slot == R2TestSlot::Novel && key == "slot"))
+        !base.contains(&key.as_str()) && !(novel && key == "slot")
+            && !(grant_revision > 1 && key == "grantRevision"))
         || base.iter().any(|key| !fields.contains_key(*key)) {
         return Err(OrchestrationError::Invalid("action frame fields"));
     }
@@ -1348,7 +1366,7 @@ fn handle_authenticated_line_with_process(
                 json_quote(&grant.revocation_head)))
         }
         "PrepareR2TestTask" => {
-            let (fields, slot) = r2_test_slot_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(connection, line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId",
             ])?;
@@ -1418,7 +1436,7 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.current.content_hash)))
         }
         "PrepareR2TestPackage" => {
-            let (fields, slot) = r2_test_slot_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(connection, line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId", "promptJson",
             ])?;
@@ -1494,7 +1512,7 @@ fn handle_authenticated_line_with_process(
                 json_quote(&prepared.package_digest)))
         }
         "PrepareR2TestLineage" => {
-            let (fields, slot) = r2_test_slot_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(connection, line, &[
                 "operation", "operationId", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId",
             ])?;
@@ -1554,7 +1572,7 @@ fn handle_authenticated_line_with_process(
                 "revocationHead", "role", "seatId",
             ];
             if authority_fields(line)?.contains_key("runtimeInstanceId") { expected_fields.push("runtimeInstanceId"); }
-            let (fields, slot) = r2_test_slot_fields(line, &expected_fields)?;
+            let (fields, slot) = r2_test_slot_fields(connection, line, &expected_fields)?;
             let operation_id = slot.operation("recipe");
             let package_id = slot.operation("package");
             if required(&fields, "operationId")? != operation_id {
@@ -1568,7 +1586,7 @@ fn handle_authenticated_line_with_process(
             )?;
             let runtime_instance_id = fields.get("runtimeInstanceId")
                 .map(String::as_str).unwrap_or(authority::FIXED_RUNTIME_INSTANCE_ID);
-            if (slot == R2TestSlot::Fixed) != (runtime_instance_id == authority::FIXED_RUNTIME_INSTANCE_ID) {
+            if !slot.novel != (runtime_instance_id == authority::FIXED_RUNTIME_INSTANCE_ID) {
                 return Err(OrchestrationError::AccessDenied);
             }
             if runtime_instance_id != authority::FIXED_RUNTIME_INSTANCE_ID {
@@ -1621,7 +1639,7 @@ fn handle_authenticated_line_with_process(
                 json_quote(&receipt.version.content_hash)))
         }
         "ReadR2TestActionDecisionBasis" => {
-            let (fields, slot) = r2_test_slot_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(connection, line, &[
                 "operation", "policyRevision", "principalId", "profileId",
                 "revocationHead", "role", "seatId", "promptJson",
             ])?;
@@ -1688,7 +1706,7 @@ fn handle_authenticated_line_with_process(
                 json_quote(&refs.action_completed_at)))
         }
         "PrepareR2TestRollbackPlan" => {
-            let (fields, slot) = r2_test_slot_fields(line, &[
+            let (fields, slot) = r2_test_slot_fields(connection, line, &[
                 "operation", "operationId", "policyRevision", "principalId",
                 "profileId", "revocationHead", "role", "seatId",
             ])?;
@@ -1714,7 +1732,7 @@ fn handle_authenticated_line_with_process(
                 connection, "domain-r2-02-test", &format!("evaluation-{}-test", slot.tag()), "1")?;
             let recorded_at = r2_test_recorded_at(connection, &operation_id)?;
             let plan: authority::R2TestRollbackPlan = authority::prepare_r2_test_rollback_plan(
-                connection, &recorded_at, slot == R2TestSlot::Novel)?;
+                connection, &recorded_at, &slot.tag())?;
             Ok(format!("{{\"state\":\"TEST_ONLY_ROLLBACK_PLAN_NOT_ACTIVATED\",\"disposition\":{},\"domainId\":\"domain-r2-02-test\",\"planId\":{},\"revision\":{},\"contentHash\":{},\"beforeHash\":{},\"afterHash\":{}}}",
                 json_quote(plan.disposition), json_quote(&plan.reference.object_id),
                 json_quote(&plan.reference.revision), json_quote(&plan.reference.content_hash),

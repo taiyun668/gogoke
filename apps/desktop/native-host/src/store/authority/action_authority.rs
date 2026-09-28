@@ -20,6 +20,14 @@ use crate::process::{PreparedCustody, ProcessIdentity};
 pub(crate) const ACTION_AUTHORITY_STATUS: &str = "PREPARATORY_CURRENT_FACTS_REQUIRED";
 pub(crate) const COMPLETION_AUTHORITY_STATUS: &str = "PREPARATORY_TRUSTED_NATIVE_RECEIPT_REQUIRED";
 
+fn is_r2_test_recipe(id: &str) -> bool {
+    if id == "recipe-r2-02-test" || id == "recipe-r2-03-test" { return true; }
+    ["recipe-r2-02-g", "recipe-r2-03-g"].iter().any(|prefix|
+        id.strip_prefix(prefix).and_then(|suffix| suffix.strip_suffix("-test"))
+            .is_some_and(|revision| revision.parse::<u64>().ok().is_some_and(|number|
+                number > 1 && number.to_string() == revision)))
+}
+
 const INTENT_SCHEMA: &str = "CREATE TABLE gogoke_action_authority_intents (domain_id TEXT NOT NULL,target_domain_id TEXT NOT NULL,operation_id TEXT NOT NULL,package_operation_id TEXT NOT NULL,package_digest TEXT NOT NULL,parent_grant_ref TEXT NOT NULL,task_id TEXT NOT NULL,task_revision TEXT NOT NULL,recipe_id TEXT NOT NULL,session_id TEXT NOT NULL,binding_id TEXT NOT NULL,generation TEXT NOT NULL,source_epoch TEXT NOT NULL,runtime_instance_id TEXT NOT NULL,context_manifest_id TEXT NOT NULL,auth_revision TEXT NOT NULL,action_kind TEXT NOT NULL CHECK(action_kind IN ('queue','steer','interrupt','close')),lane TEXT NOT NULL CHECK(lane IN ('control','work')),payload_digest TEXT NOT NULL CHECK(length(payload_digest)=71),attempt_id TEXT,send_authority TEXT,CHECK((attempt_id IS NULL AND send_authority IS NULL) OR (attempt_id IS NOT NULL AND send_authority IS NOT NULL)),PRIMARY KEY(domain_id,operation_id),UNIQUE(domain_id,package_operation_id,operation_id),FOREIGN KEY(operation_id) REFERENCES gogoke_action_reservations(operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT,FOREIGN KEY(domain_id,package_operation_id) REFERENCES gogoke_authorized_task_packages(domain_id,operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT) STRICT";
 const COMPLETION_SCHEMA: &str = "CREATE TABLE gogoke_action_completion_receipts (domain_id TEXT NOT NULL,operation_id TEXT NOT NULL,reservation_id TEXT NOT NULL,semantic_digest TEXT NOT NULL CHECK(length(semantic_digest)=71),attempt_id TEXT NOT NULL,send_authority TEXT NOT NULL,binding_id TEXT NOT NULL,generation TEXT NOT NULL,source_epoch TEXT NOT NULL,runtime_instance_id TEXT NOT NULL,native_request_id TEXT NOT NULL,native_session_id TEXT NOT NULL,trusted_receipt_ref TEXT NOT NULL,evidence_hash TEXT NOT NULL CHECK(length(evidence_hash)=71),disposition TEXT NOT NULL CHECK(disposition IN ('COMPLETED','REJECTED','ACCEPTANCE_UNKNOWN')),receipt_id TEXT NOT NULL,PRIMARY KEY(domain_id,operation_id),UNIQUE(domain_id,reservation_id),FOREIGN KEY(operation_id) REFERENCES gogoke_action_reservations(operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT,FOREIGN KEY(domain_id,receipt_id) REFERENCES gogoke_receipts(domain_id,receipt_id) ON DELETE RESTRICT ON UPDATE RESTRICT) STRICT";
 const CURRENT_FACTS_SCHEMA: &str = "CREATE TABLE gogoke_action_current_facts (domain_id TEXT NOT NULL,operation_id TEXT NOT NULL,facts_revision TEXT NOT NULL,policy_revision TEXT NOT NULL,revocation_head TEXT NOT NULL,binding_id TEXT NOT NULL,generation TEXT NOT NULL,source_epoch TEXT NOT NULL,runtime_instance_id TEXT NOT NULL,model_ref_digest TEXT NOT NULL CHECK(length(model_ref_digest)=71),capability_revision TEXT NOT NULL,context_manifest_id TEXT NOT NULL,context_manifest_hash TEXT NOT NULL CHECK(length(context_manifest_hash)=71),admission_ref TEXT NOT NULL,admission_revision TEXT NOT NULL,expires_at_epoch_ms TEXT NOT NULL,PRIMARY KEY(domain_id,operation_id),FOREIGN KEY(operation_id) REFERENCES gogoke_action_reservations(operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT) STRICT";
@@ -450,8 +458,7 @@ pub(crate) fn read_native_action_fixture_selection(
         {
             return denied();
         }
-        let launch_digest_sha256 = if matches!(recipe.recipe.recipe_id.as_str(),
-            "recipe-r2-02-test" | "recipe-r2-03-test")
+        let launch_digest_sha256 = if is_r2_test_recipe(&recipe.recipe.recipe_id)
             && recipe.recipe.runtime_instance_id != super::r2_fixture_driver::FIXED_RUNTIME_INSTANCE_ID {
             super::r2_fixture_driver::resolve_in_transaction(tx, &recipe.recipe.runtime_instance_id)?.launch_digest_sha256
         } else {
@@ -1430,8 +1437,7 @@ pub(crate) fn begin_committed_action(
             payload,
         };
         let (package, task, lineage, recipe, current_profile) = current_selection(tx, &selected)?;
-        if matches!(recipe.recipe.recipe_id.as_str(),
-            "recipe-r2-02-test" | "recipe-r2-03-test")
+        if is_r2_test_recipe(&recipe.recipe.recipe_id)
             && recipe.recipe.runtime_instance_id != super::r2_fixture_driver::FIXED_RUNTIME_INSTANCE_ID {
             super::r2_fixture_driver::resolve_in_transaction(tx, &recipe.recipe.runtime_instance_id)?;
         }
