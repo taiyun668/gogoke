@@ -410,9 +410,10 @@ pub(crate) fn issue_owner_delegation(
 }
 
 /// The public R2-02 fixture has one fixed, non-private grant envelope. The
-/// operation identity determines its grant ID so a lost reply cannot issue a
-/// second grant. This remains private native composition, never an IPC grant
-/// constructor; the caller still needs a separately verified Owner ingress.
+/// operation identity determines its grant ID; a live reply replays the same
+/// revision, while an expired grant can be renewed only within that envelope.
+/// This remains private native composition, never an IPC grant constructor;
+/// the caller still needs a separately verified Owner ingress.
 pub(crate) fn issue_r2_test_owner_delegation_once(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
@@ -469,15 +470,36 @@ pub(crate) fn issue_r2_test_owner_delegation_once(
             &[&identity.grant_id], 2,
         )?;
         if !heads.is_empty() {
-            if heads.len() != 1 || heads[0][0] != "1" || heads[0][1] != "0" {
+            if heads.len() != 1 || heads[0][1] != "0" {
                 return denied();
             }
-            let existing = current_in_transaction(tx, &profile, &identity)?;
-            if existing.parent.is_some() || existing.principal != input.principal
+            let old_identity = DelegationGrantIdentity {
+                grant_id: identity.grant_id.clone(),
+                revision: heads[0][0].clone(),
+            };
+            let existing = load_core(tx, &old_identity, &profile)?;
+            if existing.parent.is_some() || existing.issuer_id != profile.issuer_id
+                || existing.principal != input.principal
                 || existing.binding != input.binding || existing.ceiling != input.ceiling {
                 return Err(OrchestrationError::OperationConflict);
             }
-            return Ok(existing);
+            if existing.expires_at_epoch_ms > current_epoch_ms()? {
+                return Ok(existing);
+            }
+            let renewed = DelegationGrantIdentity {
+                grant_id: identity.grant_id.clone(),
+                revision: next_revision(&old_identity.revision)?,
+            };
+            insert_grant(tx, &profile, &renewed, &input, &profile.issuer_id, None)?;
+            tx.write("UPDATE main.gogoke_authority_grant_heads SET revision=? WHERE grant_id=? AND revision=? AND revoked=0",
+                &[&renewed.revision, &renewed.grant_id, &old_identity.revision])?;
+            if tx.query("SELECT changes()", &[], 1)?[0][0] != "1" {
+                return denied();
+            }
+            tx.write(
+                "INSERT INTO main.gogoke_authority_events(event_kind,issuer_id,grant_id,grant_revision,policy_revision,revocation_head) VALUES('REVISE',?,?,?,?,?)",
+                &[&profile.issuer_id, &renewed.grant_id, &renewed.revision, &profile.policy_revision, &profile.revocation_head])?;
+            return current_in_transaction(tx, &profile, &renewed);
         }
         insert_grant(tx, &profile, &identity, &input, &profile.issuer_id, None)?;
         tx.write("INSERT INTO main.gogoke_authority_grant_heads(grant_id,revision,revoked) VALUES(?,?,0)",
