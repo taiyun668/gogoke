@@ -39,9 +39,9 @@ function Hash([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 function Require-Hash([string]$Path, [string]$Expected) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or (Hash $Path) -cne $Expected) {
-        throw 'Exact formal smoke asset hash differs.'
-    }
+    $name = [IO.Path]::GetFileName($Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Formal smoke asset missing: $name" }
+    if ((Hash $Path) -cne $Expected) { throw "Formal smoke asset hash differs: $name" }
 }
 function Read-Api([string]$Endpoint) {
     $json = & gh api $Endpoint
@@ -99,12 +99,12 @@ function Download-ExactArtifact([long]$Id, [long]$RunId, [string]$Commit,
         }
     } finally { $archive.Dispose() }
 }
-function Verify-Manifest([string]$Input, [string]$SignatureHex, [string]$ExpectedHash,
+function Verify-Manifest([string]$ManifestPath, [string]$SignatureHex, [string]$ExpectedHash,
     [string]$ExpectedSignatureHash, [string]$Version, [string]$Kind, [string]$FrozenDir,
     [string]$PortableDir, [string]$ReleaseDir, [Security.Cryptography.ECDsa]$Verifier) {
-    Require-Hash $Input $ExpectedHash
+    Require-Hash $ManifestPath $ExpectedHash
     if ($SignatureHex -cnotmatch '^[0-9a-f]{128}$') { throw 'Formal signature has invalid shape.' }
-    $bytes = [IO.File]::ReadAllBytes($Input)
+    $bytes = [IO.File]::ReadAllBytes($ManifestPath)
     if (-not $Verifier.VerifyData($bytes, [Convert]::FromHexString($SignatureHex),
             [Security.Cryptography.HashAlgorithmName]::SHA256)) {
         throw 'Formal signature does not verify against compiled Owner public key.'
@@ -127,14 +127,18 @@ function Verify-Manifest([string]$Input, [string]$SignatureHex, [string]$Expecte
     }
     New-Item -ItemType Directory -Path $ReleaseDir | Out-Null
     for ($i = 0; $i -lt $expectedNames.Count; $i++) {
-        if ($lines[$i + 2] -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9._+-]+)$' -or
-            $Matches[2] -cne $expectedNames[$i]) { throw 'Formal asset line differs.' }
-        $path = Join-Path $FrozenDir $Matches[2]
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $path = Join-Path $PortableDir $Matches[2] }
-        Require-Hash $path $Matches[1]
-        Copy-Item -LiteralPath $path -Destination (Join-Path $ReleaseDir $Matches[2])
+        $entry = [regex]::Match($lines[$i + 2], '^([0-9a-f]{64})  ([A-Za-z0-9._+-]+)$')
+        if (-not $entry.Success -or $entry.Groups[2].Value -cne $expectedNames[$i]) {
+            throw 'Formal asset line differs.'
+        }
+        $assetName = $entry.Groups[2].Value
+        $assetHash = $entry.Groups[1].Value
+        $path = Join-Path $FrozenDir $assetName
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $path = Join-Path $PortableDir $assetName }
+        Require-Hash $path $assetHash
+        Copy-Item -LiteralPath $path -Destination (Join-Path $ReleaseDir $assetName)
     }
-    Copy-Item -LiteralPath $Input -Destination (Join-Path $ReleaseDir 'SHA256SUMS.windows')
+    Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $ReleaseDir 'SHA256SUMS.windows')
     [IO.File]::WriteAllText((Join-Path $ReleaseDir 'SHA256SUMS.windows.sig'),
         "$SignatureHex`n", [Text.Encoding]::ASCII)
     Require-Hash (Join-Path $ReleaseDir 'SHA256SUMS.windows.sig') $ExpectedSignatureHash
