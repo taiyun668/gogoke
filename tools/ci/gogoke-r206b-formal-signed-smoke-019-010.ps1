@@ -203,6 +203,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $work 'full-release') -PathType Cont
     -not (Test-Path -LiteralPath (Join-Path $work 'resources-release') -PathType Container)) {
     throw 'Formal smoke did not receive both exact preflight release sets.'
 }
+if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+    throw 'Formal product cloud GitHub read credential unavailable.'
+}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 try {
     if ([Security.Principal.WindowsPrincipal]::new($identity).IsInRole(

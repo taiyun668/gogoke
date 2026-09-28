@@ -66,6 +66,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Formal preflight failed: $LASTEXITCODE" }
       - name: Exercise exact formal installed product and uninstall under Medium token
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $root = Join-Path $env:RUNNER_TEMP "gogoke-r206b-formal-${{ github.run_id }}"
           $toolRoot = Join-Path $env:RUNNER_TEMP "gogoke-formal-medium-${{ github.run_id }}"
