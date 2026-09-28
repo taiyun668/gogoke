@@ -2096,6 +2096,37 @@ mod tests {
     }
 
     #[test]
+    fn pointer_replacement_while_runtime_lease_holds_install_root() {
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-resource-pointer-live-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir(&root).expect("owned test install root");
+        let pinned = root.join("signed.bin");
+        fs::write(&pinned, b"signed").expect("signed fixture");
+        let pointer = root.join(ACTIVE_SET_POINTER);
+        let partial = root.join(format!(".{ACTIVE_SET_POINTER}.test.part"));
+        fs::write(&pointer, b"old").expect("existing pointer");
+        fs::write(&partial, b"new").expect("staged pointer");
+        let mut lease = RuntimeLease::default();
+        lease.pin_file(&pinned, &ByteRecord {
+            length: 6,
+            sha256: sha256(b"signed"),
+        }, false).expect("live signed file lease");
+        let wide = |path: &Path| path.as_os_str().encode_wide()
+            .chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let moved = unsafe { MoveFileExW(
+            wide(&partial).as_ptr(), wide(&pointer).as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        ) };
+        let error = std::io::Error::last_os_error();
+        drop(lease);
+        assert_ne!(moved, 0, "live pointer replace failed: {error}");
+        assert_eq!(fs::read(&pointer).expect("new pointer"), b"new");
+        fs::remove_dir_all(&root).expect("remove owned test install root");
+    }
+
+    #[test]
     fn lifecycle_lock_serializes_old_and_new_roots_under_one_parent() {
         let parent = std::env::temp_dir().join(format!(
             "gogoke-lifecycle-test-{}",
