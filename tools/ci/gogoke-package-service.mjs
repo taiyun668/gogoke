@@ -777,7 +777,7 @@ if (mode === 'stage') {
   if (!['node', 'native-host', 'service'].includes(other)) throw new Error('installed negative smoke component is invalid');
   const negativeSmoke = await smokeTauri(ensureDir(root), smokeRequest, other);
   writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'PASS', negativeSmoke });
-} else if (mode === 'candidate-installed-service') {
+} else if (mode === 'candidate-installed-service' || mode === 'formal-installed-service') {
   const [expectedSourceCommit, expectedVersion, evidenceFile, productRoot] = process.argv.slice(5);
   if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'taiyun668/gogoke' ||
       !process.env.RUNNER_TEMP || !process.env.GITHUB_RUN_ID || !process.env.GITHUB_RUN_ATTEMPT ||
@@ -794,8 +794,12 @@ if (mode === 'stage') {
     throw new Error('candidate test poison remains before uninstall');
   }
   result.negative.poisonRemoved = true;
+  if (mode === 'formal-installed-service') {
+    result.schema = 'gogoke.r2-06b.formal-service-smoke.v1';
+    result.release = false;
+  }
   fs.writeFileSync(resolvedEvidence, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
-  console.log('PASS installed candidate service positive and poisoned-module negative');
+  console.log(`PASS installed ${mode === 'formal-installed-service' ? 'formal' : 'candidate'} service positive and poisoned-module negative`);
 } else if (mode === 'record-smoke') {
   recordSmokeReceipt(ensure(root), process.argv.slice(4).map(ensure));
  } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | smoke-negative <installed-dir> | candidate-installed-service <installed-dir> <generation-id> <source-commit> <version> <evidence-file> | record-smoke <positive-receipt> [negative-receipt]');
@@ -819,7 +823,7 @@ if (mode === 'stage') {
       console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
       console.error('::error::installed smoke failure receipt could not be written');
     }
-  } else if (mode === 'candidate-installed-service' || ((mode === 'smoke' || mode === 'smoke-negative') && process.env.GOGOKE_R2_SMOKE_RECEIPT)) {
+} else if (mode === 'candidate-installed-service' || mode === 'formal-installed-service' || ((mode === 'smoke' || mode === 'smoke-negative') && process.env.GOGOKE_R2_SMOKE_RECEIPT)) {
     console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
   } else {
     fs.mkdirSync(path.dirname(manifestPath), { recursive: true });

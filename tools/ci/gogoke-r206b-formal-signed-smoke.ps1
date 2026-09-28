@@ -263,33 +263,69 @@ try {
     $result.nodeSha256 = $nodeHash
     $result.installExitCode = 0
     $result.registrationDomain = 'OWNER_RELEASE'
-    $receipt = Join-Path $env:RUNNER_TEMP ('gogoke-r2-smoke-receipt-' + [Guid]::NewGuid().ToString('N') + '.json')
-    if (Test-Path -LiteralPath $receipt) { throw 'Product smoke receipt path exists.' }
-    $env:GOGOKE_R2_SMOKE_RECEIPT = $receipt
-    try {
-        & node (Join-Path $repoRoot 'tools\ci\gogoke-package-service.mjs') smoke $install
-        if ($LASTEXITCODE -ne 0) {
-            if (Test-Path -LiteralPath $receipt -PathType Leaf) {
-                $failure = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
-                if ($failure.state -ceq 'FAIL' -and $failure.failure.message) {
-                    $message = [string]$failure.failure.message
-                    $message = $message.Replace($work, '%WORKROOT%').Replace($env:RUNNER_TEMP, '%RUNNER_TEMP%')
-                    $result.productFailure = $message.Substring(0, [Math]::Min(1500, $message.Length))
-                }
-            }
-            throw 'Actual formal installed product smoke failed.'
-        }
-    } finally { Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue }
-    $product = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
-    if ($product.schema -cne 'gogoke.r2-04.installed-smoke-receipt.v1' -or
-        $product.state -cne 'PASS' -or $product.installedSmoke.adoption -ne $false -or
-        $product.installedSmoke.release -ne $false) {
-        throw 'Formal product smoke result is not exact PASS test-only.'
+    $indexPath = Join-Path $install 'resource-index.json'
+    $indexHash = Hash $indexPath
+    $index = Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json
+    if ($index.schema -cne 'gogoke.resource-index.v1' -or $index.sourceCommit -cne $fullSource -or
+        $index.version -cne '0.1.3' -or [string]::IsNullOrWhiteSpace([string]$index.generationId)) {
+        throw 'Formal installed resource index identity differs.'
+    }
+    $evidencePath = Join-Path $env:RUNNER_TEMP "gogoke-r2-06-service-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT.json"
+    if (Test-Path -LiteralPath $evidencePath) { throw 'Formal service evidence path exists.' }
+    $data = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)) 'app.gogoke.desktop'
+    & (Join-Path $install 'gogoke-service\runtime\node.exe') `
+        (Join-Path $repoRoot 'tools\ci\gogoke-package-service.mjs') `
+        formal-installed-service $install ([string]$index.generationId) $fullSource '0.1.3' `
+        $evidencePath (Join-Path $data 'product-authority')
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) {
+        throw 'Actual formal installed generation-aware product smoke failed.'
+    }
+    $product = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
+    if ($product.schema -cne 'gogoke.r2-06b.formal-service-smoke.v1' -or
+        $product.state -cne 'PASS' -or $product.platform -cne 'WINDOWS_CLOUD_NOT_OWNER_WIN11' -or
+        $product.sourceCommit -cne $fullSource -or $product.generationId -cne $index.generationId -or
+        $product.smokeRunId -cne [string]$env:GITHUB_RUN_ID -or
+        $product.smokeRunAttempt -cne [string]$env:GITHUB_RUN_ATTEMPT -or
+        $product.installedShellSha256 -cne $installedShellHash -or
+        $product.positive.state -cne 'VALIDATED_TEST_RESULT_NOT_ADOPTED' -or
+        $product.positive.readinessSetId -cne $indexHash -or
+        $product.positive.adoption -cne $false -or
+        $product.negative.rejection -cne 'GOGOKE_PRODUCT_SERVICE_FAILED:78' -or
+        $product.negative.poisonExecuted -cne $false -or
+        $product.negative.poisonRemoved -cne $true -or
+        $product.negative.adoption -cne $false -or $product.release -cne $false) {
+        throw 'Formal installed product smoke evidence differs.'
     }
     $result.productState = 'PASS_TEST_ONLY'
     $result.adoption = $false
     $result.release = $false
-    $data = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)) 'app.gogoke.desktop'
+    $result.productServiceEvidenceSha256 = Hash $evidencePath
+    $readyPath = [IO.Path]::Combine([string]$env:TMP,
+        ('gogoke-update-r2-06-' + [Guid]::NewGuid().ToString('N') + '.ready'))
+    if (Test-Path -LiteralPath $readyPath) { throw 'Formal readiness path exists.' }
+    $launch = [Diagnostics.ProcessStartInfo]::new()
+    $launch.FileName = Join-Path $install 'gogoke.exe'
+    $launch.UseShellExecute = $false
+    $launch.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
+    [void]$launch.ArgumentList.Add("--gogoke-update-ready=$readyPath")
+    $app = [Diagnostics.Process]::new()
+    $app.StartInfo = $launch
+    if (-not $app.Start()) { throw 'Formal installed product did not launch.' }
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    while ([DateTime]::UtcNow -lt $readyDeadline) {
+        if (Test-Path -LiteralPath $readyPath -PathType Leaf) { break }
+        if ($app.HasExited) { throw 'Formal installed product exited before readiness.' }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
+        throw 'Formal installed product did not publish bootstrap readiness.'
+    }
+    $ready = Get-Content -LiteralPath $readyPath -Raw | ConvertFrom-Json
+    if ($ready.version -cne '0.1.3' -or $ready.generationId -cne $index.generationId -or
+        $ready.setId -cne $indexHash) { throw 'Formal installed bootstrap readiness identity differs.' }
+    $result.bootstrapReadiness = [ordered]@{ version = $ready.version; generationId = $ready.generationId; setId = $ready.setId }
+    [void]$app.CloseMainWindow()
+    if (-not $app.WaitForExit(15000)) { throw 'Formal installed product did not exit after close request.' }
     $dataBefore = @{}
     if (Test-Path -LiteralPath $data -PathType Container) {
         foreach ($item in @(Get-ChildItem -LiteralPath $data -Recurse -File -Force)) {
