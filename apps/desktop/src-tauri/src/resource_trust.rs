@@ -129,14 +129,16 @@ pub(crate) struct VerifiedResources {
 }
 
 /// Physical path custody for bytes used by a running resource generation.
-/// Directory handles prevent an ancestor being replaced with a junction after
-/// verification; leaf handles deny write/delete sharing until the last lease
-/// holder drops them. Paths remain useful to Node, which needs path arguments.
+/// Immutable ancestor handles resist replacement after verification. The
+/// installation root and generation parent permit their required publication
+/// operations; signed leaf handles still deny write/delete sharing until the
+/// last lease holder drops them. Paths remain useful to Node.
 #[derive(Default)]
 pub(crate) struct RuntimeLease {
     directories: HashMap<PathBuf, fs::File>,
     files: HashMap<PathBuf, (fs::File, ByteRecord)>,
     mutable_generation_parent: Option<PathBuf>,
+    mutable_pointer_parent: Option<PathBuf>,
 }
 
 impl RuntimeLease {
@@ -168,6 +170,8 @@ impl RuntimeLease {
             // pinned with read-only sharing.
             let share = if self.mutable_generation_parent.as_deref() == Some(ancestor) {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            } else if self.mutable_pointer_parent.as_deref() == Some(ancestor) {
+                FILE_SHARE_READ | FILE_SHARE_DELETE
             } else {
                 FILE_SHARE_READ
             };
@@ -1173,6 +1177,10 @@ fn build_runtime_lease(
     lease.mutable_generation_parent = Some(
         generation_root.parent().ok_or("GOGOKE_RESOURCE_PATH_UNSAFE")?.to_path_buf()
     );
+    // The active-set pointer is atomically replaced in the installation root.
+    // Holding that parent without delete sharing blocks the replacement on Windows.
+    // Signed leaf handles still deny write and delete sharing.
+    lease.mutable_pointer_parent = Some(install_root.to_path_buf());
     lease.pin_file(native_host_path, native_host, false)?;
     lease.pin_file(node_runtime_path, node, false)?;
     for (path, record) in installed_files {
@@ -2109,10 +2117,12 @@ mod tests {
         fs::write(&pointer, b"old").expect("existing pointer");
         fs::write(&partial, b"new").expect("staged pointer");
         let mut lease = RuntimeLease::default();
+        lease.mutable_pointer_parent = Some(root.clone());
         lease.pin_file(&pinned, &ByteRecord {
             length: 6,
             sha256: sha256(b"signed"),
         }, false).expect("live signed file lease");
+        assert!(fs::write(&pinned, b"changed").is_err(), "signed leaf remains protected");
         let wide = |path: &Path| path.as_os_str().encode_wide()
             .chain(std::iter::once(0)).collect::<Vec<u16>>();
         let moved = unsafe { MoveFileExW(
