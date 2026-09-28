@@ -268,7 +268,17 @@ try {
     $env:GOGOKE_R2_SMOKE_RECEIPT = $receipt
     try {
         & node (Join-Path $repoRoot 'tools\ci\gogoke-package-service.mjs') smoke $install
-        if ($LASTEXITCODE -ne 0) { throw 'Actual formal installed product smoke failed.' }
+        if ($LASTEXITCODE -ne 0) {
+            if (Test-Path -LiteralPath $receipt -PathType Leaf) {
+                $failure = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+                if ($failure.state -ceq 'FAIL' -and $failure.failure.message) {
+                    $message = [string]$failure.failure.message
+                    $message = $message.Replace($work, '%WORKROOT%').Replace($env:RUNNER_TEMP, '%RUNNER_TEMP%')
+                    $result.productFailure = $message.Substring(0, [Math]::Min(1500, $message.Length))
+                }
+            }
+            throw 'Actual formal installed product smoke failed.'
+        }
     } finally { Remove-Item Env:GOGOKE_R2_SMOKE_RECEIPT -ErrorAction SilentlyContinue }
     $product = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
     if ($product.schema -cne 'gogoke.r2-04.installed-smoke-receipt.v1' -or
