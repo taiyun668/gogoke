@@ -1,24 +1,24 @@
-name: gogoke formal signed byte smoke
+name: gogoke candidate installed smoke
 
-# Temporary execution-branch workflow at an existing dispatch path. Restore the
-# candidate-smoke workflow after this exact signed-byte run completes.
+# This branch version consumes signed candidate bytes. The default-branch
+# version of this same workflow path is the only candidate signer.
 on:
   workflow_dispatch:
     inputs:
       source_commit:
-        description: Exact frozen full source commit
+        description: Exact successful controlled build commit
         required: true
         type: string
       run_id:
-        description: Exact frozen full desktop CI run ID
+        description: Exact successful main signing run ID
         required: true
         type: number
       run_attempt:
-        description: Exact frozen full desktop CI run attempt
+        description: Exact main signing run attempt
         required: true
         type: number
       artifact_id:
-        description: Exact frozen full artifact ID
+        description: Exact signed candidate artifact ID
         required: true
         type: number
 
@@ -31,64 +31,137 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  formal-signed-byte-smoke:
-    name: Verify Owner signatures and install exact frozen formal bytes
+  candidate-installed-smoke:
+    name: Verify and install signed candidate on an isolated Windows runner
     timeout-minutes: 60
     runs-on: windows-latest
     steps:
-      - name: Checkout exact execution-branch smoke code
+      - name: Checkout the exact execution branch workflow revision
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Require exact execution-branch code
+      - name: Prove the smoke code is the exact execution branch revision
         shell: pwsh
         run: |
           if ($env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke' -or
               $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
               $env:GITHUB_REF -cne 'refs/heads/gpt/s1-r4-r2-execution-r1' -or
               (git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
-            throw 'Formal signed byte smoke did not load the exact execution branch.'
+            throw 'Installed smoke did not load its exact execution branch revision.'
           }
-      - name: Download frozen bytes and verify both Owner-signed manifests
+      - name: Verify and download the exact signed candidate without executing it
+        id: preflight
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GOGOKE_R206B_FORMAL_SIGNATURES: ${{ secrets.GOGOKE_R206B_FORMAL_SIGNATURES_TEST_ONLY }}
         run: |
-          $root = Join-Path $env:RUNNER_TEMP "gogoke-r206b-formal-${{ github.run_id }}"
-          & ./tools/ci/gogoke-r206b-formal-signed-smoke-015-016.ps1 `
-            -Mode Preflight -WorkRoot $root `
-            -SourceCommit '${{ inputs.source_commit }}' `
-            -SourceRunId '${{ inputs.run_id }}' `
-            -SourceRunAttempt '${{ inputs.run_attempt }}' `
-            -SourceArtifactId '${{ inputs.artifact_id }}'
-          if ($LASTEXITCODE -ne 0) { throw "Formal preflight failed: $LASTEXITCODE" }
-      - name: Exercise exact formal installed product and uninstall under Medium token
+          & ./tools/ci/gogoke-candidate-installed-preflight.ps1 `
+            -ExpectedSourceCommit '${{ inputs.source_commit }}' `
+            -SigningRunId '${{ inputs.run_id }}' `
+            -SigningRunAttempt '${{ inputs.run_attempt }}' `
+            -SignedArtifactId '${{ inputs.artifact_id }}'
+          if ($LASTEXITCODE -ne 0) { throw "Signed candidate preflight failed: $LASTEXITCODE" }
+      - name: Download separate CI-only negative installer from the exact source run
+        uses: actions/download-artifact@v4
+        with:
+          name: gogoke-nsis-negative-${{ inputs.source_commit }}-${{ steps.preflight.outputs.source_run_id }}
+          run-id: ${{ steps.preflight.outputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/gogoke-r206a-negative-installer-input
+      - name: Exercise actual installed candidate product and uninstall
         shell: pwsh
+        env:
+          CANDIDATE_INPUT: ${{ steps.preflight.outputs.artifact_directory }}
+          NEGATIVE_INSTALLER_INPUT: ${{ runner.temp }}/gogoke-r206a-negative-installer-input
         run: |
-          $root = Join-Path $env:RUNNER_TEMP "gogoke-r206b-formal-${{ github.run_id }}"
-          $toolRoot = Join-Path $env:RUNNER_TEMP "gogoke-formal-medium-${{ github.run_id }}"
-          if (Test-Path -LiteralPath $toolRoot) { throw 'Medium token tool root exists.' }
-          New-Item -ItemType Directory -Path $toolRoot | Out-Null
-          $archive = Join-Path $toolRoot 'gsudo.portable.zip'
-          Invoke-WebRequest -Uri 'https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip' -OutFile $archive
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne
-              '21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44') {
-            throw 'Pinned Medium token launcher digest differs.'
+          # The hosted runner starts elevated; WebView2 product smoke uses a
+          # pinned launcher to run the actual product under a Medium token.
+          $toolRoot = Join-Path $env:RUNNER_TEMP "gogoke-candidate-medium-${{ github.run_id }}-${{ github.run_attempt }}"
+          $runnerRoot = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+          if (-not [IO.Path]::GetFullPath($toolRoot).StartsWith($runnerRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+              (Test-Path -LiteralPath $toolRoot)) {
+            throw 'Medium token launcher path is not a fresh runner temporary child.'
           }
-          Expand-Archive -LiteralPath $archive -DestinationPath $toolRoot
-          $launcher = Join-Path $toolRoot 'x64/gsudo.exe'
-          if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Pinned Medium launcher missing.' }
-          $script = (Resolve-Path -LiteralPath './tools/ci/gogoke-r206b-formal-signed-smoke-015-016.ps1').Path
-          & $launcher --integrity Medium --direct (Join-Path $PSHOME 'pwsh.exe') `
-            -NoProfile -File $script -Mode Exercise -WorkRoot $root
-          if ($LASTEXITCODE -ne 0) { throw "Formal installed smoke failed: $LASTEXITCODE" }
-      - name: Upload bounded formal smoke result
+          New-Item -ItemType Directory -Path $toolRoot | Out-Null
+          try {
+            $archive = Join-Path $toolRoot 'gsudo.portable.zip'
+            Invoke-WebRequest -Uri 'https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip' -OutFile $archive
+            $expected = '21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44'
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) {
+              throw 'Pinned Medium token launcher archive digest mismatch.'
+            }
+            Expand-Archive -LiteralPath $archive -DestinationPath $toolRoot
+            $launcher = Join-Path $toolRoot 'x64/gsudo.exe'
+            if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+              throw 'Pinned Medium token launcher is missing.'
+            }
+            $smokeScript = (Resolve-Path -LiteralPath './tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1').Path
+            $arguments = @(
+              '--integrity', 'Medium', '--direct', (Join-Path $PSHOME 'pwsh.exe'),
+              '-NoProfile', '-File', $smokeScript,
+              '-ArtifactDirectory', $env:CANDIDATE_INPUT,
+              '-ExpectedSetupSha256', '${{ steps.preflight.outputs.setup_sha256 }}',
+              '-ExpectedInstalledShellSha256', '${{ steps.preflight.outputs.installed_shell_sha256 }}',
+              '-ExpectedNativeHostSha256', '${{ steps.preflight.outputs.native_host_sha256 }}',
+              '-ExpectedNodeSha256', '${{ steps.preflight.outputs.node_sha256 }}',
+              '-ExpectedVersion', '${{ steps.preflight.outputs.version }}',
+              '-ExpectedSourceCommit', '${{ inputs.source_commit }}',
+              '-ExpectedRunId', '${{ steps.preflight.outputs.source_run_id }}',
+              '-ExpectedRunAttempt', '${{ steps.preflight.outputs.source_run_attempt }}',
+              '-ExpectedArtifactId', '${{ steps.preflight.outputs.source_artifact_id }}',
+              '-ExpectedSigningRunId', '${{ steps.preflight.outputs.signing_run_id }}',
+              '-ExpectedSigningRunAttempt', '${{ steps.preflight.outputs.signing_run_attempt }}',
+              '-ExpectedSmokeRunId', '${{ github.run_id }}',
+              '-ExpectedSmokeRunAttempt', '${{ github.run_attempt }}'
+            )
+            & $launcher @arguments
+            if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) {
+              throw "Installed candidate Medium smoke failed: $LASTEXITCODE"
+            }
+            $negativeScript = (Resolve-Path -LiteralPath './tools/ci/gogoke-r206a-installer-negative.ps1').Path
+            $negativeArguments = @(
+              '--integrity', 'Medium', '--direct', (Join-Path $PSHOME 'pwsh.exe'),
+              '-NoProfile', '-File', $negativeScript,
+              '-SignedArtifactDirectory', $env:CANDIDATE_INPUT,
+              '-InstrumentArtifactDirectory', $env:NEGATIVE_INSTALLER_INPUT,
+              '-ExpectedProductionSetupSha256', '${{ steps.preflight.outputs.setup_sha256 }}',
+              '-ExpectedInstalledShellSha256', '${{ steps.preflight.outputs.installed_shell_sha256 }}',
+              '-ExpectedSourceArtifactId', '${{ steps.preflight.outputs.source_artifact_id }}',
+              '-ExpectedVersion', '${{ steps.preflight.outputs.version }}',
+              '-ExpectedSourceCommit', '${{ inputs.source_commit }}',
+              '-ExpectedRunId', '${{ steps.preflight.outputs.source_run_id }}',
+              '-ExpectedRunAttempt', '${{ steps.preflight.outputs.source_run_attempt }}',
+              '-ExpectedSmokeRunId', '${{ github.run_id }}',
+              '-ExpectedSmokeRunAttempt', '${{ github.run_attempt }}'
+            )
+            & $launcher @negativeArguments
+            if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) {
+              throw "CI-only negative installation axes failed: $LASTEXITCODE"
+            }
+          } finally {
+            if (Test-Path -LiteralPath $toolRoot) {
+              $toolItem = Get-Item -LiteralPath $toolRoot -Force
+              if (($toolItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  -not [IO.Path]::GetFullPath($toolItem.FullName).StartsWith($runnerRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Medium token launcher cleanup target changed; runner teardown owns it.'
+              }
+              Remove-Item -LiteralPath $toolRoot -Recurse -Force
+            }
+          }
+      - name: Upload bounded candidate installation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gogoke-formal-signed-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/gogoke-r206b-formal-${{ github.run_id }}/formal-smoke-result.json
+          name: gogoke-candidate-installed-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-r2-06-candidate-smoke-${{ github.run_id }}-${{ github.run_attempt }}.json
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
+      - name: Upload bounded CI-only installer negative evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-r206a-installer-negative-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-r206a-installer-negative-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: ignore
+          retention-days: 30
