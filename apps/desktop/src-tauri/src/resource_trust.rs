@@ -17,7 +17,8 @@ use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, MoveFileExW, SetFileInformationByHandle, DELETE, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_READ,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE,
     FileRenameInfo, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_EXISTING,
 };
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -131,6 +132,7 @@ pub(crate) struct VerifiedResources {
 pub(crate) struct RuntimeLease {
     directories: HashMap<PathBuf, fs::File>,
     files: HashMap<PathBuf, (fs::File, ByteRecord)>,
+    mutable_generation_parent: Option<PathBuf>,
 }
 
 impl RuntimeLease {
@@ -157,9 +159,17 @@ impl RuntimeLease {
             if self.directories.contains_key(ancestor) {
                 continue;
             }
+            // A live old generation must not block publication of a verified
+            // sibling. Its own directory and every higher ancestor remain
+            // pinned with read-only sharing.
+            let share = if self.mutable_generation_parent.as_deref() == Some(ancestor) {
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            } else {
+                FILE_SHARE_READ
+            };
             let directory = fs::OpenOptions::new()
                 .read(true)
-                .share_mode(FILE_SHARE_READ)
+                .share_mode(share)
                 .custom_flags(OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
                 .open(ancestor)
                 .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string())?;
@@ -830,7 +840,8 @@ fn rename_owned_stage_no_replace(stage: &fs::File, destination: &Path) -> Result
         )
     };
     if success == 0 {
-        return Err("GOGOKE_RESOURCE_SET_PUBLISH_FAILED".to_string());
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(format!("GOGOKE_RESOURCE_SET_PUBLISH_FAILED:WIN32_{code}"));
     }
     Ok(())
 }
@@ -1154,6 +1165,9 @@ fn build_runtime_lease(
     generation_files: &HashMap<String, ByteRecord>,
 ) -> Result<Arc<RuntimeLease>, String> {
     let mut lease = RuntimeLease::default();
+    lease.mutable_generation_parent = Some(
+        generation_root.parent().ok_or("GOGOKE_RESOURCE_PATH_UNSAFE")?.to_path_buf()
+    );
     lease.pin_file(native_host_path, native_host, false)?;
     lease.pin_file(node_runtime_path, node, false)?;
     for (path, record) in installed_files {
@@ -1442,7 +1456,7 @@ fn publish_generation_from_pack(
     drop(directories); // Nested directory handles must close before parent rename.
     drop(parent_lease); // The retained stage handle identifies the verified object during rename.
     rename_owned_stage_no_replace(&stage_handle, destination)
-        .map_err(|_| "GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED".to_string())?;
+        .map_err(|error| format!("GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED:{error}"))?;
     Ok(())
 }
 
@@ -1884,6 +1898,49 @@ mod tests {
     }
 
     #[test]
+    fn live_generation_lease_allows_verified_sibling_publication() {
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-generation-sibling-test-{}", uuid::Uuid::new_v4().simple()
+        ));
+        let generations = root.join("service/generations");
+        let old = generations.join("old");
+        let stage = generations.join("stage");
+        let published = generations.join("published");
+        fs::create_dir_all(&old).expect("old generation fixture");
+        fs::create_dir(&stage).expect("owned stage fixture");
+        fs::write(stage.join("entry"), b"verified").expect("stage fixture bytes");
+        let stage_handle = open_owned_stage_directory(&stage).expect("own stage fixture");
+
+        let mut restrictive = RuntimeLease::default();
+        restrictive.pin_ancestors(&old.join("entry"))
+            .expect("pin live old generation with prior sharing");
+        assert!(rename_owned_stage_no_replace(&stage_handle, &published)
+            .is_err_and(|error| error.ends_with("WIN32_32")));
+        drop(restrictive);
+
+        let mut live = RuntimeLease::default();
+        live.mutable_generation_parent = Some(generations.clone());
+        live.pin_ancestors(&old.join("entry"))
+            .expect("pin live old generation while permitting sibling publication");
+        rename_owned_stage_no_replace(&stage_handle, &published)
+            .expect("publish verified sibling while old generation remains pinned");
+        assert_eq!(fs::read(published.join("entry")).expect("published bytes"), b"verified");
+        let ancestor_handle = open_owned_stage_directory(&generations)
+            .expect("open generation parent for negative control");
+        assert!(rename_owned_stage_no_replace(&ancestor_handle, &root.join("moved"))
+            .is_err_and(|error| error.ends_with("WIN32_32")));
+        drop(ancestor_handle);
+        drop(stage_handle);
+        drop(live);
+        let resolved_root = root.canonicalize().expect("owned fixture root");
+        let resolved_temp = std::env::temp_dir().canonicalize().expect("test temp root");
+        assert!(resolved_root.starts_with(&resolved_temp)
+            && root.file_name().and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("gogoke-generation-sibling-test-")));
+        fs::remove_dir_all(&root).expect("remove settled owned test fixture");
+    }
+
+    #[test]
     fn stage_leaf_and_set_publication_never_replace_existing_objects() {
         let root = std::env::temp_dir().join(format!(
             "gogoke-stage-no-replace-test-{}", uuid::Uuid::new_v4().simple()
@@ -1913,9 +1970,9 @@ mod tests {
         fs::create_dir(&published).expect("external empty directory");
         fs::write(stage.join("owned.bin"), b"owned").expect("owned stage leaf");
         let handle = open_owned_stage_directory(&stage).expect("open exact stage object");
-        assert_eq!(
-            rename_owned_stage_no_replace(&handle, &published),
-            Err("GOGOKE_RESOURCE_SET_PUBLISH_FAILED".to_string())
+        assert!(
+            rename_owned_stage_no_replace(&handle, &published)
+                .is_err_and(|error| error.starts_with("GOGOKE_RESOURCE_SET_PUBLISH_FAILED:WIN32_"))
         );
         assert!(stage.join("owned.bin").is_file(), "owned source remains after refusal");
         assert_eq!(fs::read_dir(&published).expect("read external directory").count(), 0);
