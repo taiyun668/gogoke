@@ -171,7 +171,7 @@ impl RuntimeLease {
             let share = if self.mutable_generation_parent.as_deref() == Some(ancestor) {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
             } else if self.mutable_pointer_parent.as_deref() == Some(ancestor) {
-                FILE_SHARE_READ | FILE_SHARE_DELETE
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
             } else {
                 FILE_SHARE_READ
             };
@@ -1178,7 +1178,7 @@ fn build_runtime_lease(
         generation_root.parent().ok_or("GOGOKE_RESOURCE_PATH_UNSAFE")?.to_path_buf()
     );
     // The active-set pointer is atomically replaced in the installation root.
-    // Holding that parent without delete sharing blocks the replacement on Windows.
+    // Holding that parent without write and delete sharing blocks replacement on Windows.
     // Signed leaf handles still deny write and delete sharing.
     lease.mutable_pointer_parent = Some(install_root.to_path_buf());
     lease.pin_file(native_host_path, native_host, false)?;
@@ -2125,29 +2125,15 @@ mod tests {
         assert!(fs::write(&pinned, b"changed").is_err(), "signed leaf remains protected");
         let wide = |path: &Path| path.as_os_str().encode_wide()
             .chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let mut moved = unsafe { MoveFileExW(
+        let moved = unsafe { MoveFileExW(
             wide(&partial).as_ptr(), wide(&pointer).as_ptr(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         ) };
-        let mut released = 0usize;
-        for ancestor in root.ancestors() {
-            if moved != 0 { break; }
-            if let Some(directory) = lease.directories.remove(ancestor) {
-                drop(directory);
-                released += 1;
-                moved = unsafe { MoveFileExW(
-                    wide(&partial).as_ptr(), wide(&pointer).as_ptr(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-                ) };
-            }
-        }
         let error = std::io::Error::last_os_error();
         drop(lease);
-        let new_pointer = fs::read(&pointer).expect("pointer after diagnostic");
+        assert_ne!(moved, 0, "live pointer replace failed: {error}");
+        assert_eq!(fs::read(&pointer).expect("new pointer"), b"new");
         fs::remove_dir_all(&root).expect("remove owned test install root");
-        assert_ne!(moved, 0, "live pointer replace failed after releasing {released} ancestor handles: {error}");
-        assert_eq!(new_pointer, b"new");
-        assert_eq!(released, 0, "pointer replacement required releasing ancestor handles");
     }
 
     #[test]
