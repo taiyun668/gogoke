@@ -422,6 +422,31 @@ mod managed_service {
 
     const CLEANUP_WAIT: Duration = Duration::from_secs(5);
     const RETRY_WAIT: Duration = Duration::from_secs(1);
+    const FAILURE_OUTPUT_TAIL_BYTES: usize = 4096;
+
+    fn read_tail(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+        let mut tail = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let count = reader.read(&mut chunk)?;
+            if count == 0 { break; }
+            tail.extend_from_slice(&chunk[..count]);
+            if tail.len() > FAILURE_OUTPUT_TAIL_BYTES {
+                tail.drain(..tail.len() - FAILURE_OUTPUT_TAIL_BYTES);
+            }
+        }
+        Ok(tail)
+    }
+
+    fn with_failure_output(mut error: String, stream: &str, bytes: &[u8]) -> String {
+        if !bytes.is_empty() {
+            error.push_str(":");
+            error.push_str(stream);
+            error.push_str("_TAIL:");
+            error.push_str(&String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(FAILURE_OUTPUT_TAIL_BYTES)..]));
+        }
+        error
+    }
 
     struct ModulePolicy {
         path: std::path::PathBuf,
@@ -979,10 +1004,7 @@ mod managed_service {
             let mut bytes = Vec::new();
             File::from(stdout).read_to_end(&mut bytes).map(|_| bytes)
         });
-        let stderr_reader = std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            File::from(stderr).read_to_end(&mut bytes)
-        });
+        let stderr_reader = std::thread::spawn(move || read_tail(File::from(stderr)));
         let writer = std::thread::spawn(move || File::from(stdin).write_all(&request));
         let failure = match unsafe {
             WaitForSingleObject(raw(&managed.process), timeout.as_millis() as u32)
@@ -1011,7 +1033,9 @@ mod managed_service {
         let output = stdout_reader.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
             .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string()));
-        let _ = stderr_reader.join();
+        let stderr_tail = stderr_reader.join()
+            .map_err(|_| "GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED".to_string())
+            .and_then(|value| value.map_err(|error| format!("GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED:WIN32_{}", error.raw_os_error().unwrap_or(0))));
         let mut exit_code = 0;
         let exit_code_available = unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
         let result = if let Some(error) = failure {
@@ -1019,7 +1043,15 @@ mod managed_service {
         } else if !exit_code_available {
             Err("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
         } else if exit_code != 0 {
-            Err(format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}"))
+            let mut error = format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}");
+            if let Ok(bytes) = &output {
+                error = with_failure_output(error, "STDOUT", bytes);
+            }
+            match &stderr_tail {
+                Ok(bytes) => error = with_failure_output(error, "STDERR", bytes),
+                Err(read_error) => error.push_str(&format!(":{read_error}")),
+            }
+            Err(error)
         } else if let Err(error) = write_result {
             Err(error)
         } else {
@@ -1254,6 +1286,40 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("remove parent-owned test fixture");
         assert_eq!(node_wait, WAIT_OBJECT_0,
             "closing the hard-terminated owner's kill-on-close Job must exit exact Node");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn managed_product_failure_reports_bounded_service_output() {
+        use std::fs;
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud test requires the staged signed Node runtime"));
+        assert!(node.is_file());
+        let root = std::env::temp_dir().join(format!(
+            "gogoke-service-output-test-{}", uuid::Uuid::new_v4().simple()
+        ));
+        let dist = root.join("service/dist");
+        fs::create_dir_all(&dist).expect("owned fixture directory");
+        let entry = dist.join("bin.mjs");
+        fs::write(&entry,
+            "process.stdout.write('service detail'); process.stderr.write('host detail'); process.exit(17);\n"
+        ).expect("owned fixture entry");
+        let paths = ProductRuntimePaths {
+            node_runtime: node,
+            service_entry: entry,
+            native_host: root.join("unused-native-host.exe"),
+            product_root: root.join("product"),
+            source_commit: None,
+            runtime_lease: None,
+        };
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
+        managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, None, service_guard, reply);
+        let error = receiver.blocking_recv().expect("managed owner reply").unwrap_err();
+        assert!(error.starts_with("GOGOKE_PRODUCT_SERVICE_FAILED:17"), "{error}");
+        assert!(error.contains(":STDOUT_TAIL:service detail"), "{error}");
+        assert!(error.contains(":STDERR_TAIL:host detail"), "{error}");
+        fs::remove_dir_all(&root).expect("remove settled owned fixture");
     }
 
     #[cfg(target_os = "windows")]

@@ -41,6 +41,10 @@ const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const MAX_INDEX_BYTES: u64 = 4 << 20;
 const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 
+fn io_failure(label: &str, error: std::io::Error) -> String {
+    format!("{label}:WIN32_{}", error.raw_os_error().unwrap_or(0))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Domain {
     Candidate,
@@ -745,7 +749,7 @@ fn stage_signed_set(source: &Path, root: &Path, signed: &SignedIndex) -> Result<
     let mut parent_lease = RuntimeLease::default();
     parent_lease.pin_ancestors(&temporary)?;
     fs::create_dir(&temporary)
-        .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED", error))?;
     let stage_handle = open_owned_stage_directory(&temporary)?;
     let mut stage_lease = RuntimeLease::default();
     stage_lease.directories.insert(temporary.clone(), stage_handle);
@@ -802,19 +806,19 @@ fn open_owned_stage_directory(path: &Path) -> Result<fs::File, String> {
 fn copy_stage_leaf_no_replace(source: &Path, target: &Path) -> Result<(), String> {
     let mut source_file = fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
         .custom_flags(OPEN_REPARSE_POINT).open(source)
-        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_SOURCE_FAILED".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_SET_STAGE_SOURCE_FAILED", error))?;
     let metadata = source_file.metadata()
-        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_SOURCE_FAILED".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_SET_STAGE_SOURCE_FAILED", error))?;
     if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0 {
         return Err("GOGOKE_RESOURCE_REPARSE_POINT".to_string());
     }
     let mut target_file = fs::OpenOptions::new().write(true).create_new(true)
         .share_mode(FILE_SHARE_READ)
         .custom_flags(OPEN_REPARSE_POINT).open(target)
-        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_COLLISION".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_SET_STAGE_COLLISION", error))?;
     std::io::copy(&mut source_file, &mut target_file)
         .and_then(|_| target_file.sync_all())
-        .map_err(|_| "GOGOKE_RESOURCE_SET_STAGE_FAILED".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_SET_STAGE_FAILED", error))?;
     Ok(())
 }
 
@@ -864,11 +868,11 @@ pub(crate) fn activate_resource_set(root: &Path, set_id: &str) -> Result<(), Str
         .write(true)
         .create_new(true)
         .open(&partial)
-        .map_err(|_| "GOGOKE_RESOURCE_POINTER_WRITE_FAILED".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_POINTER_WRITE_FAILED", error))?;
     output
         .write_all(format!("{set_id}\n").as_bytes())
         .and_then(|_| output.sync_all())
-        .map_err(|_| "GOGOKE_RESOURCE_POINTER_WRITE_FAILED".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_POINTER_WRITE_FAILED", error))?;
     drop(output);
     let wide = |path: &Path| {
         path.as_os_str()
@@ -884,8 +888,9 @@ pub(crate) fn activate_resource_set(root: &Path, set_id: &str) -> Result<(), Str
         )
     };
     if moved == 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         let _ = fs::remove_file(&partial);
-        return Err("GOGOKE_RESOURCE_POINTER_PUBLISH_FAILED".to_string());
+        return Err(format!("GOGOKE_RESOURCE_POINTER_PUBLISH_FAILED:WIN32_{code}"));
     }
     Ok(())
 }
@@ -1343,7 +1348,7 @@ fn physical_directory_or_create(path: &Path) -> Result<(), String> {
         }
         return Ok(());
     }
-    fs::create_dir(path).map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED".to_string())?;
+    fs::create_dir(path).map_err(|error| io_failure("GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED", error))?;
     let meta = fs::symlink_metadata(path)
         .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_UNREADABLE".to_string())?;
     if !meta.is_dir() || meta.file_attributes() & REPARSE_POINT != 0 {
@@ -1403,7 +1408,7 @@ fn extract_generation(
             .share_mode(FILE_SHARE_READ)
             .custom_flags(OPEN_REPARSE_POINT)
             .open(&target)
-            .map_err(|_| "GOGOKE_RESOURCE_EXTRACT_CREATE_FAILED".to_string())?;
+            .map_err(|error| io_failure("GOGOKE_RESOURCE_EXTRACT_CREATE_FAILED", error))?;
         let mut digest = Sha256::new();
         let mut length = 0u64;
         let mut buffer = [0u8; 64 * 1024];
@@ -1423,11 +1428,11 @@ fn extract_generation(
             digest.update(&buffer[..size]);
             output
                 .write_all(&buffer[..size])
-                .map_err(|_| "GOGOKE_RESOURCE_EXTRACT_WRITE_FAILED".to_string())?;
+                .map_err(|error| io_failure("GOGOKE_RESOURCE_EXTRACT_WRITE_FAILED", error))?;
         }
         output
             .sync_all()
-            .map_err(|_| "GOGOKE_RESOURCE_EXTRACT_WRITE_FAILED".to_string())?;
+            .map_err(|error| io_failure("GOGOKE_RESOURCE_EXTRACT_WRITE_FAILED", error))?;
         if length != record.length || format!("{:x}", digest.finalize()) != record.sha256 {
             return Err("GOGOKE_RESOURCE_PACK_ENTRY_HASH".to_string());
         }
@@ -1445,7 +1450,7 @@ fn publish_generation_from_pack(
     let mut parent_lease = RuntimeLease::default();
     parent_lease.pin_ancestors(&temporary)?;
     fs::create_dir(&temporary)
-        .map_err(|_| "GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED".to_string())?;
+        .map_err(|error| io_failure("GOGOKE_RESOURCE_DIRECTORY_CREATE_FAILED", error))?;
     let stage_handle = open_owned_stage_directory(&temporary)?;
     let mut directories = RuntimeLease::default();
     directories.directories.insert(temporary.clone(), stage_handle);
@@ -1950,18 +1955,14 @@ mod tests {
         let target = root.join("target.bin");
         fs::write(&source, b"signed bytes").expect("owned source");
         fs::write(&target, b"external sentinel").expect("external target sentinel");
-        assert_eq!(
-            copy_stage_leaf_no_replace(&source, &target),
-            Err("GOGOKE_RESOURCE_SET_STAGE_COLLISION".to_string())
-        );
+        assert!(copy_stage_leaf_no_replace(&source, &target)
+            .is_err_and(|error| error.starts_with("GOGOKE_RESOURCE_SET_STAGE_COLLISION:WIN32_")));
         assert_eq!(fs::read(&target).expect("read sentinel"), b"external sentinel");
 
         let linked_target = root.join("linked-target.bin");
         fs::hard_link(&target, &linked_target).expect("insert hard-link leaf");
-        assert_eq!(
-            copy_stage_leaf_no_replace(&source, &linked_target),
-            Err("GOGOKE_RESOURCE_SET_STAGE_COLLISION".to_string())
-        );
+        assert!(copy_stage_leaf_no_replace(&source, &linked_target)
+            .is_err_and(|error| error.starts_with("GOGOKE_RESOURCE_SET_STAGE_COLLISION:WIN32_")));
         assert_eq!(fs::read(&target).expect("read linked sentinel"), b"external sentinel");
 
         let stage = root.join("stage");
