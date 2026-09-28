@@ -422,7 +422,7 @@ try {
         $serviceEvidence.positive.acceptance -cne 'TEST_FIXTURE_NOT_ADOPTED' -or
         $serviceEvidence.positive.adoption -cne $false -or
         $serviceEvidence.negative.invocation -cne 'gogoke_r2_goal_probe' -or
-        $serviceEvidence.negative.rejection -cne 'GOGOKE_PRODUCT_SERVICE_FAILED:78' -or
+        -not ([string]$serviceEvidence.negative.rejection).StartsWith('GOGOKE_PRODUCT_SERVICE_FAILED:78:STDERR_TAIL:GOGOKE_MODULE_NOT_LISTED', [StringComparison]::Ordinal) -or
         $serviceEvidence.negative.poisonPath -cne 'gogoke-service/generations/node_modules/@ff-labs/fff-node' -or
         $serviceEvidence.negative.poisonExecuted -cne $false -or
         $serviceEvidence.negative.poisonRemoved -cne $true -or

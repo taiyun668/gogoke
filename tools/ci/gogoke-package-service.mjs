@@ -660,7 +660,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
         poisonFiles.set(file, bytes);
       }
       const rejection = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}}).then(() => 'UNEXPECTED_SUCCESS', error => String(error))`);
-      if (rejection !== 'GOGOKE_PRODUCT_SERVICE_FAILED:78') {
+      if (!rejection.startsWith('GOGOKE_PRODUCT_SERVICE_FAILED:78:STDERR_TAIL:GOGOKE_MODULE_NOT_LISTED')) {
         throw new Error(`poisoned installed candidate did not return service exit 78: ${rejection}`);
       }
       if (fs.existsSync(marker) || fs.existsSync(updateReceipt) || fs.existsSync(canaryMarker)) {

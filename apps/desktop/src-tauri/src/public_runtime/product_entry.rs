@@ -1364,7 +1364,8 @@ mod tests {
         let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
         managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, None, service_guard, reply);
         let result = receiver.blocking_recv().expect("managed owner reply");
-        assert_eq!(result, Err("GOGOKE_PRODUCT_SERVICE_FAILED:78".to_string()));
+        let error = result.expect_err("poisoned generation module must be rejected");
+        assert!(error.starts_with("GOGOKE_PRODUCT_SERVICE_FAILED:78:STDERR_TAIL:GOGOKE_MODULE_NOT_LISTED"), "{error}");
         assert!(!marker.exists(), "poison module body must never execute");
         fs::remove_dir_all(&root).expect("remove owned fixture after settled Job");
     }
