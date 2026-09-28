@@ -2125,15 +2125,29 @@ mod tests {
         assert!(fs::write(&pinned, b"changed").is_err(), "signed leaf remains protected");
         let wide = |path: &Path| path.as_os_str().encode_wide()
             .chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let moved = unsafe { MoveFileExW(
+        let mut moved = unsafe { MoveFileExW(
             wide(&partial).as_ptr(), wide(&pointer).as_ptr(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         ) };
+        let mut released = 0usize;
+        for ancestor in root.ancestors() {
+            if moved != 0 { break; }
+            if let Some(directory) = lease.directories.remove(ancestor) {
+                drop(directory);
+                released += 1;
+                moved = unsafe { MoveFileExW(
+                    wide(&partial).as_ptr(), wide(&pointer).as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                ) };
+            }
+        }
         let error = std::io::Error::last_os_error();
         drop(lease);
-        assert_ne!(moved, 0, "live pointer replace failed: {error}");
-        assert_eq!(fs::read(&pointer).expect("new pointer"), b"new");
+        let new_pointer = fs::read(&pointer).expect("pointer after diagnostic");
         fs::remove_dir_all(&root).expect("remove owned test install root");
+        assert_ne!(moved, 0, "live pointer replace failed after releasing {released} ancestor handles: {error}");
+        assert_eq!(new_pointer, b"new");
+        assert_eq!(released, 0, "pointer replacement required releasing ancestor handles");
     }
 
     #[test]
