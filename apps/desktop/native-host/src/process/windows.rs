@@ -2509,8 +2509,11 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+        let helper_stderr = fs::File::create("first-helper-stderr.txt")
+            .expect("capture exact first LPAC helper stderr");
         let launched = std::process::Command::new(&path)
             .args(["--exact", "process::windows::tests::seat_pipe_child_helper", "--nocapture"])
+            .stderr(std::process::Stdio::from(helper_stderr))
             .spawn();
         let (outcome, spawn_failed, first_helper_status) = match launched {
             Ok(mut process) => match process.wait() {
@@ -2709,7 +2712,8 @@ mod tests {
             .expect("LPAC exit"));
         let first_helper_status = std::fs::read_to_string(home.join("first-helper-status.txt"))
             .expect("first LPAC helper completion");
-        assert_eq!(first_helper_status, "SUCCESS", "first LPAC helper must complete the protocol");
+        assert_eq!(first_helper_status, "SUCCESS", "first LPAC helper must complete the protocol; stderr={:?}",
+            std::fs::read_to_string(home.join("first-helper-stderr.txt")));
         assert!(!home.join("pipe-client-error.txt").exists(), "LPAC pipe client reported failure");
         assert_eq!(accepted.as_deref(), Some(package_sid.as_str()));
         drop(peer);
@@ -2718,6 +2722,7 @@ mod tests {
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
         std::fs::remove_file(home.join("parent-launch.txt")).unwrap();
         std::fs::remove_file(home.join("first-helper-status.txt")).unwrap();
+        std::fs::remove_file(home.join("first-helper-stderr.txt")).unwrap();
         std::fs::remove_file(helper).unwrap();
         std::fs::remove_file(exe).unwrap();
         std::fs::remove_dir(home).unwrap();
