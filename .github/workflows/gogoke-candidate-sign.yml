@@ -1,6 +1,12 @@
 name: gogoke candidate resource signing
 
 on:
+  # Push only enters the workflow concurrency group. Both execution jobs
+  # require other events, so cancellation never grants signing or installation.
+  push:
+    branches:
+      - main
+      - codex/gogoke-37-l0
   workflow_run:
     workflows: ["gogoke desktop CI"]
     types: [completed]
@@ -28,7 +34,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.workflow_run.head_branch || 'manual' }}
+  group: ${{ github.workflow }}-gogoke-37-candidate
   cancel-in-progress: true
 
 jobs:
