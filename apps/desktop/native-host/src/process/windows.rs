@@ -155,6 +155,9 @@ struct JobObjectBasicAccountingInformation {
 
 #[link(name = "kernel32")]
 extern "system" {
+    fn CreateFileW(name: *const u16, desired_access: u32, share_mode: u32,
+        security_attributes: *const c_void, creation_disposition: u32,
+        flags_and_attributes: u32, template_file: Handle) -> Handle;
     fn CreateProcessW(
         application_name: *const u16,
         command_line: *mut u16,
@@ -2440,6 +2443,17 @@ mod tests {
         let read = fs::File::open(&path)
             .map(|_| "OK".to_owned())
             .unwrap_or_else(|error| format!("WIN32_{:?}", error.raw_os_error()));
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Probe the exact primary image under the LPAC parent's token before
+        // the failing CreateProcess. FILE_READ_DATA | FILE_EXECUTE | READ_CONTROL.
+        let image = unsafe { CreateFileW(wide.as_ptr(), 0x0002_0021, 7,
+            ptr::null(), 3, 0, ptr::null_mut()) };
+        let execute_open = if image as isize == -1 {
+            format!("WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+        } else {
+            unsafe { CloseHandle(image) };
+            "OK".to_owned()
+        };
         let launched = std::process::Command::new(&path)
             .args(["--exact", "process::windows::tests::seat_pipe_child_helper", "--nocapture"])
             .spawn();
@@ -2447,7 +2461,7 @@ mod tests {
             Ok(mut process) => format!("spawn=OK; exit={:?}", process.wait()),
             Err(error) => format!("spawn=WIN32_{:?}; detail={error}", error.raw_os_error()),
         };
-        fs::write("parent-launch.txt", format!("read={read}; {outcome}"))
+        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}"))
             .expect("persist direct child launch result");
     }
 
