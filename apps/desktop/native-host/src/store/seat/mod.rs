@@ -406,14 +406,29 @@ fn operation(
             .parse()
             .map_err(|_| SeatError::SchemaDrift)?,
     };
-    let current = read(db, domain, &seat.seat_id)?.ok_or(SeatError::SchemaDrift)?;
-    if current.incarnation != seat.incarnation {
-        return Err(SeatError::SchemaDrift);
-    }
     Ok(Some(SeatReceipt {
         seat,
         replayed: true,
     }))
+}
+fn authorize_replay(
+    db: &VerifiedDatabaseConnection<'_>,
+    origin: &NativeOrigin<'_>,
+    receipt: &SeatReceipt,
+) -> Result<(), SeatError> {
+    let current =
+        read(db, &receipt.seat.domain_id, &receipt.seat.seat_id)?.ok_or(SeatError::SchemaDrift)?;
+    // First recheck the live actor and layer relationship. A historical
+    // request fingerprint cannot keep a stopped or revoked lead authorized.
+    check_origin(db, origin, &receipt.seat.domain_id, Some(&current))?;
+    // Even with a live actor, an old receipt cannot represent a later target
+    // generation, reclamation or binding as the current successful result.
+    // The exact reclaim receipt itself may replay while that same reclaimed
+    // generation remains current; it does not restore dispatch authority.
+    if current != receipt.seat {
+        return Err(SeatError::Conflict);
+    }
+    Ok(())
 }
 fn record_operation(
     db: &VerifiedDatabaseConnection<'_>,
@@ -478,6 +493,7 @@ pub(crate) fn create(
     ]);
     transact(db, |db| {
         if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
+            authorize_replay(db, &origin, &receipt)?;
             return Ok(receipt);
         }
         let (layer, parent) = check_origin(db, &origin, input.domain_id, None)?;
@@ -537,6 +553,7 @@ fn change(
     ]);
     transact(db, |db| {
         if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
+            authorize_replay(db, &origin, &receipt)?;
             return Ok(receipt);
         }
         let before = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::Unknown)?;

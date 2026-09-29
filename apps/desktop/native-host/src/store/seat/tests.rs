@@ -68,9 +68,23 @@ fn exact_schema_reopens_and_drift_refuses_repair() {
 }
 
 #[test]
-fn binding_refuses_busy_or_stale_generation_and_replay_keeps_original_receipt() {
+fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
     fixture(|db, owner| {
         let original = create_user(db, owner, "lead", "createLead");
+        let original_replay = create(
+            db,
+            NativeOrigin::user(owner),
+            CreateSeat {
+                domain_id: "projectA",
+                seat_id: "lead",
+                instance_id: "instanceA",
+                kind: Kind::Long,
+                request_id: "createLead",
+            },
+        )
+        .unwrap();
+        assert!(original_replay.replayed);
+        assert_eq!(original_replay.seat, original);
         let busy = set_dispatch_state(db, &original, true).unwrap();
         assert!(matches!(
             bind_instance(
@@ -101,20 +115,20 @@ fn binding_refuses_busy_or_stale_generation_and_replay_keeps_original_receipt() 
         .unwrap();
         assert_eq!(changed.seat.generation, 4);
         assert_eq!(changed.seat.instance_id, "instanceB");
-        let original_replay = create(
-            db,
-            NativeOrigin::user(owner),
-            CreateSeat {
-                domain_id: "projectA",
-                seat_id: "lead",
-                instance_id: "instanceA",
-                kind: Kind::Long,
-                request_id: "createLead",
-            },
-        )
-        .unwrap();
-        assert!(original_replay.replayed);
-        assert_eq!(original_replay.seat, original);
+        assert!(matches!(
+            create(
+                db,
+                NativeOrigin::user(owner),
+                CreateSeat {
+                    domain_id: "projectA",
+                    seat_id: "lead",
+                    instance_id: "instanceA",
+                    kind: Kind::Long,
+                    request_id: "createLead",
+                }
+            ),
+            Err(SeatError::Conflict)
+        ));
         assert!(matches!(
             bind_instance(
                 db,
@@ -259,6 +273,20 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 NativeOrigin::lead(&admission),
                 CreateSeat {
                     domain_id: "projectA",
+                    seat_id: "worker",
+                    instance_id: "instanceA",
+                    kind: Kind::Short,
+                    request_id: "createWorker"
+                }
+            ),
+            Err(SeatError::Denied)
+        ));
+        assert!(matches!(
+            create(
+                db,
+                NativeOrigin::lead(&admission),
+                CreateSeat {
+                    domain_id: "projectA",
                     seat_id: "afterStop",
                     instance_id: "instanceA",
                     kind: Kind::Short,
@@ -272,5 +300,78 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
             Err(SeatError::Denied)
         ));
         assert_eq!(stopped.state, State::Idle);
+    });
+}
+
+#[test]
+fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
+    fixture(|db, owner| {
+        let lead = create_user(db, owner, "lead", "createLead");
+        let active = set_dispatch_state(db, &lead, true).unwrap();
+        let admission = NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
+        let worker = create(
+            db,
+            NativeOrigin::lead(&admission),
+            CreateSeat {
+                domain_id: "projectA",
+                seat_id: "worker",
+                instance_id: "instanceA",
+                kind: Kind::Short,
+                request_id: "createWorker",
+            },
+        )
+        .unwrap()
+        .seat;
+        let change = SeatChange {
+            domain_id: "projectA",
+            seat_id: "worker",
+            expected_generation: worker.generation,
+            request_id: "promoteWorker",
+        };
+        let promoted = promote(db, NativeOrigin::lead(&admission), change).unwrap();
+        let immediate_replay = promote(
+            db,
+            NativeOrigin::lead(&admission),
+            SeatChange {
+                domain_id: "projectA",
+                seat_id: "worker",
+                expected_generation: worker.generation,
+                request_id: "promoteWorker",
+            },
+        )
+        .unwrap();
+        assert!(immediate_replay.replayed);
+        assert_eq!(immediate_replay.seat, promoted.seat);
+        let idle = set_dispatch_state(db, &active, false).unwrap();
+        let new_active = set_dispatch_state(db, &idle, true).unwrap();
+        assert_eq!(new_active.state, State::Busy);
+        assert!(matches!(
+            promote(
+                db,
+                NativeOrigin::lead(&admission),
+                SeatChange {
+                    domain_id: "projectA",
+                    seat_id: "worker",
+                    expected_generation: worker.generation,
+                    request_id: "promoteWorker",
+                }
+            ),
+            Err(SeatError::Denied)
+        ));
+        let fresh_admission =
+            NativeLeadAdmission::from_native_runtime_snapshot(&new_active).unwrap();
+        assert!(matches!(
+            promote(
+                db,
+                NativeOrigin::lead(&fresh_admission),
+                SeatChange {
+                    domain_id: "projectA",
+                    seat_id: "worker",
+                    expected_generation: worker.generation,
+                    request_id: "promoteWorker",
+                }
+            ),
+            Err(SeatError::Conflict)
+        ));
     });
 }
