@@ -253,7 +253,8 @@ export async function probeInstalledCodex(threadProbe = false): Promise<ProbeRes
     if (!record(initialized)) throw new CodexProtocolError("INVALID_RESPONSE", "initialize");
     await transport.notify("initialized");
     result = { ...result, initialize: "PASS",
-      serverUserAgent: typeof initialized.userAgent === "string" ? initialized.userAgent : undefined };
+      ...(typeof initialized.userAgent === "string"
+        ? { serverUserAgent: initialized.userAgent } : {}) };
     const config = await transport.request("config/read", { cwd: home, includeLayers: true });
     if (!record(config) || !record(config.config)) throw new CodexProtocolError("INVALID_RESPONSE", "config/read");
     const effective = config.config;
