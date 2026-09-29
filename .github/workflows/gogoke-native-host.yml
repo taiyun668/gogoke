@@ -285,6 +285,11 @@ jobs:
         shell: pwsh
         run: |
           & ./tools/ci/gogoke37-lpac-procmon.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
+      - name: Capture exact LPAC parent failure stack with signed Microsoft CDB
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          & ./tools/ci/gogoke37-lpac-cdb.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
       - name: Upload native-host machine evidence
         if: always()
         uses: actions/upload-artifact@v4

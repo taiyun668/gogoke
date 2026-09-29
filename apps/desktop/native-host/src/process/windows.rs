@@ -2499,6 +2499,16 @@ mod tests {
             unsafe { CloseHandle(image) };
             ("OK".to_owned(), section)
         };
+        if let Some(directory) = std::env::var_os("GOGOKE_LPAC_CDB_DIR") {
+            let directory = PathBuf::from(directory);
+            fs::write(directory.join("parent.pid"), std::process::id().to_string())
+                .expect("publish exact LPAC parent PID for cloud diagnostic");
+            let start = Instant::now();
+            while !directory.join("release").exists() {
+                assert!(start.elapsed() < Duration::from_secs(90), "cloud debugger release timed out");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
         let launched = std::process::Command::new(&path)
             .args(["--exact", "process::windows::tests::seat_pipe_child_helper", "--nocapture"])
             .spawn();
@@ -2640,12 +2650,22 @@ mod tests {
             ("GOGOKE_TEST_SEAT_PIPE".into(), pipe_path),
             ("GOGOKE_TEST_SEAT_CHILD".into(), helper.to_string_lossy().into_owned()),
         ]);
+        let debugger_directory = std::env::var_os("GOGOKE_LPAC_CDB_DIR").map(|pointer| {
+            fs::write(PathBuf::from(pointer), home.to_string_lossy().as_bytes())
+                .expect("publish ACL-granted LPAC diagnostic directory");
+            home.clone()
+        });
+        if let Some(directory) = debugger_directory.as_ref() {
+            launch.environment.as_mut().expect("test environment").push((
+                "GOGOKE_LPAC_CDB_DIR".into(), directory.to_string_lossy().into_owned()));
+        }
         launch.arguments = vec!["--exact".into(),
             "process::windows::tests::seat_pipe_parent_helper".into(), "--nocapture".into()];
         let mut custodian = ProcessCustodian::new().expect("seat custodian");
         let prepared = custodian.prepare(&request(launch)).expect("prepared LPAC child");
         custodian.activate(&prepared).expect("activated LPAC child");
-        let accepted = receiver.recv_timeout(Duration::from_secs(15))
+        let diagnostic_timeout = if debugger_directory.is_some() { 120 } else { 15 };
+        let accepted = receiver.recv_timeout(Duration::from_secs(diagnostic_timeout))
             .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; direct child launch={:?}; client error={:?}; parent_exit={:?}",
                 std::fs::read_to_string(home.join("parent-launch.txt")),
                 std::fs::read_to_string(home.join("pipe-client-error.txt")),
