@@ -70,4 +70,17 @@ CREATE TABLE IF NOT EXISTS v37_ledger_receipt (
     receipt_bytes BLOB NOT NULL,
     PRIMARY KEY (family, domain_id, request_id)
 ) STRICT;
+
+-- Session purpose is fixed at registration. A formal review must start with a
+-- fresh native session and cannot gain an old ledger source by resume/fork.
+CREATE TABLE IF NOT EXISTS v37_ledger_session (
+    session_id TEXT PRIMARY KEY,
+    domain_id TEXT NOT NULL,
+    seat_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('WORK', 'HANDOFF', 'SIDE_CHAT', 'FORMAL_REVIEW')),
+    side_id TEXT,
+    CHECK ((purpose = 'SIDE_CHAT') = (side_id IS NOT NULL))
+) STRICT;
+CREATE INDEX IF NOT EXISTS v37_ledger_scope_cursor
+ON v37_ledger_index(domain_id, cursor);
 COMMIT;
