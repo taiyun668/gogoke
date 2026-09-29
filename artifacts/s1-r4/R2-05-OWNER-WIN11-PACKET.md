@@ -1,5 +1,7 @@
 # R2-05 Owner Win11 实机候选包
 
+历史记录：本文件只描述旧 985e17d1 候选及当时的实机动作，不能作为当前安装身份或待办清单。当前 full 0.1.11 + resources 0.1.13 的合并前证据与剩余 Owner 触点见 [R2-05-PREMERGE-REPORT.md](R2-05-PREMERGE-REPORT.md)。
+
 这是测试候选，不是已接受成果或 release。产品源码固定为 `985e17d1ffdb19ef05ca5f6bc0a8970a66df3f0d`；PR #27 仍为 Draft。[native/server 运行 36066883566](https://github.com/taiyun668/gogoke/actions/runs/36066883566) 与 [desktop 安装运行 36066910163](https://github.com/taiyun668/gogoke/actions/runs/36066910163) 均实际 checkout 此 SHA。云端是 Windows Server 证据，不代替 Owner Win11。
 
 从 desktop run `36066910163` 下载 `gogoke-windows-unsigned`（artifact ID `10837862139`）。其中有 `gogoke-0.1.2-windows-x64-unsigned-setup.exe`、portable ZIP 和 `SHA256SUMS.windows`。installer SHA-256 为 `5bf0e841a94a6a9127d435d13d20cd516c4d90d85b64500a59964ad61cd33f45`，portable ZIP 为 `b053d0faf9bfe004cf311dcedc52e1a05956e0dc2b5859a81f462d6e809ac4cb`。清单尚未经过 Owner 离线签名，不能据此发布。GitHub 当前显示该 artifact 到期时间为 `2026-12-23T22:20:56Z`。
