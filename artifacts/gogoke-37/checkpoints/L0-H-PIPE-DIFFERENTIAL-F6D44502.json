@@ -1,0 +1,46 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-PIPE-DIFFERENTIAL-F6D44502",
+  "recorded_utc": "2026-09-29T19:21:02Z",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "plan_revision": "PR #55 remains open at 856480935cd999c9658b02993c166fbd3c29acc4. Its focused audit comment https://github.com/taiyun668/gogoke/pull/55#issuecomment-5894355857 still calls for Claude revision; no new authorization PR has been created."
+  },
+  "cloud_run": {
+    "run_id": 36617041464,
+    "source_sha": "f6d445028d52808f12c5c9beba7a4b80cf6559f5",
+    "runner": "Cloud Windows win25-vs2026; not Owner Win11 product proof",
+    "server_machine_result": "PASS",
+    "native_release_build": "PASS",
+    "native_library": "490 passed, 1 failed, 0 skipped; the unmodified production LOCAL path and zero registry capability remain the failing baseline",
+    "test_only_registryRead_fresh_directory": "PASS",
+    "test_only_registryRead_LOCAL_pipe": "FAIL",
+    "test_only_registryRead_unqualified_pipe": "PASS: exact one test executed, first helper completed the ack protocol and exited successfully, host verified the actual peer and Job membership; 490 other lib tests were filtered from this exact invocation",
+    "procmon": "The separate exact replay exited 0, but this run's ProcMon summary did not capture a client pipe-open event. It is not used as an independent pipe-open claim; previous runs did capture the open and the test itself checks it directly.",
+    "machine_result_sha256": "3c43c255aef46695b00d77377495ceabdc70cfd03069c247c9b5e8a6cfcc06e8",
+    "procmon_summary_sha256": "88193a380f73684d94e7a464111c860d00c90f21fef08781722adf4b66071a3a",
+    "cdb_summary_sha256": "2977df78ae023344fb695a506aad2a82dca87e88fd83b7650525ee65f1918c11"
+  },
+  "logic_and_boundary": "The direct stderr from the previous source showed Win32 233 while reading the ack because the fixture server closed immediately after writing. The test-only server now stays open until the first helper has completed and its success has been checked. The production pipe path remains LOCAL, registryRead remains test-only, and the real seat authority consumer that must check the current Job/generation is not wired. No product acceptance or permission-boundary change is claimed.",
+  "inbox": {
+    "branch": "control/gogoke-s1-r4-inbox",
+    "head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "unchanged at natural checkpoint boundary"
+  },
+  "verification": {
+    "private_test_repository": "taiyun668/gogoke-seat-testbed confirmed PRIVATE",
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "next": "Wait for Claude's revised PR #55 head, perform focused read-only re-audit and PR comment. Owner merges plan. Then T00 recheck and separate new MANIFEST-bound authorization PR; Owner merges and Controller reads back exactly. Only then change L0 production path/permissions and persist OT3 caps 4 and 4. Continue H-specific read-only analysis and test-only evidence where it does not preempt the authorization order. This checkpoint is not a stop."
+}
