@@ -7,18 +7,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // these bytes verbatim; it does not reconstruct them from typed fields.
 fn wire(request_id: &str) -> &'static [u8] {
     match request_id {
-        "createLead" => br#"{"op":"create","requestId":"createLead","domainId":"projectA","seatId":"lead","instanceId":"instanceA","kind":"LONG"}"#,
-        "createAnother" => br#"{"op":"create","requestId":"createAnother","domainId":"projectA","seatId":"another","instanceId":"instanceA","kind":"LONG"}"#,
+        "createLead" => br#"{"op":"create-from-template","requestId":"createLead","domainId":"projectA","seatId":"lead","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
+        "createAnother" => br#"{"op":"create-from-template","requestId":"createAnother","domainId":"projectA","seatId":"another","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "busyBind" => br#"{"op":"bind","requestId":"busyBind","domainId":"projectA","seatId":"lead","expectedGeneration":2,"instanceId":"instanceB"}"#,
         "bindOnce" => br#"{"op":"bind","requestId":"bindOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"instanceId":"instanceB"}"#,
         "staleBind" => br#"{"op":"bind","requestId":"staleBind","domainId":"projectA","seatId":"lead","expectedGeneration":1,"instanceId":"instanceA"}"#,
-        "createWorker" => br#"{"op":"create","requestId":"createWorker","domainId":"projectA","seatId":"worker","instanceId":"instanceA","kind":"SHORT"}"#,
+        "createWorker" => br#"{"op":"create-from-template","requestId":"createWorker","domainId":"projectA","seatId":"worker","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
         "forbiddenBind" => br#"{"op":"bind","requestId":"forbiddenBind","domainId":"projectA","seatId":"another","expectedGeneration":1,"instanceId":"instanceB"}"#,
-        "otherProjectCreate" => br#"{"op":"create","requestId":"otherProjectCreate","domainId":"projectB","seatId":"otherProject","instanceId":"instanceA","kind":"SHORT"}"#,
+        "otherProjectCreate" => br#"{"op":"create-from-template","requestId":"otherProjectCreate","domainId":"projectB","seatId":"otherProject","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
         "promoteWorker" => br#"{"op":"promote","requestId":"promoteWorker","domainId":"projectA","seatId":"worker","expectedGeneration":1}"#,
         "reclaimWorker" => br#"{"op":"reclaim","requestId":"reclaimWorker","domainId":"projectA","seatId":"worker","expectedGeneration":2}"#,
-        "reuseWorker" => br#"{"op":"create","requestId":"reuseWorker","domainId":"projectA","seatId":"worker","instanceId":"instanceA","kind":"SHORT"}"#,
-        "afterStopCreate" => br#"{"op":"create","requestId":"afterStopCreate","domainId":"projectA","seatId":"afterStop","instanceId":"instanceA","kind":"SHORT"}"#,
+        "reuseWorker" => br#"{"op":"create-from-template","requestId":"reuseWorker","domainId":"projectA","seatId":"worker","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
+        "afterStopCreate" => br#"{"op":"create-from-template","requestId":"afterStopCreate","domainId":"projectA","seatId":"afterStop","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
+        "createUnbound" => br#"{"op":"create-from-template","requestId":"createUnbound","domainId":"projectA","seatId":"unbound","templateId":"templateA","kind":"SHORT"}"#,
+        "bindUnbound" => br#"{"op":"bind-instance","requestId":"bindUnbound","domainId":"projectA","seatId":"unbound","expectedGeneration":1,"instanceId":"instanceB"}"#,
         _ => panic!("missing complete test request: {request_id}"),
     }
 }
@@ -38,6 +40,16 @@ fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) 
     let owner = crate::store::authority::initialize_profile(&mut db, &root).unwrap();
     crate::store::instance::initialize_schema(&mut db).unwrap();
     initialize_schema(&mut db).unwrap();
+    store_template(
+        &mut db,
+        NativeOrigin::user(&owner),
+        StoreTemplate {
+            domain_id: "projectA",
+            template_id: "templateA",
+            settings_json: br#"{"instruction":"default"}"#,
+        },
+    )
+    .unwrap();
     for (instance, home, identity) in [
         ("instanceA", "homeA", "identityA"),
         ("instanceB", "homeB", "identityB"),
@@ -69,7 +81,8 @@ fn create_user(
         CreateSeat {
             domain_id: "projectA",
             seat_id,
-            instance_id: "instanceA",
+            template_id: "templateA",
+            instance_id: Some("instanceA"),
             kind: Kind::Long,
             request_id,
             request_bytes: wire(request_id),
@@ -89,6 +102,47 @@ fn exact_schema_reopens_and_drift_refuses_repair() {
 }
 
 #[test]
+fn legacy_bound_seat_migrates_without_losing_identity_or_binding() {
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "gogoke-v37-seat-legacy-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let database = path.join("state.sqlite");
+    let mut db = create_new(&root, &database).unwrap();
+    db.execute("PRAGMA foreign_keys=ON").unwrap();
+    let _owner = crate::store::authority::initialize_profile(&mut db, &root).unwrap();
+    crate::store::instance::initialize_schema(&mut db).unwrap();
+    db.execute(LEGACY_SEATS).unwrap();
+    db.execute(OPERATIONS).unwrap();
+    let insert_instance = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
+    insert_instance.step_done().unwrap();
+    let insert_seat = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','lead','incarnationA','USER',NULL,'LONG','instanceA','IDLE',1,1)").unwrap();
+    insert_seat.step_done().unwrap();
+
+    initialize_schema(&mut db).unwrap();
+    let restored = get(&db, "projectA", "lead").unwrap().unwrap();
+    assert_eq!(restored.incarnation, "incarnationA");
+    assert_eq!(restored.instance_id, "instanceA");
+    assert!(restored.template_id.is_none());
+    assert!(restored.settings_json.is_none());
+    initialize_schema(&mut db).unwrap();
+
+    db.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_file(database).unwrap();
+    if let Err(error) = std::fs::remove_dir(&path) {
+        eprintln!("owned fixture retained: {} ({error})", path.display());
+    }
+}
+
+#[test]
 fn empty_or_oversize_raw_request_is_rejected_before_mutation() {
     fixture(|db, owner| {
         let oversized = vec![b'x'; crate::ipc::MAX_FRAME_BYTES + 1];
@@ -100,7 +154,8 @@ fn empty_or_oversize_raw_request_is_rejected_before_mutation() {
                     CreateSeat {
                         domain_id: "projectA",
                         seat_id: "lead",
-                        instance_id: "instanceA",
+                        template_id: "templateA",
+                        instance_id: Some("instanceA"),
                         kind: Kind::Long,
                         request_id: "createLead",
                         request_bytes: raw,
@@ -114,6 +169,61 @@ fn empty_or_oversize_raw_request_is_rejected_before_mutation() {
 }
 
 #[test]
+fn create_from_stored_template_copies_settings_before_later_binding() {
+    fixture(|db, owner| {
+        let created = create(
+            db,
+            NativeOrigin::user(owner),
+            CreateSeat {
+                domain_id: "projectA",
+                seat_id: "unbound",
+                template_id: "templateA",
+                instance_id: None,
+                kind: Kind::Short,
+                request_id: "createUnbound",
+                request_bytes: wire("createUnbound"),
+            },
+        )
+        .unwrap();
+        assert_eq!(created.seat.instance_id, "");
+        assert_eq!(created.seat.template_id.as_deref(), Some("templateA"));
+        assert_eq!(
+            created.seat.settings_json.as_deref(),
+            Some("{\"instruction\":\"default\"}")
+        );
+
+        // The seat owns a snapshot. A later template edit cannot rewrite an
+        // already-created seat's settings.
+        db.execute("UPDATE gogoke_v37_seat_templates SET settings_json='{\"instruction\":\"changed\"}' WHERE domain_id='projectA' AND template_id='templateA'").unwrap();
+        let before_bind = get(db, "projectA", "unbound").unwrap().unwrap();
+        assert_eq!(
+            before_bind.settings_json.as_deref(),
+            Some("{\"instruction\":\"default\"}")
+        );
+        assert_eq!(before_bind.instance_id, "");
+
+        let bound = bind_instance(
+            db,
+            NativeOrigin::user(owner),
+            SeatChange {
+                domain_id: "projectA",
+                seat_id: "unbound",
+                expected_generation: 1,
+                request_id: "bindUnbound",
+                request_bytes: wire("bindUnbound"),
+            },
+            "instanceB",
+        )
+        .unwrap();
+        assert_eq!(bound.seat.instance_id, "instanceB");
+        assert_eq!(
+            bound.seat.settings_json.as_deref(),
+            Some("{\"instruction\":\"default\"}")
+        );
+    });
+}
+
+#[test]
 fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
     fixture(|db, owner| {
         let original = create_user(db, owner, "lead", "createLead");
@@ -123,7 +233,8 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
             CreateSeat {
                 domain_id: "projectA",
                 seat_id: "lead",
-                instance_id: "instanceA",
+                template_id: "templateA",
+                instance_id: Some("instanceA"),
                 kind: Kind::Long,
                 request_id: "createLead",
                 request_bytes: wire("createLead"),
@@ -139,10 +250,11 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "lead",
-                    instance_id: "instanceA",
+                    template_id: "templateA",
+                    instance_id: Some("instanceA"),
                     kind: Kind::Long,
                     request_id: "createLead",
-                    request_bytes: br#"{ "op":"create","requestId":"createLead","domainId":"projectA","seatId":"lead","instanceId":"instanceA","kind":"LONG"}"#,
+                    request_bytes: br#"{ "op":"create-from-template","requestId":"createLead","domainId":"projectA","seatId":"lead","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
                 }
             ),
             Err(SeatError::Conflict)
@@ -186,7 +298,8 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "lead",
-                    instance_id: "instanceA",
+                    template_id: "templateA",
+                    instance_id: Some("instanceA"),
                     kind: Kind::Long,
                     request_id: "createLead",
                     request_bytes: wire("createLead"),
@@ -271,7 +384,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
             CreateSeat {
                 domain_id: "projectA",
                 seat_id: "worker",
-                instance_id: "instanceA",
+                template_id: "templateA",
+                instance_id: Some("instanceA"),
                 kind: Kind::Short,
                 request_id: "createWorker",
                 request_bytes: wire("createWorker"),
@@ -303,7 +417,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectB",
                     seat_id: "otherProject",
-                    instance_id: "instanceA",
+                    template_id: "templateA",
+                    instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "otherProjectCreate",
                     request_bytes: wire("otherProjectCreate"),
@@ -347,7 +462,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "worker",
-                    instance_id: "instanceA",
+                    template_id: "templateA",
+                    instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "reuseWorker",
                     request_bytes: wire("reuseWorker"),
@@ -363,7 +479,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "worker",
-                    instance_id: "instanceA",
+                    template_id: "templateA",
+                    instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "createWorker",
                     request_bytes: wire("createWorker"),
@@ -378,7 +495,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "afterStop",
-                    instance_id: "instanceA",
+                    template_id: "templateA",
+                    instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "afterStopCreate",
                     request_bytes: wire("afterStopCreate"),
@@ -406,7 +524,8 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
             CreateSeat {
                 domain_id: "projectA",
                 seat_id: "worker",
-                instance_id: "instanceA",
+                template_id: "templateA",
+                instance_id: Some("instanceA"),
                 kind: Kind::Short,
                 request_id: "createWorker",
                 request_bytes: wire("createWorker"),

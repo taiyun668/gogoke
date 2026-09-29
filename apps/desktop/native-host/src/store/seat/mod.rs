@@ -1,16 +1,20 @@
-//! E.1 seat identity and instance binding on the product database connection.
+//! E.1 seat identity, template copy, and instance binding on the product database connection.
 //! This module receives only native capabilities. It is not an IPC dispatcher;
 //! the future ingress must authenticate a live lead session before admission.
 
-use super::atomic::{AtomicError, Statement};
+use super::atomic::{AtomicError, Json, Parser, Statement};
 use super::authority::OwnerIssuer;
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 #[cfg(all(test, windows))]
 mod tests;
 
-const SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT NOT NULL REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
+const LEGACY_SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT NOT NULL REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
+const SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
 const OPERATIONS: &str = "CREATE TABLE gogoke_v37_seat_operations(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,fingerprint TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL,layer TEXT NOT NULL,parent_seat_id TEXT,kind TEXT NOT NULL,instance_id TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(domain_id,request_id)) STRICT";
+const TEMPLATES: &str = "CREATE TABLE gogoke_v37_seat_templates(domain_id TEXT NOT NULL,template_id TEXT NOT NULL,settings_json TEXT NOT NULL CHECK(length(settings_json) > 0),revision INTEGER NOT NULL CHECK(revision >= 1),PRIMARY KEY(domain_id,template_id)) STRICT";
+const SETTINGS: &str = "CREATE TABLE gogoke_v37_seat_settings(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,template_id TEXT NOT NULL,settings_json TEXT NOT NULL CHECK(length(settings_json) > 0),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
+const OPERATION_SNAPSHOTS: &str = "CREATE TABLE gogoke_v37_seat_operation_snapshots(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,template_id TEXT NOT NULL,settings_json TEXT NOT NULL CHECK(length(settings_json) > 0),PRIMARY KEY(domain_id,request_id),FOREIGN KEY(domain_id,request_id) REFERENCES gogoke_v37_seat_operations(domain_id,request_id)) STRICT";
 
 #[derive(Debug)]
 pub(crate) enum SeatError {
@@ -59,7 +63,10 @@ pub(crate) struct Seat {
     pub(crate) layer: Layer,
     pub(crate) parent_seat_id: Option<String>,
     pub(crate) kind: Kind,
+    /// Empty is the native view of a SQL NULL until bind_instance succeeds.
     pub(crate) instance_id: String,
+    pub(crate) template_id: Option<String>,
+    pub(crate) settings_json: Option<String>,
     pub(crate) state: State,
     pub(crate) generation: i64,
     pub(crate) revision: i64,
@@ -136,11 +143,20 @@ impl<'a> NativeOrigin<'a> {
 pub(crate) struct CreateSeat<'a> {
     pub(crate) domain_id: &'a str,
     pub(crate) seat_id: &'a str,
-    pub(crate) instance_id: &'a str,
+    pub(crate) template_id: &'a str,
+    /// A new seat can remain unbound until the native caller chooses an
+    /// instance. Bound creation is retained for existing callers.
+    pub(crate) instance_id: Option<&'a str>,
     pub(crate) kind: Kind,
     pub(crate) request_id: &'a str,
     /// Exact ingress bytes, including unknown fields and original whitespace.
     pub(crate) request_bytes: &'a [u8],
+}
+pub(crate) struct StoreTemplate<'a> {
+    pub(crate) domain_id: &'a str,
+    pub(crate) template_id: &'a str,
+    /// Canonical JSON object copied into every seat created from this template.
+    pub(crate) settings_json: &'a [u8],
 }
 pub(crate) struct SeatChange<'a> {
     pub(crate) domain_id: &'a str,
@@ -220,21 +236,39 @@ fn reject_shadow_or_effect(db: &VerifiedDatabaseConnection<'_>) -> Result<(), Se
     Ok(())
 }
 fn expected_schema() -> Vec<(String, String)> {
-    vec![
+    let mut entries = vec![
+        (
+            "gogoke_v37_seat_operation_snapshots".into(),
+            OPERATION_SNAPSHOTS.into(),
+        ),
         ("gogoke_v37_seat_operations".into(), OPERATIONS.into()),
+        ("gogoke_v37_seat_settings".into(), SETTINGS.into()),
+        ("gogoke_v37_seat_templates".into(), TEMPLATES.into()),
         ("gogoke_v37_seats".into(), SEATS.into()),
-    ]
+    ];
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+fn legacy_schema() -> Vec<(String, String)> {
+    let mut entries = vec![
+        ("gogoke_v37_seat_operations".into(), OPERATIONS.into()),
+        ("gogoke_v37_seats".into(), LEGACY_SEATS.into()),
+    ];
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
 }
 /// Call after F's instance schema, on the same verified product connection.
 pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {
     reject_shadow_or_effect(db)?;
     let observed = schema(db)?;
+    if observed == expected_schema() {
+        return Ok(());
+    }
+    if observed == legacy_schema() {
+        return migrate_legacy_schema(db);
+    }
     if !observed.is_empty() {
-        return if observed == expected_schema() {
-            Ok(())
-        } else {
-            Err(SeatError::SchemaDrift)
-        };
+        return Err(SeatError::SchemaDrift);
     }
     transact(db, |db| {
         reject_shadow_or_effect(db)?;
@@ -243,6 +277,9 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         }
         db.execute(SEATS)?;
         db.execute(OPERATIONS)?;
+        db.execute(TEMPLATES)?;
+        db.execute(SETTINGS)?;
+        db.execute(OPERATION_SNAPSHOTS)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -250,12 +287,89 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     })
 }
 
+fn migrate_legacy_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {
+    transact(db, |db| {
+        if schema(db)? != legacy_schema() {
+            return Err(SeatError::SchemaDrift);
+        }
+        // SQLite cannot make a NOT NULL column nullable in place. Rebuild only
+        // this table, preserving every existing row and the self-layer FK.
+        db.execute("CREATE TABLE gogoke_v37_seats_v2(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats_v2(domain_id,seat_id)) STRICT")?;
+        db.execute("INSERT INTO gogoke_v37_seats_v2(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) SELECT domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision FROM gogoke_v37_seats")?;
+        db.execute("DROP TABLE gogoke_v37_seats")?;
+        // CREATE the final table from the canonical SQL instead of renaming
+        // the temporary one: SQLite records renamed identifiers with quotes,
+        // which would make the exact-schema pin depend on migration history.
+        db.execute(SEATS)?;
+        db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) SELECT domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision FROM gogoke_v37_seats_v2")?;
+        db.execute("DROP TABLE gogoke_v37_seats_v2")?;
+        db.execute(TEMPLATES)?;
+        db.execute(SETTINGS)?;
+        db.execute(OPERATION_SNAPSHOTS)?;
+        if schema(db)? != expected_schema() {
+            return Err(SeatError::SchemaDrift);
+        }
+        Ok(())
+    })
+}
+
+fn validate_template_settings(raw: &[u8]) -> Result<(), SeatError> {
+    if raw.is_empty() || raw.len() > crate::ipc::MAX_FRAME_BYTES {
+        return Err(SeatError::Invalid("template_settings"));
+    }
+    super::atomic::require_canonical_json(raw, "template.settings")?;
+    let text = std::str::from_utf8(raw).map_err(|_| SeatError::Invalid("template_settings"))?;
+    if !matches!(Parser::parse(text)?, Json::Object(_)) {
+        return Err(SeatError::Invalid("template_settings"));
+    }
+    Ok(())
+}
+
+fn seat_template_fields(
+    template_id: String,
+    settings_json: String,
+) -> Result<(Option<String>, Option<String>), SeatError> {
+    if template_id.is_empty() != settings_json.is_empty() {
+        return Err(SeatError::SchemaDrift);
+    }
+    if template_id.is_empty() {
+        return Ok((None, None));
+    }
+    if !valid_id(&template_id) {
+        return Err(SeatError::SchemaDrift);
+    }
+    validate_template_settings(settings_json.as_bytes()).map_err(|_| SeatError::SchemaDrift)?;
+    Ok((Some(template_id), Some(settings_json)))
+}
+
+fn template(
+    db: &VerifiedDatabaseConnection<'_>,
+    domain: &str,
+    template_id: &str,
+) -> Result<Option<String>, SeatError> {
+    let q = Statement::prepare(
+        db.as_ptr(),
+        "SELECT settings_json FROM main.gogoke_v37_seat_templates WHERE domain_id=?1 AND template_id=?2",
+    )?;
+    q.bind_text(1, domain)?;
+    q.bind_text(2, template_id)?;
+    if !q.step_row()? {
+        return Ok(None);
+    }
+    let settings = q.column_text(0)?;
+    if q.step_row()? {
+        return Err(SeatError::SchemaDrift);
+    }
+    validate_template_settings(settings.as_bytes()).map_err(|_| SeatError::SchemaDrift)?;
+    Ok(Some(settings))
+}
+
 fn read(
     db: &VerifiedDatabaseConnection<'_>,
     domain: &str,
     seat_id: &str,
 ) -> Result<Option<Seat>, SeatError> {
-    let q = Statement::prepare(db.as_ptr(), "SELECT incarnation,layer,COALESCE(parent_seat_id,''),kind,instance_id,state,generation,revision FROM main.gogoke_v37_seats WHERE domain_id=?1 AND seat_id=?2")?;
+    let q = Statement::prepare(db.as_ptr(), "SELECT s.incarnation,s.layer,COALESCE(s.parent_seat_id,''),s.kind,COALESCE(s.instance_id,''),s.state,s.generation,s.revision,COALESCE(t.template_id,''),COALESCE(t.settings_json,'') FROM main.gogoke_v37_seats AS s LEFT JOIN main.gogoke_v37_seat_settings AS t ON t.domain_id=s.domain_id AND t.seat_id=s.seat_id WHERE s.domain_id=?1 AND s.seat_id=?2")?;
     q.bind_text(1, domain)?;
     q.bind_text(2, seat_id)?;
     if !q.step_row()? {
@@ -286,6 +400,7 @@ fn read(
         .column_text(7)?
         .parse()
         .map_err(|_| SeatError::SchemaDrift)?;
+    let (template_id, settings_json) = seat_template_fields(q.column_text(8)?, q.column_text(9)?)?;
     let seat = Seat {
         domain_id: domain.into(),
         seat_id: seat_id.into(),
@@ -298,6 +413,8 @@ fn read(
         },
         kind,
         instance_id: q.column_text(4)?,
+        template_id,
+        settings_json,
         state,
         generation,
         revision,
@@ -317,6 +434,48 @@ pub(crate) fn get(
     }
     read(db, domain, seat_id)
 }
+
+/// Store an immutable template definition. Only the owner layer can publish
+/// templates; lead seats may copy them but cannot change the source definition.
+pub(crate) fn store_template(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    origin: NativeOrigin<'_>,
+    input: StoreTemplate<'_>,
+) -> Result<(), SeatError> {
+    if !matches!(origin, NativeOrigin::User(_)) {
+        return Err(SeatError::Denied);
+    }
+    if !valid_id(input.domain_id) {
+        return Err(SeatError::Invalid("domain_id"));
+    }
+    if !valid_id(input.template_id) {
+        return Err(SeatError::Invalid("template_id"));
+    }
+    validate_template_settings(input.settings_json)?;
+    transact(db, |db| {
+        let existing = Statement::prepare(
+            db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_seat_templates WHERE domain_id=?1 AND template_id=?2",
+        )?;
+        existing.bind_text(1, input.domain_id)?;
+        existing.bind_text(2, input.template_id)?;
+        if existing.step_row()? {
+            return Err(SeatError::Conflict);
+        }
+        let insert = Statement::prepare(
+            db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_seat_templates(domain_id,template_id,settings_json,revision) VALUES(?1,?2,?3,1)",
+        )?;
+        insert.bind_text(1, input.domain_id)?;
+        insert.bind_text(2, input.template_id)?;
+        let settings = std::str::from_utf8(input.settings_json)
+            .map_err(|_| SeatError::Invalid("template_settings"))?;
+        insert.bind_text(3, settings)?;
+        insert.step_done()?;
+        Ok(())
+    })
+}
+
 fn instance_exists(
     db: &VerifiedDatabaseConnection<'_>,
     instance_id: &str,
@@ -366,7 +525,7 @@ fn operation(
     request: &str,
     fp: &str,
 ) -> Result<Option<SeatReceipt>, SeatError> {
-    let q = Statement::prepare(db.as_ptr(), "SELECT fingerprint,seat_id,incarnation,layer,COALESCE(parent_seat_id,''),kind,instance_id,state,revision,generation FROM main.gogoke_v37_seat_operations WHERE domain_id=?1 AND request_id=?2")?;
+    let q = Statement::prepare(db.as_ptr(), "SELECT o.fingerprint,o.seat_id,o.incarnation,o.layer,COALESCE(o.parent_seat_id,''),o.kind,o.instance_id,o.state,o.revision,o.generation,COALESCE(s.template_id,''),COALESCE(s.settings_json,'') FROM main.gogoke_v37_seat_operations AS o LEFT JOIN main.gogoke_v37_seat_operation_snapshots AS s ON s.domain_id=o.domain_id AND s.request_id=o.request_id WHERE o.domain_id=?1 AND o.request_id=?2")?;
     q.bind_text(1, domain)?;
     q.bind_text(2, request)?;
     if !q.step_row()? {
@@ -386,6 +545,8 @@ fn operation(
         "SHORT" => Kind::Short,
         _ => return Err(SeatError::SchemaDrift),
     };
+    let (template_id, settings_json) =
+        seat_template_fields(q.column_text(10)?, q.column_text(11)?)?;
     let state = match q.column_text(7)?.as_str() {
         "IDLE" => State::Idle,
         "BUSY" => State::Busy,
@@ -404,6 +565,8 @@ fn operation(
         },
         kind,
         instance_id: q.column_text(6)?,
+        template_id,
+        settings_json,
         state,
         revision: q
             .column_text(8)?
@@ -467,6 +630,17 @@ fn record_operation(
     q.bind_i64(11, seat.revision)?;
     q.bind_i64(12, seat.generation)?;
     q.step_done()?;
+    if let (Some(template_id), Some(settings_json)) = (&seat.template_id, &seat.settings_json) {
+        let snapshot = Statement::prepare(
+            db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_seat_operation_snapshots(domain_id,request_id,template_id,settings_json) VALUES(?1,?2,?3,?4)",
+        )?;
+        snapshot.bind_text(1, &seat.domain_id)?;
+        snapshot.bind_text(2, request)?;
+        snapshot.bind_text(3, template_id)?;
+        snapshot.bind_text(4, settings_json)?;
+        snapshot.step_done()?;
+    }
     Ok(())
 }
 
@@ -481,8 +655,13 @@ pub(crate) fn create(
         input.request_id,
         input.request_bytes,
     )?;
-    if !valid_id(input.instance_id) {
-        return Err(SeatError::Invalid("instance_id"));
+    if !valid_id(input.template_id) {
+        return Err(SeatError::Invalid("template_id"));
+    }
+    if let Some(instance_id) = input.instance_id {
+        if !valid_id(instance_id) {
+            return Err(SeatError::Invalid("instance_id"));
+        }
     }
     let (layer_label, parent_label, origin_incarnation, origin_generation) = match &origin {
         NativeOrigin::User(_) => ("USER", "", "", String::new()),
@@ -498,7 +677,8 @@ pub(crate) fn create(
             "create",
             input.domain_id,
             input.seat_id,
-            input.instance_id,
+            input.template_id,
+            input.instance_id.unwrap_or(""),
             input.kind.sql(),
             layer_label,
             parent_label,
@@ -516,19 +696,44 @@ pub(crate) fn create(
         if read(db, input.domain_id, input.seat_id)?.is_some() {
             return Err(SeatError::Conflict);
         }
-        if !instance_exists(db, input.instance_id)? {
-            return Err(SeatError::Unknown);
+        let settings_json =
+            template(db, input.domain_id, input.template_id)?.ok_or(SeatError::Unknown)?;
+        if let Some(instance_id) = input.instance_id {
+            if !instance_exists(db, instance_id)? {
+                return Err(SeatError::Unknown);
+            }
         }
-        let q = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES(?1,?2,lower(hex(randomblob(16))),?3,?4,?5,?6,'IDLE',1,1)")?;
-        q.bind_text(1, input.domain_id)?;
-        q.bind_text(2, input.seat_id)?;
-        q.bind_text(3, layer.sql())?;
-        if let Some(parent) = &parent {
-            q.bind_text(4, parent)?;
+        if let Some(instance_id) = input.instance_id {
+            let q = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES(?1,?2,lower(hex(randomblob(16))),?3,?4,?5,?6,'IDLE',1,1)")?;
+            q.bind_text(1, input.domain_id)?;
+            q.bind_text(2, input.seat_id)?;
+            q.bind_text(3, layer.sql())?;
+            if let Some(parent) = &parent {
+                q.bind_text(4, parent)?;
+            }
+            q.bind_text(5, input.kind.sql())?;
+            q.bind_text(6, instance_id)?;
+            q.step_done()?;
+        } else {
+            let q = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES(?1,?2,lower(hex(randomblob(16))),?3,?4,?5,NULL,'IDLE',1,1)")?;
+            q.bind_text(1, input.domain_id)?;
+            q.bind_text(2, input.seat_id)?;
+            q.bind_text(3, layer.sql())?;
+            if let Some(parent) = &parent {
+                q.bind_text(4, parent)?;
+            }
+            q.bind_text(5, input.kind.sql())?;
+            q.step_done()?;
         }
-        q.bind_text(5, input.kind.sql())?;
-        q.bind_text(6, input.instance_id)?;
-        q.step_done()?;
+        let settings = Statement::prepare(
+            db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json) VALUES(?1,?2,?3,?4)",
+        )?;
+        settings.bind_text(1, input.domain_id)?;
+        settings.bind_text(2, input.seat_id)?;
+        settings.bind_text(3, input.template_id)?;
+        settings.bind_text(4, &settings_json)?;
+        settings.step_done()?;
         let seat = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::SchemaDrift)?;
         record_operation(db, input.request_id, &fp, &seat)?;
         Ok(SeatReceipt {
