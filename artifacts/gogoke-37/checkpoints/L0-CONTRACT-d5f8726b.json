@@ -1,0 +1,49 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-CONTRACT-d5f8726b",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "d5f8726baa82ba100f570c757fb90c1173be7ae9",
+  "state": "L0_SHARED_CONTRACT_PARTIAL_REAL_PATH_NOT_RUN",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "receipt_blob": "90361681cb25cd8f7c5071ebe775a6ea11a41e24",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "current_pr": {
+    "number": 54,
+    "state": "DRAFT",
+    "remote_head_before_push": "dd40d9b23542a1545aecb267ac7c01de84c999d3"
+  },
+  "completed_this_segment": [
+    "T00 52 shared paths and nine plan source blobs match the authorized base and mapping snapshot",
+    "legacy orchestration event IDs and sequence remain the single source for seat-ledger projection",
+    "existing Windows Job custody is not filesystem write confinement; unavailable permission tiers must be refused",
+    "v37 fake request replay compares received bytes and current authority",
+    "reclaimed seat has no active takeover answers or readiness",
+    "fake K-SESSION resume binds confirmed stop, held admission, trusted instance/driver/pin, generation and same-ID UNKNOWN reconciliation",
+    "fake K-INSTANCE temporary SESSION/CALL lifecycle requires trusted native callbacks and opaque directory references",
+    "K-POLICY escalation contract separates durable intent from external delivery and trusted completion"
+  ],
+  "verification": {
+    "focused_v37": "12_PASS_0_FAIL_AT_d5f8726b",
+    "local_public_source_positive_control": "PASS",
+    "local_public_source_scanner_tests": "11_PASS_0_FAIL",
+    "local_public_source_scan": "24708_FILES_0_LEAKS",
+    "plan_structural_check": "PASS",
+    "native_cloud_exact_head": "PENDING_PUSH",
+    "desktop_cloud_exact_head": "PENDING_PUSH",
+    "real_native_v37_dispatch": "NOT_IMPLEMENTED",
+    "real_host_permission_enforcement": "NOT_IMPLEMENTED",
+    "real_codex_instance": "NOT_PREPARED",
+    "ot4_login": "NOT_REQUESTED",
+    "m1_acceptance": "NOT_RUN"
+  },
+  "known_limitations": [
+    "Temporary-home fake does not yet model trusted resolution of an UNKNOWN native directory outcome; the real F implementation must journal and reconcile before reuse or cleanup.",
+    "The same-user service pipe is not a seat origin proof; a v37 request remains unwired until native identity and grant binding are implemented.",
+    "Fake conformance is an instrument and cannot establish actual Windows isolation, CLI resume, custody, or installed-product behavior."
+  ],
+  "next": "Push this checkpoint and run exact-head cloud hygiene and server/native/desktop checks. Continue along the existing native-host authenticated pipe and store path: add real trusted v37 caller admission, F instance registry and H custody/permission enforcement before preparing the Codex test instance and asking for OT4. Keep the existing R2 path unchanged and PR 54 draft."
+}
