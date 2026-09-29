@@ -36,6 +36,7 @@ type Result<T> = std::result::Result<T, OrchestrationError>;
 
 mod v37_seat;
 mod v37_session;
+mod v37_login;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
     match request.payload.get(&JsonString::from_str(field)) {
@@ -137,6 +138,7 @@ pub struct ProductDatabase<'root> {
     connection: VerifiedDatabaseConnection<'root>,
     owner: OwnerIssuer,
     process_custodian: ProcessCustodian,
+    owner_login: Option<v37_login::OwnerLoginSession>,
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -156,7 +158,7 @@ impl<'root> ProductDatabase<'root> {
         // grant store. initialize_profile checks the exact retained database pin.
         let owner = authority::initialize_profile(&mut connection, root)?;
         let process_custodian = ProcessCustodian::new()?;
-        Ok(Self { root, connection, owner, process_custodian })
+        Ok(Self { root, connection, owner, process_custodian, owner_login: None })
     }
 
     pub fn serve_pipe(&mut self, pipe: &PrivatePipeConnection) -> Result<()> {
@@ -195,6 +197,9 @@ impl<'root> ProductDatabase<'root> {
     /// native store; all other closed-envelope operations stay unsupported.
     pub fn dispatch_user_frame(&mut self, origin: &UserOriginProof, frame: &[u8]) -> Result<Vec<u8>> {
         origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
+        if v37_login::is_owner_login_frame(frame) {
+            return self.dispatch_owner_login_frame(frame);
+        }
         if v37_seat::is_user_v37_configuration_frame(frame) {
             return self.configure_user_v37(frame);
         }
@@ -210,7 +215,7 @@ impl<'root> ProductDatabase<'root> {
             return match request.operation.as_str() {
                 "register" => self.register_user_instance(request),
                 "install-state" => self.read_user_instance(request, false),
-                "login-state" => self.read_user_instance(request, true),
+                "login-state" => self.dispatch_owner_login_observation(request),
                 "concurrency-input" => self.read_user_instance_capacity(request),
                 _ => Ok(encode_receipt(request, V37Status::Unsupported,
                     request.expected_revision, request.expected_revision, Default::default())),
@@ -604,7 +609,8 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        let Self { root: _, connection, owner: _, process_custodian } = self;
+        let Self { root: _, connection, owner: _, process_custodian, owner_login } = self;
+        drop(owner_login);
         // Closing the Job first prevents a child from outliving the active
         // coordination database. Unresolved rows stay UNKNOWN on recovery.
         drop(process_custodian);

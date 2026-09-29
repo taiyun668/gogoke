@@ -1352,8 +1352,12 @@ pub(crate) async fn gogoke_design37_user_operation(
     });
     let response = receiver.await
         .map_err(|error| format!("GOGOKE_DESIGN37_USER_OWNER_FAILED:{error}"))??;
-    String::from_utf8(response)
-        .map_err(|error| format!("GOGOKE_DESIGN37_USER_RESPONSE_UTF8_FAILED:{error}"))
+    let response = String::from_utf8(response)
+        .map_err(|error| format!("GOGOKE_DESIGN37_USER_RESPONSE_UTF8_FAILED:{error}"))?;
+    if response.starts_with("ERR\t") {
+        return Err(format!("GOGOKE_DESIGN37_NATIVE_USER_OPERATION_FAILED:{response}"));
+    }
+    Ok(response)
 }
 
 fn validate_design37_register_receipt(
