@@ -817,6 +817,20 @@
     ]
    },
    {
+    "path": "apps/desktop/src/features/settings/components/SettingsNav.tsx",
+    "extension": "one navigation item for the instance section in the hard-coded list",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/i18n/index.tsx",
+    "extension": "English and zh-CN translation keys for the instance section label; TranslationKey is derived from the English table",
+    "serves": [
+     "G"
+    ]
+   },
+   {
     "path": "apps/desktop/src/features/app/components/RequestUserInputMessage.tsx",
     "extension": "reused as the question-card primitive; changed only if wrapping from a new directory is not enough",
     "serves": [
@@ -1085,7 +1099,7 @@
  "lines": [
   {
    "id": "T00",
-   "title": "Re-check at the mapping snapshot before authorization",
+   "title": "Re-check at the authorization base commit against the mapping snapshot",
    "write_scope": [
     "docs/design/gogoke-37-plan-v1/"
    ],
@@ -1884,7 +1898,7 @@
     "id": "OT5",
     "when": "M3",
     "what": "Decide acceptance of the M3 candidate from its evidence",
-    "why_only_owner": "Acceptance is the Owner's. The controller installs and exercises the exact candidate on the Owner's Win11 with Smart App Control on, through the ordinary-view method in the build and release governance; the Owner does not operate the installer."
+    "why_only_owner": "Acceptance is the Owner's. The controller installs and exercises the exact candidate on the Owner's Win11 with Smart App Control on, through the ordinary-view method in the build and release governance; the Owner does not operate the installer. If candidate bytes change after the Owner's decision, the controller re-runs the affected on-machine checks on the new candidate; only the acceptance decision on the new candidate returns to the Owner, as OT5 again."
    }
   ],
   "conditional": [
@@ -1907,11 +1921,6 @@
     "id": "CT4",
     "trigger": "A finding conflicts with design 37 or a recorded Owner decision",
     "why_only_owner": "Product decisions are the Owner's; presented with solutions and a free answer."
-   },
-   {
-    "id": "CT5",
-    "trigger": "Candidate bytes change after the Owner's machine check",
-    "why_only_owner": "Re-verification on the Owner's machine applies only to the exact bytes observed."
    }
   ],
   "not_in_scope": "Public release. The candidate is not published by this plan; publishing needs its own Owner action under the release governance."
@@ -1967,7 +1976,7 @@
  "authorization": {
   "sequence": [
    "draft review",
-   "T00 re-check at the mapping snapshot",
+   "T00 re-check at the authorization base commit against the mapping snapshot",
    "machine plan and MANIFEST finalised and merged",
    "separate authorization PR",
    "exact read-back of the merged authorization",

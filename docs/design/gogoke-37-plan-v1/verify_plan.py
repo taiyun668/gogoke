@@ -44,7 +44,7 @@ REQUIRED_SOURCES = {
 }
 REQUIRED_SEQUENCE = [
     "draft review",
-    "T00 re-check at the mapping snapshot",
+    "T00 re-check at the authorization base commit against the mapping snapshot",
     "machine plan and MANIFEST finalised and merged",
     "separate authorization PR",
     "exact read-back of the merged authorization",
