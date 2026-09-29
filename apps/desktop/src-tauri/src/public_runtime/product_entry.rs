@@ -1158,6 +1158,17 @@ pub(crate) async fn verify_product_startup(app: &tauri::AppHandle) -> Result<(),
     Ok(())
 }
 
+/// Start the long-lived Design 37 host from the verified installed resource
+/// set. The caller owns the returned handle for the Tauri session and passes
+/// its endpoint to the Node service's `connectExisting` seam. The existing R2
+/// path remains unchanged until that seam is wired.
+pub(crate) fn spawn_design37_host(
+    app: &tauri::AppHandle,
+) -> Result<super::design37_host::Design37Host, String> {
+    let paths = resolve_runtime_paths(app)?;
+    super::design37_host::Design37Host::spawn(&paths.native_host, &paths.product_root)
+}
+
 #[tauri::command]
 pub(crate) async fn gogoke_r2_goal_probe(
     app: tauri::AppHandle,
