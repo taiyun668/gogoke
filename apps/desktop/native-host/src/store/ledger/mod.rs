@@ -1672,6 +1672,7 @@ mod tests {
             command_line.into(),
         ];
         launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
         let request = PrepareRequest {
             binding: NativeBinding {
                 binary_digest_sha256: content_hash(
@@ -1710,7 +1711,7 @@ mod tests {
         authority::mark_process_active(connection, operation_id, &prepared)
             .expect("active custody");
         let frame = custodian
-            .read_child_frame(&prepared.ticket, Duration::from_secs(5))
+            .read_persistent_child_frame(&prepared.ticket, Duration::from_secs(5))
             .expect("exact child frame");
         (custodian, prepared, frame)
     }
@@ -2067,7 +2068,7 @@ mod tests {
         let (mut custodian, _prepared, first_frame) =
             raw_process_fixture(&mut connection, &registration, "operation-raw");
         let second_frame = custodian
-            .read_child_frame(
+            .read_persistent_child_frame(
                 &first_frame.custody().ticket,
                 Duration::from_secs(5),
             )
