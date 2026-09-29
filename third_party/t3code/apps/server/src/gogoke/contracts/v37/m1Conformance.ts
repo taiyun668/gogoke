@@ -151,8 +151,19 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
       questionIds: ["purpose", "authority"] });
     assert.equal((await call(h.reconstruct(), req("K-SEAT", "state-card", "afterSwap", "leadA", "5"))).result.takeoverReady,
       false);
+    assert.equal((await call(h.port, req("K-SEAT", "takeover-answers", "answersAfterSwap", "leadA", "5",
+      { ...answers.payload, takeoverEpoch: "epochD" }))).status, "APPLIED");
+    const readyBeforeReclaim = req("K-SEAT", "state-card", "readyBeforeReclaim", "leadA", "6");
+    assert.equal((await call(h.reconstruct(), readyBeforeReclaim)).result.takeoverReady, true);
+    assert.equal((await call(h.port, req("K-SEAT", "reclaim", "reclaimLead", "leadA", "6"))).status,
+      "APPLIED");
+    const reclaimed = await call(h.reconstruct(), req("K-SEAT", "state-card", "reclaimedCard", "leadA", "7"));
+    assert.equal(reclaimed.result.state, "RECLAIMED");
+    assert.equal(reclaimed.result.takeoverReady, false);
+    assert.equal(reclaimed.result.takeoverAnswers, null);
+    assert.equal((await call(h.reconstruct(), readyBeforeReclaim)).status, "STALE");
     h.revoke();
-    assert.equal((await call(h.reconstruct(), req("K-SEAT", "takeover-answers", "revokedAnswers", "leadA", "5",
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "takeover-answers", "revokedAnswers", "leadA", "7",
       answers.payload))).status, "DENIED");
   }
   {

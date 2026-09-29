@@ -76,7 +76,8 @@ const validContext = (context: V37TakeoverContext | null | undefined,
     !["__proto__", "constructor", "prototype"].includes(id));
 
 const currentTakeover = (seat: Seat, context: V37TakeoverContext | null | undefined,
-  isLead: boolean): boolean => isLead && validContext(context, seat.instanceId) &&
+  isLead: boolean): boolean => seat.lifecycle !== "RECLAIMED" && isLead &&
+  validContext(context, seat.instanceId) &&
   seat.takeover !== undefined && seat.takeover.epoch === context.epoch &&
   seat.takeover.takerSeatId === context.takerSeatId &&
   seat.takeover.instanceId === context.instanceId &&
@@ -142,6 +143,9 @@ export class V37M1FakePort implements V37Port {
     const prior = this.store.replies.get(replayKey);
     if (prior) {
       if (prior.request !== raw) return encodeV37Receipt(reply("CONFLICT"));
+      if (request.operation === "state-card" && prior.receipt.revision !== current.toString()) {
+        return encodeV37Receipt(reply("STALE"));
+      }
       if (takeoverOperation && prior.takeoverContextKey !== observedKey) {
         return encodeV37Receipt(reply("STALE"));
       }
@@ -288,16 +292,13 @@ export class V37M1FakePort implements V37Port {
         delete seat.takeover;
       } else if (request.operation === "reclaim") {
         seat.lifecycle = "RECLAIMED";
+        delete seat.takeover;
       } else if (request.operation === "short-to-long") {
         if (seat.lifecycle !== "SHORT") return encodeV37Receipt(reply("CONFLICT"));
         seat.lifecycle = "LONG";
       } else return encodeV37Receipt(reply("UNSUPPORTED"));
       seat.revision += 1n;
-      return committed(reply("APPLIED", seat.revision,
-        request.operation === "takeover-answers"
-          ? { state: seat.lifecycle, takeoverReady: currentTakeover(seat, observedTakeover, observedLead),
-            takeoverEpoch: seat.takeover!.epoch }
-          : { state: seat.lifecycle }));
+      return committed(reply("APPLIED", seat.revision, { state: seat.lifecycle }));
     }
 
     if (request.operation === "register") {
