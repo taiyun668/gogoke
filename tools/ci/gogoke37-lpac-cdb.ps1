@@ -144,20 +144,26 @@ try {
         '.echo LPAC_NT_SNAPSHOT_DONE'
     )
     Wait-CdbMarker 'LPAC_NT_SNAPSHOT_DONE' 15
-    $snapshot = Get-Content -LiteralPath $debugLog -Raw
-    if ($snapshot -notmatch '(?m)^LPAC_NT_CAPTURE tid=([0-9a-f]+) parent=([0-9a-f`]+) return=([0-9a-f`]+)') {
+    # Get-Content strips CRLF from each line. Regex '$' against -Raw text
+    # sees the remaining CR and falsely reports a different thread.
+    $snapshot = @(Get-Content -LiteralPath $debugLog)
+    $capture = @($snapshot | Where-Object {
+        $_ -match '^LPAC_NT_CAPTURE tid=([0-9a-f]+) parent=([0-9a-f`]+) return=([0-9a-f`]+)'
+    })
+    if ($capture.Count -ne 1 -or
+        $capture[0] -notmatch '^LPAC_NT_CAPTURE tid=([0-9a-f]+) parent=([0-9a-f`]+) return=([0-9a-f`]+)') {
         throw 'CDB did not expose both saved return addresses'
     }
     if ($Matches[1].ToLowerInvariant() -ne $ntThread -or $Matches[2] -ne $parentReturn -or
         ($Matches[2] -replace '[`0]', '') -eq '' -or ($Matches[3] -replace '[`0]', '') -eq '') {
         throw 'CDB saved a zero return address'
     }
-    if ($snapshot -notmatch "(?m)^LPAC_NT_RETURN tid=$ntThread`$") {
+    if (@($snapshot | Where-Object { $_ -eq "LPAC_NT_RETURN tid=$ntThread" }).Count -ne 1) {
         throw 'NtCreateUserProcess return occurred on another thread'
     }
-    if ($snapshot -notmatch '(?m)^LPAC_NT_STATUS [0-9a-f]{8}$' -or
-        $snapshot -notmatch '(?m)^LPAC_PROCESS_HANDLE [0-9a-f`]+$' -or
-        $snapshot -notmatch '(?m)^LPAC_THREAD_HANDLE [0-9a-f`]+$') {
+    if (@($snapshot | Where-Object { $_ -match '^LPAC_NT_STATUS [0-9a-f]{8}$' }).Count -ne 1 -or
+        @($snapshot | Where-Object { $_ -match '^LPAC_PROCESS_HANDLE [0-9a-f`]+$' }).Count -ne 1 -or
+        @($snapshot | Where-Object { $_ -match '^LPAC_THREAD_HANDLE [0-9a-f`]+$' }).Count -ne 1) {
         throw 'CDB did not expose status and both output handles'
     }
     $phase = 'WAIT_TRACE_ENDPOINT'
