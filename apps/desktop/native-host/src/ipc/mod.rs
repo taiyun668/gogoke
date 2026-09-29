@@ -514,7 +514,16 @@ mod platform {
             validate_endpoint(endpoint)?;
             let expected_sid = current_user_sid()?;
             let path = if package_sid.is_some() {
-                // AppContainer clients resolve named pipes only in LOCAL.
+                // Production uses the documented LOCAL prefix; the other
+                // namespace is a test-only differential for this exact LPAC.
+                #[cfg(test)]
+                if std::env::var_os("GOGOKE_TEST_SEAT_PIPE_UNQUALIFIED")
+                    .as_deref() == Some(std::ffi::OsStr::new("1")) {
+                    format!(r"\\.\pipe\gogoke.seat.v1.{endpoint}")
+                } else {
+                    format!(r"\\.\pipe\LOCAL\gogoke.seat.v1.{endpoint}")
+                }
+                #[cfg(not(test))]
                 format!(r"\\.\pipe\LOCAL\gogoke.seat.v1.{endpoint}")
             } else if expected_user_process.is_some() {
                 format!(r"\\.\pipe\gogoke.user.v1.{endpoint}")

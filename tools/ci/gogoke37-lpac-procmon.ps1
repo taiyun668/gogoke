@@ -78,6 +78,20 @@ function Convert-PathClass([string]$path) {
     return 'HASH:' + $hash.Substring(0, 16) + '/' + [System.IO.Path]::GetFileName($path)
 }
 
+function Convert-SeatPipePrefix([string]$path) {
+    $marker = [regex]::Match($path, '(?i)gogoke\.seat\.v1\.')
+    if (-not $marker.Success) { return $null }
+    $prefix = $path.Substring(0, $marker.Index)
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($prefix.ToLowerInvariant())
+    [ordered]@{
+        prefix_sha256 = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+        named_pipe = ($prefix -match '(?i)NamedPipe|\\pipe\\')
+        local_segment = ($prefix -match '(?i)(?:^|\\)LOCAL\\$')
+        app_container_namespace = ($prefix -match '(?i)AppContainerNamedObjects')
+        sessions_namespace = ($prefix -match '(?i)(?:^|\\)Sessions\\')
+    }
+}
+
 $parent = @(Import-Csv -LiteralPath $csv | Where-Object {
     $_.'Process Name' -eq 'seat-pipe-parent.exe'
 })
@@ -106,6 +120,9 @@ $childFailures = @($childEvents | Where-Object {
     ($_.Path -match '(?i)gogoke\.seat\.v1\.' -and $_.Result -ne 'SUCCESS')
 })
 $pipeEvents = @($childEvents | Where-Object { $_.Path -match '(?i)gogoke\.seat\.v1\.' })
+$allPipeEvents = @(Import-Csv -LiteralPath $csv | Where-Object {
+    $_.Path -match '(?i)gogoke\.seat\.v1\.'
+})
 $childLifecycle = @($childEvents | Where-Object {
     $_.Operation -match 'Process|Thread|Load Image' -or
     $_.Result -match 'DENIED|PRIVILEGE|BLOCKED|INVALID IMAGE|POLICY|DLL NOT FOUND'
@@ -125,6 +142,7 @@ $summary = [ordered]@{
     test_image_sha256 = $imageHash
     exact_test_exit = $testExit
     test_only_registry_read = ($env:GOGOKE_TEST_LPAC_REGISTRY_READ -eq '1')
+    test_only_unqualified_pipe = ($env:GOGOKE_TEST_SEAT_PIPE_UNQUALIFIED -eq '1')
     procmon_version = $toolVersion
     procmon_sha256 = $toolHash
     procmon_signature = 'Valid Microsoft'
@@ -149,6 +167,16 @@ $summary = [ordered]@{
             pid = $_.PID
             operation = $_.Operation
             object = Convert-PathClass $_.Path
+            result = $_.Result
+        }
+    })
+    selected_all_seat_pipe_events = @($allPipeEvents | Select-Object -Last 80 | ForEach-Object {
+        [ordered]@{
+            time = $_.'Time of Day'
+            process = $_.'Process Name'
+            pid = $_.PID
+            operation = $_.Operation
+            prefix = Convert-SeatPipePrefix $_.Path
             result = $_.Result
         }
     })
