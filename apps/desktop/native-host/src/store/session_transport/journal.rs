@@ -295,6 +295,8 @@ fn h_binding(
              ON c.operation_id=a.process_operation_id
             AND c.domain_id=a.domain_id
             AND c.generation=a.generation
+           JOIN main.gogoke_v37_h_owner_binding AS b
+             ON b.binding_id=a.binding_id
           WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3 AND c.ticket=?4",
     )?;
     for (index, value) in [domain_id, session_id, generation, ticket]
@@ -322,7 +324,11 @@ fn h_binding(
         && !stop_fact.is_empty()
         && stop_fact == stop_proof;
     let state_ok = match use_case {
-        BindingUse::Prepare => claim_state == "COMMITTED" && custody_state == "ACTIVE",
+        BindingUse::Prepare => {
+            claim_state == "COMMITTED"
+                && custody_state == "ACTIVE"
+                && owner_binding_active(connection, domain_id, session_id, generation)?
+        }
         BindingUse::MarkUnknown => {
             matches!(claim_state.as_str(), "COMMITTED" | "UNKNOWN") && custody_state == "UNKNOWN"
         }
@@ -343,6 +349,30 @@ fn h_binding(
         return Err(JournalError::Denied);
     }
     Ok(binding)
+}
+
+fn owner_binding_active(
+    connection: &VerifiedDatabaseConnection<'_>,
+    domain_id: &str,
+    session_id: &str,
+    generation: &str,
+) -> Result<bool, JournalError> {
+    let statement = Statement::prepare(
+        connection.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_h_claim AS a
+           JOIN main.gogoke_v37_h_owner_binding AS b ON b.binding_id=a.binding_id
+          WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3
+            AND b.domain_id=a.domain_id AND b.owner_id=a.session_id
+            AND b.generation=a.generation AND b.instance_id=a.instance_id
+            AND b.kind='SESSION' AND b.state='ACTIVE'",
+    )?;
+    for (index, value) in [domain_id, session_id, generation].iter().enumerate() {
+        statement.bind_text((index + 1) as i32, value)?;
+    }
+    if !statement.step_row()? {
+        return Err(JournalError::Unknown);
+    }
+    Ok(statement.column_text(0)? == "1" && !statement.step_row()?)
 }
 
 fn frame_matches(frame: &OriginBoundFrame, binding: &HBinding) -> Result<(), JournalError> {
@@ -494,7 +524,6 @@ fn validate_receipt(
         || receipt.request_id != record.request_id
         || receipt.target_id != record.session_id
         || receipt.status.wire() != record.receipt_status.map(V37Status::wire).unwrap_or("")
-        || receipt.previous_revision != record.expected_revision
         || receipt.previous_revision != previous_revision
         || receipt.revision != revision
         || receipt.revision < receipt.previous_revision
@@ -575,6 +604,24 @@ pub(crate) fn prepare_stdin_request(
             input.generation,
             BindingUse::Prepare,
         )?;
+        let unresolved = Statement::prepare(
+            connection.as_ptr(),
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_stdin_journal
+              WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+                AND phase IN ('PREPARED','UNKNOWN')",
+        )?;
+        for (index, value) in [input.domain_id, input.session_id, input.generation]
+            .iter()
+            .enumerate()
+        {
+            unresolved.bind_text((index + 1) as i32, value)?;
+        }
+        if !unresolved.step_row()? {
+            return Err(JournalError::Unknown);
+        }
+        if unresolved.column_text(0)? != "0" {
+            return Err(JournalError::Unknown);
+        }
         let request_hex = hex(input.request_bytes);
         let expected_revision = request.expected_revision.to_string();
         let statement = Statement::prepare(
@@ -672,7 +719,6 @@ fn receipt_for_frame(
         || receipt.operation != request.operation
         || receipt.request_id != request.request_id
         || receipt.target_id != input.session_id
-        || receipt.previous_revision != request.expected_revision
         || receipt.revision < receipt.previous_revision
     {
         return Err(JournalError::Conflict);
@@ -862,8 +908,25 @@ mod tests {
         let mut db = create_new(&root, &path).unwrap();
         setup_schema(&mut db);
         insert_fake_custody(&mut db);
+        db.execute(
+            "UPDATE gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='bindingA'",
+        )
+        .unwrap();
+        assert!(matches!(
+            prepare_stdin_request(&mut db, &input(REQUEST)),
+            Err(JournalError::Denied)
+        ));
+        db.execute(
+            "UPDATE gogoke_v37_h_owner_binding SET state='ACTIVE' WHERE binding_id='bindingA'",
+        )
+        .unwrap();
         let first = prepare_stdin_request(&mut db, &input(REQUEST)).unwrap();
         assert_eq!(first.disposition, PrepareDisposition::Prepared);
+        let next_id = String::from_utf8_lossy(REQUEST).replace("sendA", "sendB");
+        assert!(matches!(
+            prepare_stdin_request(&mut db, &input(next_id.as_bytes())),
+            Err(JournalError::Unknown)
+        ));
         let replay = prepare_stdin_request(&mut db, &input(REQUEST)).unwrap();
         assert_eq!(replay.disposition, PrepareDisposition::Replayed);
         let changed = REQUEST
@@ -882,6 +945,26 @@ mod tests {
         db.execute("UPDATE gogoke_coordination_process_custody SET state='UNKNOWN' WHERE operation_id='processA'").unwrap();
         let unknown = mark_stdin_write_unknown(&mut db, &input(REQUEST)).unwrap();
         assert_eq!(unknown.disposition, PrepareDisposition::Unknown);
+        assert!(matches!(
+            prepare_stdin_request(&mut db, &input(next_id.as_bytes())),
+            Err(JournalError::Unknown)
+        ));
+        let request = decode_request(REQUEST).unwrap();
+        let mut resolved = unknown.record.clone();
+        resolved.state = JournalState::Receipted;
+        resolved.receipt_status = Some(V37Status::Replayed);
+        resolved.receipt_previous_revision = Some(4);
+        resolved.receipt_revision = Some(5);
+        let mut resolved_bytes = super::super::wire::encode_receipt(
+            &request,
+            V37Status::Replayed,
+            4,
+            5,
+            std::collections::BTreeMap::new(),
+        );
+        resolved_bytes.push(b'\n');
+        resolved.receipt_bytes = Some(resolved_bytes);
+        validate_record(&resolved).unwrap();
         db.close_checked().unwrap();
         drop(root);
         let root = RootLock::acquire(&folder).unwrap();
@@ -921,22 +1004,27 @@ mod tests {
         let request = decode_request(REQUEST).unwrap();
         let mut receipt = super::super::wire::encode_receipt(
             &request,
-            V37Status::Applied,
-            3,
-            4,
+            V37Status::Stale,
+            5,
+            5,
             std::collections::BTreeMap::new(),
         );
         receipt.push(b'\n');
+        let receipt_path = folder.join("adapter-receipt.jsonl");
+        std::fs::write(&receipt_path, &receipt).unwrap();
         let command = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32")
-            .join("cmd.exe");
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
         let mut launch = ProcessLaunch::new(command.clone());
         launch.arguments = vec![
-            "/D".into(),
-            "/C".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
             format!(
-                "echo {}",
-                String::from_utf8_lossy(&receipt[..receipt.len() - 1])
+                "[Console]::OpenStandardOutput().Write([IO.File]::ReadAllBytes('{}'))",
+                receipt_path.display().to_string().replace('\'', "''")
             ),
         ];
         launch.protocol_stdio = true;
@@ -958,6 +1046,7 @@ mod tests {
         let frame = custodian
             .read_persistent_child_frame(&prepared.ticket, std::time::Duration::from_secs(5))
             .unwrap();
+        assert_eq!(frame.bytes(), receipt.as_slice());
         let stdin = StdinRequest {
             domain_id: "projectA",
             session_id: "sessionA",
@@ -970,6 +1059,7 @@ mod tests {
         let completed = complete_stdin_request(&mut db, &stdin, &frame).unwrap();
         assert_eq!(completed.disposition, PrepareDisposition::Completed);
         assert_eq!(completed.record.state, JournalState::Receipted);
+        assert_eq!(completed.record.receipt_previous_revision, Some(5));
         assert_eq!(
             completed.record.receipt_bytes.as_deref(),
             Some(frame.bytes())
@@ -980,6 +1070,7 @@ mod tests {
         db.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(receipt_path).unwrap();
         std::fs::remove_dir(folder).unwrap();
     }
 

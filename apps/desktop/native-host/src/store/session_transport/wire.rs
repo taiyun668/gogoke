@@ -2,7 +2,40 @@ use crate::store::atomic::{AtomicError, Json, JsonString, Parser};
 use std::collections::BTreeMap;
 
 const MAX_BYTES: usize = 4 * 1024 * 1024;
+const MAX_JSON_DEPTH: usize = 128;
 const SCHEMA: &str = "gogoke.37.operations.v1";
+
+// Parser::parse builds nested JSON recursively. Check the raw frame before
+// entering it; braces inside strings (including escaped quotes) are data.
+fn bounded_json_depth(bytes: &[u8]) -> Result<(), V37WireError> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &byte in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else {
+            match byte {
+                b'"' => in_string = true,
+                b'{' | b'[' => {
+                    depth += 1;
+                    if depth > MAX_JSON_DEPTH {
+                        return Err(V37WireError::Invalid("JSON depth"));
+                    }
+                }
+                b'}' | b']' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub(crate) enum V37WireError {
@@ -74,27 +107,56 @@ pub(crate) fn encode_receipt(
     result: BTreeMap<JsonString, Json>,
 ) -> Vec<u8> {
     let fields = BTreeMap::from([
-        (JsonString::from_str("schema"), Json::String(JsonString::from_str(SCHEMA))),
-        (JsonString::from_str("family"), Json::String(JsonString::from_str(&request.family))),
-        (JsonString::from_str("operation"), Json::String(JsonString::from_str(&request.operation))),
-        (JsonString::from_str("requestId"), Json::String(JsonString::from_str(&request.request_id))),
-        (JsonString::from_str("targetId"), Json::String(JsonString::from_str(&request.target_id))),
-        (JsonString::from_str("status"), Json::String(JsonString::from_str(status.wire()))),
-        (JsonString::from_str("previousRevision"),
-            Json::String(JsonString::from_str(&previous_revision.to_string()))),
-        (JsonString::from_str("revision"), Json::String(JsonString::from_str(&revision.to_string()))),
+        (
+            JsonString::from_str("schema"),
+            Json::String(JsonString::from_str(SCHEMA)),
+        ),
+        (
+            JsonString::from_str("family"),
+            Json::String(JsonString::from_str(&request.family)),
+        ),
+        (
+            JsonString::from_str("operation"),
+            Json::String(JsonString::from_str(&request.operation)),
+        ),
+        (
+            JsonString::from_str("requestId"),
+            Json::String(JsonString::from_str(&request.request_id)),
+        ),
+        (
+            JsonString::from_str("targetId"),
+            Json::String(JsonString::from_str(&request.target_id)),
+        ),
+        (
+            JsonString::from_str("status"),
+            Json::String(JsonString::from_str(status.wire())),
+        ),
+        (
+            JsonString::from_str("previousRevision"),
+            Json::String(JsonString::from_str(&previous_revision.to_string())),
+        ),
+        (
+            JsonString::from_str("revision"),
+            Json::String(JsonString::from_str(&revision.to_string())),
+        ),
         (JsonString::from_str("result"), Json::Object(result)),
     ]);
     Json::Object(fields).canonical().into_bytes()
 }
 
-fn field(fields: &mut BTreeMap<JsonString, Json>, name: &'static str) -> Result<Json, V37WireError> {
+fn field(
+    fields: &mut BTreeMap<JsonString, Json>,
+    name: &'static str,
+) -> Result<Json, V37WireError> {
     fields
         .remove(&JsonString::from_str(name))
         .ok_or(V37WireError::Invalid(name))
 }
 
-fn string(fields: &mut BTreeMap<JsonString, Json>, name: &'static str) -> Result<String, V37WireError> {
+fn string(
+    fields: &mut BTreeMap<JsonString, Json>,
+    name: &'static str,
+) -> Result<String, V37WireError> {
     match field(fields, name)? {
         Json::String(value) => value
             .to_well_formed_string()
@@ -115,20 +177,85 @@ fn identifier(value: &str) -> bool {
 
 fn operation_admitted(family: &str, operation: &str) -> bool {
     let allowed: &[&str] = match family {
-        "K-SESSION" => &["open", "resume", "stop", "send", "output-stream", "capability-probe",
-            "append-without-turn", "exit-and-stop-receipt", "reconnect", "compact", "renew-session",
-            "admission-reserve", "admission-commit", "admission-release"],
-        "K-LEDGER" => &["record", "scoped-query", "subscribe", "resume-subscription", "end-subscription"],
-        "K-INBOX" => &["enqueue", "edit", "cancel", "steer", "deliver", "check-unknown", "requeue"],
+        "K-SESSION" => &[
+            "open",
+            "resume",
+            "stop",
+            "send",
+            "output-stream",
+            "capability-probe",
+            "append-without-turn",
+            "exit-and-stop-receipt",
+            "reconnect",
+            "compact",
+            "renew-session",
+            "admission-reserve",
+            "admission-commit",
+            "admission-release",
+        ],
+        "K-LEDGER" => &[
+            "record",
+            "scoped-query",
+            "subscribe",
+            "resume-subscription",
+            "end-subscription",
+        ],
+        "K-INBOX" => &[
+            "enqueue",
+            "edit",
+            "cancel",
+            "steer",
+            "deliver",
+            "check-unknown",
+            "requeue",
+        ],
         "K-QCARD" => &["raise", "answer", "expire", "recover"],
-        "K-SIDE" => &["create", "resume", "archive", "restore", "delete", "pending-delta", "read-thread"],
-        "K-SEAT" => &["create-from-template", "tune", "bind-instance", "change-instance", "reclaim",
-            "short-to-long", "state-card", "takeover-answers"],
-        "K-POLICY" => &["call-permission-table", "gate-submit", "gate-decide", "stage-transition",
-            "escalate", "trigger-register", "trigger-recover", "trigger-cancel"],
-        "K-INSTANCE" => &["register", "install-state", "login-state", "version-and-new-version",
-            "repin-after-manual-upgrade", "concurrency-input", "home-lifecycle"],
-        "K-WORKTREE" => &["create", "register", "classify-single-or-mixed", "graph-query", "merge", "cleanup"],
+        "K-SIDE" => &[
+            "create",
+            "resume",
+            "archive",
+            "restore",
+            "delete",
+            "pending-delta",
+            "read-thread",
+        ],
+        "K-SEAT" => &[
+            "create-from-template",
+            "tune",
+            "bind-instance",
+            "change-instance",
+            "reclaim",
+            "short-to-long",
+            "state-card",
+            "takeover-answers",
+        ],
+        "K-POLICY" => &[
+            "call-permission-table",
+            "gate-submit",
+            "gate-decide",
+            "stage-transition",
+            "escalate",
+            "trigger-register",
+            "trigger-recover",
+            "trigger-cancel",
+        ],
+        "K-INSTANCE" => &[
+            "register",
+            "install-state",
+            "login-state",
+            "version-and-new-version",
+            "repin-after-manual-upgrade",
+            "concurrency-input",
+            "home-lifecycle",
+        ],
+        "K-WORKTREE" => &[
+            "create",
+            "register",
+            "classify-single-or-mixed",
+            "graph-query",
+            "merge",
+            "cleanup",
+        ],
         "K-UI" => &["read-models", "actions"],
         _ => return false,
     };
@@ -142,6 +269,7 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<V37Request, V37WireError> {
     if bytes.len() > MAX_BYTES {
         return Err(V37WireError::Invalid("frame size"));
     }
+    bounded_json_depth(bytes)?;
     let text = std::str::from_utf8(bytes).map_err(V37WireError::Utf8)?;
     let Json::Object(mut fields) = Parser::parse(text).map_err(V37WireError::Json)? else {
         return Err(V37WireError::Invalid("object"));
@@ -161,26 +289,36 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<V37Request, V37WireError> {
         return Err(V37WireError::Invalid("identity"));
     }
     let revision = string(&mut fields, "expectedRevision")?;
-    if revision.is_empty() || (revision.len() > 1 && revision.starts_with('0')) ||
-        !revision.bytes().all(|byte| byte.is_ascii_digit()) {
+    if revision.is_empty()
+        || (revision.len() > 1 && revision.starts_with('0'))
+        || !revision.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return Err(V37WireError::Invalid("revision"));
     }
-    let expected_revision = revision
-        .parse::<u64>()
-        .map_err(V37WireError::Revision)?;
+    let expected_revision = revision.parse::<u64>().map_err(V37WireError::Revision)?;
     let Json::Object(payload) = field(&mut fields, "payload")? else {
         return Err(V37WireError::Invalid("payload"));
     };
     if !fields.is_empty() {
         return Err(V37WireError::Invalid("extra fields"));
     }
-    Ok(V37Request { raw_bytes: bytes.to_vec(), family, operation, request_id, target_id, domain_id,
-        expected_revision, payload })
+    Ok(V37Request {
+        raw_bytes: bytes.to_vec(),
+        family,
+        operation,
+        request_id,
+        target_id,
+        domain_id,
+        expected_revision,
+        payload,
+    })
 }
 
 fn decode_revision(value: String, name: &'static str) -> Result<u64, V37WireError> {
-    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) ||
-        !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return Err(V37WireError::Invalid(name));
     }
     value.parse::<u64>().map_err(V37WireError::Revision)
@@ -207,6 +345,7 @@ pub(crate) fn decode_receipt(bytes: &[u8]) -> Result<V37Receipt, V37WireError> {
     if bytes.len() > MAX_BYTES {
         return Err(V37WireError::Invalid("frame size"));
     }
+    bounded_json_depth(bytes)?;
     let text = std::str::from_utf8(bytes).map_err(V37WireError::Utf8)?;
     let Json::Object(mut fields) = Parser::parse(text).map_err(V37WireError::Json)? else {
         return Err(V37WireError::Invalid("object"));
@@ -225,10 +364,8 @@ pub(crate) fn decode_receipt(bytes: &[u8]) -> Result<V37Receipt, V37WireError> {
         return Err(V37WireError::Invalid("identity"));
     }
     let status = decode_status(string(&mut fields, "status")?)?;
-    let previous_revision = decode_revision(
-        string(&mut fields, "previousRevision")?,
-        "previousRevision",
-    )?;
+    let previous_revision =
+        decode_revision(string(&mut fields, "previousRevision")?, "previousRevision")?;
     let revision = decode_revision(string(&mut fields, "revision")?, "revision")?;
     let Json::Object(result) = field(&mut fields, "result")? else {
         return Err(V37WireError::Invalid("result"));
@@ -266,8 +403,10 @@ mod tests {
         assert_eq!(request.raw_bytes, GOOD.as_bytes());
         assert_eq!(request.payload.len(), 1);
         let receipt = encode_receipt(&request, V37Status::Applied, 0, 1, BTreeMap::new());
-        assert_eq!(std::str::from_utf8(&receipt).unwrap(),
-            r#"{"family":"K-INSTANCE","operation":"register","previousRevision":"0","requestId":"registerA","result":{},"revision":"1","schema":"gogoke.37.operations.v1","status":"APPLIED","targetId":"instanceA"}"#);
+        assert_eq!(
+            std::str::from_utf8(&receipt).unwrap(),
+            r#"{"family":"K-INSTANCE","operation":"register","previousRevision":"0","requestId":"registerA","result":{},"revision":"1","schema":"gogoke.37.operations.v1","status":"APPLIED","targetId":"instanceA"}"#
+        );
     }
 
     #[test]
@@ -275,7 +414,10 @@ mod tests {
         for raw in [
             GOOD.replace("\"payload\":", "\"caller\":\"owner\",\"payload\":"),
             GOOD.replace("\"register\"", "\"unlisted\""),
-            GOOD.replace("\"requestId\":\"registerA\"", "\"requestId\":\"registerA\",\"requestId\":\"registerB\""),
+            GOOD.replace(
+                "\"requestId\":\"registerA\"",
+                "\"requestId\":\"registerA\",\"requestId\":\"registerB\"",
+            ),
             GOOD.replace("\"expectedRevision\":\"0\"", "\"expectedRevision\":\"00\""),
             GOOD.replace("\"domainId\":\"global\"", "\"domainId\":\"projectA\""),
         ] {
@@ -302,5 +444,28 @@ mod tests {
         assert_eq!(receipt.revision, 4);
         let unknown = String::from_utf8_lossy(raw).replace("APPLIED", "NOT_A_STATUS");
         assert!(decode_receipt(unknown.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn recursive_json_is_bounded_before_receipt_parse() {
+        let deep = format!(
+            "{{\"schema\":\"{SCHEMA}\",\"family\":\"K-SESSION\",\"operation\":\"send\",\"requestId\":\"sendA\",\"targetId\":\"sessionA\",\"status\":\"APPLIED\",\"previousRevision\":\"3\",\"revision\":\"4\",\"result\":{{\"nested\":{} }} }}",
+            format!("{}null{}", "[".repeat(MAX_JSON_DEPTH), "]".repeat(MAX_JSON_DEPTH))
+        );
+        assert!(matches!(
+            decode_receipt(deep.as_bytes()),
+            Err(V37WireError::Invalid("JSON depth"))
+        ));
+        let ordinary = deep.replace(
+            &format!(
+                "{}null{}",
+                "[".repeat(MAX_JSON_DEPTH),
+                "]".repeat(MAX_JSON_DEPTH)
+            ),
+            "[null]",
+        );
+        assert!(decode_receipt(ordinary.as_bytes()).is_ok());
+        let quoted = ordinary.replace("[null]", "\"[{\\\"depth\\\":42}]\"");
+        assert!(decode_receipt(quoted.as_bytes()).is_ok());
     }
 }
