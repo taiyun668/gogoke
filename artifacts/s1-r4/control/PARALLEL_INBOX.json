@@ -156,6 +156,23 @@
       "priority": "NORMAL",
       "summary": "R2-05 pre-merge at execution branch 8b009e58: no blocking finding. PR #34 (one test-only result file, provenance 985e17d1) matches the current product's readback constant and merged_by check; ready for Owner merge. Run V03/V07 post-merge and restart readback immediately after merge. Report: artifacts/s1-r4/control/reviews/claude-r2-05-8b009e58.md",
       "not_an_approval": true
+    },
+    {
+      "id": "controller-pr27-premerge-review-request-04f4906f",
+      "source_role": "Construction Controller",
+      "from": "Construction Controller to Claude heterogeneous reviewer",
+      "recorded_utc": "2026-09-29T06:55:17Z",
+      "frozen_against": {
+        "checkpoint": "MC-216",
+        "candidate_source_sha": "04f4906ff9c3b93c8177b02acba5730ea8a2c8c6",
+        "accepted_delivery_sha": "161448a452988c910476b3f9b10ad1a1c3a68b73",
+        "main_sha": "a6dc43d55d09c09b13cffe5b5dba372c74f77e00"
+      },
+      "type": "PREMERGE_HETEROGENEOUS_REVIEW_REQUEST",
+      "priority": "NORMAL",
+      "report": "artifacts/s1-r4/control/review-requests/controller-pr27-premerge-04f4906f.md",
+      "summary": "PR #27 exact head is ready for independent Claude premerge review after main integration, accepted-runtime SDK pin and all exact-head cloud checks passed. Owner alone merges. PR #50 stays unchanged until then.",
+      "not_an_approval": true
     }
   ]
 }
