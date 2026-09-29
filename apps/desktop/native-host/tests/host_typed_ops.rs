@@ -209,9 +209,12 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     let user_path = user_line.trim_end().strip_prefix("USER_PIPE\t").unwrap();
     let mut user = OpenOptions::new().read(true).write(true).open(user_path).expect("User pipe");
     user.write_all(&[0x47]).expect("User preface");
-    let user_request = br#"{"schema":"gogoke.37.operations.v1","family":"K-UI","operation":"read-models","requestId":"readA","targetId":"uiA","domainId":"global","expectedRevision":"0","payload":{}}"#;
-    write_frame(&mut user, user_request);
-    assert!(read_frame(&mut user).contains("\"status\":\"UNSUPPORTED\""));
+    let host_path = host().to_string_lossy().replace('\\', "\\\\");
+    let user_request = format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"register\",\"requestId\":\"registerA\",\"targetId\":\"instanceA\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{\"driverId\":\"codex\",\"programPath\":\"{host_path}\",\"version\":\"test\"}}}}");
+    write_frame(&mut user, user_request.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"APPLIED\""));
+    write_frame(&mut user, user_request.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"REPLAYED\""));
 
     let authenticate = format!("{{\"capability\":\"{capability}\",\"operation\":\"AuthenticateService\"}}");
     let connect_service = || {
@@ -228,7 +231,7 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
         }
     };
     let mut first = connect_service();
-    write_frame(&mut first, user_request);
+    write_frame(&mut first, user_request.as_bytes());
     assert!(read_frame(&mut first).starts_with("ERR"), "service promoted User request");
     drop(first);
     let mut second = connect_service();

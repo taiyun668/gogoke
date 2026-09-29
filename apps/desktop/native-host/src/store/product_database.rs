@@ -1,6 +1,6 @@
 //! Native composition owns the existing database and its private bootstrap issuer.
 //! IPC remains unprivileged: the legacy typed dispatcher never receives OwnerIssuer.
-use super::atomic::DomainRecordReceipt;
+use super::atomic::{DomainRecordReceipt, Json, JsonString};
 use super::authority::{
     self, AppendExecutionRecipe, AppendTaskMaterial, AuthorizedContextReadSet,
     AuthorizedTaskPackageReceipt,
@@ -22,18 +22,30 @@ use super::orchestration::OrchestrationError;
 use super::same_open::{OpenLedger, SameOpenError, VerifiedDatabaseConnection};
 use super::session::{dispatch_service_frame, open_product_database, serve_authenticated_pipe,
     serve_lines, serve_pipe, ServiceFrameSession};
-use super::session_transport::{decode_request, encode_receipt, V37Status};
+use super::session_transport::{decode_request, encode_receipt, V37Request, V37Status};
+use super::instance::{self, ProgramObservation, Registration, RegistrationDisposition};
 use crate::ipc::{PrivatePipeConnection, UserOriginProof};
 use crate::root::RootLock;
 use crate::process::ProcessCustodian;
 use std::io::{BufRead, Write};
 use std::path::Path;
+use std::path::PathBuf;
 
 type Result<T> = std::result::Result<T, OrchestrationError>;
+
+fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
+    match request.payload.get(&JsonString::from_str(field)) {
+        Some(Json::String(value)) => value.to_well_formed_string()
+            .filter(|value| !value.is_empty() && !value.contains('\0'))
+            .ok_or(OrchestrationError::Invalid(field)),
+        _ => Err(OrchestrationError::Invalid(field)),
+    }
+}
 
 /// Opaque native service state. No public raw database/issuer accessor, Clone,
 /// deserialization, or caller-selected actor. Its RootLock must outlive it.
 pub struct ProductDatabase<'root> {
+    root: &'root RootLock,
     connection: VerifiedDatabaseConnection<'root>,
     owner: OwnerIssuer,
     process_custodian: ProcessCustodian,
@@ -56,7 +68,7 @@ impl<'root> ProductDatabase<'root> {
         // grant store. initialize_profile checks the exact retained database pin.
         let owner = authority::initialize_profile(&mut connection, root)?;
         let process_custodian = ProcessCustodian::new()?;
-        Ok(Self { connection, owner, process_custodian })
+        Ok(Self { root, connection, owner, process_custodian })
     }
 
     pub fn serve_pipe(&mut self, pipe: &PrivatePipeConnection) -> Result<()> {
@@ -91,13 +103,45 @@ impl<'root> ProductDatabase<'root> {
     }
 
     /// A complete User frame can enter only through the dedicated pipe's
-    /// process-object proof. The current L0 dispatcher deliberately reports
-    /// unsupported until each operation is connected to its native store.
+    /// process-object proof. Each operation is connected individually to its
+    /// native store; all other closed-envelope operations stay unsupported.
     pub fn dispatch_user_frame(&mut self, origin: &UserOriginProof, frame: &[u8]) -> Result<Vec<u8>> {
         origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
         let request = decode_request(frame).map_err(|_| OrchestrationError::Invalid("v37 user frame"))?;
+        if request.family == "K-INSTANCE" && request.operation == "register" {
+            return self.register_user_instance(&request);
+        }
         Ok(encode_receipt(&request, V37Status::Unsupported,
             request.expected_revision, request.expected_revision, Default::default()))
+    }
+
+    fn register_user_instance(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.domain_id != "global" || request.expected_revision != 0
+            || request.payload.len() != 3 {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let driver = user_payload_string(request, "driverId")?;
+        let path = PathBuf::from(user_payload_string(request, "programPath")?);
+        if !path.is_absolute() {
+            return Err(OrchestrationError::Invalid("programPath"));
+        }
+        let version = user_payload_string(request, "version")?;
+        let observed = ProgramObservation::observe(&path, &version)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("instance program: {error:?}")))?;
+        let disposition = instance::register_instance(&mut self.connection, self.root,
+            &Registration {
+                request_id: &request.request_id,
+                request_bytes: &request.raw_bytes,
+                instance_id: &request.target_id,
+                driver_id: &driver,
+                program: &observed,
+            })
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("instance register: {error:?}")))?;
+        let status = match disposition {
+            RegistrationDisposition::Applied => V37Status::Applied,
+            RegistrationDisposition::Replayed => V37Status::Replayed,
+        };
+        Ok(encode_receipt(request, status, 0, 1, Default::default()))
     }
 
     pub fn serve_lines<R: BufRead, W: Write>(&mut self, input: R, output: &mut W) -> Result<()> {
@@ -105,7 +149,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        let Self { connection, owner: _, process_custodian } = self;
+        let Self { root: _, connection, owner: _, process_custodian } = self;
         // Closing the Job first prevents a child from outliving the active
         // coordination database. Unresolved rows stay UNKNOWN on recovery.
         drop(process_custodian);
