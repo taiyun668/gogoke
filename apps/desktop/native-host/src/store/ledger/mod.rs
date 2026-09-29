@@ -466,12 +466,16 @@ pub(crate) fn record(
     if stream_exists {
         let last = cursor(&stream.column_text(0)?)?;
         let state = stream.column_text(1)?;
-        if state != "ACTIVE" || source_cursor != last.saturating_add(1) {
+        let expected = last.saturating_add(1);
+        if state != "ACTIVE" || source_cursor != expected {
+            let failure = if state != "ACTIVE" { "source stream tombstoned" }
+                else if source_cursor > expected { "source stream gap" }
+                else { "source stream duplicate or rewind" };
             return Err(AtomicError::DurabilityContractFailed(format!(
-                "A.1 source stream violation: session={} epoch={} expected={} received={} state={state}",
+                "A.1 {failure}: session={} epoch={} expected={} received={} state={state}",
                 input.session_id,
                 input.source_epoch,
-                last.saturating_add(1),
+                expected,
                 source_cursor,
             )));
         }
@@ -1242,7 +1246,7 @@ mod tests {
         assert!(matches!(
             record(&mut connection, &duplicate_cursor),
             Err(AtomicError::DurabilityContractFailed(message))
-                if message.contains("source stream violation")
+                if message.contains("source stream duplicate or rewind")
         ));
         record(
             &mut connection,

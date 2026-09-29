@@ -2484,12 +2484,13 @@ mod tests {
             ("GOGOKE_TEST_SEAT_PIPE".into(), pipe_path),
         ]);
         launch.arguments = vec!["/D".into(), "/C".into(),
-            "seat-pipe-helper.exe --exact process::windows::tests::seat_pipe_child_helper --nocapture > helper-output.txt 2>&1".into()];
+            "cmd.exe /D /C echo nested> nested.txt & seat-pipe-helper.exe --exact process::windows::tests::seat_pipe_child_helper --nocapture > helper-output.txt 2>&1".into()];
         let mut custodian = ProcessCustodian::new().expect("seat custodian");
         let prepared = custodian.prepare(&request(launch)).expect("prepared LPAC child");
         custodian.activate(&prepared).expect("activated LPAC child");
         let accepted = receiver.recv_timeout(Duration::from_secs(15))
-            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; helper output={:?}; client error={:?}; parent_exit={:?}",
+            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; nested_cmd={:?}; helper output={:?}; client error={:?}; parent_exit={:?}",
+                std::fs::read_to_string(home.join("nested.txt")),
                 std::fs::read_to_string(home.join("helper-output.txt")),
                 std::fs::read_to_string(home.join("pipe-client-error.txt")),
                 process_exit_code(custodian.active(&prepared.ticket).unwrap().process.raw())));
@@ -2521,6 +2522,7 @@ mod tests {
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
         std::fs::remove_file(home.join("helper-output.txt")).unwrap();
+        std::fs::remove_file(home.join("nested.txt")).unwrap();
         std::fs::remove_file(helper).unwrap();
         std::fs::remove_file(exe).unwrap();
         std::fs::remove_dir(home).unwrap();
