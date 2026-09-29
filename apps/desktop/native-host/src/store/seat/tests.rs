@@ -123,8 +123,12 @@ fn legacy_bound_seat_migrates_without_losing_identity_or_binding() {
     db.execute(OPERATIONS).unwrap();
     let insert_instance = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
     insert_instance.step_done().unwrap();
-    let insert_seat = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','lead','incarnationA','USER',NULL,'LONG','instanceA','IDLE',1,1)").unwrap();
-    insert_seat.step_done().unwrap();
+    let insert_lead = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','lead','incarnationA','USER',NULL,'LONG','instanceA','IDLE',1,1)").unwrap();
+    insert_lead.step_done().unwrap();
+    let insert_child = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','child','incarnationB','LEAD','lead','SHORT','instanceA','IDLE',1,1)").unwrap();
+    insert_child.step_done().unwrap();
+    let insert_operation = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seat_operations(domain_id,request_id,fingerprint,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,revision,generation) VALUES('projectA','legacyCreate','legacy-fingerprint','lead','incarnationA','USER',NULL,'LONG','instanceA','IDLE',1,1)").unwrap();
+    insert_operation.step_done().unwrap();
 
     initialize_schema(&mut db).unwrap();
     let restored = get(&db, "projectA", "lead").unwrap().unwrap();
@@ -132,6 +136,20 @@ fn legacy_bound_seat_migrates_without_losing_identity_or_binding() {
     assert_eq!(restored.instance_id, "instanceA");
     assert!(restored.template_id.is_none());
     assert!(restored.settings_json.is_none());
+    let restored_child = get(&db, "projectA", "child").unwrap().unwrap();
+    assert_eq!(restored_child.parent_seat_id.as_deref(), Some("lead"));
+    let replay = operation(&db, "projectA", "legacyCreate", "legacy-fingerprint")
+        .unwrap()
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.seat, restored);
+    let snapshot_count = Statement::prepare(
+        db.as_ptr(),
+        "SELECT COUNT(*) FROM gogoke_v37_seat_operation_snapshots",
+    )
+    .unwrap();
+    assert!(snapshot_count.step_row().unwrap());
+    assert_eq!(snapshot_count.column_text(0).unwrap(), "0");
     initialize_schema(&mut db).unwrap();
 
     db.close_checked().unwrap();
