@@ -121,6 +121,7 @@ mod platform {
     const TOKEN_USER_CLASS: Dword = 1;
     const TOKEN_IS_APP_CONTAINER_CLASS: Dword = 29;
     const TOKEN_APP_CONTAINER_SID_CLASS: Dword = 31;
+    const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
     const SECURITY_DESCRIPTOR_REVISION: Dword = 1;
     const DACL_SECURITY_INFORMATION: Dword = 0x0000_0004;
     const SE_KERNEL_OBJECT: Dword = 6;
@@ -187,6 +188,9 @@ mod platform {
             security_attributes: *mut SecurityAttributes,
         ) -> Handle;
         fn ConnectNamedPipe(pipe: Handle, overlapped: *mut c_void) -> Bool;
+        fn GetNamedPipeClientProcessId(pipe: Handle, client_process_id: *mut Dword) -> Bool;
+        fn OpenProcess(access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+        fn GetProcessId(process: Handle) -> Dword;
         fn ReadFile(
             file: Handle,
             buffer: *mut c_void,
@@ -703,18 +707,63 @@ mod platform {
                 package
             } else { None };
             drop(_impersonation);
+            let peer_process = if observed_package_sid.is_some() {
+                let mut pid = 0;
+                if unsafe { GetNamedPipeClientProcessId(self.handle.raw(), &mut pid) } == FALSE {
+                    return Err(os_error("GetNamedPipeClientProcessId"));
+                }
+                if pid == 0 {
+                    return Err(PrivateIpcError::PeerIdentityMismatch {
+                        expected: "nonzero named-pipe client PID".into(),
+                        observed: "0".into(),
+                    });
+                }
+                // Keep the opened process object, rather than using a PID as
+                // later proof of origin. The handle is never inherited by a child.
+                let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+                if raw.is_null() {
+                    return Err(os_error("OpenProcess(named-pipe client)"));
+                }
+                let handle = OwnedHandle(raw);
+                let opened_pid = unsafe { GetProcessId(handle.raw()) };
+                if opened_pid == 0 {
+                    return Err(os_error("GetProcessId(named-pipe client)"));
+                }
+                if opened_pid != pid {
+                    return Err(PrivateIpcError::PeerIdentityMismatch {
+                        expected: format!("named-pipe client PID {pid}"),
+                        observed: format!("opened process PID {opened_pid}"),
+                    });
+                }
+                Some(PeerProcessHandle { handle, pid })
+            } else { None };
             Ok(PrivatePipeConnection {
                 handle: self.handle,
                 peer_sid: observed,
                 peer_package_sid: observed_package_sid,
+                peer_process,
             })
         }
+    }
+
+    /// An owned process object obtained from the connected seat pipe. A PID is
+    /// diagnostic only; callers must check this handle against the active Job.
+    pub struct PeerProcessHandle {
+        handle: OwnedHandle,
+        pid: Dword,
+    }
+
+    impl PeerProcessHandle {
+        pub fn pid(&self) -> u32 { self.pid }
+
+        pub(crate) fn raw(&self) -> Handle { self.handle.raw() }
     }
 
     pub struct PrivatePipeConnection {
         handle: OwnedHandle,
         peer_sid: String,
         peer_package_sid: Option<String>,
+        peer_process: Option<PeerProcessHandle>,
     }
 
     impl PrivatePipeConnection {
@@ -724,6 +773,13 @@ mod platform {
 
         pub fn peer_package_sid(&self) -> Option<&str> {
             self.peer_package_sid.as_deref()
+        }
+
+        /// Move the verified seat peer to the host's authority thread once.
+        /// The pipe worker must wait for that thread's admission result before
+        /// accepting any seat frame.
+        pub fn take_peer_process(&mut self) -> Option<PeerProcessHandle> {
+            self.peer_process.take()
         }
 
         pub fn read_frame(&self) -> Result<Vec<u8>, PrivateIpcError> {
@@ -847,10 +903,12 @@ mod platform {
             let path = listener.path().to_owned();
             let expected = listener.expected_sid().to_owned();
             let server = std::thread::spawn(move || {
-                let connection = listener
+                let mut connection = listener
                     .accept_current_user()
                     .expect("accept current-user client");
                 assert_eq!(connection.peer_sid(), expected);
+                assert!(connection.take_peer_process().is_none(),
+                    "legacy current-user pipe has no seat process binding");
                 assert_eq!(
                     connection.read_frame().expect("read bounded client frame"),
                     b"client"
@@ -915,7 +973,7 @@ mod platform {
 }
 
 #[cfg(windows)]
-pub use platform::{current_user_sid, PrivatePipeConnection, PrivatePipeListener};
+pub use platform::{current_user_sid, PeerProcessHandle, PrivatePipeConnection, PrivatePipeListener};
 
 #[cfg(not(windows))]
 pub struct PrivatePipeListener;

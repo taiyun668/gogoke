@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 use super::session::{AppContainerProfile, SecurityCapabilities};
+use crate::ipc::PeerProcessHandle;
 
 type Handle = *mut c_void;
 
@@ -950,6 +951,27 @@ impl ProcessCustodian {
 
     pub fn active(&self, ticket: &ProcessTicket) -> Option<&ManagedProcess> {
         self.active.get(ticket).map(|(_, process)| process)
+    }
+
+    /// Check the exact process object captured by the seat pipe against this
+    /// custodian's active Job. A ticket selects the expected Job; it does not
+    /// authenticate the peer. A missing or stopped Job is never a match.
+    pub fn peer_in_active_job(
+        &self,
+        ticket: &ProcessTicket,
+        peer: &PeerProcessHandle,
+    ) -> io::Result<bool> {
+        if self.tombstones.contains(ticket) || self.pending_stop.contains_key(ticket) {
+            return Ok(false);
+        }
+        let Some((_, managed)) = self.active.get(ticket) else {
+            return Ok(false);
+        };
+        let mut member = 0;
+        if unsafe { IsProcessInJob(peer.raw(), managed.job.raw(), &mut member) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(member != 0)
     }
 
     /// Read an owned child's output without pairing Node-forwarded bytes to
@@ -2168,9 +2190,13 @@ mod tests {
         let pipe_path = listener.path().to_owned();
         let (sender, receiver) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            sender.send(listener.accept_app_container()
-                .map(|connection| connection.peer_package_sid().map(str::to_owned)))
-                .expect("seat result receiver");
+            assert!(sender.send(listener.accept_app_container()
+                .map(|mut connection| {
+                    let package = connection.peer_package_sid().map(str::to_owned);
+                    let peer = connection.take_peer_process().expect("seat peer process handle");
+                    assert!(connection.take_peer_process().is_none(), "peer handle moves once");
+                    (package, peer)
+                })).is_ok(), "seat result receiver");
         });
         let mut launch = ProcessLaunch::new(&exe);
         launch.current_directory = Some(home.clone());
@@ -2182,18 +2208,38 @@ mod tests {
             ("LOCALAPPDATA".into(), home.to_string_lossy().into_owned()),
         ]);
         launch.arguments = vec!["/V:ON".into(), "/D".into(), "/C".into(),
-            format!("echo G > {pipe_path} & echo !errorlevel! > pipe-result.txt")];
-        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("real LPAC child");
-        assert!(managed.wait(Duration::from_secs(10)).expect("LPAC exit"));
+            format!("cmd.exe /D /C \"echo G > {pipe_path}\" & echo !errorlevel! > pipe-result.txt")];
+        let mut custodian = ProcessCustodian::new().expect("seat custodian");
+        let prepared = custodian.prepare(&request(launch)).expect("prepared LPAC child");
+        custodian.activate(&prepared).expect("activated LPAC child");
+        let accepted = receiver.recv_timeout(Duration::from_secs(5))
+            .expect("LPAC pipe connection timed out");
+        server.join().expect("seat listener thread");
+        let (accepted, peer) = accepted.expect("LPAC peer identity");
+        assert_ne!(peer.pid(), 0);
+        assert_ne!(peer.pid(), prepared.identity.pid,
+            "pipe peer must be the managed Job descendant, not its parent");
+        assert!(custodian.peer_in_active_job(&prepared.ticket, &peer)
+            .expect("exact seat Job membership"));
+        let mut other = ProcessCustodian::new().expect("unrelated custodian");
+        let mut unrelated_launch = ProcessLaunch::new(powershell());
+        unrelated_launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+            "-Command".into(), "Start-Sleep -Seconds 10".into()];
+        let unrelated = other.prepare(&request(unrelated_launch)).expect("unrelated child");
+        other.activate(&unrelated).expect("unrelated active Job");
+        assert!(!other.peer_in_active_job(&unrelated.ticket, &peer)
+            .expect("different Job membership"), "same-user peer in another Job must be denied");
+        drop(other);
+        assert!(!custodian.peer_in_active_job(&unrelated.ticket, &peer)
+            .expect("missing Job is denied"));
+        assert!(custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(10))
+            .expect("LPAC exit"));
         let child_result = std::fs::read_to_string(home.join("pipe-result.txt"))
             .expect("LPAC pipe result");
-        let accepted = receiver.recv_timeout(Duration::from_secs(5))
-            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; child result={}", child_result.trim()));
-        server.join().expect("seat listener thread");
-        let accepted = accepted.expect("LPAC peer identity");
         assert_eq!(child_result.trim(), "0", "LPAC pipe open failed: {}", child_result.trim());
         assert_eq!(accepted.as_deref(), Some(package_sid.as_str()));
-        drop(managed);
+        drop(peer);
+        drop(custodian);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
         std::fs::remove_file(home.join("pipe-result.txt")).unwrap();
