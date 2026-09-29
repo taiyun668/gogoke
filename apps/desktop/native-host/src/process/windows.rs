@@ -9,7 +9,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 use super::session::{AppContainerProfile, SecurityCapabilities};
@@ -46,6 +46,8 @@ pub const HOST_STOP_DEADLINE_MS: u32 = 30_000;
 pub const STOP_TIMEOUT_EXIT_CODE: u32 = 124;
 pub const STOP_REFUSED_EXIT_CODE: u32 = 125;
 const CONTROLLED_FIXTURE_SHA256: &str = "sha256:2e66dac4ee497e023fd8d860178c77ef5b82e01b7bcd23dc868e9db80637f85c";
+/// Matches the Codex adapter's maximum JSONL frame (including LF).
+const PERSISTENT_FRAME_MAX_BYTES: usize = 1024 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -293,6 +295,9 @@ pub struct ProcessLaunch {
     pub current_directory: Option<PathBuf>,
     pub hide_window: bool,
     pub protocol_stdio: bool,
+    /// Only native seat composition can opt into repeated CLI stdio. Service
+    /// requests continue to use the original one-shot protocol.
+    pub(crate) persistent_protocol_stdio: bool,
     /// A complete host-constructed environment. None retains the legacy R2
     /// behavior; v37 callers must supply this before admission.
     pub environment: Option<Vec<(String, String)>>,
@@ -311,6 +316,7 @@ impl ProcessLaunch {
             current_directory: None,
             hide_window: true,
             protocol_stdio: false,
+            persistent_protocol_stdio: false,
             environment: None,
             app_container_profile: None,
             app_container_internet_client: false,
@@ -734,6 +740,7 @@ struct PreparedProcess {
     job: OwnedHandle,
     identity: ProcessIdentity,
     protocol: Option<ProtocolPipes>,
+    persistent_protocol_stdio: bool,
 }
 
 impl PreparedProcess {
@@ -766,6 +773,7 @@ impl PreparedProcess {
             job,
             identity,
             protocol,
+            persistent_protocol_stdio: launch.persistent_protocol_stdio,
         })
     }
 
@@ -792,6 +800,7 @@ impl PreparedProcess {
             job,
             identity,
             protocol,
+            persistent_protocol_stdio,
         } = self;
         drop(initial_thread);
         Ok(ManagedProcess {
@@ -799,6 +808,9 @@ impl PreparedProcess {
             job,
             identity,
             protocol,
+            persistent_protocol_stdio,
+            persistent_writer: Mutex::new(false),
+            persistent_reader: Mutex::new(PersistentReadState::default()),
             stop_attempted: AtomicBool::new(false),
             protocol_write_attempted: AtomicBool::new(false),
         })
@@ -1095,8 +1107,34 @@ pub struct ManagedProcess {
     job: OwnedHandle,
     identity: ProcessIdentity,
     protocol: Option<ProtocolPipes>,
+    persistent_protocol_stdio: bool,
+    persistent_writer: Mutex<bool>,
+    persistent_reader: Mutex<PersistentReadState>,
     stop_attempted: AtomicBool,
     protocol_write_attempted: AtomicBool,
+}
+
+#[derive(Default)]
+struct PersistentReadState {
+    partial: Vec<u8>,
+    pending: Vec<u8>,
+    pending_offset: usize,
+    terminal: Option<(io::ErrorKind, String, Option<i32>)>,
+}
+
+impl PersistentReadState {
+    fn fail(&mut self, error: io::Error) -> io::Error {
+        let saved = (error.kind(), error.to_string(), error.raw_os_error());
+        self.terminal = Some(saved);
+        error
+    }
+
+    fn terminal_error(&self) -> Option<io::Error> {
+        self.terminal.as_ref().map(|(kind, message, code)| match code {
+            Some(code) => io::Error::new(*kind, format!("{message} (Windows error {code})")),
+            None => io::Error::new(*kind, message.clone()),
+        })
+    }
 }
 
 impl ManagedProcess {
@@ -1108,10 +1146,150 @@ impl ManagedProcess {
         Ok(!self.process.is_inheritable()? && !self.job.is_inheritable()?)
     }
 
+    /// Native-owned, repeated JSONL writes to this exact Job child. A failed
+    /// or timed-out write poisons the stream: a partial JSON-RPC message must
+    /// never be followed by another request. The writer lock includes the
+    /// worker deadline, so concurrent callers cannot interleave bytes.
+    pub(crate) fn write_persistent_frame(&self, bytes: &[u8]) -> io::Result<()> {
+        if !self.persistent_protocol_stdio {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "persistent stdio was not admitted"));
+        }
+        let protocol = self.protocol.as_ref().ok_or_else(||
+            io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
+        if bytes.is_empty() || bytes.len() > PERSISTENT_FRAME_MAX_BYTES
+            || bytes.last() != Some(&b'\n') || bytes[..bytes.len() - 1].contains(&b'\n') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "expected one bounded LF frame"));
+        }
+        let mut failed = self.persistent_writer.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => io::Error::new(io::ErrorKind::WouldBlock, "persistent writer busy"),
+            TryLockError::Poisoned(_) => io::Error::new(io::ErrorKind::Other, "persistent writer state unknown"),
+        })?;
+        if *failed {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "persistent writer previously failed"));
+        }
+        let mut duplicate = ptr::null_mut();
+        let current = unsafe { GetCurrentProcess() };
+        if unsafe { DuplicateHandle(current, protocol.stdin_write.raw(), current, &mut duplicate,
+            0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
+            *failed = true;
+            return Err(io::Error::last_os_error());
+        }
+        let write_handle = OwnedHandle::new(duplicate).expect("duplicated protocol handle");
+        let payload = bytes.to_vec();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut offset = 0usize;
+            let result = loop {
+                if offset == payload.len() { break Ok(()); }
+                let mut written = 0u32;
+                let length = (payload.len() - offset).min(64 * 1024) as u32;
+                if unsafe { WriteFile(write_handle.raw(), payload[offset..].as_ptr().cast(),
+                    length, &mut written, ptr::null_mut()) } == 0 {
+                    break Err(io::Error::last_os_error());
+                }
+                if written == 0 { break Err(io::Error::new(io::ErrorKind::WriteZero, "persistent write made no progress")); }
+                offset += written as usize;
+            };
+            let _ = sender.send(result);
+        });
+        let result = match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => { let _ = worker.join(); result }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                unsafe { CancelSynchronousIo(worker.as_raw_handle().cast()); }
+                let terminate = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE);
+                if receiver.recv_timeout(Duration::from_secs(2)).is_ok() { let _ = worker.join(); }
+                Err(io::Error::new(io::ErrorKind::TimedOut,
+                    format!("persistent write deadline; job termination={}",
+                        terminate.map_or_else(|error| error.to_string(), |_| "ok".to_owned()))))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = worker.join();
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "persistent writer disconnected"))
+            }
+        };
+        if result.is_err() { *failed = true; }
+        result
+    }
+
+    /// One reader owns the continuous child stdout stream. A timed-out
+    /// partial frame is retained for the next call; EOF, overflow and kernel
+    /// failures are terminal and retain their original error for recovery.
+    pub(crate) fn read_persistent_frame(&self, deadline: Duration) -> io::Result<Vec<u8>> {
+        if !self.persistent_protocol_stdio {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "persistent stdio was not admitted"));
+        }
+        let protocol = self.protocol.as_ref().ok_or_else(||
+            io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
+        if deadline.is_zero() || deadline > Duration::from_secs(30) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "persistent read deadline out of bounds"));
+        }
+        let mut state = self.persistent_reader.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => io::Error::new(io::ErrorKind::WouldBlock, "persistent reader busy"),
+            TryLockError::Poisoned(_) => io::Error::new(io::ErrorKind::Other, "persistent reader state unknown"),
+        })?;
+        if let Some(error) = state.terminal_error() { return Err(error); }
+        let started = Instant::now();
+        loop {
+            if state.pending_offset < state.pending.len() {
+                let unread = &state.pending[state.pending_offset..];
+                let end = unread.iter().position(|byte| *byte == b'\n')
+                    .map_or(unread.len(), |index| index + 1);
+                state.partial.extend_from_slice(&unread[..end]);
+                state.pending_offset += end;
+                let complete = state.partial.last() == Some(&b'\n');
+                if state.pending_offset == state.pending.len() {
+                    state.pending.clear();
+                    state.pending_offset = 0;
+                }
+                if state.partial.len() > PERSISTENT_FRAME_MAX_BYTES {
+                    return Err(state.fail(io::Error::new(io::ErrorKind::InvalidData,
+                        "persistent frame exceeds Codex decoder bound")));
+                }
+                if complete { return Ok(std::mem::take(&mut state.partial)); }
+            }
+            if started.elapsed() >= deadline {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "persistent frame deadline"));
+            }
+            let mut available = 0u32;
+            if unsafe { PeekNamedPipe(protocol.stdout_read.raw(), ptr::null_mut(), 0,
+                ptr::null_mut(), &mut available, ptr::null_mut()) } == 0 {
+                let source = io::Error::last_os_error();
+                let error = if matches!(source.raw_os_error(), Some(109 | 233)) {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, format!("child stdout closed: {source}"))
+                } else { source };
+                return Err(state.fail(error));
+            }
+            if available == 0 {
+                match self.wait(Duration::ZERO) {
+                    Ok(true) => return Err(state.fail(io::Error::new(io::ErrorKind::UnexpectedEof,
+                        "process exited before complete persistent frame"))),
+                    Ok(false) => {},
+                    Err(error) => return Err(state.fail(error)),
+                }
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            let mut buffer = [0u8; 8192];
+            let mut read = 0u32;
+            if unsafe { ReadFile(protocol.stdout_read.raw(), buffer.as_mut_ptr().cast(),
+                available.min(buffer.len() as u32), &mut read, ptr::null_mut()) } == 0 {
+                return Err(state.fail(io::Error::last_os_error()));
+            }
+            if read == 0 {
+                return Err(state.fail(io::Error::new(io::ErrorKind::UnexpectedEof,
+                    "partial persistent frame")));
+            }
+            state.pending.extend_from_slice(&buffer[..read as usize]);
+        }
+    }
+
     /// Byte-bounded synchronous protocol transport. The product caller must
     /// provide write liveness, admission and the beginCommitted boundary;
     /// neither an ACK nor these bytes prove completion.
     pub fn write_protocol(&self, bytes: &[u8]) -> io::Result<()> {
+        if self.persistent_protocol_stdio {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "persistent protocol requires native transport"));
+        }
         let protocol = self.protocol.as_ref().ok_or_else(||
             io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
         if bytes.is_empty() || bytes.len() > 64 * 1024 || bytes.last() != Some(&b'\n') {
@@ -1159,6 +1337,9 @@ impl ManagedProcess {
     /// Reads one LF frame with an explicit deadline and byte bound. EOF or
     /// process exit before LF is an error, never a task result.
     pub fn read_protocol_frame(&self, deadline: Duration) -> io::Result<Vec<u8>> {
+        if self.persistent_protocol_stdio {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "persistent protocol requires native transport"));
+        }
         let protocol = self.protocol.as_ref().ok_or_else(||
             io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
         if deadline.is_zero() || deadline > Duration::from_secs(30) {
@@ -1354,6 +1535,10 @@ pub fn may_target_pid(recorded: &ProcessIdentity, observed: Option<&ProcessIdent
 }
 
 fn validate_launch(launch: &ProcessLaunch) -> Result<(), ProcessCustodyError> {
+    if launch.persistent_protocol_stdio && !launch.protocol_stdio {
+        return Err(ProcessCustodyError::InvalidLaunch(
+            "persistent stdio requires protocol pipes"));
+    }
     if launch.app_container_internet_client && launch.app_container_profile.is_none() {
         return Err(ProcessCustodyError::InvalidLaunch(
             "outbound network capability requires an AppContainer identity"));
@@ -1971,6 +2156,14 @@ mod tests {
         path.to_string_lossy().replace('\'', "''")
     }
 
+    fn write_executable_with_directory_acl(source: &Path, destination: &Path) {
+        let mut input = fs::File::open(source).expect("open executable fixture");
+        let mut output = fs::OpenOptions::new().write(true).create_new(true)
+            .open(destination).expect("create executable under granted directory");
+        io::copy(&mut input, &mut output).expect("write executable fixture");
+        output.sync_all().expect("flush executable fixture");
+    }
+
     fn request(launch: ProcessLaunch) -> PrepareRequest {
         let digest = file_sha256(&launch.application).expect("fixture binary digest");
         PrepareRequest {
@@ -2085,9 +2278,60 @@ mod tests {
         assert_eq!(managed.write_protocol(b"no delimiter").unwrap_err().kind(), io::ErrorKind::InvalidInput);
         assert_eq!(managed.read_protocol_frame(Duration::ZERO).unwrap_err().kind(), io::ErrorKind::InvalidInput);
         managed.write_protocol(b"controlled\n").expect("bounded command write");
+        assert_eq!(managed.write_protocol(b"second\n").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists, "legacy protocol remains one-shot");
         let output = managed.read_protocol_frame(Duration::from_secs(5)).expect("bounded frame read");
         assert!(String::from_utf8_lossy(&output).contains("echo:controlled"));
         assert!(managed.wait(Duration::from_secs(5)).expect("child exit"));
+    }
+
+    #[test]
+    fn persistent_child_exchanges_multiple_jsonl_frames_on_one_owned_job() {
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
+        launch.arguments = vec![
+            "-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
+            r#"while ($null -ne ($line = [Console]::ReadLine())) { [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"turn/started"}'); [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":7,"method":"approval"}'); [Console]::Out.WriteLine($line) }"#.into(),
+        ];
+        let mut custodian = ProcessCustodian::new().expect("native custodian");
+        let prepared = custodian.prepare(&request(launch)).expect("prepared persistent ticket");
+        custodian.activate(&prepared).expect("activate exact ticket");
+        let managed = custodian.active(&prepared.ticket).expect("same active Job");
+        assert!(managed.handles_are_non_inheritable().unwrap());
+        assert!(managed.active_job_processes().unwrap() >= 1);
+        assert_eq!(managed.write_protocol(b"legacy\n").unwrap_err().kind(), io::ErrorKind::Unsupported);
+        assert_eq!(managed.read_protocol_frame(Duration::from_secs(1)).unwrap_err().kind(),
+            io::ErrorKind::Unsupported);
+        for id in [1, 2] {
+            let request = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"thread/start\"}}\n");
+            managed.write_persistent_frame(request.as_bytes()).expect("repeated request write");
+            let notification = managed.read_persistent_frame(Duration::from_secs(5)).unwrap();
+            assert_eq!(String::from_utf8_lossy(&notification).trim_end(),
+                "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\"}");
+            let server_request = managed.read_persistent_frame(Duration::from_secs(5)).unwrap();
+            assert_eq!(String::from_utf8_lossy(&server_request).trim_end(),
+                "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"approval\"}");
+            let response = managed.read_persistent_frame(Duration::from_secs(5)).unwrap();
+            assert_eq!(String::from_utf8_lossy(&response).trim_end(), request.trim_end());
+        }
+        assert_eq!(managed.write_persistent_frame(b"two\nframes\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput);
+        assert!(custodian.active(&prepared.ticket).is_some(), "repeated exchange keeps original ticket");
+    }
+
+    #[test]
+    fn persistent_reader_keeps_eof_unknown_after_exact_child_exit() {
+        let mut launch = ProcessLaunch::new(system_cmd());
+        launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
+        launch.arguments = vec!["/D".into(), "/C".into(), "exit /B 0".into()];
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("owned exiting child");
+        let error = managed.read_persistent_frame(Duration::from_secs(5))
+            .expect_err("exit without LF is not a response");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(managed.read_persistent_frame(Duration::from_secs(1)).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof, "terminal stream cannot regain certainty");
     }
 
     #[test]
@@ -2141,7 +2385,7 @@ mod tests {
         profile.grant_fresh_session_directory(&allowed).expect("package directory ACL");
         drop(profile);
         let executable = allowed.join("cmd.exe");
-        std::fs::copy(system_cmd(), &executable).expect("isolated executable fixture");
+        write_executable_with_directory_acl(&system_cmd(), &executable);
         let mut launch = ProcessLaunch::new(&executable);
         launch.current_directory = Some(allowed.clone());
         launch.protocol_stdio = true;
@@ -2204,10 +2448,9 @@ mod tests {
         let package_sid = profile.package_sid_string().expect("package SID");
         drop(profile);
         let exe = home.join("cmd.exe");
-        std::fs::copy(system_cmd(), &exe).expect("isolated command fixture");
+        write_executable_with_directory_acl(&system_cmd(), &exe);
         let helper = home.join("seat-pipe-helper.exe");
-        std::fs::copy(std::env::current_exe().expect("native test image"), &helper)
-            .expect("isolated native test helper");
+        write_executable_with_directory_acl(&std::env::current_exe().expect("native test image"), &helper);
         let endpoint = format!("lpac-{}-{nonce}", std::process::id());
         let listener = PrivatePipeListener::bind_app_container(&endpoint, &package_sid)
             .expect("seat listener");
