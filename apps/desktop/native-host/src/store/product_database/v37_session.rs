@@ -67,7 +67,8 @@ impl<'root> ProductDatabase<'root> {
         let suffix = &suffix[..40];
         let binding_id = format!("binding-{suffix}");
         let home_id = format!("home-{suffix}");
-        self.connection.execute("BEGIN IMMEDIATE")?;
+        self.connection.execute("BEGIN IMMEDIATE")
+            .map_err(|error| OrchestrationError::Atomic(error.into()))?;
         let bound = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
             let now = seat::get(&self.connection, &request.domain_id, seat_id)?
