@@ -2459,9 +2459,14 @@ mod tests {
     fn seat_pipe_parent_helper() {
         #[link(name = "kernel32")]
         extern "system" {
+            fn GetLastError() -> u32;
             fn CreateFileMappingW(file: Handle, attributes: *const c_void,
                 protect: u32, maximum_size_high: u32, maximum_size_low: u32,
                 name: *const u16) -> Handle;
+        }
+        #[link(name = "ntdll")]
+        extern "system" {
+            fn RtlGetLastNtStatus() -> i32;
         }
         let image_section = |file: Handle| {
             // PAGE_READONLY | SEC_IMAGE on the same opened image, before the
@@ -2531,7 +2536,12 @@ mod tests {
             ptr::null(), ptr::null(), 0, CREATE_NO_WINDOW, ptr::null(), ptr::null(),
             &mut startup, &mut info) };
         let raw_control = if created == 0 {
-            format!("raw_signed_child=WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+            // Capture both thread-local values before formatting or any other
+            // native call. LastNtStatus is a clue, not CreateProcess's error
+            // contract; GetLastError remains the reported failure.
+            let win32 = unsafe { GetLastError() };
+            let ntstatus = unsafe { RtlGetLastNtStatus() } as u32;
+            format!("raw_signed_child=WIN32_{win32}; last_ntstatus={ntstatus:#010x}")
         } else {
             let process = OwnedHandle::new(info.process).expect("raw child process handle");
             let _thread = OwnedHandle::new(info.thread).expect("raw child thread handle");
@@ -2552,7 +2562,9 @@ mod tests {
             ptr::null(), ptr::null(), 0, CREATE_NO_WINDOW, ptr::null(), ptr::null(),
             &mut helper_startup, &mut helper_info) };
         let raw_helper = if helper_created == 0 {
-            format!("raw_helper=WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+            let win32 = unsafe { GetLastError() };
+            let ntstatus = unsafe { RtlGetLastNtStatus() } as u32;
+            format!("raw_helper=WIN32_{win32}; last_ntstatus={ntstatus:#010x}")
         } else {
             let process = OwnedHandle::new(helper_info.process).expect("raw helper process handle");
             let _thread = OwnedHandle::new(helper_info.thread).expect("raw helper thread handle");

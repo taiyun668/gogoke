@@ -101,6 +101,10 @@ $childFailures = @($childEvents | Where-Object {
     $_.Result -match 'DENIED|PRIVILEGE|BLOCKED|INVALID IMAGE|POLICY|DLL NOT FOUND' -or
     $_.Operation -eq 'Process Exit'
 })
+$childLifecycle = @($childEvents | Where-Object {
+    $_.Operation -match 'Process|Thread|Load Image' -or
+    $_.Result -match 'DENIED|PRIVILEGE|BLOCKED|INVALID IMAGE|POLICY|DLL NOT FOUND'
+})
 $selected = @($denied | Select-Object -First 100 | ForEach-Object {
     [ordered]@{
         time = $_.'Time of Day'
@@ -131,6 +135,17 @@ $summary = [ordered]@{
             operation = $_.Operation
             object = Convert-PathClass $_.Path
             result = $_.Result
+        }
+    })
+    selected_child_lifecycle = @($childLifecycle | Select-Object -First 160 | ForEach-Object {
+        $exitMatch = [regex]::Match($_.Detail, '(?i)Exit Status:\s*(0x[0-9a-f]+|\d+)')
+        [ordered]@{
+            time = $_.'Time of Day'
+            pid = $_.PID
+            operation = $_.Operation
+            object = Convert-PathClass $_.Path
+            result = $_.Result
+            exit_status = if ($exitMatch.Success) { $exitMatch.Groups[1].Value } else { $null }
         }
     })
     selected_process_events = @($processEvents | Select-Object -Last 40 | ForEach-Object {
