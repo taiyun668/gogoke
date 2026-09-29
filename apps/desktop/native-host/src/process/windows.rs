@@ -571,7 +571,7 @@ impl Drop for OwnedHandle {
 unsafe impl Send for OwnedHandle {}
 
 struct ProtocolPipes {
-    stdin_write: OwnedHandle,
+    stdin_write: Option<OwnedHandle>,
     stdout_read: OwnedHandle,
     stderr: StderrCapture,
 }
@@ -672,7 +672,7 @@ impl ChildProtocolHandles {
             stdin_read,
             stdout_write,
             stderr_write,
-            parent: ProtocolPipes { stdin_write, stdout_read, stderr },
+            parent: ProtocolPipes { stdin_write: Some(stdin_write), stdout_read, stderr },
         })
     }
 }
@@ -1040,6 +1040,17 @@ impl ProcessCustodian {
         self.active.get(ticket).map(|(_, process)| process)
     }
 
+    /// Send EOF to the exact retained child's stdin before graceful stop.
+    /// This changes no custody or stop facts and exposes no wire operation.
+    pub(crate) fn close_child_input(&mut self, ticket: &ProcessTicket)
+        -> Result<(), ProcessCustodyError> {
+        let result = self.active.get_mut(ticket).ok_or_else(||
+            ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?
+            .1.close_input();
+        result.map_err(|error| self.protocol_error_with_stderr(ticket,
+            ProcessCustodyError::ProtocolPipe(error)))
+    }
+
     /// Check the exact process object captured by the seat pipe against this
     /// custodian's active Job. A ticket selects the expected Job; it does not
     /// authenticate the peer. A missing or stopped Job is never a match.
@@ -1235,6 +1246,21 @@ impl PersistentReadState {
 }
 
 impl ManagedProcess {
+    fn close_input(&mut self) -> io::Result<()> {
+        let protocol = self.protocol.as_mut().ok_or_else(||
+            io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
+        let mut writer = self.persistent_writer.try_lock().map_err(|error|
+            io::Error::new(io::ErrorKind::Other, format!("stdin close writer state: {error}")))?;
+        let Some(handle) = protocol.stdin_write.as_ref() else { return Ok(()); };
+        if unsafe { CloseHandle(handle.raw()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // CloseHandle succeeded. Remove ownership without closing twice.
+        std::mem::forget(protocol.stdin_write.take().expect("owned stdin handle"));
+        *writer = true;
+        Ok(())
+    }
+
     pub(crate) fn stderr_tail(&self) -> String {
         let Some(protocol) = &self.protocol else { return "stderr was not admitted".into(); };
         match active_job_processes(self.job.raw()) {
@@ -1273,7 +1299,9 @@ impl ManagedProcess {
         }
         let mut duplicate = ptr::null_mut();
         let current = unsafe { GetCurrentProcess() };
-        if unsafe { DuplicateHandle(current, protocol.stdin_write.raw(), current, &mut duplicate,
+        let input = protocol.stdin_write.as_ref().ok_or_else(||
+            io::Error::new(io::ErrorKind::BrokenPipe, "child input already closed"))?;
+        if unsafe { DuplicateHandle(current, input.raw(), current, &mut duplicate,
             0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
             *failed = true;
             return Err(io::Error::last_os_error());
@@ -1405,7 +1433,9 @@ impl ManagedProcess {
         }
         let mut duplicate = ptr::null_mut();
         let current = unsafe { GetCurrentProcess() };
-        if unsafe { DuplicateHandle(current, protocol.stdin_write.raw(), current, &mut duplicate,
+        let input = protocol.stdin_write.as_ref().ok_or_else(||
+            io::Error::new(io::ErrorKind::BrokenPipe, "child input already closed"))?;
+        if unsafe { DuplicateHandle(current, input.raw(), current, &mut duplicate,
             0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -2358,6 +2388,31 @@ mod tests {
     }
 
     #[test]
+    fn native_input_close_delivers_eof_and_preserves_graceful_stop_proof() {
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
+        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
+            "while ($null -ne [Console]::ReadLine()) {}; [Console]::Out.WriteLine('stdin-eof'); exit 0".into()];
+        let mut custodian = ProcessCustodian::new().unwrap();
+        let prepared = custodian.prepare(&request(launch)).unwrap();
+        custodian.activate(&prepared).unwrap();
+        custodian.active(&prepared.ticket).unwrap().write_persistent_frame(b"one\n").unwrap();
+        custodian.close_child_input(&prepared.ticket).unwrap();
+        custodian.close_child_input(&prepared.ticket).unwrap();
+        assert_eq!(custodian.active(&prepared.ticket).unwrap()
+            .write_persistent_frame(b"two\n").unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        let frame = custodian.read_persistent_child_frame(&prepared.ticket, Duration::from_secs(10)).unwrap();
+        assert_eq!(frame.bytes(), b"stdin-eof\r\n");
+        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(())).unwrap();
+        assert_eq!(proof.exit_code, Some(0));
+        assert!(proof.parent_exited && proof.writer_fence_verified);
+        assert_eq!(proof.active_job_processes, Some(0));
+        assert!(!proof.kill_attempted);
+        assert!(proof.errors.is_empty(), "graceful close errors: {:?}", proof.errors);
+    }
+
+    #[test]
     fn failed_protocol_retains_direct_stderr_and_does_not_block_large_stderr() {
         let mut launch = ProcessLaunch::new(powershell());
         launch.protocol_stdio = true;
@@ -2388,7 +2443,7 @@ mod tests {
         ];
         let managed = prepare_and_activate(&launch, |_| Ok(())).expect("durably activate piped child");
         let pipes = managed.protocol.as_ref().expect("protocol pipes");
-        assert!(!pipes.stdin_write.is_inheritable().expect("parent stdin handle"));
+        assert!(!pipes.stdin_write.as_ref().unwrap().is_inheritable().expect("parent stdin handle"));
         assert!(!pipes.stdout_read.is_inheritable().expect("parent stdout handle"));
         assert_eq!(managed.write_protocol(b"no delimiter").unwrap_err().kind(), io::ErrorKind::InvalidInput);
         assert_eq!(managed.read_protocol_frame(Duration::ZERO).unwrap_err().kind(), io::ErrorKind::InvalidInput);

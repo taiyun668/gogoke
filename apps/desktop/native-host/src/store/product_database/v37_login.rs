@@ -887,8 +887,10 @@ impl<'root> ProductDatabase<'root> {
                 "login active record: {error:?}; stop: {stop:?}; unknown record: {unknown:?}")));
         }
         let execution = self.observe_account_via_active_cli(&prepared);
+        let close = self.process_custodian.close_child_input(&prepared.ticket)
+            .map_err(|error| format!("account/read stdin close: {error}"));
         let stop = self.process_custodian.stop(&prepared.ticket,
-            StopBudgets::production(), || Ok(()));
+            StopBudgets::production(), move || close);
         let proof = match stop {
             Ok(proof) => proof,
             Err(error) => {
