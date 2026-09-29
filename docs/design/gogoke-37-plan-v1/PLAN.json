@@ -19,11 +19,11 @@
   },
   {
    "path": "docs/design/gogoke-s1-r4-plan-v2/PLAN.md",
-   "blob": "b9f6765181ce87a195052d2670a054a4ae07bc85"
+   "blob": "7f3a3fdaa9f3b26fd8b7760bd381728104b28315"
   },
   {
    "path": "AGENTS.md",
-   "blob": "9f10c92267383e4a1d961e0ee404af3aad381fd9"
+   "blob": "70f1dad3803d48f5221a365390f69bf910ac6b0f"
   },
   {
    "path": "docs/model-routing.md",
@@ -31,7 +31,7 @@
   },
   {
    "path": "docs/governance/gogoke-build-and-release.md",
-   "blob": "95b9b818cf5844ae55c770b2e8bca00f42acb223"
+   "blob": "7482ac5855fe65d873fb419a88e4dcb1db9db76c"
   },
   {
    "path": "docs/governance/gogoke-ledger-decision.md",
@@ -44,17 +44,16 @@
  ],
  "baseline": {
   "mapping_snapshot": {
-   "main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
-   "s1_r4_execution_branch": "df63d8b7bde1834d61437bf8c93006e721748ee3"
+   "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
-  "construction_baseline": "R2-05_ACCEPTED_DELIVERY_COMMIT",
-  "rule": "The asset and shared-file mapping was read at mapping_snapshot. The execution branch is not accepted. T00 re-reads every shared file and asset at the actual R2-05 accepted delivery commit before this plan is finalised; any change is a plan amendment, which changes MANIFEST and so any authorization binding."
+  "construction_baseline": "MAIN_AT_MAPPING_SNAPSHOT",
+  "rule": "The asset and shared-file mapping was read at mapping_snapshot: main after PR #27 merged the Owner-accepted R2-05 delivery, one tree holding the delivered product code and current governance. The earlier two-tree snapshot (main d0e739be plus execution branch df63d8b7) was superseded after the controller's T00 record artifacts/gogoke-37/t00/T00-RECHECK-161448a4.json found drift; this revision absorbs it. Before authorization, T00 re-reads every shared file and asset at the authorization base commit; any change from mapping_snapshot is a plan amendment, which changes MANIFEST and so any authorization binding."
  },
  "invariants": {
   "fact_ledger": "Git/GitHub",
   "native_build": "CLOUD",
   "code_signing": false,
-  "owner_manifest_signature": "OFFLINE_SHA256SUMS",
+  "owner_manifest_signature": "OWNER_KEY_SHA256SUMS",
   "win11_actual_installer_required": true,
   "construction_dispatch_basis": [
    "AGENTS.md",
@@ -1086,7 +1085,7 @@
  "lines": [
   {
    "id": "T00",
-   "title": "Re-baseline at the R2-05 accepted delivery",
+   "title": "Re-check at the mapping snapshot before authorization",
    "write_scope": [
     "docs/design/gogoke-37-plan-v1/"
    ],
@@ -1096,7 +1095,7 @@
      "id": "T00.1",
      "milestone": "PRE",
      "deliverables": [
-      "shared-file and asset table re-read at the accepted delivery commit",
+      "shared-file and asset table re-read at the authorization base commit and compared with mapping_snapshot",
       "conditional files recorded as MODIFIED or VERIFIED_UNCHANGED",
       "whether an existing authorization covers the test repository",
       "plan amendment if anything moved"
@@ -1415,7 +1414,7 @@
  "milestones": [
   {
    "id": "PRE",
-   "title": "Plan finalised against the accepted R2-05 delivery"
+   "title": "Plan finalised against main after the R2-05 delivery merge"
   },
   {
    "id": "M1",
@@ -1884,8 +1883,8 @@
    {
     "id": "OT5",
     "when": "M3",
-    "what": "Install the candidate on Win11 with Smart App Control on and run the acceptance",
-    "why_only_owner": "Only the Owner's machine proves the installed behaviour."
+    "what": "Decide acceptance of the M3 candidate from its evidence",
+    "why_only_owner": "Acceptance is the Owner's. The controller installs and exercises the exact candidate on the Owner's Win11 with Smart App Control on, through the ordinary-view method in the build and release governance; the Owner does not operate the installer."
    }
   ],
   "conditional": [
@@ -1960,7 +1959,7 @@
    "All native code and tests run in cloud CI; jobs have timeouts and newer pushes cancel older runs.",
    "JS and TS tests run locally only on the signed Node runtime.",
    "No code-signing prerequisite; no security setting is changed; a pass for one component or version is not extrapolated.",
-   "The existing update chain and the Owner's offline SHA256SUMS signature stay unchanged.",
+   "The existing update chain stays unchanged. SHA256SUMS is signed with the Owner key; the Controller may sign locally under the Owner's 2026-09-25 authorization, and public release stays the Owner's decision.",
    "Evidence is scanned by the hygiene check with positive samples before it is made public; no absolute paths, accounts, usage snapshots or credentials.",
    "Construction dispatch follows AGENTS.md and docs/model-routing.md; design 37's product orchestration rules do not authorize construction dispatch."
   ]
@@ -1968,7 +1967,7 @@
  "authorization": {
   "sequence": [
    "draft review",
-   "T00 re-baseline at the R2-05 accepted delivery",
+   "T00 re-check at the mapping snapshot",
    "machine plan and MANIFEST finalised and merged",
    "separate authorization PR",
    "exact read-back of the merged authorization",

@@ -2,13 +2,12 @@
   "schema": "gogoke.37.plan-manifest.v1",
   "status": "DESIGN_PROPOSAL_NOT_AUTHORIZED",
   "mapping_snapshot": {
-    "main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
-    "s1_r4_execution_branch": "df63d8b7bde1834d61437bf8c93006e721748ee3"
+    "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
   "sha256": {
-    "PLAN.md": "f0f28e161313e6366127d5c9118a851185123e7484ea59fa41af84a875fc846f",
-    "PLAN.json": "477024bcd1af90606e44ac6b52c2323a14cb91317400156e37420a86768f2dc1",
-    "verify_plan.py": "3fa431cfb7863443908ca90f015bef8d588d91a7a5200f9b4977a544025af167"
+    "PLAN.md": "8f6f59a477b5b5aa7acb2b0aa1f3c25447a5e929eeb7b6d83733b233f9dcdcd5",
+    "PLAN.json": "2450da3fef53f506e3ec68533c33a84d0e76d053eabfd08fa9987fe81dd9dc2d",
+    "verify_plan.py": "ba5ccf326ef8f28c6affd2d4d1a1bf923b8cd9421eef38d9cf8c91b4926faf74"
   },
   "excluded": [
     "MANIFEST.json",
