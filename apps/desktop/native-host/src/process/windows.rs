@@ -2457,6 +2457,25 @@ mod tests {
 
     #[test]
     fn seat_pipe_parent_helper() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateFileMappingW(file: Handle, attributes: *const c_void,
+                protect: u32, maximum_size_high: u32, maximum_size_low: u32,
+                name: *const u16) -> Handle;
+        }
+        let image_section = |file: Handle| {
+            // PAGE_READONLY | SEC_IMAGE on the same opened image, before the
+            // failing process creation. This observes image-section access;
+            // success does not prove a child process can be created.
+            let section = unsafe { CreateFileMappingW(file, ptr::null(),
+                0x0000_0002 | 0x0100_0000, 0, 0, ptr::null()) };
+            if section.is_null() {
+                format!("WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+            } else {
+                unsafe { CloseHandle(section) };
+                "OK".to_owned()
+            }
+        };
         let Some(child) = std::env::var_os("GOGOKE_TEST_SEAT_CHILD") else { return; };
         let path = PathBuf::from(child);
         let read = fs::File::open(&path)
@@ -2467,11 +2486,13 @@ mod tests {
         // the failing CreateProcess. FILE_READ_DATA | FILE_EXECUTE | READ_CONTROL.
         let image = unsafe { CreateFileW(wide.as_ptr(), 0x0002_0021, 7,
             ptr::null(), 3, 0, ptr::null_mut()) };
-        let execute_open = if image as isize == -1 {
-            format!("WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+        let (execute_open, image_section_result) = if image as isize == -1 {
+            (format!("WIN32_{:?}", io::Error::last_os_error().raw_os_error()),
+                "NOT_RUN".to_owned())
         } else {
+            let section = image_section(image);
             unsafe { CloseHandle(image) };
-            "OK".to_owned()
+            ("OK".to_owned(), section)
         };
         let launched = std::process::Command::new(&path)
             .args(["--exact", "process::windows::tests::seat_pipe_child_helper", "--nocapture"])
@@ -2494,11 +2515,13 @@ mod tests {
         let application = wide_null(signed.as_os_str());
         let signed_image = unsafe { CreateFileW(application.as_ptr(), 0x0002_0021, 7,
             ptr::null(), 3, 0, ptr::null_mut()) };
-        let signed_execute_open = if signed_image as isize == -1 {
-            format!("WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+        let (signed_execute_open, signed_image_section_result) = if signed_image as isize == -1 {
+            (format!("WIN32_{:?}", io::Error::last_os_error().raw_os_error()),
+                "NOT_RUN".to_owned())
         } else {
+            let section = image_section(signed_image);
             unsafe { CloseHandle(signed_image) };
-            "OK".to_owned()
+            ("OK".to_owned(), section)
         };
         let mut command = wide_null(OsStr::new(&format!("\"{}\" /D /C exit 0", signed.display())));
         let mut startup: StartupInfoW = unsafe { zeroed() };
@@ -2550,7 +2573,7 @@ mod tests {
         } else {
             format!("child_policy_flags={child_policy_flags:#x}")
         };
-        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}; signed_execute_open={signed_execute_open}; {raw_control}; {raw_helper}; {child_policy}"))
+        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; image_section={image_section_result}; {outcome}; {control}; signed_execute_open={signed_execute_open}; signed_image_section={signed_image_section_result}; {raw_control}; {raw_helper}; {child_policy}"))
             .expect("persist direct child launch result");
     }
 

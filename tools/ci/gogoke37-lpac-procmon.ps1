@@ -81,6 +81,9 @@ $parent = @(Import-Csv -LiteralPath $csv | Where-Object {
 $denied = @($parent | Where-Object {
     $_.Result -match 'DENIED|PRIVILEGE|BLOCKED|INVALID IMAGE|POLICY'
 })
+$processEvents = @($parent | Where-Object {
+    $_.Operation -match 'Process|Thread|Load Image|CreateFileMapping'
+})
 $selected = @($denied | Select-Object -First 100 | ForEach-Object {
     [ordered]@{
         time = $_.'Time of Day'
@@ -101,9 +104,20 @@ $summary = [ordered]@{
     trace_bytes = (Get-Item -LiteralPath $trace).Length
     parent_event_count = $parent.Count
     parent_denied_count = $denied.Count
+    parent_process_event_count = $processEvents.Count
+    selected_process_events = @($processEvents | Select-Object -Last 40 | ForEach-Object {
+        [ordered]@{
+            time = $_.'Time of Day'
+            pid = $_.PID
+            operation = $_.Operation
+            object = Convert-PathClass $_.Path
+            result = $_.Result
+        }
+    })
     selected_denied = $selected
     raw_trace_uploaded = $false
 }
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'lpac-procmon-summary.json') -Encoding utf8NoBOM
 if ($parent.Count -eq 0) { throw 'ProcMon trace has no exact LPAC parent events' }
 if ($testExit -ne 101) { throw "Exact test exit changed: $testExit" }
+exit 0
