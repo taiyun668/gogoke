@@ -14,7 +14,7 @@ test("0.149.0 session initializes, starts a thread and binds a turn before steer
       calls.push({ method, params });
       if (method === "initialize") return { userAgent: "codex" };
       if (method === "config/read") return memoryOffConfig;
-      if (method === "thread/start") return { thread: { id: "thread-a" } };
+      if (method === "thread/start") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
       if (method === "turn/start") return { turn: { id: "turn-a", status: "inProgress" } };
       if (method === "turn/steer") return { turnId: "turn-a" };
       return {};
@@ -112,6 +112,20 @@ test("resumed Codex thread must report the verified working directory", async ()
   assert.equal(session.phase, "recovery-required");
 });
 
+test("new Codex thread must report the verified working directory", async () => {
+  const session = new Codex0149Session({
+    async request(method) {
+      if (method === "config/read") return memoryOffConfig;
+      if (method === "thread/start") return { thread: { id: "thread-a", cwd: "D:/other-project" } };
+      return {};
+    }, async notify() {},
+  }, "0.149.0");
+  await session.initialize("test");
+  await session.verifyMemoryOff("D:/isolated-instance");
+  await assert.rejects(session.startThread("D:/isolated-instance"), /different cwd/);
+  assert.equal(session.phase, "recovery-required");
+});
+
 test("native question uses exact server request ID and terminal event closes the turn", async () => {
   const session = new Codex0149Session({
     async request(method) {
@@ -147,7 +161,7 @@ test("append and compact have separate ACK and observed completion semantics", a
   const calls: string[] = [];
   const session = new Codex0149Session({
     async request(method) { calls.push(method); return method === "config/read" ? memoryOffConfig :
-      method === "thread/start" ? { thread: { id: "thread-a" } } : {}; },
+      method === "thread/start" ? { thread: { id: "thread-a", cwd: "D:/isolated-instance" } } : {}; },
     async notify() {},
   }, "0.149.0");
   await session.initialize("test");
@@ -192,7 +206,7 @@ test("malformed mutation ACK remains unknown and cannot be retried on this conne
   const session = new Codex0149Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
-      if (method === "thread/start") return { thread: { id: "thread-a" } };
+      if (method === "thread/start") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
       if (method === "thread/inject_items") return { accepted: true };
       return {};
     }, async notify() {},
@@ -229,7 +243,7 @@ test("terminal notification before turn/start response is retained without a pha
   const session = new Codex0149Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
-      if (method === "thread/start") return { thread: { id: "thread-a" } };
+      if (method === "thread/start") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
       if (method === "turn/start") return await new Promise<unknown>((resolve) => { release = resolve; });
       return {};
     }, async notify() {},

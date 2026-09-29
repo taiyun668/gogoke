@@ -217,7 +217,12 @@ export class Codex0149Session {
     this.requireMemoryOff("thread/start", targetCwd);
     if (this.threadIdValue !== null) throw new CodexProtocolError("INVALID_STATE", "thread already bound");
     const id = this.confirm("thread/start", await this.call("thread/start", { cwd: targetCwd }),
-      (value) => threadIdOf(value, "thread/start"));
+      (value) => {
+        const thread = object(object(value, "thread/start").thread, "thread/start.thread");
+        if (thread.cwd !== targetCwd)
+          throw new CodexProtocolError("INVALID_RESPONSE", "thread/start returned a different cwd");
+        return threadIdOf(value, "thread/start");
+      });
     this.threadIdValue = id;
     return id;
   }
