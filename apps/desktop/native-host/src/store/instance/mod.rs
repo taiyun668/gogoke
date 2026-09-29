@@ -7,8 +7,11 @@ mod temporary;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use catalog::{discover_program, CatalogError};
-pub(crate) use registry::{register_instance, record_observation, InstanceObservation,
-    ObservationRequest, ProgramObservation, Registration, RegistrationDisposition, RegistryError};
+pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
+    register_instance, record_observation,
+    InstanceObservation, ObservationRequest, ProgramObservation, Registration,
+    RegistrationDisposition, RegistrationJournalPhase, RegistrationPreflight,
+    RegistrationReplay, RegistryError};
 pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_temporary_home,
     CreateTemporaryHome, TemporaryHomeError, TemporaryHomeReceipt, TemporaryKind,
     TransitionTemporaryHome};

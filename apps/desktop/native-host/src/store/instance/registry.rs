@@ -197,10 +197,133 @@ fn observation_fingerprint(input: &ObservationRequest<'_>) -> Result<String, Reg
 fn operation(connection: &VerifiedDatabaseConnection<'_>, request_id: &str)
     -> Result<Option<(String, String, String, String)>, RegistryError> {
     let row = Statement::prepare(connection.as_ptr(),
-        "SELECT request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM gogoke_v37_instance_operations WHERE request_id=?1")?;
+        "SELECT request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations WHERE request_id=?1")?;
     row.bind_text(1, request_id)?;
     if row.step_row()? { Ok(Some((row.column_text(0)?, row.column_text(1)?, row.column_text(2)?, row.column_text(3)?))) }
     else { Ok(None) }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistrationJournalPhase { Preparing, Unknown, Applied, Denied, Failed }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistrationPreflight {
+    Unseen,
+    MatchingPrior(RegistrationJournalPhase),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistrationReplay { Unseen, Pending, Replayed }
+
+fn decode_framed_hex(value: &str) -> Result<Vec<Vec<u8>>, RegistryError> {
+    if value.is_empty() || value.len() > 262_144 || value.len() % 2 != 0 {
+        return Err(RegistryError::Unknown);
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let high = (pair[0] as char).to_digit(16).ok_or(RegistryError::Unknown)?;
+        let low = (pair[1] as char).to_digit(16).ok_or(RegistryError::Unknown)?;
+        bytes.push(((high << 4) | low) as u8);
+    }
+    let mut fields = Vec::new();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        if fields.len() == 16 || bytes.len() - offset < 8 {
+            return Err(RegistryError::Unknown);
+        }
+        let length = u64::from_be_bytes(bytes[offset..offset + 8].try_into()
+            .map_err(|_| RegistryError::Unknown)?);
+        offset += 8;
+        let length = usize::try_from(length).map_err(|_| RegistryError::Unknown)?;
+        if length > 65_536 || length > bytes.len() - offset {
+            return Err(RegistryError::Unknown);
+        }
+        fields.push(bytes[offset..offset + length].to_vec());
+        offset += length;
+    }
+    if fields.is_empty() { return Err(RegistryError::Unknown); }
+    Ok(fields)
+}
+
+/// Read-only request-ID preflight before catalog lookup, version checks or
+/// revision checks. `request_hex` already contains the exact raw request as
+/// the first length-framed field; no new schema or migration is necessary.
+/// MatchingPrior is only a replay candidate, never a replay receipt: the
+/// native home and full operation fingerprint still require reconciliation.
+pub(crate) fn preflight_register_request(connection: &VerifiedDatabaseConnection<'_>,
+    request_id: &str, instance_id: &str, request_bytes: &[u8])
+    -> Result<RegistrationPreflight, RegistryError> {
+    if !valid_atom(request_id) || !valid_id(instance_id)
+        || request_bytes.is_empty() || request_bytes.len() > 65_536 {
+        return Err(RegistryError::Invalid("registration preflight"));
+    }
+    // Bound the amount copied from a damaged journal and qualify main so a
+    // TEMP shadow cannot change the answer after schema initialization.
+    let row = Statement::prepare(connection.as_ptr(),
+        "SELECT CASE WHEN length(request_hex)<=262144 THEN request_hex ELSE '' END,target_id,phase \
+         FROM main.gogoke_v37_instance_operations WHERE request_id=?1")?;
+    row.bind_text(1, request_id)?;
+    if !row.step_row()? { return Ok(RegistrationPreflight::Unseen); }
+    let stored = row.column_text(0)?;
+    let target = row.column_text(1)?;
+    let phase = row.column_text(2)?;
+    let fields = decode_framed_hex(&stored)?;
+    let first = fields.first().ok_or(RegistryError::Unknown)?;
+    if first.as_slice() != request_bytes || target != instance_id {
+        return Err(RegistryError::RequestConflict);
+    }
+    // A registration fingerprint has exactly five framed fields, with the
+    // target repeated inside the durable fingerprint. Other F operations use
+    // distinct first-field markers and cannot become registration replays.
+    if fields.len() != 5 || fields.get(1).map(Vec::as_slice) != Some(instance_id.as_bytes()) {
+        return Err(RegistryError::Unknown);
+    }
+    let phase = match phase.as_str() {
+        "PREPARING" => RegistrationJournalPhase::Preparing,
+        "UNKNOWN" => RegistrationJournalPhase::Unknown,
+        "APPLIED" => RegistrationJournalPhase::Applied,
+        "DENIED" => RegistrationJournalPhase::Denied,
+        "FAILED" => RegistrationJournalPhase::Failed,
+        _ => return Err(RegistryError::Unknown),
+    };
+    Ok(RegistrationPreflight::MatchingPrior(phase))
+}
+
+/// Reconcile an exact prior registration without consulting the currently
+/// installed CLI. APPLIED alone is insufficient: the durable fingerprint,
+/// registered row, physical home and native receipt must all still agree.
+pub(crate) fn reconcile_register_replay(connection: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock, request_id: &str, instance_id: &str, request_bytes: &[u8])
+    -> Result<RegistrationReplay, RegistryError> {
+    match preflight_register_request(connection, request_id, instance_id, request_bytes)? {
+        RegistrationPreflight::Unseen => return Ok(RegistrationReplay::Unseen),
+        RegistrationPreflight::MatchingPrior(RegistrationJournalPhase::Preparing |
+            RegistrationJournalPhase::Unknown) => return Ok(RegistrationReplay::Pending),
+        RegistrationPreflight::MatchingPrior(RegistrationJournalPhase::Denied |
+            RegistrationJournalPhase::Failed) => return Err(RegistryError::Unknown),
+        RegistrationPreflight::MatchingPrior(RegistrationJournalPhase::Applied) => (),
+    }
+    let prior = operation(connection, request_id)?.ok_or(RegistryError::Unknown)?;
+    if prior.1 != instance_id || prior.2 != "APPLIED" {
+        return Err(RegistryError::Unknown);
+    }
+    let home = observed_home(root, instance_id)?.ok_or(RegistryError::Unknown)?;
+    if prior.3 != home.opaque() { return Err(RegistryError::Unknown); }
+    let (driver, home_ref, identity, digest, version, _, _) =
+        instance(connection, instance_id)?.ok_or(RegistryError::Unknown)?;
+    if home_ref != format!("instance-home-{instance_id}") || identity != home.opaque() {
+        return Err(RegistryError::Unknown);
+    }
+    let observed_at_commit = ProgramObservation { digest, version };
+    let original = Registration { request_id, request_bytes, instance_id,
+        driver_id: &driver, program: &observed_at_commit };
+    if prior.0 != fingerprint(&original)? || operation(connection, request_id)? != Some(prior) {
+        return Err(RegistryError::Unknown);
+    }
+    if observed_home(root, instance_id)? != Some(home) {
+        return Err(RegistryError::Unknown);
+    }
+    Ok(RegistrationReplay::Replayed)
 }
 
 fn pending_target(connection: &VerifiedDatabaseConnection<'_>, instance_id: &str)
@@ -214,7 +337,7 @@ fn pending_target(connection: &VerifiedDatabaseConnection<'_>, instance_id: &str
 fn instance(connection: &VerifiedDatabaseConnection<'_>, instance_id: &str)
     -> Result<Option<(String, String, String, String, String, String, String)>, RegistryError> {
     let row = Statement::prepare(connection.as_ptr(),
-        "SELECT driver_id,home_ref,home_identity,program_digest,version,install_state,login_state FROM gogoke_v37_instances WHERE instance_id=?1")?;
+        "SELECT driver_id,home_ref,home_identity,program_digest,version,install_state,login_state FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
     row.bind_text(1, instance_id)?;
     if row.step_row()? {
         Ok(Some((row.column_text(0)?,row.column_text(1)?,row.column_text(2)?,
@@ -457,12 +580,65 @@ mod tests {
         fixture(|connection, root| {
             let observed = program(root);
             let input = registration("req-1", b"register one", "instanceA", &observed);
+            assert_eq!(preflight_register_request(connection, "req-1", "instanceA", b"register one").unwrap(),
+                RegistrationPreflight::Unseen);
             assert_eq!(register_instance(connection, root, &input).unwrap(), RegistrationDisposition::Applied);
+            assert_eq!(preflight_register_request(connection, "req-1", "instanceA", b"register one").unwrap(),
+                RegistrationPreflight::MatchingPrior(RegistrationJournalPhase::Applied));
+            assert!(matches!(preflight_register_request(connection, "req-1", "instanceA",
+                b"different driver in raw request"), Err(RegistryError::RequestConflict)));
+            assert!(matches!(preflight_register_request(connection, "req-1", "instanceB",
+                b"register one"), Err(RegistryError::RequestConflict)));
             assert_eq!(register_instance(connection, root, &input).unwrap(), RegistrationDisposition::Replayed);
             let changed = registration("req-1", b"register two", "instanceA", &observed);
             assert!(matches!(register_instance(connection, root, &changed), Err(RegistryError::RequestConflict)));
             let other = registration("req-2", b"register one", "instanceA", &observed);
             assert!(matches!(register_instance(connection, root, &other), Err(RegistryError::InstanceConflict)));
+        });
+    }
+
+    #[test]
+    fn preflight_reads_legacy_framed_request_without_catalog_and_rejects_corrupt_journal() {
+        fixture(|connection, root| {
+            let observed = program(root);
+            let raw = br#"{"driverId":"codex"}"#;
+            let input = registration("legacy-1", raw, "instanceA", &observed);
+            let insert = Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES(?1,?2,?3,'PREPARING')").unwrap();
+            insert.bind_text(1, input.request_id).unwrap();
+            insert.bind_text(2, &fingerprint(&input).unwrap()).unwrap();
+            insert.bind_text(3, input.instance_id).unwrap();
+            insert.step_done().unwrap();
+            assert_eq!(preflight_register_request(connection, "legacy-1", "instanceA", raw).unwrap(),
+                RegistrationPreflight::MatchingPrior(RegistrationJournalPhase::Preparing));
+            assert_eq!(reconcile_register_replay(connection, root, "legacy-1", "instanceA", raw).unwrap(),
+                RegistrationReplay::Pending);
+            assert!(matches!(preflight_register_request(connection, "legacy-1", "instanceA", br#"{"driverId":"unknown"}"#),
+                Err(RegistryError::RequestConflict)));
+            assert!(matches!(preflight_register_request(connection, "legacy-1", "instanceA", br#"{ "driverId":"codex" }"#),
+                Err(RegistryError::RequestConflict)));
+            connection.execute("UPDATE main.gogoke_v37_instance_operations SET request_hex='not-hex' WHERE request_id='legacy-1'").unwrap();
+            assert!(matches!(preflight_register_request(connection, "legacy-1", "instanceA", raw),
+                Err(RegistryError::Unknown)));
+        });
+    }
+
+    #[test]
+    fn exact_replay_survives_missing_cli_but_requires_original_home_and_row() {
+        fixture(|connection, root| {
+            let observed = program(root);
+            let input = registration("replay-1", b"same raw bytes", "instanceA", &observed);
+            assert_eq!(reconcile_register_replay(connection, root, input.request_id,
+                input.instance_id, input.request_bytes).unwrap(), RegistrationReplay::Unseen);
+            register_instance(connection, root, &input).unwrap();
+            fs::remove_file(root.canonical_root().canonical_path.join("observed-cli.bin")).unwrap();
+            assert_eq!(reconcile_register_replay(connection, root, input.request_id,
+                input.instance_id, input.request_bytes).unwrap(), RegistrationReplay::Replayed);
+            assert!(matches!(reconcile_register_replay(connection, root, input.request_id,
+                input.instance_id, b"changed raw bytes"), Err(RegistryError::RequestConflict)));
+            connection.execute("UPDATE main.gogoke_v37_instances SET program_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000' WHERE instance_id='instanceA'").unwrap();
+            assert!(matches!(reconcile_register_replay(connection, root, input.request_id,
+                input.instance_id, input.request_bytes), Err(RegistryError::Unknown)));
         });
     }
 
