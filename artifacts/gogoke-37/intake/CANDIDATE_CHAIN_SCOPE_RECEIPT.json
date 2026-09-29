@@ -1,0 +1,41 @@
+{
+  "schema": "gogoke.37.candidate-chain-scope.v1",
+  "repository": "taiyun668/gogoke",
+  "state": "NARROW_EDIT_SCOPE_OWNER_FOLLOWUP_MAIN_ACTIVATION_PENDING",
+  "owner_followup": "继续推进",
+  "instruction_context": "The Owner followup directly follows the Controller's concrete request to authorize the five files in CANDIDATE-CHAIN-SCOPE-REQUEST.json. Controller applies that go-ahead to this precise scope; it is not a general scope expansion or main-merge instruction.",
+  "proposal": {
+    "path": "artifacts/gogoke-37/checkpoints/CANDIDATE-CHAIN-SCOPE-REQUEST.json",
+    "commit": "ed5f4e899cd3d7df3aec41376ac203c038d3ff01",
+    "blob": "05e40d2664a0182e604f9734417da62bcd1d49ae"
+  },
+  "plan_authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "unchanged": true
+  },
+  "allowed_source_branch": "codex/gogoke-37-l0",
+  "allowed_files": [
+    ".github/workflows/gogoke-candidate-sign.yml",
+    "tools/ci/gogoke-candidate-sign.ps1",
+    "tools/ci/gogoke-candidate-installed-preflight.ps1",
+    "tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1",
+    "tools/ci/gogoke-r206a-installer-negative.ps1"
+  ],
+  "purpose": "Restore the existing trusted-main candidate signer and narrowly adapt source, preflight and installed smoke to the authorized design37 exact successful frozen build.",
+  "boundaries": {
+    "candidate_key_and_public_key": "UNCHANGED",
+    "purpose": "CI_CANDIDATE_RESOURCE",
+    "secret_environment": "EXISTING_MAIN_ONLY_CANDIDATE_RESOURCE_SIGNING",
+    "signer_executes_source_code_or_installer": false,
+    "frozen_executable_bytes_rebuilt_or_resigned": false,
+    "candidate_install_domain": "EXISTING_ISOLATED_CANDIDATE_DOMAIN",
+    "formal_product_data_registration_or_shortcuts": "PROTECTED",
+    "plan_or_manifest_change": false,
+    "public_release": false,
+    "self_acceptance": false
+  },
+  "main_activation": "Prepare a separately reviewable CI-only PR with independent review; Owner main merge remains pending. Edit permission does not authorize a main merge.",
+  "non_claims": "This receipt records narrow construction scope. It is not a cryptographic release signature, completed signing run, candidate installation or milestone acceptance."
+}

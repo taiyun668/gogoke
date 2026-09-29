@@ -199,7 +199,8 @@ try {
         $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
         $env:GITHUB_SERVER_URL -cne 'https://github.com' -or
         $env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke' -or
-        $env:GITHUB_REF -cne 'refs/heads/gpt/s1-r4-r2-execution-r1' -or
+        $env:GITHUB_REF -cne 'refs/heads/codex/gogoke-37-l0' -or
+        $env:GITHUB_SHA -cne $ExpectedSourceCommit -or
         $env:GITHUB_RUN_ID -cne [string]$ExpectedSmokeRunId -or
         $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSmokeRunAttempt) {
         throw 'Negative installer test requires the exact GitHub-hosted Windows smoke run'

@@ -11,9 +11,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = 'taiyun668/gogoke'
-$branch = 'gpt/s1-r4-r2-execution-r1'
+$branch = 'codex/gogoke-37-l0'
 $sourceWorkflow = '.github/workflows/gogoke-desktop.yml'
 $signingWorkflow = '.github/workflows/gogoke-candidate-sign.yml'
+$authorizationMain = '8a984b6ac402d217a8897adaa4a7dcc56fbf68e3'
+$manifestBlob = '2d3b34a7903e7b0223d043786863706c2297c78c'
+$receiptBlob = '8020812e3abf35887829f50c78ec9f513272bf70'
+$manifestPath = 'docs/design/gogoke-37-plan-v1/MANIFEST.json'
+$receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
 $maxArchiveBytes = 1073741824L
 $maxExtractedBytes = 1073741824L
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -200,7 +205,7 @@ function Assert-SignedManifest([string]$Directory, [string]$SourceCommit) {
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
     $env:GITHUB_SERVER_URL -cne 'https://github.com' -or $env:GITHUB_REPOSITORY -cne $repo -or
     $env:GITHUB_REF -cne "refs/heads/$branch" -or
-    $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$' -or
+    $env:GITHUB_SHA -cne $ExpectedSourceCommit -or
     $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') {
     throw 'Candidate preflight requires the exact controlled branch workflow checkout'
 }
@@ -218,6 +223,19 @@ if (-not [IO.Path]::IsPathFullyQualified($script:ghPath)) { throw 'gh executable
 $signRun = Read-Api "repos/$repo/actions/runs/$SigningRunId"
 Assert-Run $signRun $SigningRunId $SigningRunAttempt $signRun.head_sha 'main' $signingWorkflow 'gogoke candidate resource signing'
 if ($signRun.head_sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Trusted signing main SHA is malformed' }
+foreach ($revision in @('main', $signRun.head_sha, $ExpectedSourceCommit)) {
+    $manifestMetadata = Read-Api "repos/$repo/contents/$manifestPath`?ref=$revision"
+    $receiptMetadata = Read-Api "repos/$repo/contents/$receiptPath`?ref=$revision"
+    if ($manifestMetadata.type -cne 'file' -or $manifestMetadata.sha -cne $manifestBlob -or
+        $receiptMetadata.type -cne 'file' -or $receiptMetadata.sha -cne $receiptBlob) {
+        throw 'Signing main or source revision differs from the authorized design 37 blobs'
+    }
+}
+$comparison = Read-Api "repos/$repo/compare/$authorizationMain...$ExpectedSourceCommit"
+if ($comparison.status -cnotin @('ahead', 'identical') -or
+    $comparison.merge_base_commit.sha -cne $authorizationMain) {
+    throw 'Source revision is not descended from the authorized main commit'
+}
 Assert-UniqueJob $SigningRunId $SigningRunAttempt 'Verify source run and sign candidate resource bytes'
 # The source run ID is in the name, but only the signed manifest can provide it.
 # Resolve the unique artifact ID first, then verify its final name against the signed manifest.
@@ -245,6 +263,9 @@ if ($signedSetupName -cne $expectedSetupName) { throw 'Signed setup name differs
 
 $sourceRun = Read-Api "repos/$repo/actions/runs/$($manifest.RunId)"
 Assert-Run $sourceRun $manifest.RunId $manifest.RunAttempt $ExpectedSourceCommit $branch $sourceWorkflow 'gogoke desktop CI'
+if ($sourceRun.event -cne 'workflow_dispatch') {
+    throw 'Source revision was not built by the exact dispatch that produces the separate negative installer'
+}
 foreach ($name in @(
     'Browser build and tests', 'Generate locked dependency notices',
     'Clean Windows build (frozen)', 'Clean Windows build (repro)',
