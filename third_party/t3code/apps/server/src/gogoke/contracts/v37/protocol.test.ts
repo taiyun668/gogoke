@@ -7,6 +7,10 @@ import { runV37Conformance } from "./conformance.ts";
 import { V37FakePort, V37FakeStore } from "./fake.ts";
 import { runV37CoreContractCases } from "./coreConformance.ts";
 import { V37CoreFakePort, V37CoreFakeStore } from "./coreFake.ts";
+import { runV37M1ContractCases } from "./m1Conformance.ts";
+import { V37M1FakePort, V37M1FakeStore } from "./m1Fake.ts";
+import { runV37M2ContractCases } from "./m2Conformance.ts";
+import { V37M2FakePort, V37M2FakeStore } from "./m2Fake.ts";
 import { decodeV37Receipt, decodeV37Request, encodeV37Request, V37_SCHEMA, V37UnwiredPort, type V37Request, type V37TrustedCaller } from "./protocol.ts";
 
 const caller: V37TrustedCaller = {
@@ -21,6 +25,50 @@ function request(family: V37Request["family"], operation: V37Request["operation"
 }
 
 describe("design 37 closed operation protocol", () => {
+  it("runs reusable side, policy and worktree behavior cases on the fake", async () => {
+    await runV37M2ContractCases((caseId) => {
+      const store = new V37M2FakeStore();
+      const principal = caseId.startsWith("worktree-") ?
+        { ...caller, seatId: "seatA", role: "seat" as const } : caller;
+      const options = {
+        caller: () => principal,
+        granted: () => true,
+        verifyRepository: (repositoryId: string) => repositoryId === "verifiedRepo",
+        verifyIsolation: () => true,
+        stopConfirmed: () => caseId !== "worktree-no-stop",
+        activeAdmissions: () => caseId === "worktree-active-reservation" ? 1 : 0,
+        mergeGranted: () => caseId !== "worktree-no-grant",
+        performMerge: () => caseId === "worktree-merge-unknown" ? "unknown" as const : "merged" as const,
+        classify: () => "SINGLE" as const,
+        removeSideLedgerTier: () => caseId !== "side-delete-denied",
+        scheduleTrigger: () => true,
+        cancelTrigger: () => true,
+      };
+      return { port: new V37M2FakePort(store, options),
+        reconstruct: () => new V37M2FakePort(store, options) };
+    });
+  });
+  it("runs reusable QCard, seat and instance behavior cases on the fake", async () => {
+    await runV37M1ContractCases((caseId) => {
+      const store = new V37M1FakeStore();
+      store.templates.set("templateA", { instruction: "default" });
+      let grant = true;
+      const principal = caseId === "seat-lead" ?
+        { ...caller, seatId: "leadSeat", role: "lead" as const } : caller;
+      const options = {
+        caller: () => principal,
+        granted: () => grant,
+        nativeCardCapability: () => caseId === "card-native",
+        verifyMemoryDisabled: () => caseId !== "instance-unverified",
+        verifyProgramDigest: (digest: string) =>
+          digest === "verifiedDigest" || digest === "newVerifiedDigest",
+        isSeatBusy: () => caseId === "seat-busy",
+        capacity: () => "3",
+      };
+      return { port: new V37M1FakePort(store, options),
+        reconstruct: () => new V37M1FakePort(store, options), revoke: () => { grant = false; } };
+    });
+  });
   it("runs operational session, ledger and inbox contract cases on the fake", async () => {
     await runV37CoreContractCases((caseId) => {
       const store = new V37CoreFakeStore();
@@ -56,10 +104,12 @@ describe("design 37 closed operation protocol", () => {
 
   it("does not pretend the unwired UI integrator can forward a receipt", async () => {
     const port = new V37FakePort(new V37FakeStore(), () => caller, () => true);
-    const result = decodeV37Receipt(await port.execute(encodeV37Request(
-      request("K-UI", "actions", "uiActionA"))));
-    assert.equal(result.status, "UNSUPPORTED");
-    assert.equal(result.revision, result.previousRevision);
+    for (const operation of ["actions", "read-models"] as const) {
+      const result = decodeV37Receipt(await port.execute(encodeV37Request(
+        request("K-UI", operation, `ui${operation}`))));
+      assert.equal(result.status, "UNSUPPORTED");
+      assert.equal(result.revision, result.previousRevision);
+    }
     await assert.rejects(() => runV37Conformance(port,
       request("K-UI", "actions", "uiActionB")), /requires exact forwarding cases/);
   });

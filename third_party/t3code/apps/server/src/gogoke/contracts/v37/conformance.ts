@@ -1,5 +1,5 @@
 import { canonicalJson } from "../strictJson.ts";
-import { V37_DURABLE_OWNER, V37_READ_OPERATIONS } from "./catalog.ts";
+import { V37_READ_OPERATIONS } from "./catalog.ts";
 import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37Request } from "./protocol.ts";
 
 /** Both the fake and each real implementation must use these same behavioral cases. */
@@ -26,8 +26,7 @@ export async function runV37Conformance(
     if (first.revision !== first.previousRevision) {
       throw new Error("V37_CONFORMANCE: read mutated durable revision");
     }
-  } else if (V37_DURABLE_OWNER[request.family] !== "NONE" &&
-             BigInt(first.revision) !== BigInt(first.previousRevision) + 1n) {
+  } else if (BigInt(first.revision) !== BigInt(first.previousRevision) + 1n) {
     throw new Error("V37_CONFORMANCE: write did not advance one durable revision");
   }
 }
