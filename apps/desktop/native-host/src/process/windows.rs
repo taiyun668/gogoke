@@ -2168,6 +2168,27 @@ mod tests {
     }
 
     #[test]
+    fn seat_pipe_child_helper() {
+        use std::io::{Read, Write};
+        let Some(path) = std::env::var_os("GOGOKE_TEST_SEAT_PIPE") else { return; };
+        let mut pipe = std::fs::OpenOptions::new().read(true).write(true)
+            .open(PathBuf::from(path))
+            .unwrap_or_else(|error| {
+                let detail = format!("OpenOptions(seat pipe): {error}; raw_os_error={:?}",
+                    error.raw_os_error());
+                std::fs::write("pipe-client-error.txt", &detail).expect("write direct pipe error");
+                panic!("{detail}");
+            });
+        pipe.write_all(&[0x47]).expect("seat transport preface");
+        let mut length = [0; 4];
+        pipe.read_exact(&mut length).expect("native Job admission ack length");
+        assert_eq!(u32::from_le_bytes(length), 2);
+        let mut ack = [0; 2];
+        pipe.read_exact(&mut ack).expect("native Job admission ack");
+        assert_eq!(&ack, b"ok");
+    }
+
+    #[test]
     fn real_app_container_descendant_reaches_native_seat_pipe() {
         use crate::ipc::PrivatePipeListener;
         use std::os::windows::ffi::OsStrExt;
@@ -2184,19 +2205,29 @@ mod tests {
         drop(profile);
         let exe = home.join("cmd.exe");
         std::fs::copy(system_cmd(), &exe).expect("isolated command fixture");
+        let helper = home.join("seat-pipe-helper.exe");
+        std::fs::copy(std::env::current_exe().expect("native test image"), &helper)
+            .expect("isolated native test helper");
         let endpoint = format!("lpac-{}-{nonce}", std::process::id());
         let listener = PrivatePipeListener::bind_app_container(&endpoint, &package_sid)
             .expect("seat listener");
         let pipe_path = listener.path().to_owned();
         let (sender, receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            assert!(sender.send(listener.accept_app_container()
-                .map(|mut connection| {
-                    let package = connection.peer_package_sid().map(str::to_owned);
-                    let peer = connection.take_peer_process().expect("seat peer process handle");
-                    assert!(connection.take_peer_process().is_none(), "peer handle moves once");
-                    (package, peer)
-                })).is_ok(), "seat result receiver");
+            let mut connection = match listener.accept_app_container() {
+                Ok(connection) => connection,
+                Err(error) => {
+                    assert!(sender.send(Err(error)).is_ok(), "seat error receiver");
+                    return;
+                }
+            };
+            let package = connection.peer_package_sid().map(str::to_owned);
+            let peer = connection.take_peer_process().expect("seat peer process handle");
+            assert!(connection.take_peer_process().is_none(), "peer handle moves once");
+            assert!(sender.send(Ok((package, peer))).is_ok(), "seat result receiver");
+            release_receiver.recv_timeout(Duration::from_secs(15)).expect("host admission result");
+            connection.write_frame(b"ok").expect("native Job admission ack");
         });
         let mut launch = ProcessLaunch::new(&exe);
         launch.current_directory = Some(home.clone());
@@ -2206,15 +2237,17 @@ mod tests {
             ("SystemRoot".into(), std::env::var("SystemRoot").unwrap()),
             ("USERPROFILE".into(), home.to_string_lossy().into_owned()),
             ("LOCALAPPDATA".into(), home.to_string_lossy().into_owned()),
+            ("GOGOKE_TEST_SEAT_PIPE".into(), pipe_path),
         ]);
-        launch.arguments = vec!["/V:ON".into(), "/D".into(), "/C".into(),
-            format!("cmd.exe /D /C \"echo G > {pipe_path}\" & echo !errorlevel! > pipe-result.txt")];
+        launch.arguments = vec!["/D".into(), "/C".into(),
+            "seat-pipe-helper.exe --exact process::windows::tests::seat_pipe_child_helper --nocapture".into()];
         let mut custodian = ProcessCustodian::new().expect("seat custodian");
         let prepared = custodian.prepare(&request(launch)).expect("prepared LPAC child");
         custodian.activate(&prepared).expect("activated LPAC child");
-        let accepted = receiver.recv_timeout(Duration::from_secs(5))
-            .expect("LPAC pipe connection timed out");
-        server.join().expect("seat listener thread");
+        let accepted = receiver.recv_timeout(Duration::from_secs(15))
+            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; direct client error={:?}; parent_exit={:?}",
+                std::fs::read_to_string(home.join("pipe-client-error.txt")),
+                process_exit_code(custodian.active(&prepared.ticket).unwrap().process.raw())));
         let (accepted, peer) = accepted.expect("LPAC peer identity");
         assert_ne!(peer.pid(), 0);
         assert_ne!(peer.pid(), prepared.identity.pid,
@@ -2232,17 +2265,17 @@ mod tests {
         drop(other);
         assert!(!custodian.peer_in_active_job(&unrelated.ticket, &peer)
             .expect("missing Job is denied"));
+        release_sender.send(()).expect("admit verified Job peer");
+        server.join().expect("seat listener thread");
         assert!(custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(10))
             .expect("LPAC exit"));
-        let child_result = std::fs::read_to_string(home.join("pipe-result.txt"))
-            .expect("LPAC pipe result");
-        assert_eq!(child_result.trim(), "0", "LPAC pipe open failed: {}", child_result.trim());
+        assert!(!home.join("pipe-client-error.txt").exists(), "LPAC pipe client reported failure");
         assert_eq!(accepted.as_deref(), Some(package_sid.as_str()));
         drop(peer);
         drop(custodian);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
-        std::fs::remove_file(home.join("pipe-result.txt")).unwrap();
+        std::fs::remove_file(helper).unwrap();
         std::fs::remove_file(exe).unwrap();
         std::fs::remove_dir(home).unwrap();
     }

@@ -87,8 +87,9 @@ fn validate_endpoint(endpoint: &str) -> Result<(), PrivateIpcError> {
 }
 
 fn validate_package_sid(value: &str) -> Result<(), PrivateIpcError> {
-    if value.len() > 180 || !value.starts_with("S-1-15-2-") ||
-        !value.bytes().all(|byte| byte.is_ascii_digit() || byte == b'-') {
+    let suffix = value.strip_prefix("S-1-15-2-").unwrap_or("");
+    if value.len() > 180 || suffix.is_empty() ||
+        !suffix.split('-').all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())) {
         return Err(PrivateIpcError::InvalidPackageSid);
     }
     Ok(())
@@ -1036,5 +1037,13 @@ mod portable_tests {
         assert!(peer_sid_is_admitted("S-1-5-21-100", "S-1-5-21-100"));
         assert!(!peer_sid_is_admitted("S-1-5-21-100", "S-1-5-21-101"));
         assert!(!peer_sid_is_admitted("S-1-5-21-100", ""));
+    }
+
+    #[test]
+    fn package_sid_validator_accepts_the_literal_sid_prefix() {
+        assert!(validate_package_sid("S-1-15-2-1-2-3-4-5-6-7-8").is_ok());
+        for invalid in ["S-1-15-3-1", "S-1-15-2-", "S-1-15-2-1--2", "S-1-15-2-1-", "S-1-15-2-1x"] {
+            assert!(matches!(validate_package_sid(invalid), Err(PrivateIpcError::InvalidPackageSid)));
+        }
     }
 }
