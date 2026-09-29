@@ -2468,7 +2468,31 @@ mod tests {
             Ok(mut process) => format!("signed_child=OK; exit={:?}", process.wait()),
             Err(error) => format!("signed_child=WIN32_{:?}; detail={error}", error.raw_os_error()),
         };
-        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}"))
+        // Separate std::process::Command's path/stdio preparation from the
+        // Windows process-creation API on the same LPAC token. This control
+        // uses an absolute signed image and does not connect to the seat pipe.
+        let signed = system_cmd();
+        let application = wide_null(signed.as_os_str());
+        let mut command = wide_null(OsStr::new(&format!("\"{}\" /D /C exit 0", signed.display())));
+        let mut startup: StartupInfoW = unsafe { zeroed() };
+        startup.cb = size_of::<StartupInfoW>() as u32;
+        let mut info: ProcessInformation = unsafe { zeroed() };
+        let created = unsafe { CreateProcessW(application.as_ptr(), command.as_mut_ptr(),
+            ptr::null(), ptr::null(), 0, CREATE_NO_WINDOW, ptr::null(), ptr::null(),
+            &mut startup, &mut info) };
+        let raw_control = if created == 0 {
+            format!("raw_signed_child=WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+        } else {
+            let process = OwnedHandle::new(info.process).expect("raw child process handle");
+            let _thread = OwnedHandle::new(info.thread).expect("raw child thread handle");
+            let wait = unsafe { WaitForSingleObject(process.raw(), 5000) };
+            if wait != 0 {
+                unsafe { TerminateProcess(process.raw(), 1) };
+                unsafe { WaitForSingleObject(process.raw(), 5000) };
+            }
+            format!("raw_signed_child=OK; wait={wait}")
+        };
+        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}; {raw_control}"))
             .expect("persist direct child launch result");
     }
 
