@@ -179,6 +179,54 @@ fn capability_matches(expected: &str, observed: &str) -> bool {
 /// Authenticated main-service channel. The capability authenticates only the
 /// service process instance; each authority-sensitive operation keeps its own
 /// Product Authority checks. It is never an OwnerIssuer or reusable grant.
+pub struct ServiceFrameSession {
+    capability: String,
+    authenticated: bool,
+    closed: bool,
+}
+
+impl ServiceFrameSession {
+    pub(crate) fn new(capability: &str) -> Result<Self, OrchestrationError> {
+        if !valid_service_capability(capability) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok(Self { capability: capability.to_owned(), authenticated: false, closed: false })
+    }
+}
+
+/// One bounded service frame on the single native database executor. Pipe I/O
+/// may live on another thread, but it never receives the issuer or connection.
+pub(crate) fn dispatch_service_frame(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    process_custodian: &mut crate::process::ProcessCustodian,
+    state: &mut ServiceFrameSession,
+    frame: &[u8],
+) -> Result<(Vec<u8>, bool), OrchestrationError> {
+    if state.closed { return Err(OrchestrationError::AccessDenied); }
+    let line = std::str::from_utf8(frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
+    if !state.authenticated {
+        let decoded = decode_operation_frame(line.as_bytes()).map_err(protocol_error)?;
+        let fields = authority_fields(line)?;
+        if decoded.name != "AuthenticateService" || fields.len() != 2
+            || required(&fields, "operation")? != "AuthenticateService"
+            || !capability_matches(&state.capability, required(&fields, "capability")?) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        state.authenticated = true;
+        return Ok((b"OK\t{\"authenticated\":true}\t0us".to_vec(), false));
+    }
+    let started = Instant::now();
+    let handled = handle_authenticated_line_with_process(connection, owner, Some(process_custodian), line);
+    let should_stop = successful_shutdown(line, &handled);
+    let reply = match handled {
+        Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
+        Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
+    };
+    state.closed = should_stop;
+    Ok((reply.into_bytes(), should_stop))
+}
+
 pub(crate) fn serve_authenticated_pipe(
     connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
@@ -186,31 +234,12 @@ pub(crate) fn serve_authenticated_pipe(
     pipe: &PrivatePipeConnection,
     expected_capability: &str,
 ) -> Result<(), OrchestrationError> {
-    if !valid_service_capability(expected_capability) {
-        return Err(OrchestrationError::AccessDenied);
-    }
-    let frame = pipe.read_frame().map_err(OrchestrationError::Ipc)?;
-    let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
-    let decoded = decode_operation_frame(line.as_bytes()).map_err(protocol_error)?;
-    let fields = authority_fields(line)?;
-    if decoded.name != "AuthenticateService" || fields.len() != 2
-        || required(&fields, "operation")? != "AuthenticateService"
-        || !capability_matches(expected_capability, required(&fields, "capability")?) {
-        return Err(OrchestrationError::AccessDenied);
-    }
-    pipe.write_frame(b"OK\t{\"authenticated\":true}\t0us")
-        .map_err(OrchestrationError::Ipc)?;
+    let mut state = ServiceFrameSession::new(expected_capability)?;
     loop {
         let frame = pipe.read_frame().map_err(OrchestrationError::Ipc)?;
-        let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
-        let started = Instant::now();
-        let handled = handle_authenticated_line_with_process(connection, owner, Some(process_custodian), line);
-        let should_stop = successful_shutdown(line, &handled);
-        let reply = match handled {
-            Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
-            Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
-        };
-        pipe.write_frame(reply.as_bytes()).map_err(OrchestrationError::Ipc)?;
+        let (reply, should_stop) = dispatch_service_frame(
+            connection, owner, process_custodian, &mut state, &frame)?;
+        pipe.write_frame(&reply).map_err(OrchestrationError::Ipc)?;
         if should_stop { break; }
     }
     Ok(())

@@ -20,7 +20,8 @@ use super::authority::{
 use super::context::{ContextCommand, ContextReceipt};
 use super::orchestration::OrchestrationError;
 use super::same_open::{OpenLedger, SameOpenError, VerifiedDatabaseConnection};
-use super::session::{open_product_database, serve_authenticated_pipe, serve_lines, serve_pipe};
+use super::session::{dispatch_service_frame, open_product_database, serve_authenticated_pipe,
+    serve_lines, serve_pipe, ServiceFrameSession};
 use crate::ipc::PrivatePipeConnection;
 use crate::root::RootLock;
 use crate::process::ProcessCustodian;
@@ -67,6 +68,19 @@ impl<'root> ProductDatabase<'root> {
         service_capability: &str,
     ) -> Result<()> {
         serve_authenticated_pipe(&mut self.connection, &self.owner, &mut self.process_custodian, pipe, service_capability)
+    }
+
+    /// A main-thread service frame session for the multiplexed native loop.
+    /// The returned state is opaque; the service pipe never owns native issuer
+    /// or database state even when its I/O runs on another thread.
+    pub fn begin_service_frames(&self, service_capability: &str) -> Result<ServiceFrameSession> {
+        ServiceFrameSession::new(service_capability)
+    }
+
+    pub fn dispatch_service_frame(&mut self, state: &mut ServiceFrameSession,
+        frame: &[u8]) -> Result<(Vec<u8>, bool)> {
+        dispatch_service_frame(&mut self.connection, &self.owner,
+            &mut self.process_custodian, state, frame)
     }
 
     pub fn serve_lines<R: BufRead, W: Write>(&mut self, input: R, output: &mut W) -> Result<()> {
