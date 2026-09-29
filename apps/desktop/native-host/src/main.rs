@@ -45,7 +45,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     io::stdout().flush()?;
     let pipe = listener.accept_current_user()?;
     product.serve_authenticated_pipe(&pipe, &service_capability)?;
-    product.close_checked().ok();
+    product.close_checked()?;
     drop(lock);
     Ok(())
 }
