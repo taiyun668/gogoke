@@ -90,7 +90,7 @@ pub(super) struct ActiveOwnerLogin {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum OwnerLoginAction { Begin, Status, Cancel }
+enum OwnerLoginAction { Begin, Status, Cancel, Refresh }
 
 struct OwnerLoginCommand {
     action: OwnerLoginAction,
@@ -122,6 +122,7 @@ fn owner_login_command(frame: &[u8]) -> Result<OwnerLoginCommand> {
         "begin" => OwnerLoginAction::Begin,
         "status" => OwnerLoginAction::Status,
         "cancel" => OwnerLoginAction::Cancel,
+        "refresh" => OwnerLoginAction::Refresh,
         _ => return Err(OrchestrationError::Invalid("owner login action")),
     };
     let instance_id = string(&mut fields, "instanceId")?;
@@ -384,6 +385,13 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn dispatch_owner_login_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let command = owner_login_command(frame)?;
+        if command.action == OwnerLoginAction::Refresh {
+            if matches!(self.owner_login, Some(OwnerLoginSession::Active(_))) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let state = self.owner_login_account_state(&command)?;
+            return Ok(owner_login_reply(&command, &state, ""));
+        }
         if let Some(session) = &self.owner_login {
             if !same_owner_login(session, &command) {
                 if matches!(session, OwnerLoginSession::Active(_)) {
@@ -402,6 +410,7 @@ impl<'root> ProductDatabase<'root> {
             OwnerLoginAction::Begin => self.begin_owner_device_login(&command),
             OwnerLoginAction::Status => self.status_owner_device_login(&command),
             OwnerLoginAction::Cancel => self.cancel_owner_device_login(&command),
+            OwnerLoginAction::Refresh => unreachable!("refresh handled before login custody"),
         }
     }
 
@@ -1119,6 +1128,11 @@ mod tests {
         let home = instance::resolve_codex_instance_home(&product.connection,
             &root, "instanceA").unwrap();
         let runtime = home.path.join("gogoke-login-runtime");
+        let query = request("login-state", "queryBeforeObservation", 1, "{}");
+        let before = product.dispatch_user_request(&query).unwrap();
+        assert!(String::from_utf8(before).unwrap().contains("\"state\":\"UNKNOWN\""));
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0",
+            "K-INSTANCE login-state is a read; it must not start a provider process");
         let first = request("login-state", "loginReadA", 1, "{}");
         let observed_bytes = product.dispatch_owner_login_observation(&first).unwrap();
         let observed = decode_receipt(&observed_bytes).unwrap();
@@ -1132,6 +1146,9 @@ mod tests {
         assert!(!observed_text.contains("token"));
         assert_eq!(scalar(&product,
             "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        let query = request("login-state", "queryAfterObservation", 2, "{}");
+        let after = product.dispatch_user_request(&query).unwrap();
+        assert!(String::from_utf8(after).unwrap().contains("\"state\":\"LOGGED_OUT\""));
         assert!(!runtime.exists());
         let replay = decode_receipt(&product.dispatch_owner_login_observation(&first).unwrap()).unwrap();
         assert_eq!(replay.status, V37Status::Replayed);

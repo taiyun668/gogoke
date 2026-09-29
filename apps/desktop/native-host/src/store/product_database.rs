@@ -215,7 +215,7 @@ impl<'root> ProductDatabase<'root> {
             return match request.operation.as_str() {
                 "register" => self.register_user_instance(request),
                 "install-state" => self.read_user_instance(request, false),
-                "login-state" => self.dispatch_owner_login_observation(request),
+                "login-state" => self.read_user_instance(request, true),
                 "concurrency-input" => self.read_user_instance_capacity(request),
                 _ => Ok(encode_receipt(request, V37Status::Unsupported,
                     request.expected_revision, request.expected_revision, Default::default())),

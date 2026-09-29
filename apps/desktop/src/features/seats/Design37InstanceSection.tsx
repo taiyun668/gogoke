@@ -183,6 +183,13 @@ export function Design37InstanceSection() {
         setLoginState(reply.state);
         setDeviceOutput(reply.output);
         if (reply.state === "PENDING") return;
+      } else {
+        const requestId = nextRequestId();
+        const raw = await invoke<string>("gogoke_design37_user_operation", {
+          frame: JSON.stringify({ schema: "gogoke.37.owner-login.v1", action: "refresh",
+            instanceId, requestId, expectedRevision: revision }),
+        });
+        setCliState(readLoginReply(raw, instanceId, requestId).state);
       }
       const requestId = nextRequestId();
       const raw = await invoke<string>("gogoke_design37_user_operation", {
