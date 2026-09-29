@@ -29,7 +29,7 @@ impl From<SameOpenError> for AdmissionError {
     }
 }
 
-const SCHEMA: [(&str, &str); 4] = [
+const SCHEMA: [(&str, &str); 5] = [
     ("gogoke_v37_h_owner_binding",
      "CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('SESSION','CALL')),owner_id TEXT NOT NULL,generation TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('ACTIVE','REVOKED')),UNIQUE(instance_id,domain_id,kind,owner_id,generation)) STRICT"),
     ("gogoke_v37_h_claim",
@@ -38,6 +38,8 @@ const SCHEMA: [(&str, &str); 4] = [
      "CREATE TABLE gogoke_v37_h_operation(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,raw_hex TEXT NOT NULL,operation TEXT NOT NULL,session_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('APPLIED','UNKNOWN')),previous_revision INTEGER NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(domain_id,request_id)) STRICT"),
     ("gogoke_v37_h_home_fence",
      "CREATE TABLE gogoke_v37_h_home_fence(home_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('SESSION','CALL')),owner_id TEXT NOT NULL,generation TEXT NOT NULL,fence_id TEXT NOT NULL UNIQUE) STRICT"),
+    ("gogoke_v37_h_stdin_journal",
+     "CREATE TABLE gogoke_v37_h_stdin_journal(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,operation TEXT NOT NULL,ticket TEXT NOT NULL,process_operation_id TEXT NOT NULL,custodian_nonce TEXT NOT NULL,session_id TEXT NOT NULL,generation TEXT NOT NULL,request_hex TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARED','UNKNOWN','RECEIPTED')),receipt_hex TEXT,receipt_status TEXT CHECK(receipt_status IS NULL OR receipt_status IN ('APPLIED','REPLAYED','DENIED','STALE','CONFLICT','UNSUPPORTED','UNKNOWN','FAILED')),expected_revision TEXT NOT NULL,receipt_previous_revision TEXT,receipt_revision TEXT,PRIMARY KEY(domain_id,request_id),CHECK((phase='PREPARED' AND receipt_hex IS NULL AND receipt_status IS NULL AND receipt_previous_revision IS NULL AND receipt_revision IS NULL) OR (phase='UNKNOWN' AND ((receipt_hex IS NULL AND receipt_status IS NULL AND receipt_previous_revision IS NULL AND receipt_revision IS NULL) OR (receipt_hex IS NOT NULL AND receipt_status='UNKNOWN' AND receipt_previous_revision IS NOT NULL AND receipt_revision IS NOT NULL))) OR (phase='RECEIPTED' AND receipt_hex IS NOT NULL AND receipt_status IS NOT NULL AND receipt_status<>'UNKNOWN' AND receipt_previous_revision IS NOT NULL AND receipt_revision IS NOT NULL))) STRICT"),
 ];
 
 fn valid(value: &str) -> bool {

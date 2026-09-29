@@ -25,6 +25,20 @@ pub(crate) struct V37Request {
     pub(crate) payload: BTreeMap<JsonString, Json>,
 }
 
+pub(crate) struct V37Receipt {
+    /// Exact bytes read from the native adapter. The journal retains these
+    /// bytes unchanged; the parsed fields below are only for correlation.
+    pub(crate) raw_bytes: Vec<u8>,
+    pub(crate) family: String,
+    pub(crate) operation: String,
+    pub(crate) request_id: String,
+    pub(crate) target_id: String,
+    pub(crate) status: V37Status,
+    pub(crate) previous_revision: u64,
+    pub(crate) revision: u64,
+    result: BTreeMap<JsonString, Json>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum V37Status {
     Applied,
@@ -38,7 +52,7 @@ pub(crate) enum V37Status {
 }
 
 impl V37Status {
-    fn wire(self) -> &'static str {
+    pub(crate) fn wire(self) -> &'static str {
         match self {
             Self::Applied => "APPLIED",
             Self::Replayed => "REPLAYED",
@@ -164,6 +178,77 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<V37Request, V37WireError> {
         expected_revision, payload })
 }
 
+fn decode_revision(value: String, name: &'static str) -> Result<u64, V37WireError> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) ||
+        !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(V37WireError::Invalid(name));
+    }
+    value.parse::<u64>().map_err(V37WireError::Revision)
+}
+
+fn decode_status(value: String) -> Result<V37Status, V37WireError> {
+    match value.as_str() {
+        "APPLIED" => Ok(V37Status::Applied),
+        "REPLAYED" => Ok(V37Status::Replayed),
+        "DENIED" => Ok(V37Status::Denied),
+        "STALE" => Ok(V37Status::Stale),
+        "CONFLICT" => Ok(V37Status::Conflict),
+        "UNSUPPORTED" => Ok(V37Status::Unsupported),
+        "UNKNOWN" => Ok(V37Status::Unknown),
+        "FAILED" => Ok(V37Status::Failed),
+        _ => Err(V37WireError::Invalid("status")),
+    }
+}
+
+/// Decodes the frozen receipt envelope emitted by the adapter. This parser is
+/// separate from request decoding so a request-shaped frame, output event, or
+/// model value cannot be used as a completion.
+pub(crate) fn decode_receipt(bytes: &[u8]) -> Result<V37Receipt, V37WireError> {
+    if bytes.len() > MAX_BYTES {
+        return Err(V37WireError::Invalid("frame size"));
+    }
+    let text = std::str::from_utf8(bytes).map_err(V37WireError::Utf8)?;
+    let Json::Object(mut fields) = Parser::parse(text).map_err(V37WireError::Json)? else {
+        return Err(V37WireError::Invalid("object"));
+    };
+    if fields.len() != 9 || string(&mut fields, "schema")? != SCHEMA {
+        return Err(V37WireError::Invalid("schema"));
+    }
+    let family = string(&mut fields, "family")?;
+    let operation = string(&mut fields, "operation")?;
+    if !operation_admitted(&family, &operation) {
+        return Err(V37WireError::Invalid("operation"));
+    }
+    let request_id = string(&mut fields, "requestId")?;
+    let target_id = string(&mut fields, "targetId")?;
+    if !identifier(&request_id) || !identifier(&target_id) {
+        return Err(V37WireError::Invalid("identity"));
+    }
+    let status = decode_status(string(&mut fields, "status")?)?;
+    let previous_revision = decode_revision(
+        string(&mut fields, "previousRevision")?,
+        "previousRevision",
+    )?;
+    let revision = decode_revision(string(&mut fields, "revision")?, "revision")?;
+    let Json::Object(result) = field(&mut fields, "result")? else {
+        return Err(V37WireError::Invalid("result"));
+    };
+    if !fields.is_empty() {
+        return Err(V37WireError::Invalid("extra fields"));
+    }
+    Ok(V37Receipt {
+        raw_bytes: bytes.to_vec(),
+        family,
+        operation,
+        request_id,
+        target_id,
+        status,
+        previous_revision,
+        revision,
+        result,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +287,20 @@ mod tests {
                 assert!(decode_request(raw.as_bytes()).is_err());
             }
         }
+    }
+
+    #[test]
+    fn receipt_decoder_retains_exact_bytes_and_closed_status() {
+        let raw = br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","status":"APPLIED","previousRevision":"3","revision":"4","result":{}}
+"#;
+        let receipt = decode_receipt(raw).expect("receipt");
+        assert_eq!(receipt.raw_bytes, raw);
+        assert_eq!(receipt.family, "K-SESSION");
+        assert_eq!(receipt.operation, "send");
+        assert_eq!(receipt.status, V37Status::Applied);
+        assert_eq!(receipt.previous_revision, 3);
+        assert_eq!(receipt.revision, 4);
+        let unknown = String::from_utf8_lossy(raw).replace("APPLIED", "NOT_A_STATUS");
+        assert!(decode_receipt(unknown.as_bytes()).is_err());
     }
 }
