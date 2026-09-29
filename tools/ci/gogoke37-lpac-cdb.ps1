@@ -31,7 +31,7 @@ $commands = Join-Path $privateRoot 'breakpoints.txt'
 @'
 .childdbg 0
 bu KERNELBASE!CreateProcessInternalW "r $t2 = @$ra; .printf \"LPAC_PARENT_ENTER tid=%x return=%p\\n\", @$tid, @$ra; gc"
-bu ntdll!NtCreateUserProcess ".printf \"LPAC_NT_ENTER tid=%x\\n\", @$tid; k 32"
+bu ntdll!NtCreateUserProcess ".printf \"LPAC_NT_ENTER tid=%x\\n\", @$tid; k 32; .echo LPAC_NT_STACK_DONE"
 bl
 .echo LPAC_BREAKPOINTS_READY
 g
@@ -105,6 +105,7 @@ try {
     New-Item -ItemType File -Path (Join-Path $gate 'release') -Force | Out-Null
     $phase = 'WAIT_NT_ENTRY'
     Wait-CdbMarker 'LPAC_NT_ENTER' 45
+    Wait-CdbMarker 'LPAC_NT_STACK_DONE' 15
     $entryLog = @(Get-Content -LiteralPath $debugLog)
     $ntEntryIndex = -1
     $ntThread = $null

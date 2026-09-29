@@ -34,6 +34,8 @@ const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const SE_GROUP_ENABLED: u32 = 4;
+#[cfg(test)]
+const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x10;
 
 #[repr(C)]
 struct SidAndAttributes { sid: *mut c_void, attributes: u32 }
@@ -114,6 +116,14 @@ extern "system" {
     fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
 }
 
+#[cfg(test)]
+#[link(name = "OneCoreUAP")]
+extern "system" {
+    fn DeriveCapabilitySidsFromName(name: *const u16,
+        group_sids: *mut *mut *mut c_void, group_count: *mut u32,
+        capability_sids: *mut *mut *mut c_void, capability_count: *mut u32) -> i32;
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
@@ -141,6 +151,8 @@ pub(crate) enum IsolationError {
     DirectoryNotFresh,
     DirectoryNotPhysical,
     Acl(io::Error),
+    #[cfg(test)]
+    InvalidTestCapability,
 }
 
 impl fmt::Display for IsolationError {
@@ -154,6 +166,8 @@ impl fmt::Display for IsolationError {
             Self::DirectoryNotFresh => write!(f, "AppContainer directory must be empty before ACL grant"),
             Self::DirectoryNotPhysical => write!(f, "AppContainer directory must be a physical directory"),
             Self::Acl(error) => write!(f, "AppContainer ACL: {error}"),
+            #[cfg(test)]
+            Self::InvalidTestCapability => write!(f, "registryRead did not derive exactly one capability SID"),
         }
     }
 }
@@ -162,6 +176,12 @@ pub(crate) struct AppContainerProfile {
     sid: *mut c_void,
     internet_sid: Option<LocalAllocation>,
     internet_capability: Option<SidAndAttributes>,
+    #[cfg(test)]
+    registry_sids: Option<DerivedCapabilitySids>,
+    #[cfg(test)]
+    registry_capability: Option<SidAndAttributes>,
+    #[cfg(test)]
+    combined_capabilities: Option<[SidAndAttributes; 2]>,
 }
 
 impl AppContainerProfile {
@@ -173,7 +193,8 @@ impl AppContainerProfile {
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide.as_ptr(), &mut sid) };
         if hr < 0 { return Err(IsolationError::ProfileHResult(hr)); }
         if sid.is_null() { return Err(IsolationError::MissingSid); }
-        Ok(Self { sid, internet_sid: None, internet_capability: None })
+        Ok(Self { sid, internet_sid: None, internet_capability: None,
+            registry_sids: None, registry_capability: None, combined_capabilities: None })
     }
 
     pub(crate) fn ensure(name: &str, internet_client: bool) -> Result<Self, IsolationError> {
@@ -189,12 +210,33 @@ impl AppContainerProfile {
             return Err(IsolationError::ProfileHResult(hr));
         }
         if sid.is_null() { return Err(IsolationError::MissingSid); }
-        let mut profile = Self { sid, internet_sid: None, internet_capability: None };
+        let mut profile = Self { sid, internet_sid: None, internet_capability: None,
+            #[cfg(test)]
+            registry_sids: None,
+            #[cfg(test)]
+            registry_capability: None,
+            #[cfg(test)]
+            combined_capabilities: None };
         if internet_client { profile.enable_internet_client()?; }
+        #[cfg(test)]
+        if std::env::var_os("GOGOKE_TEST_LPAC_REGISTRY_READ").as_deref()
+            == Some(std::ffi::OsStr::new("1")) {
+            profile.enable_registry_read_for_test()?;
+        }
         Ok(profile)
     }
 
     pub(crate) fn security_capabilities(&self) -> SecurityCapabilities {
+        #[cfg(test)]
+        if let Some(registry) = &self.registry_capability {
+            let (pointer, count) = if let Some(pair) = &self.combined_capabilities {
+                (pair.as_ptr().cast_mut().cast(), 2)
+            } else {
+                ((registry as *const SidAndAttributes).cast_mut().cast(), 1)
+            };
+            return SecurityCapabilities { app_container_sid: self.sid,
+                capabilities: pointer, capability_count: count, reserved: 0 };
+        }
         SecurityCapabilities { app_container_sid: self.sid,
             capabilities: self.internet_capability.as_ref().map_or(ptr::null_mut(), |capability|
                 (capability as *const SidAndAttributes).cast_mut().cast()),
@@ -234,6 +276,29 @@ impl AppContainerProfile {
         if sid.is_null() { return Err(IsolationError::MissingSid); }
         self.internet_capability = Some(SidAndAttributes { sid, attributes: SE_GROUP_ENABLED });
         self.internet_sid = Some(LocalAllocation(sid));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn enable_registry_read_for_test(&mut self) -> Result<(), IsolationError> {
+        let name: Vec<u16> = std::ffi::OsStr::new("registryRead")
+            .encode_wide().chain(Some(0)).collect();
+        let derived = DerivedCapabilitySids::from_name(&name)?;
+        if derived.capability_count != 1 || derived.capability_sids.is_null() {
+            return Err(IsolationError::InvalidTestCapability);
+        }
+        let sid = unsafe { *derived.capability_sids };
+        if sid.is_null() { return Err(IsolationError::InvalidTestCapability); }
+        if self.internet_capability.as_ref().is_some_and(|internet|
+            unsafe { EqualSid(internet.sid, sid) } != 0) {
+            return Err(IsolationError::InvalidTestCapability);
+        }
+        let capability = SidAndAttributes { sid, attributes: SE_GROUP_ENABLED };
+        self.combined_capabilities = self.internet_capability.as_ref().map(|internet|
+            [SidAndAttributes { sid: internet.sid, attributes: internet.attributes },
+                SidAndAttributes { sid: capability.sid, attributes: capability.attributes }]);
+        self.registry_capability = Some(capability);
+        self.registry_sids = Some(derived);
         Ok(())
     }
 
@@ -348,9 +413,32 @@ impl AppContainerProfile {
         }
         if returned < group_offset as u32 { return Err(IsolationError::WrongToken); }
         let count = unsafe { *(groups.as_ptr() as *const u32) } as usize;
-        if count > 32 || count != usize::from(self.internet_capability.is_some()) ||
+        #[cfg(test)]
+        let expected_count = usize::from(self.internet_capability.is_some())
+            + usize::from(self.registry_capability.is_some());
+        #[cfg(not(test))]
+        let expected_count = usize::from(self.internet_capability.is_some());
+        if count > 32 || count != expected_count ||
             (returned as usize) < group_offset + count * size_of::<SidAndAttributes>() {
             return Err(IsolationError::WrongToken);
+        }
+        #[cfg(test)]
+        if let Some(registry) = &self.registry_capability {
+            let actual = unsafe { std::slice::from_raw_parts(
+                (groups.as_ptr() as *const u8).add(group_offset) as *const SidAndAttributes,
+                count) };
+            let expected = self.combined_capabilities.as_ref().map_or(
+                std::slice::from_ref(registry), |pair| pair.as_slice());
+            // Windows may add mandatory/default metadata bits to token groups;
+            // compare the access-effective enabled/deny-only state exactly.
+            if expected.iter().any(|wanted| actual.iter().filter(|found|
+                !found.sid.is_null() &&
+                found.attributes & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY)
+                    == wanted.attributes &&
+                unsafe { EqualSid(found.sid, wanted.sid) } != 0).count() != 1) {
+                return Err(IsolationError::WrongToken);
+            }
+            return Ok(());
         }
         if let Some(expected) = &self.internet_capability {
             let actual = unsafe { &*((groups.as_ptr() as *const u8).add(group_offset)
@@ -386,6 +474,49 @@ impl Drop for LocalAllocation {
     fn drop(&mut self) { unsafe { LocalFree(self.0); } }
 }
 
+#[cfg(test)]
+struct DerivedCapabilitySids {
+    group_sids: *mut *mut c_void,
+    group_count: u32,
+    capability_sids: *mut *mut c_void,
+    capability_count: u32,
+}
+
+#[cfg(test)]
+impl DerivedCapabilitySids {
+    fn from_name(name: &[u16]) -> Result<Self, IsolationError> {
+        let mut derived = Self { group_sids: ptr::null_mut(), group_count: 0,
+            capability_sids: ptr::null_mut(), capability_count: 0 };
+        if unsafe { DeriveCapabilitySidsFromName(name.as_ptr(),
+            &mut derived.group_sids, &mut derived.group_count,
+            &mut derived.capability_sids, &mut derived.capability_count) } == 0 {
+            return Err(IsolationError::Token(io::Error::last_os_error()));
+        }
+        Ok(derived)
+    }
+}
+
+#[cfg(test)]
+impl Drop for DerivedCapabilitySids {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.group_sids.is_null() {
+                for sid in std::slice::from_raw_parts(self.group_sids, self.group_count as usize) {
+                    if !sid.is_null() { LocalFree(*sid); }
+                }
+                LocalFree(self.group_sids.cast());
+            }
+            if !self.capability_sids.is_null() {
+                for sid in std::slice::from_raw_parts(self.capability_sids,
+                    self.capability_count as usize) {
+                    if !sid.is_null() { LocalFree(*sid); }
+                }
+                LocalFree(self.capability_sids.cast());
+            }
+        }
+    }
+}
+
 fn valid_profile_name(name: &str) -> bool {
     name.len() <= 64 && name.starts_with("Gogoke37.") && name[9..].bytes().all(|byte|
         byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')) && name.len() > 9
@@ -411,7 +542,8 @@ mod tests {
         let mut sid = ptr::null_mut();
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide.as_ptr(), &mut sid) };
         assert!(hr >= 0 && !sid.is_null(), "derive test package SID HRESULT={hr:#x}");
-        let profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None };
+        let profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None,
+            registry_sids: None, registry_capability: None, combined_capabilities: None };
         let path = std::env::temp_dir().join(format!("gogoke-v37-acl-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         profile.grant_fresh_session_directory(&path).unwrap();
@@ -450,7 +582,8 @@ mod tests {
             .encode_wide().chain(Some(0)).collect();
         let mut sid = ptr::null_mut();
         assert!(unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) } >= 0);
-        let mut profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None };
+        let mut profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None,
+            registry_sids: None, registry_capability: None, combined_capabilities: None };
         assert_eq!(profile.security_capabilities().capability_count, 0);
         profile.enable_internet_client().unwrap();
         let capabilities = profile.security_capabilities();
