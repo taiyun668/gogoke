@@ -16,11 +16,14 @@ fn write_frame(client: &mut std::fs::File, frame: &[u8]) {
     client.write_all(frame).expect("frame");
 }
 
+#[track_caller]
 fn read_frame(client: &mut std::fs::File) -> String {
     let mut length = [0u8; 4];
     client.read_exact(&mut length).expect("length");
     let mut body = vec![0u8; u32::from_le_bytes(length) as usize];
-    client.read_exact(&mut body).expect("body");
+    client.read_exact(&mut body).unwrap_or_else(|error| {
+        panic!("reply body length={}: {error}", body.len())
+    });
     String::from_utf8(body).expect("utf8")
 }
 
