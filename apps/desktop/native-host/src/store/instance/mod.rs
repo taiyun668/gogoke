@@ -2,12 +2,14 @@
 //! This schema shares the verified product connection but never changes R2 authority tables.
 mod home;
 mod catalog;
+mod cap;
 mod registry;
 mod resolver;
 mod temporary;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use catalog::{discover_program, locate_pinned_program, CatalogError};
+pub(crate) use cap::{read_instance_concurrency_cap, set_instance_concurrency_cap};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation,
     InstanceObservation, ObservationRequest, ProgramObservation, Registration,
@@ -24,7 +26,7 @@ use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
 use super::same_open::VerifiedDatabaseConnection;
 
-const SCHEMA: [(&str, &str); 3] = [
+const SCHEMA: [(&str, &str); 4] = [
     (
         "gogoke_v37_instances",
         "CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY, driver_id TEXT NOT NULL, home_ref TEXT NOT NULL UNIQUE, home_identity TEXT NOT NULL UNIQUE, program_digest TEXT NOT NULL, version TEXT NOT NULL, install_state TEXT NOT NULL CHECK(install_state IN ('UNKNOWN','INSTALLED','MISSING')), login_state TEXT NOT NULL CHECK(login_state IN ('UNKNOWN','LOGGED_IN','LOGGED_OUT')), revision INTEGER NOT NULL CHECK(revision >= 1)) STRICT",
@@ -36,6 +38,10 @@ const SCHEMA: [(&str, &str); 3] = [
     (
         "gogoke_v37_instance_operations",
         "CREATE TABLE gogoke_v37_instance_operations(request_id TEXT PRIMARY KEY, request_hex TEXT NOT NULL, target_id TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('PREPARING','UNKNOWN','APPLIED','DENIED','FAILED')), receipt_json TEXT, native_receipt_id TEXT UNIQUE) STRICT",
+    ),
+    (
+        "gogoke_v37_instance_caps",
+        "CREATE TABLE gogoke_v37_instance_caps(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),concurrency_cap INTEGER NOT NULL CHECK(concurrency_cap > 0)) STRICT",
     ),
 ];
 
@@ -78,6 +84,15 @@ fn expected_schema() -> Vec<(String, String)> {
     entries
 }
 
+fn previous_schema() -> Vec<(String, String)> {
+    let mut entries: Vec<_> = SCHEMA[..3]
+        .iter()
+        .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned()))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
 /// Called only after the existing native Owner issuer and root pin are verified.
 /// An incomplete or changed family is corruption, not permission to recreate it.
 pub(crate) fn initialize_schema(
@@ -86,12 +101,11 @@ pub(crate) fn initialize_schema(
     reject_shadow_or_side_effect_objects(connection)?;
     let expected = expected_schema();
     let observed = observed_schema(connection)?;
-    if !observed.is_empty() {
-        return if observed == expected {
-            Ok(())
-        } else {
-            Err(OrchestrationError::AccessDenied)
-        };
+    if observed == expected {
+        return Ok(());
+    }
+    if !observed.is_empty() && observed != previous_schema() {
+        return Err(OrchestrationError::AccessDenied);
     }
     connection
         .execute("BEGIN IMMEDIATE")
@@ -99,10 +113,11 @@ pub(crate) fn initialize_schema(
     let created = (|| {
         // Recheck inside the write transaction in case another trusted opener won.
         reject_shadow_or_side_effect_objects(connection)?;
-        if !observed_schema(connection)?.is_empty() {
+        if observed_schema(connection)? != observed {
             return Err(OrchestrationError::AccessDenied);
         }
-        for (_, sql) in SCHEMA {
+        let to_create: &[(&str, &str)] = if observed.is_empty() { &SCHEMA } else { &SCHEMA[3..] };
+        for (_, sql) in to_create {
             connection
                 .execute(sql)
                 .map_err(|error| OrchestrationError::Atomic(error.into()))?;
@@ -168,6 +183,27 @@ mod tests {
             let statement = Statement::prepare(connection.as_ptr(), "SELECT value FROM unrelated").unwrap();
             assert!(statement.step_row().unwrap());
             assert_eq!(statement.column_text(0).unwrap(), "keep");
+        });
+    }
+
+    #[test]
+    fn exact_pre_cap_schema_migrates_without_setting_cap_or_losing_instance() {
+        fixture(|connection| {
+            for (_, sql) in &SCHEMA[..3] {
+                connection.execute(sql).unwrap();
+            }
+            connection.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
+            assert_eq!(observed_schema(connection).unwrap(), previous_schema());
+            initialize_schema(connection).unwrap();
+            assert_eq!(observed_schema(connection).unwrap(), expected_schema());
+            assert!(matches!(read_instance_concurrency_cap(connection, "instanceA"),
+                Err(OrchestrationError::AccessDenied)));
+            let query = Statement::prepare(connection.as_ptr(),
+                "SELECT login_state,home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+            assert!(query.step_row().unwrap());
+            assert_eq!(query.column_text(0).unwrap(), "LOGGED_IN");
+            assert_eq!(query.column_text(1).unwrap(), "identityA");
+            initialize_schema(connection).unwrap();
         });
     }
 

@@ -15,6 +15,7 @@ const OPERATIONS: &str = "CREATE TABLE gogoke_v37_seat_operations(domain_id TEXT
 const TEMPLATES: &str = "CREATE TABLE gogoke_v37_seat_templates(domain_id TEXT NOT NULL,template_id TEXT NOT NULL,settings_json TEXT NOT NULL CHECK(length(settings_json) > 0),revision INTEGER NOT NULL CHECK(revision >= 1),PRIMARY KEY(domain_id,template_id)) STRICT";
 const SETTINGS: &str = "CREATE TABLE gogoke_v37_seat_settings(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,template_id TEXT NOT NULL,settings_json TEXT NOT NULL CHECK(length(settings_json) > 0),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
 const OPERATION_SNAPSHOTS: &str = "CREATE TABLE gogoke_v37_seat_operation_snapshots(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,template_id TEXT NOT NULL,settings_json TEXT NOT NULL CHECK(length(settings_json) > 0),PRIMARY KEY(domain_id,request_id),FOREIGN KEY(domain_id,request_id) REFERENCES gogoke_v37_seat_operations(domain_id,request_id)) STRICT";
+const PROJECT_CAPS: &str = "CREATE TABLE gogoke_v37_seat_project_caps(domain_id TEXT PRIMARY KEY,parallel_cap INTEGER NOT NULL CHECK(parallel_cap > 0)) STRICT";
 
 #[derive(Debug)]
 pub(crate) enum SeatError {
@@ -246,6 +247,12 @@ fn reject_shadow_or_effect(db: &VerifiedDatabaseConnection<'_>) -> Result<(), Se
     Ok(())
 }
 fn expected_schema() -> Vec<(String, String)> {
+    let mut entries = previous_schema();
+    entries.push(("gogoke_v37_seat_project_caps".into(), PROJECT_CAPS.into()));
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+fn previous_schema() -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = vec![
         (
             "gogoke_v37_seat_operation_snapshots".into(),
@@ -277,6 +284,9 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     if observed == legacy_schema() {
         return migrate_legacy_schema(db);
     }
+    if observed == previous_schema() {
+        return migrate_previous_schema(db);
+    }
     if !observed.is_empty() {
         return Err(SeatError::SchemaDrift);
     }
@@ -290,6 +300,21 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         db.execute(TEMPLATES)?;
         db.execute(SETTINGS)?;
         db.execute(OPERATION_SNAPSHOTS)?;
+        db.execute(PROJECT_CAPS)?;
+        if schema(db)? != expected_schema() {
+            return Err(SeatError::SchemaDrift);
+        }
+        Ok(())
+    })
+}
+
+fn migrate_previous_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {
+    transact(db, |db| {
+        reject_shadow_or_effect(db)?;
+        if schema(db)? != previous_schema() {
+            return Err(SeatError::SchemaDrift);
+        }
+        db.execute(PROJECT_CAPS)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -316,6 +341,7 @@ fn migrate_legacy_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), 
         db.execute(TEMPLATES)?;
         db.execute(SETTINGS)?;
         db.execute(OPERATION_SNAPSHOTS)?;
+        db.execute(PROJECT_CAPS)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -443,6 +469,58 @@ pub(crate) fn get(
         return Err(SeatError::Invalid("seat address"));
     }
     read(db, domain, seat_id)
+}
+
+/// Owner's project-wide admission limit. The native issuer is checked inside
+/// the same write transaction as the update; lead-layer callers have no write
+/// capability. No value is installed by schema creation or migration.
+pub(crate) fn set_project_parallel_cap(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    issuer: &OwnerIssuer,
+    domain: &str,
+    cap: i64,
+) -> Result<(), SeatError> {
+    if !valid_id(domain) {
+        return Err(SeatError::Invalid("domain_id"));
+    }
+    if cap <= 0 {
+        return Err(SeatError::Invalid("project_parallel_cap"));
+    }
+    transact(db, |db| {
+        check_current_owner(db, issuer)?;
+        let write = Statement::prepare(
+            db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_seat_project_caps(domain_id,parallel_cap) VALUES(?1,?2) ON CONFLICT(domain_id) DO UPDATE SET parallel_cap=excluded.parallel_cap",
+        )?;
+        write.bind_text(1, domain)?;
+        write.bind_i64(2, cap)?;
+        write.step_done()?;
+        Ok(())
+    })
+}
+
+/// H reads this required value inside its BEGIN IMMEDIATE admission transaction
+/// on the same verified connection. A missing project cap denies admission.
+pub(crate) fn read_project_parallel_cap(
+    db: &VerifiedDatabaseConnection<'_>,
+    domain: &str,
+) -> Result<i64, SeatError> {
+    if !valid_id(domain) {
+        return Err(SeatError::Invalid("domain_id"));
+    }
+    let query = Statement::prepare(
+        db.as_ptr(),
+        "SELECT parallel_cap FROM main.gogoke_v37_seat_project_caps WHERE domain_id=?1",
+    )?;
+    query.bind_text(1, domain)?;
+    if !query.step_row()? {
+        return Err(SeatError::Denied);
+    }
+    let cap = query.column_text(0)?.parse::<i64>().map_err(|_| SeatError::SchemaDrift)?;
+    if cap <= 0 || query.step_row()? {
+        return Err(SeatError::SchemaDrift);
+    }
+    Ok(cap)
 }
 
 /// Store an immutable template definition. Only the owner layer can publish

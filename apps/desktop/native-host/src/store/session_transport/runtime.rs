@@ -6,6 +6,7 @@
 
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::authority::{self, ProductIdentitySnapshot};
+use crate::store::instance;
 use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{self, NativeOrigin, State as SeatState};
 use super::admission::{self, AdmissionError, AdmissionRequest, AdmissionResult, TrustedLimits};
@@ -51,23 +52,35 @@ pub(crate) fn require_launch_permission(_tier: PermissionTier)
 
 /// Owner-origin admission rechecks the native issuer before and within H's
 /// BEGIN IMMEDIATE transaction. Lead admission stays denied until E exposes
-/// an H-facing verifier for the opaque native lead channel. `capacity` must
-/// read E's project cap and F's instance cap on this same connection; it must
-/// not capture a wire value or a cached UI state.
+/// an H-facing verifier for the opaque native lead channel. The two required
+/// caps are read from E and F on this same connection inside that transaction.
+/// Neither the wire nor cached UI state can supply a capacity value.
 pub(crate) fn reserve_native(
     db: &mut VerifiedDatabaseConnection<'_>,
     origin: &NativeOrigin<'_>,
     seat_id: &str,
     request: &AdmissionRequest<'_>,
-    capacity: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<TrustedLimits, AdmissionError>,
 ) -> Result<AdmissionResult, AdmissionError> {
     let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
-    let identity = authority::read_product_identity(db, owner).map_err(|_| AdmissionError::Denied)?;
+    let identity = authority::read_product_identity(db, owner)
+        .map_err(AdmissionError::Identity)?;
     admission::reserve_admission(db, request, |db| {
         check_owner_and_seat(db, &identity, seat_id, request)?;
         current_instance_pin(db, request.instance_id)?;
-        capacity(db)
+        persisted_limits(db, request.domain_id, request.instance_id)
     })
+}
+
+fn persisted_limits(
+    db: &VerifiedDatabaseConnection<'_>,
+    domain_id: &str,
+    instance_id: &str,
+) -> Result<TrustedLimits, AdmissionError> {
+    let project_parallel = seat::read_project_parallel_cap(db, domain_id)
+        .map_err(AdmissionError::ProjectCapacity)?;
+    let instance_concurrency = instance::read_instance_concurrency_cap(db, instance_id)
+        .map_err(AdmissionError::InstanceCapacity)?;
+    Ok(TrustedLimits { project_parallel, instance_concurrency })
 }
 
 /// Commit consumes the exact reservation only while the native Owner issuer,
@@ -80,7 +93,8 @@ pub(crate) fn commit_native(
     request: &AdmissionRequest<'_>,
 ) -> Result<AdmissionResult, AdmissionError> {
     let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
-    let identity = authority::read_product_identity(db, owner).map_err(|_| AdmissionError::Denied)?;
+    let identity = authority::read_product_identity(db, owner)
+        .map_err(AdmissionError::Identity)?;
     admission::commit_admission(db, request, |db| {
         check_owner_and_seat(db, &identity, seat_id, request)?;
         current_instance_pin(db, request.instance_id).map(|_| ())
@@ -93,7 +107,8 @@ pub(crate) fn release_native(
     request: &AdmissionRequest<'_>,
 ) -> Result<AdmissionResult, AdmissionError> {
     let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
-    let identity = authority::read_product_identity(db, owner).map_err(|_| AdmissionError::Denied)?;
+    let identity = authority::read_product_identity(db, owner)
+        .map_err(AdmissionError::Identity)?;
     admission::release_admission(db, request, |db| check_owner_current(db, &identity))
 }
 
@@ -132,7 +147,7 @@ fn check_owner_and_seat(
     request: &AdmissionRequest<'_>,
 ) -> Result<(), AdmissionError> {
     check_owner_current(db, identity)?;
-    let seat = seat::get(db, request.domain_id, seat_id).map_err(|_| AdmissionError::Denied)?
+    let seat = seat::get(db, request.domain_id, seat_id).map_err(AdmissionError::Seat)?
         .ok_or(AdmissionError::Denied)?;
     if seat.state != SeatState::Busy || seat.instance_id != request.instance_id
         || seat.generation.to_string() != request.generation {
@@ -393,6 +408,51 @@ impl SessionTransitions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn admission_reads_both_required_owner_caps_on_the_same_connection() {
+        use crate::root::RootLock;
+        use crate::store::same_open::{create_new, open_existing, route_b_test_guard};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!(
+            "gogoke-h-persisted-cap-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let root = RootLock::acquire(&folder).unwrap();
+        let path = folder.join("state.sqlite");
+        let mut db = create_new(&root, &path).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        let owner = authority::initialize_profile(&mut db, &root).unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        seat::initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
+
+        assert!(matches!(persisted_limits(&db, "projectA", "instanceA"),
+            Err(AdmissionError::ProjectCapacity(seat::SeatError::Denied))));
+        seat::set_project_parallel_cap(&mut db, &owner, "projectA", 4).unwrap();
+        assert!(matches!(persisted_limits(&db, "projectA", "instanceA"),
+            Err(AdmissionError::InstanceCapacity(
+                crate::store::orchestration::OrchestrationError::AccessDenied))));
+        instance::set_instance_concurrency_cap(&mut db, &owner, "instanceA", 4).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let limits = persisted_limits(&db, "projectA", "instanceA").unwrap();
+        assert_eq!((limits.project_parallel, limits.instance_concurrency), (4, 4));
+        db.execute("COMMIT").unwrap();
+        db.close_checked().unwrap();
+
+        let reopened = open_existing(&root, &path).unwrap();
+        let limits = persisted_limits(&reopened, "projectA", "instanceA").unwrap();
+        assert_eq!((limits.project_parallel, limits.instance_concurrency), (4, 4));
+        reopened.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(path).unwrap();
+        if let Err(error) = std::fs::remove_dir(&folder) {
+            eprintln!("owned fixture retained: {} ({error})", folder.display());
+        }
+    }
 
     #[test]
     fn permission_tiers_do_not_silently_downgrade() {

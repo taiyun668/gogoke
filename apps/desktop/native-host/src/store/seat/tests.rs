@@ -1,6 +1,6 @@
 use super::*;
 use crate::root::RootLock;
-use crate::store::same_open::{create_new, route_b_test_guard};
+use crate::store::same_open::{create_new, open_existing, route_b_test_guard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Complete ingress records for the focused native tests. The store receives
@@ -101,6 +101,80 @@ fn exact_schema_reopens_and_drift_refuses_repair() {
         db.execute("DROP TABLE gogoke_v37_seat_operations").unwrap();
         assert!(matches!(initialize_schema(db), Err(SeatError::SchemaDrift)));
     });
+}
+
+#[test]
+fn project_parallel_cap_requires_explicit_valid_owner_value() {
+    fixture(|db, owner| {
+        assert!(matches!(read_project_parallel_cap(db, "projectA"), Err(SeatError::Denied)));
+        for invalid in [0, -1, i64::MIN] {
+            assert!(matches!(
+                set_project_parallel_cap(db, owner, "projectA", invalid),
+                Err(SeatError::Invalid("project_parallel_cap"))
+            ));
+        }
+        assert!(matches!(read_project_parallel_cap(db, "projectA"), Err(SeatError::Denied)));
+        set_project_parallel_cap(db, owner, "projectA", 4).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert_eq!(read_project_parallel_cap(db, "projectA").unwrap(), 4);
+        db.execute("COMMIT").unwrap();
+        assert!(matches!(
+            set_project_parallel_cap(db, owner, "projectA", 0),
+            Err(SeatError::Invalid("project_parallel_cap"))
+        ));
+        assert_eq!(read_project_parallel_cap(db, "projectA").unwrap(), 4);
+        assert!(matches!(read_project_parallel_cap(db, "projectB"), Err(SeatError::Denied)));
+        set_project_parallel_cap(db, owner, "projectA", 2).unwrap();
+        assert_eq!(read_project_parallel_cap(db, "projectA").unwrap(), 2);
+    });
+}
+
+#[test]
+fn previous_seat_schema_migrates_without_inventing_a_cap() {
+    fixture(|db, owner| {
+        let before = create_user(db, owner, "lead", "createLead");
+        db.execute("DROP TABLE gogoke_v37_seat_project_caps").unwrap();
+        assert_eq!(schema(db).unwrap(), previous_schema());
+        initialize_schema(db).unwrap();
+        assert_eq!(schema(db).unwrap(), expected_schema());
+        assert_eq!(get(db, "projectA", "lead").unwrap(), Some(before));
+        assert!(matches!(read_project_parallel_cap(db, "projectA"), Err(SeatError::Denied)));
+        assert_eq!(template(db, "projectA", "templateA").unwrap().as_deref(),
+            Some("{\"instruction\":\"default\"}"));
+        db.execute("CREATE TABLE gogoke_v37_seat_unknown(x INTEGER) STRICT").unwrap();
+        assert!(matches!(initialize_schema(db), Err(SeatError::SchemaDrift)));
+    });
+}
+
+#[test]
+fn project_parallel_cap_survives_verified_database_reopen() {
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "gogoke-v37-seat-cap-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let database = path.join("state.sqlite");
+    let mut db = create_new(&root, &database).unwrap();
+    db.execute("PRAGMA foreign_keys=ON").unwrap();
+    let owner = crate::store::authority::initialize_profile(&mut db, &root).unwrap();
+    crate::store::instance::initialize_schema(&mut db).unwrap();
+    initialize_schema(&mut db).unwrap();
+    set_project_parallel_cap(&mut db, &owner, "projectA", 4).unwrap();
+    db.close_checked().unwrap();
+
+    let mut reopened = open_existing(&root, &database).unwrap();
+    reopened.execute("PRAGMA foreign_keys=ON").unwrap();
+    initialize_schema(&mut reopened).unwrap();
+    assert_eq!(read_project_parallel_cap(&reopened, "projectA").unwrap(), 4);
+    assert!(matches!(read_project_parallel_cap(&reopened, "projectB"), Err(SeatError::Denied)));
+    reopened.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_file(database).unwrap();
+    if let Err(error) = std::fs::remove_dir(&path) {
+        eprintln!("owned fixture retained: {} ({error})", path.display());
+    }
 }
 
 #[test]
@@ -248,8 +322,13 @@ fn user_issuer_is_checked_against_current_profile_inside_write_group() {
         )
         .unwrap();
 
-        // An issuer from another verified database is not accepted by either
-        // the template publisher or the User-origin seat path.
+        // An issuer from another verified database is not accepted by Owner
+        // user-layer writes, including the project admission cap.
+        assert!(matches!(
+            set_project_parallel_cap(&mut db_b, owner_a, "projectA", 4),
+            Err(SeatError::Denied)
+        ));
+        assert!(matches!(read_project_parallel_cap(&db_b, "projectA"), Err(SeatError::Denied)));
         assert!(matches!(
             store_template(
                 &mut db_b,
@@ -285,6 +364,10 @@ fn user_issuer_is_checked_against_current_profile_inside_write_group() {
             "UPDATE gogoke_authority_profile SET issuer_id='forged-issuer' WHERE singleton=1",
         )
         .unwrap();
+        assert!(matches!(
+            set_project_parallel_cap(&mut db_b, &owner_b, "projectA", 4),
+            Err(SeatError::Denied)
+        ));
         assert!(matches!(
             create(
                 &mut db_b,

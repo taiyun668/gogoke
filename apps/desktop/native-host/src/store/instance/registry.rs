@@ -131,7 +131,7 @@ pub(crate) struct ObservationRequest<'a> {
     pub(crate) observation: InstanceObservation,
 }
 
-fn valid_id(value: &str) -> bool {
+pub(super) fn valid_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty() && bytes.len() <= 64 && bytes[0].is_ascii_alphabetic()
         && bytes[1..].iter().all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
