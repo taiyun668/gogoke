@@ -5,6 +5,7 @@
 //! The caller must establish User origin before invoking this private action.
 
 use super::*;
+use crate::process::AppContainerProfile;
 use crate::process::{DurableStopConfirmation, NativeBinding, OriginBoundFrame,
     PrepareRequest, PreparedCustody, ProcessCustodyError, ProcessLaunch, StopBudgets};
 use crate::root::{inspect_root, RootIdentity};
@@ -302,6 +303,47 @@ fn clean_environment(instance_home: &Path, runtime: &Path) -> Result<Vec<(String
         ("TMP".into(), runtime),
         ("CODEX_HOME".into(), instance),
     ])
+}
+
+fn owner_login_profile_name(instance_id: &str, home_identity: &RootIdentity) -> String {
+    // The registered physical home, rather than a wire path or request ID,
+    // determines the isolation domain across login and account/read launches.
+    let digest = crate::store::digest::sha256_hex(
+        format!("{}\n{instance_id}", home_identity.opaque()).as_bytes());
+    format!("Gogoke37.OwnerLogin.{}", &digest[..40])
+}
+
+fn grant_owner_login_scope(profile: &AppContainerProfile, home: &instance::ResolvedDirectory,
+    runtime: &Path, runtime_identity: &RootIdentity, program: &Path) -> Result<()> {
+    // The runtime is a child of the exact F home. Its inherited ACE is
+    // verified with the rest of that tree; granting it an extra explicit ACE
+    // would make the bound-tree witness ambiguous.
+    let actual_runtime = inspect_root(runtime).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("login runtime scope: {error:?}")))?;
+    if &actual_runtime.identity != runtime_identity || runtime.parent() != Some(home.path.as_path()) {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    let program_identity = AppContainerProfile::capture_program_identity(program)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "login program identity: {error}")))?;
+    profile.grant_bound_tree(&home.path, &home.identity, true)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "login instance scope: {error}")))?;
+    profile.grant_bound_program(program, &program_identity)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "login program scope: {error}")))?;
+    profile.verify_bound_tree_grant(&home.path, &home.identity, true)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "login instance scope verification: {error}")))?;
+    profile.verify_bound_program_grant(program, &program_identity)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "login program scope verification: {error}")))?;
+    let actual_runtime = inspect_root(runtime).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("login runtime verification: {error:?}")))?;
+    if &actual_runtime.identity != runtime_identity {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok(())
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -709,11 +751,27 @@ impl<'root> ProductDatabase<'root> {
             &row.program_digest, &row.version)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                 "login pinned program: {error:?}")))?;
-        let (runtime, runtime_identity) = runtime_home(&home.path)?;
-        let environment = clean_environment(&home.path, &runtime)?;
         let digest = row.program_digest.strip_prefix("sha256:")
             .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or(OrchestrationError::AccessDenied)?;
+        let profile_name = owner_login_profile_name(instance_id, &home.identity);
+        let profile = AppContainerProfile::ensure(&profile_name, true)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+                "login isolation profile: {error}")))?;
+        let (runtime, runtime_identity) = runtime_home(&home.path)?;
+        let scope = (|| -> Result<Vec<(String, String)>> {
+            let environment = clean_environment(&home.path, &runtime)?;
+            grant_owner_login_scope(&profile, &home, &runtime, &runtime_identity, &program)?;
+            Ok(environment)
+        })();
+        let environment = match scope {
+            Ok(environment) => environment,
+            Err(error) => {
+                let cleanup = remove_owned_runtime(&runtime, &runtime_identity);
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "login isolation preparation: {error:?}; cleanup: {cleanup:?}")));
+            }
+        };
         let binding = NativeBinding {
             binary_digest_sha256: format!("sha256:{}", digest.to_ascii_lowercase()),
             profile_id: instance_id.to_owned(),
@@ -728,6 +786,8 @@ impl<'root> ProductDatabase<'root> {
         // stdout pipe. No credential bytes are sent to stdin.
         login.protocol_stdio = true;
         login.persistent_protocol_stdio = true;
+        login.app_container_profile = Some(profile_name.clone());
+        login.app_container_internet_client = true;
         let mut account_read = ProcessLaunch::new(program);
         account_read.arguments = vec![
             "-c".into(), "features.memories=false".into(),
@@ -739,6 +799,8 @@ impl<'root> ProductDatabase<'root> {
         account_read.environment = Some(environment);
         account_read.protocol_stdio = true;
         account_read.persistent_protocol_stdio = true;
+        account_read.app_container_profile = Some(profile_name);
+        account_read.app_container_internet_client = true;
         Ok(PreparedOwnerLogin {
             login: PrepareRequest { launch: login, binding: binding.clone() },
             account_read: PrepareRequest { launch: account_read, binding },
@@ -1115,6 +1177,56 @@ mod tests {
     }
 
     #[test]
+    fn pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-isolated-auth-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+            V37Status::Applied, "real pinned CLI is required, not a skipped control");
+        let home = instance::resolve_codex_instance_home(&product.connection, &root, "instanceA").unwrap();
+        // Exercise the CLI's own credential-file creation and replacement with
+        // invalid synthetic markers, without a model call or real login. The
+        // host does not open or copy the credential bytes, including in tests.
+        for (index, marker) in [b"gogoke-synthetic-credential-one\n".as_slice(),
+            b"gogoke-synthetic-credential-two\n".as_slice()].iter().enumerate() {
+            let mut scope = product.prepare_owner_codex_login("instanceA").unwrap();
+            scope.login.launch.arguments = vec!["login".into(), "--with-api-key".into()];
+            let prepared = product.process_custodian.prepare(&scope.login).unwrap();
+            let operation_id = format!("synthetic-cli-credential-{index}");
+            authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+            product.process_custodian.activate(&prepared).unwrap();
+            authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+            product.process_custodian.active(&prepared.ticket).unwrap().write_persistent_frame(marker).unwrap();
+            product.process_custodian.close_child_input(&prepared.ticket).unwrap();
+            assert!(product.process_custodian.active(&prepared.ticket).unwrap()
+                .wait(Duration::from_secs(15)).unwrap(), "CLI credential-file action did not exit");
+            let proof = product.process_custodian.stop(&prepared.ticket,
+                StopBudgets::production(), || Ok(())).unwrap();
+            assert_eq!(proof.exit_code, Some(0), "CLI failure: {}",
+                product.process_custodian.active(&prepared.ticket).unwrap().stderr_tail());
+            let revision = authority::mark_process_stopped(&mut product.connection, &operation_id, &proof).unwrap();
+            product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+                ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+                identity: prepared.identity.clone(), proof_hash: proof.proof_hash(), durable_revision: revision,
+            }).unwrap();
+            remove_owned_runtime(&scope.runtime_home, &scope.runtime_identity).unwrap();
+            assert!(home.path.join("auth.json").is_file(), "official CLI must create its own file store");
+        }
+        let observed = product.dispatch_owner_login_observation(
+            &request("login-state", "observeSyntheticPresence", 1, "{}")).unwrap();
+        assert!(String::from_utf8(observed).unwrap().contains("\"state\":\"LOGGED_IN\""),
+            "CLI presence observation is distinct from authentication validity");
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn pinned_codex_empty_home_reports_native_logout_and_durable_stop() {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -1131,6 +1243,19 @@ mod tests {
         let home = instance::resolve_codex_instance_home(&product.connection,
             &root, "instanceA").unwrap();
         let runtime = home.path.join("gogoke-login-runtime");
+        let scoped = product.prepare_owner_codex_login("instanceA").unwrap();
+        let login_profile = scoped.login.launch.app_container_profile.as_deref().unwrap();
+        assert_eq!(scoped.account_read.launch.app_container_profile.as_deref(),
+            Some(login_profile), "device auth and account/read must share one isolated identity");
+        assert!(scoped.login.launch.app_container_internet_client);
+        assert!(scoped.account_read.launch.app_container_internet_client);
+        assert_eq!(scoped.login.launch.application,
+            scoped.account_read.launch.application);
+        assert_eq!(scoped.login.launch.environment,
+            scoped.account_read.launch.environment);
+        assert_eq!(scoped.login.launch.current_directory.as_deref(), Some(runtime.as_path()));
+        assert_eq!(scoped.account_read.launch.current_directory.as_deref(), Some(runtime.as_path()));
+        remove_owned_runtime(&scoped.runtime_home, &scoped.runtime_identity).unwrap();
         let query = request("login-state", "queryBeforeObservation", 1, "{}");
         let before = product.dispatch_user_request(&query).unwrap();
         assert!(String::from_utf8(before).unwrap().contains("\"state\":\"UNKNOWN\""));

@@ -179,6 +179,7 @@ jobs:
             @{ id = 'protocol-input-close'; filter = 'native_input_close_delivers_eof_and_preserves_graceful_stop_proof' },
             @{ id = 'bound-instance-acl'; filter = 'bound_nonempty_tree_grants_only_its_recorded_instance_identity' },
             @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
+            @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
             @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
             @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
