@@ -2596,12 +2596,7 @@ mod tests {
             .handles_are_non_inheritable()
             .expect("handle policy"));
         let started = Instant::now();
-        let marker_deadline = started + Duration::from_secs(5);
-        while !marker.exists() && Instant::now() < marker_deadline {
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(marker.exists(), "controlled parent did not publish child pid: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}", started.elapsed().as_millis(), process_exit_code(process.process.raw()).ok().flatten(), process.active_job_processes().ok(), entry_marker.exists(), fs::read_to_string(&error_marker).ok());
-        let parent_finished = process.wait(Duration::from_secs(5)).expect("wait parent");
+        let parent_finished = process.wait(Duration::from_secs(15)).expect("wait parent");
         assert!(
             parent_finished,
             "controlled parent did not exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
@@ -2611,6 +2606,7 @@ mod tests {
             entry_marker.exists(),
             fs::read_to_string(&error_marker).ok()
         );
+        assert!(marker.exists(), "controlled parent exited without publishing child pid: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}", started.elapsed().as_millis(), process_exit_code(process.process.raw()).ok().flatten(), process.active_job_processes().ok(), entry_marker.exists(), fs::read_to_string(&error_marker).ok());
         assert!(
             process.active_job_processes().expect("job accounting") >= 1,
             "descendant must remain in the owned job after parent exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}",

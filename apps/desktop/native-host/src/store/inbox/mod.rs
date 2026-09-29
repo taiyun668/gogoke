@@ -559,9 +559,10 @@ pub(crate) fn raise_card(connection: &mut VerifiedDatabaseConnection<'_>, envelo
     -> Result<CardOperation, InboxError> {
     envelope.validate()?;
     for (value,name) in [(request_ref,"request"),
-        (seat_id,"seat"),(turn_id,"turn"),(generation,"generation")] {
+        (seat_id,"seat"),(turn_id,"turn")] {
         if !valid_id(value) { return Err(InboxError::Invalid(name)); }
     }
+    required(generation,"generation")?;
     if options.is_empty() || options.iter().filter(|option| option.recommended).count() != 1 ||
         options.iter().any(|option| !valid_id(option.id)) { return Err(InboxError::Invalid("options")); }
     let mut ids = std::collections::BTreeSet::new();

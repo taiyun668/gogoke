@@ -892,10 +892,12 @@ mod platform {
 
         #[test]
         fn seat_pipe_rejects_a_same_user_non_app_container_client() {
-            let package_sid = "S-1-15-2-123456789";
+            let package_sid = crate::process::AppContainerProfile::derived_for_test(
+                "Gogoke37.SeatPipeTest").expect("derived test package")
+                .sid_identity().expect("test package SID");
             let listener = PrivatePipeListener::bind_app_container(
-                &unique_endpoint("seat-peer"), package_sid).expect("seat pipe");
-            assert_eq!(listener.expected_package_sid(), Some(package_sid));
+                &unique_endpoint("seat-peer"), &package_sid).expect("seat pipe");
+            assert_eq!(listener.expected_package_sid(), Some(package_sid.as_str()));
             let dacl = listener.applied_dacl_snapshot().expect("applied DACL");
             assert!(dacl.0);
             assert_eq!(dacl.1.len(), 2);
