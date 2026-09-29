@@ -7,6 +7,12 @@ use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, SyncSender};
+
+struct ServiceFrame {
+    bytes: Vec<u8>,
+    answer: SyncSender<(Vec<u8>, bool)>,
+}
 
 fn main() {
     match run() {
@@ -43,8 +49,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("PIPE\t{}", listener.path());
     println!("CAPABILITY\t{service_capability}");
     io::stdout().flush()?;
-    let pipe = listener.accept_current_user()?;
-    product.serve_authenticated_pipe(&pipe, &service_capability)?;
+    // The pipe worker owns only transport bytes. The main thread remains the
+    // sole owner of the verified database, issuer and process custodian.
+    let (sender, receiver) = mpsc::channel::<ServiceFrame>();
+    let worker = std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let pipe = listener.accept_current_user()?;
+        loop {
+            let bytes = pipe.read_frame()?;
+            let (answer, reply) = mpsc::sync_channel(0);
+            sender.send(ServiceFrame { bytes, answer })?;
+            let (frame, should_stop) = reply.recv()?;
+            pipe.write_frame(&frame)?;
+            if should_stop { break; }
+        }
+        Ok(())
+    });
+    let mut service = product.begin_service_frames(&service_capability)?;
+    for frame in receiver {
+        let (reply, should_stop) = match product.dispatch_service_frame(&mut service, &frame.bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                drop(frame.answer);
+                drop(worker.join());
+                return Err(Box::new(error));
+            }
+        };
+        frame.answer.send((reply, should_stop))?;
+        if should_stop { break; }
+    }
+    worker.join().map_err(|_| io::Error::other("service pipe worker panicked"))??;
     product.close_checked()?;
     drop(lock);
     Ok(())
