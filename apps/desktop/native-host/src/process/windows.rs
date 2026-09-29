@@ -2461,7 +2461,14 @@ mod tests {
             Ok(mut process) => format!("spawn=OK; exit={:?}", process.wait()),
             Err(error) => format!("spawn=WIN32_{:?}; detail={error}", error.raw_os_error()),
         };
-        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}"))
+        let signed_control = std::process::Command::new(system_cmd())
+            .args(["/D", "/C", "exit 0"])
+            .spawn();
+        let control = match signed_control {
+            Ok(mut process) => format!("signed_child=OK; exit={:?}", process.wait()),
+            Err(error) => format!("signed_child=WIN32_{:?}; detail={error}", error.raw_os_error()),
+        };
+        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}"))
             .expect("persist direct child launch result");
     }
 
