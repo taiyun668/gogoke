@@ -22,7 +22,11 @@ pub(crate) enum RegistryError {
     RequestConflict,
     InstanceConflict,
     Unknown,
+    CommitUnknown(crate::store::same_open::SameOpenError),
+    RollbackUnknown(crate::store::same_open::SameOpenError),
+    RevisionParse(std::num::ParseIntError),
     IdentityChanged,
+    Root(crate::root::RootLockError),
     Home(HomeError),
     Io(io::Error),
     Store(crate::store::atomic::AtomicError),
@@ -223,11 +227,11 @@ fn transaction<T>(connection: &mut VerifiedDatabaseConnection<'_>, action: impl 
     connection.execute("BEGIN IMMEDIATE")?;
     match action(connection) {
         Ok(value) => {
-            connection.execute("COMMIT").map_err(|_| RegistryError::Unknown)?;
+            connection.execute("COMMIT").map_err(RegistryError::CommitUnknown)?;
             Ok(value)
         }
         Err(error) => {
-            connection.execute("ROLLBACK").map_err(|_| RegistryError::Unknown)?;
+            connection.execute("ROLLBACK").map_err(RegistryError::RollbackUnknown)?;
             Err(error)
         }
     }
@@ -238,7 +242,7 @@ fn checked_identity(path: &Path) -> Result<RootIdentity, RegistryError> {
     if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
         return Err(RegistryError::IdentityChanged);
     }
-    Ok(inspect_root(path).map_err(|_| RegistryError::IdentityChanged)?.identity)
+    Ok(inspect_root(path).map_err(RegistryError::Root)?.identity)
 }
 
 fn observed_home(root: &RootLock, instance_id: &str) -> Result<Option<RootIdentity>, RegistryError> {
@@ -388,7 +392,7 @@ pub(crate) fn record_observation(connection: &mut VerifiedDatabaseConnection<'_>
         row.bind_text(1, input.instance_id)?;
         if !row.step_row()? { return Err(RegistryError::InstanceConflict); }
         if row.column_text(0)? != home.opaque() { return Err(RegistryError::IdentityChanged); }
-        let revision = row.column_text(1)?.parse::<i64>().map_err(|_| RegistryError::Unknown)?;
+        let revision = row.column_text(1)?.parse::<i64>().map_err(RegistryError::RevisionParse)?;
         drop(row);
         if revision != input.expected_revision || revision == i64::MAX {
             return Err(RegistryError::InstanceConflict);

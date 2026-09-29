@@ -8,6 +8,8 @@ const SCHEMA: &str = "gogoke.37.operations.v1";
 pub(crate) enum V37WireError {
     Invalid(&'static str),
     Json(AtomicError),
+    Utf8(std::str::Utf8Error),
+    Revision(std::num::ParseIntError),
 }
 
 pub(crate) struct V37Request {
@@ -126,7 +128,7 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<V37Request, V37WireError> {
     if bytes.len() > MAX_BYTES {
         return Err(V37WireError::Invalid("frame size"));
     }
-    let text = std::str::from_utf8(bytes).map_err(|_| V37WireError::Invalid("utf8"))?;
+    let text = std::str::from_utf8(bytes).map_err(V37WireError::Utf8)?;
     let Json::Object(mut fields) = Parser::parse(text).map_err(V37WireError::Json)? else {
         return Err(V37WireError::Invalid("object"));
     };
@@ -151,7 +153,7 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<V37Request, V37WireError> {
     }
     let expected_revision = revision
         .parse::<u64>()
-        .map_err(|_| V37WireError::Invalid("revision"))?;
+        .map_err(V37WireError::Revision)?;
     let Json::Object(payload) = field(&mut fields, "payload")? else {
         return Err(V37WireError::Invalid("payload"));
     };

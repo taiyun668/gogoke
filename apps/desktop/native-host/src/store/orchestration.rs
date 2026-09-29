@@ -16,6 +16,7 @@ pub enum OrchestrationError {
     ProjectorRejected(&'static str),
     Fault(FaultPoint),
     CommitUnknown,
+    CommitUnknownWithCause(SameOpenError),
     Atomic(AtomicError),
     Process(ProcessCustodyError),
     Io(std::io::Error),

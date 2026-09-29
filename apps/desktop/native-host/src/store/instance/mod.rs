@@ -102,11 +102,11 @@ pub(crate) fn initialize_schema(
     match created {
         Ok(()) => connection
             .execute("COMMIT")
-            .map_err(|_| OrchestrationError::CommitUnknown),
+            .map_err(OrchestrationError::CommitUnknownWithCause),
         Err(error) => {
             connection
                 .execute("ROLLBACK")
-                .map_err(|_| OrchestrationError::CommitUnknown)?;
+                .map_err(OrchestrationError::CommitUnknownWithCause)?;
             Err(error)
         }
     }

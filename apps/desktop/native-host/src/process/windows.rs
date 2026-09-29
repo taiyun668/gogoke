@@ -1558,8 +1558,8 @@ fn controlled_environment() -> Result<Vec<u16>, ProcessCustodyError> {
         return Err(ProcessCustodyError::ProtocolEnvironment(io::Error::last_os_error()));
     }
     let directory = String::from_utf16(&buffer[..length as usize])
-        .map_err(|_| ProcessCustodyError::ProtocolEnvironment(
-            io::Error::new(io::ErrorKind::InvalidData, "Windows directory UTF-16")))?;
+        .map_err(|error| ProcessCustodyError::ProtocolEnvironment(
+            io::Error::new(io::ErrorKind::InvalidData, error)))?;
     // Do not inherit NODE_OPTIONS, PATH, credentials, provider config or
     // attacker-controlled preload/search paths from the service process.
     Ok(format!("SystemRoot={directory}\0WINDIR={directory}\0\0").encode_utf16().collect())
