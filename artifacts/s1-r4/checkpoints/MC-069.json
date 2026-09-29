@@ -1,0 +1,61 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-069",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "9fabfbd4d5a02374ce0318ec4ed82ffa61eba78b",
+  "recorded_utc": "2026-09-24T18:19:21Z",
+  "reason": "AGENTS_DRIFT_THRESHOLD_AFTER_OWNER_DIRECTED_R2_04_COMPARISON",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "this_turn": {
+    "code_changes": "NONE",
+    "owner_directed_work": "Read the completed cloud comparison with Tauri alive and the same inherited smoke environment, installed Node, service entry, working directory and native-host. The two direct calls used the source-derived Tauri app_data_dir root and a fresh root.",
+    "diagnostic_limit": "The actual root is derived from the Tauri path implementation and Windows RoamingAppData known folder in the Medium process; a runtime Tauri root value was not independently emitted. The original Tauri child stderr remains unavailable."
+  },
+  "cloud_evidence": {
+    "desktop_run": 36037470304,
+    "exact_sha": "9fabfbd4d5a02374ce0318ec4ed82ffa61eba78b",
+    "browser": "PASS",
+    "dependency_notices": "PASS",
+    "nsis_job": 107763915652,
+    "nsis": "FAIL",
+    "passed_before_failure": [
+      "actual T3 service bundle and locked deployment",
+      "staged Node and cloud native-host build",
+      "package seal and release verifier",
+      "unsigned NSIS installer build",
+      "update/readiness/rollback smoke",
+      "installed resource byte identity"
+    ],
+    "first_failed_step": "Verify installed resource identity and read-only product entry",
+    "tauri_product_invoke": "GOGOKE_PRODUCT_SERVICE_FAILED:1",
+    "direct_with_tauri_alive_source_derived_root": "EXIT_0; stderr only Node SQLite experimental warning",
+    "direct_with_tauri_alive_fresh_root": "EXIT_0; stderr only Node SQLite experimental warning",
+    "source_hygiene_run": 36037470323,
+    "source_hygiene": "PASS"
+  },
+  "finding": "Both direct service calls succeeded under the inherited smoke environment while Tauri remained alive. This comparison did not reproduce the failing Tauri child, so it does not establish a cause or authorize a production fix. Request bytes, Tauri runtime root identity and Tauri child stderr are not verified equivalent by this evidence.",
+  "drift_signal": "The previous and current construction rounds ended without an additional runnable product capability. The root AGENTS.md mechanical rule requires a construction stop and one external Owner repositioning. No further diagnostic layer or product mutation was added after this finding.",
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "evidence_boundary": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "candidate_review": "NOT_RUN",
+    "adoption_release_merge": "NONE"
+  },
+  "architecture_blocker": "NO_EVIDENCE_OF_ARCHITECTURE_BLOCKER",
+  "workspace": "Clean before checkpoint. The temporary cloud diagnostic remains committed pending a real root-cause repair; no local native build or test was run.",
+  "external_action": "NO_UNCERTAIN_REMOTE_WRITE; NO_MAIN_WRITE; NO_MERGE; NO_RELEASE",
+  "next_action": "STOP construction and request Owner external repositioning under AGENTS.md. On explicit direction, re-read exact remote truth and continue only the directed R2-04 work. Remove the temporary cloud diagnostic after a verified root-cause repair."
+}

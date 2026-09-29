@@ -1,0 +1,32 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-138",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "8a13eabe1b1a393851e2eb36635bfc5cbd262ab8",
+  "recorded_utc": "2026-09-27T08:48:47Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-137.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "second_owner_win11_uninstall_observation": {
+    "attempts_total": 2,
+    "second_parent_pid": 9808,
+    "started_utc": "2026-09-27T08:44:57Z",
+    "ended_utc": "2026-09-27T08:45:42Z",
+    "second_parent_exit_code": 1,
+    "second_parent_stderr": "GOGOKE_UNINSTALL_LOCK_HANDOFF_UNCONFIRMED",
+    "exact_instance_finalizer_receipt": "ABSENT in the installation root's actual parent",
+    "sibling_lifecycle_lock": "392-byte PowerShell CLIXML first-use progress, SHA-256 a3639af5e23464fc391dae127fd5493f02c8178068a35866d9c7fdd35dcd623f, no LOCK nonce marker",
+    "local_observer": "%LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-b025\\uninstall-completion.json"
+  },
+  "independent_source_analysis": "The parent maps stdout timeout, early EOF, wrong READY line, and missing lock witness to one error. The 20-second handshake clock begins only after the entire stdin handoff is written; 45 seconds of parent lifetime does not isolate that interval. An actual PowerShell CLIXML write to inherited stderr supports that the child opened the inherited lock handle, but does not prove that it reached the finalizer's lock verification. The finalizer reserves a receipt before writing LOCK and READY. No receipt or marker was found, so the exact failing stage is still unknown. Do not call this an SAC block or merely widen the timeout without a falsifying measurement.",
+  "post_second_attempt": {
+    "candidate_registration_and_installed_shell": "PRESENT; same candidate instance and frozen shell bytes",
+    "candidate_data": "2 files retained",
+    "formal_install_data_registry_and_shortcuts": "UNCHANGED against before-install snapshot; 12,989 installed files and 6 data files; latest local snapshot %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-b025\\formal-after-uninstall-failure.json",
+    "new_code_integrity_events_after_record_7089": 0,
+    "gogoke_processes": 0
+  },
+  "inbox_classification_at_current_b025_bytes": {"F1": "ALREADY_FIXED in source/cloud interleave evidence, subject to this newly observed Win11 uninstall failure", "F2": "ALREADY_FIXED; non-32 branch not dynamically triggered", "F3": "ALREADY_FIXED in preparation, residual candidate root/data/locks currently preserved", "F4": "NEEDS_REVIEW; formal shortcut launch remains after successful candidate uninstall and formal snapshot comparison"},
+  "next_action": "Diagnose the precise PowerShell handoff stage by non-destructive measurement of the exact bootstrap/finalizer path in an isolated fixture. Keep the installed candidate and formal installation intact; no third real uninstall or force deletion while the mechanism is unknown. Repair within R2-06a, rerun affected cloud build/signature/installed negatives for changed bytes, and rebind preparation. Only then resume Owner Win11 cleanup/test. Preserve MC-122 two-file evidence copy; no PR #34 merge, R2-06b, publication, code signing, security-setting change or self-acceptance."
+}

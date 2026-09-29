@@ -24,6 +24,7 @@ type UpdateStage =
   | "installing"
   | "restarting"
   | "latest"
+  | "cleanup_pending"
   | "error";
 
 type UpdateProgress = {
@@ -35,6 +36,7 @@ export type UpdateState = {
   stage: UpdateStage;
   version?: string;
   progress?: UpdateProgress;
+  message?: string;
   error?: string;
 };
 
@@ -189,11 +191,15 @@ export function useUpdater({
     hasAttemptedAutoCheckRef.current = true;
     void (async () => {
       try {
-        const failure = await takeGogokeUpdateFailure();
-        if (failure) {
+        const notice = await takeGogokeUpdateFailure();
+        if (notice?.kind === "cleanup_pending") {
+          setState({ stage: "cleanup_pending", message: notice.message });
+          return;
+        }
+        if (notice?.kind === "failure") {
           setState({
             stage: "error",
-            error: `The previous gogoke update was rolled back: ${failure}`,
+            error: notice.message,
           });
           return;
         }

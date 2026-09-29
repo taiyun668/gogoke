@@ -1,0 +1,36 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-094",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "5b6b7eb617cb156792854209e0e89e25231f5fea",
+  "recorded_utc": "2026-09-25T16:38:57Z",
+  "reason": "R2_06_CANDIDATE_READY_PROVEN_UNINSTALL_FIRST_FAILURE_AND_GENERATION_ROUTING_INCREMENT",
+  "current_main": "e77396b71dcbf89183887e918e03f2a8d495ab3f",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac remain current.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_NOT_MERGED at remote 5b6b7eb617cb156792854209e0e89e25231f5fea.",
+  "pr34": "OPEN_NOT_MERGED at dacd466e1a870c1820aed0854a676ec23a2d1613; Owner-held R2-05 remains WIP.",
+  "pr41": "MERGED into main at e77396b7 after exact 422e8cd0 Browser, notices, Windows NSIS, and public hygiene PASS plus focused independent script review. It removed temporary WebView/service diagnostics and uses raw hosted TMP spelling for candidate readiness.",
+  "pr42": "OPEN at 3a9a14e0988b6389fa5df7a22742f2c143d9a9eb; bounded uninstall stderr capture only. Hygiene run 36161925941 PASS; desktop run 36161925776 IN_PROGRESS. Focused read-only review and signed Node synthetic stderr tests found no remaining definite defect; hosted Gogoke stderr NOT_RUN.",
+  "executed_evidence": {
+    "full_update_argument": "Execution 8cb7c230 desktop run 36157883110 SUCCESS across Browser, notices, two independent Windows native/NSIS builds and executable-byte comparison; source hygiene run 36157887661 SUCCESS. Browser cloud test executed two spaced readiness argument cases and old unquoted negative controls. This is exact-8cb evidence, not inherited by later production bytes.",
+    "candidate_path_root_cause": "Trusted signer run 36157834412 measured installed Medium readiness rejection: the smoke used .NET-expanded long temp spelling while the product process received raw TMP with an 8.3 segment. PR41 preserved raw TMP, removed the temporary diagnostics, and passed exact-head CI.",
+    "candidate_installed": "Trusted main e77396b7 manual signer run 36160734783 reused successful source 295c4447/run 36153652792/attempt 1/frozen artifact 10874445723. Signing PASS and installed Medium smoke reached exact version 0.1.3, generation and set-bound readiness receipt. It then FAILed at installed gogoke.exe --uninstall --quiet exit 1; no finalizer receipt or data-preservation PASS. Machine evidence artifact 10875805701, signed candidate artifact 10875805451. The existing smoke did not capture the GUI child stderr, so the product rejection reason is UNKNOWN; no same-condition retry.",
+    "resource_generation_increment": "Execution 5b6b7eb6 binds main/About WebView requests to verified generation IDs, decodes one URL layer, and publishes a signed set only after its generation is complete. Independent focused source review found no remaining definite defect for the three measured issues. Local JS typecheck and Vite build PASS; exact-5b cloud native/build run 36161994385 IN_PROGRESS, public hygiene run 36161998884 PASS. Real resource switch/rollback and crash injection NOT_RUN."
+  },
+  "blocked_or_not_run": "Candidate uninstall and finalizer/data preservation FAIL/NOT_RUN after exit 1; PR42 direct stderr cloud diagnosis pending. Exact-5b native and executable-byte evidence IN_PROGRESS. Formal Owner-signed full/resource update, rollback/crash recovery, Owner Win11 SAC formal installer, final independent candidate review and held R2-05 remain NOT_RUN. No release, adoption or acceptance.",
+  "path_first_reflection": "The previous service and WebView probes showed readiness did not run but did not directly test the readiness argument. A same-Medium direct call measured the raw TMP versus .NET path spelling and resolved that instrumentation error in one minimal trusted-script change. The next installed run proved readiness and exposed uninstall exit 1; changing product logic by guess would add another cloud round, so PR42 captures only the direct GUI child stderr while the execution branch independently addresses three source-proven resource-generation defects. The signed source artifact is reused without rebuilding for the diagnostic.",
+  "retained_custody": [
+    "Execution worktree is clean at pushed 5b6b7eb6 before this checkpoint; ignored pre-existing apps/desktop/dist was overwritten by a local JS-only Vite build and is not candidate evidence.",
+    "Trusted signer worktree holds clean pushed PR42 branch 3a9a14e0 for the bounded stderr cloud diagnostic; its PR remains open.",
+    "%TEMP%/gogoke-r206-version-compare-20260925, %TEMP%/gogoke-r206-version-compare-3a60712b-20260925 and %TEMP%/gogoke-r206-candidate-smoke-36145183788 retain small public machine JSON copies pending safe cleanup.",
+    "Temporary PR body files and the ignored tools/ci/__pycache__/test_gogoke_update_backup_cleanup_cloud.cpython-313.pyc remain after exact-path Remove-Item was automatically rejected as blocked by policy; no alternate deletion route was attempted."
+  ],
+  "external_action": "PR41_MERGED; PR42_OPEN; PR27_DRAFT; PR34_OPEN_OWNER_HELD; SIGNER_RUN_36160734783_FAILED_AT_UNINSTALL_KNOWN; NO_OWNER_KEY_USE; NO_RELEASE; TEMP_CLEANUP_AUTO_REVIEW_REJECTED",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Complete PR42 exact-head CI/review, merge trusted bounded stderr capture, then rerun signer on the same exact successful source 295c4447 frozen artifact to obtain the first direct uninstall error. Repair only the measured root cause on execution branch. In parallel inspect exact-5b cloud native/build result and source hygiene; do not inherit 8cb PASS. Rerun affected exact-head axes and candidate installed smoke, keep PR34/R2-05 held."
+}

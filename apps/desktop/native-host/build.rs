@@ -186,6 +186,16 @@ fn patch_fixed_source(source: &str, patch: &str) -> String {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=GOGOKE_CONTROLLED_NODE_PATH");
+    let controlled_node = PathBuf::from(
+        std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud build must name the Node runtime shipped with controlled fixture"),
+    );
+    let controlled_node_digest = sha256(
+        &fs::read(&controlled_node).expect("read controlled Node runtime at cloud build"),
+    );
+    println!("cargo:rerun-if-changed={}", controlled_node.display());
+    println!("cargo:rustc-env=GOGOKE_CONTROLLED_NODE_SHA256=sha256:{controlled_node_digest}");
     println!("cargo:rerun-if-changed={SQLITE_C}");
     println!("cargo:rerun-if-changed={SQLITE_H}");
     println!("cargo:rerun-if-changed={SQLITE_PATCH}");

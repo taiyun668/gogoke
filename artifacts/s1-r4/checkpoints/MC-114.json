@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-114",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "59c78fc2539d9738ced83ba833f1f6aae31bc3aa",
+  "recorded_utc": "2026-09-26T21:31:00Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-113.json",
+  "current_main": "262f3e8184c9f25b69e2d6b543e2e053ba6d5caf",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a is authorized WIP; release is not authorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Installed smoke 36270617198 on script revision 7374ede7, using signed source ec8505b1 and candidate artifact 10914706805, passed installation, exact installed executable hashes and signed-resource Home selection, then returned GOGOKE_PRODUCT_SERVICE_FAILED:78 from the real readiness IPC. Script-only cloud replay 36271276405 at 42170d0d used the same signed candidate, Node, service entry, cwd and signed-index file set; it reproduced exit 78 and identified the denied module as the installed ffi-rs.win32-x64-msvc.node under @yuuang/ffi-rs-win32-x64-msvc. Node passed a Windows namespaced path while the verified module policy contained ordinary drive paths. Local signed-Node path-key check confirmed the two strings compare differently and a poisoned generation path stays distinct. Source fix 59c78fc2 derives a namespaced alias only for each exact verified leased file; local JS syntax, path-key and diff checks passed. Desktop cloud run 36271742540 at exact 59c78fc2 is IN_PROGRESS: browser tests and dependency notices PASS; both Windows native-test lanes have passed their test step and are building unsigned shell/NSIS. No new installed candidate PASS is claimed.",
+  "path_reflection": "The first smoke after the resource URL correction reached the product IPC and exposed service exit 78. Rather than rebuilding a diagnostic binary, one script-only cloud replay identified the exact denied native module. The fix adds an exact alias for the same leased bytes, not a directory allow rule. The current single desktop run covers both native lanes and byte comparison before one trusted signing and installed smoke. Temporary replay and first-error diagnostics must be removed after product success, followed by a final rebuild/sign/smoke of the cleaned bytes.",
+  "main_drift": "Since MC-113, main changed two design documents only. PR #49 is now MERGED; its model-routing paragraph was already read. No current governance, R2-06a contract, authorization or production dependency changed, so no merge is needed.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "Installed positive service/readiness, poisoned-module negative, uninstall/data preservation, Owner Win11/SAC and final review remain NOT_RUN for 59c78fc2. PR #27 OPEN/DRAFT; PR #34 OPEN and Owner-held. R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "Branch push and exact cloud run were read back. Run 36271742540 is the named active external object. No merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Read all five jobs of desktop run 36271742540 at 59c78fc2. On PASS, run trusted main candidate signing for its exact source artifact, then branch installed smoke at exact signed bytes, checking real product readiness, controlled service positive/poison negative, uninstall and data preservation. On failure, fix the first real failure within R2-06a. After an installed PASS, delete temporary diagnostics and rebuild/sign/smoke final candidate bytes before review and Owner-machine testing."
+}

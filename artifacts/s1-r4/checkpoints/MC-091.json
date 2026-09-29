@@ -1,0 +1,47 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-091",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "61270c79fb28fc0fd31a500a816f0383dfc331a6",
+  "recorded_utc": "2026-09-25T12:42:09Z",
+  "reason": "R2_06_EXACT_DUAL_BUILD_PASS_AND_ISOLATED_CANDIDATE_SMOKE_WIP",
+  "current_main": "56536f4ab850bc8b962456f95f5d0f2162d0c43a",
+  "authorization": "Current main retains v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "execution_remote_before_push": "a4db178908038ea358689c42b032b53ff53c76e0",
+  "pr27": "OPEN_DRAFT_NOT_MERGED at remote a4db178908038ea358689c42b032b53ff53c76e0 before this checkpoint push.",
+  "pr34": "OPEN_NOT_MERGED at dacd466e1a870c1820aed0854a676ec23a2d1613; Owner-held R2-05 remains WIP.",
+  "pr37": "OPEN_DRAFT_NOT_MERGED at 536d2800cceae109274982b291a35dcebb4d4c51. Latest source hygiene PASS; Browser and dependency notices were IN_PROGRESS at checkpoint. The trusted signer and isolated candidate installed smoke are not yet on main; no real candidate signing or install was executed.",
+  "wip_implemented_since_mc090": [
+    "Commit d62b1040 pins Rust LLD for both native-host and shell. Commit a4db1789 also disables PDB/debug identity emission at both final links while retaining /Brepro. Commit 912c1fae carries the trusted signer ZIP-extra rejection into execution. The latter is local only until the next push.",
+    "Commit 61270c79 adds a cloud-only signed candidate installed-product smoke and aligns the execution signer workflow with trusted PR #37. The signer secret is present only in its signing step; actual installer, product and uninstaller run in a separate Windows job with no candidate secret and a pinned Medium token launcher. The smoke binds source run, source artifact, signing run, setup, installed shell, native-host and Node bytes, actual product readiness, candidate registration, uninstall receipt and preserved AppData sentinel. This is source WIP, not executed product evidence.",
+    "The R2-06 NSIS template no longer writes an unused HKCU Software\\gogoke product-root locator. The active product and uninstaller already use the separate instance-bound HKCU Uninstall registration; no consumer of the removed locator was found. The new installed smoke rejects its creation. This installer change awaits cloud execution."
+  ],
+  "executed_evidence": {
+    "desktop_ci_reproducibility": "Run 36132814919 at exact remote a4db178908038ea358689c42b032b53ff53c76e0: Browser build/tests PASS, dependency notices PASS, both independent clean Windows build lanes PASS with native release tests and NSIS packaging, and comparison job 108073972427 PASS for raw gogoke.exe, NSIS-patched installed gogoke.exe, native-host, Node, resource pack and index. Comparison artifact 10865475149 uploaded with SHA-256 a9ba90e27a2876a0966ac67e3167f66e0db868f94785d2e4b9ff71bd420e5951. Frozen artifact 10864915485 and repro artifact 10865500015 had their uploaded SHA-256 digests checked by the comparison job. This PASS is bound to a4db1789; it does not transfer to later source bytes.",
+    "source_hygiene": "Run 36132814818 at exact a4db178908038ea358689c42b032b53ff53c76e0: PASS. Later local commits require new exact-head evidence.",
+    "prior_first_failure": "Run 36129003162 at d62b1040 passed both clean build lanes but the byte comparison failed at gogoke-portable.exe. Direct in-memory PE comparison of the exact two uploaded artifacts found only 20 changing bytes in each Rust executable: COFF/debug timestamps and part of the PDB GUID; code/data/resource section hashes matched. That measurement motivated /DEBUG:NONE at a4db1789. No local native build was used.",
+    "local_checks": "The new candidate smoke PowerShell AST parsed, the signer workflow and script copies in execution matched trusted PR #37 after the Medium-token adjustment, and staged git diff --check passed. The actual candidate installer/product/uninstaller smoke is NOT_RUN until the trusted workflow lands on main and runs in cloud.",
+    "candidate_signing_installed_product_sac": "NOT_RUN at current execution source head; PR #37 remains Draft and not on main. No Owner private key was used."
+  },
+  "open_findings": [
+    "Exact-head cloud CI for local 61270c79 and this checkpoint is NOT_RUN. The a4db1789 reproducibility result must be repeated after the new installer and workflow source commit, then checked across resource/version-only source changes.",
+    "PR #37 at 536d2800 has no final exact-head cross-model review. An external Claude CLI attempt on earlier ffdaff1b stopped at its session limit until the stated reset; it was not silently retried through another account or model. Fresh review must bind the latest PR head, followed by trusted main landing before real signer secret, candidate artifact and isolated installed smoke can run.",
+    "Cloud installed --uninstall, registered shortcut ownership, partial-deletion retry, full-update retained-backup cleanup and resource-switch failure/crash rollback are still not proven complete.",
+    "Owner Win11 Smart App Control candidate/formal installed-product axes, formal Owner signature, R2-05 final gates and PR #34 merge remain NOT_RUN or held. Candidate cloud PASS would not by itself satisfy them."
+  ],
+  "path_first_reflection": "The previous repeated cloud failures were narrowed from a volatile pnpm staging file to linker metadata, not code sections. The a4db1789 round changed both final Rust link seams once and tested both clean builders plus six files in one run. For the next test, a signed candidate must not execute beside the CI private key: the trusted signer job exports verified identities and uploads one artifact, then an independent secret-free Windows job runs the real installed product under the already established Medium token. The unused product locator was removed at its only writer instead of adding a second deletion path to the uninstaller.",
+  "retained_custody": [
+    "The execution worktree is clean at local 61270c79 before this checkpoint, two commits ahead of remote a4db1789. Push by ordinary fast-forward after committing this checkpoint; no force push or reset occurred.",
+    "Separate trusted signer worktree/PR #37 is clean at 536d2800. Keep it until main landing, candidate workflow execution and evidence capture.",
+    "%TEMP%/gogoke-pr37-body-ffdaff1b.md is a single temporary PR body copy. Automatic approval review rejected its Remove-Item cleanup with the stated reason 'blocked by policy'. No alternate deletion path was attempted; retain until a permitted cleanup method is available.",
+    "The earlier public comparison copies under %TEMP%/gogoke-r206-d0-compare-36121183429 and the MC-085/MC-089 retained paths remain under their prior checkpoints. This turn's a4db1789 evidence was read from GitHub run/job/artifact metadata and logs without a new local artifact download."
+  ],
+  "external_action": "EXECUTION_PUSH_PENDING; PR37_PUSHED_DRAFT; NO_CANDIDATE_SIGNATURE; NO_OWNER_KEY_USE; NO_MAIN_MERGE; NO_PR34_MERGE; NO_RELEASE; TEMP_CLEANUP_AUTO_REVIEW_REJECTED",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Commit/push MC-091 and the local execution commits by ordinary fast-forward; verify remote PR #27 head, then run exact-head desktop and source-hygiene CI. Recheck PR #37 exact-head checks and obtain fresh external Claude review after the provider reset. If source byte and review gates pass, land the trusted signer on main, run one controlled signer workflow against an exact successful source artifact, inspect isolated installed-product evidence, and proceed to Owner Win11 candidate test without asking Owner to sign or click. Keep PR #34 and R2-05 held."
+}

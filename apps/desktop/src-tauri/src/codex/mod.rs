@@ -38,7 +38,7 @@ pub(crate) async fn spawn_workspace_session(
     app_handle: AppHandle,
     codex_home: Option<PathBuf>,
 ) -> Result<Arc<WorkspaceSession>, String> {
-    let client_version = app_handle.package_info().version.to_string();
+    let client_version = env!("CARGO_PKG_VERSION").to_string();
     let event_sink = TauriEventSink::new(app_handle);
     spawn_workspace_session_inner(
         entry,

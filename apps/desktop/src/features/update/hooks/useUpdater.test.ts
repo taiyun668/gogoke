@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DebugEntry } from "../../../types";
 import { useUpdater } from "./useUpdater";
 import { STORAGE_KEY_PENDING_POST_UPDATE_VERSION } from "../utils/postUpdateRelease";
-import { checkGogokeUpdate, installGogokeUpdate } from "../../../services/tauri";
+import { checkGogokeUpdate, installGogokeUpdate, takeGogokeUpdateFailure } from "../../../services/tauri";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: vi.fn(() => true),
@@ -18,6 +18,7 @@ vi.mock("../../../services/tauri", () => ({
 
 const checkMock = vi.mocked(checkGogokeUpdate);
 const installMock = vi.mocked(installGogokeUpdate);
+const takeFailureMock = vi.mocked(takeGogokeUpdateFailure);
 const fetchMock = vi.fn();
 
 describe("useUpdater", () => {
@@ -31,6 +32,29 @@ describe("useUpdater", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("keeps a committed update cleanup notice separate from install failure", async () => {
+    vi.stubEnv("DEV", false);
+    const message = "New installation remains active; old backup cleanup incomplete at C:\\backup";
+    takeFailureMock.mockResolvedValue({ kind: "cleanup_pending", message });
+    const { result } = renderHook(() => useUpdater({}));
+
+    await waitFor(() => expect(result.current.state.stage).toBe("cleanup_pending"));
+    expect(result.current.state.message).toBe(message);
+    expect(result.current.state.error).toBeUndefined();
+    expect(checkMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps ordinary update failures in the error state", async () => {
+    vi.stubEnv("DEV", false);
+    takeFailureMock.mockResolvedValue({ kind: "failure", message: "installer exit 1" });
+    const { result } = renderHook(() => useUpdater({}));
+
+    await waitFor(() => expect(result.current.state.stage).toBe("error"));
+    expect(result.current.state.error).toBe("installer exit 1");
+    expect(result.current.state.message).toBeUndefined();
   });
 
   it("sets error state when update check fails", async () => {
@@ -87,6 +111,7 @@ describe("useUpdater", () => {
   it("installs a prepared gogoke update and enters restart state", async () => {
     checkMock.mockResolvedValue({
       version: "1.2.3",
+      releaseType: "full",
       asset: "gogoke-1.2.3-windows-x64-unsigned-setup.exe",
       sha256: "a".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",
@@ -118,6 +143,7 @@ describe("useUpdater", () => {
   it("resets to idle on dismiss", async () => {
     checkMock.mockResolvedValue({
       version: "1.0.0",
+      releaseType: "full",
       asset: "gogoke-1.0.0-windows-x64-unsigned-setup.exe",
       sha256: "b".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",
@@ -140,6 +166,7 @@ describe("useUpdater", () => {
   it("surfaces verified installer launch errors", async () => {
     checkMock.mockResolvedValue({
       version: "2.0.0",
+      releaseType: "full",
       asset: "gogoke-2.0.0-windows-x64-unsigned-setup.exe",
       sha256: "c".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",
@@ -174,6 +201,7 @@ describe("useUpdater", () => {
   it("does not run updater workflow when disabled", async () => {
     checkMock.mockResolvedValue({
       version: "9.9.9",
+      releaseType: "full",
       asset: "gogoke-9.9.9-windows-x64-unsigned-setup.exe",
       sha256: "d".repeat(64),
       publishedAt: "2026-09-15T00:00:00Z",

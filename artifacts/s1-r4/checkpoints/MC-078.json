@@ -1,0 +1,103 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-078",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "727394dfbd7364c016a8ddadeee525d8b9f26bb2",
+  "recorded_utc": "2026-09-24T23:39:44Z",
+  "reason": "R2_05_OWNER_WIN11_INSTALLED_PRODUCT_TEST_AND_ORIGINAL_INSTALL_RESTORATION",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "owner_win11_test_authorization": "Owner explicitly authorized local installation/test after candidate hash verification and preservation of the prior installer; required stopping on Smart App Control block and restoration when needed."
+  },
+  "package": "R2-05_FROZEN_SOURCE_CANDIDATE_EVIDENCE_IN_PROGRESS_NOT_ACCEPTED",
+  "candidate": {
+    "source_sha": "985e17d1ffdb19ef05ca5f6bc0a8970a66df3f0d",
+    "cloud_desktop_run": 36066910163,
+    "cloud_native_server_run": 36066883566,
+    "unsigned_package_artifact_id": 10837862139,
+    "installer_sha256": "5bf0e841a94a6a9127d435d13d20cd516c4d90d85b64500a59964ad61cd33f45",
+    "portable_zip_sha256": "b053d0faf9bfe004cf311dcedc52e1a05956e0dc2b5859a81f462d6e809ac4cb",
+    "installed_app_sha256": "333c56ea63da2c1ded3a260a2db546618ebcc38af7393a02b509ac549147ed1d",
+    "installed_native_host_sha256": "a3854c8146fb8df3a8dbf0bbc6fb2bdec0512f87970f6a45a5c9f09b99178648",
+    "installed_node_sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50",
+    "installed_service_entry_sha256": "e266112f295e1f764a6af36232ac57e2fe1dee20fb674696915665822d2200fc"
+  },
+  "owner_machine": {
+    "platform": "Microsoft Windows 11 Pro 10.0.26200 x64",
+    "smart_app_control": "VerifiedAndReputablePolicyState=1_ENFORCE",
+    "install": "Candidate installer from exact cloud artifact was freshly downloaded; installer and portable hashes matched SHA256SUMS.windows and MC-077. Silent NSIS install exited 0. The four installed component hashes matched the candidate inventory.",
+    "launch": "A diagnostic WebView loopback launch command was rejected by automatic approval review before execution (blocked by policy). A separate normal visible Gogoke launch without diagnostic arguments succeeded. No SAC bypass or security setting change occurred.",
+    "product_entry": "Owner used installed Home controls Verify local path, Run test and save draft, and Run open fixture driver. Home displayed verified non-adopted test result, native Action completion, Context manifest, Outcome, Evaluation, Dream draft, and verified test-ledger draft.",
+    "coordination": "The actual Windows known-folder app data product-authority root gained state.sqlite and .gogoke-state.sqlite.custody-v1. The original product root did not exist before the test.",
+    "restart_replay": "Gogoke was closed gracefully and restarted from the same installed candidate bytes. Owner clicked Run test and save draft once. The UI displayed the original fixed Action receipt and draft commit bb570749; the test ledger branch remained at d2e210a7 with no third write.",
+    "sac_observation": "No Code Integrity 3077 or 3033 event mentioning Gogoke or Node was observed from installation through rollback; all executed installer/product processes exited or operated normally. This is a bounded observation of this exact candidate on this Owner machine, not future allowlisting.",
+    "owner_screenshot_novel_sha256": "0a0915f33b71456c7be68aab90f6b530c6a904747794290e9bc9ec955fcbaffb",
+    "owner_screenshot_fixed_replay_sha256": "4410fa6876db65b54e714ca1d5c1a0739e28551f46c579f241953a21c71a43de",
+    "public_replay_screenshot": "artifacts/s1-r4/R2-05-owner-win11-fixed-replay-985e17d1.png",
+    "novel_screenshot_publication": "NOT_COMMITTED: public-source scanner marked a binary printable run as machine-path; original Owner chat attachment hash is recorded but the screenshot is not claimed as durable public Git evidence."
+  },
+  "test_ledger": {
+    "repository": "taiyun668/gogoke",
+    "branch": "s1-r4-ledger-test/r2-02",
+    "head_before": "e1df87873a1ad2fcdf54cf2d9d0799f09255cef2",
+    "fixed_commit": "bb5707496d0fd6c7870213e0a1860df9ef197f80",
+    "fixed_parent": "e1df87873a1ad2fcdf54cf2d9d0799f09255cef2",
+    "fixed_path": "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-product-1bd6970786554a53882046f1848c28db.json",
+    "fixed_sha256": "8de1a818d5c60f852f4f04e71ebf921627a390f4bdcb338957c5ba1db7012f64",
+    "fixed_git_blob": "cf159776d0e5bf1635d4c50d3b4c95fdb59f41d3",
+    "fixed_action_completion": "action-receipt:81bf6ac6513df4f83a3e2524dc14265fcd19f095c5ba6e9029a13c77a7c435a2",
+    "novel_commit": "d2e210a798767273b1b120fa26feeca79ed5c512",
+    "novel_parent": "bb5707496d0fd6c7870213e0a1860df9ef197f80",
+    "novel_path": "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-product-5625a8791dcf4ed8151a8b9590722718.json",
+    "novel_sha256": "911063402683f63834f21df6d923b2102de32a591300f9efeda775f114ac8b95",
+    "novel_git_blob": "a0d69d4d1834bbc3a9ac878709ca0d6acb19dd87",
+    "novel_driver_id": "mock_novel_39a77ddcd589c4d2",
+    "novel_action_completion": "action-receipt:95d9ecca01c47ae5c16efca4303d54db7a81bc4aa0eb469f8bd599baff31c1c4",
+    "final_head_after_replay": "d2e210a798767273b1b120fa26feeca79ed5c512",
+    "readback": "Both commits have GitHub author taiyun668, exact single authorized path, expected parent chain, testOnly=true, executionEvidenceSha=985e17d1, serviceEntrySha256 matching the installed bundle, independently recomputed Git blob and SHA-256, and TEST_FIXTURE_NOT_ADOPTED. The UI reported verified readback for each draft.",
+    "main_write": false,
+    "merge_or_adoption": false
+  },
+  "rollback": {
+    "previous_installer_sha256": "ad3ae37c4a936b5f7344114c3a0bbed4b32f53ceff49b2f0b5e7f61fec9a8a05",
+    "previous_portable_sha256": "5562bdfb3e3f4309475a64b818b94873f9068b7f0ec14497b7a3a0253766755e",
+    "previous_owner_manifest_signature": "VALID_AGAINST_BUILT_IN_PUBLIC_KEY; installer and portable matched the signed SHA256SUMS.windows bytes",
+    "previous_installed_app_sha256": "f49fbd43e734b2f64782425e93504bd11e3a0e958d011902afb02143566227d9",
+    "steps": "After graceful product exit, candidate uninstaller /S exited 0 and preserved all four AppData files byte-for-byte. The verified prior installer /S exited 0. Two original text notice files, absent from that old NSIS installer, were restored from its signed portable ZIP. All three portable members match the restored installation after the expected Tauri NSIS main-binary token patch.",
+    "final_state": "Original app SHA-256 and daemon length restored; candidate native-host and service are absent; no Gogoke process remains; four AppData files match the pre-rollback private backup byte-for-byte. The test-only coordination DB remains user data and was not deleted."
+  },
+  "evidence_status": {
+    "V02": "OWNER_WIN11_INSTALLED_FIXED_AND_NOVEL_TEST_TASK_EXECUTED_NONADOPTED",
+    "V03": "CURRENT_CANDIDATE_PRODUCT_TEST_DRAFT_WRITE_READBACK_AND_RESTART_REPLAY_EXECUTED; ACCEPTED_RESULT_ADOPTION_AND_SAME_ROOT_ACCEPTED_FACT_RECOVERY_NOT_RUN",
+    "V06": "EXACT_CLOUD_PACKAGE_PASS_AND_OWNER_INSTALLED_COMPONENT_HASHES_MATCH",
+    "V07": "OWNER_WIN11_SAC_ENFORCE_INSTALLED_TASK_AND_TEST_LEDGER_OBSERVED; FULL_ACCEPTED_RESULT_AXIS_NOT_RUN",
+    "V04_V05": "PRIOR_FOCUSED_EVIDENCE_RETAINED; REMAINING_PRODUCTION_MUTATIONS_NOT_RUN",
+    "V08": "FRESH_CLAUDE_CROSS_MODEL_REVIEW_AND_OWNER_FINAL_DECISION_NOT_RUN"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "ci_after_mc077": "PR-associated desktop run 36071747625 and public source hygiene run 36071747587 SUCCESS at metadata head 727394df; PR checkout is not substituted for source candidate 985e17d1 exact workflow_dispatch evidence.",
+  "architecture_blocker": "NO_CONFIRMED_ARCHITECTURE_BLOCKER",
+  "external_action": "CANDIDATE_INSTALLED_TESTED_AND_REMOVED; ORIGINAL_INSTALL_RESTORED; TEST_LEDGER_TWO_AUTHORIZED_WRITES_CONFIRMED; NO_UNKNOWN_WRITE_NO_MAIN_WRITE_NO_PR_MERGE_NO_RELEASE",
+  "workspace": {
+    "tracked_diff_before_checkpoint": "NONE",
+    "untracked_novel_screenshot_copy": "artifacts/s1-r4/R2-05-owner-win11-novel-985e17d1.png",
+    "untracked_copy_owner": "Codex Construction Controller",
+    "untracked_copy_reason": "Public-source scanner rejected the binary; automatic approval review rejected an exact-file removal command with blocked by policy. It is not staged or committed.",
+    "untracked_copy_cleanup_condition": "Remove only via a permitted local cleanup action after verifying the exact file and SHA-256; do not force add it to the public repository.",
+    "candidate_download_stage": "%TEMP%/gogoke-r205-candidate-985e17d1",
+    "candidate_download_stage_reason": "Automatic approval review rejected the verified candidate-stage cleanup command with blocked by policy; retain without reuse until a permitted cleanup action.",
+    "private_data_backup": "%LOCALAPPDATA%/gogoke-r205-data-before-rollback-985e17d1",
+    "private_data_backup_reason": "Private exact four-file snapshot retained to prove program rollback did not change user data; delete only after Owner confirms no further recovery need and a permitted cleanup action exists.",
+    "previous_signed_installer_backup": "%LOCALAPPDATA%/gogoke-r205-rollback-985e17d1",
+    "previous_signed_installer_backup_reason": "Owner explicitly required preserving the prior installer for rollback; keep until Owner decides otherwise."
+  },
+  "next_action": "Keep source candidate 985e17d1 and PR #27 Draft. Obtain independent review of the new Owner-machine/Git evidence, then external Claude review via Parallel Inbox. Resolve the remaining accepted-result and mutation axes only within existing authorization; do not merge the test ledger branch to main, claim adoption or Goal Acceptance, merge PR #27, sign/release, or treat the installed test as future SAC approval."
+}

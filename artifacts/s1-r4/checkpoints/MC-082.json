@@ -1,0 +1,76 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-082",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "a13e04690f18c736f1f37717cd2ebce4f5e5fd04",
+  "recorded_utc": "2026-09-25T01:52:36Z",
+  "reason": "OWNER_STOP_AFTER_EXACT_SAC_BLOCK_OBJECT_COMPARISON",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "package": "R2-05_IN_PROGRESS_NOT_ACCEPTED",
+  "source_candidate": "041a49660ffe3ecc6e061ef3b20fd54e2ec47535",
+  "blocked_object": {
+    "classification": "THE_UNSIGNED_NSIS_INSTALLER_ITSELF",
+    "file_name": "gogoke-0.1.2-windows-x64-unsigned-setup.exe",
+    "event_log": "Microsoft-Windows-CodeIntegrity/Operational",
+    "event_target_nt_path_redacted": "\\Device\\HarddiskVolume4\\Users\\<local-user>\\AppData\\Local\\Temp\\gogoke-r205-candidate-041a4966\\gogoke-0.1.2-windows-x64-unsigned-setup.exe",
+    "event_target_windows_path_normalized": "%TEMP%\\gogoke-r205-candidate-041a4966\\gogoke-0.1.2-windows-x64-unsigned-setup.exe",
+    "event_caller_nt_path_redacted": "\\Device\\HarddiskVolume4\\Users\\<local-user>\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe",
+    "path_redaction": "The public checkpoint substitutes <local-user> for the local account name; event record IDs retain the exact raw paths in the local Code Integrity log.",
+    "file_length_bytes": 64175310,
+    "sha256": "917ae878985c840d056ee74fe9670236e1fe2f0effbff21f02bc7db843d3d720",
+    "cloud_source_run": "36081448198 SUCCESS; downloaded setup hash matched SHA256SUMS.windows",
+    "start_process_result": "An Application Control policy has blocked this file; installer did not execute. No numerical 4551 result was independently captured.",
+    "code_integrity_events": [
+      {
+        "id": 3033,
+        "record_id": 7072,
+        "time_utc": "2026-09-25T01:46:49.1897568Z",
+        "target": "the installer path above",
+        "message_meaning": "target did not meet Enterprise signing level requirements"
+      },
+      {
+        "id": 3077,
+        "record_id": 7074,
+        "time_utc": "2026-09-25T01:46:49.4399530Z",
+        "target": "the installer path above",
+        "policy_id": "0283ac0f-fff1-49ae-ada1-8a933130cad6",
+        "message_meaning": "target did not meet signing level requirements or violated code integrity policy"
+      }
+    ],
+    "not_reached": [
+      "041a4966 gogoke.exe was not installed or launched",
+      "041a4966 gogoke-native-host.exe was not installed or launched",
+      "041a4966 bundled node.exe was not installed or launched"
+    ]
+  },
+  "prior_985e17d1_comparison": {
+    "corresponding_object": "gogoke-0.1.2-windows-x64-unsigned-setup.exe",
+    "source_candidate": "985e17d1ffdb19ef05ca5f6bc0a8970a66df3f0d",
+    "file_length_bytes": 64176730,
+    "sha256": "5bf0e841a94a6a9127d435d13d20cd516c4d90d85b64500a59964ad61cd33f45",
+    "hash_relation": "DIFFERENT_FROM_041a4966_INSTALLER",
+    "bounded_owner_machine_result": "MC-078 recorded this exact 985e17d1 unsigned installer starting and exiting 0, with no relevant Code Integrity 3077 or 3033 event from installation through rollback. This is historical evidence for those bytes only, not an allowlisting claim for new bytes.",
+    "installed_component_hashes_from_mc078": {
+      "gogoke_exe": "333c56ea63da2c1ded3a260a2db546618ebcc38af7393a02b509ac549147ed1d",
+      "native_host_exe": "a3854c8146fb8df3a8dbf0bbc6fb2bdec0512f87970f6a45a5c9f09b99178648",
+      "node_exe": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+    }
+  },
+  "current_owner_machine_state": "The previously installed 6c06568a app, native-host, bundled Node and service entry remained byte-identical to their pre-attempt package inventory. No Gogoke process remains. All six product AppData files matched byte-for-byte before and after the blocked installer start.",
+  "pr34": "OPEN_CLEAN_ALL_CHECKS_SUCCESS_NOT_MERGED; Owner explicitly chose to keep it open; no accepted-fact product readback occurred",
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "test_ledger_branch": "s1-r4-ledger-test/r2-02 at d2e210a798767273b1b120fa26feeca79ed5c512; no new write",
+  "f5_cleanup": "Prior automatic approval review blocked exact-path cleanup before execution; MC-078 leftovers and later Controller-created temporary stages remain in local custody, unchanged by this checkpoint.",
+  "review": "Fresh all-axis source risk reviewer was interrupted on Owner stop; no final verdict is claimed.",
+  "candidate_state": "CLOUD_AXES_PASS_OWNER_MACHINE_INSTALL_BLOCKED; NOT_ACCEPTED_NOT_RELEASED",
+  "external_action": "NO_INSTALLER_EXECUTION_NO_RETRY_NO_ALTERNATE_LAUNCH_NO_SECURITY_SETTING_CHANGE_NO_MAIN_MERGE_NO_RELEASE",
+  "workspace": {
+    "tracked_diff_before_checkpoint": "NONE",
+    "untracked_screenshot_copy": "artifacts/s1-r4/R2-05-owner-win11-novel-985e17d1.png",
+    "retained_local_candidate": "%TEMP%/gogoke-r205-candidate-041a4966",
+    "retention_reason": "Exact blocked installer and hash evidence; cleanup remains blocked by the previously observed automatic approval review."
+  },
+  "next_action": "STOP per Owner instruction after this checkpoint is pushed. Keep PR34 open. Do not retry, bypass, change security settings, or run alternate package entry. Await new Owner direction before further construction or installed testing."
+}

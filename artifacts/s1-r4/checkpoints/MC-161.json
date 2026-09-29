@@ -1,0 +1,16 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-161",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "recorded_utc": "2026-09-27T22:20:49Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-160.json",
+  "production_head": "8e607be8fbc19518e81de0151b6687ddfca84bfd",
+  "head_before_checkpoint": "854406e3fe05554baa826cd1119adc9dd229b2d4",
+  "governance": "origin/main@1ba8f6092a7e86ab2ca2c5d2e58259c57f1d2d31:AGENTS.md, including the PR #51 premise/inference/decision-relevance check, remains effective. The inbox head control/gogoke-s1-r4-inbox@6108bf24705b9c02cf2350095cb700e386330d29 was unchanged at this natural checkpoint.",
+  "independent_review": "A fresh read-only focused reviewer checked the two previously confirmed P2 findings against exact production head 8e607be8. The premise and inference for each defect were valid; both repairs are source-level PASS with no new confirmed P1/P2 in the focused scope. The review checked actual installer/resource/old-uninstall lock paths and original full-install receipt semantics. The detailed receipt is artifacts/s1-r4/reviews/R2-06b-8e607-focused-review.md; it is not acceptance.",
+  "cloud": "Exact-source desktop CI run 36352937187 was still in progress at this checkpoint. Browser build and notices succeeded; the repro Windows lane succeeded; the frozen Windows lane was building the unsigned shell and NSIS installer. No full workflow, frozen artifact, byte-compare or native final PASS is claimed yet. Exact 854406e3 public hygiene run 36353115429 completed success.",
+  "dynamic_boundary": "The new unit test checks registration-lock exclusivity, while actual WebView failure rollback, HKCU DisplayVersion transitions, crash recovery, and update/reinstall concurrency remain NOT_RUN on formal Owner-signed resources. Static source review and cloud candidate tests cannot be substituted for those formal dynamic paths.",
+  "next": "Wait for exact production CI, artifact and trusted signing results; perform candidate cloud and ordinary Win11 install/product/uninstall with formal-state snapshots for changed executable bytes. Then build a separate 0.1.4 resources-only version delta and compare its executable/static installed bytes to the frozen 0.1.3 baseline. Prepare canonical full/resources manifest bytes and hashes at the Owner offline-signing boundary.",
+  "stop_conditions": "Stop and preserve state for Smart App Control blocking a new component, any formal installation/data/shortcut/registration change, need to alter formal objects, or need to change authorization or security boundary. No local native build, code signing, PR #34 merge, public release, or Controller self-acceptance."
+}

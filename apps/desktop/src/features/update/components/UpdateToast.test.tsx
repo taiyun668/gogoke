@@ -81,6 +81,30 @@ describe("UpdateToast", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
+  it("shows committed cleanup warning and exact notice without failure or retry", () => {
+    const onUpdate = vi.fn();
+    const onDismiss = vi.fn();
+    const message = "New installation remains active; old backup cleanup incomplete at C:\\backup";
+    const { container } = render(
+      <UpdateToast
+        state={{ stage: "cleanup_pending", message }}
+        onUpdate={onUpdate}
+        onDismiss={onDismiss}
+        postUpdateNotice={{ stage: "loading", version: "1.2.3", htmlUrl: "https://example.com" }}
+      />,
+    );
+    const scoped = within(container);
+
+    expect(scoped.getByText("Update finalization needs attention.")).toBeTruthy();
+    expect(scoped.getByText(message)).toBeTruthy();
+    expect(scoped.queryByText("Update failed.")).toBeNull();
+    expect(scoped.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(scoped.queryByText("What's New")).toBeNull();
+    fireEvent.click(scoped.getByRole("button", { name: "Dismiss" }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
   it("renders latest state and allows dismiss", () => {
     const onDismiss = vi.fn();
     const state: UpdateState = { stage: "latest" };

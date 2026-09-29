@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-118",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "af7f864277cafad3fa86989b82cc4c05d6372112",
+  "recorded_utc": "2026-09-27T00:21:54Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-117.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a WIP authorized; formal release not authorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Desktop run 36279650918 at diagnostic source 7f1c7d92c6414fef2d3b1a760d40676ecf7fd125 PASS all five jobs: Browser, notices, two independent Windows native build/test lanes, and byte-for-byte executable comparison. Frozen artifact 10918023960. Trusted main signing run 36281567222 PASS; signed candidate artifact 10919470186 binds that source and build. Branch installed smoke 36281628853 at workflow SHA fd502a9f FAIL after successful install/hash/Home, at installed-product-service-positive-and-poison-negative. Managed Node exits 1. Its actual original error is NativeHostClientError HOST_EOF: native-host closed stdout before handshake; same candidate direct Node replay with existing and fresh created root PASS. Native-host's own stderr is not yet in that receipt, so HOST_EOF is a boundary observation, not root cause. Commit af7f8642 pipes nested native-host stderr to the already captured parent stderr only in cloud diagnosis. JS syntax/diff checks PASS; desktop cloud run 36281880129 at af7f8642 is IN_PROGRESS; Browser and notices jobs PASS, both Windows native lanes in progress.",
+  "path_reflection": "Corrected root replay ruled out missing root. Capturing actual managed Node output found HOST_EOF, narrowing the failure to nested native-host startup under the managed Job. A production change to Job or locking before seeing native-host's own error would be guesswork. The next cloud pass records that one existing stderr stream, then repairs only the demonstrated cause. Remove all temporary diagnosis and rebuild/sign/smoke cleaned exact bytes before candidate freeze.",
+  "main_drift": "Current main unchanged; no governance, authorization or contract drift affects this package.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "Installed positive service/readiness, poisoned-module negative, uninstall/data preservation, Owner Win11/SAC and final review remain FAIL or NOT_RUN. PR #27 OPEN/DRAFT at af7f8642; PR #34 Owner-held OPEN. R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "Execution push and CI identity read back. Run 36281880129 is named active cloud object. No merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Read all jobs of desktop run 36281880129. If exact-head PASS, verify trusted main signing artifact and run branch installed smoke. Read the first nested native-host stderr and repair only its demonstrated cause; remove temporary diagnostic code and rerun full cloud build/sign/install axes on cleaned bytes."
+}

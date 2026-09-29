@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-112",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "ec8505b1d86a5f895610513c0b6a1b6eed01bbb5",
+  "recorded_utc": "2026-09-26T19:34:43Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-111.json",
+  "current_main": "d3ef719fc831da60b95396f246fec3c31493322f",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a remains authorized WIP; release remains unauthorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "First installed invocation at source 2df9ffe2, desktop run 36258866697 PASS, trusted signing run 36260876932 PASS, branch installed smoke 36260963292 FAIL with firstInstallError pin-ancestor-open:.stage-UUID:32. The extraction had 1234/1234 generation files. f5168c17 changed generation verification to reuse the retained stage lease; its two Windows native-test steps passed before run 36261568987 was cancelled by newer exact-head work. b5655e29 also changed signed-set verification to reuse its stage lease and set the one-shot NSIS bound to 900 seconds. Desktop run 36263022828 PASS all five jobs, including two independent Windows builds, native tests, and executable-byte comparison; hygiene 36263049776 PASS. Trusted main signing run 36264961338 PASS, candidate artifact 10913660755. Branch installed smoke 36265033726 FAIL within the bound: installer exit 2, firstInstallError rename-owned-stage:32, 1234/1234 generation files, no install receipt or active set; product service and uninstall NOT_RUN. de82e50a added the previously missing parent lease to the held-stage publication test. Desktop run 36265375730 FAIL in both Windows native-test jobs: held_stage_verifies_and_publishes_generation failed at rename; 7 resource_trust tests passed and 1 failed per lane. This reproduced the actual handle geometry. ec8505b1 releases the parent lease just before stage rename while retaining the verified stage object handle; desktop run 36266462038 is IN_PROGRESS at this checkpoint. No successful installed candidate claim is made.",
+  "path_reflection": "Earlier isolated publication test omitted the parent lease held by production, so it passed while the installed product failed. The first-error receipt and complete stage inventory identified the exact failing operation, then the test was reshaped to match the product's retained handles. The minimal next round repairs that demonstrated parent-handle conflict in both publication paths and uses one exact-head cloud build followed by one signed installed smoke. The temporary CI-only first-error receipt and smoke diagnostics remain only until the product path succeeds, then must be removed and final bytes rebuilt and retested.",
+  "main_drift": "Since MC-111, main changed three unrelated design documents. AGENTS.md, model routing, R2-06a contract, MANIFEST and authorization bytes did not change; no production merge is required.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "Installed product service, uninstall/data preservation, successful 06a cloud installed smoke, Owner Win11/SAC, formal signed install and final review remain NOT_RUN. PR #27 Draft; PR #34 and #49 Owner-held OPEN; R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "All GitHub writes in this increment were read back by exact branch/run/artifact identity. No consequential action has unknown state. No merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Read desktop run 36266462038 at exact ec8505b1. If both native tests and byte comparison pass, allow trusted main candidate signer, then run branch installed smoke against its exact signed artifact. Classify the first actual failure if any. On success remove temporary first-error and replay diagnostics, rebuild/sign/retest final candidate bytes, then continue R2-06a review and authorized Win11 installed testing."
+}

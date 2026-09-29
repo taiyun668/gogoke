@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-116",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "114799b19adabc3ecfdd983ea88eaef84759655b",
+  "recorded_utc": "2026-09-26T22:34:20Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-115.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and artifacts/s1-r4/intake/PUBLIC_AUTHORIZATION_RECEIPT.json blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a WIP is authorized; formal release is not authorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Desktop source 59c78fc2539d9738ced83ba833f1f6aae31bc3aa run 36271742540 PASS five jobs; trusted main signing run 36273711534 PASS and produced signed candidate artifact 10915569886. Branch installed smoke 36276223294 at script SHA bc9882223e10ce21188338c35016b29d259b3e6e FAIL after successful installation/hash/resource Home: actual managed product direct IPC GOGOKE_PRODUCT_SERVICE_FAILED:1. Corrected direct replay made both the existing product root and a created fresh root return status 0 with PRODUCT_SERVICE_NATIVE_CONTROLLER_ADMITTED. Thus the earlier absent-root status 1 in run 36275563376 was an invalid comparator, and the root-initialization hypothesis is rejected. JS parse and PowerShell parse checks passed for 114799b1; desktop cloud run 36276680595 at that exact HEAD is IN_PROGRESS.",
+  "path_reflection": "The prior diagnostic omitted create_dir_all that the product performs before launch, producing a false fresh-root failure. The corrected one-round replay falsified root initialization but still does not model the actual managed Job/environment. The existing product owner already captures both child streams then discards stderr on failure. A bounded CI-only first-error receipt at 114799b1 captures that actual managed child evidence, using the existing receipt path rather than adding a new authority or error classification. Read it before changing the production seam; remove all temporary diagnostics after root cause repair, then rebuild/sign/smoke final bytes.",
+  "main_drift": "Current main remains d0e739be; no new governance or authorization change and no production merge required.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "Installed positive service/readiness, poisoned-module negative, uninstall/data preservation, Owner Win11/SAC, and final review remain NOT_RUN or FAIL. PR #27 OPEN/DRAFT at 114799b1; PR #34 Owner-held OPEN. R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "Execution pushes read back; run 36276223294 completed FAILURE; run 36276680595 is the named active cloud build. No merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Read all jobs in desktop run 36276680595 at 114799b1. If PASS, use the trusted main signer for that exact source artifact and run the branch installed smoke at the matching diagnostic revision; inspect first managed child stdout/stderr, repair only the demonstrated cause, remove temporary diagnostic code, then rebuild/sign/smoke cleaned candidate bytes."
+}

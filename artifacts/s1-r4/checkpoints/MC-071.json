@@ -1,0 +1,56 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-071",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "66854f4bf86051416dc623103b341499fccbe85e",
+  "recorded_utc": "2026-09-24T19:07:01Z",
+  "reason": "R2_04_ORIGINAL_INSTALLED_CHILD_STDERR_IDENTIFIED_PATH_CAUSE",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "cloud_evidence": {
+    "desktop_run": 36042269456,
+    "exact_sha": "66854f4bf86051416dc623103b341499fccbe85e",
+    "browser": "PASS",
+    "dependency_notices": "PASS",
+    "nsis_job": 107780881997,
+    "nsis": "FAIL",
+    "passed_before_failure": [
+      "actual T3 service bundle and locked deployment",
+      "staged Node and cloud native-host build",
+      "package seal and release verifier",
+      "unsigned NSIS installer build",
+      "update/readiness/rollback smoke",
+      "installed resource byte identity"
+    ],
+    "first_failed_step": "Verify installed resource identity and read-only product entry",
+    "original_child_stderr": "Node main module resolution failed with EISDIR while calling realpathSync and lstat on a drive root, before Gogoke service code started.",
+    "identity_comparison": "The Tauri request and source-derived product root matched the direct smoke input hashes. Tauri's Node executable, service entry, native-host and working directory paths differed from the successful direct run because the Tauri paths carried the Windows verbatim prefix.",
+    "source_hygiene_run": 36042269273,
+    "source_hygiene": "PASS"
+  },
+  "root_cause": "A trusted Tauri installed resource path was passed to Node in Windows verbatim spelling. Node 24 resolved that entry spelling as a drive-directory lookup and exited before the service loaded. The direct replays succeeded because they used ordinary installed path spelling.",
+  "fix_in_progress": "At the trusted Tauri path-resolution seam, convert supported Windows verbatim disk and UNC spellings to equivalent ordinary absolute paths before starting Node or passing installed paths to it. Reject unsupported path namespaces. Remove the temporary cloud stderr and direct replay diagnostics from product and smoke sources.",
+  "path_reflection_applied": "The original child stderr, request and path identities were collected in one exact-head cloud build. This fixed the previous measurement gap; the production fix and diagnostic removal are grouped into one push and one exact-head verification build.",
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate_state": "NONE",
+  "evidence_boundary": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "candidate_review": "NOT_RUN",
+    "adoption_release_merge": "NONE"
+  },
+  "architecture_blocker": "NO",
+  "external_action": "NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "next_action": "Commit and push the path fix plus diagnostic removal, then verify installed byte identity, actual Tauri product invocation, missing-component negative check, machine inventory and release artifacts on the resulting exact SHA."
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-125",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "e68709842799e0aada73411bf29105e98b08b554",
+  "recorded_utc": "2026-09-27T05:45:33Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-124.json",
+  "production_source_commit": "a3b6f85e38ca0971fdd05096734c2e99aeee7ec4",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "parallel_inbox_entry": "claude-r2-06a-a3b6f85e",
+  "parallel_inbox_report": "artifacts/s1-r4/control/reviews/claude-r2-06a-a3b6f85e.md",
+  "inbox_not_approval": true,
+  "classification_against_current_bytes": {
+    "F1": { "state": "STILL_PRESENT", "reason": "NSIS holds gogoke-registration-<domain>.lock during install, while the embedded uninstall finalizer checks the registration in Assert-Instance and later calls DeleteSubKey without this lock. The parent-directory lock does not serialize another installer in a different parent. This is an R2-06a lifecycle defect to repair before acceptance." },
+    "F2": { "state": "STILL_PRESENT", "reason": "The NSIS CreateFileW failure branch unconditionally reports another install, without distinguishing ERROR_SHARING_VIOLATION 32 from other errors." },
+    "F3": { "state": "STILL_PRESENT", "reason": "The Win11 preparation text does not yet enumerate the registration lock file, retained candidate data root and unknown install-root files with cleanup conditions." },
+    "F4": { "state": "STILL_PRESENT", "reason": "The Win11 preparation text does not yet place a formal-shortcut launch after the final before/after snapshot comparison." }
+  },
+  "owner_touchpoint_correction": "Remove the pre-test Owner confirmation. Controller checks gogoke.exe and gogoke-native-host.exe processes and observable window state. If neither is running, proceed without asking Owner. If running and unsaved-work state cannot be determined from observable evidence, ask Owner with a recommended option. The only routine Owner touchpoint is optional subjective product/result viewing at the end; machine-readable facts remain Controller work.",
+  "decision": "Repair F1 and F2 within R2-06a, update the prep for F3 and F4, then rebuild and retest changed exact bytes in cloud and run Win11 isolated test once on the final candidate. No deferral decision is needed at this checkpoint.",
+  "next_action": "Implement registration-domain locking across uninstall Assert-Instance through DeleteSubKey, correct NSIS error reporting, and add an actual install/uninstall interleave negative axis. Rebind source/build/signature/smoke hashes and preparation before Owner Win11 test. Keep formal install and the MC-122 two-file evidence copy; no PR #34 merge, R2-06b, release, code signing, or security-setting changes."
+}

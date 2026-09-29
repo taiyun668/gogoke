@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-092",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "d2136e3e26aad41b355dfc405bd45b315ed8b931",
+  "recorded_utc": "2026-09-25T14:18:05Z",
+  "reason": "R2_06_VERSION_ONLY_BYTES_PASS_SIGNED_CANDIDATE_READINESS_FAIL_AND_BACKUP_CLEANUP_WIP",
+  "current_main": "ffde584b46f51f6279a07193b0cb131b870db1cc",
+  "authorization": "Current main retains v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "execution_remote_before_push": "3a60712b1ae3f070ed1708db8690da6860eafd9a",
+  "pr27": "OPEN_DRAFT_NOT_MERGED at remote 3a60712b before checkpoint push.",
+  "pr34": "OPEN_NOT_MERGED at dacd466e; Owner-held R2-05 remains WIP.",
+  "pr37": "MERGED into main at ffde584b after exact-head CI, fresh independent reviews and external Claude read-only review found no definite source defect. Signer infrastructure is not candidate acceptance.",
+  "pr38": "OPEN at 257caa57. Temporary secret-free installed-smoke diagnostic for candidate readiness failure; checks and review pending. Remove output after root cause is fixed.",
+  "executed_evidence": {
+    "version_only_cloud": "Run 36141510169 at exact 3a60712b SUCCESS: Browser, notices, two clean Windows native/NSIS builds and byte comparison job 108104159654; hygiene 36141510148 SUCCESS. Version 0.1.2 baseline 6ff24632/run 36136513802 and version 0.1.3 3a60712b have identical hashes and lengths for portable shell adec85ecce9fd278dbfe90117fb21f33aa414b6db59e576acf5caab96467df23, NSIS installed shell 2cc0eca19b293d3a7b2903331bc9d5903e98d1a582387e96e1127493a6998291, native-host 1f688c4435517ba8b45bd3883edb5b58d1d05383d415bbc209138f1c2d795615 and Node e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50; pack/index hashes changed. New reproducibility artifact 10868298974 digest 7c438a3192b0c3d73c78115f4a098cd92e9f83e93006a655009608fc819ab38c; baseline artifact 10866406370 digest 83e071196e42dc795e8e3d02e972f9f418677f05a44740c4678ec2e8a044148a. Diff between source SHAs changes executable inputs only in version fields; notice tooling changed as a resource.",
+    "trusted_signer": "Main workflow run 36145183788 bound source run 36141510169 attempt 1, SHA 3a60712b and frozen artifact 10869103624. Source authorization, exact download, byte inventory, candidate-only signature and artifact upload SUCCESS. Signed candidate artifact 10868858928 digest 5a2beca00d35ba1c33db3ed4744fdee6ea7891bddb010ad0e3eecc3e4eb6f77b. CI secret was confined to the trusted signing step; agent did not access it.",
+    "installed_smoke": "Separate secret-free Medium Windows job 108104767807 FAIL at sentinel-and-product-readiness: NSIS install, registration and installed shell/host/Node hash checks succeeded; running Gogoke produced no version-bound readiness receipt in 45 seconds. Uninstall NOT_RUN. Failure artifact 10868889430 digest 9ea1012bc81b67335eb288dca61582484f2b779919fff3a43832768cccb60092. Root cause unknown; no identical retry.",
+    "local_wip_checks": "Updater/toast Vitest 22/22 PASS; npm typecheck PASS; coordinator/candidate smoke PowerShell AST and cloud fixture Python/harness AST parse with zero errors; git diff --check PASS. Native compilation and cleanup behavior at d2136e3e NOT_RUN. Independent high-risk audit found six findings; focused review found two further issues. Receipt lifecycle, separators, state ordering, result delivery, File.Replace binding and stale-log classification were repaired before this checkpoint, still awaiting cloud execution."
+  },
+  "wip_implemented": "Commits c246549f and d2136e3e mirror trusted signer fixes and add verified old-shell owned-file inventory, identity/hash-bound cleanup after readiness, unique residual backup names, product cleanup-warning readback/UI, and a Windows cloud fixture for production cleanup/state functions. The fixture does not exercise a complete Owner-signed full update or rollback.",
+  "blocked_or_not_run": "Exact-head d2136e3e cloud build and cleanup behavior NOT_RUN before push; candidate installed readiness/uninstall not PASS; formal Owner-signed full/resources release, full rollback/crash recovery, Owner Win11 SAC formal installer, and held R2-05 axes remain NOT_RUN. No release, adoption or acceptance.",
+  "path_first_reflection": "The 0.1.3 cloud round tested both native build lanes and cross-version bytes at once. The first trusted signer proved the secret and artifact transport, then failed at real product readiness. Rebuilding the product only to classify that failure adds a round trip; PR #38 uses the same frozen signed bytes and adds installed-product stderr plus direct Node/service replay with the same root and a fresh-root control. The cleanup audit exposed that the first fixture invented a receipt deleted by NSIS and omitted a nested mixed-separator path; the next fixture now models those production shapes.",
+  "retained_custody": [
+    "Execution worktree clean at local d2136e3e before this checkpoint; its commits and checkpoint await ordinary fast-forward push.",
+    "Trusted signer worktree clean at PR #38 head 257caa57, retained for temporary diagnostic CI and exact signed artifact rerun.",
+    "%TEMP%/gogoke-r206-version-compare-20260925, %TEMP%/gogoke-r206-version-compare-3a60712b-20260925 and %TEMP%/gogoke-r206-candidate-smoke-36145183788 contain small public machine JSON copies. Retain until evidence is checkpointed, then clean only by a permitted operation.",
+    "Ignored tools/ci/__pycache__/test_gogoke_update_backup_cleanup_cloud.cpython-313.pyc is local script output. Automatic approval review rejected its exact-file Remove-Item with reason 'blocked by policy'; no alternate deletion route was attempted. Prior PR body temp cleanup rejection remains in MC-091."
+  ],
+  "external_action": "PR37_MERGED; PR38_OPEN_DIAGNOSTIC; EXECUTION_PUSH_PENDING; CANDIDATE_INSTALLED_SMOKE_FAIL; NO_OWNER_KEY_USE; NO_PR27_OR_PR34_MERGE; NO_RELEASE; TEMP_CLEANUP_AUTO_REVIEW_REJECTED",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Push this checkpoint and d2136e3e fast-forward, inspect exact-head cloud CI and new Windows cleanup test. Complete PR #38 CI/review, land it if sound, then rerun trusted signer against the exact successful 3a60712b frozen artifact to capture real installed stderr and same/fresh-root direct service results. Fix measured cause, remove temporary diagnostic, repeat exact-head cloud/candidate axes, and keep PR #34/R2-05 held."
+}

@@ -1,0 +1,55 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-046",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "9972026d0dd3ed88dde3b9ae74e8aa0a29f55ae7",
+  "reason": "R2-02_PRODUCT_TEST_RESULT_AND_GH_CREDENTIAL_SEAM",
+  "current_main": "a58b91373862f9448c152780860988ebc84c4c4d",
+  "main_drift": "PR_29_ADDED_DIRECTION_CANDIDATES_ONLY;_DOCUMENT_EXPLICITLY_DOES_NOT_CHANGE_S1_R4_V2_PLAN_AUTHORIZATION_OR_CONSTRUCTION_RULES;_NO_MECHANICAL_MAIN_MERGE",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-02_WIP_NOT_DELIVERED",
+  "increment": [
+    "The actual Tauri Goal command and T3-derived product entry can explicitly run a test-only controlled task through the native-host ProcessCustodian and Pi JSONL protocol; Home has separate path-verification and controlled-task controls. The returned Result is validated against immutable Git source bytes and marked not adopted.",
+    "The native writer has bounded synchronous-I/O cancellation, exact Job stop on deadline, explicit controlled Node environment and durable PREPARED/ACTIVE/STOPPED/UNKNOWN coordination. This does not yet bind the existing Action prepare, beginCommitted and trusted completion path.",
+    "The Owner selected the existing signed gh login as the R2 test-ledger credential route. A narrow adapter checks native admission and gh login taiyun668 before obtaining the in-process credential. It is not yet invoked by the product Git write path; no new product test fact was written in this increment.",
+    "The test ledger branch stays separate from execution and main. Its prior diagnostic source reference is not a Result, adoption or Goal Acceptance."
+  ],
+  "evidence": {
+    "cloud_run": 35909646608,
+    "exact_sha": "594c06ae300f9ddc740c95ee0bd73ece6196c19f",
+    "scope": "WINDOWS_SERVER_REAL_RUN_NOT_OWNER_WIN11",
+    "server": "PASS_50_FILES_10_NODE_40_VITE_560_EXECUTED_560_PASS_0_SKIP",
+    "native": "PASS_RELEASE_BUILD_2_REAL_PROCESS_AXES_6_FOCUSED_PROBES_387_LIB_TESTS_0_SKIP",
+    "desktop_browser": "PASS_RUN_35909614721",
+    "source_hygiene": "PASS_RUN_35909614787",
+    "desktop_unsigned_nsis": "PASS_RUN_35909614721",
+    "gh_adapter_local": "3_PASS_0_SKIP_TARGETED_TYPESCRIPT_PASS",
+    "product_action_prepare_begin_completion": "NOT_RUN",
+    "product_outcome_evaluation_dream": "NOT_RUN",
+    "product_git_fact_write_readback": "NOT_RUN",
+    "owner_win11_installed_product": "NOT_RUN"
+  },
+  "focused_review": {
+    "target_sha": "04d50dc94e35b305624d38dc06a7075e19a94355",
+    "state": "PASS_FOCUSED_REVIEW_FOR_FOUR_PRIOR_FINDINGS_ONLY",
+    "nonclaim": "The prior focused review does not inherit to current changed bytes and is not candidate acceptance."
+  },
+  "test_ledger_branch": {
+    "head": "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+    "state": "TEST_ONLY_DIAGNOSTIC_SOURCE_REFERENCE_NOT_ADOPTED"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate": "NOT_CUT",
+  "architecture_blocker": "NO",
+  "external_action": "CLOUD_RUN_35909646608_SUCCESS;_DESKTOP_RUN_35909614721_SUCCESS;_NO_NEW_TEST_LEDGER_WRITE",
+  "next_action": "Complete the R2-02 existing native Context/Decision/Recipe and Action prepare→beginCommitted→trusted completion seam before forming Objective Outcome, Evaluation and isolated Dream draft. Then write a test-only fact to the Owner-authorized ledger branch through the existing gh login, reconcile exact remote state and read back immutable bytes. Continue cloud exact-head tests and keep PR #27 Draft."
+}

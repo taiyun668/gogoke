@@ -1,0 +1,31 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-124",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "43ebdb446fe98b951bcf88c4befb8244cd3a393f",
+  "recorded_utc": "2026-09-27T05:32:16Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-123.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. Isolated R2-06a candidate test is within existing authority; PR #34 merge, code signing, security-setting changes and public release are not authorized here.",
+  "production_source_commit": "a3b6f85e38ca0971fdd05096734c2e99aeee7ec4",
+  "candidate_state": "R2_06A_CLOUD_FROZEN_CANDIDATE_NOT_ACCEPTED",
+  "files_changed": [
+    "artifacts/s1-r4/reviews/R2-06a-a3b6-final-risk-audit.md",
+    "artifacts/s1-r4/R2-06a-owner-win11-isolated-prep-a3b6.md",
+    "artifacts/s1-r4/checkpoints/MC-124.json"
+  ],
+  "review_state": "Fresh risk_auditor Astra/xhigh read-only final all-axis review completed on exact a3b6f85e source. No newly confirmed P1/P2 production finding. It did not issue all-axis PASS or Owner acceptance because current-shell resource/version-only cross-commit evidence, formal-domain actual shortcut/install behavior, Owner Win11/SAC, exact-source external Claude and WCS-26/F1 dynamic premise remain unclosed. Full review and source attribution are in artifacts/s1-r4/reviews/R2-06a-a3b6-final-risk-audit.md. No production repair was made; no new production bytes require cloud rerun at this checkpoint.",
+  "audit_evidence": "Auditor independently rehashed seven original artifact ZIPs against GitHub metadata supplied by Controller, compared frozen/repro six classes byte-for-byte, checked signed/frozen common files, candidate signature positive/negative 4/4, executable identity 4/4 and production pack verifier exit 0. Four GitHub run logs and two machine receipts retain source/run/artifact identity; see review report. Controller-run focused Python 30 tests exit 0 are separate, not auditor-independent execution.",
+  "owner_win11_preparation": "Signed candidate artifact 10922689154 archive SHA-256 3149291e68d13312c0e434f6a44187c33b0258230e48f79fafe81a70da25d91a was downloaded without execution. Local preflight bound the manifest to exact source/run/artifact, verified pack/index hashes and purpose-bound P-256 signature; an in-memory one-byte mutation was rejected. Production setup SHA-256 13dfcd8cb95394348434f83d0cc610a03cc8c1f88e7b708c41f10692844b53c2. The Owner Win11 snapshot showed SAC state 1, formal 0.1.2 executable SHA-256 21549a4f18b3781c68db0d33d41ac83c4be1868fee08c9bcc1180db0229c8dc8, six formal data files, two formal shortcuts, zero gogoke processes and no candidate registry/data root. Refresh all observations at execution; this is not install or SAC PASS. Steps and Owner-only reasons are in artifacts/s1-r4/R2-06a-owner-win11-isolated-prep-a3b6.md.",
+  "local_evidence_custody": "Controller-fetched API metadata, seven raw artifact ZIPs, four raw logs ZIPs, extracted receipts and focused test logs remain under %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-final-audit for review. Signed candidate files remain under %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-prep; a private formal baseline remains under %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-baseline until post-test comparison. The separate MC-122 two-file evidence copy at %TEMP%\\gogoke-r206a-evidence-a3b6-36293571078 is retained unchanged pending explicit Owner direction. No candidate install root was created.",
+  "public_hygiene": "For the two new public markdown files, staged diff --check PASS; scanner positive control PASS, scanner unit tests 11/11 PASS, local committed-index scan PUBLIC_SOURCE_SCAN files=24540 leaks=0. These checks cover public text hygiene, not product acceptance.",
+  "parallel_inbox_observed_head": "8d231004bd996daa95330046d8fd26613942cc01",
+  "parallel_inbox_new_entries": 0,
+  "external_claude_handoff": "Owner handoff scope remains exact production source a3b6f85e38ca0971fdd05096734c2e99aeee7ec4 and a8dc77f4487f3b4c08d7722e6df23413bdf3230b..a3b6f85e38ca0971fdd05096734c2e99aeee7ec4 delta, R2-06a contract, source/workflow/installed receipts and bounded cloud provenance. External Claude result NOT_RECEIVED. Read Parallel Inbox at the next natural checkpoint.",
+  "pr_state": "PR #27 remains OPEN/DRAFT; PR #34 remains OPEN and Owner-held. No merge, product adoption, Goal Acceptance or public release occurred.",
+  "blocked_or_not_run": "Owner Win11/SAC isolated installed candidate and actual child behavior NOT_RUN. Formal Owner-signed manifest/install and exact formal shortcut writer NOT_RUN. Current-shell resource/version-only cross-commit cloud comparator NOT_RUN. External Claude exact-source review NOT_RECEIVED. WCS-26/F1 low-trust ACL/same-object A/B remains NEEDS_REVIEW. R2-06b full/resource update, rollback and crash recovery remain deferred and unaccepted.",
+  "path_reflection": "Source and exact remote evidence were verified before obtaining a new candidate copy. Raw archive digests and a falsifiable signature mutation reduce identity ambiguity. The existing formal installation was snapshotted read-only and the candidate root was left absent; next test can compare the actual before/after object rather than infer separation from CI.",
+  "architecture_blocker": "NO_NEW_CONFIRMED_BLOCKER",
+  "next_action": "At the already authorized Owner Win11 session, refresh formal-install and SAC baseline, then execute the exact signed candidate only in the isolated install domain and record installed shell/native-host/Node hashes, actual product/service behavior and Code Integrity 3033/3077 or Win32 4551 if observed. Preserve the formal installation and MC-122 evidence copy; stop on any identity/custody mismatch. Owner judges personal UI experience and later final acceptance; Controller handles mechanical install, logs and test-ledger readback. Complete remaining current-shell version/resource comparator and formal-domain/Claude axes before any all-axis PASS or acceptance claim. Do not merge PR #34, start R2-06b, sign code, change security settings or publish."
+}

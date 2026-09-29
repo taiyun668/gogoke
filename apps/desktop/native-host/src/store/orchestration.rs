@@ -4,6 +4,7 @@
 use super::atomic::{exec, AtomicError, Statement};
 use super::digest::content_hash;
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
+use crate::process::ProcessCustodyError;
 
 #[derive(Debug)]
 pub enum OrchestrationError {
@@ -15,6 +16,7 @@ pub enum OrchestrationError {
     Fault(FaultPoint),
     CommitUnknown,
     Atomic(AtomicError),
+    Process(ProcessCustodyError),
 }
 
 impl std::fmt::Display for OrchestrationError {
@@ -24,6 +26,10 @@ impl std::fmt::Display for OrchestrationError {
 }
 
 impl std::error::Error for OrchestrationError {}
+
+impl From<ProcessCustodyError> for OrchestrationError {
+    fn from(error: ProcessCustodyError) -> Self { Self::Process(error) }
+}
 
 impl From<AtomicError> for OrchestrationError {
     fn from(error: AtomicError) -> Self {

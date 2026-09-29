@@ -1,0 +1,52 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-088",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "ee911dec1065c97d2e033d078c7c4a5c22028b36",
+  "recorded_utc": "2026-09-25T07:52:26Z",
+  "reason": "R2_06_FIRST_CLOUD_UNINSTALL_FAILURE_AND_INTEROP_REPAIR",
+  "current_main": "56536f4ab850bc8b962456f95f5d0f2162d0c43a",
+  "authorization": "Current main retains v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac. Authorization remains current.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "pr34": "OPEN_NOT_MERGED; R2-05 remains WIP under the Owner's hold.",
+  "pr37": "OPEN_DRAFT_NOT_MERGED at b032caefcc801f6d71457b56418b065c4fd1847a; CI and focused/full-axis source audit green, but real trusted signing, external Claude review, main landing, and candidate installation are NOT_RUN.",
+  "wip_implemented_since_mc087": [
+    "The first cloud execution of the fixed uninstall finalizer failed in both lanes before READY. Independent first risk audit returned U-F1 through U-F7, including interop declaration, PowerShell integer, stdin encoding, receipt timing, system-tool path, shortcut ownership, and cloud helper guard issues.",
+    "The next execution commit uses in-memory DllImport metadata with PreserveSig, SetLastError and exact entry names; a PowerShell 5.1 metadata-only check confirms all six methods have these flags. It uses a valid unsigned GENERIC_READ integer and Marshal.GetLastWin32Error instead of direct GetLastError.",
+    "The parent now sends base64 UTF-8 JSON over ASCII stdin after the fixed script line; the cloud fixture uses a Chinese install-root component to exercise that transport. The finalizer reserves and flushes a PENDING receipt before READY. The parent selects the actual system PowerShell directory through GetSystemDirectoryW instead of SystemRoot environment text. The cloud helper entry repeats its runner-only guard.",
+    "The signer b032caef focused F7/F8 mutation review and fresh full-axis source review found no new signer source defect. PR #37 remains Draft and does not have main-only signing access yet."
+  ],
+  "executed_evidence": {
+    "desktop_ci_old_sha": "Run 36108373525 at 20703afbdaccb11c44130719b2b302836ba25a88: browser PASS, notices PASS; both Windows lanes selected the pinned toolchain but failed at Exercise embedded uninstall finalizer on clean cloud Windows. The cloud test parent helper returned 4 because READY was not observed. Native release tests, NSIS build, and byte comparison were NOT_RUN/SKIPPED on this SHA.",
+    "source_hygiene_old_sha": "Run 36108373585 at the same SHA: PASS.",
+    "uninstall_first_risk_audit": "Read-only full-axis audit at 20703afb found seven defects/open items U-F1..U-F7. U-F1..U-F5 and U-F7 have source repairs in the new local commit, but cloud behavior and fresh review are NOT_RUN. U-F6 exact installer-recorded shortcut ownership remains open. Partial deletion is represented by a failure receipt but durable retry/cleanup behavior remains NOT_VERIFIED.",
+    "local_static_checks": "PowerShell/Python AST and git diff check PASS. Target Windows PowerShell 5.1 metadata-only probe reports six P/Invoke methods with PreserveSig, SetLastError and ExactSpelling; unsigned GENERIC_READ numeric conversion PASS. No local native build, native test, deletion, installation, or SAC change was performed.",
+    "signer_ci_and_review": "Signer PR #37 run 36107975830 at b032caef: browser PASS, notices PASS, unsigned Windows NSIS PASS; source hygiene PASS. Focused F7/F8 mutation review and fresh R1-R6 source audit found no new signer source defect. Real candidate signature, installed consumption, and heterogeneous Claude review remain NOT_RUN.",
+    "reproducibility_after_toolchain_pin": "NOT_RUN because the uninstall test failed before the two native builds on run 36108373525.",
+    "trusted_candidate_signature_and_installed_smoke": "NOT_RUN",
+    "owner_win11_sac_candidate": "NOT_RUN",
+    "full_update_and_final_uninstall": "NOT_VERIFIED"
+  },
+  "open_findings": [
+    "The fixed uninstall interop, UTF-8 transport, receipt timing, system directory lookup and cloud helper must run on the new exact SHA before any functional conclusion. The first cloud failure does not prove which one failed first because the prior fixture reported only missing READY.",
+    "Uninstall still leaves product shortcuts without installer-recorded identity and leaves empty directories. A partial deletion may make a later verify_bootstrap-based retry impossible; the result receipt is not yet a full recovery protocol.",
+    "Full update coordinator releases the sibling lifecycle lock before NSIS takes it and again between NSIS exit and coordinator reacquisition. A read-only specialist identified same-handle delegation and pre-rename owned-file inventory as the minimal path; no implementation or cloud evidence exists yet.",
+    "PR #37 source audit is green, but main-only trusted workflow cannot execute while Draft/unmerged. External Claude review is required before main merge; no candidate signature has been produced.",
+    "Formal Owner signing, installed candidate/Owner Win11 SAC, resource-only update failure/crash smoke, and R2-05 final gates remain NOT_RUN. PR #34 stays open."
+  ],
+  "path_first_reflection": "The previous push batched toolchain pinning with a new uninstall cloud test. Both Windows lanes reached that early behavior test and stopped before expensive native builds, exposing a missing READY rather than another nondeterministic executable. The independent audit then checked actual PowerShell 5.1 interop metadata, numeric semantics and pipe encoding without touching the Owner installation, so one repair commit addresses all confirmed pre-READY causes and moves receipt reservation ahead of READY. The next cloud run will test those real behaviors first; if it fails, read its first concrete error before changing code again.",
+  "retained_custody": [
+    "Controller execution worktree remains the R2-06 WIP checkout; no locally built native binary exists.",
+    "Separate PR #37 signer worktree remains for external review and trusted workflow landing; it is not an execution integration writer.",
+    "%TEMP%/gogoke-r206-repro-36100213297 and %TEMP%/gogoke-r206-repro-36103415870 retain downloaded public CI artifact ZIPs for the next cross-run byte comparison. Their exact outer SHA-256 values are in MC-086 and MC-087; clean only after verifying the target paths and custody.",
+    "%TEMP%/gogoke-signer-final-b032-55c33aac contains a temporary read-only audit report and logs; retained only until its conclusions are durably reviewed, then clean after exact-path verification.",
+    "MC-085's earlier temporary paths remain under their recorded custody because automatic cleanup review rejected removal; no bypass was attempted."
+  ],
+  "external_action": "NO_CANDIDATE_SIGNATURE; NO_OWNER_KEY_USE; NO_MAIN_MERGE; NO_PR34_MERGE; NO_RELEASE; NEXT_EXECUTION_PUSH_PENDING",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "next_action": "Push the interop repair and this checkpoint after confirming exact remote HEAD. Observe the new exact-head source hygiene and early Windows uninstall behavior test. If it passes, continue native release build and two-lane byte comparison with the pinned MSVC/SDK; classify any first failure and fix within R2-06. Keep signer PR #37 Draft pending external Claude review and address shortcut ownership plus full update lock/backup gaps without reclassifying WIP as candidate."
+}

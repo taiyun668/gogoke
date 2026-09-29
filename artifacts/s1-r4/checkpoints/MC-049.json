@@ -1,0 +1,56 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-049",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "8587748daf41ee24302a29c9bfd24fe1ec2a3cd6",
+  "reason": "R2-02_TYPED_NATIVE_ACTION_CLIENT_CLOUD_PASS",
+  "current_main": "165f4b234654711c45d05ecd80e9b6553dd93ceb",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-02_WIP_NOT_DELIVERED",
+  "increment": [
+    "The T3-derived native store client now exposes a typed RunControlledFixtureAction call for an already prepared Action. The reply codec distinguishes fresh transport completion from receipt reconciliation and never labels either as Result or adoption.",
+    "The native Action operation runs the fixed Node fixture in cloud with a build-pinned runtime digest and validates ACK, matching message frames, settlement, process exit and durable stop before recording transport completion. Reentry reads the existing completion without resending.",
+    "The product Goal still uses the diagnostic probe. The authenticated fixed test grant/package/lineage preparation path remains to be connected; profile-field consistency and pipe possession alone do not authorize grant issuance."
+  ],
+  "evidence": {
+    "cloud_run": 35923653878,
+    "exact_sha": "8587748daf41ee24302a29c9bfd24fe1ec2a3cd6",
+    "scope": "WINDOWS_SERVER_REAL_RUN_NOT_OWNER_WIN11",
+    "server": "PASS_51_FILES_10_NODE_41_VITE_565_EXECUTED_565_PASS_0_SKIP",
+    "native": "PASS_RELEASE_BUILD_2_REAL_PROCESS_AXES_6_FOCUSED_PROBES_390_LIB_TESTS_0_SKIP",
+    "source_hygiene": "PASS_RUN_35923647112",
+    "desktop": "RUN_35923647097_BROWSER_AND_NOTICES_PASS_UNSIGNED_NSIS_IN_PROGRESS_AT_CHECKPOINT",
+    "product_goal_action_chain": "NOT_RUN",
+    "product_outcome_evaluation_dream": "NOT_RUN",
+    "product_git_fact_write_readback": "NOT_RUN",
+    "owner_win11_installed_product": "NOT_RUN"
+  },
+  "review": {
+    "older_fixed_auditor": "GPT_5_6_SOL_HIGH_PROBLEM_LEADS_ONLY_NOT_GPT_6_ROUTE_EVIDENCE",
+    "fresh_gpt6_sol_high_focused": "NOT_RUN_COLLABORATION_THREAD_LIMIT_REJECTED_DISPATCH_AND_FOLLOWUP",
+    "candidate": "NOT_CUT"
+  },
+  "test_ledger_branch": {
+    "head": "6765d4e11ace61c47b9aeb123e0ef4770ab072c0",
+    "state": "TEST_ONLY_DIAGNOSTIC_SOURCE_REFERENCE_NOT_ADOPTED"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "architecture_blocker": "NO",
+  "external_action": "CLOUD_RUN_35923653878_SUCCESS;_NO_NEW_TEST_LEDGER_WRITE",
+  "workspace_retained": {
+    "owner": "Codex Construction Controller",
+    "paths_relative_to_execution_checkout": [".", "../gogoke-codex-evidence/run-35923653878-server", "../gogoke-codex-evidence/run-35923653878-native"],
+    "reason": "Active execution checkout and exact cloud machine-evidence copies",
+    "cleanup_condition": "After S1-R4 custody ends and durable GitHub artifacts are confirmed retained or no longer required"
+  },
+  "next_action": "Resolve the fixed R2 test grant envelope against current Owner authorization and implement a fail-closed production admission that cannot issue arbitrary or duplicate grants. Connect the existing native Task/Grant/Package/Lineage/Context/Recipe/Decision/Action chain to the Product Goal, then bind validated Result, Outcome, Evaluation, isolated Dream and test-ledger Git write/readback. Obtain fresh explicit GPT-6 Sol/high focused review on current bytes when the collaboration tool admits a turn; keep PR #27 Draft."
+}

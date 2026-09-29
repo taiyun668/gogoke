@@ -55,3 +55,17 @@ fn req()->DecisionCapacityRequest{let s=snap();DecisionCapacityRequest{operation
  transaction::run(db,|tx|reserve_decision_capacity_in_transaction(tx,&req()).map(|_|())).unwrap();
  let mut next=snap();next.operation_id="decision-op-two".into();next.resource_revision="6".into();next.capacity_total=0;
  assert!(publish_decision_snapshot(db,&next).is_err());});}
+
+#[test]fn main_trigger_on_r2_release_cannot_change_capacity_after_admission(){fixture(|db|{
+ db.execute("CREATE TRIGGER forged_r2_release AFTER INSERT ON gogoke_coordination_r2_capacity_releases BEGIN UPDATE gogoke_decision_capacity_pools SET reserved_units=1 WHERE resource_ref='capacity-r2-02-fixture'; END").unwrap();
+ assert!(publish_decision_snapshot(db,&snap()).is_err());
+ let rows=transaction::run(db,|tx|tx.query("SELECT count(*) FROM main.gogoke_decision_authority_snapshots",&[],1)).unwrap();
+ assert_eq!(rows[0][0],"0");
+});}
+
+#[test]fn temp_trigger_on_r2_release_cannot_change_capacity_after_admission(){fixture(|db|{
+ db.execute("CREATE TEMP TRIGGER forged_r2_release AFTER INSERT ON main.gogoke_coordination_r2_capacity_releases BEGIN UPDATE gogoke_decision_capacity_pools SET reserved_units=1 WHERE resource_ref='capacity-r2-02-fixture'; END").unwrap();
+ assert!(publish_decision_snapshot(db,&snap()).is_err());
+ let rows=transaction::run(db,|tx|tx.query("SELECT count(*) FROM main.gogoke_decision_authority_snapshots",&[],1)).unwrap();
+ assert_eq!(rows[0][0],"0");
+});}

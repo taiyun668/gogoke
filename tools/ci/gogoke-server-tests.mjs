@@ -2,6 +2,7 @@
 // Cloud construction evidence for every Gogoke server test file, not a due-check runner.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +10,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const donorRoot = join(repoRoot, "third_party/t3code");
 const serverRoot = join(donorRoot, "apps/server");
 const testRoot = join(serverRoot, "src/gogoke");
+const productTest = join(testRoot, "bootstrap/controlledProductProcess.test.ts");
+const productTestHash = () => `sha256:${createHash("sha256").update(readFileSync(productTest)).digest("hex")}`;
 
 function testFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -26,20 +29,23 @@ export function parseVitestReport(report, expectedFiles, exitCode) {
   const passed = count(report.numPassedTests);
   const failed = count(report.numFailedTests);
   const pending = count(report.numPendingTests);
-  const todo = count(report.numTodoTests ?? 0);
+  const todo = count(report.numTodoTests);
   const actualFiles = Array.isArray(report.testResults) ? report.testResults : [];
   const expected = new Set(expectedFiles.map((path) => resolve(path).toLowerCase()));
   const actual = new Set(actualFiles.map((entry) => resolve(entry.name ?? "").toLowerCase()));
   const failedFiles = actualFiles.filter((entry) => entry.status !== "passed").map((entry) => entry.name);
   const filesMatch = actualFiles.length === expectedFiles.length && expected.size === actual.size &&
     [...expected].every((path) => actual.has(path));
+  const executed = passed === null || failed === null ? null : passed + failed;
+  const accounted = passed === null || failed === null || pending === null || todo === null ? null :
+    passed + failed + pending + todo;
   const instrumentOk = Number.isSafeInteger(exitCode) && filesMatch && tests !== null && passed !== null && failed !== null &&
-    pending !== null && todo !== null && tests > 0 && passed + failed + pending + todo <= tests;
+    pending !== null && todo !== null && tests > 0 && executed > 0 && accounted === tests;
   const skipped = pending === null || todo === null ? null : pending + todo;
   return {
     test_files: actualFiles.length,
     discovered: tests,
-    executed: passed === null || failed === null ? null : passed + failed,
+    executed,
     passed,
     failed,
     skipped,
@@ -126,7 +132,8 @@ function main() {
   if (nodeRun.error) node.spawn_error = nodeRun.error;
   if (!node.native_host_bound) node.state = "FAIL_INSTRUMENT";
 
-  const selectionOk = files.length === 44 && nodeFiles.length === 9 && viteFiles.length === 35;
+  const selectionOk = files.length === 51 && nodeFiles.length === 10 && viteFiles.length === 41 &&
+    nodeFiles.includes(productTest);
   const categories = [vite, node];
   const result = {
     schema: "gogoke.server-cloud-tests.v1",
@@ -138,6 +145,8 @@ function main() {
     node_version: process.version,
     selected_files: { total: files.length, vite: viteFiles.length, node: nodeFiles.length,
       paths: files.map((path) => relative(repoRoot, path).replaceAll("\\", "/")) },
+    product_test_file: relative(repoRoot, productTest).replaceAll("\\", "/"),
+    product_test_sha256: productTestHash(),
     vite,
     node,
     totals: {

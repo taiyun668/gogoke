@@ -1,0 +1,12 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-206",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-205.json",
+  "state": "PUBLIC_RESOURCES_0_1_13_REAL_ORDINARY_OFFER_PASS_NEGATIVE_CASES_PENDING",
+  "ordinary_offer": "A session-1 unpackaged Limited scheduled task launched the real installed full 0.1.11 shell with resources 0.1.12 active and SAC state 1. Its real WebView and native host reached the controlled product test with PASS_TEST_ONLY and no adoption. Product readiness reported active resource set 1e999aa7ce5bec1f4da501f01e884c8f5e879dc53e28bab696e0441568c17950 and generation 0f949dcf9660a88e7c8f09725195bd1a61c63a2ea3eda0af9f144bcdc6bcae1e. The product's update-check command returned public resources 0.1.13 pack SHA-256 3c5035780a6a01152cd260d9032b7b43860dbe5bd9a85a5f8b87077464c8c926. The product closed normally and the measurement task exited 0.",
+  "protected_readback": "The before/after protected formal installation tree SHA-256 remained 1eeed52ee69720002af6482c36871d6574c6f31995a2f6841dd9f3dc83e8d4c1; formal registration and shortcuts were unchanged, no Gogoke process remained and SAC state stayed 1. Formal window-state content differed only by height 1750 to 1780 with the same width, position, flags and other fields, consistent with tauri-plugin-window-state normal close behavior. The authorized controlled product probe added one package, one grant revision and one authority event to the real formal database. Ordinary read-only SQLite integrity_check was ok; all five prior package IDs and all seven prior grant revisions remained, now six packages and eight revisions. No prior formal business data loss or overwrite was observed.",
+  "measurement": "The ordinary runner checked the full 0.1.11 root index separately from the active resources 0.1.12 generation, so the update was measured against the actual installed identity. A separate ordinary read-only database snapshot verified the changed database rather than treating any byte change as a failure or ignoring it.",
+  "remaining": "Run actual new-resource Document failure rollback, crash recovery, update/reinstall concurrency, then successful resources 0.1.13 activation, each with before/after formal data and protected installation checks. R2-06a remains unaccepted, PR #34 unmerged, no Controller acceptance. Stop only for an unapproved action or possible unintended formal-data loss or overwrite."
+}

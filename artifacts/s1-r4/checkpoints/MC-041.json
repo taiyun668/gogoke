@@ -1,0 +1,55 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-041",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "41cce97d4a251264dfba2eeeba56e22b4064d2f1",
+  "reason": "R2-01_INCREMENT_CLOUD_EVIDENCE_CLOSED_BEGIN_R2-02",
+  "current_main": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "package": {
+    "r2_01": "INCREMENTAL_DELIVERABLE_CLOSED_NOT_CANDIDATE",
+    "r2_02": "NEXT_DEPENDENCY_SAFE_PACKAGE",
+    "production_code_sha": "eadb1e4cea7fdfd73ee8f4de23c1f9e22ac4c2b8",
+    "note": "R2-01 product entry, Goal and ledger reference, native caller admission and coordination boundary remain WIP toward the complete installed product. R2-04 owns full packaging and managed installed launch. No accepted Git fact or Goal Acceptance is claimed."
+  },
+  "evidence": {
+    "native_host_and_server_cloud": {
+      "run": 35889725090,
+      "checkout_sha": "41cce97d4a251264dfba2eeeba56e22b4064d2f1",
+      "scope": "WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP",
+      "workflow": ".github/workflows/gogoke-native-host.yml",
+      "state": "PASS",
+      "native_host_release_build": "PASS",
+      "native_real_process_axes": {
+        "b07_two_process": "1_PASS_0_SKIP",
+        "host_typed_ops": "1_PASS_0_SKIP"
+      },
+      "native_focused_lib_probes": "3_PASS_0_SKIP",
+      "native_lib_tests": "384_PASS_0_SKIP",
+      "server_selected_files": "45_TOTAL_9_NODE_36_VITE",
+      "server_tests": "540_PASS_0_SKIP",
+      "machine_artifacts": [
+        "native-host-evidence-41cce97d4a251264dfba2eeeba56e22b4064d2f1-35889725090-1",
+        "gogoke-server-evidence-41cce97d4a251264dfba2eeeba56e22b4064d2f1-35889725090-1"
+      ]
+    },
+    "desktop_ci": "PASS_AT_EADB1E4CEA7FDFD73EE8F4DE23C1F9E22AC4C2B8_RUN_35859726086",
+    "source_hygiene": "PASS_AT_EADB1E4CEA7FDFD73EE8F4DE23C1F9E22AC4C2B8_RUN_35859726094",
+    "v01_v02_v03": "PARTIAL_ONLY_NOT_FULL_CHECK_PASS",
+    "owner_windows_11_installed_product": "NOT_RUN"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP_NOT_MERGEABLE_BEFORE_CLAUDE_CROSS_MODEL_REVIEW",
+  "candidate": "NOT_CUT",
+  "external_action": "WORKFLOW_DISPATCH_35889725090_COMPLETED_SUCCESS",
+  "architecture_blocker": "NO",
+  "next_action": "Begin R2-02 by tracing the existing Context, Decision, Pi adapter, Action, Evaluation and Dream seams from the actual product entry. Implement one controlled fixture task and Git/GitHub fact readback within the authorized test scope; preserve single Product Authority and do not claim adoption from a database write."
+}

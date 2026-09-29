@@ -1,0 +1,43 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-070",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "4437147316ab403dcb33ffec76d1549f8919b05f",
+  "reason": "OWNER_REPOSITIONED_R2_04_MINIMIZE_CLOUD_ROUND_TRIPS",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "current_main_rules": "Read AGENTS.md at the current main. Its new path-first rule requires minimizing cloud and handoff round trips; its drift rule counts a construction package as one round, not each build or debugging pass.",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "path_reflection": {
+    "previous_route": "Separate full Windows package builds were used first to classify a child failure through product IPC, then to replay the service in a separate process. The classifier hid the original error; the replay ran after the failed child and therefore did not observe its failure. Checkpoint-only pushes also restarted or cancelled full builds.",
+    "missing_direct_source": "At the failure site, product_entry.rs already has the exact failed child stdout, stderr, status, request bytes and resolved runtime paths in memory. None of the prior cloud logs exposed those original bytes.",
+    "minimum_round_trip_route": "Use one cloud build to print the original failed child stderr to the cloud smoke log, outside product IPC, with token redaction. In that same run compare hashes of the actual request and resolved paths against the cloud smoke inputs; retain the existing direct same-root and fresh-root comparison. Read the first actual failure, repair only its cause, remove all temporary diagnostics, then run one exact-head cloud verification build.",
+    "next_push_discipline": "Commit this checkpoint together with the diagnostic source in one push, so a checkpoint-only push does not launch a disposable Windows build."
+  },
+  "latest_evidence": {
+    "desktop_run": 36037470304,
+    "source_sha": "9fabfbd4d5a02374ce0318ec4ed82ffa61eba78b",
+    "browser": "PASS",
+    "dependency_notices": "PASS",
+    "nsis_job": 107763915652,
+    "installed_entry": "FAIL_GOGOKE_PRODUCT_SERVICE_FAILED_1",
+    "direct_with_tauri_alive_source_derived_root": "EXIT_0; SQLite warning only",
+    "direct_with_tauri_alive_fresh_root": "EXIT_0; SQLite warning only",
+    "source_hygiene_run": 36037470323,
+    "source_hygiene": "PASS"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "candidate_state": "NONE",
+  "architecture_blocker": "NO_EVIDENCE_OF_ARCHITECTURE_BLOCKER",
+  "external_action": "NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "next_action": "Capture original Tauri child stderr and source identities in one cloud run; repair the actual cause, remove temporary diagnostics, and verify the installed product entry at the resulting exact SHA."
+}

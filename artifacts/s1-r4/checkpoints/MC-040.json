@@ -1,0 +1,107 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-040",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "eadb1e4cea7fdfd73ee8f4de23c1f9e22ac4c2b8",
+  "recorded_utc": "2026-09-23T15:19:52Z",
+  "reason": "OWNER_SWITCHES_CONSTRUCTION_CUSTODY_FROM_GPT_TO_CODEX",
+  "custody_transfer": {
+    "from": "GPT Construction Controller",
+    "to": "Codex Construction Controller",
+    "owner_instruction": "Continue S1-R4 v2 construction from current durable state; do not replan or redo correct WIP.",
+    "integration_owner_after_handoff": "Codex Construction Controller",
+    "same_execution_branch": true,
+    "same_wip_pr": 27,
+    "master_control_product_code_write": false
+  },
+  "current_main": {
+    "head": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+    "note": "Current main includes the latest construction-governance updates; execution branch is intentionally not merged to main."
+  },
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "public_plan_path": "docs/design/gogoke-s1-r4-plan-v2/",
+    "bound_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11",
+    "current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "construction": {
+    "package": "R2-01",
+    "state": "WIP_IMPLEMENTATION_WIRED_DESKTOP_CI_GREEN_NATIVE_SERVER_CLOUD_AXIS_PENDING",
+    "execution_head": "eadb1e4cea7fdfd73ee8f4de23c1f9e22ac4c2b8",
+    "previous_checkpoint": "MC-039",
+    "pr27": {
+      "state": "OPEN_DRAFT_WIP",
+      "head": "eadb1e4cea7fdfd73ee8f4de23c1f9e22ac4c2b8",
+      "merge_allowed_now": false
+    },
+    "preserved_wip": [
+      "T3-derived executable entry enters canonical Gogoke composition rather than donor start/serve.",
+      "native-host exposes Product Authority identity.",
+      "Owner-backed Controller/Seat caller context is transaction-validated; pipe capability is not product permission.",
+      "Tauri product command invokes the local Gogoke service path and Home presents construction Goal plus Git ledger reference.",
+      "Fixture remains explicitly TEST_FIXTURE_NOT_ADOPTED; no accepted-fact write or Goal Acceptance is claimed.",
+      "R2-01 probe constrains coordination project set to remain empty.",
+      "Server evidence selector is current at 45 total / 9 node / 36 Vite.",
+      "Optional release-policy arrays are omitted when absent instead of being passed as undefined."
+    ]
+  },
+  "evidence": {
+    "desktop_ci": {
+      "run": 35859726086,
+      "exact_head": "eadb1e4cea7fdfd73ee8f4de23c1f9e22ac4c2b8",
+      "state": "PASS",
+      "browser_build_and_tests": "PASS",
+      "dependency_notices": "PASS",
+      "unsigned_windows_nsis": "PASS",
+      "installer_build": "PASS",
+      "update_readiness_rollback_smoke": "PASS"
+    },
+    "source_hygiene": {
+      "run": 35859726094,
+      "exact_head": "eadb1e4cea7fdfd73ee8f4de23c1f9e22ac4c2b8",
+      "state": "PASS"
+    },
+    "native_host_and_server_cloud": {
+      "state": "NOT_RUN_EXACT_HEAD",
+      "workflow": ".github/workflows/gogoke-native-host.yml",
+      "trigger": "workflow_dispatch",
+      "note": "The prior GPT connector could read/rerun workflows but could not create workflow_dispatch. Codex may use its normal authorized GitHub/gh path to dispatch the existing workflow against the exact execution ref; do not modify workflow scope merely to make it auto-trigger.",
+      "nonclaim": "Existing workflow and test source are not execution evidence."
+    }
+  },
+  "parallel_inbox": {
+    "observed_head_before_mc040": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "entries": 0,
+    "state": "INBOX_UNCHANGED_EMPTY",
+    "rule": "At each natural checkpoint boundary, compare inbox HEAD with the last observed execution-checkpoint value. Read only new entries; do not mutate the inbox branch merely to acknowledge consumption."
+  },
+  "review_and_merge": {
+    "current_review": "NOT_STARTED_FOR_CURRENT_ACCUMULATED_WIP",
+    "owner_review_policy": "Do not merge accumulated construction WIP to main before the planned Claude cross-model review. Review binds frozen exact candidate bytes; changed bytes invalidate prior review.",
+    "pr27_must_remain_draft_until_ready": true
+  },
+  "continuous_progress": {
+    "rule": "Non-hard blockers do not stop the entire authorized package. Fix/retry in-contract; mark blocked evidence honestly; continue other dependency-safe authorized work until a real dependency boundary, authorization stop, architecture escalation, unknown consequential external effect, or Owner hard stop.",
+    "architecture_blocker": "NO"
+  },
+  "v2_evidence_levels": {
+    "V01": "IN_PROGRESS_CONFIGURED_PINNED_PARTIAL",
+    "V02": "IN_PROGRESS_DESKTOP_CONTROLLED_PLATFORM_PARTIAL_NATIVE_SERVER_CLOUD_PENDING",
+    "V03": "IN_PROGRESS_SOURCE_CONFIGURED_ONLY_NO_PRODUCT_GIT_GITHUB_ACCEPTANCE_PASS",
+    "V04": "NOT_RUN",
+    "V05": "NOT_RUN",
+    "V06": "NOT_RUN_R2_04_OWNS_PACKAGING",
+    "V07": "NOT_RUN",
+    "V08": "NOT_RUN"
+  },
+  "exact_next_action": [
+    "Codex first re-read current execution HEAD, latest checkpoint, main governance/authorization, PR #27, and Parallel Inbox; do not trust this checkpoint as permanently current.",
+    "Using the existing authorized GitHub/gh path, dispatch .github/workflows/gogoke-native-host.yml against the exact execution branch/ref and bind the resulting run/jobs/evidence to the exact SHA.",
+    "If the exact-head native-host/server cloud axis fails, fix the first real in-contract failure and retry; do not substitute local native build evidence.",
+    "If the axis passes and R2-01 observable increment is satisfied, record a new checkpoint closing only R2-01 incremental deliverable/evidence, without promoting V01-V03 beyond actual evidence.",
+    "Then continue dependency-safe into R2-02 under the same S1-R4 v2 authorization; do not stop merely because one unrelated evidence axis or tool is temporarily unavailable.",
+    "Keep PR #27 WIP/Draft and do not merge main until the planned Claude cross-model review of the accumulated frozen candidate."
+  ]
+}

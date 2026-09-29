@@ -139,6 +139,12 @@ export function SettingsAboutSection({
             {tx("Update failed:")} {updaterState.error}
           </div>
         )}
+        {updaterState.stage === "cleanup_pending" && (
+          <div className="settings-help">
+            {tx("Update finalization needs attention.")}{" "}
+            {updaterState.message}
+          </div>
+        )}
 
         {updaterState.stage === "downloading" ||
         updaterState.stage === "installing" ||

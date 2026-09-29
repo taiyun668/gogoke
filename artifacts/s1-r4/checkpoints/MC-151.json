@@ -1,0 +1,15 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-151",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "d2eb4799ad76690be024858b51025a6c0267e5b3",
+  "recorded_utc": "2026-09-27T10:36:47Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-150.json",
+  "parallel_inbox_observed_head": "c0c67c89bf8c2ab1e1ef629fa6a17ede2b96c292",
+  "production_source_commit": "97ef666dce9f9844e540b60d523bdb8ae510842c",
+  "new_risk_candidate": "Fresh 97 risk_auditor identified NEEDS_REVIEW in R2-06a installer: GogokePinDirectory opens directories with FILE_READ_ATTRIBUTES and share=3, checks reparse once, then later GogokePublishFile uses string-path CREATE_NEW. A same-user attacker may set an in-place reparse point on an already pinned empty resource directory through FSCTL_SET_REPARSE_POINT without rename/delete and redirect a subsequent payload. Existing leaf-insertion and same-domain tests do not exercise this. Microsoft CreateFile documentation says attribute access can be exempt from sharing restrictions; merely changing share=3 to share=1 is not yet a proven fix. A separate read-only specialist is evaluating API behavior and an effective cloud negative test. This is a hypothesis pending dynamic proof, not a confirmed escaped write.",
+  "cloud_status": "Exact 97 desktop run 36312788945 is in progress (browser PASS, notices running); source hygiene run 36312791405 SUCCESS. No signer or Win11 run on 97. If risk is confirmed, 97 will be diagnostic only and new source bytes will require affected cloud checks again.",
+  "g4": "Independent ordinary-view supplement now conditional PASS for old candidate data and both ordinary locks; redacted audit and raw receipt SHA-256 are pushed. No item has been deleted yet. All formal objects protected.",
+  "next_action": "Resolve directory reparse hypothesis with exact Windows behavior and narrow CI negative; repair inside R2-06a if confirmed, preserving no-follow/instance boundaries. Then rerun affected exact-byte cloud build, hygiene, trusted candidate signature, installed smoke and ordinary Win11/SAC test; checkpoint and audited cleanup before beginning R2-06b Owner-free work."
+}

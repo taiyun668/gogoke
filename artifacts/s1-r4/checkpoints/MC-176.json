@@ -1,0 +1,31 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-176",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-175.json",
+  "authority": "Owner authorized public full 0.1.3 and resources 0.1.4 publication, both now published from the previously signed frozen bytes. Owner also clarified that measurement tool, scheduled-task, path and snapshot failures are repairable; genuine product, installation, update or publication failures stop execution. The local manifest signatures were made under Owner's 2026-09-25 authorization to use the Owner private key on this machine. No private key was copied to the repository, CI, logs or release assets.",
+  "ordinary_update_check": {
+    "state": "PASS_TEST_ONLY",
+    "observation": "The actual installed full 0.1.3 product queried the public releases/latest feed, selected resources 0.1.4 and prepared its exact signed four-file release set. The update-state remained prepared with the old active resource pointer before the install attempt.",
+    "private_receipt_sha256": "2bbe71c12075e81f09aed2b3e9fc703637209f95d8cce24c247b18b968e80672"
+  },
+  "ordinary_resource_install_attempt": {
+    "state": "PRODUCT_FAILURE_STOP",
+    "source": "Installed formal product's actual gogoke_update_install('0.1.4') IPC result, observed through its ordinary-session WebView CDP runtime",
+    "product_result": "ERROR:GOGOKE_RESOURCE_GENERATION_PUBLISH_FAILED",
+    "logic_check": "The repository maps a failure of rename_owned_stage_no_replace in publish_generation_from_pack to this product error. The new resource generation had been extracted into a stage directory; update-state was still prepared and the old active pointer was unchanged. The product error occurred before the planned blocked-new-page rollback stimulus, so the rollback test did not execute. The exact underlying Windows rename error was not exposed by this product result and is not inferred here.",
+    "measurement_issue": "The outer scheduled-task runner waited only 180 seconds for its probe and wrote FAIL with 'Installed formal product probe produced no result' while the actual product was still working. This was an instrument timeout, not the stop reason. Private outer result SHA-256 fbbdfeab78472371230fc535c51f4873ba1679377a31140ed78fdaaf942ad6c6; pre-attempt ordinary snapshot SHA-256 80cfd8cbd08a7fcad7c9e807bbe637b86e98ff57c8ce9582357a1b0e9e3f8d64.",
+    "private_failure_observation_sha256": "d5be215d4868390b7abe6ecf97e829a2d2334b3e4e7c0841d4fbf7f02c8b81d6",
+    "staged_resource_generation": "One incomplete .stage directory remains in the installed 0.1.3 generation store. It was preserved. No second update was invoked and no published release was withdrawn."
+  },
+  "ordinary_after_stop": {
+    "state": "STOPPED_AND_SNAPSHOTTED",
+    "observation": "The ordinary product window was closed normally. Product and probe processes exited; the test and snapshot scheduled tasks were unregistered. The post-failure ordinary Win11 snapshot reports SAC state 1, no gogoke processes, old 0.1.2 installation tree SHA-256 1eeed52ee69720002af6482c36871d6574c6f31995a2f6841dd9f3dc83e8d4c1 unchanged, formal OWNER_RELEASE registration still version 0.1.3, update-state prepared and active resource set still 84f53efa4512981990e7a5786a9fd71bfaf73994d8ddfea0bfe67cde39a16fed.",
+    "formal_data_change": "The shared formal roaming data tree SHA-256 changed from 0f1a6761ad2b385e0d2973c4cd8b5e6e4014e4cdb19493b3dc6881d9ae90d079 to 1c076f721c827c4a0473339d3aa45263f1be6da6bb03f1dc03420458822a747e. Entry comparison found .window-state.json changed; the cause has not been independently established. This meets the Owner's formal-data stop condition and is preserved without repair or cleanup.",
+    "private_snapshot_sha256": "2e56263751f0414fe304b76dd66308faab1a5f0d19cdfaad8e7018cc7a853f12",
+    "view_warning": "A separate Codex-packaged-view registry read reported 0.1.2 and was not used as evidence of the ordinary registration. The ordinary scheduled-task snapshot is the effective registration readback."
+  },
+  "remaining": "R2-06b actual failure rollback, crash recovery, successful resource activation, and update/reinstall concurrency remain NOT_RUN. No retry or further product mutation is authorized under the present stop condition. Preserve both public releases. Investigate the generation publish error and formal roaming-data change with the Owner before further ordinary-view tests. PR #34 remains open and unmerged; no Controller acceptance or public release rollback.",
+  "inbox": "origin/control/gogoke-s1-r4-inbox remains 6108bf24705b9c02cf2350095cb700e386330d29; no new entry at this natural checkpoint."
+}

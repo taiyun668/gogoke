@@ -25,11 +25,22 @@ export function collectProductionNotices(sbom, desktopRoot = ROOT) {
   if (!Array.isArray(sbom?.packages) || sbom.packages.length < 2) {
     throw new Error("FAIL_INSTRUMENT: production SPDX package set is empty");
   }
+  const rootPackage = JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8"));
+  if (rootPackage.name !== "gogoke" || typeof rootPackage.version !== "string") {
+    throw new Error("FAIL_INSTRUMENT: gogoke root package identity is invalid");
+  }
   const nodeModules = resolve(desktopRoot, "node_modules");
   const seen = new Set();
   const notices = [];
+  let rootCount = 0;
   for (const entry of sbom.packages) {
-    if (entry.name === "gogoke" && entry.versionInfo === "0.1.2") continue;
+    if (entry.name === rootPackage.name && entry.packageFileName === "") {
+      if (entry.versionInfo !== rootPackage.version) {
+        throw new Error("FAIL_INSTRUMENT: gogoke root SPDX identity differs from package.json");
+      }
+      rootCount += 1;
+      continue;
+    }
     if (typeof entry.name !== "string" || typeof entry.versionInfo !== "string" ||
         typeof entry.licenseDeclared !== "string" ||
         !entry.licenseDeclared || entry.licenseDeclared === "NOASSERTION" ||
@@ -57,14 +68,15 @@ export function collectProductionNotices(sbom, desktopRoot = ROOT) {
       license: entry.licenseDeclared, packagePath: relative(desktopRoot, packageDir).replaceAll("\\", "/"),
       sources: candidates });
   }
+  if (rootCount !== 1) throw new Error("FAIL_INSTRUMENT: gogoke root SPDX identity is missing or duplicate");
   if (notices.length < 100) throw new Error(`FAIL_INSTRUMENT: only ${notices.length} production npm packages`);
   return notices.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
 }
 
-export function renderNotices(notices, lockHash) {
+export function renderNotices(notices) {
   return `<!doctype html>\n<html lang="en"><meta charset="utf-8"><title>gogoke npm production notices</title>\n` +
     `<h1>gogoke npm production dependency notices</h1>\n` +
-    `<p>Generated from the locked production dependency tree. package-lock SHA-256: <code>${escapeHtml(lockHash)}</code>. ` +
+    `<p>Generated from the locked production dependency tree. ` +
     `This inventory is not a legal conclusion.</p>\n` +
     `<p>Packages: ${notices.length}</p>\n` +
     notices.map((item) => `<section><h2>${escapeHtml(item.name)}@${escapeHtml(item.version)}</h2>\n` +
@@ -80,7 +92,7 @@ function main() {
   const notices = collectProductionNotices(sbom);
   const lockHash = createHash("sha256").update(readFileSync(join(ROOT, "package-lock.json"))).digest("hex");
   mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, renderNotices(notices, lockHash), "utf8");
+  writeFileSync(outputPath, renderNotices(notices), "utf8");
   console.log(JSON.stringify({ state: "PASS", package_count: notices.length, lock_sha256: lockHash,
     notice_sources: notices.reduce((sum, item) => sum + item.sources.length, 0) }));
 }

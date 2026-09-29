@@ -1,0 +1,41 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-143",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "964a6f05f46c380cc80d3f7d768e1e017f49ecb9",
+  "recorded_utc": "2026-09-27T09:16:54Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-142.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "ordinary_win11_installed_product_probe": {
+    "state": "PASS",
+    "started_utc": "2026-09-27T09:15:00Z",
+    "finished_utc": "2026-09-27T09:15:15Z",
+    "product_pid": 36840,
+    "node": "installed ordinary-view gogoke-service/runtime/node.exe, SHA-256 e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50, Authenticode Valid, signer OpenJS Foundation",
+    "installed_shell_sha256": "325d7bccae248147a5eeb7d812af1b1c4dba910ac686379d04f5b8f3d878c929",
+    "home_webview": "http://gogoke-resource.localhost/cd8ee1462ed49f6647b1a8010ee9cfc7569190bdb83e52f8c5e9903fc0a67451/index.html",
+    "readiness": "version 0.1.3; signed generation 00e5c932959e2adc5e13b8437f2819ca53ef0d8f9329991c0f760c4bb8b87ffa; resource set cd8ee1462ed49f6647b1a8010ee9cfc7569190bdb83e52f8c5e9903fc0a67451",
+    "native_controller": "ADMITTED",
+    "native_host": "REACHABLE",
+    "ledger": "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED; blob a20115fdd5acf9e7e5025c3b3ca50696001badac",
+    "controlled_task": "VALIDATED_TEST_RESULT_NOT_ADOPTED",
+    "acceptance": "TEST_FIXTURE_NOT_ADOPTED",
+    "screenshot_sha256": "ca3f84c2fedd8712fc83da2c910eba9912c3e941cc74cb21dd311651c2d71b29",
+    "local_evidence": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary\\product-corrected.json and candidate-corrected-home.png",
+    "visual_limit": "CDP screenshot has a black central background and dark underlying text. It may represent transparent-surface capture rather than the actual compositor; no UI defect is concluded from this screenshot alone. Optional Owner visual check remains."
+  },
+  "post_product_ordinary_snapshot": {
+    "local_evidence": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary-after-product.json",
+    "formal_install_data_and_shortcuts": "BITWISE IDENTICAL to MC-140 ordinary baseline",
+    "formal_hkcu_registration": "ABSENT before and after",
+    "candidate_installed_tree_sha256": "5950cdd1490c09ba0648c20be4e580d9b8f2e1621562e7ad29c45a5184d3c72f",
+    "candidate_data": "2 files, tree SHA-256 498070a77bddc1d137cd0d5c10e30fe99cf05168709dcab0045aaf710ba4466d",
+    "candidate_registry": "PRESENT, exact ordinary instance",
+    "gogoke_processes": 0,
+    "code_integrity_record_id": 7097
+  },
+  "inbox_classification_at_current_b025_bytes": {"F1": "ALREADY_FIXED with cloud interleave evidence; ordinary Win11 teardown pending", "F2": "ALREADY_FIXED, non-32 dynamic branch unobserved", "F3": "ALREADY_FIXED in preparation and view-specific residual inventory", "F4": "NEEDS_REVIEW after ordinary formal post-uninstall comparison then formal shortcut launch"},
+  "next_action": "Use the installed ordinary-view candidate gogoke.exe --uninstall --quiet from the same ordinary-user context once, with exact registration/instance/hash preflight and parent/finalizer receipt monitoring. Verify owned files and candidate registration removal, data retention, formal baseline identity, and Code Integrity events. Preserve packaged candidate and all evidence; stop without manual deletion on any uncertainty. After formal comparison only, launch original formal shortcut once. No PR #34 merge, R2-06b, publication, code signing, security-setting change or self-acceptance."
+}

@@ -180,5 +180,6 @@ fn actual_product_open_composes_core_and_keeps_one_profile_on_reopen() {
     connection.close_checked().unwrap();
     drop(root);
     std::fs::remove_file(database).unwrap();
+    std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
     if let Err(error) = std::fs::remove_dir(&path) { eprintln!("owned fixture retained: {} ({error})", path.display()); }
 }

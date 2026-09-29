@@ -1,0 +1,45 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-062",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "832c836c1435cae18a3d9f7f3f93b092c3f217c5",
+  "recorded_utc": "2026-09-24T13:18:16Z",
+  "reason": "R2_04_UNELEVATED_INSTALLED_SMOKE_READY_FOR_CLOUD",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "package": "R2-04",
+  "state": "WIP_NEW_CLOUD_RESULT_REQUIRED",
+  "source_changes_in_this_checkpoint_commit": {
+    ".github/workflows/gogoke-desktop.yml": "073f6924a87e500344187c4615fe78f8db5f4d2f",
+    "tools/ci/gogoke-installed-smoke.ps1": "a3bcc570b1cffadd3eeef7998a331560200a4091"
+  },
+  "change": "Only the cloud installed-smoke launcher changes. It uses a Medium token, verifies the child is not an administrator, then calls the existing JS smoke without altering its Tauri/Home/native/Git/controlled-result assertions or missing-Node negative control. Application source, package resources, runtime versions and security policy are unchanged.",
+  "ci_only_dependency": {
+    "name": "gsudo portable",
+    "version": "2.6.1",
+    "source": "https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip",
+    "archive_sha256": "21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44",
+    "custody": "Unique runner-temp directory, deleted after synchronous test completion. Never installed, placed on system PATH, shipped, or invoked on Owner machine. No registry/policy/ACL changes."
+  },
+  "evidence": {
+    "previous_exact_failure": "MC-061: run 35962614536, job 107515850223, installed Tauri WebView target unavailable",
+    "new_bytes": "NOT_RUN_AT_CHECKPOINT_CREATION",
+    "local_native_compilation": "NOT_PERFORMED",
+    "V06": "PARTIAL_CONTROLLED_PLATFORM_NOT_PASS",
+    "owner_win11": "NOT_RUN"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "custody": "Controller owns the two named CI files; code and this checkpoint are committed atomically. No unpushed production WIP is required to resume.",
+  "architecture_blocker": "NO",
+  "next_action": "Read the replacement exact-head PR27 desktop CI and its package inventory. Verify non-administrator launch, real installed Home/Tauri invocation, native-host/Git/controlled-task result and missing-Node rejection. Repair ordinary R2-04 failures. After actual R2-04 closure write source/merge/run/job/artifact handoff and STOP. Keep PR27 Draft; no main merge and no R2-05 work."
+}

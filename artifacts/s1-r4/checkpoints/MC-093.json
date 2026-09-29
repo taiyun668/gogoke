@@ -1,0 +1,35 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-093",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "295c44474ae017f4a046e9266ab62086a7aff019",
+  "recorded_utc": "2026-09-25T15:23:45Z",
+  "reason": "R2_06_CLOUD_CLEANUP_PASS_CANDIDATE_ROOT_CAUSE_NARROWED_WEBVIEW_DIAGNOSTIC_IN_PROGRESS",
+  "current_main": "81c87a2375840424b8f97f4eef8a0bbb61bffb01",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11, authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35, and Owner-merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac remain current.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_NOT_CANDIDATE",
+  "pr27": "OPEN_DRAFT_NOT_MERGED at remote 295c4447 before checkpoint push.",
+  "pr34": "OPEN_NOT_MERGED at dacd466e; Owner-held R2-05 remains WIP.",
+  "pr38": "MERGED into main at 81c87a23 after exact 74472f7d CI and focused independent script review. Temporary installed stderr and same/fresh-root diagnostics remain until measured root-cause repair.",
+  "pr39": "OPEN at fea899e3. Temporary secret-free WebView2 inspection; focused synthetic review passed eight scenarios; real cloud WebView evidence and PR checks pending.",
+  "executed_evidence": {
+    "cloud_cleanup": "Execution d30f3922 run 36149547564 SUCCESS: Browser 146 files/1044 TypeScript tests, four non-skipped Windows cleanup fixture tests, notices, independent Windows native/NSIS lanes and executable-byte comparison. Frozen artifact 10873071446; reproducibility artifact 10872457380. Earlier run 36148755522 measured Python 8.3 RUNNER~1 versus PowerShell runneradmin path; d30f3922 canonicalized only the fixture root and confirmed same object identity, leaving production path safety checks intact.",
+    "signed_candidate_diagnostic": "Trusted main signer run 36150551257 reused successful source 3a60712b/run 36141510169/attempt 1/frozen artifact 10869103624. Signing succeeded; installed Medium smoke FAIL at readiness. Installed Gogoke stayed alive, with empty stdout/stderr, no readiness receipt and no candidate product-authority root. Direct installed Node/service/native-host with the same cwd, entry and root returned admitted readiness and exit 0; fresh-root control did too. The missing trigger is between installed UI/Tauri startup and service invocation; actual WebView state UNKNOWN. Uninstall NOT_RUN.",
+    "notice_race": "Independent focused review found a coordinator installed-versus-stale-log deletion race. Execution 295c4447 prioritizes committed status, handles NotFound, removes notice-consumer state writeback and adds disappearing/present-log regression tests. Focused source review found no remaining definite defect; exact-head cloud native run 36153652792 and hygiene 36153657620 are IN_PROGRESS, so this fix is NOT_RUN as native evidence.",
+    "version_only": "Earlier 6ff24632 versus 3a60712b cross-version executable-byte comparison remains PASS only for those exact sources (MC-092); post-295c4447 cross-version bytes NOT_RUN."
+  },
+  "blocked_or_not_run": "Actual installed candidate WebView origin, IPC and React state NOT_RUN until PR39 diagnostic. Candidate readiness FAIL; uninstall NOT_RUN. Formal Owner-signed update, full rollback/crash recovery, Owner Win11 SAC formal installer, final independent candidate review and held R2-05 remain NOT_RUN. No release, adoption or acceptance.",
+  "path_first_reflection": "The cleanup cloud failure was a fixture path representation mismatch measured before changing only the fixture. Direct service probes pass in both roots, while the installed product never creates its root; further service error classification is unsupported. PR39 uses the same frozen candidate and bounded loopback WebView inspection; its five synthetic instrument defects were repaired before real CI use.",
+  "retained_custody": [
+    "Execution worktree holds pushed 295c4447 plus this checkpoint before push. Trusted signer worktree holds clean PR39 branch fea899e3 for temporary diagnostic CI and rerun.",
+    "%TEMP%/gogoke-r206-version-compare-20260925, %TEMP%/gogoke-r206-version-compare-3a60712b-20260925 and %TEMP%/gogoke-r206-candidate-smoke-36145183788 retain small public machine JSON copies pending cleanup.",
+    "Temporary PR38/PR39 body files under %TEMP% and ignored tools/ci/__pycache__/test_gogoke_update_backup_cleanup_cloud.cpython-313.pyc remain after exact-path Remove-Item requests were automatically rejected as blocked by policy. No alternate deletion route was attempted."
+  ],
+  "external_action": "PR38_MERGED; PR39_OPEN; PR27_DRAFT; PR34_OPEN_OWNER_HELD; AUTO_SIGNER_D30_RUN_36153537155_IN_PROGRESS; NO_OWNER_KEY_USE; NO_RELEASE; TEMP_CLEANUP_AUTO_REVIEW_REJECTED",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Finish PR39 exact-head CI/review, merge temporary diagnostic into trusted main if sound, then rerun signer on exact successful frozen 3a60712b artifact to measure installed WebView origin/IPC/React state without rebuilding product bytes. Inspect 295c4447 cloud native regression and auto signer d30; fix measured trigger, remove diagnostics, rerun affected exact-head build/candidate axes, and keep PR34/R2-05 held."
+}

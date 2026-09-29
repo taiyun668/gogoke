@@ -1,0 +1,10 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-194",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-193.json",
+  "state": "POINTER_SHARE_FIRST_FIX_FALSIFIED_ANCESTOR_DIAGNOSTIC_RUNNING",
+  "correction": "MC-193 located the installed product's Win32 sharing failure, but its proposed installation-root-only repair was too narrow. At exact source e8a578ef, desktop run 36433732121 failed the same focused pointer replacement test in both frozen and repro Windows lanes with os error 32, despite allowing delete sharing on the installation-root handle. Browser, native-host and public hygiene runs passed, but desktop CI did not; no full 0.1.11 artifact from that run is release eligible. This is direct falsification of the root-only hypothesis, not a new product pass.",
+  "next_diagnostic": "Source 1b681b27 changes only the focused Windows test to release already held ancestor directory handles one at a time and report the count at which the exact pointer MoveFileExW succeeds, while retaining the verified leaf handle. It removes its owned test fixture before asserting. Desktop run 36436294069 was dispatched to identify the remaining sharing level. No owner-machine probe was retried after the automatic local approval rejection. No new public release, ordinary full installation, dynamic success, crash recovery or concurrency result is claimed. Continue under Owner's product-bug repair authorization; stop only for an unapproved action or possible unintended formal-data loss/overwrite."
+}

@@ -1,0 +1,92 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-039",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "db047ab757e69786afe4df0208b904cdd88184f4",
+  "recorded_utc": "2026-09-23T12:15:00Z",
+  "reason": "R2_01_TAURI_COMMAND_COMPILE_FAILURE_FIXED_NEXT_EVIDENCE_GAPS_IDENTIFIED",
+  "current_main": {
+    "head": "f6a820dda05a3eac5c29be48c4149bff7e1c9598",
+    "production_write_domain_conflict": "NONE"
+  },
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_pr": 21,
+    "authorization_merge_commit": "b762d3a8c6d043b57bd0f5458531fe0ab47ebeba",
+    "authorization_merged_by": "taiyun668",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11",
+    "current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "construction": {
+    "package": "R2-01",
+    "state": "WIP_COMPILE_FAILURE_FIXED_CONTINUING_EVIDENCE_WIRING",
+    "pr27": {
+      "number": 27,
+      "state": "OPEN_DRAFT_WIP",
+      "exact_head": "db047ab757e69786afe4df0208b904cdd88184f4"
+    },
+    "fix_commit": "db047ab757e69786afe4df0208b904cdd88184f4",
+    "fixed_failure": {
+      "prior_run": 35853966902,
+      "prior_job": 107160344301,
+      "prior_error": "E0433 could not find __cmd__gogoke_r2_goal_probe in public_runtime",
+      "repair": "Register tauri command at its defining module path public_runtime::product_entry::gogoke_r2_goal_probe and expose product_entry module crate-locally.",
+      "exact_validation": "Replacement run 35858062527 job Unsigned Windows NSIS step 'Test the gogoke release verifier' passed on db047ab757e69786afe4df0208b904cdd88184f4."
+    }
+  },
+  "evidence": {
+    "source_hygiene": {
+      "run": 35858062684,
+      "exact_head": "db047ab757e69786afe4df0208b904cdd88184f4",
+      "state": "PASS"
+    },
+    "desktop_ci": {
+      "run": 35858062527,
+      "exact_head": "db047ab757e69786afe4df0208b904cdd88184f4",
+      "state": "IN_PROGRESS",
+      "browser_build_and_tests": "PASS",
+      "dependency_notices": "PASS",
+      "unsigned_windows_nsis": {
+        "state": "IN_PROGRESS",
+        "release_verifier_compile_step": "PASS",
+        "installer_build_step": "IN_PROGRESS_AT_CHECKPOINT"
+      },
+      "nonclaim": "Whole desktop workflow is not yet PASS; downstream installer/smoke steps remain unresolved on this SHA."
+    },
+    "native_host_cloud_axis": {
+      "state": "NOT_RUN_CURRENT_HEAD",
+      "dispatch_constraint": "Current GitHub connector exposes workflow reads/reruns but no workflow_dispatch creation for the manual-only gogoke-native-host.yml.",
+      "nonclaim": "No local native build is substituted."
+    }
+  },
+  "newly_identified_dependency_safe_gaps": [
+    {
+      "path": "tools/ci/gogoke-server-tests.mjs",
+      "finding": "Current tree contains 45 Gogoke server .test.ts files including productEntry.test.ts, while selection guard is hard-coded to 44 total / 9 node / 35 Vite.",
+      "exact_change": "45 total / 9 node / 36 Vite",
+      "consequence_without_fix": "Future supported native/server cloud execution would FAIL_INSTRUMENT before it could count as evidence."
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/nativeStoreService.ts",
+      "finding": "snapshotAdmissionRequest passes optional arrays explicitly as possibly undefined into validateMinimalReleaseRequest under exactOptionalPropertyTypes.",
+      "exact_change": "Use conditional object spreads so absent optional properties are omitted rather than supplied as undefined.",
+      "consequence_without_fix": "Potential server typecheck failure; fix remains within existing release-policy semantics."
+    }
+  ],
+  "parallel_inbox": {
+    "previous_checkpoint_observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "observed_head_before_mc039": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "state": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_modified": false
+  },
+  "v2_evidence_levels": {
+    "V01": "IN_PROGRESS_CONFIGURED_PINNED_PARTIAL",
+    "V02": "IN_PROGRESS_WINDOWS_COMPILE_SEAM_CONFIRMED_NO_CONTROLLED_END_TO_END_PASS",
+    "V03": "IN_PROGRESS_SOURCE_CONFIGURED_ONLY_NO_PRODUCT_GIT_GITHUB_ACCEPTANCE_PASS"
+  },
+  "architecture_blocker": "NO",
+  "exact_next_action": "Apply only the two identified R2-01 evidence/type-safety repairs: update gogoke-server cloud selector to 45/9/36 and omit undefined optional release-policy fields in nativeStoreService.ts. Push once, then read exact replacement CI. Keep PR #27 Draft/WIP and native-host cloud axis NOT_RUN unless a supported exact-head cloud execution path becomes available."
+}

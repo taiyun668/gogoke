@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-144",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "fa141aa9b3ba767ef87d278657f43126dfac5810",
+  "recorded_utc": "2026-09-27T09:23:23Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-143.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "ordinary_win11_candidate_uninstall": {
+    "instrument_note": "A first scheduled monitor task failed at PowerShell 5.1 ScriptBlock parse time before calling gogoke.exe. Its local error receipt is retained. The corrected script parsed successfully in the same PowerShell version; its invocation below was the first actual ordinary-view uninstall.",
+    "started_utc": "2026-09-27T09:19:49Z",
+    "completed_utc": "2026-09-27T09:22:00Z",
+    "parent_pid": 30196,
+    "parent_exit_code": 0,
+    "parent_stderr": "EMPTY",
+    "exact_instance_id_sha256": "9896485fdfec67c0deaa28592bdb0ac09b2bb6a9c75e3e0f2e7e90634337cc20",
+    "finalizer_receipt": "DELETED; owned files removed, unknown files and user data retained",
+    "local_monitor": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary-uninstall-corrected.json",
+    "finalizer_receipt_location": "ordinary %LOCALAPPDATA%\\gogoke-agent-tmp\\gogoke-uninstall-9896485fdfec67c0-<nonce>.json"
+  },
+  "after_uninstall_before_formal_launch": {
+    "local_snapshot": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary-after-uninstall.json",
+    "candidate_registration": "ABSENT in ordinary HKCU",
+    "candidate_owned_files": "REMOVED; gogoke.exe absent; no files remain in isolated installation root",
+    "candidate_root_residual": "1,087 empty directories remain, no files; recorded as F3 residue and not cleaned",
+    "candidate_data": "2 files, tree SHA-256 498070a77bddc1d137cd0d5c10e30fe99cf05168709dcab0045aaf710ba4466d, byte-identical to before uninstall",
+    "formal_install_data_and_shortcuts": "BITWISE IDENTICAL to the MC-140 ordinary preinstall baseline, before any formal shortcut launch",
+    "formal_hkcu_registration": "ABSENT before and after in ordinary view",
+    "gogoke_processes": 0,
+    "code_integrity_record_id": 7097
+  },
+  "scope_boundary": "This DELETED result applies only to the ordinary-user candidate instance. The packaged Codex-view candidate, its registration and data remain preserved following the separate handoff failure in MC-138. No product bytes changed; no new cloud check was needed. The candidate has not been accepted.",
+  "inbox_classification_at_current_b025_bytes": {"F1": "ALREADY_FIXED; final deletion-window cloud negative and ordinary Win11 teardown passed; packaged alias-view failure separately recorded", "F2": "ALREADY_FIXED; non-32 dynamic branch not exercised", "F3": "ALREADY_FIXED in preparation; actual ordinary candidate data, empty-root and lock residue plus packaged-view candidate retained", "F4": "NEEDS_REVIEW; required formal comparison is now complete, shortcut launch is next"},
+  "next_action": "From the original ordinary-user formal shortcut, launch formal Gogoke once and observe actual process/window/startup without modifying the already completed formal prelaunch comparison. Record any error and SAC event. Do not alter the pre-existing absent ordinary formal HKCU registration to force launch. Then prepare final Owner report and explicit residual/cleanup conditions, including the packaged-view candidate. Preserve MC-122 two-file copy; no PR #34 merge, R2-06b, publication, code signing, security-setting change or self-acceptance."
+}

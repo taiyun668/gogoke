@@ -1,0 +1,21 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-149",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "33035db270d4affe5e745a59c88f085ecba70856",
+  "recorded_utc": "2026-09-27T10:27:00Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-148.json",
+  "parallel_inbox_observed_head": "c0c67c89bf8c2ab1e1ef629fa6a17ede2b96c292",
+  "production_source_commit": "33035db270d4affe5e745a59c88f085ecba70856",
+  "risk_audit": "New risk_auditor completed read-only f314 R1-R8 static full-axis pass with one LOW: GUI-subsystem uninstall displayed no direct-run guidance on packaged/redirected rejection. All other checked static axes had no new confirmed P1/P2; dynamic f314 build/sign/install/Win11 were pending, so no final PASS. See artifacts/s1-r4/reviews/R2-06a-f314-risk-audit.md.",
+  "repair": "33035db2 adds fixed native MessageBoxW guidance for nonquiet packaged/redirected uninstall and stderr machine code plus guidance for quiet. No product mutation or security boundary relaxation. This changes shell and setup bytes, so f314 is superseded as a final candidate; exact 330 cloud chain and Win11 run are required.",
+  "cloud_330": {
+    "desktop_run": 36312551402,
+    "source_hygiene_run": 36312553851,
+    "head_sha_verified": "33035db270d4affe5e745a59c88f085ecba70856",
+    "state": "PENDING_OR_IN_PROGRESS at checkpoint"
+  },
+  "g4": "Independent item-by-item cleanup audit pushed in MC-148; no deletion yet. Keep ordinary candidate data/two ordinary locks because current Codex-descended read is redirected. All deletion remains conditional on immediate exact identity and same-view absence recheck.",
+  "next_action": "Complete exact 330 cloud build/hygiene, trusted main-only candidate resource signature, branch installed smoke including new negative axes, and fresh final-source risk review. If concrete failure, repair within R2-06a and rerun affected exact-byte gates. Then ordinary-view Win11 SAC installation/product/uninstall with fresh formal snapshots; stop on SAC block or formal change. Checkpoint final R2-06a WIP, clean only audited items, proceed to Owner-free R2-06b until Owner offline SHA256SUMS.windows signing boundary."
+}

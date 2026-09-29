@@ -1,8 +1,10 @@
 //! Windows process containment primitives for the public execution host.
 //!
-//! This module deliberately owns the kernel handles from suspended creation
-//! through durable custody and activation. A caller cannot obtain a runnable
-//! process before its custody callback succeeds.
+//! This module owns kernel handles from suspended creation through activation.
+//! Activation is restricted to trusted in-crate service composition; the
+//! production service commits its coordination custody row before calling it.
+//! These process primitives do not themselves prove a database commit or a
+//! RootLock held by an arbitrary Rust caller.
 
 #[cfg(windows)]
 mod windows;

@@ -1,0 +1,29 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-108",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "fd771400f7f8821a5617d95904efd8739d8e350f",
+  "recorded_utc": "2026-09-26T15:11:06Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-107.json",
+  "current_main": "f041ea35778aa4861f9e82616f0e143f65b937b1",
+  "authorization": "Current main S1-R4 v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 were rechecked. Owner order remains R2-06a, R2-05, then R2-06b. Formal local manifest signing is authorized; public -Publish is Owner-controlled.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": {
+    "db0ce00b": "Desktop 36231631705 PASS, trusted main signer 36233323918 PASS, branch installed smoke 36233424799 FAIL after 120 seconds at installer CI barrier despite no requested barrier. NSIS undefined environment expansion returned a literal; 088fc1e1 corrected detection.",
+    "088fc1e1": "Desktop 36233886551 PASS, signer 36235650720 PASS, branch installed smoke 36235702049 FAIL at publish-source-open. The reported Win32 code 80 came from a separate call and was not the source-open error.",
+    "77bdccaf": "Desktop 36235875846 PASS, signer 36237725362 PASS, branch installed smoke 36237789973 FAIL with source-open Win32 2. Trace showed a literal Handlebars expression in the path. 55f7540f corrected ten escaped resource/binary template paths.",
+    "55f7540f": "Desktop 36237912207 PASS, signer 36239764868 PASS, branch installed smoke 36245258511 FAIL at five-minute install bound after directory pinning, before first product leaf.",
+    "447dcb93": "Desktop 36245682600 PASS, signer 36247747083 PASS, branch installed smoke 36247814153 FAIL at the same install bound. Exact frozen resource-index inspection counted 12,979 installed files, 1,017 distinct parent directories, and 12,974 service files; the resource pack contains 1,234 entries and does not include the bundled node_modules tree. Repeated linear directory-pin lookup for a second scratch tree was the observed bottleneck.",
+    "fd771400": "Flat ordinal scratch under one pinned directory retained CREATE_NEW publication and final-parent pins. Desktop 36248482071 PASS all five jobs, including independent Windows executable byte comparison; hygiene 36248484416 PASS. Trusted main signer 36250445977 PASS and emitted exact-source signed artifact 10908189210. Branch installed smoke 36250558920 FAIL at its five-minute install bound, but progressed through shell publication into payload file ordinal 3943; shell hash 6acb5e623f48c3593ebdd489ca1e2d113f2189d41cb2008f9a0cf5f8e2e3190b matched expected, service directory existed, native-host and signed sidecars had not yet been published. Product service and uninstall remained NOT_RUN. The temporary diagnosis wrote a separate trace file several times per payload file, making this timing non-representative of the intended installer."
+  },
+  "current_change": "Remove the temporary NSIS trace function/calls and companion smoke trace plumbing. Preserve the same 300-second install bound, per-leaf CREATE_NEW, pinned parents, source object checks, and FlushFileBuffers. A new exact-head cloud build and installed smoke will test whether tracing caused the remaining slowdown. If it still times out, inspect production per-file publication cost rather than treating this hypothesis as proven.",
+  "main_drift": "main advanced from 246fa849 to f041ea35 only by deleting docs/directions/2026-09-26-web-chatgpt-subagent-channel.md. No current authorization, v2 manifest, or R2-06a production contract changed; no mechanical merge into execution branch.",
+  "retained_custody": "A task-owned read-only frozen-artifact inspection copy remains at %TEMP%\\gogoke-r206a-inventory-36245682600 (nine files). Resolved-path checks preceded cleanup. Automatic approval review rejected both recursive and per-file nonrecursive deletion, so no alternate tool or shell was used to bypass it. Keep until an approved cleanup path is available. Earlier retained paths and private backup custody remain recorded in MC-104 through MC-107.",
+  "blocked_or_not_run": "F1 deterministic installer leaf-insertion barrier, completed installed service positive/poison-negative, uninstall/data preservation, formal signed install, Owner Win11/SAC, final all-axis and heterogeneous review remain NOT_RUN. WCS-26/WCS-27 classifications and archived static reports remain as recorded in MC-107. R2-06b is deferred; PR #27 is Draft, PR #34 and #49 are Owner-held OPEN; no release.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Commit and push the diagnostic-trace removal, then run exact-head desktop and hygiene cloud axes. If desktop passes, consume its artifact through the existing trusted-main candidate signer and execution-branch installed smoke. Inspect the first real failure or full machine PASS receipt. Do not weaken CREATE_NEW or silently extend the five-minute bound. Once the actual installed path passes, run the deterministic installer leaf-insertion barrier and remaining R2-06a gates, then freeze/review/Win11 as authorized."
+}
