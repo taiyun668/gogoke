@@ -1,0 +1,35 @@
+{
+  "schema": "gogoke.37.l0.user-origin-binding-decision.v1",
+  "source_plan_manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+  "status": "CONTROLLER_DECIDED_IMPLEMENTATION_AND_PROOF_PENDING",
+  "decision": "TAURI_OWNED_HOST_WITH_RECIPROCAL_PROCESS_OBJECT_BINDING",
+  "threat_model": {
+    "untrusted": "A launched restricted CLI, its model-directed descendants, and bytes carried by the Node service connection",
+    "boundary": "None of those sources may obtain User authority by selecting a caller value, host mode, path, PID, service capability, or reusable ticket",
+    "outside_scope": "An already unrestricted same-user process outside the launched CLI; it has the user's existing filesystem rights and does not create a new privilege boundary"
+  },
+  "direct_source_facts": [
+    "The current Tauri product runtime starts Node, and Node NativeHostClient.attach starts native-host; the host observes only the service pipe source.",
+    "The current native-host holds one verified ProductDatabase connection and handles one service connection until Shutdown.",
+    "L0's v37 request wire has no caller or grant fields; the R2 service capability authenticates service only.",
+    "Node connectExisting now exists as a service-only transport but is not wired into product startup."
+  ],
+  "implementation_boundary": [
+    "Tauri starts and retains the exact native-host process object and its existing product root and resource custody; Node connects to that host as service only.",
+    "A separate User pipe accepts only the native-observed current-user Tauri process object pinned for this host lifetime; the host also checks that process remains live before accepting an operation.",
+    "Tauri verifies that the User pipe server is the native-host process it launched and still retains before sending a complete request.",
+    "The Tauri command surface accepts only explicit local product actions; it does not proxy arbitrary Node requests into User operations.",
+    "The User, service and seat channels carry origin facts to one main-thread authority executor using one RootLock and one verified database connection.",
+    "Each v37 operation rechecks its current grant, generation, scope and host epoch; a prior receipt cannot bypass current authority.",
+    "The legacy R2 owning-client mode keeps its existing Shutdown and stop semantics; a shared-host service disconnect does not end the User-owned host."
+  ],
+  "logical_check": "An inherited stdin handle, command-line mode, parent PID or image path alone is not User proof. Windows permits an explicit parent process attribute. Mutual comparison of live process objects and a dedicated source channel supplies the missing product-origin fact within the recorded AppContainer threat boundary; it does not prove a human click or resist an unrestricted same-user process.",
+  "direct_checks_required": [
+    "A real Tauri command reaches a User-only native operation exactly once, while the same bytes on the Node service pipe are rejected with no database write or process launch.",
+    "A distinct same-user process and a restricted CLI descendant cannot enter the User pipe; no User write handle is inherited by Node or CLI.",
+    "A Tauri-verified User pipe server is the exact retained native-host process; process exit before acceptance fails closed.",
+    "Node connect-only close leaves the host and active seat alive; the legacy R2 owning client still closes through Shutdown.",
+    "A host restart changes epoch, invalidates old channels, and preserves UNKNOWN custody until direct recovery evidence exists."
+  ],
+  "completion_claim": false
+}
