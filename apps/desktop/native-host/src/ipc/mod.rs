@@ -445,7 +445,8 @@ mod platform {
             validate_endpoint(endpoint)?;
             let expected_sid = current_user_sid()?;
             let path = if package_sid.is_some() {
-                format!(r"\\.\pipe\gogoke.seat.v1.{endpoint}")
+                // AppContainer clients resolve named pipes only in LOCAL.
+                format!(r"\\.\pipe\LOCAL\gogoke.seat.v1.{endpoint}")
             } else {
                 format!(r"\\.\pipe\gogoke.current-user.v1.{endpoint}")
             };
