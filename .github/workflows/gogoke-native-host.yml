@@ -185,6 +185,7 @@ jobs:
             @{ id = 'bound-instance-acl'; filter = 'bound_nonempty_tree_grants_only_its_recorded_instance_identity' },
             @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
             @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
+            @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
             @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
             @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
@@ -200,7 +201,7 @@ jobs:
             }
             $env:GOGOKE_CI_CDB = $debugger
             $env:GOGOKE_CI_CDB_LOGROOT = $evidenceRoot
-            $probes = @($probes | Where-Object { $_.id -in @('pinned-codex-account-read', 'pinned-codex-credential-files') })
+            $probes = @($probes | Where-Object { $_.id -in @('pinned-codex-account-read', 'pinned-codex-credential-files', 'persisted-permission-intent') })
             Write-Host "Directed trace only: debugger SHA256=$((Get-FileHash -LiteralPath $debugger -Algorithm SHA256).Hash); full library suite NOT_RUN."
           }
           $results = @()

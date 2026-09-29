@@ -43,8 +43,10 @@ pub(super) fn before_activation(prepared: &PreparedCustody) -> Option<CliTrace> 
     let mut output = std::fs::OpenOptions::new().create_new(true).write(true)
         .open(log).expect("exclusive directed debugger log");
     // Observe the real GetFinalPathNameByHandleW entry and its caller return.
-    // The one-shot return breakpoint leaves every instruction and ACL intact.
-    let commands = r#"bp KERNELBASE!GetFinalPathNameByHandleW ".printf \"GOGOKE_FINALPATH_ENTRY flags=%x handle=%p\\n\", @r9, @rcx; !handle @rcx f; bp /1 poi(@rsp) \".printf \\\"GOGOKE_FINALPATH_RETURN value=%x\\\\n\\\", @rax; !gle; gc\"; gc"; .echo GOGOKE_CDB_READY; g"#;
+    // Software breakpoints change memory and timing for measurement, not the
+    // on-disk CLI bytes, its token or ACL. This is not product acceptance.
+    // Continue only the loader breakpoint observed in the first cloud trace.
+    let commands = r#"sxe -c ".if (@rip == ntdll!LdrpDoDebuggerBreak+0x35) { .echo GOGOKE_LOADER_BREAK_CONTINUE; gh }" bpe; bp KERNELBASE!GetFinalPathNameByHandleW ".printf \"GOGOKE_FINALPATH_ENTRY tid=%x flags=%x handle=%p\\n\", @$tid, @r9, @rcx; !handle @rcx f; ~.bp /1 poi(@rsp) \".printf \\\"GOGOKE_FINALPATH_RETURN tid=%x value=%x\\\\n\\\", @$tid, @rax; !gle; gc\"; gc"; .echo GOGOKE_CDB_READY; g"#;
     let mut child = Command::new(debugger).args(["-G", "-pd", "-p", &prepared.identity.pid.to_string(),
         "-c", commands]).stdin(Stdio::null()).stdout(Stdio::piped())
         .stderr(Stdio::inherit()).spawn().expect("attach existing SDK debugger to exact fixture PID");
