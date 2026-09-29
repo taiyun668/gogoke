@@ -1,4 +1,6 @@
 import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -211,6 +213,74 @@ test("startup handshake rejects an invalid second line without waiting for a thi
   } finally {
     lines.close();
     pipe.destroy();
+  }
+});
+
+test("existing-host mode rejects malformed service coordinates before connecting", () => {
+  const capability = "a".repeat(64);
+  for (const pipePath of [
+    "\\\\.\\pipe\\LOCAL\\gogoke.seat.v1.store.test",
+    "\\\\.\\pipe\\other-service",
+    "\\\\.\\pipe\\gogoke.current-user.v1.store.test\nother",
+  ]) {
+    assert.throws(
+      () => NativeHostClient.connectExisting({ pipePath, capability }),
+      (error: unknown) => error instanceof NativeHostClientError && error.code === "HOST_PIPE",
+    );
+  }
+  assert.throws(
+    () => NativeHostClient.connectExisting({
+      pipePath: "\\\\.\\pipe\\gogoke.current-user.v1.store.test",
+      capability: ` ${capability}`,
+    }),
+    (error: unknown) => error instanceof NativeHostClientError && error.code === "HOST_CAPABILITY",
+  );
+});
+
+test("existing-host close disconnects after authentication without sending Shutdown", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const pipePath = `\\\\.\\pipe\\gogoke.current-user.v1.store.${process.pid}-${NodeCrypto.randomBytes(8).toString("hex")}`;
+  const capability = "a".repeat(64);
+  const fixture = String.raw`
+    const net = require('node:net');
+    const path = process.argv[1];
+    const server = net.createServer((socket) => {
+      let bytes = Buffer.alloc(0);
+      let prefaced = false;
+      const operations = [];
+      socket.on('data', (chunk) => {
+        bytes = Buffer.concat([bytes, chunk]);
+        if (!prefaced && bytes.length) { if (bytes[0] !== 0x47) process.exit(3); bytes = bytes.subarray(1); prefaced = true; }
+        while (bytes.length >= 4 && bytes.length >= 4 + bytes.readUInt32LE(0)) {
+          const length = bytes.readUInt32LE(0);
+          operations.push(JSON.parse(bytes.subarray(4, 4 + length).toString()).operation);
+          bytes = bytes.subarray(4 + length);
+          const reply = Buffer.from('OK\t{"authenticated":true}\t1us');
+          const header = Buffer.alloc(4); header.writeUInt32LE(reply.length);
+          socket.write(Buffer.concat([header, reply]));
+        }
+      });
+      socket.on('end', () => console.log('CLOSED\t' + operations.join(',')));
+    });
+    server.listen(path, () => console.log('READY'));
+  `;
+  const child = NodeChildProcess.spawn(process.execPath, ["-e", fixture, pipePath], {
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+  });
+  assert.ok(child.stdout);
+  const lines = NodeReadline.createInterface({ input: child.stdout });
+  const iterator = lines[Symbol.asyncIterator]();
+  try {
+    assert.equal((await iterator.next()).value, "READY");
+    const client = NativeHostClient.connectExisting({ pipePath, capability });
+    await client.close();
+    await client.close();
+    assert.equal((await iterator.next()).value, "CLOSED\tAuthenticateService");
+    assert.equal(child.exitCode, null);
+  } finally {
+    lines.close();
+    child.kill();
   }
 });
 

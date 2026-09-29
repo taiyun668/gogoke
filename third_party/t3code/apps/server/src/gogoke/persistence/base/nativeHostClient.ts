@@ -2161,10 +2161,11 @@ export function encodeActionOutcomeFrame(
  * passes a SQLite filename or inherits OS handles.
  */
 export class NativeHostClient {
-  readonly #child: NodeChildProcess.ChildProcess;
+  readonly #child: NodeChildProcess.ChildProcess | null;
   readonly #pipe: number;
+  #closed = false;
 
-  private constructor(child: NodeChildProcess.ChildProcess, pipe: number) {
+  private constructor(child: NodeChildProcess.ChildProcess | null, pipe: number) {
     this.#child = child;
     this.#pipe = pipe;
   }
@@ -2192,39 +2193,48 @@ export class NativeHostClient {
     }
     const { pipeLine, capabilityLine } = handshake;
     stdout.close();
-    if (!capabilityLine.startsWith("CAPABILITY\t")) {
-      child.kill();
-      throw new NativeHostClientError(
-        "HOST_CAPABILITY",
-        "native-host did not provide a service capability",
-      );
-    }
-    const capability = capabilityLine.slice(11).trim();
-    if (!/^[0-9a-f]{64}$/.test(capability)) {
-      child.kill();
-      throw new NativeHostClientError(
-        "HOST_CAPABILITY",
-        "native-host service capability is not canonical",
-      );
-    }
-    const pipePath = pipeLine.slice(5).trim();
-    const pipe = NodeFS.openSync(pipePath, "r+");
-    NodeFS.writeSync(pipe, Buffer.from([0x47]));
-    const client = new NativeHostClient(child, pipe);
     try {
+      return NativeHostClient.connectService(pipeLine, capabilityLine, child);
+    } catch (error) {
+      child.kill();
+      throw error;
+    }
+  }
+
+  /** Connects to a host already owned by the native product; this is service transport only. */
+  static connectExisting(input: {
+    readonly pipePath: string;
+    readonly capability: string;
+  }): NativeHostClient {
+    return NativeHostClient.connectService(`PIPE\t${input.pipePath}`, `CAPABILITY\t${input.capability}`, null);
+  }
+
+  private static connectService(
+    pipeLine: string,
+    capabilityLine: string,
+    child: NodeChildProcess.ChildProcess | null,
+  ): NativeHostClient {
+    const pipePath = pipeLine.slice(5);
+    if (!/^PIPE\t\\\\\.\\pipe\\gogoke\.current-user\.v1\.[A-Za-z0-9._-]{1,120}$/.test(pipeLine)) {
+      throw new NativeHostClientError("HOST_PIPE", "native-host service pipe path is invalid");
+    }
+    if (!/^CAPABILITY\t[0-9a-f]{64}$/.test(capabilityLine)) {
+      throw new NativeHostClientError("HOST_CAPABILITY", "native-host service capability is not canonical");
+    }
+    const capability = capabilityLine.slice(11);
+    const pipe = NodeFS.openSync(pipePath, "r+");
+    try {
+      NodeFS.writeSync(pipe, Buffer.from([0x47]));
+      const client = new NativeHostClient(child, pipe);
       const authenticated = client.request(
         JSON.stringify({ capability, operation: "AuthenticateService" }),
       );
       if (authenticated.body !== '{"authenticated":true}') {
-        throw new NativeHostClientError(
-          "HOST_CAPABILITY",
-          "native-host did not confirm service authentication",
-        );
+        throw new NativeHostClientError("HOST_CAPABILITY", "native-host did not confirm service authentication");
       }
       return client;
     } catch (error) {
       NodeFS.closeSync(pipe);
-      child.kill();
       throw error;
     }
   }
@@ -2858,22 +2868,29 @@ export class NativeHostClient {
   }
 
   async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    const child = this.#child;
+    if (child === null) {
+      NodeFS.closeSync(this.#pipe);
+      return;
+    }
     try {
-      if (this.#child.exitCode === null) {
+      if (child.exitCode === null) {
         await this.request(JSON.stringify({ operation: "Shutdown" }));
       }
     } catch {
-      this.#child.kill();
+      child.kill();
     }
     NodeFS.closeSync(this.#pipe);
     await new Promise<void>((resolve) => {
-      if (this.#child.exitCode !== null) {
+      if (child.exitCode !== null) {
         resolve();
         return;
       }
-      this.#child.once("exit", () => resolve());
+      child.once("exit", () => resolve());
       setTimeout(() => {
-        this.#child.kill();
+        child.kill();
         resolve();
       }, 2000);
     });
