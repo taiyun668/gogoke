@@ -23,7 +23,8 @@ use super::same_open::{OpenLedger, SameOpenError, VerifiedDatabaseConnection};
 use super::session::{dispatch_service_frame, open_product_database, serve_authenticated_pipe,
     serve_lines, serve_pipe, ServiceFrameSession};
 use super::session_transport::{decode_request, encode_receipt, V37Request, V37Status};
-use super::instance::{self, CatalogError, Registration, RegistrationDisposition, RegistryError};
+use super::instance::{self, CatalogError, Registration, RegistrationDisposition,
+    RegistrationReplay, RegistryError};
 use crate::ipc::{PrivatePipeConnection, UserOriginProof};
 use crate::root::RootLock;
 use crate::process::ProcessCustodian;
@@ -124,6 +125,20 @@ impl<'root> ProductDatabase<'root> {
             }
             encode_receipt(request, status, previous, revision, result)
         };
+        match instance::reconcile_register_replay(&self.connection, self.root,
+            &request.request_id, &request.target_id, &request.raw_bytes) {
+            Ok(RegistrationReplay::Unseen) => (),
+            Ok(RegistrationReplay::Pending) =>
+                return Ok(receipt(V37Status::Unknown, 0, 0, None)),
+            Ok(RegistrationReplay::Replayed) =>
+                return Ok(receipt(V37Status::Replayed, 0, 1, None)),
+            Err(RegistryError::RequestConflict) =>
+                return Ok(receipt(V37Status::Conflict, 0, 0, None)),
+            Err(RegistryError::Invalid(_)) =>
+                return Ok(receipt(V37Status::Denied, 0, 0, None)),
+            Err(error) => return Ok(receipt(V37Status::Unknown, 0, 0,
+                Some(format!("instance replay: {error:?}")))),
+        }
         if request.domain_id != "global" || request.payload.len() != 1 {
             return Ok(receipt(V37Status::Denied, 0, 0, None));
         }
@@ -170,7 +185,9 @@ impl<'root> ProductDatabase<'root> {
         };
         let next = if matches!(status, V37Status::Applied | V37Status::Replayed) { 1 }
             else { current };
-        Ok(receipt(status, current, next, reason))
+        let previous = if matches!(status, V37Status::Applied | V37Status::Replayed) { 0 }
+            else { current };
+        Ok(receipt(status, previous, next, reason))
     }
 
     fn user_instance_revision(&self, instance_id: &str) -> Result<u64> {

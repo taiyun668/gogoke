@@ -239,6 +239,17 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     assert!(read_frame(&mut user).contains("\"status\":\"APPLIED\""));
     write_frame(&mut user, user_request.as_bytes());
     assert!(read_frame(&mut user).contains("\"status\":\"REPLAYED\""));
+    let changed_bytes = user_request.replace("\"driverId\":\"codex\"",
+        "\"driverId\":\"unknown\"");
+    write_frame(&mut user, changed_bytes.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"CONFLICT\""),
+        "changed bytes reused a committed request ID");
+    let stale = user_request.replace("\"requestId\":\"registerA\"",
+        "\"requestId\":\"registerStale\"")
+        .replace("\"expectedRevision\":\"0\"", "\"expectedRevision\":\"2\"");
+    write_frame(&mut user, stale.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"STALE\""),
+        "competing revision was accepted");
     let mut second = connect_service();
     write_frame(&mut second, br#"{"operation":"Shutdown"}"#);
     assert!(read_frame(&mut second).starts_with("ERR"), "shared service stopped host");
