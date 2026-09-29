@@ -236,7 +236,7 @@ fn reject_shadow_or_effect(db: &VerifiedDatabaseConnection<'_>) -> Result<(), Se
     Ok(())
 }
 fn expected_schema() -> Vec<(String, String)> {
-    let mut entries = vec![
+    let mut entries: Vec<(String, String)> = vec![
         (
             "gogoke_v37_seat_operation_snapshots".into(),
             OPERATION_SNAPSHOTS.into(),
@@ -250,7 +250,7 @@ fn expected_schema() -> Vec<(String, String)> {
     entries
 }
 fn legacy_schema() -> Vec<(String, String)> {
-    let mut entries = vec![
+    let mut entries: Vec<(String, String)> = vec![
         ("gogoke_v37_seat_operations".into(), OPERATIONS.into()),
         ("gogoke_v37_seats".into(), LEGACY_SEATS.into()),
     ];
