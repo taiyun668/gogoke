@@ -205,6 +205,8 @@ gogoke 自己的文档原话："**Windows publisher reputation and gogoke releas
 13. 在本机用**签名的运行时**（官方 `node.exe`、`python.exe`）跑脚本和 JS/TS 测试——这是房间和 Sandglass 一直在用的方式，不受影响
 14. 在本机运行**云端构建、正式安装**的 gogoke
 
+**Owner 机器上的安装与卸载视图（适用于 R2-06a 及后续 R2-05）：**安装器和卸载入口须由当前用户的普通交互式进程直接运行，不能由 Codex 等打包应用的进程树代为启动。本次已验证的执行方式是计划任务 `Interactive` 登录、`Limited` 运行级别；执行前后分别记录用户 SID、会话、实际文件和 HKCU 视图，并保全正式版快照。包身份 API 返回“无包”也不能单独证明视图正常：打包应用的子进程可能仍看到被重定向的 LocalAppData/HKCU。候选和正式版的安装、卸载都必须在相同的普通视图完成。
+
 ---
 
 ## 七、已知未解
