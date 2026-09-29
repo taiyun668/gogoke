@@ -188,6 +188,8 @@ mod platform {
     extern "system" {
         fn GetCurrentProcess() -> Handle;
         fn GetCurrentThread() -> Handle;
+        fn GetModuleHandleW(name: *const u16) -> Handle;
+        fn GetProcAddress(module: Handle, name: *const u8) -> *const c_void;
         fn CloseHandle(handle: Handle) -> Bool;
         fn LocalFree(memory: LocalMem) -> LocalMem;
         fn CreateNamedPipeW(
@@ -222,9 +224,21 @@ mod platform {
         fn DisconnectNamedPipe(pipe: Handle) -> Bool;
     }
 
-    #[link(name = "KernelBase")]
-    extern "system" {
-        fn CompareObjectHandles(first: Handle, second: Handle) -> Bool;
+    fn compare_process_objects(first: Handle, second: Handle) -> Result<bool, PrivateIpcError> {
+        // The Windows SDK on the cloud runner does not include KernelBase.lib.
+        // Resolve the documented KernelBase.dll export at runtime and fail
+        // closed if it is unavailable; a PID comparison is not a substitute.
+        let module = unsafe { GetModuleHandleW(wide("KernelBase.dll").as_ptr()) };
+        if module.is_null() {
+            return Err(os_error("GetModuleHandleW(KernelBase.dll)"));
+        }
+        let address = unsafe { GetProcAddress(module, b"CompareObjectHandles\0".as_ptr()) };
+        if address.is_null() {
+            return Err(os_error("GetProcAddress(CompareObjectHandles)"));
+        }
+        let compare: unsafe extern "system" fn(Handle, Handle) -> Bool =
+            unsafe { std::mem::transmute(address) };
+        Ok(unsafe { compare(first, second) } != FALSE)
     }
 
     #[link(name = "advapi32")]
@@ -840,9 +854,7 @@ mod platform {
         pub fn verify_live_origin(&self) -> Result<(), PrivateIpcError> {
             require_live_process(self.expected_process.raw())?;
             require_live_process(self.peer_process.raw())?;
-            if unsafe { CompareObjectHandles(self.expected_process.raw(), self.peer_process.raw()) }
-                == FALSE
-            {
+            if !compare_process_objects(self.expected_process.raw(), self.peer_process.raw())? {
                 return Err(PrivateIpcError::UserProcessObjectMismatch {
                     source: io::Error::last_os_error(),
                 });
