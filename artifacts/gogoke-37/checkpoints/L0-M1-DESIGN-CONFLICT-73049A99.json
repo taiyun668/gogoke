@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-DESIGN-CONFLICT-73049A99",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "73049a9996adb3f96cbdf7588567e4473987a2a0",
+  "state": "STOPPED_FOR_AUTHORIZED_PLAN_CONFLICT_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "plan_conflict": {
+    "h_m1_requirement": "PLAN.json H.1 deliverable requires E project parallel cap and F instance concurrency as inputs to one H admission boundary at M1; frozen K-SESSION contract requires committed admission before open.",
+    "e_f_schedule": "PLAN.json E.2 places project parallel cap at M2, while F.2 places instance concurrency input at M2. E.1 and F.1 at M1 list registry, binding, home and login but no cap source.",
+    "current_product": "E seat template settings are opaque JSON without a validated cap key. F instance registry has no concurrency field. H reserve_native demands TrustedLimits on the same verified connection and fails closed without them; require_launch_permission also rejects every tier until a native launch witness exists.",
+    "logic_check": "OT3's three-subordinate orchestration limit is not a defined F instance capacity. The older decision-capacity pool serves a separate S1-R4 decision mechanism. The fake K-INSTANCE concurrency-input can return UNSUPPORTED when its optional provider is absent, which does not supply a real M1 admission limit.",
+    "decision_needed": "Owner must resolve M1 versus M2 timing and the authoritative persisted sources for E project parallel and F instance concurrency before a real M1 K-SESSION admission/open route can be wired. Any plan or contract revision follows the existing Owner merge path. No synthetic default or caller-supplied limit was introduced."
+  },
+  "cloud": {
+    "run_36595122333": {
+      "head": "02a33b03a9fefb5f7a0b3397b3a5ba58f6ce35f5",
+      "server": "PASS",
+      "native_lib": "488 passed, 2 failed, 0 skipped, 490 executed",
+      "native_failures": [
+        "LPAC descendant does not reach the native seat pipe",
+        "H journal cmd.exe echo receipt fixture failed decoding with Invalid(receipt frame); its exact emitted bytes were not recorded"
+      ],
+      "cdb_summary_sha256": "ba742e5e4e288c5ebe0be1d5f462a4b13ae1951b9c2ccdac9382141d843a84b7",
+      "cdb_result": "Signed Microsoft CDB attached to the exact LPAC parent. Four attempted child creates entered NtCreateUserProcess; the bounded summary records parent NtTerminateProcess markers, CreateProcessInternalW symbols and Win32 5 error-setting markers. It strengthens the parent rollback hypothesis, but the summary does not correlate each child handle with termination or identify the failing Windows function or object. The raw debugger log stayed on the cloud runner; the published summary contains bounded symbols and status markers only."
+    },
+    "current_head_native": "NOT_RUN after H journal test-fixture correction; no cloud or acceptance claim for 73049a99",
+    "current_head_hygiene": "PASS at run 36595930890",
+    "current_head_desktop": "IN_PROGRESS at checkpoint"
+  },
+  "repairs": {
+    "h_journal": "Commit 2706cfca repairs four independently audited journal defects. A second independent read-only audit found two deterministic test defects; commit 73049a99 corrects the PowerShell byte writer and the custody UNKNOWN expectation and adds a live UNKNOWN receipt/new-ID fence case. This SHA awaits cloud native execution.",
+    "c_native_cards": "Commit ee86b6c0 provides native card persistence and identity deduplication; ProductDatabase route remains unconnected."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "custody": "Draft PR #54 remains open; no merge, release or product installation. Stop is the Owner-design-conflict condition stated for this task."
+}
