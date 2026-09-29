@@ -256,7 +256,12 @@ fn observed_home(root: &RootLock, instance_id: &str) -> Result<Option<RootIdenti
         return Err(RegistryError::IdentityChanged);
     }
     let expected = format!("gogoke-v37-instance-home-v1\n{}\n{instance_id}\n", root.canonical_root().identity.opaque());
-    if fs::read_to_string(&marker)? != expected
+    if metadata.len() != expected.len() as u64 {
+        return Err(RegistryError::IdentityChanged);
+    }
+    let mut actual = String::new();
+    fs::File::open(&marker)?.take(512).read_to_string(&mut actual)?;
+    if actual != expected
         || checked_identity(&parent)? != parent_identity || checked_identity(&path)? != identity {
         return Err(RegistryError::IdentityChanged);
     }
