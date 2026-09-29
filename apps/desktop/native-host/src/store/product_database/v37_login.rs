@@ -350,7 +350,8 @@ impl<'root> ProductDatabase<'root> {
     fn record_unchanged_login_state(&mut self, request: &V37Request,
         state: NativeAccountState) -> Result<Vec<u8>> {
         let fingerprint = observation_hex(request, state, true);
-        self.connection.execute("BEGIN IMMEDIATE")?;
+        self.connection.execute("BEGIN IMMEDIATE")
+            .map_err(|error| OrchestrationError::Atomic(error.into()))?;
         let result = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
             let row = self.read_registered_instance(&request.target_id)?
