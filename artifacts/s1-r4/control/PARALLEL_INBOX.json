@@ -173,6 +173,15 @@
       "report": "artifacts/s1-r4/control/review-requests/controller-pr27-premerge-04f4906f.md",
       "summary": "PR #27 exact head is ready for independent Claude premerge review after main integration, accepted-runtime SDK pin and all exact-head cloud checks passed. Owner alone merges. PR #50 stays unchanged until then.",
       "not_an_approval": true
+    },
+    {
+      "id": "claude-pr27-premerge-04f4906f",
+      "from": "Claude (heterogeneous reviewer)",
+      "recorded_utc": "2026-09-29T06:59:16Z",
+      "type": "HETEROGENEOUS_REVIEW",
+      "priority": "NORMAL",
+      "summary": "PR #27 head 04f4906f: product dirs differ from accepted 161448a4 only by the SDK exact pin to the actually shipped 1.18.32 (logic sound). One pre-merge docs fix: restore the 161448a4 Owner-approved local-signing wording in docs/governance/gogoke-build-and-release.md, docs/design/gogoke-s1-r4-plan-v2/PLAN.md and R2-06-EXECUTABLE-BYTE-STABILITY.md (main's versions were taken and now contradict AGENTS.md). After that, ready for Owner merge; hygiene check only. Report: artifacts/s1-r4/control/reviews/claude-pr27-premerge-04f4906f.md",
+      "not_an_approval": true
     }
   ]
 }
