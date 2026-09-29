@@ -3,6 +3,7 @@
 mod home;
 mod catalog;
 mod registry;
+mod resolver;
 mod temporary;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
@@ -12,6 +13,9 @@ pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     InstanceObservation, ObservationRequest, ProgramObservation, Registration,
     RegistrationDisposition, RegistrationJournalPhase, RegistrationPreflight,
     RegistrationReplay, RegistryError};
+pub(crate) use resolver::{resolve_codex_instance_home,
+    resolve_codex_session_launch_homes, InstanceLaunchHomes, LaunchHomeError,
+    ResolvedDirectory};
 pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_temporary_home,
     CreateTemporaryHome, TemporaryHomeError, TemporaryHomeReceipt, TemporaryKind,
     TransitionTemporaryHome};

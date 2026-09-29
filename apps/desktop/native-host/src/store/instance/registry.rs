@@ -10,7 +10,7 @@ use crate::store::same_open::VerifiedDatabaseConnection;
 use std::fs;
 use std::io::{self, Read};
 use std::os::windows::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const CONTAINER: &str = "v37-instances";
 const MARKER: &str = "gogoke-instance.marker";
@@ -397,6 +397,43 @@ pub(super) fn observed_home(root: &RootLock, instance_id: &str) -> Result<Option
         return Err(RegistryError::IdentityChanged);
     }
     Ok(Some(identity))
+}
+
+/// Resolve the physical home recorded for a Codex instance. This is an
+/// internal launch seam: the database row, the v37 marker, and the current
+/// physical directory must all agree before a path is returned.
+pub(super) fn resolve_registered_codex_home(
+    connection: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock,
+    instance_id: &str,
+) -> Result<(PathBuf, RootIdentity), RegistryError> {
+    if !valid_id(instance_id) {
+        return Err(RegistryError::Invalid("instance_id"));
+    }
+    let Some((driver, home_ref, recorded_identity, _, _, _, _)) =
+        instance(connection, instance_id)?
+    else {
+        return Err(RegistryError::Unknown);
+    };
+    if driver != "codex" || home_ref != format!("instance-home-{instance_id}")
+        || recorded_identity.is_empty()
+    {
+        return Err(RegistryError::Unknown);
+    }
+    let observed = observed_home(root, instance_id)?.ok_or(RegistryError::Unknown)?;
+    if observed.opaque() != recorded_identity {
+        return Err(RegistryError::IdentityChanged);
+    }
+    let path = root
+        .canonical_root()
+        .canonical_path
+        .join(CONTAINER)
+        .join(instance_id);
+    let current = checked_identity(&path)?;
+    if current != observed {
+        return Err(RegistryError::IdentityChanged);
+    }
+    Ok((path, current))
 }
 
 /// An exact replay may complete an interrupted registration after inspecting

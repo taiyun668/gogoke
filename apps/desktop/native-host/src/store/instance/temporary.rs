@@ -496,6 +496,78 @@ fn transition_stage(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock
     if checked_dir(&path)? != identity { return Err(TemporaryHomeError::IdentityChanged); }
     Ok(Some(stage))
 }
+
+/// Resolve an ACTIVE SESSION home for H after checking the durable owner
+/// binding, the persistent instance identity, and the bound marker/path.
+/// This function only reads the marker and directory metadata; it never opens
+/// a credential file.
+pub(super) fn resolve_active_session_home(
+    connection: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock,
+    profile: &AppContainerProfile,
+    instance_id: &str,
+    home_id: &str,
+    domain_id: &str,
+    owner_id: &str,
+    generation: &str,
+) -> Result<(std::path::PathBuf, RootIdentity), TemporaryHomeError> {
+    for (name, value) in [
+        ("instance_id", instance_id),
+        ("home_id", home_id),
+        ("domain_id", domain_id),
+        ("owner_id", owner_id),
+    ] {
+        if !valid_id(value) {
+            return Err(TemporaryHomeError::Invalid(name));
+        }
+    }
+    if !valid_generation(generation) {
+        return Err(TemporaryHomeError::Invalid("generation"));
+    }
+    let row = home_row(connection, home_id)?.ok_or(TemporaryHomeError::Unknown)?;
+    if row.0 != instance_id
+        || row.1 != domain_id
+        || row.2 != "SESSION"
+        || row.3 != owner_id
+        || row.4 != generation
+        || row.7 != "ACTIVE"
+        || row.8 != "1"
+    {
+        return Err(TemporaryHomeError::Unknown);
+    }
+    row_identity(&row, home_id)?;
+
+    let persistent = observed_home(root, instance_id)?.ok_or(TemporaryHomeError::InstanceChanged)?;
+    if instance_identity(connection, instance_id)?.as_deref() != Some(persistent.opaque().as_str()) {
+        return Err(TemporaryHomeError::InstanceChanged);
+    }
+
+    let binding = Statement::prepare(
+        connection.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_h_owner_binding WHERE instance_id=?1 AND domain_id=?2 AND kind='SESSION' AND owner_id=?3 AND generation=?4 AND state='ACTIVE'",
+    )?;
+    for (index, value) in [instance_id, domain_id, owner_id, generation]
+        .iter()
+        .enumerate()
+    {
+        binding.bind_text((index + 1) as i32, value)?;
+    }
+    if !binding.step_row()? || binding.column_text(0)? != "1" {
+        return Err(TemporaryHomeError::Unknown);
+    }
+
+    let sid = profile.sid_identity()?;
+    let path = transition_path(root, instance_id, home_id);
+    let identity = match transition_stage(connection, root, home_id, &row, &sid)? {
+        Some(DirectoryStage::Marked(identity, _)) => identity,
+        Some(DirectoryStage::Empty(_)) | None => return Err(TemporaryHomeError::Unknown),
+    };
+    if identity.opaque() != row.6 {
+        return Err(TemporaryHomeError::IdentityChanged);
+    }
+    Ok((path, identity))
+}
+
 fn exact_stopped_home(connection: &mut VerifiedDatabaseConnection<'_>, home_id: &str,
     row: &HomeRow) -> Result<String, TemporaryHomeError> {
     let stop = verify_home_stop_in_transaction(connection, &row.0, &row.1, &row.2, &row.3, &row.4)?;
