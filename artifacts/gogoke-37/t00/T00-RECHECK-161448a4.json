@@ -1,0 +1,898 @@
+{
+  "schema": "gogoke.37.t00-recheck.v1",
+  "status": "RECHECKED_PLAN_AMENDMENT_REQUIRED_NOT_AUTHORIZED",
+  "scope": "Read-only T00 mapping against the Owner-accepted R2-05 delivery. This is planning evidence, not authorization, implementation or product acceptance.",
+  "baseline_logic": "Accepted delivery is execution branch 161448a4 (MC-213 postmerge V03/V07 checkpoint); its product code is unchanged from 8b009e58. PR #34 merged main a6dc43d5 only for the test-only fact. Main is the authority for current governance/design text; accepted execution branch is the authority for delivered product code. Do not treat either tree alone as a complete integrated construction baseline.",
+  "refs": {
+    "accepted_delivery": "161448a452988c910476b3f9b10ad1a1c3a68b73",
+    "mapping_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+    "mapping_execution": "df63d8b7bde1834d61437bf8c93006e721748ee3",
+    "current_main": "a6dc43d55d09c09b13cffe5b5dba372c74f77e00",
+    "pr50": "51e8b2da4965c25b9f87ee67fcd998126af4b775"
+  },
+  "plan_path": "docs/design/gogoke-37-plan-v1/PLAN.json",
+  "shared_count": 50,
+  "shared_changed_since_mapping_execution": 9,
+  "shared_different_from_pr50_tree": 20,
+  "shared_files": [
+    {
+      "number": 1,
+      "path": "apps/desktop/native-host/src/lib.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "2b1f268d27b8885885202090222d9bcf798dcebd",
+        "mapping_main": "2b1f268d27b8885885202090222d9bcf798dcebd",
+        "mapping_execution": "2b1f268d27b8885885202090222d9bcf798dcebd",
+        "current_main": "2b1f268d27b8885885202090222d9bcf798dcebd",
+        "pr50": "2b1f268d27b8885885202090222d9bcf798dcebd"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 2,
+      "path": "apps/desktop/native-host/src/main.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "38eeffcf95241ae8acddffffb9b5e1919789f4b3",
+        "mapping_main": "38eeffcf95241ae8acddffffb9b5e1919789f4b3",
+        "mapping_execution": "38eeffcf95241ae8acddffffb9b5e1919789f4b3",
+        "current_main": "38eeffcf95241ae8acddffffb9b5e1919789f4b3",
+        "pr50": "38eeffcf95241ae8acddffffb9b5e1919789f4b3"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 3,
+      "path": "apps/desktop/native-host/src/ipc/mod.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "bb4f9b2cfa5607c2800640c891c0544431ad3912",
+        "mapping_main": "bb4f9b2cfa5607c2800640c891c0544431ad3912",
+        "mapping_execution": "bb4f9b2cfa5607c2800640c891c0544431ad3912",
+        "current_main": "bb4f9b2cfa5607c2800640c891c0544431ad3912",
+        "pr50": "bb4f9b2cfa5607c2800640c891c0544431ad3912"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 4,
+      "path": "apps/desktop/native-host/src/process/mod.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "ae2317606fa7633a71abb91d1e7a4632138597e7",
+        "mapping_main": "28c95f7e7607303ccb45770c18fc7235acc4beda",
+        "mapping_execution": "ae2317606fa7633a71abb91d1e7a4632138597e7",
+        "current_main": "28c95f7e7607303ccb45770c18fc7235acc4beda",
+        "pr50": "28c95f7e7607303ccb45770c18fc7235acc4beda"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 5,
+      "path": "apps/desktop/native-host/src/process/windows.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "0346c025fc08e9e72ae6a10c7b59cdd780bf21ba",
+        "mapping_main": "fdbe73aa1a9293840705786997978259cf6510f8",
+        "mapping_execution": "0346c025fc08e9e72ae6a10c7b59cdd780bf21ba",
+        "current_main": "fdbe73aa1a9293840705786997978259cf6510f8",
+        "pr50": "fdbe73aa1a9293840705786997978259cf6510f8"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 6,
+      "path": "apps/desktop/native-host/src/store/mod.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "ace1fc1982a61cb05bb82e98eac65221e01f9f7d",
+        "mapping_main": "ace1fc1982a61cb05bb82e98eac65221e01f9f7d",
+        "mapping_execution": "ace1fc1982a61cb05bb82e98eac65221e01f9f7d",
+        "current_main": "ace1fc1982a61cb05bb82e98eac65221e01f9f7d",
+        "pr50": "ace1fc1982a61cb05bb82e98eac65221e01f9f7d"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 7,
+      "path": "apps/desktop/native-host/src/store/protocol.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "9cd0154963bb8cef15ca0942cd8d891a1a68c644",
+        "mapping_main": "4e0bfc431fb60508cd37fd9322951bf7d2af95e1",
+        "mapping_execution": "9cd0154963bb8cef15ca0942cd8d891a1a68c644",
+        "current_main": "4e0bfc431fb60508cd37fd9322951bf7d2af95e1",
+        "pr50": "4e0bfc431fb60508cd37fd9322951bf7d2af95e1"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 8,
+      "path": "apps/desktop/native-host/src/store/session.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "7bf913c3a0bc3f141c619eaa370c66901e9b85bf",
+        "mapping_main": "fc27b60308321844193888cc24129c4f7be72744",
+        "mapping_execution": "5ca34bb96062cd335c4671d962b2a591445b8080",
+        "current_main": "fc27b60308321844193888cc24129c4f7be72744",
+        "pr50": "fc27b60308321844193888cc24129c4f7be72744"
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 9,
+      "path": "apps/desktop/native-host/src/store/orchestration.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "21349947103fcceec8e6a15bae314c1fa85fb7fa",
+        "mapping_main": "e3cfc41870724052dc9e38d2f335fee1e923b505",
+        "mapping_execution": "21349947103fcceec8e6a15bae314c1fa85fb7fa",
+        "current_main": "e3cfc41870724052dc9e38d2f335fee1e923b505",
+        "pr50": "e3cfc41870724052dc9e38d2f335fee1e923b505"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 10,
+      "path": "apps/desktop/native-host/src/store/authority/mod.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "89a0e7665b150affac3a35bf9f2a971c497269e3",
+        "mapping_main": "9f7603b73ba487e6d6daace615abfa718c66345d",
+        "mapping_execution": "89a0e7665b150affac3a35bf9f2a971c497269e3",
+        "current_main": "9f7603b73ba487e6d6daace615abfa718c66345d",
+        "pr50": "9f7603b73ba487e6d6daace615abfa718c66345d"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 11,
+      "path": "apps/desktop/native-host/src/store/authority/bootstrap.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "940407af9e41888f2cec7fc3312df3c6ea549f14",
+        "mapping_main": "47a5103ba9d38ba9e429647e04a3c6f4591157de",
+        "mapping_execution": "940407af9e41888f2cec7fc3312df3c6ea549f14",
+        "current_main": "47a5103ba9d38ba9e429647e04a3c6f4591157de",
+        "pr50": "47a5103ba9d38ba9e429647e04a3c6f4591157de"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 12,
+      "path": "apps/desktop/native-host/src/store/authority/schema.sql",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "e1f685c219c8d69f808c66a230ea76903c3739a0",
+        "mapping_main": "e1f685c219c8d69f808c66a230ea76903c3739a0",
+        "mapping_execution": "e1f685c219c8d69f808c66a230ea76903c3739a0",
+        "current_main": "e1f685c219c8d69f808c66a230ea76903c3739a0",
+        "pr50": "e1f685c219c8d69f808c66a230ea76903c3739a0"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 13,
+      "path": "apps/desktop/native-host/src/store/authority/process_custody.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "35e131cbfdeb91b9e7f0d98fc0e80030c8f0df32",
+        "mapping_main": null,
+        "mapping_execution": "35e131cbfdeb91b9e7f0d98fc0e80030c8f0df32",
+        "current_main": null,
+        "pr50": null
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 14,
+      "path": "apps/desktop/native-host/Cargo.toml",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "54d8c785b088312d51b0e269c497b3bdecacd9f5",
+        "mapping_main": "54d8c785b088312d51b0e269c497b3bdecacd9f5",
+        "mapping_execution": "54d8c785b088312d51b0e269c497b3bdecacd9f5",
+        "current_main": "54d8c785b088312d51b0e269c497b3bdecacd9f5",
+        "pr50": "54d8c785b088312d51b0e269c497b3bdecacd9f5"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 15,
+      "path": "third_party/t3code/apps/server/src/gogoke/index.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "4baf5ad03a7fe4f1be57dc3b4ea391ffb639654f",
+        "mapping_main": "4baf5ad03a7fe4f1be57dc3b4ea391ffb639654f",
+        "mapping_execution": "4baf5ad03a7fe4f1be57dc3b4ea391ffb639654f",
+        "current_main": "4baf5ad03a7fe4f1be57dc3b4ea391ffb639654f",
+        "pr50": "4baf5ad03a7fe4f1be57dc3b4ea391ffb639654f"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 16,
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/model.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "25b73cf1198fc24c917dcb41672c47d02affebeb",
+        "mapping_main": "25b73cf1198fc24c917dcb41672c47d02affebeb",
+        "mapping_execution": "25b73cf1198fc24c917dcb41672c47d02affebeb",
+        "current_main": "25b73cf1198fc24c917dcb41672c47d02affebeb",
+        "pr50": "25b73cf1198fc24c917dcb41672c47d02affebeb"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 17,
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/codec.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "ffb13869aa9e5e8f3949bc4915f2b7d9e2c8c42f",
+        "mapping_main": "ffb13869aa9e5e8f3949bc4915f2b7d9e2c8c42f",
+        "mapping_execution": "ffb13869aa9e5e8f3949bc4915f2b7d9e2c8c42f",
+        "current_main": "ffb13869aa9e5e8f3949bc4915f2b7d9e2c8c42f",
+        "pr50": "ffb13869aa9e5e8f3949bc4915f2b7d9e2c8c42f"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 18,
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/index.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "8488a9f6e13a443c0797b1b6b86709ee5fb802c9",
+        "mapping_main": "8488a9f6e13a443c0797b1b6b86709ee5fb802c9",
+        "mapping_execution": "8488a9f6e13a443c0797b1b6b86709ee5fb802c9",
+        "current_main": "8488a9f6e13a443c0797b1b6b86709ee5fb802c9",
+        "pr50": "8488a9f6e13a443c0797b1b6b86709ee5fb802c9"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 19,
+      "path": "third_party/t3code/apps/server/src/gogoke/persistence/base/nativeHostClient.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "b4f47498fa669ca35ee75ae21171ec60c1b8d7ea",
+        "mapping_main": "421eacdd9350bc55a6293bca48952957070278bd",
+        "mapping_execution": "c8c7ff00b6edb4ecc0080a82d6a5c75e3377e8f0",
+        "current_main": "421eacdd9350bc55a6293bca48952957070278bd",
+        "pr50": "421eacdd9350bc55a6293bca48952957070278bd"
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 20,
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/index.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "8ec06bf41b00695a8ae0e105c553948472c5476c",
+        "mapping_main": "8ec06bf41b00695a8ae0e105c553948472c5476c",
+        "mapping_execution": "8ec06bf41b00695a8ae0e105c553948472c5476c",
+        "current_main": "8ec06bf41b00695a8ae0e105c553948472c5476c",
+        "pr50": "8ec06bf41b00695a8ae0e105c553948472c5476c"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 21,
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/nativeStoreService.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "8f07e13ea687c2a12038233c5cbe77b160eb3149",
+        "mapping_main": "a91e38bd5412a1339b27443d285d7e3cee6f1692",
+        "mapping_execution": "190614d8d89fbfe2902b5e5ff7fa8bba381cfba5",
+        "current_main": "a91e38bd5412a1339b27443d285d7e3cee6f1692",
+        "pr50": "a91e38bd5412a1339b27443d285d7e3cee6f1692"
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 22,
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/productEntry.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "484be89a5a6a8b3a8a05a2fda43ff30353bb1824",
+        "mapping_main": null,
+        "mapping_execution": "484be89a5a6a8b3a8a05a2fda43ff30353bb1824",
+        "current_main": null,
+        "pr50": null
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 23,
+      "path": "third_party/t3code/apps/server/src/gogoke/adapters/native/registry.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "b668ac697f78c65967de0bd63a2fe12f6ab65f9a",
+        "mapping_main": "b668ac697f78c65967de0bd63a2fe12f6ab65f9a",
+        "mapping_execution": "b668ac697f78c65967de0bd63a2fe12f6ab65f9a",
+        "current_main": "b668ac697f78c65967de0bd63a2fe12f6ab65f9a",
+        "pr50": "b668ac697f78c65967de0bd63a2fe12f6ab65f9a"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 24,
+      "path": "third_party/t3code/apps/server/src/gogoke/runtimeCatalog/catalog.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "22ff9521cebd2d94c7ed65ad1389bbee009f5cbf",
+        "mapping_main": "22ff9521cebd2d94c7ed65ad1389bbee009f5cbf",
+        "mapping_execution": "22ff9521cebd2d94c7ed65ad1389bbee009f5cbf",
+        "current_main": "22ff9521cebd2d94c7ed65ad1389bbee009f5cbf",
+        "pr50": "22ff9521cebd2d94c7ed65ad1389bbee009f5cbf"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 25,
+      "path": "third_party/t3code/apps/server/src/gogoke/host/coordinator.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "e9e60ee0edc525212aa7638a105626939ec2697e",
+        "mapping_main": "e9e60ee0edc525212aa7638a105626939ec2697e",
+        "mapping_execution": "e9e60ee0edc525212aa7638a105626939ec2697e",
+        "current_main": "e9e60ee0edc525212aa7638a105626939ec2697e",
+        "pr50": "e9e60ee0edc525212aa7638a105626939ec2697e"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 26,
+      "path": "third_party/t3code/apps/server/package.json",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "b7f1bce8876891585e7013ffc32f2bec0c1ef478",
+        "mapping_main": "b7f1bce8876891585e7013ffc32f2bec0c1ef478",
+        "mapping_execution": "b7f1bce8876891585e7013ffc32f2bec0c1ef478",
+        "current_main": "b7f1bce8876891585e7013ffc32f2bec0c1ef478",
+        "pr50": "b7f1bce8876891585e7013ffc32f2bec0c1ef478"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 27,
+      "path": "third_party/t3code/pnpm-lock.yaml",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "a0daed3ff962e7d93da2cab34317484a0fb1e751",
+        "mapping_main": "a0daed3ff962e7d93da2cab34317484a0fb1e751",
+        "mapping_execution": "a0daed3ff962e7d93da2cab34317484a0fb1e751",
+        "current_main": "a0daed3ff962e7d93da2cab34317484a0fb1e751",
+        "pr50": "a0daed3ff962e7d93da2cab34317484a0fb1e751"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 28,
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "2904772c36c4ec31b387392bd00e97f4878d2241",
+        "mapping_main": "fa7169498bcf81d1cd2ea85a2ad56e2ceb93da1b",
+        "mapping_execution": "6315f72b6474c47dab4e42acc62407810e2d8340",
+        "current_main": "fa7169498bcf81d1cd2ea85a2ad56e2ceb93da1b",
+        "pr50": "fa7169498bcf81d1cd2ea85a2ad56e2ceb93da1b"
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 29,
+      "path": "apps/desktop/src-tauri/src/public_runtime/product_entry.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "a148cd08c99dac0faeea74ef91641aecec64f509",
+        "mapping_main": null,
+        "mapping_execution": "efe4d7b995cae9fd6b8da67239102c902feee477",
+        "current_main": null,
+        "pr50": null
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 30,
+      "path": "apps/desktop/src-tauri/src/workspaces/commands.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "4f8166e75fff7af56320d65a98ec78a76b376c77",
+        "mapping_main": "4f8166e75fff7af56320d65a98ec78a76b376c77",
+        "mapping_execution": "4f8166e75fff7af56320d65a98ec78a76b376c77",
+        "current_main": "4f8166e75fff7af56320d65a98ec78a76b376c77",
+        "pr50": "4f8166e75fff7af56320d65a98ec78a76b376c77"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 31,
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "90eb5f91170cf0aae50996a6b2100e930f7e2b14",
+        "mapping_main": "90eb5f91170cf0aae50996a6b2100e930f7e2b14",
+        "mapping_execution": "90eb5f91170cf0aae50996a6b2100e930f7e2b14",
+        "current_main": "90eb5f91170cf0aae50996a6b2100e930f7e2b14",
+        "pr50": "90eb5f91170cf0aae50996a6b2100e930f7e2b14"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 32,
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core/worktree.rs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "824e4aecdadb228e0363ca2faf87833cc08ab4c2",
+        "mapping_main": "824e4aecdadb228e0363ca2faf87833cc08ab4c2",
+        "mapping_execution": "824e4aecdadb228e0363ca2faf87833cc08ab4c2",
+        "current_main": "824e4aecdadb228e0363ca2faf87833cc08ab4c2",
+        "pr50": "824e4aecdadb228e0363ca2faf87833cc08ab4c2"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 33,
+      "path": "apps/desktop/src/App.tsx",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "aaba5ec4d45ba191c9ae6b03c7291469cd4038a5",
+        "mapping_main": "aaba5ec4d45ba191c9ae6b03c7291469cd4038a5",
+        "mapping_execution": "aaba5ec4d45ba191c9ae6b03c7291469cd4038a5",
+        "current_main": "aaba5ec4d45ba191c9ae6b03c7291469cd4038a5",
+        "pr50": "aaba5ec4d45ba191c9ae6b03c7291469cd4038a5"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 34,
+      "path": "apps/desktop/src/features/app/components/MainApp.tsx",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "cd0f8022e988069b20587c504d48dba20dd64f9d",
+        "mapping_main": "cd0f8022e988069b20587c504d48dba20dd64f9d",
+        "mapping_execution": "cd0f8022e988069b20587c504d48dba20dd64f9d",
+        "current_main": "cd0f8022e988069b20587c504d48dba20dd64f9d",
+        "pr50": "cd0f8022e988069b20587c504d48dba20dd64f9d"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 35,
+      "path": "apps/desktop/src/services/tauri.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "b9888a945d0f6da1dbc94f14fba440f7580b9d75",
+        "mapping_main": "752c806abab82c2b5601474415e9348e0d588735",
+        "mapping_execution": "b9888a945d0f6da1dbc94f14fba440f7580b9d75",
+        "current_main": "752c806abab82c2b5601474415e9348e0d588735",
+        "pr50": "752c806abab82c2b5601474415e9348e0d588735"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 36,
+      "path": "apps/desktop/package.json",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "b554f7d8208e5ce6c2f976baeee2cf711897b036",
+        "mapping_main": "427175a53cc75179fbb4bca9bb0ed6e8fc81b3fa",
+        "mapping_execution": "e2a8a92a12b13a7837ecb5c5bf1ccbc6d02dcede",
+        "current_main": "427175a53cc75179fbb4bca9bb0ed6e8fc81b3fa",
+        "pr50": "427175a53cc75179fbb4bca9bb0ed6e8fc81b3fa"
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 37,
+      "path": "apps/desktop/package-lock.json",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "e8da203e5247d7a81d23cf2937fe5d860697a177",
+        "mapping_main": "9804bab0c316e9693244a8af4915cee4940e6f42",
+        "mapping_execution": "55c12ca68af049fb9acab25bb664cb63a002a412",
+        "current_main": "9804bab0c316e9693244a8af4915cee4940e6f42",
+        "pr50": "9804bab0c316e9693244a8af4915cee4940e6f42"
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 38,
+      "path": ".github/workflows/gogoke-native-host.yml",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "67fa9b8497e1fcede81c0a28709a46be303b7ffe",
+        "mapping_main": "1819772eb324a12e9ca937268da2afd36f61a869",
+        "mapping_execution": "67fa9b8497e1fcede81c0a28709a46be303b7ffe",
+        "current_main": "1819772eb324a12e9ca937268da2afd36f61a869",
+        "pr50": "1819772eb324a12e9ca937268da2afd36f61a869"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 39,
+      "path": ".github/workflows/gogoke-desktop.yml",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "73734fa0f1ee25c2bd7b1050a33f895bdb6cf1a2",
+        "mapping_main": "7572ff87e44b589aa4bdac7d2f6fb376c94b97f7",
+        "mapping_execution": "db25a0adbc8baf344c053b196aaab221a08984b4",
+        "current_main": "7572ff87e44b589aa4bdac7d2f6fb376c94b97f7",
+        "pr50": "7572ff87e44b589aa4bdac7d2f6fb376c94b97f7"
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 40,
+      "path": ".github/workflows/gogoke-source-hygiene.yml",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "c33a50639322a123d1765a8b7f0be239413f6530",
+        "mapping_main": "c33a50639322a123d1765a8b7f0be239413f6530",
+        "mapping_execution": "c33a50639322a123d1765a8b7f0be239413f6530",
+        "current_main": "c33a50639322a123d1765a8b7f0be239413f6530",
+        "pr50": "c33a50639322a123d1765a8b7f0be239413f6530"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 41,
+      "path": "tools/ci/gogoke-server-tests.mjs",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "263f25126fe09d2f1409b9842321ad6499e39ee1",
+        "mapping_main": "7281061d4566b31d40f80d7d07299894f2017fbe",
+        "mapping_execution": "263f25126fe09d2f1409b9842321ad6499e39ee1",
+        "current_main": "7281061d4566b31d40f80d7d07299894f2017fbe",
+        "pr50": "7281061d4566b31d40f80d7d07299894f2017fbe"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": true
+    },
+    {
+      "number": 42,
+      "path": "apps/desktop/src/features/settings/components/SettingsView.tsx",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "b4a7e5e1076dc3cd4d5dd0dd109a2ba01c732e6f",
+        "mapping_main": "b4a7e5e1076dc3cd4d5dd0dd109a2ba01c732e6f",
+        "mapping_execution": "b4a7e5e1076dc3cd4d5dd0dd109a2ba01c732e6f",
+        "current_main": "b4a7e5e1076dc3cd4d5dd0dd109a2ba01c732e6f",
+        "pr50": "b4a7e5e1076dc3cd4d5dd0dd109a2ba01c732e6f"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 43,
+      "path": "apps/desktop/src/features/settings/components/sections/SettingsSectionContainers.tsx",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "d01bb342091d661f8f8da06f99e717ab0fe9c87c",
+        "mapping_main": "d01bb342091d661f8f8da06f99e717ab0fe9c87c",
+        "mapping_execution": "d01bb342091d661f8f8da06f99e717ab0fe9c87c",
+        "current_main": "d01bb342091d661f8f8da06f99e717ab0fe9c87c",
+        "pr50": "d01bb342091d661f8f8da06f99e717ab0fe9c87c"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 44,
+      "path": "apps/desktop/src/features/settings/components/settingsTypes.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "166f79148581ebad6f76ed68d10974feb6530470",
+        "mapping_main": "166f79148581ebad6f76ed68d10974feb6530470",
+        "mapping_execution": "166f79148581ebad6f76ed68d10974feb6530470",
+        "current_main": "166f79148581ebad6f76ed68d10974feb6530470",
+        "pr50": "166f79148581ebad6f76ed68d10974feb6530470"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 45,
+      "path": "apps/desktop/src/features/settings/components/settingsViewConstants.ts",
+      "conditional": false,
+      "blobs": {
+        "accepted_delivery": "9f9e6f5b7b07ca2a4f54104efcc70027d288039d",
+        "mapping_main": "9f9e6f5b7b07ca2a4f54104efcc70027d288039d",
+        "mapping_execution": "9f9e6f5b7b07ca2a4f54104efcc70027d288039d",
+        "current_main": "9f9e6f5b7b07ca2a4f54104efcc70027d288039d",
+        "pr50": "9f9e6f5b7b07ca2a4f54104efcc70027d288039d"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false
+    },
+    {
+      "number": 46,
+      "path": "apps/desktop/src/features/app/components/RequestUserInputMessage.tsx",
+      "conditional": true,
+      "blobs": {
+        "accepted_delivery": "cd297a91bc7bdedb9cd3d8370f9794b09de27332",
+        "mapping_main": "cd297a91bc7bdedb9cd3d8370f9794b09de27332",
+        "mapping_execution": "cd297a91bc7bdedb9cd3d8370f9794b09de27332",
+        "current_main": "cd297a91bc7bdedb9cd3d8370f9794b09de27332",
+        "pr50": "cd297a91bc7bdedb9cd3d8370f9794b09de27332"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false,
+      "conditional_t00_disposition": "L0_DECISION_PENDING: Existing Codex question-card UI is confirmed; decide whether a wrapper suffices for vendor-neutral seat/turn binding."
+    },
+    {
+      "number": 47,
+      "path": "apps/desktop/native-host/Cargo.lock",
+      "conditional": true,
+      "blobs": {
+        "accepted_delivery": "0b58e807eab4ab0f928b6faad2951673297dfe18",
+        "mapping_main": "0b58e807eab4ab0f928b6faad2951673297dfe18",
+        "mapping_execution": "0b58e807eab4ab0f928b6faad2951673297dfe18",
+        "current_main": "0b58e807eab4ab0f928b6faad2951673297dfe18",
+        "pr50": "0b58e807eab4ab0f928b6faad2951673297dfe18"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false,
+      "conditional_t00_disposition": "L0_DECISION_PENDING: Update exactly if the selected native module dependencies change Cargo.toml; preserve --locked build."
+    },
+    {
+      "number": 48,
+      "path": "tools/check-public-source.py",
+      "conditional": true,
+      "blobs": {
+        "accepted_delivery": "324bcf40e57b552c7ea15d4485eb6f9ad08def79",
+        "mapping_main": "324bcf40e57b552c7ea15d4485eb6f9ad08def79",
+        "mapping_execution": "324bcf40e57b552c7ea15d4485eb6f9ad08def79",
+        "current_main": "324bcf40e57b552c7ea15d4485eb6f9ad08def79",
+        "pr50": "324bcf40e57b552c7ea15d4485eb6f9ad08def79"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false,
+      "conditional_t00_disposition": "L0_DECISION_PENDING: Compare actual new evidence types with the existing scanner before deciding whether to add rules."
+    },
+    {
+      "number": 49,
+      "path": "tools/tests/test_check_public_source.py",
+      "conditional": true,
+      "blobs": {
+        "accepted_delivery": "1284f52eb91c8b3ae724a456794b1f5e3cee96ef",
+        "mapping_main": "1284f52eb91c8b3ae724a456794b1f5e3cee96ef",
+        "mapping_execution": "1284f52eb91c8b3ae724a456794b1f5e3cee96ef",
+        "current_main": "1284f52eb91c8b3ae724a456794b1f5e3cee96ef",
+        "pr50": "1284f52eb91c8b3ae724a456794b1f5e3cee96ef"
+      },
+      "changed_since_mapping_execution": false,
+      "different_from_pr50_tree": false,
+      "conditional_t00_disposition": "L0_DECISION_PENDING: Add positive samples only for a new scanner rule or newly uncovered evidence type."
+    },
+    {
+      "number": 50,
+      "path": "tools/ci/gogoke-package-service.mjs",
+      "conditional": true,
+      "blobs": {
+        "accepted_delivery": "6d71d74c219d6f3075f0cae7c29480e3af85bf4f",
+        "mapping_main": null,
+        "mapping_execution": "885e6cb9aff6359f29e7c3ea31f0eb48d828fc9e",
+        "current_main": null,
+        "pr50": null
+      },
+      "changed_since_mapping_execution": true,
+      "different_from_pr50_tree": true,
+      "conditional_t00_disposition": "L0_DECISION_PENDING: R2-05 changed this file since mapping; decide against actual borrowed parts whether service packaging and notices need changes."
+    }
+  ],
+  "sources": [
+    {
+      "path": "docs/design/37-seat-session-architecture-draft.md",
+      "plan_declared_blob": "52db1253d0d6b607926902e15815ae77d511baca",
+      "blobs": {
+        "accepted_delivery": null,
+        "mapping_main": "52db1253d0d6b607926902e15815ae77d511baca",
+        "mapping_execution": null,
+        "current_main": "52db1253d0d6b607926902e15815ae77d511baca",
+        "pr50": "52db1253d0d6b607926902e15815ae77d511baca"
+      },
+      "plan_matches_current_main": true
+    },
+    {
+      "path": "docs/design/GOGO-要做的和不做的.md",
+      "plan_declared_blob": "b941188791a7821c13b0ea1466194efde72f398a",
+      "blobs": {
+        "accepted_delivery": "ebb787e2875b4b7eee58425a3950bdea200cc1a7",
+        "mapping_main": "b941188791a7821c13b0ea1466194efde72f398a",
+        "mapping_execution": "ebb787e2875b4b7eee58425a3950bdea200cc1a7",
+        "current_main": "b941188791a7821c13b0ea1466194efde72f398a",
+        "pr50": "b941188791a7821c13b0ea1466194efde72f398a"
+      },
+      "plan_matches_current_main": true
+    },
+    {
+      "path": "docs/directions/2026-09-23-direction-candidates.md",
+      "plan_declared_blob": "46912f3078e2a11e93643da641dd9cede0bc8aba",
+      "blobs": {
+        "accepted_delivery": "46912f3078e2a11e93643da641dd9cede0bc8aba",
+        "mapping_main": "46912f3078e2a11e93643da641dd9cede0bc8aba",
+        "mapping_execution": "46912f3078e2a11e93643da641dd9cede0bc8aba",
+        "current_main": "46912f3078e2a11e93643da641dd9cede0bc8aba",
+        "pr50": "46912f3078e2a11e93643da641dd9cede0bc8aba"
+      },
+      "plan_matches_current_main": true
+    },
+    {
+      "path": "docs/design/gogoke-s1-r4-plan-v2/PLAN.md",
+      "plan_declared_blob": "b9f6765181ce87a195052d2670a054a4ae07bc85",
+      "blobs": {
+        "accepted_delivery": "7f3a3fdaa9f3b26fd8b7760bd381728104b28315",
+        "mapping_main": "b9f6765181ce87a195052d2670a054a4ae07bc85",
+        "mapping_execution": "b9f6765181ce87a195052d2670a054a4ae07bc85",
+        "current_main": "b9f6765181ce87a195052d2670a054a4ae07bc85",
+        "pr50": "b9f6765181ce87a195052d2670a054a4ae07bc85"
+      },
+      "plan_matches_current_main": true
+    },
+    {
+      "path": "AGENTS.md",
+      "plan_declared_blob": "9f10c92267383e4a1d961e0ee404af3aad381fd9",
+      "blobs": {
+        "accepted_delivery": "82e3f9112211c5eea3757e0ed8de48a7bb44e29c",
+        "mapping_main": "9f10c92267383e4a1d961e0ee404af3aad381fd9",
+        "mapping_execution": "9f10c92267383e4a1d961e0ee404af3aad381fd9",
+        "current_main": "4999956691b175fe0ca483feeb83212118fa1124",
+        "pr50": "9f10c92267383e4a1d961e0ee404af3aad381fd9"
+      },
+      "plan_matches_current_main": false
+    },
+    {
+      "path": "docs/model-routing.md",
+      "plan_declared_blob": "c25daaf6e0adcfb09e38f42b5460eb3815916a52",
+      "blobs": {
+        "accepted_delivery": "84a2933b05cc35195a804cba466f3ff422fdd997",
+        "mapping_main": "c25daaf6e0adcfb09e38f42b5460eb3815916a52",
+        "mapping_execution": "84a2933b05cc35195a804cba466f3ff422fdd997",
+        "current_main": "c25daaf6e0adcfb09e38f42b5460eb3815916a52",
+        "pr50": "c25daaf6e0adcfb09e38f42b5460eb3815916a52"
+      },
+      "plan_matches_current_main": true
+    },
+    {
+      "path": "docs/governance/gogoke-build-and-release.md",
+      "plan_declared_blob": "95b9b818cf5844ae55c770b2e8bca00f42acb223",
+      "blobs": {
+        "accepted_delivery": "9b99b0b12200afc6e4232f23b0ff50842d817e28",
+        "mapping_main": "95b9b818cf5844ae55c770b2e8bca00f42acb223",
+        "mapping_execution": "95b9b818cf5844ae55c770b2e8bca00f42acb223",
+        "current_main": "95b9b818cf5844ae55c770b2e8bca00f42acb223",
+        "pr50": "95b9b818cf5844ae55c770b2e8bca00f42acb223"
+      },
+      "plan_matches_current_main": true
+    },
+    {
+      "path": "docs/governance/gogoke-ledger-decision.md",
+      "plan_declared_blob": "2fb0738b5e5787c2e1724942fafec60cc89e6147",
+      "blobs": {
+        "accepted_delivery": "2fb0738b5e5787c2e1724942fafec60cc89e6147",
+        "mapping_main": "2fb0738b5e5787c2e1724942fafec60cc89e6147",
+        "mapping_execution": "2fb0738b5e5787c2e1724942fafec60cc89e6147",
+        "current_main": "2fb0738b5e5787c2e1724942fafec60cc89e6147",
+        "pr50": "2fb0738b5e5787c2e1724942fafec60cc89e6147"
+      },
+      "plan_matches_current_main": true
+    },
+    {
+      "path": "docs/governance/GOGOKE_GPT_MASTER_CONTROL_HANDOFF_STANDARD.md",
+      "plan_declared_blob": "351b5105c6bcb558eed8d7e402e5284922707522",
+      "blobs": {
+        "accepted_delivery": "351b5105c6bcb558eed8d7e402e5284922707522",
+        "mapping_main": "351b5105c6bcb558eed8d7e402e5284922707522",
+        "mapping_execution": "351b5105c6bcb558eed8d7e402e5284922707522",
+        "current_main": "351b5105c6bcb558eed8d7e402e5284922707522",
+        "pr50": "351b5105c6bcb558eed8d7e402e5284922707522"
+      },
+      "plan_matches_current_main": true
+    }
+  ],
+  "conditional_rule": "Five conditional files were each inspected for current identity and assigned an L0 decision because the actual Design 37 module choices and evidence types are not yet implemented. No conditional file is falsely declared MODIFIED or VERIFIED_UNCHANGED before that decision.",
+  "asset_recheck": [
+    {
+      "object": "instance, seat template, seat, session",
+      "result": "CONTRACT_EXISTS_BEHAVIOUR_LIMITED",
+      "evidence": [
+        "third_party/t3code/apps/server/src/gogoke/contracts/model.ts",
+        "apps/desktop/native-host/src/store/session.rs"
+      ],
+      "note": "Versioned model types exist; current accepted behaviour remains the controlled R2 path, not five generic live CLI sessions."
+    },
+    {
+      "object": "process launch and custody",
+      "result": "EXISTING_BOUNDED_MECHANISM",
+      "evidence": [
+        "apps/desktop/native-host/src/process/windows.rs",
+        "apps/desktop/native-host/src/store/protocol.rs",
+        "apps/desktop/native-host/src/store/authority/process_custody.rs"
+      ],
+      "note": "Closed RunControlledFixture operations, ProcessLaunch and stop proof exist; they are not the generic five-CLI session admission/permission implementation."
+    },
+    {
+      "object": "events",
+      "result": "LEGACY_EVENTS_EXIST",
+      "evidence": [
+        "apps/desktop/native-host/src/store/orchestration.rs"
+      ],
+      "note": "Message, Activity, Session, Turn and Approval events are real; no vendor-neutral seat ledger is accepted as implemented."
+    },
+    {
+      "object": "worktrees",
+      "result": "LEGACY_TAURI_WORKTREES_EXIST",
+      "evidence": [
+        "apps/desktop/src-tauri/src/shared/workspaces_core/worktree.rs"
+      ],
+      "note": "Existing Codex-thread worktree creation is real; host seat worktree authority is future F scope."
+    },
+    {
+      "object": "question cards",
+      "result": "UI_PRIMITIVE_EXISTS",
+      "evidence": [
+        "apps/desktop/src/features/app/components/RequestUserInputMessage.tsx"
+      ],
+      "note": "Request, options, free text and answer callback exist; vendor-neutral seat/turn binding and durable recovery remain future scope."
+    },
+    {
+      "object": "quota",
+      "result": "LEGACY_CODEX_READ_PATH_EXISTS_V1_EXCLUDED",
+      "evidence": [
+        "apps/desktop/src/services/tauri.ts"
+      ],
+      "note": "Existing local usage and Codex rate-limit read paths do not amend the Owner decision to exclude quota integration from Design 37 v1."
+    },
+    {
+      "object": "inbox, side chat, takeover answers, call permission, gates, escalation",
+      "result": "NO_DESIGN37_GENERIC_IMPLEMENTATION_VERIFIED",
+      "evidence": [
+        "third_party/t3code/apps/server/src/gogoke/policy/types.ts",
+        "third_party/t3code/apps/server/src/gogoke/decision/families/registry.ts"
+      ],
+      "note": "Earlier test-only policy labels or decision scenario names are not live Design 37 inbox, side-chat, permission or gate implementations."
+    }
+  ],
+  "required_plan_action": "Rebaseline PLAN.json and MANIFEST to the accepted code plus current main governance/design, then rerun named structural checks and third-round independent review before plan merge. PR #50 merge alone never authorizes implementation."
+}
