@@ -1,9 +1,10 @@
 //! Current-user local IPC for the native host.
 //!
 //! This module exposes only a Windows named pipe. It does not create a TCP or
-//! HTTP listener and cannot fall back to one. The pipe DACL contains one allow
-//! ACE for the current user SID, rejects remote clients, and authenticates the
-//! connected peer token before returning the connection.
+//! HTTP listener and cannot fall back to one. The legacy service pipe admits
+//! only the current user SID. A seat pipe additionally binds the exact
+//! AppContainer package SID and rejects a same-user non-container client.
+//! Both reject remote clients and authenticate the connected token.
 
 use std::fmt;
 use std::io;
@@ -11,6 +12,8 @@ use std::io;
 #[derive(Debug)]
 pub enum PrivateIpcError {
     InvalidEndpoint,
+    InvalidPackageSid,
+    WrongListenerMode,
     InvalidPreface,
     FrameTooLarge {
         length: usize,
@@ -30,6 +33,8 @@ impl fmt::Display for PrivateIpcError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidEndpoint => write!(formatter, "PRIVATE_IPC_INVALID_ENDPOINT"),
+            Self::InvalidPackageSid => write!(formatter, "PRIVATE_IPC_INVALID_PACKAGE_SID"),
+            Self::WrongListenerMode => write!(formatter, "PRIVATE_IPC_WRONG_LISTENER_MODE"),
             Self::InvalidPreface => write!(formatter, "PRIVATE_IPC_INVALID_PREFACE"),
             Self::FrameTooLarge { length } => {
                 write!(formatter, "PRIVATE_IPC_FRAME_TOO_LARGE: {length}")
@@ -81,9 +86,17 @@ fn validate_endpoint(endpoint: &str) -> Result<(), PrivateIpcError> {
     Ok(())
 }
 
+fn validate_package_sid(value: &str) -> Result<(), PrivateIpcError> {
+    if value.len() > 180 || !value.starts_with("S-1-15-2-") ||
+        !value.bytes().all(|byte| byte.is_ascii_digit() || byte == b'-') {
+        return Err(PrivateIpcError::InvalidPackageSid);
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 mod platform {
-    use super::{validate_endpoint, PrivateIpcError};
+    use super::{validate_endpoint, validate_package_sid, PrivateIpcError};
     use std::ffi::{c_void, OsString};
     use std::io;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -106,6 +119,8 @@ mod platform {
     const PIPE_WAIT: Dword = 0x0000_0000;
     const TOKEN_QUERY: Dword = 0x0008;
     const TOKEN_USER_CLASS: Dword = 1;
+    const TOKEN_IS_APP_CONTAINER_CLASS: Dword = 29;
+    const TOKEN_APP_CONTAINER_SID_CLASS: Dword = 31;
     const SECURITY_DESCRIPTOR_REVISION: Dword = 1;
     const DACL_SECURITY_INFORMATION: Dword = 0x0000_0004;
     const SE_KERNEL_OBJECT: Dword = 6;
@@ -343,6 +358,44 @@ mod platform {
         Ok(sid)
     }
 
+    fn token_app_container_sid(token: Handle) -> Result<Option<String>, PrivateIpcError> {
+        let mut is_container = 0u32;
+        let mut returned = 0u32;
+        if unsafe { GetTokenInformation(token, TOKEN_IS_APP_CONTAINER_CLASS,
+            (&mut is_container as *mut u32).cast(), std::mem::size_of::<u32>() as u32,
+            &mut returned) } == FALSE {
+            return Err(os_error("GetTokenInformation(TokenIsAppContainer)"));
+        }
+        if returned != std::mem::size_of::<u32>() as u32 || is_container == 0 {
+            return Ok(None);
+        }
+        let mut size = 0u32;
+        unsafe { GetTokenInformation(token, TOKEN_APP_CONTAINER_SID_CLASS,
+            null_mut(), 0, &mut size); }
+        if size < std::mem::size_of::<Sid>() as u32 || size > 4096 {
+            return Err(PrivateIpcError::InvalidPackageSid);
+        }
+        let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        if unsafe { GetTokenInformation(token, TOKEN_APP_CONTAINER_SID_CLASS,
+            buffer.as_mut_ptr().cast(), size, &mut returned) } == FALSE {
+            return Err(os_error("GetTokenInformation(TokenAppContainerSid)"));
+        }
+        if returned < std::mem::size_of::<Sid>() as u32 {
+            return Err(PrivateIpcError::InvalidPackageSid);
+        }
+        let sid = buffer[0] as Sid;
+        if sid.is_null() { return Err(PrivateIpcError::InvalidPackageSid); }
+        let mut text = null_mut();
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == FALSE {
+            return Err(os_error("ConvertSidToStringSidW(package)"));
+        }
+        let allocation = OwnedLocal(text.cast());
+        let value = unsafe { wide_pointer_to_string(text) };
+        drop(allocation);
+        validate_package_sid(&value)?;
+        Ok(Some(value))
+    }
+
     pub fn current_user_sid() -> Result<String, PrivateIpcError> {
         let mut token = null_mut();
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == FALSE {
@@ -366,14 +419,35 @@ mod platform {
         handle: OwnedHandle,
         path: String,
         expected_sid: String,
+        expected_package_sid: Option<String>,
     }
 
     impl PrivatePipeListener {
         pub fn bind(endpoint: &str) -> Result<Self, PrivateIpcError> {
+            Self::bind_inner(endpoint, None)
+        }
+
+        /// A seat pipe is still current-user local, but it additionally needs
+        /// the exact AppContainer package SID on the connected client token.
+        pub fn bind_app_container(endpoint: &str, package_sid: &str)
+            -> Result<Self, PrivateIpcError> {
+            validate_package_sid(package_sid)?;
+            Self::bind_inner(endpoint, Some(package_sid))
+        }
+
+        fn bind_inner(endpoint: &str, package_sid: Option<&str>)
+            -> Result<Self, PrivateIpcError> {
             validate_endpoint(endpoint)?;
             let expected_sid = current_user_sid()?;
-            let path = format!(r"\\.\pipe\gogoke.current-user.v1.{endpoint}");
-            let descriptor_text = format!("D:P(A;;GA;;;{expected_sid})");
+            let path = if package_sid.is_some() {
+                format!(r"\\.\pipe\gogoke.seat.v1.{endpoint}")
+            } else {
+                format!(r"\\.\pipe\gogoke.current-user.v1.{endpoint}")
+            };
+            let descriptor_text = match package_sid {
+                Some(package_sid) => format!("D:P(A;;GA;;;{expected_sid})(A;;GA;;;{package_sid})"),
+                None => format!("D:P(A;;GA;;;{expected_sid})"),
+            };
             let mut descriptor = null_mut();
             if unsafe {
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -417,6 +491,7 @@ mod platform {
                 handle: OwnedHandle(handle),
                 path,
                 expected_sid,
+                expected_package_sid: package_sid.map(str::to_owned),
             })
         }
 
@@ -426,6 +501,10 @@ mod platform {
 
         pub fn expected_sid(&self) -> &str {
             &self.expected_sid
+        }
+
+        pub fn expected_package_sid(&self) -> Option<&str> {
+            self.expected_package_sid.as_deref()
         }
 
         pub fn applied_dacl_sddl(&self) -> Result<String, PrivateIpcError> {
@@ -560,6 +639,16 @@ mod platform {
         }
 
         pub fn accept_current_user(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
+            if self.expected_package_sid.is_some() { return Err(PrivateIpcError::WrongListenerMode); }
+            self.accept_verified()
+        }
+
+        pub fn accept_app_container(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
+            if self.expected_package_sid.is_none() { return Err(PrivateIpcError::WrongListenerMode); }
+            self.accept_verified()
+        }
+
+        fn accept_verified(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
             if unsafe { ConnectNamedPipe(self.handle.raw(), null_mut()) } == FALSE
                 && io::Error::last_os_error().raw_os_error() != Some(ERROR_PIPE_CONNECTED)
             {
@@ -603,10 +692,21 @@ mod platform {
                     observed,
                 });
             }
+            let observed_package_sid = if let Some(expected) = &self.expected_package_sid {
+                let package = token_app_container_sid(peer_token.raw())?;
+                if package.as_deref() != Some(expected.as_str()) {
+                    return Err(PrivateIpcError::PeerIdentityMismatch {
+                        expected: expected.clone(),
+                        observed: package.unwrap_or_else(|| "non-AppContainer".into()),
+                    });
+                }
+                package
+            } else { None };
             drop(_impersonation);
             Ok(PrivatePipeConnection {
                 handle: self.handle,
                 peer_sid: observed,
+                peer_package_sid: observed_package_sid,
             })
         }
     }
@@ -614,11 +714,16 @@ mod platform {
     pub struct PrivatePipeConnection {
         handle: OwnedHandle,
         peer_sid: String,
+        peer_package_sid: Option<String>,
     }
 
     impl PrivatePipeConnection {
         pub fn peer_sid(&self) -> &str {
             &self.peer_sid
+        }
+
+        pub fn peer_package_sid(&self) -> Option<&str> {
+            self.peer_package_sid.as_deref()
         }
 
         pub fn read_frame(&self) -> Result<Vec<u8>, PrivateIpcError> {
@@ -784,6 +889,26 @@ mod platform {
             server.join().expect("server thread");
             drop(client);
         }
+
+        #[test]
+        fn seat_pipe_rejects_a_same_user_non_app_container_client() {
+            let package_sid = "S-1-15-2-123456789";
+            let listener = PrivatePipeListener::bind_app_container(
+                &unique_endpoint("seat-peer"), package_sid).expect("seat pipe");
+            assert_eq!(listener.expected_package_sid(), Some(package_sid));
+            let dacl = listener.applied_dacl_snapshot().expect("applied DACL");
+            assert!(dacl.0);
+            assert_eq!(dacl.1.len(), 2);
+            assert!(dacl.1.iter().any(|ace| ace.2 == package_sid));
+            assert!(dacl.1.iter().any(|ace| ace.2 == listener.expected_sid()));
+            let path = listener.path().to_owned();
+            let server = std::thread::spawn(move || listener.accept_app_container());
+            let mut client = OpenOptions::new().read(true).write(true).open(path).unwrap();
+            client.write_all(&[0x47]).unwrap();
+            assert!(matches!(server.join().unwrap(),
+                Err(PrivateIpcError::PeerIdentityMismatch { .. })));
+            drop(client);
+        }
     }
 }
 
@@ -797,6 +922,13 @@ pub struct PrivatePipeListener;
 impl PrivatePipeListener {
     pub fn bind(endpoint: &str) -> Result<Self, PrivateIpcError> {
         validate_endpoint(endpoint)?;
+        Err(PrivateIpcError::UnsupportedPlatform)
+    }
+
+    pub fn bind_app_container(endpoint: &str, package_sid: &str)
+        -> Result<Self, PrivateIpcError> {
+        validate_endpoint(endpoint)?;
+        validate_package_sid(package_sid)?;
         Err(PrivateIpcError::UnsupportedPlatform)
     }
 }

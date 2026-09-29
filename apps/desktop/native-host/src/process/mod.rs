@@ -13,6 +13,8 @@ mod session;
 
 #[cfg(windows)]
 pub use windows::*;
+#[cfg(windows)]
+pub(crate) use session::{AppContainerProfile, IsolationError};
 
 #[cfg(not(windows))]
 compile_error!("gogoke native process custody is Windows-only");

@@ -2,4 +2,4 @@
 
 mod isolation;
 
-pub(crate) use isolation::{AppContainerProfile, SecurityCapabilities};
+pub(crate) use isolation::{AppContainerProfile, IsolationError, SecurityCapabilities};

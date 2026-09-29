@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use std::fmt;
 use std::io;
 use std::mem::size_of;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::MetadataExt;
 use std::path::Path;
 use std::ptr;
@@ -111,6 +111,7 @@ extern "system" {
     fn GetExplicitEntriesFromAclW(acl: *mut c_void, count: *mut u32,
         entries: *mut *mut ExplicitAccessW) -> u32;
     fn ConvertStringSidToSidW(text: *const u16, sid: *mut *mut c_void) -> i32;
+    fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -187,6 +188,27 @@ impl AppContainerProfile {
             capabilities: self.internet_capability.as_ref().map_or(ptr::null_mut(), |capability|
                 (capability as *const SidAndAttributes).cast_mut().cast()),
             capability_count: u32::from(self.internet_capability.is_some()), reserved: 0 }
+    }
+
+    pub(crate) fn package_sid_string(&self) -> Result<String, IsolationError> {
+        let mut raw = ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(self.sid, &mut raw) } == 0 {
+            return Err(IsolationError::Token(io::Error::last_os_error()));
+        }
+        let allocation = LocalAllocation(raw.cast());
+        let mut len = 0usize;
+        while unsafe { *raw.add(len) } != 0 {
+            if len >= 180 { return Err(IsolationError::WrongToken); }
+            len += 1;
+        }
+        let value = std::ffi::OsString::from_wide(unsafe { std::slice::from_raw_parts(raw, len) })
+            .to_string_lossy().into_owned();
+        drop(allocation);
+        Ok(value)
+    }
+
+    pub(crate) fn sid_identity(&self) -> Result<String, IsolationError> {
+        self.package_sid_string()
     }
 
     fn enable_internet_client(&mut self) -> Result<(), IsolationError> {

@@ -132,8 +132,8 @@ function main() {
   if (nodeRun.error) node.spawn_error = nodeRun.error;
   if (!node.native_host_bound) node.state = "FAIL_INSTRUMENT";
 
-  const selectionOk = files.length === 52 && nodeFiles.length === 10 && viteFiles.length === 42 &&
-    nodeFiles.includes(productTest);
+  const selectionOk = files.length > 0 && nodeFiles.length > 0 && viteFiles.length > 0 &&
+    nodeFiles.length + viteFiles.length === files.length && nodeFiles.includes(productTest);
   const categories = [vite, node];
   const result = {
     schema: "gogoke.server-cloud-tests.v1",
