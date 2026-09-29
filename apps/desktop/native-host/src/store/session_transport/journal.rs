@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(unknown.disposition, PrepareDisposition::Unknown);
         assert!(matches!(
             prepare_stdin_request(&mut db, &input(next_id.as_bytes())),
-            Err(JournalError::Unknown)
+            Err(JournalError::Denied)
         ));
         let request = decode_request(REQUEST).unwrap();
         let mut resolved = unknown.record.clone();
@@ -1002,6 +1002,14 @@ mod tests {
         setup_schema(&mut db);
 
         let request = decode_request(REQUEST).unwrap();
+        let mut uncertain_receipt = super::super::wire::encode_receipt(
+            &request,
+            V37Status::Unknown,
+            4,
+            5,
+            std::collections::BTreeMap::new(),
+        );
+        uncertain_receipt.push(b'\n');
         let mut receipt = super::super::wire::encode_receipt(
             &request,
             V37Status::Stale,
@@ -1011,7 +1019,9 @@ mod tests {
         );
         receipt.push(b'\n');
         let receipt_path = folder.join("adapter-receipt.jsonl");
-        std::fs::write(&receipt_path, &receipt).unwrap();
+        let mut emitted = uncertain_receipt.clone();
+        emitted.extend_from_slice(&receipt);
+        std::fs::write(&receipt_path, &emitted).unwrap();
         let command = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32")
             .join("WindowsPowerShell")
@@ -1023,7 +1033,7 @@ mod tests {
             "-NonInteractive".into(),
             "-Command".into(),
             format!(
-                "[Console]::OpenStandardOutput().Write([IO.File]::ReadAllBytes('{}'))",
+                "$bytes=[IO.File]::ReadAllBytes('{}');[Console]::OpenStandardOutput().Write($bytes,0,$bytes.Length)",
                 receipt_path.display().to_string().replace('\'', "''")
             ),
         ];
@@ -1046,7 +1056,7 @@ mod tests {
         let frame = custodian
             .read_persistent_child_frame(&prepared.ticket, std::time::Duration::from_secs(5))
             .unwrap();
-        assert_eq!(frame.bytes(), receipt.as_slice());
+        assert_eq!(frame.bytes(), uncertain_receipt.as_slice());
         let stdin = StdinRequest {
             domain_id: "projectA",
             session_id: "sessionA",
@@ -1056,6 +1066,26 @@ mod tests {
         };
         let first = prepare_stdin_request(&mut db, &stdin).unwrap();
         assert_eq!(first.disposition, PrepareDisposition::Prepared);
+        let uncertain = complete_stdin_request(&mut db, &stdin, &frame).unwrap();
+        assert_eq!(uncertain.disposition, PrepareDisposition::Unknown);
+        let next_id = String::from_utf8_lossy(REQUEST).replace("sendA", "sendB");
+        assert!(matches!(
+            prepare_stdin_request(
+                &mut db,
+                &StdinRequest {
+                    domain_id: stdin.domain_id,
+                    session_id: stdin.session_id,
+                    ticket: stdin.ticket,
+                    generation: stdin.generation,
+                    request_bytes: next_id.as_bytes(),
+                }
+            ),
+            Err(JournalError::Unknown)
+        ));
+        let frame = custodian
+            .read_persistent_child_frame(&prepared.ticket, std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(frame.bytes(), receipt.as_slice());
         let completed = complete_stdin_request(&mut db, &stdin, &frame).unwrap();
         assert_eq!(completed.disposition, PrepareDisposition::Completed);
         assert_eq!(completed.record.state, JournalState::Receipted);
