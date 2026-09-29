@@ -2512,9 +2512,9 @@ mod tests {
         let launched = std::process::Command::new(&path)
             .args(["--exact", "process::windows::tests::seat_pipe_child_helper", "--nocapture"])
             .spawn();
-        let outcome = match launched {
-            Ok(mut process) => format!("spawn=OK; exit={:?}", process.wait()),
-            Err(error) => format!("spawn=WIN32_{:?}; detail={error}", error.raw_os_error()),
+        let (outcome, spawn_failed) = match launched {
+            Ok(mut process) => (format!("spawn=OK; exit={:?}", process.wait()), false),
+            Err(error) => (format!("spawn=WIN32_{:?}; detail={error}", error.raw_os_error()), true),
         };
         let signed_control = std::process::Command::new(system_cmd())
             .args(["/D", "/C", "exit 0"])
@@ -2562,28 +2562,35 @@ mod tests {
             }
             format!("raw_signed_child=OK; wait={wait}")
         };
-        let mut helper_command = wide_null(OsStr::new(&format!(
-            "\"{}\" --exact process::windows::tests::seat_pipe_child_helper --nocapture",
-            path.display())));
-        let mut helper_startup: StartupInfoW = unsafe { zeroed() };
-        helper_startup.cb = size_of::<StartupInfoW>() as u32;
-        let mut helper_info: ProcessInformation = unsafe { zeroed() };
-        let helper_created = unsafe { CreateProcessW(wide.as_ptr(), helper_command.as_mut_ptr(),
-            ptr::null(), ptr::null(), 0, CREATE_NO_WINDOW, ptr::null(), ptr::null(),
-            &mut helper_startup, &mut helper_info) };
-        let raw_helper = if helper_created == 0 {
-            let win32 = unsafe { GetLastError() };
-            let ntstatus = unsafe { RtlGetLastNtStatus() } as u32;
-            format!("raw_helper=WIN32_{win32}; last_ntstatus={ntstatus:#010x}")
-        } else {
-            let process = OwnedHandle::new(helper_info.process).expect("raw helper process handle");
-            let _thread = OwnedHandle::new(helper_info.thread).expect("raw helper thread handle");
-            let wait = unsafe { WaitForSingleObject(process.raw(), 20_000) };
-            if wait != 0 {
-                unsafe { TerminateProcess(process.raw(), 1) };
-                unsafe { WaitForSingleObject(process.raw(), 5000) };
+        // The seat listener admits one client. A second helper after a
+        // successful spawn would test a closed pipe and poison the same error
+        // file, so only compare raw CreateProcess when the first spawn failed.
+        let raw_helper = if spawn_failed {
+            let mut helper_command = wide_null(OsStr::new(&format!(
+                "\"{}\" --exact process::windows::tests::seat_pipe_child_helper --nocapture",
+                path.display())));
+            let mut helper_startup: StartupInfoW = unsafe { zeroed() };
+            helper_startup.cb = size_of::<StartupInfoW>() as u32;
+            let mut helper_info: ProcessInformation = unsafe { zeroed() };
+            let helper_created = unsafe { CreateProcessW(wide.as_ptr(), helper_command.as_mut_ptr(),
+                ptr::null(), ptr::null(), 0, CREATE_NO_WINDOW, ptr::null(), ptr::null(),
+                &mut helper_startup, &mut helper_info) };
+            if helper_created == 0 {
+                let win32 = unsafe { GetLastError() };
+                let ntstatus = unsafe { RtlGetLastNtStatus() } as u32;
+                format!("raw_helper=WIN32_{win32}; last_ntstatus={ntstatus:#010x}")
+            } else {
+                let process = OwnedHandle::new(helper_info.process).expect("raw helper process handle");
+                let _thread = OwnedHandle::new(helper_info.thread).expect("raw helper thread handle");
+                let wait = unsafe { WaitForSingleObject(process.raw(), 20_000) };
+                if wait != 0 {
+                    unsafe { TerminateProcess(process.raw(), 1) };
+                    unsafe { WaitForSingleObject(process.raw(), 5000) };
+                }
+                format!("raw_helper=OK; wait={wait}")
             }
-            format!("raw_helper=OK; wait={wait}")
+        } else {
+            "raw_helper=NOT_RUN_INITIAL_SPAWN_SUCCEEDED".to_owned()
         };
         // PROCESS_MITIGATION_POLICY::ProcessChildProcessPolicy is index 13.
         // Observe the effective policy; do not alter system or process policy.
