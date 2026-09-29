@@ -79,7 +79,7 @@ T3 服务复用 `third_party/t3code/apps/server/package.json` 的 `build:bundle`
 
 同时交付实际服务 bundle 和运行它所需的 Node 运行时；优先复用现有锁定 runtime 资产，不要求 Owner 装开发依赖、手工复制 exe、启动开发服务器或从工作树启动服务。若现有资产不完整，只补这条闭环所需的 runtime、资源与许可材料。产品入口建立进程托管和私有 IPC 后才准入任务；不能绕 native-host 直接启动无托管工作。
 
-**不做可执行文件代码签名，不新增 OV/EV/SignPath 申请或签名流水线。** 沿用未签名安装包与 Owner 私钥签署的 `SHA256SUMS.windows`；Owner 已于 2026-09-25 授权 Controller 在本机执行清单签署，公开发布仍须 Owner 决定。私钥不进代码、CI、日志或制品。清单签名证明发布完整性，不证明 Smart App Control 会放行。更新公钥、允许主机、协调器信任根仍为编译期常量。正式安装包验证不自动授权公开 release。
+**不做可执行文件代码签名，不新增 OV/EV/SignPath 申请或签名流水线。** 沿用未签名安装包与 Owner 离线签署的 `SHA256SUMS.windows`；私钥不进代码、CI 或制品。Owner 的清单签名证明发布完整性，不证明 Smart App Control 会放行。更新公钥、允许主机、协调器信任根仍为编译期常量。正式安装包验证不自动授权公开 release。
 
 native-host、Node/runtime/helper 都是独立子进程资产，应逐项记录来源、版本/hash 与强制模式下的实际启动结果；主程序通过不能外推给子进程，旧版本通过不能外推给新版本。被拦截时记录 Code Integrity/进程现象与精确制品，交 Owner 决定；不自行签名、关安全设置或改用本机原生编译绕过。
 

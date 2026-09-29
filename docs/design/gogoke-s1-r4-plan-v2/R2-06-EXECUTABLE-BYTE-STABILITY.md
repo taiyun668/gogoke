@@ -6,7 +6,7 @@
 
 ## 1. 起因、目标与边界
 
-Owner Windows 11 的 Smart App Control 强制模式对 `041a4966` 安装程序和便携 `gogoke.exe` 分别产生 3033/3077，二者均在启动前被拦；`985e17d1` 对应安装程序曾成功安装，其便携 `gogoke.exe` 在同机同类启动流程中也运行成功、未见 3033/3077。四份对象的哈希和事件在 `MC-078`、`MC-082`、`MC-083`、`MC-084`。这只是不同字节、目录和时间下的观察，**不能推断 SAC 只看哈希、已建立放行名单，或旧字节未来必然放行**。[构建与发布治理](../../governance/gogoke-build-and-release.md)的云端原生构建、不关闭 SAC、不做代码签名、Owner 私钥签清单（Controller 经授权可在本机执行）、公开发布需 Owner 决定及正式安装实测边界继续有效。
+Owner Windows 11 的 Smart App Control 强制模式对 `041a4966` 安装程序和便携 `gogoke.exe` 分别产生 3033/3077，二者均在启动前被拦；`985e17d1` 对应安装程序曾成功安装，其便携 `gogoke.exe` 在同机同类启动流程中也运行成功、未见 3033/3077。四份对象的哈希和事件在 `MC-078`、`MC-082`、`MC-083`、`MC-084`。这只是不同字节、目录和时间下的观察，**不能推断 SAC 只看哈希、已建立放行名单，或旧字节未来必然放行**。[构建与发布治理](../../governance/gogoke-build-and-release.md)的云端原生构建、不关闭 SAC、不做代码签名、Owner 离线签清单及正式安装实测边界继续有效。
 
 目标是让纯前端、服务脚本和其他非可执行资源的变更不改变 `gogoke.exe` 与 `gogoke-native-host.exe` 的字节，并让运行中的产品在验签后切换资源。任何 `.exe`/`.dll`、Node runtime、原生协议、编译期公钥/允许主机/协调器或 shell 安全逻辑变化，都属于**可执行文件更新**，不能标为资源更新。字节稳定降低因资源改动制造新可执行文件的次数，**不保证 SAC 放行稳定字节**。
 
@@ -30,11 +30,11 @@ CI 在无秘密的构建 job 冻结 source SHA、安装程序、两个可执行�
 
 候选使用与最终正式发行**同一冻结** `setup.exe`、`gogoke.exe`、native-host 和资源包字节；区别仅是外部候选 sidecar 与运行域。运行候选安装程序前还须以可信 GitHub run/artifact 回读的精确 hash 核本地 `setup.exe`，候选资源签名不能代替安装程序来源核验；安装后再核实际 exe 字节。CI 在云端运行；已获授权的 Owner Win11 测试在 Owner 账户下运行**云端构建、经 NSIS 实际安装**的候选，机械核候选安装登记、独立安装/数据根、实例 ID 与 SAC 实际强制状态；任一不成立，该环境的候选轴记 `NOT_RUN`，不得改用便携包或工作树试跑。候选可沿既有受限测试账本通道写入并回读，不请求 Owner 为每个候选签名、手动转交产物或点击测试控件。候选执行仍只是 `TEST_ONLY` 平台证据，不是正式 release、adoption 或 R2-05 最终验收。
 
-### 正式发行：仅 Owner 私钥签名
+### 正式发行：仅 Owner 清单签名
 
-`SHA256SUMS.windows` 继续是 Owner 私钥签署的正式发布集合；Owner 已于 2026-09-25 授权 Controller 在本机执行清单签署，公开发布仍须 Owner 决定。增加严格的 `full` / `resources` 发行种类、版本、索引和资源包条目。`full` 必须恰有一个精确安装程序、便携 ZIP、资源包和索引；`resources` 必须恰有资源包和索引、**不得有安装程序**。解析拒绝重复字段、重复名称、缺项、混合种类、候选标记和版本不一致。资源索引把 Owner 签名传递到每个安装后的文件；正式清单直接绑定发行资产哈希。现有 `gogoke_update.rs`、`tools/sign-gogoke-release-manifest.ps1` 和 `tools/publish-gogoke-release.ps1` 在施工时按这两种精确形状调整；**Owner 发行私钥**不进入 CI、仓库、构建树、日志或任何产物，正式发布仍需 Owner 的显式决定。候选签名及其公钥不能通过 release 检查、更新检查或资源加载的正式域。
+`SHA256SUMS.windows` 继续是 Owner **离线签署**的正式发布集合；增加严格的 `full` / `resources` 发行种类、版本、索引和资源包条目。`full` 必须恰有一个精确安装程序、便携 ZIP、资源包和索引；`resources` 必须恰有资源包和索引、**不得有安装程序**。解析拒绝重复字段、重复名称、缺项、混合种类、候选标记和版本不一致。资源索引把 Owner 签名传递到每个安装后的文件；正式清单直接绑定发行资产哈希。现有 `gogoke_update.rs`、`tools/sign-gogoke-release-manifest.ps1` 和 `tools/publish-gogoke-release.ps1` 在施工时按这两种精确形状调整；**Owner 发行私钥**不进入 CI、仓库、构建树或产物，正式发布仍需 Owner 的显式决定。候选签名及其公钥不能通过 release 检查、更新检查或资源加载的正式域。
 
-构建/签名顺序必须避免自引用：云端先完成资源包、两个可执行文件与 NSIS 安装程序；从 NSIS 实际承载的 shell 字节，或经精确 token 数和内容校验的 Tauri `UNK→NSS` 变换，计算**预期安装后** shell 哈希，生成冻结索引和清单草稿。CI 候选签名先供精确产物的云端/Win11 实测；候选合格后 Controller 依 2026-09-25 授权在本机用 Owner 私钥对**同一资产字节**的最终 `SHA256SUMS.windows` 签一次，绝不重编/重包 exe 或 setup。候选 sidecar 与正式清单/签名/索引都在安装程序旁，不编入它所校验的安装程序；NSIS 只接受两种形状之一，复制 sidecar 和初始资源到隔离候选根或正式安装根对应的版本化资源代。缺项时在改动旧安装前拒绝。正式首装由受信的清单验证步骤先核 Owner 签名及安装程序 hash；程序启动后的自检不能倒过来证明安装程序原本可信。正式签名后的云端安装烟测再量**实际安装** shell 字节并与索引相等，且实际走 Owner 验签域；这一步不重新编译、不自动发布。sidecar 避开“安装包包含校验自身的最终清单”这一哈希循环。
+构建/签名顺序必须避免自引用：云端先完成资源包、两个可执行文件与 NSIS 安装程序；从 NSIS 实际承载的 shell 字节，或经精确 token 数和内容校验的 Tauri `UNK→NSS` 变换，计算**预期安装后** shell 哈希，生成冻结索引和清单草稿。CI 候选签名先供精确产物的云端/Win11 实测；候选合格后 Owner 才对**同一资产字节**的最终 `SHA256SUMS.windows` 离线签一次，绝不重编/重包 exe 或 setup。候选 sidecar 与正式清单/签名/索引都在安装程序旁，不编入它所校验的安装程序；NSIS 只接受两种形状之一，复制 sidecar 和初始资源到隔离候选根或正式安装根对应的版本化资源代。缺项时在改动旧安装前拒绝。正式首装由受信的清单验证步骤先核 Owner 签名及安装程序 hash；程序启动后的自检不能倒过来证明安装程序原本可信。正式签名后的云端安装烟测再量**实际安装** shell 字节并与索引相等，且实际走 Owner 验签域；这一步不重新编译、不自动发布。sidecar 避开“安装包包含校验自身的最终清单”这一哈希循环。
 
 现有版本的 `gogoke_update.rs` 只暂存安装程序，不能自动向新 NSIS 提供 sidecar。首个 R2-06 架构版本需要上述完整集合受控引导安装；经既有授权，Controller/agent 负责核字节、安装、取回执与失败回滚，不把 Owner 当人工安装或回执转发员。旧 updater 的 installer-only 路径不能说成已兼容；新版本进入后，后续完整可执行文件更新才由修改后的既有更新链暂存 sidecar、走协调器/正式安装程序与回滚。
 
@@ -63,7 +63,7 @@ NSIS 使用锁定 Tauri 支持的[自定义 installer template](https://v2.tauri
 
 资源代以不可变目录承载，`SHA256SUMS.windows`、签名、索引与资源文件随代存放，不原位覆盖当前 sidecar。正在运行的请求继续钉住旧代，真实 `beginCommitted` 后不因资源切换杀进程或盲重发；不能安全切换就延期，不能伪造 readiness。切换的是已验证代的原子指针，不对正在服务的文件原位覆盖。每次启动及每次从磁盘供给前端字节仍验签/验实际读取字节；旧代只在无句柄且新代就绪后清理。资源状态只是本地协调，不成为第二 accepted fact ledger。
 
-`gogoke_update.rs` 当前只识别带 installer 的 release，`gogoke-update-coordinator.ps1` 也直接启动它；施工必须显式加 `resources` 分支，同时保留 `full` 的版本绑定、重核 GitHub release、受信 host、缓存 hash、用户确认、readiness 与 rollback。新发行版本须高于当前已验版本；只有受控失败回滚可恢复旧代。签名证明 Owner 授权字节，不单独证明它是最新版本。`tools/publish-gogoke-release.ps1` 当前要求安装程序与便携 ZIP；资源发行改为**不生成安装程序**的精确资产集合，仍由 Owner 私钥签署；公开发布需 Owner 显式决定。资源更新不能绕过既有 release/Owner 控制，也不能自动采用 Dream 或 Goal Acceptance。
+`gogoke_update.rs` 当前只识别带 installer 的 release，`gogoke-update-coordinator.ps1` 也直接启动它；施工必须显式加 `resources` 分支，同时保留 `full` 的版本绑定、重核 GitHub release、受信 host、缓存 hash、用户确认、readiness 与 rollback。新发行版本须高于当前已验版本；只有受控失败回滚可恢复旧代。签名证明 Owner 授权字节，不单独证明它是最新版本。`tools/publish-gogoke-release.ps1` 当前要求安装程序与便携 ZIP；资源发行改为**不生成安装程序**的精确资产集合，仍由 Owner 离线签名及显式发布。资源更新不能绕过既有 release/Owner 控制，也不能自动采用 Dream 或 Goal Acceptance。
 
 候选域不执行正式 release 检查或更新；其候选签名只用于实测已冻结资源。`full` / `resources` 两条正式更新路径均只调用 Owner 验签器，不能因为候选签名存在就降级到候选根或把候选资源提升为正式代。
 
@@ -83,7 +83,7 @@ R2-06 的必要证据为：精确 SHA 的双云端可执行文件逐字节比较
 | CI 候选密钥的用途/信任边界 | **本轮方向决定已给出；无逐次触点。** 若以后扩大用途或更换安全根，需要 Owner 再定边界；不能把密钥维护调成每候选审批。 | 在已授权边界内一次性生成/配置 Actions environment secret 与固定候选公钥、审计权限；权限核验自动化。若 GitHub 管理权限真实不足，仅请求所缺的权限，不让 Owner 代贴私钥。公钥轮换按完整 exe 更新处理。 |
 | 同账户候选安装与数据根 | **无新增触点。** Owner 本轮选定现有账户，不要求创建用户或修改 OS ACL；候选独立根仅分离产品状态，不声称隔离同账户凭据。 | 配置并核对候选安装根、HKCU 登记、数据根及实例 ID，保留正式安装与数据；按既有本机授权执行测试和清理。 |
 | 每个候选的构建、签资源、云端与 Win11 实测 | **无签名或手工测试触点。** CI 保管候选密钥；既有本机安装授权覆盖时由 Controller 执行，不让 Owner 点按钮或传截图。 | 无秘密构建 → 受信 CI 候选签名 → 精确候选测试与受限测试账本写入/回读 → 自动收集 SHA/run/进程/SAC 证据；普通失败修复与重测。 |
-| 正式 `SHA256SUMS.windows` 本机签署 | **不新增 Owner 签署触点。** Owner 于 2026-09-25 授权 Controller 在本机用默认 Owner 私钥签清单；私钥不进 CI、仓库、日志或任何产物，公开发布仍须 Owner 决定。 | 冻结资产与清单、机械核全部 hash、Controller 本机签署并自动验签，跑同字节云端烟测；不请 Owner 手工搬运回执。 |
+| 正式 `SHA256SUMS.windows` 离线签署 | **每次 `full` 或 `resources` 正式发行一次。** Owner 发行私钥按治理始终离线且只由 Owner 保管；放进 CI 会降低已冻结信任边界。 | 冻结资产与清单、机械核全部 hash、准备一次可审阅签名输入；签后自动验签和跑同字节云端烟测，不请 Owner 手工搬运回执。 |
 | R2-05 最终验收 | **一次明确裁决。** Goal Acceptance 与产品验收权仍在 Owner；候选 CI PASS 或独立复核不能代替。 | 提供真实产品、精确字节和全部必要证据；自动收集与整理，不让 Owner 逐项复现。 |
 | 公开 release | **每次发行一次明确决定。** 公开发布是不可逆对外动作，不随 R2-05 验收或候选 CI PASS 自动发生。 | 准备可审阅的精确发行集合；获明确授权后由 Controller 执行发布、核远端事实。日常 PR、CI 和评论不升级成 Owner 微审批。 |
 | SAC 拦截或其他故障 | **默认无。** 只有证据证明继续必须改变冻结架构、安全设置或 Owner 产品能力时，才需要 Owner 方向决定。 | 停止该尝试、记录组件/hash/事件、受控回滚并推进独立安全工作；不因单个失败要求 Owner 选择命令或路径。 |
