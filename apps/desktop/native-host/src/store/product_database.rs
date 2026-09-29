@@ -1,6 +1,6 @@
 //! Native composition owns the existing database and its private bootstrap issuer.
 //! IPC remains unprivileged: the legacy typed dispatcher never receives OwnerIssuer.
-use super::atomic::{DomainRecordReceipt, Json, JsonString};
+use super::atomic::{DomainRecordReceipt, Json, JsonString, Statement};
 use super::authority::{
     self, AppendExecutionRecipe, AppendTaskMaterial, AuthorizedContextReadSet,
     AuthorizedTaskPackageReceipt,
@@ -23,13 +23,12 @@ use super::same_open::{OpenLedger, SameOpenError, VerifiedDatabaseConnection};
 use super::session::{dispatch_service_frame, open_product_database, serve_authenticated_pipe,
     serve_lines, serve_pipe, ServiceFrameSession};
 use super::session_transport::{decode_request, encode_receipt, V37Request, V37Status};
-use super::instance::{self, ProgramObservation, Registration, RegistrationDisposition};
+use super::instance::{self, CatalogError, Registration, RegistrationDisposition, RegistryError};
 use crate::ipc::{PrivatePipeConnection, UserOriginProof};
 use crate::root::RootLock;
 use crate::process::ProcessCustodian;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::path::PathBuf;
 
 type Result<T> = std::result::Result<T, OrchestrationError>;
 
@@ -107,7 +106,8 @@ impl<'root> ProductDatabase<'root> {
     /// native store; all other closed-envelope operations stay unsupported.
     pub fn dispatch_user_frame(&mut self, origin: &UserOriginProof, frame: &[u8]) -> Result<Vec<u8>> {
         origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
-        let request = decode_request(frame).map_err(|_| OrchestrationError::Invalid("v37 user frame"))?;
+        let request = decode_request(frame).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("v37 user frame: {error:?}")))?;
         if request.family == "K-INSTANCE" && request.operation == "register" {
             return self.register_user_instance(&request);
         }
@@ -116,18 +116,42 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn register_user_instance(&mut self, request: &V37Request) -> Result<Vec<u8>> {
-        if request.domain_id != "global" || request.expected_revision != 0
-            || request.payload.len() != 3 {
-            return Err(OrchestrationError::AccessDenied);
+        let receipt = |status, previous, revision, reason: Option<String>| {
+            let mut result = std::collections::BTreeMap::new();
+            if let Some(reason) = reason {
+                result.insert(JsonString::from_str("reason"),
+                    Json::String(JsonString::from_str(&reason)));
+            }
+            encode_receipt(request, status, previous, revision, result)
+        };
+        if request.domain_id != "global" || request.payload.len() != 1 {
+            return Ok(receipt(V37Status::Denied, 0, 0, None));
         }
-        let driver = user_payload_string(request, "driverId")?;
-        let path = PathBuf::from(user_payload_string(request, "programPath")?);
-        if !path.is_absolute() {
-            return Err(OrchestrationError::Invalid("programPath"));
+        let current = match self.user_instance_revision(&request.target_id) {
+            Ok(revision) => revision,
+            Err(error) => return Ok(receipt(V37Status::Unknown, 0, 0,
+                Some(format!("instance revision: {error:?}")))),
+        };
+        if request.expected_revision != 0 {
+            return Ok(receipt(V37Status::Stale, current, current, None));
         }
-        let version = user_payload_string(request, "version")?;
-        let observed = ProgramObservation::observe(&path, &version)
-            .map_err(|error| OrchestrationError::V37StoreFailure(format!("instance program: {error:?}")))?;
+        let driver = match user_payload_string(request, "driverId") {
+            Ok(driver) => driver,
+            Err(_) => return Ok(receipt(V37Status::Denied, current, current, None)),
+        };
+        let observed = match instance::discover_program(&driver) {
+            Ok(observed) => observed,
+            Err(error) => {
+                let status = match error {
+                    CatalogError::UnknownDriver | CatalogError::UnsupportedVersion |
+                    CatalogError::PackageIdentity | CatalogError::PackageFormat |
+                    CatalogError::IdentityChanged => V37Status::Denied,
+                    _ => V37Status::Failed,
+                };
+                return Ok(receipt(status, current, current,
+                    Some(format!("native program observation: {error:?}"))));
+            }
+        };
         let disposition = instance::register_instance(&mut self.connection, self.root,
             &Registration {
                 request_id: &request.request_id,
@@ -135,13 +159,33 @@ impl<'root> ProductDatabase<'root> {
                 instance_id: &request.target_id,
                 driver_id: &driver,
                 program: &observed,
-            })
-            .map_err(|error| OrchestrationError::V37StoreFailure(format!("instance register: {error:?}")))?;
-        let status = match disposition {
-            RegistrationDisposition::Applied => V37Status::Applied,
-            RegistrationDisposition::Replayed => V37Status::Replayed,
+            });
+        let (status, reason) = match disposition {
+            Ok(RegistrationDisposition::Applied) => (V37Status::Applied, None),
+            Ok(RegistrationDisposition::Replayed) => (V37Status::Replayed, None),
+            Err(error @ (RegistryError::RequestConflict | RegistryError::InstanceConflict)) =>
+                (V37Status::Conflict, Some(format!("native instance register: {error:?}"))),
+            Err(error) => (V37Status::Unknown,
+                Some(format!("native instance register: {error:?}"))),
         };
-        Ok(encode_receipt(request, status, 0, 1, Default::default()))
+        let next = if matches!(status, V37Status::Applied | V37Status::Replayed) { 1 }
+            else { current };
+        Ok(receipt(status, current, next, reason))
+    }
+
+    fn user_instance_revision(&self, instance_id: &str) -> Result<u64> {
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id=?1")
+            .map_err(OrchestrationError::Atomic)?;
+        query.bind_text(1, instance_id).map_err(OrchestrationError::Atomic)?;
+        if !query.step_row().map_err(OrchestrationError::Atomic)? { return Ok(0); }
+        let revision = query.column_text(0).map_err(OrchestrationError::Atomic)?
+            .parse().map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("instance revision: {error}")))?;
+        if query.step_row().map_err(OrchestrationError::Atomic)? {
+            return Err(OrchestrationError::Invalid("duplicate instance"));
+        }
+        Ok(revision)
     }
 
     pub fn serve_lines<R: BufRead, W: Write>(&mut self, input: R, output: &mut W) -> Result<()> {

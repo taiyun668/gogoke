@@ -90,7 +90,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             sender.send(ServiceFrame { bytes, answer })?;
             let (frame, should_stop) = reply.recv()?;
             pipe.write_frame(&frame)?;
-            if should_stop { break; }
+            if should_stop {
+                pipe.flush_for_disconnect()?;
+                break;
+            }
         }
         Ok(())
     });
@@ -160,7 +163,13 @@ fn run_desktop(
                     Ok(value) => value,
                     Err(_) => return,
                 };
-                if pipe.write_frame(&frame).is_err() || disconnect { break; }
+                if pipe.write_frame(&frame).is_err() { break; }
+                if disconnect {
+                    if let Err(error) = pipe.flush_for_disconnect() {
+                        let _ = service_events.send(DesktopEvent::ServiceFailed(error.to_string()));
+                    }
+                    break;
+                }
             }
             drop(pipe);
             if service_events.send(DesktopEvent::ServiceDisconnected).is_err() { break; }

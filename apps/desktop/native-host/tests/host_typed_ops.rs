@@ -209,8 +209,7 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     let user_path = user_line.trim_end().strip_prefix("USER_PIPE\t").unwrap();
     let mut user = OpenOptions::new().read(true).write(true).open(user_path).expect("User pipe");
     user.write_all(&[0x47]).expect("User preface");
-    let host_path = host().to_string_lossy().replace('\\', "\\\\");
-    let user_request = format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"register\",\"requestId\":\"registerA\",\"targetId\":\"instanceA\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{\"driverId\":\"codex\",\"programPath\":\"{host_path}\",\"version\":\"test\"}}}}");
+    let user_request = r#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#;
     let authenticate = format!("{{\"capability\":\"{capability}\",\"operation\":\"AuthenticateService\"}}");
     let connect_service = || {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -231,6 +230,11 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     drop(first);
     // The same fresh request must still apply through User. A prior User
     // commit would make an accidental service replay invisible here.
+    let caller_path = user_request.replace("\"driverId\":\"codex\"",
+        "\"driverId\":\"codex\",\"programPath\":\"C:/caller-selected.exe\"");
+    write_frame(&mut user, caller_path.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"DENIED\""),
+        "caller-selected executable was admitted");
     write_frame(&mut user, user_request.as_bytes());
     assert!(read_frame(&mut user).contains("\"status\":\"APPLIED\""));
     write_frame(&mut user, user_request.as_bytes());

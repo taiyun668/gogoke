@@ -221,6 +221,7 @@ mod platform {
             bytes_written: *mut Dword,
             overlapped: *mut c_void,
         ) -> Bool;
+        fn FlushFileBuffers(file: Handle) -> Bool;
         fn DisconnectNamedPipe(pipe: Handle) -> Bool;
     }
 
@@ -919,6 +920,15 @@ mod platform {
             super::validate_frame_length(frame.len())?;
             self.write_all(&(frame.len() as u32).to_le_bytes())?;
             self.write_all(frame)
+        }
+
+        /// Windows may discard unread bytes when DisconnectNamedPipe closes a
+        /// byte pipe. On a final response, wait until the peer consumes it.
+        pub fn flush_for_disconnect(&self) -> Result<(), PrivateIpcError> {
+            if unsafe { FlushFileBuffers(self.handle.raw()) } == FALSE {
+                return Err(os_error("FlushFileBuffers(private IPC final reply)"));
+            }
+            Ok(())
         }
 
         fn read_exact(&self, buffer: &mut [u8]) -> Result<(), PrivateIpcError> {
