@@ -47,6 +47,9 @@ pub mod orchestration;
 pub(crate) mod instance;
 
 #[cfg(windows)]
+pub(crate) mod seat;
+
+#[cfg(windows)]
 pub(crate) mod ledger;
 
 #[cfg(windows)]
