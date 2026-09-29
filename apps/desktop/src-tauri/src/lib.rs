@@ -351,6 +351,7 @@ pub fn run() {
             gogoke_update::gogoke_update_signal_ready,
             gogoke_update::gogoke_update_take_failure,
             public_runtime::product_entry::gogoke_r2_goal_probe,
+            public_runtime::product_entry::gogoke_design37_register_codex_instance,
             files::file_read,
             files::file_write,
             files::read_image_as_data_url,
