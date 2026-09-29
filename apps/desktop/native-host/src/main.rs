@@ -77,7 +77,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         frame.answer.send((reply, should_stop))?;
         if should_stop { break; }
     }
-    worker.join().map_err(|_| io::Error::other("service pipe worker panicked"))??;
+    worker.join().map_err(|_| io::Error::other("service pipe worker panicked"))?
+        .map_err(|error| io::Error::other(error.to_string()))?;
     product.close_checked()?;
     drop(lock);
     Ok(())
