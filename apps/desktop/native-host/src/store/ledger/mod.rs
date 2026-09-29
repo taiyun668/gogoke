@@ -1084,6 +1084,24 @@ pub(crate) fn record(
     if session.purpose == SessionPurpose::FormalReview && input.tier == Tier::Global {
         return Err(AtomicError::InvalidRecord("formal review global tier"));
     }
+    let raw_terminal = Statement::prepare(
+        connection.as_ptr(),
+        "SELECT state FROM v37_ledger_raw_source
+         WHERE session_id = ? AND source_epoch = ? AND source_cursor = ?",
+    )?;
+    raw_terminal.bind_text(1, &input.session_id)?;
+    raw_terminal.bind_text(2, &input.source_epoch)?;
+    raw_terminal.bind_text(3, &input.source_cursor)?;
+    let mut found_terminal = false;
+    while raw_terminal.step_row()? {
+        if raw_terminal.column_text(0)? == "NO_EVENT" {
+            found_terminal = true;
+        }
+    }
+    drop(raw_terminal);
+    if found_terminal {
+        return Err(AtomicError::OperationConflict);
+    }
     if let Some(existing) = existing_event(connection, &input.event_id)? {
         return if existing.input == *input {
             Ok(existing)
@@ -2360,6 +2378,13 @@ mod tests {
         )
         .expect("terminal row read")
         .is_none());
+        assert!(matches!(
+            record(
+                &mut connection,
+                &event_at("late-normalized-event", &registration, Tier::Session, "1"),
+            ),
+            Err(AtomicError::OperationConflict)
+        ));
         assert_eq!(
             scalar(
                 &connection,
@@ -2369,6 +2394,19 @@ mod tests {
             .expect("terminal disposition"),
             "NO_EVENT:protocol_reply_without_ledger_event"
         );
+        assert!(query(
+            &connection,
+            &Reader {
+                domain_id: registration.domain_id.clone(),
+                seat_id: registration.seat_id.clone(),
+                session_id: registration.session_id.clone(),
+            },
+            &start,
+            10,
+        )
+        .expect("ordinary query excludes raw terminal rows")
+        .events
+        .is_empty());
         assert_eq!(recover(&connection).expect("ordinary recovery").cursor, start.cursor);
         drop(custodian);
         connection.close_checked().expect("close");
