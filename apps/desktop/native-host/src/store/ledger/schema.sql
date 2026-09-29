@@ -87,7 +87,8 @@ END;
 -- no ledger cursor of its own and is never joined by the user-facing query
 -- or receipt paths.  The source cursor is the adapter's cursor, while the
 -- operation/ticket/session/generation columns bind one exact frame to H's
--- durable process custody.
+-- durable process custody. A valid protocol reply/notification without a
+-- normalized K-LEDGER event is terminal NO_EVENT with a bounded reason code.
 CREATE TABLE IF NOT EXISTS v37_ledger_raw_source (
     operation_id TEXT NOT NULL,
     process_ticket TEXT NOT NULL,
@@ -106,14 +107,19 @@ CREATE TABLE IF NOT EXISTS v37_ledger_raw_source (
         length(raw_bytes) BETWEEN 1 AND 1048576
         AND substr(raw_bytes, -1, 1) = X'0A'
     ),
-    state TEXT NOT NULL CHECK (state IN ('PENDING', 'RESOLVED')),
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'RESOLVED', 'NO_EVENT')),
     resolved_event_id TEXT,
+    no_event_reason TEXT,
     PRIMARY KEY (operation_id, source_epoch, source_cursor),
     UNIQUE (process_ticket, source_epoch, source_cursor),
     CHECK (
-        (state = 'PENDING' AND resolved_event_id IS NULL)
+        (state = 'PENDING' AND resolved_event_id IS NULL AND no_event_reason IS NULL)
         OR
-        (state = 'RESOLVED' AND resolved_event_id IS NOT NULL)
+        (state = 'RESOLVED' AND resolved_event_id IS NOT NULL AND no_event_reason IS NULL)
+        OR
+        (state = 'NO_EVENT' AND resolved_event_id IS NULL
+         AND no_event_reason IS NOT NULL
+         AND length(no_event_reason) BETWEEN 1 AND 128)
     )
 ) STRICT;
 

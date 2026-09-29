@@ -12,6 +12,66 @@ use crate::process::OriginBoundFrame;
 use std::collections::BTreeMap;
 
 const RAW_SOURCE_MAX_BYTES: usize = 1024 * 1024;
+const RAW_SOURCE_OLD_COLUMNS: [&str; 11] = [
+    "operation_id",
+    "process_ticket",
+    "custodian_nonce",
+    "domain_id",
+    "session_id",
+    "generation",
+    "source_epoch",
+    "source_cursor",
+    "raw_bytes",
+    "state",
+    "resolved_event_id",
+];
+const RAW_SOURCE_COLUMNS: [&str; 12] = [
+    "operation_id",
+    "process_ticket",
+    "custodian_nonce",
+    "domain_id",
+    "session_id",
+    "generation",
+    "source_epoch",
+    "source_cursor",
+    "raw_bytes",
+    "state",
+    "resolved_event_id",
+    "no_event_reason",
+];
+const RAW_SOURCE_SCHEMA: &str = "CREATE TABLE v37_ledger_raw_source (
+    operation_id TEXT NOT NULL,
+    process_ticket TEXT NOT NULL,
+    custodian_nonce TEXT NOT NULL,
+    domain_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    source_epoch TEXT NOT NULL,
+    source_cursor TEXT NOT NULL CHECK (
+        length(source_cursor) BETWEEN 1 AND 20
+        AND source_cursor NOT GLOB '*[^0-9]*'
+        AND source_cursor <> '0'
+        AND substr(source_cursor, 1, 1) <> '0'
+    ),
+    raw_bytes BLOB NOT NULL CHECK (
+        length(raw_bytes) BETWEEN 1 AND 1048576
+        AND substr(raw_bytes, -1, 1) = X'0A'
+    ),
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'RESOLVED', 'NO_EVENT')),
+    resolved_event_id TEXT,
+    no_event_reason TEXT,
+    PRIMARY KEY (operation_id, source_epoch, source_cursor),
+    UNIQUE (process_ticket, source_epoch, source_cursor),
+    CHECK (
+        (state = 'PENDING' AND resolved_event_id IS NULL AND no_event_reason IS NULL)
+        OR
+        (state = 'RESOLVED' AND resolved_event_id IS NOT NULL AND no_event_reason IS NULL)
+        OR
+        (state = 'NO_EVENT' AND resolved_event_id IS NULL
+         AND no_event_reason IS NOT NULL
+         AND length(no_event_reason) BETWEEN 1 AND 128)
+    )
+) STRICT";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LedgerPosition {
@@ -144,6 +204,7 @@ pub(crate) struct RawSourceKey {
 pub(crate) enum RawSourceState {
     Pending,
     Resolved,
+    NoEvent,
 }
 
 impl RawSourceState {
@@ -151,6 +212,7 @@ impl RawSourceState {
         match value {
             "PENDING" => Ok(Self::Pending),
             "RESOLVED" => Ok(Self::Resolved),
+            "NO_EVENT" => Ok(Self::NoEvent),
             _ => Err(AtomicError::DurabilityContractFailed(format!(
                 "unknown raw source state: {value}"
             ))),
@@ -172,12 +234,19 @@ pub(crate) struct RawSourceRecord {
     pub(crate) raw_bytes: Vec<u8>,
     pub(crate) state: RawSourceState,
     pub(crate) resolved_event_id: Option<String>,
+    pub(crate) no_event_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RawSourceResolution {
     pub(crate) key: RawSourceKey,
     pub(crate) event_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RawSourceNoEventResolution {
+    pub(crate) key: RawSourceKey,
+    pub(crate) reason: String,
 }
 
 fn required(value: &str, field: &'static str) -> Result<(), AtomicError> {
@@ -209,6 +278,18 @@ fn raw_cursor(value: &str) -> Result<u64, AtomicError> {
 fn raw_bytes(value: &[u8]) -> Result<(), AtomicError> {
     if value.is_empty() || value.len() > RAW_SOURCE_MAX_BYTES || value.last() != Some(&b'\n') {
         return Err(AtomicError::InvalidRecord("rawSourceFrame"));
+    }
+    Ok(())
+}
+
+fn raw_no_event_reason(value: &str) -> Result<(), AtomicError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(AtomicError::InvalidRecord("noEventReason"));
     }
     Ok(())
 }
@@ -294,7 +375,9 @@ fn h_source_binding(
             ("COMMITTED", "ACTIVE" | "UNKNOWN")
                 | ("UNKNOWN", "UNKNOWN" | "STOPPED")
                 | ("STOPPED", "STOPPED")
-        )
+        ) || (expected.is_some()
+            && claim_state == "RELEASED"
+            && custody_state == "STOPPED")
     } else {
         claim_state == "COMMITTED" && custody_state == "ACTIVE"
     };
@@ -340,7 +423,8 @@ fn read_raw_source(
         connection.as_ptr(),
         "SELECT operation_id, process_ticket, custodian_nonce, domain_id,
                 session_id, generation, source_epoch, source_cursor,
-                hex(raw_bytes), state, COALESCE(resolved_event_id, '')
+                hex(raw_bytes), state, COALESCE(resolved_event_id, ''),
+                COALESCE(no_event_reason, '')
          FROM v37_ledger_raw_source
          WHERE operation_id = ? AND source_epoch = ? AND source_cursor = ?",
     )?;
@@ -352,6 +436,18 @@ fn read_raw_source(
     }
     let state = RawSourceState::parse(&statement.column_text(9)?)?;
     let resolved = statement.column_text(10)?;
+    let no_event_reason = statement.column_text(11)?;
+    let resolved_event_id = if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved)
+    };
+    let no_event_reason = if no_event_reason.is_empty() {
+        None
+    } else {
+        raw_no_event_reason(&no_event_reason)?;
+        Some(no_event_reason)
+    };
     let record = RawSourceRecord {
         key: RawSourceKey {
             operation_id: statement.column_text(0)?,
@@ -365,11 +461,18 @@ fn read_raw_source(
         generation: statement.column_text(5)?,
         raw_bytes: blob_hex(&statement, 8)?,
         state,
-        resolved_event_id: if resolved.is_empty() { None } else { Some(resolved) },
+        resolved_event_id,
+        no_event_reason,
     };
     let state_shape_ok = matches!(
-        (&record.state, &record.resolved_event_id),
-        (RawSourceState::Pending, None) | (RawSourceState::Resolved, Some(_))
+        (
+            &record.state,
+            &record.resolved_event_id,
+            &record.no_event_reason,
+        ),
+        (RawSourceState::Pending, None, None)
+            | (RawSourceState::Resolved, Some(_), None)
+            | (RawSourceState::NoEvent, None, Some(_))
     );
     if !state_shape_ok || statement.step_row()? {
         return Err(AtomicError::DurabilityContractFailed(
@@ -397,6 +500,76 @@ fn read_raw_key(key: &RawSourceKey) -> Result<(), AtomicError> {
         required(value, field)?;
     }
     raw_cursor(&key.source_cursor).map(|_| ())
+}
+
+fn raw_source_columns(
+    connection: &VerifiedDatabaseConnection<'_>,
+) -> Result<Vec<String>, AtomicError> {
+    let statement = Statement::prepare(
+        connection.as_ptr(),
+        "PRAGMA table_info('v37_ledger_raw_source')",
+    )?;
+    let mut columns = Vec::new();
+    while statement.step_row()? {
+        columns.push(statement.column_text(1)?);
+    }
+    Ok(columns)
+}
+
+/// The raw journal was introduced before its terminal no-event disposition.
+/// Preserve already-captured rows when an existing 8a database is opened by
+/// the extended schema; an unknown shape fails closed instead of being guessed.
+fn ensure_raw_source_schema(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+) -> Result<(), AtomicError> {
+    let columns = raw_source_columns(connection)?;
+    if columns.is_empty()
+        || columns
+            .iter()
+            .map(|value| value.as_str())
+            .eq(RAW_SOURCE_COLUMNS.iter().copied())
+    {
+        return Ok(());
+    }
+    if !columns
+        .iter()
+        .map(|value| value.as_str())
+        .eq(RAW_SOURCE_OLD_COLUMNS.iter().copied())
+    {
+        return Err(AtomicError::DurabilityContractFailed(
+            "A.1 raw source schema shape is unknown".into(),
+        ));
+    }
+    connection
+        .execute("BEGIN IMMEDIATE")
+        .map_err(AtomicError::from)?;
+    let migrated: Result<(), crate::store::same_open::SameOpenError> = (|| {
+        connection.execute(
+            "ALTER TABLE v37_ledger_raw_source RENAME TO v37_ledger_raw_source_legacy",
+        )?;
+        connection.execute(RAW_SOURCE_SCHEMA)?;
+        connection.execute(
+            "INSERT INTO v37_ledger_raw_source
+             (operation_id, process_ticket, custodian_nonce, domain_id, session_id,
+              generation, source_epoch, source_cursor, raw_bytes, state,
+              resolved_event_id, no_event_reason)
+             SELECT operation_id, process_ticket, custodian_nonce, domain_id, session_id,
+                    generation, source_epoch, source_cursor, raw_bytes, state,
+                    resolved_event_id, NULL
+             FROM v37_ledger_raw_source_legacy",
+        )?;
+        connection.execute("DROP TABLE v37_ledger_raw_source_legacy")?;
+        Ok(())
+    })();
+    match migrated {
+        Ok(()) => connection
+            .execute("COMMIT")
+            .map_err(AtomicError::from),
+        Err(error) => {
+            let _ = connection.execute("ROLLBACK");
+            Err(AtomicError::from(error))
+        }
+    }
 }
 
 fn registered(
@@ -663,8 +836,8 @@ pub(crate) fn capture_raw_source(
         connection.as_ptr(),
         "INSERT INTO v37_ledger_raw_source
          (operation_id, process_ticket, custodian_nonce, domain_id, session_id,
-          generation, source_epoch, source_cursor, raw_bytes, state)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')",
+          generation, source_epoch, source_cursor, raw_bytes, state, no_event_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL)",
     )?;
     statement.bind_text(1, operation_id)?;
     statement.bind_text(2, &binding.process_ticket)?;
@@ -684,7 +857,8 @@ pub(crate) fn capture_raw_source(
 /// Recover a pending frame for the native normalizer. H may be COMMITTED with
 /// UNKNOWN custody after host restart; that pair is accepted only when the
 /// durable operation/ticket/session/generation binding still matches. A
-/// released or otherwise ambiguous source is refused.
+/// RELEASED claim is accepted only for an already-captured row whose custody
+/// is STOPPED and whose stored binding still matches.
 pub(crate) fn read_pending_raw_source(
     connection: &VerifiedDatabaseConnection<'_>,
     operation_id: &str,
@@ -727,6 +901,9 @@ pub(crate) fn resolve_raw_source(
             Err(AtomicError::OperationConflict)
         };
     }
+    if existing.state == RawSourceState::NoEvent {
+        return Err(AtomicError::OperationConflict);
+    }
     let binding = h_source_binding(connection, operation_id, Some(&existing), None, true)?;
     let event = Statement::prepare(
         connection.as_ptr(),
@@ -751,7 +928,8 @@ pub(crate) fn resolve_raw_source(
         "UPDATE v37_ledger_raw_source
          SET state = 'RESOLVED', resolved_event_id = ?
          WHERE operation_id = ? AND source_epoch = ? AND source_cursor = ?
-           AND state = 'PENDING' AND resolved_event_id IS NULL",
+           AND state = 'PENDING' AND resolved_event_id IS NULL
+           AND no_event_reason IS NULL",
     )?;
     statement.bind_text(1, event_id)?;
     statement.bind_text(2, operation_id)?;
@@ -768,6 +946,61 @@ pub(crate) fn resolve_raw_source(
     Ok(RawSourceResolution {
         key,
         event_id: event_id.to_owned(),
+    })
+}
+
+/// Mark a captured provider frame as terminal without manufacturing a
+/// normalized ledger event. This covers JSON-RPC replies/notifications (and
+/// other protocol frames) that are valid source bytes but carry no K-LEDGER
+/// update. The reason is a bounded code, never raw protocol text.
+pub(crate) fn resolve_raw_source_no_event(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    operation_id: &str,
+    source_epoch: &str,
+    source_cursor: &str,
+    reason: &str,
+) -> Result<RawSourceNoEventResolution, AtomicError> {
+    let key = raw_key(operation_id, source_epoch, source_cursor)?;
+    raw_no_event_reason(reason)?;
+    let existing = read_raw_source(connection, &key)?
+        .ok_or(AtomicError::InvalidRecord("rawSource"))?;
+    if existing.state == RawSourceState::NoEvent {
+        return if existing.no_event_reason.as_deref() == Some(reason) {
+            Ok(RawSourceNoEventResolution {
+                key,
+                reason: reason.to_owned(),
+            })
+        } else {
+            Err(AtomicError::OperationConflict)
+        };
+    }
+    if existing.state == RawSourceState::Resolved {
+        return Err(AtomicError::OperationConflict);
+    }
+    h_source_binding(connection, operation_id, Some(&existing), None, true)?;
+    let statement = Statement::prepare(
+        connection.as_ptr(),
+        "UPDATE v37_ledger_raw_source
+         SET state = 'NO_EVENT', resolved_event_id = NULL, no_event_reason = ?
+         WHERE operation_id = ? AND source_epoch = ? AND source_cursor = ?
+           AND state = 'PENDING' AND resolved_event_id IS NULL
+           AND no_event_reason IS NULL",
+    )?;
+    statement.bind_text(1, reason)?;
+    statement.bind_text(2, operation_id)?;
+    statement.bind_text(3, source_epoch)?;
+    statement.bind_text(4, source_cursor)?;
+    statement.step_done()?;
+    let resolved = read_raw_source(connection, &key)?
+        .ok_or_else(|| AtomicError::DurabilityContractFailed("A.1 raw source disappeared".into()))?;
+    if resolved.state != RawSourceState::NoEvent
+        || resolved.no_event_reason.as_deref() != Some(reason)
+    {
+        return Err(AtomicError::OperationConflict);
+    }
+    Ok(RawSourceNoEventResolution {
+        key,
+        reason: reason.to_owned(),
     })
 }
 
@@ -1179,6 +1412,7 @@ fn scalar(connection: &VerifiedDatabaseConnection<'_>, sql: &str) -> Result<Stri
 pub(crate) fn initialize_schema(
     connection: &mut VerifiedDatabaseConnection<'_>,
 ) -> Result<LedgerPosition, AtomicError> {
+    ensure_raw_source_schema(connection)?;
     exec(connection, include_str!("schema.sql"))?;
     recover(connection)
 }
@@ -1381,6 +1615,20 @@ mod tests {
         registration: &SessionRegistration,
         operation_id: &str,
     ) -> (ProcessCustodian, PreparedCustody, OriginBoundFrame) {
+        raw_process_fixture_with_command(
+            connection,
+            registration,
+            operation_id,
+            "echo raw-one&echo raw-two",
+        )
+    }
+
+    fn raw_process_fixture_with_command(
+        connection: &mut VerifiedDatabaseConnection<'_>,
+        registration: &SessionRegistration,
+        operation_id: &str,
+        command_line: &str,
+    ) -> (ProcessCustodian, PreparedCustody, OriginBoundFrame) {
         let command = PathBuf::from(
             std::env::var_os("SystemRoot").expect("SystemRoot"),
         )
@@ -1390,7 +1638,7 @@ mod tests {
         launch.arguments = vec![
             "/D".into(),
             "/C".into(),
-            "echo raw-one&echo raw-two".into(),
+            command_line.into(),
         ];
         launch.protocol_stdio = true;
         let request = PrepareRequest {
@@ -1875,9 +2123,23 @@ mod tests {
         exec(
             &mut connection,
             "UPDATE gogoke_coordination_process_custody
-             SET state = 'UNKNOWN' WHERE operation_id = 'operation-recovery'",
+             SET state = 'STOPPED', stop_proof_hash = 'proof-recovery'
+             WHERE operation_id = 'operation-recovery';
+             UPDATE gogoke_v37_h_claim
+             SET state = 'RELEASED', stop_fact_id = 'proof-recovery'
+             WHERE process_operation_id = 'operation-recovery'",
         )
-        .expect("simulate host custody recovery");
+        .expect("simulate durable stop followed by H release");
+        assert!(matches!(
+            capture_raw_source(
+                &mut connection,
+                &frame,
+                "operation-recovery",
+                "source-epoch",
+                "1",
+            ),
+            Err(AtomicError::OperationConflict)
+        ));
         drop(custodian);
         connection.close_checked().expect("close");
 
@@ -1935,6 +2197,168 @@ mod tests {
             1
         );
         reopened.close_checked().expect("close reopened");
+    }
+
+    #[test]
+    fn raw_source_schema_upgrade_preserves_pending_bytes() {
+        let _guard = route_b_test_guard();
+        let path = scratch_root();
+        let root = RootLock::acquire(&path).expect("root");
+        let db = path.join("ledger.db");
+        let mut connection = create_new(&root, &db).expect("open");
+        exec(
+            &mut connection,
+            "CREATE TABLE orchestration_events
+             (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
+              occurred_at TEXT, event_type TEXT, payload_json TEXT);
+             CREATE TABLE v37_ledger_raw_source (
+                 operation_id TEXT NOT NULL,
+                 process_ticket TEXT NOT NULL,
+                 custodian_nonce TEXT NOT NULL,
+                 domain_id TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 generation TEXT NOT NULL,
+                 source_epoch TEXT NOT NULL,
+                 source_cursor TEXT NOT NULL,
+                 raw_bytes BLOB NOT NULL,
+                 state TEXT NOT NULL,
+                 resolved_event_id TEXT,
+                 PRIMARY KEY (operation_id, source_epoch, source_cursor),
+                 UNIQUE (process_ticket, source_epoch, source_cursor)
+             ) STRICT;
+             INSERT INTO v37_ledger_raw_source
+             VALUES ('operation-old', 'ticket-old', 'nonce-old', 'project-old',
+                     'session-old', '1', 'epoch-old', '1', X'610A', 'PENDING', NULL)",
+        )
+        .expect("legacy raw journal");
+        initialize_schema(&mut connection).expect("upgrade schema");
+        let record = read_raw_source(
+            &connection,
+            &RawSourceKey {
+                operation_id: "operation-old".into(),
+                source_epoch: "epoch-old".into(),
+                source_cursor: "1".into(),
+            },
+        )
+        .expect("read upgraded raw row")
+        .expect("upgraded row");
+        assert_eq!(record.state, RawSourceState::Pending);
+        assert_eq!(record.raw_bytes, b"a\n");
+        assert_eq!(record.no_event_reason, None);
+        connection.close_checked().expect("close");
+    }
+
+    #[test]
+    fn no_event_terminal_resolution_is_bounded_and_idempotent() {
+        let _guard = route_b_test_guard();
+        let path = scratch_root();
+        let root = RootLock::acquire(&path).expect("root");
+        let db = path.join("ledger.db");
+        let mut connection = create_new(&root, &db).expect("open");
+        exec(
+            &mut connection,
+            "CREATE TABLE orchestration_events
+             (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
+              occurred_at TEXT, event_type TEXT, payload_json TEXT)",
+        )
+        .expect("legacy table");
+        let start = initialize_schema(&mut connection).expect("schema");
+        let registration = session(
+            "project-no-event",
+            "seat-no-event",
+            "session-no-event",
+            SessionPurpose::Work,
+            None,
+        );
+        register_session(&mut connection, &registration).expect("register");
+        initialize_raw_h_fixture(&mut connection);
+        let (mut custodian, _prepared, frame) = raw_process_fixture_with_command(
+            &mut connection,
+            &registration,
+            "operation-no-event",
+            r#"echo {"jsonrpc":"2.0","id":7,"result":{}}"#,
+        );
+        assert!(frame.bytes().starts_with(br#"{"jsonrpc":"2.0""#));
+        capture_raw_source(
+            &mut connection,
+            &frame,
+            "operation-no-event",
+            "source-epoch",
+            "1",
+        )
+        .expect("capture protocol frame");
+
+        assert!(matches!(
+            resolve_raw_source_no_event(
+                &mut connection,
+                "operation-no-event",
+                "source-epoch",
+                "1",
+                "",
+            ),
+            Err(AtomicError::InvalidRecord("noEventReason"))
+        ));
+        let oversized_reason = "x".repeat(129);
+        assert!(matches!(
+            resolve_raw_source_no_event(
+                &mut connection,
+                "operation-no-event",
+                "source-epoch",
+                "1",
+                &oversized_reason,
+            ),
+            Err(AtomicError::InvalidRecord("noEventReason"))
+        ));
+        let resolved = resolve_raw_source_no_event(
+            &mut connection,
+            "operation-no-event",
+            "source-epoch",
+            "1",
+            "protocol_reply_without_ledger_event",
+        )
+        .expect("terminal no-event resolution");
+        assert_eq!(resolved.reason, "protocol_reply_without_ledger_event");
+        assert_eq!(
+            resolve_raw_source_no_event(
+                &mut connection,
+                "operation-no-event",
+                "source-epoch",
+                "1",
+                "protocol_reply_without_ledger_event",
+            )
+            .expect("idempotent no-event replay"),
+            resolved
+        );
+        assert!(matches!(
+            resolve_raw_source_no_event(
+                &mut connection,
+                "operation-no-event",
+                "source-epoch",
+                "1",
+                "different_reason",
+            ),
+            Err(AtomicError::OperationConflict)
+        ));
+        assert!(read_pending_raw_source(
+            &connection,
+            "operation-no-event",
+            "source-epoch",
+            "1",
+        )
+        .expect("terminal row read")
+        .is_none());
+        assert_eq!(
+            scalar(
+                &connection,
+                "SELECT state || ':' || no_event_reason
+                 FROM v37_ledger_raw_source",
+            )
+            .expect("terminal disposition"),
+            "NO_EVENT:protocol_reply_without_ledger_event"
+        );
+        assert_eq!(recover(&connection).expect("ordinary recovery").cursor, start.cursor);
+        drop(custodian);
+        connection.close_checked().expect("close");
     }
 
     #[test]
