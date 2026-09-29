@@ -162,6 +162,8 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
     assert.equal(reclaimed.result.takeoverReady, false);
     assert.equal(reclaimed.result.takeoverAnswers, null);
     assert.equal((await call(h.reconstruct(), readyBeforeReclaim)).status, "STALE");
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "takeover-answers", "answersAfterReclaim", "leadA", "7",
+      { ...answers.payload, takeoverEpoch: "epochD" }))).status, "CONFLICT");
     h.revoke();
     assert.equal((await call(h.reconstruct(), req("K-SEAT", "takeover-answers", "revokedAnswers", "leadA", "7",
       answers.payload))).status, "DENIED");

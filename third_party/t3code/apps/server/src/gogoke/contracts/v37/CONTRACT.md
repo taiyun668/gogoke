@@ -15,8 +15,8 @@ transaction as a write and on **every** scoped read and delivery. A Node
 object, model output, directory path, environment variable, or UI state cannot
 issue authority. Unwired production calls fail with `UNWIRED`.
 
-`APPLIED` means the durable owner committed the operation. `REPLAYED` returns
-the same committed result for the same request ID and identical request bytes;
+`APPLIED` means the durable owner committed the operation. For writes, `REPLAYED`
+returns the same committed result for the same request ID and identical request bytes;
 reuse of that ID with different bytes is `CONFLICT`. A competing expected
 revision is `STALE`. `UNKNOWN` means commit outcome could not be established:
 the caller must query by request ID, not blindly retry with a new ID. A denied
@@ -26,6 +26,11 @@ write, and receipt on its owning store connection. A process restart must
 recover request IDs and committed receipts before accepting new writes.
 The test fakes compare the received wire bytes, including JSON key order;
 parsing and re-encoding cannot decide request identity.
+Current scoped reads such as `state-card` and `call-permission-table` replay
+only while their source revision and observed context are unchanged. An exact
+read retry after either changes is `STALE`, so an old ready state or permission
+table cannot masquerade as a current observation. A committed write receipt
+remains historical and replayable while the caller retains current authority.
 
 The catalog in `catalog.ts` is the closed operation list. The following is the
 operation-specific contract that implementations and the shared conformance

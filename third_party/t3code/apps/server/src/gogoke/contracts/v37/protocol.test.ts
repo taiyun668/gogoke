@@ -96,8 +96,10 @@ describe("design 37 closed operation protocol", () => {
     });
   });
   it("runs reusable QCard, seat and instance behavior cases on the fake", async () => {
+    let reclaimedStore: V37M1FakeStore | undefined;
     await runV37M1ContractCases((caseId) => {
       const store = new V37M1FakeStore();
+      if (caseId === "seat-takeover") reclaimedStore = store;
       store.templates.set("templateA", { instruction: "default" });
       let grant = true;
       let takeoverContext: V37TakeoverContext | null = caseId === "seat-takeover-unwired" ? null :
@@ -121,6 +123,7 @@ describe("design 37 closed operation protocol", () => {
         reconstruct: () => new V37M1FakePort(store, options), revoke: () => { grant = false; },
         setTakeoverContext: (context: V37TakeoverContext | null) => { takeoverContext = context; } };
     });
+    assert.equal(reclaimedStore?.seats.get("projectA:leadA")?.takeover, undefined);
   });
   it("runs operational session, ledger and inbox contract cases on the fake", async () => {
     await runV37CoreContractCases((caseId) => {
