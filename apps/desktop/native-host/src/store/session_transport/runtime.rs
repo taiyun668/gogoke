@@ -5,8 +5,10 @@
 //! reconciliation reads the original operation; a new request cannot retry it.
 
 use crate::store::atomic::{AtomicError, Statement};
+use crate::store::authority::{self, ProductIdentitySnapshot};
 use crate::store::same_open::VerifiedDatabaseConnection;
-use crate::store::seat::NativeOrigin;
+use crate::store::seat::{self, NativeOrigin, State as SeatState};
+use super::admission::{self, AdmissionError, AdmissionRequest, AdmissionResult, TrustedLimits};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionPhase {
@@ -25,6 +27,137 @@ pub(crate) enum RuntimeError {
     StaleGeneration,
     UnknownExternalEffect,
     MissingDurableFact,
+    PermissionNotEnforced,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PermissionTier {
+    ReadOnly,
+    NoNetwork,
+    IsolatedWrite,
+    NetworkedWrite,
+}
+
+/// A reservation is not a process permission. H's open path must call this
+/// before prepare. F currently returns an opaque directory receipt but no
+/// verified launch profile/path pair, and E has no durable tier binding. Even
+/// NoNetwork cannot promise its full filesystem scope from those facts alone.
+/// Refuse every runnable tier until the native ACL/profile/worktree witness is
+/// available; no weaker tier is silently substituted.
+pub(crate) fn require_launch_permission(_tier: PermissionTier)
+    -> Result<(), RuntimeError> {
+    Err(RuntimeError::PermissionNotEnforced)
+}
+
+/// Owner-origin admission rechecks the native issuer before and within H's
+/// BEGIN IMMEDIATE transaction. Lead admission stays denied until E exposes
+/// an H-facing verifier for the opaque native lead channel. `capacity` must
+/// read E's project cap and F's instance cap on this same connection; it must
+/// not capture a wire value or a cached UI state.
+pub(crate) fn reserve_native(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    origin: &NativeOrigin<'_>,
+    seat_id: &str,
+    request: &AdmissionRequest<'_>,
+    capacity: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<TrustedLimits, AdmissionError>,
+) -> Result<AdmissionResult, AdmissionError> {
+    let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
+    let identity = authority::read_product_identity(db, owner).map_err(|_| AdmissionError::Denied)?;
+    admission::reserve_admission(db, request, |db| {
+        check_owner_and_seat(db, &identity, seat_id, request)?;
+        current_instance_pin(db, request.instance_id)?;
+        capacity(db)
+    })
+}
+
+/// Commit consumes the exact reservation only while the native Owner issuer,
+/// target seat, instance and pin remain current. No caller-supplied capacity
+/// or grant is accepted by this entry.
+pub(crate) fn commit_native(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    origin: &NativeOrigin<'_>,
+    seat_id: &str,
+    request: &AdmissionRequest<'_>,
+) -> Result<AdmissionResult, AdmissionError> {
+    let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
+    let identity = authority::read_product_identity(db, owner).map_err(|_| AdmissionError::Denied)?;
+    admission::commit_admission(db, request, |db| {
+        check_owner_and_seat(db, &identity, seat_id, request)?;
+        current_instance_pin(db, request.instance_id).map(|_| ())
+    })
+}
+
+pub(crate) fn release_native(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    origin: &NativeOrigin<'_>,
+    request: &AdmissionRequest<'_>,
+) -> Result<AdmissionResult, AdmissionError> {
+    let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
+    let identity = authority::read_product_identity(db, owner).map_err(|_| AdmissionError::Denied)?;
+    admission::release_admission(db, request, |db| check_owner_current(db, &identity))
+}
+
+/// This is the registered F pin, not a path or digest supplied by the request.
+/// The native catalog must provide the executable path and ProcessCustodian
+/// must compare the file and launched image against this digest again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstancePin {
+    pub(crate) driver_id: String,
+    pub(crate) digest: String,
+    pub(crate) version: String,
+}
+
+pub(crate) fn current_instance_pin(
+    db: &VerifiedDatabaseConnection<'_>,
+    instance_id: &str,
+) -> Result<InstancePin, AdmissionError> {
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT driver_id,program_digest,version FROM main.gogoke_v37_instances \
+         WHERE instance_id=?1 AND install_state='INSTALLED' AND login_state='LOGGED_IN'")?;
+    row.bind_text(1, instance_id)?;
+    if !row.step_row()? { return Err(AdmissionError::Denied); }
+    let pin = InstancePin { driver_id: row.column_text(0)?,
+        digest: row.column_text(1)?, version: row.column_text(2)? };
+    if pin.driver_id.is_empty() || pin.digest.len() != 71
+        || !pin.digest.starts_with("sha256:")
+        || !pin.digest[7..].bytes().all(|b| b.is_ascii_hexdigit()) || pin.version.is_empty()
+        || row.step_row()? { return Err(AdmissionError::Denied); }
+    Ok(pin)
+}
+
+fn check_owner_and_seat(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    identity: &ProductIdentitySnapshot,
+    seat_id: &str,
+    request: &AdmissionRequest<'_>,
+) -> Result<(), AdmissionError> {
+    check_owner_current(db, identity)?;
+    let seat = seat::get(db, request.domain_id, seat_id).map_err(|_| AdmissionError::Denied)?
+        .ok_or(AdmissionError::Denied)?;
+    if seat.state != SeatState::Busy || seat.instance_id != request.instance_id
+        || seat.generation.to_string() != request.generation {
+        return Err(AdmissionError::Denied);
+    }
+    Ok(())
+}
+
+fn check_owner_current(
+    db: &VerifiedDatabaseConnection<'_>,
+    identity: &ProductIdentitySnapshot,
+) -> Result<(), AdmissionError> {
+    // The issuer was checked against the held root before the transaction.
+    // Rechecking every mutable profile head inside this transaction prevents
+    // an intervening policy/revocation change from authorizing a write.
+    let profile = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_authority_profile WHERE singleton=1 \
+         AND profile_id=?1 AND root_identity=?2 AND owner_principal_id=?3 \
+         AND owner_seat_id=?4 AND policy_revision=?5 AND revocation_head=?6")?;
+    for (index, value) in [
+        &identity.profile_id, &identity.root_identity, &identity.principal_id,
+        &identity.seat_id, &identity.policy_revision, &identity.revocation_head,
+    ].iter().enumerate() { profile.bind_text((index + 1) as i32, value)?; }
+    if !profile.step_row()? || profile.step_row()? { return Err(AdmissionError::Denied); }
+    Ok(())
 }
 
 /// Only an exact, current claim read from H's admission table. It is an
@@ -260,6 +393,42 @@ impl SessionTransitions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_tiers_do_not_silently_downgrade() {
+        for tier in [PermissionTier::ReadOnly, PermissionTier::NoNetwork,
+            PermissionTier::IsolatedWrite, PermissionTier::NetworkedWrite] {
+            assert_eq!(require_launch_permission(tier), Err(RuntimeError::PermissionNotEnforced));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pin_is_read_from_same_verified_store_and_requires_observed_login() {
+        use crate::root::RootLock;
+        use crate::store::same_open::{create_new, route_b_test_guard};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!("gogoke-h-pin-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let root = RootLock::acquire(&folder).unwrap();
+        let path = folder.join("state.sqlite");
+        let mut db = create_new(&root, &path).unwrap();
+        db.execute("CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY,driver_id TEXT,program_digest TEXT,version TEXT,install_state TEXT,login_state TEXT) STRICT").unwrap();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        db.execute(&format!("INSERT INTO gogoke_v37_instances VALUES('instanceA','codex','{digest}','1.0','INSTALLED','UNKNOWN')")).unwrap();
+        assert!(matches!(current_instance_pin(&db, "instanceA"), Err(AdmissionError::Denied)));
+        db.execute("UPDATE gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='instanceA'").unwrap();
+        assert_eq!(current_instance_pin(&db, "instanceA").unwrap().digest, digest);
+        db.execute("UPDATE gogoke_v37_instances SET program_digest='caller-value' WHERE instance_id='instanceA'").unwrap();
+        assert!(matches!(current_instance_pin(&db, "instanceA"), Err(AdmissionError::Denied)));
+        db.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(folder).unwrap();
+    }
 
     #[test]
     fn uncertain_write_never_replays_or_switches_generation() {
