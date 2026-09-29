@@ -1,5 +1,6 @@
 //! Trusted native bootstrap: no caller-supplied issuer, principal or boolean.
 use super::super::orchestration::OrchestrationError;
+use super::super::atomic::Statement;
 use super::super::same_open::VerifiedDatabaseConnection;
 use super::model::{denied, identifier, revision};
 use super::transaction::{self, Result, Transaction};
@@ -8,6 +9,7 @@ use std::ffi::c_void;
 
 const SCHEMA_V1: &str = include_str!("schema_v1.sql");
 const SCHEMA: &str = include_str!("schema.sql");
+const PROFILE_QUERY: &str = "SELECT profile_id,root_identity,owner_principal_id,owner_seat_id,issuer_id,policy_revision,revocation_head,schema_revision FROM main.gogoke_authority_profile WHERE singleton=1";
 
 #[link(name = "bcrypt")]
 unsafe extern "system" {
@@ -225,11 +227,13 @@ pub(super) fn verify_schema_v1(tx: &mut Transaction<'_, '_>) -> Result<()> {
 }
 
 pub(super) fn profile(tx: &mut Transaction<'_, '_>) -> Result<Profile> {
-    let rows = tx.query(
-        "SELECT profile_id,root_identity,owner_principal_id,owner_seat_id,issuer_id,policy_revision,revocation_head,schema_revision FROM main.gogoke_authority_profile WHERE singleton=1",
-        &[], 8)?;
+    let rows = tx.query(PROFILE_QUERY, &[], 8)?;
+    parse_profile(rows, &tx.root_identity())
+}
+
+fn parse_profile(rows: Vec<Vec<String>>, root_identity: &str) -> Result<Profile> {
     let row = rows.first().ok_or(OrchestrationError::AccessDenied)?;
-    if rows.len() != 1 || row[7] != "2" || row[1] != tx.root_identity() {
+    if rows.len() != 1 || row.len() != 8 || row[7] != "2" || row[1] != root_identity {
         return denied();
     }
     for index in [0, 2, 3, 4] {
@@ -246,6 +250,35 @@ pub(super) fn profile(tx: &mut Transaction<'_, '_>) -> Result<Profile> {
         policy_revision: row[5].clone(),
         revocation_head: row[6].clone(),
     })
+}
+
+/// Recheck the native issuer inside an already-open same-connection write
+/// group. Seat operations use this after BEGIN IMMEDIATE and before their
+/// first write; a type-only OwnerIssuer or an earlier read is not admission.
+pub(crate) fn check_owner_in_current_transaction(
+    connection: &VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+) -> Result<()> {
+    unsafe extern "C" {
+        fn sqlite3_get_autocommit(database: *mut c_void) -> i32;
+    }
+    if unsafe { sqlite3_get_autocommit(connection.as_ptr()) } != 0 {
+        return denied();
+    }
+    let query = Statement::prepare(connection.as_ptr(), PROFILE_QUERY)?;
+    let mut rows = Vec::new();
+    while query.step_row()? {
+        if rows.len() >= 2 {
+            return denied();
+        }
+        let mut row = Vec::with_capacity(8);
+        for column in 0..8 {
+            row.push(query.column_text(column)?);
+        }
+        rows.push(row);
+    }
+    let current = parse_profile(rows, &connection.root_identity().opaque())?;
+    owner.check(&current)
 }
 
 pub(crate) fn read_product_identity(
