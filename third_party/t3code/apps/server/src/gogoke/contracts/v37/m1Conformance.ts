@@ -4,7 +4,8 @@ import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37R
 
 export type V37M1Case = "card-fallback" | "card-native" | "seat-user" | "seat-busy" |
   "seat-lead" | "seat-revoked" | "seat-takeover" | "seat-takeover-unwired" |
-  "instance" | "instance-unverified" | "instance-home" | "instance-home-no-stop" |
+  "instance" | "instance-unverified" | "instance-seat-denied" |
+  "instance-home" | "instance-home-no-stop" |
   "instance-home-busy" | "instance-home-unknown";
 export interface V37M1Harness {
   readonly port: V37Port; reconstruct(): V37Port; revoke(): void;
@@ -18,6 +19,8 @@ const req = (family: V37Request["family"], operation: V37Request["operation"],
   schema: V37_SCHEMA, family, operation, requestId, targetId,
   domainId: "projectA", expectedRevision, payload,
 });
+const instanceReq = (...args: Parameters<typeof req>): V37Request =>
+  ({ ...req(...args), domainId: "global" });
 const call = async (port: V37Port, request: V37Request): Promise<V37Receipt> => {
   const result = decodeV37Receipt(await port.execute(encodeV37Request(request)));
   assert.equal(result.requestId, request.requestId);
@@ -188,42 +191,50 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
       { layer: "LEAD", templateId: "templateA" }))).status, "APPLIED");
   }
   {
+    const h = factory("instance-seat-denied");
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "register", "seatCannotRegister",
+      "instanceA", "0", { driverId: "codex" }))).status,
+      "DENIED");
+  }
+  {
     const h = factory("instance-unverified");
-    const invalid = await call(h.port, req("K-INSTANCE", "register", "unverified", "instanceA", "0",
-      { homeRef: "homeA", programDigest: "verifiedDigest", version: "1" }));
+    const invalid = await call(h.port, instanceReq("K-INSTANCE", "register", "unverified", "instanceA", "0",
+      { driverId: "codex" }));
     assert.equal(invalid.status, "DENIED");
     assert.equal(invalid.revision, "0");
   }
   {
     const h = factory("instance");
-    const register = req("K-INSTANCE", "register", "registerA", "instanceA", "0",
-      { homeRef: "homeA", programDigest: "verifiedDigest", version: "1" });
+    const register = instanceReq("K-INSTANCE", "register", "registerA", "instanceA", "0",
+      { driverId: "codex" });
+    await assert.rejects(() => call(h.port, { ...register, requestId: "forgedHome",
+      payload: { driverId: "codex", homeRef: "borrowed" } }), /registration payload/);
     assert.equal((await call(h.port, register)).status, "APPLIED");
     assert.equal((await call(h.reconstruct(), register)).status, "REPLAYED");
-    assert.equal((await call(h.port, req("K-INSTANCE", "register", "sharedHome", "instanceB", "0",
-      { homeRef: "homeA", programDigest: "verifiedDigest", version: "1" }))).status, "DENIED");
-    const login = await call(h.port, req("K-INSTANCE", "login-state", "loginRead", "instanceA", "1"));
-    assert.equal(login.result.loggedIn, false);
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "register", "sharedHome", "instanceB", "0",
+      { driverId: "codex" }))).status, "DENIED");
+    const login = await call(h.port, instanceReq("K-INSTANCE", "login-state", "loginRead", "instanceA", "1"));
+    assert.equal(login.result.state, "UNKNOWN");
     assert.equal(login.revision, login.previousRevision);
-    assert.equal((await call(h.port, req("K-INSTANCE", "install-state", "installRead", "instanceA", "1"))).result.installed,
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "install-state", "installRead", "instanceA", "1"))).result.installed,
       true);
-    assert.equal((await call(h.port, req("K-INSTANCE", "repin-after-manual-upgrade", "badRepin", "instanceA", "1",
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "repin-after-manual-upgrade", "badRepin", "instanceA", "1",
       { programDigest: "unverifiedDigest", version: "2" }))).status, "DENIED");
-    assert.equal((await call(h.port, req("K-INSTANCE", "repin-after-manual-upgrade", "repinA", "instanceA", "1",
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "repin-after-manual-upgrade", "repinA", "instanceA", "1",
       { programDigest: "newVerifiedDigest", version: "2" }))).status, "APPLIED");
-    const version = await call(h.reconstruct(), req("K-INSTANCE", "version-and-new-version", "versionRead", "instanceA", "2"));
+    const version = await call(h.reconstruct(), instanceReq("K-INSTANCE", "version-and-new-version", "versionRead", "instanceA", "2"));
     assert.equal(version.result.programDigest, "newVerifiedDigest");
     assert.equal(version.result.version, "2");
-    assert.equal((await call(h.port, req("K-INSTANCE", "concurrency-input", "capacityRead", "instanceA", "2"))).result.capacity,
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "concurrency-input", "capacityRead", "instanceA", "2"))).result.capacity,
       "3");
     assert.equal(JSON.stringify(version.result).includes("credential"), false);
   }
   for (const caseId of ["instance-home", "instance-home-no-stop", "instance-home-busy",
     "instance-home-unknown"] as const) {
     const h = factory(caseId);
-    assert.equal((await call(h.port, req("K-INSTANCE", "register", `${caseId}Register`, "instanceA", "0",
-      { homeRef: "homeA", programDigest: "verifiedDigest", version: "1" }))).status, "APPLIED");
-    const create = req("K-INSTANCE", "home-lifecycle", `${caseId}Create`, "tempA", "0",
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "register", `${caseId}Register`, "instanceA", "0",
+      { driverId: "codex" }))).status, "APPLIED");
+    const create = instanceReq("K-INSTANCE", "home-lifecycle", `${caseId}Create`, "tempA", "0",
       { action: "CREATE", instanceId: "instanceA", kind: "SESSION", ownerId: "sessionA",
         generation: "1" });
     assert.equal((await call(h.port, { ...create, requestId: `${caseId}WrongInstance`,
@@ -239,24 +250,24 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
     assert.equal((await call(h.port, { ...create, requestId: `${caseId}SecondCreate` })).status,
       caseId === "instance-home-unknown" ? "CONFLICT" : "STALE");
     if (caseId === "instance-home-unknown") {
-      assert.equal((await call(h.port, req("K-INSTANCE", "home-lifecycle", "blindCleanup", "tempA", "0",
+      assert.equal((await call(h.port, instanceReq("K-INSTANCE", "home-lifecycle", "blindCleanup", "tempA", "0",
         { action: "CLEANUP" }))).status, "CONFLICT");
       continue;
     }
     assert.equal(JSON.stringify(created.result).includes("homeA"), false);
     assert.equal(JSON.stringify(created.result).includes("credential"), false);
-    const close = req("K-INSTANCE", "home-lifecycle", `${caseId}Close`, "tempA", "1",
+    const close = instanceReq("K-INSTANCE", "home-lifecycle", `${caseId}Close`, "tempA", "1",
       { action: "CLOSE" });
     const closed = await call(h.port, close);
     assert.equal(closed.status, caseId === "instance-home-no-stop" ? "DENIED" : "APPLIED");
     if (caseId === "instance-home-no-stop") continue;
-    assert.equal((await call(h.port, req("K-INSTANCE", "home-lifecycle", `${caseId}EarlyCleanup`,
+    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "home-lifecycle", `${caseId}EarlyCleanup`,
       "tempA", "1", { action: "CLEANUP" }))).status, "STALE");
-    const cleaned = await call(h.port, req("K-INSTANCE", "home-lifecycle", `${caseId}Cleanup`,
+    const cleaned = await call(h.port, instanceReq("K-INSTANCE", "home-lifecycle", `${caseId}Cleanup`,
       "tempA", "2", { action: "CLEANUP" }));
     assert.equal(cleaned.status, caseId === "instance-home-busy" ? "DENIED" : "APPLIED");
     if (caseId === "instance-home") {
-      assert.equal((await call(h.reconstruct(), req("K-INSTANCE", "home-lifecycle", "afterCleanup",
+      assert.equal((await call(h.reconstruct(), instanceReq("K-INSTANCE", "home-lifecycle", "afterCleanup",
         "tempA", "3", { action: "CLEANUP" }))).status, "CONFLICT");
       assert.equal((await call(h.reconstruct(), close)).status, "REPLAYED");
     }

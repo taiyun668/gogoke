@@ -106,7 +106,10 @@ describe("design 37 closed operation protocol", () => {
         { epoch: "epochA", takerSeatId: "lead", instanceId: null,
           questionIds: ["purpose", "authority"] };
       const principal = caseId === "seat-lead" ?
-        { ...caller, seatId: "leadSeat", role: "lead" as const } : caller;
+        { ...caller, seatId: "leadSeat", role: "lead" as const } :
+        caseId === "instance-seat-denied" ?
+          { ...caller, domainId: "global", role: "seat" as const } :
+          caseId.startsWith("instance") ? { ...caller, domainId: "global" } : caller;
       const options = {
         caller: () => principal,
         granted: () => grant,
@@ -114,6 +117,7 @@ describe("design 37 closed operation protocol", () => {
         verifyMemoryDisabled: () => caseId !== "instance-unverified",
         verifyProgramDigest: (digest: string) =>
           digest === "verifiedDigest" || digest === "newVerifiedDigest",
+        hostRegistration: () => ({ homeRef: "homeA", programDigest: "verifiedDigest", version: "1" }),
         isSeatBusy: () => caseId === "seat-busy",
         capacity: () => "3",
         isTakeoverLead: (seatId: string) => seatId === "leadA",

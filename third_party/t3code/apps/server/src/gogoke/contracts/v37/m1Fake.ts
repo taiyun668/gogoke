@@ -16,8 +16,8 @@ interface Seat {
     questionIds: readonly string[]; answers: JsonObject };
 }
 interface Instance {
-  revision: bigint; homeRef: string; programDigest: string; version: string;
-  installed: boolean; loggedIn: boolean;
+  revision: bigint; driverId: string; homeRef: string; programDigest: string; version: string;
+  installed: boolean; loginState: "UNKNOWN" | "LOGGED_IN" | "LOGGED_OUT";
 }
 interface TemporaryHome {
   revision: bigint; instanceId: string; kind: "SESSION" | "CALL"; ownerId: string;
@@ -48,6 +48,8 @@ export interface V37M1FakeOptions {
   readonly granted: (caller: V37TrustedCaller, request: V37Request) => boolean;
   readonly verifyMemoryDisabled?: (instanceId: string) => boolean;
   readonly verifyProgramDigest?: (digest: string) => boolean;
+  readonly hostRegistration?: (instanceId: string, driverId: string) =>
+    { homeRef: string; programDigest: string; version: string } | null;
   readonly nativeCardCapability?: (driverId: string) => boolean | null;
   readonly isSeatBusy?: (seatId: string) => boolean;
   readonly capacity?: (instanceId: string) => string;
@@ -149,6 +151,10 @@ export class V37M1FakePort implements V37Port {
     const caller = this.options.caller();
     if (caller === null || caller.domainId !== request.domainId ||
         !this.options.granted(caller, request)) {
+      return encodeV37Receipt(reply("DENIED"));
+    }
+    if (request.family === "K-INSTANCE" &&
+        (request.domainId !== "global" || !["user", "host"].includes(caller.role))) {
       return encodeV37Receipt(reply("DENIED"));
     }
     const takeoverOperation = request.family === "K-SEAT" &&
@@ -397,16 +403,21 @@ export class V37M1FakePort implements V37Port {
     }
     if (request.operation === "register") {
       if (instance) return encodeV37Receipt(reply("CONFLICT"));
-      const homeRef = nonempty(request.payload, "homeRef");
-      const programDigest = nonempty(request.payload, "programDigest");
-      if (this.store.homeRefs.has(homeRef) ||
-          !this.options.verifyProgramDigest?.(programDigest) ||
+      if (Object.keys(request.payload).some((name) => name !== "driverId")) {
+        throw new Error("V37_M1_INVALID: instance registration payload");
+      }
+      const driverId = nonempty(request.payload, "driverId");
+      const observed = this.options.hostRegistration?.(request.targetId, driverId);
+      if (!observed || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(observed.homeRef) ||
+          !this.options.verifyProgramDigest?.(observed.programDigest) ||
+          !observed.version || this.store.homeRefs.has(observed.homeRef) ||
           !this.options.verifyMemoryDisabled?.(request.targetId)) {
         return encodeV37Receipt(reply("DENIED"));
       }
-      this.store.homeRefs.add(homeRef);
-      this.store.instances.set(key, { revision: 1n, homeRef, programDigest,
-        version: nonempty(request.payload, "version"), installed: true, loggedIn: false });
+      this.store.homeRefs.add(observed.homeRef);
+      this.store.instances.set(key, { revision: 1n, driverId,
+        homeRef: observed.homeRef, programDigest: observed.programDigest,
+        version: observed.version, installed: true, loginState: "UNKNOWN" });
       return committed(reply("APPLIED", 1n, { state: "REGISTERED" }));
     }
     if (!instance) return encodeV37Receipt(reply("CONFLICT"));
@@ -427,7 +438,7 @@ export class V37M1FakePort implements V37Port {
         return encodeV37Receipt(reply("UNSUPPORTED"));
       }
       const result: JsonObject = request.operation === "install-state" ? { installed: instance.installed }
-        : request.operation === "login-state" ? { loggedIn: instance.loggedIn }
+        : request.operation === "login-state" ? { state: instance.loginState }
         : request.operation === "version-and-new-version" ? { version: instance.version,
           programDigest: instance.programDigest } : { capacity: this.options.capacity!(request.targetId) };
       return committed(reply("APPLIED", current, result));

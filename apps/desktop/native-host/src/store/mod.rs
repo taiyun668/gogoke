@@ -43,6 +43,9 @@ pub mod migrate;
 #[cfg(windows)]
 pub mod orchestration;
 
+#[cfg(windows)]
+pub(crate) mod instance;
+
 pub mod protocol;
 
 #[cfg(windows)]

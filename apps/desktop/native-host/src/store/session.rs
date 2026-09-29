@@ -85,6 +85,7 @@ pub fn open_product_database<'root>(
     apply_context_schema(&mut connection)?;
     apply_action_schema(&mut connection)?;
     let _owner_issuer = super::authority::initialize_profile(&mut connection, root)?;
+    super::instance::initialize_schema(&mut connection)?;
     if !marker_exists && database_exists {
         // An established DB without a marker predates this custody signal.
         // Only a successfully validated authority profile can migrate it.
