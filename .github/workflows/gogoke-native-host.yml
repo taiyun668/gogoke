@@ -307,7 +307,7 @@ jobs:
             $output | Tee-Object -FilePath (Join-Path $evidenceRoot $logName) | Write-Host
             $text = $output -join "`n"
             $executed = $text -match '(?m)^running 1 test$'
-            $passed = $text -match 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+            $passed = $text -match 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out'
             $results += [ordered]@{
               test = $testName
               test_only_capability = 'registryRead'
@@ -325,11 +325,17 @@ jobs:
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) {
             throw 'One or more test-only LPAC registryRead differential axes failed or did not execute.'
           }
-      - name: Observe exact LPAC child creation denial with signed Microsoft ProcMon
+      - name: Observe exact LPAC descendant pipe failure with signed Microsoft ProcMon
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          & ./tools/ci/gogoke37-lpac-procmon.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
+          $prior = [Environment]::GetEnvironmentVariable('GOGOKE_TEST_LPAC_REGISTRY_READ', 'Process')
+          try {
+            $env:GOGOKE_TEST_LPAC_REGISTRY_READ = '1'
+            & ./tools/ci/gogoke37-lpac-procmon.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
+          } finally {
+            [Environment]::SetEnvironmentVariable('GOGOKE_TEST_LPAC_REGISTRY_READ', $prior, 'Process')
+          }
       - name: Capture exact LPAC parent failure stack with signed Microsoft CDB
         if: ${{ !cancelled() }}
         shell: pwsh

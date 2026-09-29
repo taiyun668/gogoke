@@ -70,6 +70,9 @@ function Convert-PathClass([string]$path) {
     if ($path.StartsWith('HKCU\', [System.StringComparison]::OrdinalIgnoreCase)) {
         return '%HKCU%' + $path.Substring(4)
     }
+    if ($path -match '(?i)(?:\\|^)gogoke\.seat\.v1\.') {
+        return '%GOGOKE_SEAT_PIPE%'
+    }
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($path)
     $hash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
     return 'HASH:' + $hash.Substring(0, 16) + '/' + [System.IO.Path]::GetFileName($path)
@@ -99,8 +102,10 @@ $childPids = @($createdChildren | ForEach-Object { $_.pid } | Select-Object -Uni
 $childEvents = @(Import-Csv -LiteralPath $csv | Where-Object { $childPids -contains $_.PID })
 $childFailures = @($childEvents | Where-Object {
     $_.Result -match 'DENIED|PRIVILEGE|BLOCKED|INVALID IMAGE|POLICY|DLL NOT FOUND' -or
-    $_.Operation -eq 'Process Exit'
+    $_.Operation -eq 'Process Exit' -or
+    ($_.Path -match '(?i)gogoke\.seat\.v1\.' -and $_.Result -ne 'SUCCESS')
 })
+$pipeEvents = @($childEvents | Where-Object { $_.Path -match '(?i)gogoke\.seat\.v1\.' })
 $childLifecycle = @($childEvents | Where-Object {
     $_.Operation -match 'Process|Thread|Load Image' -or
     $_.Result -match 'DENIED|PRIVILEGE|BLOCKED|INVALID IMAGE|POLICY|DLL NOT FOUND'
@@ -119,6 +124,7 @@ $summary = [ordered]@{
     source_sha = $env:GITHUB_SHA
     test_image_sha256 = $imageHash
     exact_test_exit = $testExit
+    test_only_registry_read = ($env:GOGOKE_TEST_LPAC_REGISTRY_READ -eq '1')
     procmon_version = $toolVersion
     procmon_sha256 = $toolHash
     procmon_signature = 'Valid Microsoft'
@@ -129,6 +135,15 @@ $summary = [ordered]@{
     created_children = $createdChildren
     child_event_count = $childEvents.Count
     selected_child_failures = @($childFailures | Select-Object -First 100 | ForEach-Object {
+        [ordered]@{
+            time = $_.'Time of Day'
+            pid = $_.PID
+            operation = $_.Operation
+            object = Convert-PathClass $_.Path
+            result = $_.Result
+        }
+    })
+    selected_seat_pipe_events = @($pipeEvents | Select-Object -Last 40 | ForEach-Object {
         [ordered]@{
             time = $_.'Time of Day'
             pid = $_.PID
@@ -162,5 +177,5 @@ $summary = [ordered]@{
 }
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'lpac-procmon-summary.json') -Encoding utf8NoBOM
 if ($parent.Count -eq 0) { throw 'ProcMon trace has no exact LPAC parent events' }
-if ($testExit -ne 101) { throw "Exact test exit changed: $testExit" }
+if ($testExit -notin @(0, 101)) { throw "Exact test exit was unexpected: $testExit" }
 exit 0
