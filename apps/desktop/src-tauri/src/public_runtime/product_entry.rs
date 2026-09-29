@@ -1487,11 +1487,11 @@ mod tests {
         readiness();
         assert!(host.is_running().expect("retained host status"));
         assert_eq!(host.host_pid(), host_pid, "Node disconnect cannot replace host");
-        let unsupported = host.request_user(br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"install-state","requestId":"probeA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{}}"#)
+        let missing_instance_receipt = host.request_user(br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"install-state","requestId":"probeA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{}}"#)
             .expect("retained User pipe remains connected after Node exit");
-        let receipt: serde_json::Value = serde_json::from_slice(&unsupported)
+        let receipt: serde_json::Value = serde_json::from_slice(&missing_instance_receipt)
             .expect("native User receipt");
-        assert_eq!(receipt["status"], "UNSUPPORTED");
+        assert_eq!(receipt["status"], "CONFLICT");
         assert_eq!(receipt["requestId"], "probeA");
         readiness();
         assert_eq!(host.host_pid(), host_pid, "second Node connects to same host");
