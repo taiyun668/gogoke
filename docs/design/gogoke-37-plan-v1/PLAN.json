@@ -1352,7 +1352,7 @@
      "id": "E.2",
      "milestone": "M2",
      "deliverables": [
-      "orchestration bounds; the parallel cap suggested from machine resources, applied only through the M1 persisted field",
+      "orchestration bounds; a machine-resource limit computed by the host as a mechanical fact and recorded with its inputs, so that admission uses the smaller of it and the Owner's persisted project cap; the host never writes the Owner's field",
       "templates copied then tuned and rendered to vendor instruction files",
       "takeover questions, state card",
       "health signals driving compact and renew-session through K-SESSION",
@@ -1471,7 +1471,7 @@
     "K-SEAT",
     "K-INSTANCE"
    ],
-   "observe": "Every K-* suite passes on its fake. The listed contracts pass the same cases on the real implementation delivered by M1, limited to the families that the M1 phases deliver; records written before the v37 schema are still decoded; each shared-file extension point used so far is exercised through the product entry.",
+   "observe": "Every K-* suite passes on its fake. The listed contracts pass the same cases on the real implementation delivered by M1, limited to the families that the M1 phases deliver; records written before the v37 schema are still decoded; each shared-file extension point used so far is exercised through the product entry. The K-SEAT and K-INSTANCE suites carry cap cases that run on the fakes and on the real M1 implementation: admission is refused when either persisted cap is missing; with both set, H's single admission boundary refuses a reservation beyond either cap and admits again after a release; both values survive a host restart; an invalid value is rejected at write.",
    "evidence": "REAL"
   },
   {
@@ -1661,7 +1661,7 @@
     "A"
    ],
    "milestone": "M2",
-   "observe": "Lead creates seats from a template, tunes the copy and the template and another project stay unchanged; the user layer adjusts and reclaims lead-layer seats; refusals when the lead exceeds bounds, touches user-layer seats, changes its own binding or creates recursively; busy seat cannot change instance; switching never double-dispatches; short to long; reclaim refused when the lead's conditions are unmet; reclaimed ledger readable; the parallel cap from machine resources holds under load.",
+   "observe": "Lead creates seats from a template, tunes the copy and the template and another project stay unchanged; the user layer adjusts and reclaims lead-layer seats; refusals when the lead exceeds bounds, touches user-layer seats, changes its own binding or creates recursively; busy seat cannot change instance; switching never double-dispatches; short to long; reclaim refused when the lead's conditions are unmet; reclaimed ledger readable; under load, admission never exceeds the smaller of the Owner's persisted project cap and the host's recorded machine-resource limit, and the Owner's field is unchanged by the host.",
    "evidence": "REAL"
   },
   {
