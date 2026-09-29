@@ -83,6 +83,31 @@ test("JSONL parser handles split frames and rejects duplicate keys", () => {
   assert.deepEqual(errors, ["DUPLICATE_KEY"]);
 });
 
+test("JSONL parser discards an oversized line and recovers at the next newline", () => {
+  const frames: string[] = [];
+  const errors: string[] = [];
+  const decoder = new CodexJsonlDecoder((frame) => frames.push(frame.kind), (error) => errors.push(error.code));
+  decoder.push(new Uint8Array(1024 * 1024 + 20).fill(65));
+  decoder.push(new TextEncoder().encode('\n{"method":"turn/started","params":{}}\n'));
+  decoder.finish();
+  assert.deepEqual(errors, ["OVERSIZE_FRAME"]);
+  assert.deepEqual(frames, ["notification"]);
+});
+
+test("native question accepts fields optional in pinned schema and defaults flags false", () => {
+  const encoded = bytes({ id: "ask-1", method: "item/tool/requestUserInput", params: {
+    threadId: "thread-one", turnId: "turn-one", itemId: "item-one",
+    questions: [{ id: "q1", header: "Choice", question: "Which?" }],
+  } });
+  const parsed = decodeCodexFrame(encoded.subarray(0, encoded.length - 1));
+  assert.equal(parsed.kind, "server-request");
+  if (parsed.kind !== "server-request") throw new Error("wrong frame");
+  assert.equal(parsed.questionCard?.questions[0]?.isOther, false);
+  assert.equal(parsed.questionCard?.questions[0]?.isSecret, false);
+  assert.equal(parsed.questionCard?.questions[0]?.options, null);
+  assert.equal(parsed.questionCard?.autoResolutionMs, null);
+});
+
 test("launch args disable both memory generation and use at the pinned version", () => {
   assert.deepEqual(codexMemoryOffAppServerArgs(), [
     "-c", "features.memories=false", "-c", "memories.generate_memories=false",

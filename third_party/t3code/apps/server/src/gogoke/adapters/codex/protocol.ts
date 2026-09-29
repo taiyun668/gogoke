@@ -30,7 +30,6 @@ export interface CodexQuestionCard {
   readonly threadId: string;
   readonly turnId: string;
   readonly itemId: string;
-  readonly isBlocking: boolean;
   readonly autoResolutionMs: number | null;
   readonly questions: ReadonlyArray<CodexQuestion>;
 }
@@ -69,36 +68,39 @@ const requiredString = (value: unknown, name: string): string => {
 /** Parse without answering. The native card stays bound to the server request ID and turn. */
 export function parseQuestionCard(id: string | number, params: unknown): CodexQuestionCard {
   if (!record(params) || !Array.isArray(params.questions) || params.questions.length === 0 ||
-      typeof params.isBlocking !== "boolean" ||
-      !(params.autoResolutionMs === null || (Number.isSafeInteger(params.autoResolutionMs) &&
+      !(params.autoResolutionMs === undefined || params.autoResolutionMs === null ||
+        (Number.isSafeInteger(params.autoResolutionMs) &&
         (params.autoResolutionMs as number) >= 0))) {
     throw new CodexProtocolError("INVALID_QUESTION_CARD", "required 0.149.0 question fields");
   }
   const ids = new Set<string>();
   const questions = params.questions.map((value: unknown): CodexQuestion => {
-    if (!record(value) || typeof value.isOther !== "boolean" || typeof value.isSecret !== "boolean" ||
-        !(value.options === null || Array.isArray(value.options))) {
+    if (!record(value) ||
+        !(value.isOther === undefined || typeof value.isOther === "boolean") ||
+        !(value.isSecret === undefined || typeof value.isSecret === "boolean") ||
+        !(value.options === undefined || value.options === null || Array.isArray(value.options))) {
       throw new CodexProtocolError("INVALID_QUESTION_CARD", "question shape");
     }
     const questionId = requiredString(value.id, "question.id");
     if (ids.has(questionId)) throw new CodexProtocolError("DUPLICATE_QUESTION_ID", questionId);
     ids.add(questionId);
-    const options = value.options === null ? null : value.options.map((option: unknown) => {
+    const options = value.options == null ? null : value.options.map((option: unknown) => {
       if (!record(option)) throw new CodexProtocolError("INVALID_QUESTION_CARD", "option shape");
       return Object.freeze({ label: requiredString(option.label, "option.label"),
         description: requiredString(option.description, "option.description") });
     });
     return Object.freeze({ id: questionId, header: requiredString(value.header, "question.header"),
-      question: requiredString(value.question, "question.question"), isOther: value.isOther,
-      isSecret: value.isSecret, options: options === null ? null : Object.freeze(options) });
+      question: requiredString(value.question, "question.question"), isOther: value.isOther ?? false,
+      isSecret: value.isSecret ?? false, options: options === null ? null : Object.freeze(options) });
   });
   return Object.freeze({ requestId: id, threadId: requiredString(params.threadId, "threadId"),
     turnId: requiredString(params.turnId, "turnId"), itemId: requiredString(params.itemId, "itemId"),
-    isBlocking: params.isBlocking, autoResolutionMs: params.autoResolutionMs as number | null,
+    autoResolutionMs: (params.autoResolutionMs ?? null) as number | null,
     questions: Object.freeze(questions) });
 }
 
 export function decodeCodexFrame(bytes: Uint8Array): CodexFrame {
+  if (bytes.length > MAX_FRAME_BYTES) throw new CodexProtocolError("OVERSIZE_FRAME", "one JSONL frame");
   const value = parseStrictJsonBytes(bytes);
   if (!record(value)) throw new CodexProtocolError("INVALID_MESSAGE", "top-level object required");
   if (typeof value.method === "string") {
@@ -133,33 +135,37 @@ export class CodexJsonlDecoder {
 
   push(chunk: Uint8Array): void {
     if (!(chunk instanceof Uint8Array)) throw new CodexProtocolError("INVALID_CHUNK", "Uint8Array required");
-    const bytes = new Uint8Array(this.#pending.length + chunk.length);
-    bytes.set(this.#pending);
-    bytes.set(chunk, this.#pending.length);
-    this.#pending = new Uint8Array();
-    let start = 0;
-    for (let index = 0; index < bytes.length; index += 1) {
-      if (bytes[index] !== 10) continue;
-      if (this.#discarding) { this.#discarding = false; start = index + 1; continue; }
-      let frame = bytes.subarray(start, index);
-      if (frame.at(-1) === 13) frame = frame.subarray(0, frame.length - 1);
-      start = index + 1;
-      if (frame.length > MAX_FRAME_BYTES) {
-        this.onError(new CodexProtocolError("OVERSIZE_FRAME", "one JSONL frame"));
-        continue;
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf(10, offset);
+      const end = newline < 0 ? chunk.length : newline;
+      if (!this.#discarding) {
+        const segment = chunk.subarray(offset, end);
+        if (this.#pending.length + segment.length > MAX_FRAME_BYTES + 1) {
+          this.onError(new CodexProtocolError("OVERSIZE_FRAME", "one JSONL frame"));
+          this.#pending = new Uint8Array();
+          this.#discarding = true;
+        } else {
+          const bytes = new Uint8Array(this.#pending.length + segment.length);
+          bytes.set(this.#pending);
+          bytes.set(segment, this.#pending.length);
+          this.#pending = bytes;
+        }
       }
-      try { this.onFrame(decodeCodexFrame(frame)); }
-      catch (error) {
-        this.onError(error instanceof CodexProtocolError ? error :
-          error instanceof ContractCodecError ? new CodexProtocolError(error.code, error.message) :
-          new CodexProtocolError("INVALID_JSON", error instanceof Error ? error.message : "unknown parse error"));
+      if (newline < 0) break;
+      if (!this.#discarding) {
+        let frame = this.#pending;
+        if (frame.at(-1) === 13) frame = frame.subarray(0, frame.length - 1);
+        try { this.onFrame(decodeCodexFrame(frame)); }
+        catch (error) {
+          this.onError(error instanceof CodexProtocolError ? error :
+            error instanceof ContractCodecError ? new CodexProtocolError(error.code, error.message) :
+            new CodexProtocolError("INVALID_JSON", error instanceof Error ? error.message : "unknown parse error"));
+        }
       }
-    }
-    this.#pending = bytes.slice(start);
-    if (this.#pending.length > MAX_FRAME_BYTES + 1) {
-      this.onError(new CodexProtocolError("OVERSIZE_FRAME", "unterminated JSONL frame"));
       this.#pending = new Uint8Array();
-      this.#discarding = true;
+      this.#discarding = false;
+      offset = newline + 1;
     }
   }
 
