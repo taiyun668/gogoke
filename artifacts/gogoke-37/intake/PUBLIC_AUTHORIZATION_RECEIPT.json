@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.37.public-authorization.v1",
+  "owner_instruction": "OWNER_MERGED_PUBLIC_GOGOKE_37_AUTHORIZATION",
+  "validity": {
+    "path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+    "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
+    "missing_stale_or_inconsistent": "FAIL_CLOSED"
+  },
+  "repository": "taiyun668/gogoke",
+  "plan": {
+    "provenance_plan_commit": "5ebac04aa3fd53f24ee2d5b33533e04875549c36",
+    "public_plan_merge_commit": "d6933964b8c14db5281c49c190763b78c97785fb",
+    "public_plan_path": "docs/design/gogoke-37-plan-v1/",
+    "public_plan_manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "stale_when": "the public plan MANIFEST.json blob differs from the value above"
+  },
+  "authorized_lines": ["L0", "H", "A", "B1", "B2", "B3", "B4", "B5", "C", "D", "E", "F", "G"],
+  "authorized_milestones": ["M1", "M2", "M3"],
+  "start_condition": "Owner merges this separate authorization PR; Controller then reads back the actual merge, receipt bytes, and current plan MANIFEST blob before starting L0",
+  "owner_touchpoints": "The bound PLAN.json retains its planned and conditional Owner decisions; this receipt does not complete them",
+  "completion_claim": false
+}
