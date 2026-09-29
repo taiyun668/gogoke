@@ -28,13 +28,29 @@ fn observed_schema(
 ) -> Result<Vec<(String, String)>, OrchestrationError> {
     let statement = Statement::prepare(
         connection.as_ptr(),
-        "SELECT name,sql FROM main.sqlite_schema WHERE substr(name,1,19)='gogoke_v37_instance' ORDER BY name",
+        "SELECT name,sql FROM main.sqlite_schema WHERE lower(substr(name,1,19))='gogoke_v37_instance' ORDER BY name",
     )?;
     let mut rows = Vec::new();
     while statement.step_row()? {
         rows.push((statement.column_text(0)?, statement.column_text(1)?));
     }
     Ok(rows)
+}
+
+fn reject_shadow_or_side_effect_objects(
+    connection: &VerifiedDatabaseConnection<'_>,
+) -> Result<(), OrchestrationError> {
+    // A TEMP table can shadow an unqualified write, and a trigger may have an
+    // arbitrary name. Check its target as well as names in both schemas.
+    for query in [
+        "SELECT 1 FROM temp.sqlite_schema WHERE lower(substr(name,1,19))='gogoke_v37_instance' OR lower(substr(tbl_name,1,19))='gogoke_v37_instance' LIMIT 1",
+        "SELECT 1 FROM main.sqlite_schema WHERE type IN ('trigger','index') AND sql IS NOT NULL AND lower(substr(tbl_name,1,19))='gogoke_v37_instance' LIMIT 1",
+    ] {
+        if Statement::prepare(connection.as_ptr(), query)?.step_row()? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+    }
+    Ok(())
 }
 
 fn expected_schema() -> Vec<(String, String)> {
@@ -51,6 +67,7 @@ fn expected_schema() -> Vec<(String, String)> {
 pub(crate) fn initialize_schema(
     connection: &mut VerifiedDatabaseConnection<'_>,
 ) -> Result<(), OrchestrationError> {
+    reject_shadow_or_side_effect_objects(connection)?;
     let expected = expected_schema();
     let observed = observed_schema(connection)?;
     if !observed.is_empty() {
@@ -65,6 +82,7 @@ pub(crate) fn initialize_schema(
         .map_err(|error| OrchestrationError::Atomic(error.into()))?;
     let created = (|| {
         // Recheck inside the write transaction in case another trusted opener won.
+        reject_shadow_or_side_effect_objects(connection)?;
         if !observed_schema(connection)?.is_empty() {
             return Err(OrchestrationError::AccessDenied);
         }
@@ -148,6 +166,18 @@ mod tests {
             initialize_schema(connection).unwrap();
             connection.execute("DROP TABLE gogoke_v37_instance_operations").unwrap();
             connection.execute("CREATE TABLE gogoke_v37_instance_operations(request_id TEXT) STRICT").unwrap();
+            assert!(matches!(initialize_schema(connection), Err(OrchestrationError::AccessDenied)));
+        });
+    }
+
+    #[test]
+    fn temp_shadow_and_arbitrarily_named_triggers_are_rejected() {
+        fixture(|connection| {
+            initialize_schema(connection).unwrap();
+            connection.execute("CREATE TEMP TABLE gogoke_v37_instances(instance_id TEXT)").unwrap();
+            assert!(matches!(initialize_schema(connection), Err(OrchestrationError::AccessDenied)));
+            connection.execute("DROP TABLE temp.gogoke_v37_instances").unwrap();
+            connection.execute("CREATE TRIGGER unrelated_name BEFORE INSERT ON gogoke_v37_instances BEGIN SELECT RAISE(ABORT,'blocked'); END").unwrap();
             assert!(matches!(initialize_schema(connection), Err(OrchestrationError::AccessDenied)));
         });
     }

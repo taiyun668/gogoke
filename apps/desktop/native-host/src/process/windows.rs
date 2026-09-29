@@ -286,6 +286,9 @@ pub struct ProcessLaunch {
     pub current_directory: Option<PathBuf>,
     pub hide_window: bool,
     pub protocol_stdio: bool,
+    /// A complete host-constructed environment. None retains the legacy R2
+    /// behavior; v37 callers must supply this before admission.
+    pub environment: Option<Vec<(String, String)>>,
 }
 
 impl ProcessLaunch {
@@ -296,6 +299,7 @@ impl ProcessLaunch {
             current_directory: None,
             hide_window: true,
             protocol_stdio: false,
+            environment: None,
         }
     }
 }
@@ -1301,7 +1305,34 @@ fn validate_launch(launch: &ProcessLaunch) -> Result<(), ProcessCustodyError> {
             ));
         }
     }
+    if let Some(environment) = &launch.environment {
+        let mut names = HashSet::new();
+        if environment.is_empty() {
+            return Err(ProcessCustodyError::InvalidLaunch("empty explicit environment"));
+        }
+        for (name, value) in environment {
+            if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') ||
+                value.contains('\0') ||
+                !names.insert(name.to_ascii_uppercase()) {
+                return Err(ProcessCustodyError::InvalidLaunch("invalid explicit environment"));
+            }
+        }
+        if encode_environment(environment).len() > 32_767 {
+            return Err(ProcessCustodyError::InvalidLaunch("explicit environment too large"));
+        }
+    }
     Ok(())
+}
+
+fn encode_environment(entries: &[(String, String)]) -> Vec<u16> {
+    let mut sorted = entries.to_vec();
+    sorted.sort_by_key(|(name, _)| name.to_ascii_uppercase());
+    let mut output = Vec::new();
+    for (name, value) in sorted {
+        output.extend(format!("{name}={value}\0").encode_utf16());
+    }
+    output.push(0);
+    output
 }
 
 fn validate_binding(binding: &NativeBinding) -> Result<(), ProcessCustodyError> {
@@ -1375,7 +1406,9 @@ fn create_suspended(
     startup.startup.cb = size_of::<StartupInfoExW>() as u32;
     startup.attributes = attributes.raw();
     let mut info: ProcessInformation = unsafe { zeroed() };
+    let environment = launch.environment.as_ref().map(|entries| encode_environment(entries));
     let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT
+        | if environment.is_some() { CREATE_UNICODE_ENVIRONMENT } else { 0 }
         | if launch.hide_window {
             CREATE_NO_WINDOW
         } else {
@@ -1389,7 +1422,7 @@ fn create_suspended(
             ptr::null(),
             0,
             flags,
-            ptr::null(),
+            environment.as_ref().map_or(ptr::null(), |value| value.as_ptr().cast()),
             current_directory
                 .as_ref()
                 .map_or(ptr::null(), |value| value.as_ptr()),
@@ -1435,7 +1468,10 @@ fn create_suspended_protocol(
     startup.startup.std_output = pipes.stdout_write.raw();
     startup.startup.std_error = stderr_handle;
     startup.attributes = attributes.raw();
-    let environment = controlled_environment()?;
+    let environment = match &launch.environment {
+        Some(entries) => encode_environment(entries),
+        None => controlled_environment()?,
+    };
     let mut info: ProcessInformation = unsafe { zeroed() };
     let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT
         | if launch.hide_window { CREATE_NO_WINDOW } else { 0 };
@@ -1945,6 +1981,25 @@ mod tests {
         let output = managed.read_protocol_frame(Duration::from_secs(5)).expect("bounded frame read");
         assert!(String::from_utf8_lossy(&output).contains("echo:controlled"));
         assert!(managed.wait(Duration::from_secs(5)).expect("child exit"));
+    }
+
+    #[test]
+    fn explicit_environment_reaches_real_child_without_parent_profile() {
+        let mut launch = ProcessLaunch::new(system_cmd());
+        launch.protocol_stdio = true;
+        launch.arguments = vec!["/D".into(), "/C".into(),
+            "echo %GOGOKE_V37_ENV_MARKER%:%USERPROFILE%".into()];
+        launch.environment = Some(vec![
+            ("SystemRoot".into(), std::env::var("SystemRoot").expect("SystemRoot")),
+            ("GOGOKE_V37_ENV_MARKER".into(), "isolated".into()),
+        ]);
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("explicit environment child");
+        let frame = managed.read_protocol_frame(Duration::from_secs(5)).expect("environment frame");
+        assert_eq!(String::from_utf8_lossy(&frame).trim(), "isolated:%USERPROFILE%");
+        assert!(managed.wait(Duration::from_secs(5)).expect("child exit"));
+
+        launch.environment = Some(vec![("Path".into(), "x".into()), ("PATH".into(), "y".into())]);
+        assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
     }
 
     #[test]
