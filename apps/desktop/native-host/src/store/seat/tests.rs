@@ -28,6 +28,46 @@ fn wire(request_id: &str) -> &'static [u8] {
 }
 
 #[test]
+fn permission_intent_is_persisted_validated_and_never_defaulted() {
+    fixture(|db, owner| {
+        let initial = create(db, NativeOrigin::user(owner), CreateSeat {
+            domain_id: "projectA", seat_id: "lead", template_id: "templateA",
+            instance_id: Some("instanceA"), kind: Kind::Long,
+            request_id: "createLead", request_bytes: wire("createLead"),
+        }).unwrap().seat;
+        assert!(matches!(permission_tier(&initial), Err(SeatError::Denied)));
+        for invalid in [br#"{"permissionTier":true}"#.as_slice(),
+            br#"{"permissionTier":"FULL_USER"}"#.as_slice()] {
+            assert!(matches!(store_template(db, NativeOrigin::user(owner), StoreTemplate {
+                domain_id: "projectA", template_id: "invalidTier", settings_json: invalid,
+            }), Err(SeatError::Invalid("permissionTier"))));
+        }
+        let change = SeatChange { domain_id: "projectA", seat_id: "lead",
+            expected_generation: initial.generation, expected_revision: initial.revision,
+            request_id: "setPermission", request_bytes: br#"{"setting":"permissionTier","value":"NETWORKED_WRITE"}"# };
+        let changed = tune(db, NativeOrigin::user(owner), change,
+            "permissionTier", "\"NETWORKED_WRITE\"").unwrap().seat;
+        let current = get(db, "projectA", "lead").unwrap().unwrap();
+        assert_eq!(current, changed);
+        assert_eq!(permission_tier(&current).unwrap(), PermissionTier::NetworkedWrite);
+        assert!(matches!(tune(db, NativeOrigin::user(owner), SeatChange {
+            domain_id: "projectA", seat_id: "lead",
+            expected_generation: current.generation, expected_revision: current.revision,
+            request_id: "invalidPermission", request_bytes: br#"{"setting":"permissionTier","value":"FULL_USER"}"#,
+        }, "permissionTier", "\"FULL_USER\""), Err(SeatError::Invalid("permissionTier"))));
+        assert_eq!(get(db, "projectA", "lead").unwrap().unwrap(), current);
+        for (value, expected) in [("READ_ONLY", PermissionTier::ReadOnly),
+            ("NO_NETWORK", PermissionTier::NoNetwork), ("ISOLATED_WRITE", PermissionTier::IsolatedWrite),
+            ("NETWORKED_WRITE", PermissionTier::NetworkedWrite)] {
+            assert_eq!(PermissionTier::from_json(&Json::String(JsonString::from_str(value))).unwrap(), expected);
+        }
+        let mut reclaimed = current;
+        reclaimed.state = State::Reclaimed;
+        assert!(matches!(permission_tier(&reclaimed), Err(SeatError::Denied)));
+    });
+}
+
+#[test]
 fn tune_copies_settings_and_keeps_native_cas_replay_and_state_guards() {
     fixture(|db, owner| {
         let make = |db: &mut VerifiedDatabaseConnection<'_>, seat_id: &'static str,

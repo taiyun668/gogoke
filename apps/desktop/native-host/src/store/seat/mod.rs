@@ -105,6 +105,39 @@ pub(crate) enum State {
     Reclaimed,
 }
 
+/// Persisted seat intent. This is an input to H's native launch witness, never
+/// evidence that the requested filesystem or network restriction is enforced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PermissionTier {
+    ReadOnly,
+    NoNetwork,
+    IsolatedWrite,
+    NetworkedWrite,
+}
+
+impl PermissionTier {
+    fn from_json(value: &Json) -> Result<Self, SeatError> {
+        let Json::String(value) = value else { return Err(SeatError::Invalid("permissionTier")); };
+        match value.to_well_formed_string().as_deref() {
+            Some("READ_ONLY") => Ok(Self::ReadOnly),
+            Some("NO_NETWORK") => Ok(Self::NoNetwork),
+            Some("ISOLATED_WRITE") => Ok(Self::IsolatedWrite),
+            Some("NETWORKED_WRITE") => Ok(Self::NetworkedWrite),
+            _ => Err(SeatError::Invalid("permissionTier")),
+        }
+    }
+}
+
+/// The current native seat record supplies permission intent; a missing field
+/// has no default and cannot be filled from an open request or UI cache.
+pub(crate) fn permission_tier(seat: &Seat) -> Result<PermissionTier, SeatError> {
+    if seat.state == State::Reclaimed { return Err(SeatError::Denied); }
+    let settings = seat.settings_json.as_deref().ok_or(SeatError::Denied)?;
+    let Json::Object(fields) = Parser::parse(settings)? else { return Err(SeatError::SchemaDrift); };
+    let value = fields.get(&JsonString::from_str("permissionTier")).ok_or(SeatError::Denied)?;
+    PermissionTier::from_json(value)
+}
+
 /// A native lead admission. No string or wire token constructor is exposed.
 /// H must call the constructor only after authenticating the live session and
 /// matching its seat, domain and generation to its admission reservation.
@@ -355,8 +388,11 @@ fn validate_template_settings(raw: &[u8]) -> Result<(), SeatError> {
     }
     super::atomic::require_canonical_json(raw, "template.settings")?;
     let text = std::str::from_utf8(raw).map_err(|_| SeatError::Invalid("template_settings"))?;
-    if !matches!(Parser::parse(text)?, Json::Object(_)) {
+    let Json::Object(fields) = Parser::parse(text)? else {
         return Err(SeatError::Invalid("template_settings"));
+    };
+    if let Some(value) = fields.get(&JsonString::from_str("permissionTier")) {
+        PermissionTier::from_json(value)?;
     }
     Ok(())
 }

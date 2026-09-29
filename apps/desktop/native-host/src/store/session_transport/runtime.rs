@@ -31,13 +31,7 @@ pub(crate) enum RuntimeError {
     PermissionNotEnforced,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PermissionTier {
-    ReadOnly,
-    NoNetwork,
-    IsolatedWrite,
-    NetworkedWrite,
-}
+pub(crate) use crate::store::seat::PermissionTier;
 
 /// A reservation is not a process permission. H's open path must call this
 /// before prepare. F currently returns an opaque directory receipt but no
