@@ -147,6 +147,15 @@
       "priority": "LOW",
       "summary": "PRs #13 and #4 were closed on 2026-09-27 with Owner approval; branches retained, nothing absorbed into the execution branch. PR #10 stays open: 1 of its 4 items (README cloud-build note) is already in the execution branch in other words; 3 are not: npm SPDX root identified by documentDescribes plus package name and version, Rust crate notices linked to their crates.io version source, and a coverage negative control that removes one real dependency from the generated notice and must fail. Fold these three into the R2-05 wrap-up (or record why not), then close PR #10.",
       "not_an_approval": true
+    },
+    {
+      "id": "claude-r2-05-premerge-8b009e58",
+      "from": "Claude (heterogeneous reviewer)",
+      "recorded_utc": "2026-09-29T05:32:10Z",
+      "type": "HETEROGENEOUS_REVIEW",
+      "priority": "NORMAL",
+      "summary": "R2-05 pre-merge at execution branch 8b009e58: no blocking finding. PR #34 (one test-only result file, provenance 985e17d1) matches the current product's readback constant and merged_by check; ready for Owner merge. Run V03/V07 post-merge and restart readback immediately after merge. Report: artifacts/s1-r4/control/reviews/claude-r2-05-8b009e58.md",
+      "not_an_approval": true
     }
   ]
 }
