@@ -333,9 +333,9 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
-    /// A persisted login value is current only when the latest revision was
-    /// produced by one APPLIED native login observation for this instance.
-    /// Registration and older observations cannot establish present login.
+    /// A persisted login value is a last trusted local observation only when
+    /// the latest revision was produced by one APPLIED native login observation
+    /// for this instance. It does not prove present credential validity.
     fn current_login_observation(
         &self,
         instance_id: &str,
