@@ -165,6 +165,17 @@ pub(crate) struct AppContainerProfile {
 }
 
 impl AppContainerProfile {
+    #[cfg(test)]
+    pub(crate) fn derived_for_test(name: &str) -> Result<Self, IsolationError> {
+        if !valid_profile_name(name) { return Err(IsolationError::InvalidProfileName); }
+        let wide: Vec<u16> = std::ffi::OsStr::new(name).encode_wide().chain(Some(0)).collect();
+        let mut sid = ptr::null_mut();
+        let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide.as_ptr(), &mut sid) };
+        if hr < 0 { return Err(IsolationError::ProfileHResult(hr)); }
+        if sid.is_null() { return Err(IsolationError::MissingSid); }
+        Ok(Self { sid, internet_sid: None, internet_capability: None })
+    }
+
     pub(crate) fn ensure(name: &str, internet_client: bool) -> Result<Self, IsolationError> {
         if !valid_profile_name(name) { return Err(IsolationError::InvalidProfileName); }
         let wide: Vec<u16> = std::ffi::OsStr::new(name).encode_wide().chain(Some(0)).collect();

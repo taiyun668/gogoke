@@ -87,6 +87,10 @@ pub fn open_product_database<'root>(
     let _owner_issuer = super::authority::initialize_profile(&mut connection, root)?;
     super::instance::initialize_schema(&mut connection)?;
     super::ledger::initialize_schema(&mut connection)?;
+    super::session_transport::initialize_admission_schema(&mut connection)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!("{error:?}")))?;
+    super::inbox::initialize_schema(&mut connection)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!("{error:?}")))?;
     if !marker_exists && database_exists {
         // An established DB without a marker predates this custody signal.
         // Only a successfully validated authority profile can migrate it.

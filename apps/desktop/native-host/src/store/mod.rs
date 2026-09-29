@@ -50,6 +50,9 @@ pub(crate) mod instance;
 pub(crate) mod ledger;
 
 #[cfg(windows)]
+pub(crate) mod inbox;
+
+#[cfg(windows)]
 pub(crate) mod session_transport;
 
 pub mod protocol;

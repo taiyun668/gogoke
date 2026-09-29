@@ -21,6 +21,7 @@ pub enum OrchestrationError {
     Process(ProcessCustodyError),
     Io(std::io::Error),
     Ipc(PrivateIpcError),
+    V37StoreFailure(String),
 }
 
 impl std::fmt::Display for OrchestrationError {
