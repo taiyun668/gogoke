@@ -6,6 +6,8 @@ use std::fmt;
 use std::io;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::MetadataExt;
+use std::path::Path;
 use std::ptr;
 
 type Handle = *mut c_void;
@@ -13,6 +15,69 @@ const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_IS_APP_CONTAINER: u32 = 29;
 const TOKEN_APP_CONTAINER_SID: u32 = 31;
 const PROFILE_ALREADY_EXISTS: u32 = 0x8007_00b7;
+const FILE_OBJECT: u32 = 1;
+const DACL_SECURITY_INFORMATION: u32 = 4;
+const GRANT_ACCESS: u32 = 1;
+const TRUSTEE_IS_SID: u32 = 0;
+const TRUSTEE_IS_UNKNOWN: u32 = 0;
+const OBJECT_AND_CONTAINER_INHERIT: u32 = 3;
+const FILE_GENERIC_READ: u32 = 0x0012_0089;
+const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
+const FILE_GENERIC_EXECUTE: u32 = 0x0012_00a0;
+const READ_CONTROL: u32 = 0x0002_0000;
+const WRITE_DAC: u32 = 0x0004_0000;
+const FILE_SHARE_ALL: u32 = 7;
+const OPEN_EXISTING: u32 = 3;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+
+#[repr(C)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct FileTime { low: u32, high: u32 }
+
+#[repr(C)]
+struct FileInformation {
+    attributes: u32,
+    created: FileTime,
+    accessed: FileTime,
+    modified: FileTime,
+    volume_serial: u32,
+    size_high: u32,
+    size_low: u32,
+    links: u32,
+    index_high: u32,
+    index_low: u32,
+}
+
+impl FileInformation {
+    fn same_object(&self, other: &Self) -> bool {
+        self.volume_serial == other.volume_serial &&
+            self.index_high == other.index_high && self.index_low == other.index_low
+    }
+    fn physical_directory(&self) -> bool {
+        self.attributes & FILE_ATTRIBUTE_DIRECTORY != 0 &&
+            self.attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+    }
+}
+
+#[repr(C)]
+struct TrusteeW {
+    multiple: *mut TrusteeW,
+    multiple_operation: u32,
+    form: u32,
+    kind: u32,
+    name: *mut u16,
+}
+
+#[repr(C)]
+struct ExplicitAccessW {
+    permissions: u32,
+    access_mode: u32,
+    inheritance: u32,
+    trustee: TrusteeW,
+}
 
 #[link(name = "userenv")]
 extern "system" {
@@ -30,11 +95,25 @@ extern "system" {
     fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
     fn GetTokenInformation(token: Handle, class: u32, output: *mut c_void,
         length: u32, returned: *mut u32) -> i32;
+    fn GetSecurityInfo(handle: Handle, object_type: u32, information: u32,
+        owner: *mut *mut c_void, group: *mut *mut c_void, dacl: *mut *mut c_void,
+        sacl: *mut *mut c_void, descriptor: *mut *mut c_void) -> u32;
+    fn SetEntriesInAclW(count: u32, entries: *mut ExplicitAccessW,
+        old_acl: *mut c_void, new_acl: *mut *mut c_void) -> u32;
+    fn SetSecurityInfo(handle: Handle, object_type: u32, information: u32,
+        owner: *mut c_void, group: *mut c_void, dacl: *mut c_void,
+        sacl: *mut c_void) -> u32;
+    fn GetExplicitEntriesFromAclW(acl: *mut c_void, count: *mut u32,
+        entries: *mut *mut ExplicitAccessW) -> u32;
 }
 
 #[link(name = "kernel32")]
 extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
+    fn LocalFree(handle: Handle) -> Handle;
+    fn CreateFileW(path: *const u16, access: u32, sharing: u32,
+        security: *const c_void, creation: u32, flags: u32, template: Handle) -> Handle;
+    fn GetFileInformationByHandle(handle: Handle, information: *mut FileInformation) -> i32;
 }
 
 #[repr(C)]
@@ -52,6 +131,9 @@ pub(crate) enum IsolationError {
     MissingSid,
     Token(io::Error),
     WrongToken,
+    DirectoryNotFresh,
+    DirectoryNotPhysical,
+    Acl(io::Error),
 }
 
 impl fmt::Display for IsolationError {
@@ -62,6 +144,9 @@ impl fmt::Display for IsolationError {
             Self::MissingSid => write!(f, "AppContainer profile returned no SID"),
             Self::Token(error) => write!(f, "AppContainer token query: {error}"),
             Self::WrongToken => write!(f, "suspended process has a different AppContainer token"),
+            Self::DirectoryNotFresh => write!(f, "AppContainer directory must be empty before ACL grant"),
+            Self::DirectoryNotPhysical => write!(f, "AppContainer directory must be a physical directory"),
+            Self::Acl(error) => write!(f, "AppContainer ACL: {error}"),
         }
     }
 }
@@ -90,6 +175,68 @@ impl AppContainerProfile {
     pub(crate) fn security_capabilities(&self) -> SecurityCapabilities {
         SecurityCapabilities { app_container_sid: self.sid, capabilities: ptr::null_mut(),
             capability_count: 0, reserved: 0 }
+    }
+
+    /// Grant only a newly created, empty session directory to this package SID.
+    /// The ACE inherits to contents created after the grant. The ordinary user
+    /// ACE remains; the AppContainer token additionally requires its SID.
+    /// The caller must hold the directory's native custody and check its
+    /// physical identity before and after this operation.
+    pub(crate) fn grant_fresh_session_directory(&self, path: &Path)
+        -> Result<(), IsolationError> {
+        let before = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
+        if !before.is_dir() || before.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(IsolationError::DirectoryNotPhysical);
+        }
+        if std::fs::read_dir(path).map_err(IsolationError::Acl)?.next().is_some() {
+            return Err(IsolationError::DirectoryNotFresh);
+        }
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let handle = unsafe { CreateFileW(wide.as_ptr(), READ_CONTROL | WRITE_DAC, FILE_SHARE_ALL,
+            ptr::null(), OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
+        if handle as isize == -1 { return Err(IsolationError::Acl(io::Error::last_os_error())); }
+        let handle = Token(handle);
+        let physical = file_information(handle.0)?;
+        if !physical.physical_directory() { return Err(IsolationError::DirectoryNotPhysical); }
+        if std::fs::read_dir(path).map_err(IsolationError::Acl)?.next().is_some() {
+            return Err(IsolationError::DirectoryNotFresh);
+        }
+        let mut old_acl = ptr::null_mut();
+        let mut descriptor = ptr::null_mut();
+        let status = unsafe { GetSecurityInfo(handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            ptr::null_mut(), ptr::null_mut(), &mut old_acl, ptr::null_mut(), &mut descriptor) };
+        if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+        let descriptor = LocalAllocation(descriptor);
+        if old_acl.is_null() { return Err(IsolationError::DirectoryNotPhysical); }
+        let mut entry = ExplicitAccessW {
+            permissions: FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
+            access_mode: GRANT_ACCESS,
+            inheritance: OBJECT_AND_CONTAINER_INHERIT,
+            trustee: TrusteeW { multiple: ptr::null_mut(), multiple_operation: 0,
+                form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN,
+                name: self.sid.cast() },
+        };
+        let mut new_acl = ptr::null_mut();
+        let status = unsafe { SetEntriesInAclW(1, &mut entry, old_acl, &mut new_acl) };
+        if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+        let new_acl = LocalAllocation(new_acl);
+        let status = unsafe { SetSecurityInfo(handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            ptr::null_mut(), ptr::null_mut(), new_acl.0, ptr::null_mut()) };
+        if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+        drop(descriptor);
+        let after = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
+        let observed = unsafe { CreateFileW(wide.as_ptr(), READ_CONTROL, FILE_SHARE_ALL,
+            ptr::null(), OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
+        if observed as isize == -1 { return Err(IsolationError::Acl(io::Error::last_os_error())); }
+        let observed = Token(observed);
+        let observed_info = file_information(observed.0)?;
+        if !after.is_dir() || after.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || !physical.same_object(&observed_info) || !observed_info.physical_directory() {
+            return Err(IsolationError::DirectoryNotPhysical);
+        }
+        Ok(())
     }
 
     /// Inspect the exact suspended process handle before durable admission.
@@ -139,6 +286,19 @@ impl Drop for Token {
     fn drop(&mut self) { unsafe { CloseHandle(self.0); } }
 }
 
+fn file_information(handle: Handle) -> Result<FileInformation, IsolationError> {
+    let mut information = std::mem::MaybeUninit::<FileInformation>::uninit();
+    if unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    Ok(unsafe { information.assume_init() })
+}
+
+struct LocalAllocation(Handle);
+impl Drop for LocalAllocation {
+    fn drop(&mut self) { unsafe { LocalFree(self.0); } }
+}
+
 fn valid_profile_name(name: &str) -> bool {
     name.len() <= 64 && name.starts_with("Gogoke37.") && name[9..].bytes().all(|byte|
         byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')) && name.len() > 9
@@ -153,5 +313,46 @@ mod tests {
         assert!(!valid_profile_name("Gogoke37."));
         assert!(!valid_profile_name("Gogoke37.a\\b"));
         assert!(!valid_profile_name(&format!("Gogoke37.{}", "a".repeat(70))));
+    }
+
+    #[test]
+    fn fresh_directory_acl_binds_exact_package_sid_and_rejects_existing_content() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let name = format!("Gogoke37.acltest{}", std::process::id());
+        let wide: Vec<u16> = std::ffi::OsStr::new(&name).encode_wide().chain(Some(0)).collect();
+        let mut sid = ptr::null_mut();
+        let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide.as_ptr(), &mut sid) };
+        assert!(hr >= 0 && !sid.is_null(), "derive test package SID HRESULT={hr:#x}");
+        let profile = AppContainerProfile { sid };
+        let path = std::env::temp_dir().join(format!("gogoke-v37-acl-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        profile.grant_fresh_session_directory(&path).unwrap();
+        let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let handle = unsafe { CreateFileW(path_wide.as_ptr(), READ_CONTROL, FILE_SHARE_ALL,
+            ptr::null(), OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
+        assert_ne!(handle as isize, -1);
+        let handle = Token(handle);
+        let mut acl = ptr::null_mut();
+        let mut descriptor = ptr::null_mut();
+        assert_eq!(unsafe { GetSecurityInfo(handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            ptr::null_mut(), ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) }, 0);
+        let _descriptor = LocalAllocation(descriptor);
+        let mut count = 0;
+        let mut raw_entries = ptr::null_mut();
+        assert_eq!(unsafe { GetExplicitEntriesFromAclW(acl, &mut count, &mut raw_entries) }, 0);
+        let _entries = LocalAllocation(raw_entries.cast());
+        let observed = unsafe { std::slice::from_raw_parts(raw_entries, count as usize) };
+        assert!(observed.iter().any(|entry| entry.access_mode == GRANT_ACCESS &&
+            entry.inheritance == OBJECT_AND_CONTAINER_INHERIT &&
+            entry.trustee.form == TRUSTEE_IS_SID &&
+            unsafe { EqualSid(entry.trustee.name.cast(), profile.sid) } != 0));
+        std::fs::write(path.join("present"), b"fixture").unwrap();
+        assert!(matches!(profile.grant_fresh_session_directory(&path),
+            Err(IsolationError::DirectoryNotFresh)));
+        std::fs::remove_file(path.join("present")).unwrap();
+        drop(handle);
+        std::fs::remove_dir(path).unwrap();
     }
 }
