@@ -424,10 +424,11 @@ fn verify_pipe_server_object(child: &Child, pipe: &std::fs::File) -> Result<(), 
             unsafe { windows_sys::Win32::Foundation::GetLastError() }
         ));
     }
-    let same = unsafe { CompareObjectHandles(child.as_raw_handle() as HANDLE, server) } != 0;
+    let comparison = compare_object_handles(child.as_raw_handle() as HANDLE, server);
     unsafe {
         CloseHandle(server);
     }
+    let same = comparison?;
     if !same {
         return Err("GOGOKE_DESIGN37_USER_SERVER_OBJECT_MISMATCH".to_string());
     }
@@ -446,13 +447,35 @@ unsafe extern "system" {
     ) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> windows_sys::Win32::Foundation::HANDLE;
     fn CloseHandle(handle: windows_sys::Win32::Foundation::HANDLE) -> i32;
+    fn GetModuleHandleW(name: *const u16) -> windows_sys::Win32::Foundation::HMODULE;
+    fn GetProcAddress(module: windows_sys::Win32::Foundation::HMODULE, name: *const u8) -> *mut std::ffi::c_void;
 }
 
 #[cfg(target_os = "windows")]
-#[link(name = "KernelBase")]
-unsafe extern "system" {
-    fn CompareObjectHandles(
-        first: windows_sys::Win32::Foundation::HANDLE,
-        second: windows_sys::Win32::Foundation::HANDLE,
+fn compare_object_handles(
+    first: windows_sys::Win32::Foundation::HANDLE,
+    second: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<bool, String> {
+    type CompareObjectHandles = unsafe extern "system" fn(
+        windows_sys::Win32::Foundation::HANDLE,
+        windows_sys::Win32::Foundation::HANDLE,
     ) -> i32;
+    let module_name: Vec<u16> = "KernelBase.dll".encode_utf16().chain(Some(0)).collect();
+    let proc_name = b"CompareObjectHandles\0";
+    let module = unsafe { GetModuleHandleW(module_name.as_ptr()) };
+    if module.is_null() {
+        return Err(format!(
+            "GOGOKE_DESIGN37_COMPARE_OBJECT_MODULE_FAILED:WIN32_{}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        ));
+    }
+    let address = unsafe { GetProcAddress(module, proc_name.as_ptr()) };
+    if address.is_null() {
+        return Err(format!(
+            "GOGOKE_DESIGN37_COMPARE_OBJECT_UNAVAILABLE:WIN32_{}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        ));
+    }
+    let compare: CompareObjectHandles = unsafe { std::mem::transmute(address) };
+    Ok(unsafe { compare(first, second) } != 0)
 }
