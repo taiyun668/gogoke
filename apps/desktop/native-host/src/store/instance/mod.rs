@@ -1,5 +1,8 @@
 //! Design 37 global instance storage. No caller-facing v37 dispatch exists yet.
 //! This schema shares the verified product connection but never changes R2 authority tables.
+mod home;
+
+pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 
 use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
