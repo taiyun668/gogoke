@@ -33,7 +33,7 @@ impl From<SameOpenError> for AdmissionError {
     }
 }
 
-const SCHEMA: [(&str, &str); 5] = [
+const SCHEMA: [(&str, &str); 6] = [
     ("gogoke_v37_h_owner_binding",
      "CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('SESSION','CALL')),owner_id TEXT NOT NULL,generation TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('ACTIVE','REVOKED')),UNIQUE(instance_id,domain_id,kind,owner_id,generation)) STRICT"),
     ("gogoke_v37_h_claim",
@@ -44,6 +44,8 @@ const SCHEMA: [(&str, &str); 5] = [
      "CREATE TABLE gogoke_v37_h_home_fence(home_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('SESSION','CALL')),owner_id TEXT NOT NULL,generation TEXT NOT NULL,fence_id TEXT NOT NULL UNIQUE) STRICT"),
     ("gogoke_v37_h_stdin_journal",
      "CREATE TABLE gogoke_v37_h_stdin_journal(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,operation TEXT NOT NULL,ticket TEXT NOT NULL,process_operation_id TEXT NOT NULL,custodian_nonce TEXT NOT NULL,session_id TEXT NOT NULL,generation TEXT NOT NULL,request_hex TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARED','UNKNOWN','RECEIPTED')),receipt_hex TEXT,receipt_status TEXT CHECK(receipt_status IS NULL OR receipt_status IN ('APPLIED','REPLAYED','DENIED','STALE','CONFLICT','UNSUPPORTED','UNKNOWN','FAILED')),expected_revision TEXT NOT NULL,receipt_previous_revision TEXT,receipt_revision TEXT,PRIMARY KEY(domain_id,request_id),CHECK((phase='PREPARED' AND receipt_hex IS NULL AND receipt_status IS NULL AND receipt_previous_revision IS NULL AND receipt_revision IS NULL) OR (phase='UNKNOWN' AND ((receipt_hex IS NULL AND receipt_status IS NULL AND receipt_previous_revision IS NULL AND receipt_revision IS NULL) OR (receipt_hex IS NOT NULL AND receipt_status='UNKNOWN' AND receipt_previous_revision IS NOT NULL AND receipt_revision IS NOT NULL))) OR (phase='RECEIPTED' AND receipt_hex IS NOT NULL AND receipt_status IS NOT NULL AND receipt_status<>'UNKNOWN' AND receipt_previous_revision IS NOT NULL AND receipt_revision IS NOT NULL))) STRICT"),
+    ("gogoke_v37_h_seat_binding",
+     "CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(domain_id,session_id),UNIQUE(domain_id,seat_incarnation,generation),FOREIGN KEY(domain_id,seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT"),
 ];
 
 fn valid(value: &str) -> bool {
@@ -121,19 +123,18 @@ pub(crate) fn initialize_admission_schema(
         .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned()))
         .collect();
     expected.sort_by(|left, right| left.0.cmp(&right.0));
-    if !rows.is_empty() {
-        return if rows == expected {
-            Ok(())
-        } else {
-            Err(AdmissionError::Denied)
-        };
-    }
+    if rows == expected { return Ok(()); }
+    let mut previous: Vec<(String, String)> = SCHEMA[..5].iter()
+        .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
+    previous.sort_by(|left, right| left.0.cmp(&right.0));
+    if !rows.is_empty() && rows != previous { return Err(AdmissionError::Denied); }
     in_transaction(connection, |connection| {
         reject_shadow_or_effects(connection)?;
-        if !observed_schema(connection)?.is_empty() {
+        if observed_schema(connection)? != rows {
             return Err(AdmissionError::Denied);
         }
-        for (_, sql) in SCHEMA {
+        let to_create = if rows.is_empty() { &SCHEMA[..] } else { &SCHEMA[5..] };
+        for (_, sql) in to_create {
             connection.execute(sql)?;
         }
         if observed_schema(connection)? != expected {
@@ -172,6 +173,42 @@ pub(crate) struct OwnerBinding<'a> {
     pub(crate) kind: &'a str,
     pub(crate) owner_id: &'a str,
     pub(crate) generation: &'a str,
+}
+
+/// Bind the actual E seat incarnation to this session in H's same admission
+/// transaction. Shared instance and generation alone do not identify a seat.
+pub(crate) fn bind_seat_in_transaction(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    seat: &crate::store::seat::Seat,
+    session_id: &str,
+) -> Result<(), AdmissionError> {
+    require(session_id, "session_id")?;
+    let row = Statement::prepare(connection.as_ptr(),
+        "SELECT seat_id,seat_incarnation,generation FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2")?;
+    row.bind_text(1, &seat.domain_id)?;
+    row.bind_text(2, session_id)?;
+    if row.step_row()? {
+        if row.column_text(0)? != seat.seat_id || row.column_text(1)? != seat.incarnation
+            || row.column_text(2)? != seat.generation.to_string() || row.step_row()? {
+            return Err(AdmissionError::Conflict);
+        }
+        return Ok(());
+    }
+    let occupied = Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND seat_incarnation=?2 AND generation=?3")?;
+    occupied.bind_text(1, &seat.domain_id)?;
+    occupied.bind_text(2, &seat.incarnation)?;
+    occupied.bind_text(3, &seat.generation.to_string())?;
+    if occupied.step_row()? { return Err(AdmissionError::Conflict); }
+    let insert = Statement::prepare(connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES(?1,?2,?3,?4,?5)")?;
+    let generation = seat.generation.to_string();
+    for (index, value) in [seat.domain_id.as_str(), session_id, seat.seat_id.as_str(),
+        seat.incarnation.as_str(), generation.as_str()].iter().enumerate() {
+        insert.bind_text((index + 1) as i32, value)?;
+    }
+    insert.step_done()?;
+    Ok(())
 }
 
 /// Called only after a native E/H seat binding is established. It does not
@@ -570,6 +607,26 @@ pub(crate) fn release_admission(
         row.step_done()?;
         if changes(connection)? != 1 {
             return Err(AdmissionError::Conflict);
+        }
+        // A product seat becomes IDLE only in the transaction that releases
+        // its unstarted reservation or its already proven STOPPED claim.
+        let binding = Statement::prepare(connection.as_ptr(),
+            "SELECT seat_id,seat_incarnation FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
+        binding.bind_text(1, input.domain_id)?;
+        binding.bind_text(2, input.session_id)?;
+        binding.bind_text(3, input.generation)?;
+        if binding.step_row()? {
+            let seat_id = binding.column_text(0)?;
+            let incarnation = binding.column_text(1)?;
+            if binding.step_row()? { return Err(AdmissionError::Conflict); }
+            let seat = crate::store::seat::get(connection, input.domain_id, &seat_id)
+                .map_err(AdmissionError::Seat)?.ok_or(AdmissionError::Denied)?;
+            if seat.incarnation != incarnation || seat.generation.to_string() != input.generation
+                || seat.instance_id != input.instance_id || seat.state != crate::store::seat::State::Busy {
+                return Err(AdmissionError::Denied);
+            }
+            crate::store::seat::set_dispatch_state_in_transaction(connection, &seat, false)
+                .map_err(AdmissionError::Seat)?;
         }
         journal(
             connection,

@@ -3,7 +3,7 @@ mod wire;
 mod admission;
 mod journal;
 mod seat_io;
-mod runtime;
+pub(crate) mod runtime;
 
 pub(crate) use wire::{decode_receipt, decode_request, encode_receipt, V37Receipt, V37Request,
     V37Status, V37WireError};

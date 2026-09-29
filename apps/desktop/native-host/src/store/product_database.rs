@@ -34,6 +34,9 @@ use std::path::Path;
 
 type Result<T> = std::result::Result<T, OrchestrationError>;
 
+mod v37_seat;
+mod v37_session;
+
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
     match request.payload.get(&JsonString::from_str(field)) {
         Some(Json::String(value)) => value.to_well_formed_string()
@@ -192,17 +195,23 @@ impl<'root> ProductDatabase<'root> {
     /// native store; all other closed-envelope operations stay unsupported.
     pub fn dispatch_user_frame(&mut self, origin: &UserOriginProof, frame: &[u8]) -> Result<Vec<u8>> {
         origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
+        if v37_seat::is_user_v37_configuration_frame(frame) {
+            return self.configure_user_v37(frame);
+        }
         let request = decode_request(frame).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("v37 user frame: {error:?}")))?;
         self.dispatch_user_request(&request)
     }
 
     fn dispatch_user_request(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.family == "K-SEAT" { return self.dispatch_user_seat(request); }
+        if request.family == "K-SESSION" { return self.dispatch_user_session(request); }
         if request.family == "K-INSTANCE" {
             return match request.operation.as_str() {
                 "register" => self.register_user_instance(request),
                 "install-state" => self.read_user_instance(request, false),
                 "login-state" => self.read_user_instance(request, true),
+                "concurrency-input" => self.read_user_instance_capacity(request),
                 _ => Ok(encode_receipt(request, V37Status::Unsupported,
                     request.expected_revision, request.expected_revision, Default::default())),
             };

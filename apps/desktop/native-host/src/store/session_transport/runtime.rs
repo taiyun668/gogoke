@@ -65,7 +65,20 @@ pub(crate) fn reserve_native(
     let identity = authority::read_product_identity(db, owner)
         .map_err(AdmissionError::Identity)?;
     admission::reserve_admission(db, request, |db| {
-        check_owner_and_seat(db, &identity, seat_id, request)?;
+        check_owner_current(db, &identity)?;
+        let current = seat::get(db, request.domain_id, seat_id).map_err(AdmissionError::Seat)?
+            .ok_or(AdmissionError::Denied)?;
+        if current.instance_id != request.instance_id { return Err(AdmissionError::Denied); }
+        let current = if current.state == SeatState::Idle
+            && current.generation.checked_add(1).map(|value| value.to_string()).as_deref()
+                == Some(request.generation) {
+            seat::set_dispatch_state_in_transaction(db, &current, true)
+                .map_err(AdmissionError::Seat)?
+        } else { current };
+        if current.state != SeatState::Busy || current.generation.to_string() != request.generation {
+            return Err(AdmissionError::Denied);
+        }
+        admission::bind_seat_in_transaction(db, &current, request.session_id)?;
         current_instance_pin(db, request.instance_id)?;
         persisted_limits(db, request.domain_id, request.instance_id)
     })
@@ -153,6 +166,13 @@ fn check_owner_and_seat(
         || seat.generation.to_string() != request.generation {
         return Err(AdmissionError::Denied);
     }
+    let binding = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2 AND seat_id=?3 AND seat_incarnation=?4 AND generation=?5")?;
+    for (index, value) in [request.domain_id, request.session_id, seat_id,
+        seat.incarnation.as_str(), request.generation].iter().enumerate() {
+        binding.bind_text((index + 1) as i32, value)?;
+    }
+    if !binding.step_row()? || binding.step_row()? { return Err(AdmissionError::Denied); }
     Ok(())
 }
 
@@ -263,6 +283,10 @@ pub(crate) fn observe_claim(
            ON s.domain_id=a.domain_id AND s.seat_id=?3 \
           AND s.instance_id=a.instance_id AND CAST(s.generation AS TEXT)=a.generation \
           AND s.state='BUSY' \
+         JOIN main.gogoke_v37_h_seat_binding AS sb \
+           ON sb.domain_id=a.domain_id AND sb.session_id=a.session_id \
+          AND sb.seat_id=s.seat_id AND sb.seat_incarnation=s.incarnation \
+          AND sb.generation=a.generation \
          WHERE a.domain_id=?1 AND a.session_id=?2")?;
     row.bind_text(1, domain_id)?;
     row.bind_text(2, session_id)?;

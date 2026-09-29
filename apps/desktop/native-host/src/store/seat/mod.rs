@@ -2,7 +2,7 @@
 //! This module receives only native capabilities. It is not an IPC dispatcher;
 //! the future ingress must authenticate a live lead session before admission.
 
-use super::atomic::{AtomicError, Json, Parser, Statement};
+use super::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use super::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
@@ -987,6 +987,84 @@ pub(crate) fn reclaim(
     change(db, origin, input, "reclaim", "RECLAIMED")
 }
 
+/// Change one copied template setting on the seat. The source template is
+/// immutable; the seat revision and copied settings advance in one transaction.
+pub(crate) fn tune(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    origin: NativeOrigin<'_>,
+    input: SeatChange<'_>,
+    setting: &str,
+    value_json: &str,
+) -> Result<SeatReceipt, SeatError> {
+    validate(input.domain_id, input.seat_id, input.request_id, input.request_bytes)?;
+    if input.expected_generation < 1 || input.expected_revision < 1 {
+        return Err(SeatError::Invalid("seat revision"));
+    }
+    if !valid_id(setting) { return Err(SeatError::Invalid("setting")); }
+    if value_json.is_empty() || value_json.len() > crate::ipc::MAX_FRAME_BYTES {
+        return Err(SeatError::Invalid("value"));
+    }
+    super::atomic::require_canonical_json(value_json.as_bytes(), "seat.value")?;
+    let value = Parser::parse(value_json)?;
+    let (origin_id, origin_incarnation, origin_generation) = match &origin {
+        NativeOrigin::User(_) => ("", "", String::new()),
+        NativeOrigin::Lead(admission) => (
+            admission.seat_id.as_str(), admission.incarnation.as_str(),
+            admission.generation.to_string(),
+        ),
+    };
+    let fp = fingerprint(&[
+        "tune", input.domain_id, input.seat_id,
+        &input.expected_generation.to_string(), &input.expected_revision.to_string(),
+        setting, value_json, origin_id, origin_incarnation, &origin_generation,
+    ], input.request_bytes);
+    transact(db, |db| {
+        check_origin(db, &origin, input.domain_id, None)?;
+        if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
+            authorize_replay(db, &origin, &receipt)?;
+            return Ok(receipt);
+        }
+        let before = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::Unknown)?;
+        check_origin(db, &origin, input.domain_id, Some(&before))?;
+        if before.state == State::Reclaimed { return Err(SeatError::Denied); }
+        if before.generation != input.expected_generation || before.revision != input.expected_revision {
+            return Err(SeatError::Conflict);
+        }
+        if before.state == State::Busy { return Err(SeatError::Busy); }
+        let Some(settings_json) = &before.settings_json else { return Err(SeatError::SchemaDrift); };
+        let Json::Object(mut settings) = Parser::parse(settings_json)? else {
+            return Err(SeatError::SchemaDrift);
+        };
+        settings.insert(JsonString::from_str(setting), value);
+        let updated_settings = Json::Object(settings).canonical();
+        validate_template_settings(updated_settings.as_bytes())?;
+        let next_generation = before.generation.checked_add(1).ok_or(SeatError::Conflict)?;
+        let next_revision = before.revision.checked_add(1).ok_or(SeatError::Conflict)?;
+        let update_settings = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seat_settings SET settings_json=?1 WHERE domain_id=?2 AND seat_id=?3")?;
+        update_settings.bind_text(1, &updated_settings)?;
+        update_settings.bind_text(2, input.domain_id)?;
+        update_settings.bind_text(3, input.seat_id)?;
+        update_settings.step_done()?;
+        let update_seat = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seats SET generation=?1,revision=?2 WHERE domain_id=?3 AND seat_id=?4 AND generation=?5 AND revision=?6 AND state='IDLE'")?;
+        update_seat.bind_i64(1, next_generation)?;
+        update_seat.bind_i64(2, next_revision)?;
+        update_seat.bind_text(3, input.domain_id)?;
+        update_seat.bind_text(4, input.seat_id)?;
+        update_seat.bind_i64(5, before.generation)?;
+        update_seat.bind_i64(6, before.revision)?;
+        update_seat.step_done()?;
+        let seat = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::SchemaDrift)?;
+        if seat.generation != next_generation || seat.revision != next_revision
+            || seat.settings_json.as_deref() != Some(updated_settings.as_str()) {
+            return Err(SeatError::Conflict);
+        }
+        record_operation(db, input.request_id, &fp, &seat)?;
+        Ok(SeatReceipt { seat, replayed: false })
+    })
+}
+
 /// H must mark BUSY before launching a seat, and mark IDLE only after its
 /// durable stop fact. BUSY survives restart and blocks a second binding until
 /// H reconciles the stop; an absent process is not itself a stop fact.
@@ -995,7 +1073,16 @@ pub(crate) fn set_dispatch_state(
     seat: &Seat,
     busy: bool,
 ) -> Result<Seat, SeatError> {
-    transact(db, |db| {
+    transact(db, |db| set_dispatch_state_in_transaction(db, seat, busy))
+}
+
+/// H calls this only inside its admission or proven-stop transaction on this
+/// same connection, so seat state cannot commit independently of that fact.
+pub(crate) fn set_dispatch_state_in_transaction(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    seat: &Seat,
+    busy: bool,
+) -> Result<Seat, SeatError> {
         let current = read(db, &seat.domain_id, &seat.seat_id)?.ok_or(SeatError::Unknown)?;
         if current.incarnation != seat.incarnation
             || current.generation != seat.generation
@@ -1027,5 +1114,4 @@ pub(crate) fn set_dispatch_state(
             return Err(SeatError::Conflict);
         }
         Ok(updated)
-    })
 }

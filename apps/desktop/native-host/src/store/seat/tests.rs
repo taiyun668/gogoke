@@ -27,6 +27,61 @@ fn wire(request_id: &str) -> &'static [u8] {
     }
 }
 
+#[test]
+fn tune_copies_settings_and_keeps_native_cas_replay_and_state_guards() {
+    fixture(|db, owner| {
+        let make = |db: &mut VerifiedDatabaseConnection<'_>, seat_id: &'static str,
+            request_id: &'static str, raw: &'static [u8]| {
+            create(db, NativeOrigin::user(owner), CreateSeat {
+                domain_id: "projectA", seat_id, template_id: "templateA",
+                instance_id: Some("instanceA"), kind: Kind::Long,
+                request_id, request_bytes: raw,
+            }).unwrap().seat
+        };
+        let seat_a = make(db, "seatA", "createA",
+            br#"{"operation":"create-from-template","requestId":"createA","domainId":"projectA","seatId":"seatA","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#);
+        let seat_b = make(db, "seatB", "createB",
+            br#"{"operation":"create-from-template","requestId":"createB","domainId":"projectA","seatId":"seatB","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#);
+        let raw = br#"{"operation":"tune","requestId":"tuneA","setting":"instruction","value":"changed"}"#;
+        let change = || SeatChange {
+            domain_id: "projectA", seat_id: "seatA",
+            expected_generation: seat_a.generation, expected_revision: seat_a.revision,
+            request_id: "tuneA", request_bytes: raw,
+        };
+        let tuned = tune(db, NativeOrigin::user(owner), change(),
+            "instruction", "\"changed\"").unwrap();
+        assert!(!tuned.replayed);
+        assert_eq!(tuned.seat.settings_json.as_deref(), Some(r#"{"instruction":"changed"}"#));
+        assert_eq!(get(db, "projectA", "seatB").unwrap().unwrap().settings_json, seat_b.settings_json);
+        let replay = tune(db, NativeOrigin::user(owner), change(),
+            "instruction", "\"changed\"").unwrap();
+        assert!(replay.replayed);
+        assert!(matches!(tune(db, NativeOrigin::user(owner), SeatChange {
+            request_bytes: br#"{"operation":"tune","requestId":"tuneA","setting":"instruction","value":"different"}"#,
+            ..change()
+        }, "instruction", "\"different\""), Err(SeatError::Conflict)));
+        assert!(matches!(tune(db, NativeOrigin::user(owner), SeatChange {
+            request_id: "staleTune", request_bytes: b"staleTune", ..change()
+        }, "instruction", "\"late\""), Err(SeatError::Conflict)));
+        let busy = set_dispatch_state(db, &tuned.seat, true).unwrap();
+        assert!(matches!(tune(db, NativeOrigin::user(owner), SeatChange {
+            expected_generation: busy.generation, expected_revision: busy.revision,
+            request_id: "busyTune", request_bytes: b"busyTune", ..change()
+        }, "instruction", "\"busy\""), Err(SeatError::Busy)));
+        let idle = set_dispatch_state(db, &busy, false).unwrap();
+        let reclaimed = reclaim(db, NativeOrigin::user(owner), SeatChange {
+            domain_id: "projectA", seat_id: "seatA", expected_generation: idle.generation,
+            expected_revision: idle.revision, request_id: "reclaimTune",
+            request_bytes: b"reclaimTune",
+        }).unwrap().seat;
+        assert!(matches!(tune(db, NativeOrigin::user(owner), SeatChange {
+            domain_id: "projectA", seat_id: "seatA", expected_generation: reclaimed.generation,
+            expected_revision: reclaimed.revision, request_id: "afterReclaimTune",
+            request_bytes: b"afterReclaimTune",
+        }, "instruction", "\"forbidden\""), Err(SeatError::Denied)));
+    });
+}
+
 fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) {
     let _guard = route_b_test_guard();
     let nonce = SystemTime::now()

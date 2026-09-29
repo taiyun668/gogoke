@@ -7,7 +7,7 @@ use std::io;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 
 type Handle = *mut c_void;
@@ -22,6 +22,7 @@ const GRANT_ACCESS: u32 = 1;
 const TRUSTEE_IS_SID: u32 = 0;
 const TRUSTEE_IS_UNKNOWN: u32 = 0;
 const OBJECT_AND_CONTAINER_INHERIT: u32 = 3;
+const NO_INHERITANCE: u32 = 0;
 const FILE_GENERIC_READ: u32 = 0x0012_0089;
 const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
 const FILE_GENERIC_EXECUTE: u32 = 0x0012_00a0;
@@ -34,7 +35,6 @@ const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const SE_GROUP_ENABLED: u32 = 4;
-#[cfg(test)]
 const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x10;
 
 #[repr(C)]
@@ -116,7 +116,6 @@ extern "system" {
     fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
 }
 
-#[cfg(test)]
 #[link(name = "OneCoreUAP")]
 extern "system" {
     fn DeriveCapabilitySidsFromName(name: *const u16,
@@ -151,8 +150,7 @@ pub(crate) enum IsolationError {
     DirectoryNotFresh,
     DirectoryNotPhysical,
     Acl(io::Error),
-    #[cfg(test)]
-    InvalidTestCapability,
+    InvalidRegistryCapability,
 }
 
 impl fmt::Display for IsolationError {
@@ -166,8 +164,7 @@ impl fmt::Display for IsolationError {
             Self::DirectoryNotFresh => write!(f, "AppContainer directory must be empty before ACL grant"),
             Self::DirectoryNotPhysical => write!(f, "AppContainer directory must be a physical directory"),
             Self::Acl(error) => write!(f, "AppContainer ACL: {error}"),
-            #[cfg(test)]
-            Self::InvalidTestCapability => write!(f, "registryRead did not derive exactly one capability SID"),
+            Self::InvalidRegistryCapability => write!(f, "registryRead did not derive exactly one capability SID"),
         }
     }
 }
@@ -176,12 +173,17 @@ pub(crate) struct AppContainerProfile {
     sid: *mut c_void,
     internet_sid: Option<LocalAllocation>,
     internet_capability: Option<SidAndAttributes>,
-    #[cfg(test)]
     registry_sids: Option<DerivedCapabilitySids>,
-    #[cfg(test)]
     registry_capability: Option<SidAndAttributes>,
-    #[cfg(test)]
     combined_capabilities: Option<[SidAndAttributes; 2]>,
+}
+
+/// An open handle to one empty physical directory. The handle, rather than its
+/// path spelling, identifies the object that may receive a package ACE.
+pub(crate) struct FreshDirectory {
+    path: PathBuf,
+    handle: Token,
+    identity: FileInformation,
 }
 
 impl AppContainerProfile {
@@ -211,23 +213,15 @@ impl AppContainerProfile {
         }
         if sid.is_null() { return Err(IsolationError::MissingSid); }
         let mut profile = Self { sid, internet_sid: None, internet_capability: None,
-            #[cfg(test)]
             registry_sids: None,
-            #[cfg(test)]
             registry_capability: None,
-            #[cfg(test)]
             combined_capabilities: None };
         if internet_client { profile.enable_internet_client()?; }
-        #[cfg(test)]
-        if std::env::var_os("GOGOKE_TEST_LPAC_REGISTRY_READ").as_deref()
-            == Some(std::ffi::OsStr::new("1")) {
-            profile.enable_registry_read_for_test()?;
-        }
+        profile.enable_registry_read()?;
         Ok(profile)
     }
 
     pub(crate) fn security_capabilities(&self) -> SecurityCapabilities {
-        #[cfg(test)]
         if let Some(registry) = &self.registry_capability {
             let (pointer, count) = if let Some(pair) = &self.combined_capabilities {
                 (pair.as_ptr().cast_mut().cast(), 2)
@@ -279,19 +273,18 @@ impl AppContainerProfile {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn enable_registry_read_for_test(&mut self) -> Result<(), IsolationError> {
+    fn enable_registry_read(&mut self) -> Result<(), IsolationError> {
         let name: Vec<u16> = std::ffi::OsStr::new("registryRead")
             .encode_wide().chain(Some(0)).collect();
         let derived = DerivedCapabilitySids::from_name(&name)?;
         if derived.capability_count != 1 || derived.capability_sids.is_null() {
-            return Err(IsolationError::InvalidTestCapability);
+            return Err(IsolationError::InvalidRegistryCapability);
         }
         let sid = unsafe { *derived.capability_sids };
-        if sid.is_null() { return Err(IsolationError::InvalidTestCapability); }
+        if sid.is_null() { return Err(IsolationError::InvalidRegistryCapability); }
         if self.internet_capability.as_ref().is_some_and(|internet|
             unsafe { EqualSid(internet.sid, sid) } != 0) {
-            return Err(IsolationError::InvalidTestCapability);
+            return Err(IsolationError::InvalidRegistryCapability);
         }
         let capability = SidAndAttributes { sid, attributes: SE_GROUP_ENABLED };
         self.combined_capabilities = self.internet_capability.as_ref().map(|internet|
@@ -302,42 +295,38 @@ impl AppContainerProfile {
         Ok(())
     }
 
-    /// Grant only a newly created, empty session directory to this package SID.
-    /// The ACE inherits to contents created after the grant. The ordinary user
-    /// ACE remains; the AppContainer token additionally requires its SID.
-    /// The caller must hold the directory's native custody and check its
-    /// physical identity before and after this operation.
-    pub(crate) fn grant_fresh_session_directory(&self, path: &Path)
-        -> Result<(), IsolationError> {
-        let before = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
-        if !before.is_dir() || before.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    /// Hold one fresh directory by its filesystem identity before selecting a
+    /// package grant. Existing content is deliberately outside this API.
+    pub(crate) fn open_fresh_directory(path: &Path) -> Result<FreshDirectory, IsolationError> {
+        require_fresh_physical_path(path)?;
+        let handle = open_directory(path, READ_CONTROL | WRITE_DAC)?;
+        let identity = file_information(handle.0)?;
+        if !identity.physical_directory() { return Err(IsolationError::DirectoryNotPhysical); }
+        require_exact_fresh_path(path, &identity)?;
+        Ok(FreshDirectory { path: path.to_path_buf(), handle, identity })
+    }
+
+    /// Grant read/traverse or read/write/traverse to this exact held directory.
+    /// `inherit` affects only children created under this fresh target. A
+    /// persistent instance ancestor must never use an inheritable package ACE.
+    pub(crate) fn grant_held_fresh_directory(&self, directory: &FreshDirectory,
+        writable: bool, inherit: bool) -> Result<(), IsolationError> {
+        if !file_information(directory.handle.0)?.same_object(&directory.identity) {
             return Err(IsolationError::DirectoryNotPhysical);
         }
-        if std::fs::read_dir(path).map_err(IsolationError::Acl)?.next().is_some() {
-            return Err(IsolationError::DirectoryNotFresh);
-        }
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let handle = unsafe { CreateFileW(wide.as_ptr(), READ_CONTROL | WRITE_DAC, FILE_SHARE_ALL,
-            ptr::null(), OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
-        if handle as isize == -1 { return Err(IsolationError::Acl(io::Error::last_os_error())); }
-        let handle = Token(handle);
-        let physical = file_information(handle.0)?;
-        if !physical.physical_directory() { return Err(IsolationError::DirectoryNotPhysical); }
-        if std::fs::read_dir(path).map_err(IsolationError::Acl)?.next().is_some() {
-            return Err(IsolationError::DirectoryNotFresh);
-        }
+        require_exact_fresh_path(&directory.path, &directory.identity)?;
         let mut old_acl = ptr::null_mut();
         let mut descriptor = ptr::null_mut();
-        let status = unsafe { GetSecurityInfo(handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        let status = unsafe { GetSecurityInfo(directory.handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
             ptr::null_mut(), ptr::null_mut(), &mut old_acl, ptr::null_mut(), &mut descriptor) };
         if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
         let descriptor = LocalAllocation(descriptor);
         if old_acl.is_null() { return Err(IsolationError::DirectoryNotPhysical); }
         let mut entry = ExplicitAccessW {
-            permissions: FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
+            permissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
+                (if writable { FILE_GENERIC_WRITE } else { 0 }),
             access_mode: GRANT_ACCESS,
-            inheritance: OBJECT_AND_CONTAINER_INHERIT,
+            inheritance: if inherit { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE },
             trustee: TrusteeW { multiple: ptr::null_mut(), multiple_operation: 0,
                 form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN,
                 name: self.sid.cast() },
@@ -346,22 +335,19 @@ impl AppContainerProfile {
         let status = unsafe { SetEntriesInAclW(1, &mut entry, old_acl, &mut new_acl) };
         if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
         let new_acl = LocalAllocation(new_acl);
-        let status = unsafe { SetSecurityInfo(handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        let status = unsafe { SetSecurityInfo(directory.handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
             ptr::null_mut(), ptr::null_mut(), new_acl.0, ptr::null_mut()) };
         if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
         drop(descriptor);
-        let after = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
-        let observed = unsafe { CreateFileW(wide.as_ptr(), READ_CONTROL, FILE_SHARE_ALL,
-            ptr::null(), OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
-        if observed as isize == -1 { return Err(IsolationError::Acl(io::Error::last_os_error())); }
-        let observed = Token(observed);
-        let observed_info = file_information(observed.0)?;
-        if !after.is_dir() || after.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            || !physical.same_object(&observed_info) || !observed_info.physical_directory() {
-            return Err(IsolationError::DirectoryNotPhysical);
-        }
+        require_exact_fresh_path(&directory.path, &directory.identity)?;
         Ok(())
+    }
+
+    /// Existing session callers get the same fresh, inheritable read/write ACE.
+    pub(crate) fn grant_fresh_session_directory(&self, path: &Path)
+        -> Result<(), IsolationError> {
+        let directory = Self::open_fresh_directory(path)?;
+        self.grant_held_fresh_directory(&directory, true, true)
     }
 
     /// Inspect the exact suspended process handle before durable admission.
@@ -413,40 +399,32 @@ impl AppContainerProfile {
         }
         if returned < group_offset as u32 { return Err(IsolationError::WrongToken); }
         let count = unsafe { *(groups.as_ptr() as *const u32) } as usize;
-        #[cfg(test)]
         let expected_count = usize::from(self.internet_capability.is_some())
             + usize::from(self.registry_capability.is_some());
-        #[cfg(not(test))]
-        let expected_count = usize::from(self.internet_capability.is_some());
         if count > 32 || count != expected_count ||
             (returned as usize) < group_offset + count * size_of::<SidAndAttributes>() {
             return Err(IsolationError::WrongToken);
         }
-        #[cfg(test)]
-        if let Some(registry) = &self.registry_capability {
-            let actual = unsafe { std::slice::from_raw_parts(
-                (groups.as_ptr() as *const u8).add(group_offset) as *const SidAndAttributes,
-                count) };
-            let expected = self.combined_capabilities.as_ref().map_or(
-                std::slice::from_ref(registry), |pair| pair.as_slice());
-            // Windows may add mandatory/default metadata bits to token groups;
-            // compare the access-effective enabled/deny-only state exactly.
-            if expected.iter().any(|wanted| actual.iter().filter(|found|
-                !found.sid.is_null() &&
-                found.attributes & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY)
-                    == wanted.attributes &&
-                unsafe { EqualSid(found.sid, wanted.sid) } != 0).count() != 1) {
-                return Err(IsolationError::WrongToken);
-            }
-            return Ok(());
-        }
-        if let Some(expected) = &self.internet_capability {
-            let actual = unsafe { &*((groups.as_ptr() as *const u8).add(group_offset)
-                as *const SidAndAttributes) };
-            if actual.sid.is_null() || unsafe { EqualSid(actual.sid, expected.sid) } == 0 ||
-                actual.attributes & SE_GROUP_ENABLED == 0 {
-                return Err(IsolationError::WrongToken);
-            }
+        let actual = unsafe { std::slice::from_raw_parts(
+            (groups.as_ptr() as *const u8).add(group_offset) as *const SidAndAttributes,
+            count) };
+        let expected: &[SidAndAttributes] = if let Some(pair) = &self.combined_capabilities {
+            pair
+        } else if let Some(registry) = &self.registry_capability {
+            std::slice::from_ref(registry)
+        } else if let Some(internet) = &self.internet_capability {
+            std::slice::from_ref(internet)
+        } else {
+            &[]
+        };
+        // Windows may add mandatory/default metadata bits to token groups;
+        // compare the access-effective enabled/deny-only state exactly.
+        if expected.iter().any(|wanted| actual.iter().filter(|found|
+            !found.sid.is_null() &&
+            found.attributes & (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY)
+                == wanted.attributes &&
+            unsafe { EqualSid(found.sid, wanted.sid) } != 0).count() != 1) {
+            return Err(IsolationError::WrongToken);
         }
         Ok(())
     }
@@ -459,6 +437,37 @@ impl Drop for AppContainerProfile {
 struct Token(Handle);
 impl Drop for Token {
     fn drop(&mut self) { unsafe { CloseHandle(self.0); } }
+}
+
+fn open_directory(path: &Path, access: u32) -> Result<Token, IsolationError> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let handle = unsafe { CreateFileW(wide.as_ptr(), access, FILE_SHARE_ALL,
+        ptr::null(), OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
+    if handle as isize == -1 { return Err(IsolationError::Acl(io::Error::last_os_error())); }
+    Ok(Token(handle))
+}
+
+fn require_fresh_physical_path(path: &Path) -> Result<(), IsolationError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(IsolationError::DirectoryNotPhysical);
+    }
+    if std::fs::read_dir(path).map_err(IsolationError::Acl)?.next().is_some() {
+        return Err(IsolationError::DirectoryNotFresh);
+    }
+    Ok(())
+}
+
+fn require_exact_fresh_path(path: &Path, identity: &FileInformation)
+    -> Result<(), IsolationError> {
+    require_fresh_physical_path(path)?;
+    let observed = open_directory(path, READ_CONTROL)?;
+    let info = file_information(observed.0)?;
+    if !info.physical_directory() || !info.same_object(identity) {
+        return Err(IsolationError::DirectoryNotPhysical);
+    }
+    require_fresh_physical_path(path)
 }
 
 fn file_information(handle: Handle) -> Result<FileInformation, IsolationError> {
@@ -474,7 +483,6 @@ impl Drop for LocalAllocation {
     fn drop(&mut self) { unsafe { LocalFree(self.0); } }
 }
 
-#[cfg(test)]
 struct DerivedCapabilitySids {
     group_sids: *mut *mut c_void,
     group_count: u32,
@@ -482,7 +490,6 @@ struct DerivedCapabilitySids {
     capability_count: u32,
 }
 
-#[cfg(test)]
 impl DerivedCapabilitySids {
     fn from_name(name: &[u16]) -> Result<Self, IsolationError> {
         let mut derived = Self { group_sids: ptr::null_mut(), group_count: 0,
@@ -496,7 +503,6 @@ impl DerivedCapabilitySids {
     }
 }
 
-#[cfg(test)]
 impl Drop for DerivedCapabilitySids {
     fn drop(&mut self) {
         unsafe {
@@ -577,6 +583,35 @@ mod tests {
     }
 
     #[test]
+    fn held_fresh_directory_can_grant_read_without_inheritance() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let profile = AppContainerProfile::derived_for_test("Gogoke37.ReadOnlyAcl").unwrap();
+        let path = std::env::temp_dir().join(format!("gogoke-v37-read-acl-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let held = AppContainerProfile::open_fresh_directory(&path).unwrap();
+        profile.grant_held_fresh_directory(&held, false, false).unwrap();
+        let mut acl = ptr::null_mut();
+        let mut descriptor = ptr::null_mut();
+        assert_eq!(unsafe { GetSecurityInfo(held.handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            ptr::null_mut(), ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) }, 0);
+        let _descriptor = LocalAllocation(descriptor);
+        let mut count = 0;
+        let mut raw_entries = ptr::null_mut();
+        assert_eq!(unsafe { GetExplicitEntriesFromAclW(acl, &mut count, &mut raw_entries) }, 0);
+        let _entries = LocalAllocation(raw_entries.cast());
+        assert!(count > 0 && !raw_entries.is_null());
+        let observed = unsafe { std::slice::from_raw_parts(raw_entries, count as usize) };
+        assert!(observed.iter().any(|entry| entry.access_mode == GRANT_ACCESS &&
+            entry.inheritance == NO_INHERITANCE &&
+            entry.permissions & 0x0001 != 0 && entry.permissions & 0x0002 == 0 &&
+            entry.trustee.form == TRUSTEE_IS_SID &&
+            unsafe { EqualSid(entry.trustee.name.cast(), profile.sid) } != 0));
+        drop(held);
+        std::fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
     fn outbound_network_capability_is_explicit_and_exact() {
         let name: Vec<u16> = std::ffi::OsStr::new("Gogoke37.capabilitytest")
             .encode_wide().chain(Some(0)).collect();
@@ -591,5 +626,16 @@ mod tests {
         let actual = unsafe { &*(capabilities.capabilities as *const SidAndAttributes) };
         assert_eq!(actual.attributes, SE_GROUP_ENABLED);
         assert_eq!(actual.sid, profile.internet_sid.as_ref().unwrap().0);
+        profile.enable_registry_read().unwrap();
+        let capabilities = profile.security_capabilities();
+        assert_eq!(capabilities.capability_count, 2);
+        let actual = unsafe { std::slice::from_raw_parts(
+            capabilities.capabilities as *const SidAndAttributes, 2) };
+        assert_eq!(actual[0].sid, profile.internet_sid.as_ref().unwrap().0);
+        assert_eq!(actual[1].sid, profile.registry_capability.as_ref().unwrap().sid);
+        assert!(actual.iter().all(|capability| capability.attributes == SE_GROUP_ENABLED));
+        let production = AppContainerProfile::ensure("Gogoke37.ProductionCapability", false).unwrap();
+        assert_eq!(production.security_capabilities().capability_count, 1);
+        assert!(production.registry_capability.is_some());
     }
 }
