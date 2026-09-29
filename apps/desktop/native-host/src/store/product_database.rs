@@ -28,6 +28,7 @@ use super::instance::{self, CatalogError, Registration, RegistrationDisposition,
 use crate::ipc::{PrivatePipeConnection, UserOriginProof};
 use crate::root::RootLock;
 use crate::process::ProcessCustodian;
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -39,6 +40,90 @@ fn user_payload_string(request: &V37Request, field: &'static str) -> Result<Stri
             .filter(|value| !value.is_empty() && !value.contains('\0'))
             .ok_or(OrchestrationError::Invalid(field)),
         _ => Err(OrchestrationError::Invalid(field)),
+    }
+}
+
+struct RegisteredInstance {
+    driver_id: String,
+    program_digest: String,
+    version: String,
+    login_state: String,
+    revision: u64,
+}
+
+struct RegistrationSource {
+    request_id: String,
+    request_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+enum InstallFact {
+    Installed,
+    Missing,
+    Unknown,
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_framed_hex(value: &str) -> Result<Vec<Vec<u8>>> {
+    if value.is_empty() || value.len() > 262_144 || value.len() % 2 != 0 {
+        return Err(OrchestrationError::V37StoreFailure(
+            "instance journal framing is invalid".into(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let high = hex_nibble(pair[0]).ok_or_else(||
+            OrchestrationError::V37StoreFailure("instance journal hex is invalid".into()))?;
+        let low = hex_nibble(pair[1]).ok_or_else(||
+            OrchestrationError::V37StoreFailure("instance journal hex is invalid".into()))?;
+        bytes.push((high << 4) | low);
+    }
+    let mut fields = Vec::new();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        if bytes.len() - offset < 8 {
+            return Err(OrchestrationError::V37StoreFailure(
+                "instance journal field length is missing".into(),
+            ));
+        }
+        let length = u64::from_be_bytes(bytes[offset..offset + 8].try_into()
+            .map_err(|_| OrchestrationError::V37StoreFailure(
+                "instance journal field length is invalid".into(),
+            ))?);
+        offset += 8;
+        let length = usize::try_from(length).map_err(|_|
+            OrchestrationError::V37StoreFailure("instance journal field is too large".into()))?;
+        if length > 65_536 || length > bytes.len() - offset {
+            return Err(OrchestrationError::V37StoreFailure(
+                "instance journal field is out of bounds".into(),
+            ));
+        }
+        fields.push(bytes[offset..offset + length].to_vec());
+        offset += length;
+    }
+    if fields.is_empty() {
+        return Err(OrchestrationError::V37StoreFailure(
+            "instance journal has no fields".into(),
+        ));
+    }
+    Ok(fields)
+}
+
+fn catalog_error_is_missing(error: &CatalogError) -> bool {
+    match error {
+        CatalogError::Io(error) => error.kind() == std::io::ErrorKind::NotFound,
+        CatalogError::Program(RegistryError::Io(error)) =>
+            error.kind() == std::io::ErrorKind::NotFound,
+        CatalogError::UnsupportedVersion => true,
+        _ => false,
     }
 }
 
@@ -109,11 +194,229 @@ impl<'root> ProductDatabase<'root> {
         origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
         let request = decode_request(frame).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("v37 user frame: {error:?}")))?;
-        if request.family == "K-INSTANCE" && request.operation == "register" {
-            return self.register_user_instance(&request);
+        self.dispatch_user_request(&request)
+    }
+
+    fn dispatch_user_request(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.family == "K-INSTANCE" {
+            return match request.operation.as_str() {
+                "register" => self.register_user_instance(request),
+                "install-state" => self.read_user_instance(request, false),
+                "login-state" => self.read_user_instance(request, true),
+                _ => Ok(encode_receipt(request, V37Status::Unsupported,
+                    request.expected_revision, request.expected_revision, Default::default())),
+            };
         }
-        Ok(encode_receipt(&request, V37Status::Unsupported,
+        Ok(encode_receipt(request, V37Status::Unsupported,
             request.expected_revision, request.expected_revision, Default::default()))
+    }
+
+    fn read_registered_instance(&self, instance_id: &str) -> Result<Option<RegisteredInstance>> {
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT driver_id,program_digest,version,login_state,revision \
+             FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+        query.bind_text(1, instance_id)?;
+        if !query.step_row()? {
+            return Ok(None);
+        }
+        let driver_id = query.column_text(0)?;
+        let program_digest = query.column_text(1)?;
+        let version = query.column_text(2)?;
+        let login_state = query.column_text(3)?;
+        let revision = query.column_text(4)?.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("instance revision: {error}")))?;
+        if revision == 0 || query.step_row()? {
+            return Err(OrchestrationError::Invalid("instance row"));
+        }
+        Ok(Some(RegisteredInstance {
+            driver_id,
+            program_digest,
+            version,
+            login_state,
+            revision,
+        }))
+    }
+
+    /// Recover the original registration bytes from F's durable fingerprint.
+    /// The operation journal is the only source for the registration identity;
+    /// a read request must never supply or reconstruct a path/digest claim.
+    fn registration_source(
+        &self,
+        instance_id: &str,
+        driver_id: &str,
+    ) -> Result<Option<RegistrationSource>> {
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id,request_hex,phase FROM main.gogoke_v37_instance_operations \
+             WHERE target_id=?1 AND phase='APPLIED' ORDER BY request_id")?;
+        query.bind_text(1, instance_id)?;
+        let mut source = None;
+        while query.step_row()? {
+            let request_id = query.column_text(0)?;
+            let fields = decode_framed_hex(&query.column_text(1)?)?;
+            // Observation fingerprints use six fields and are not registration
+            // authority. Only the exact five-field registration fingerprint is
+            // eligible to establish the persistent home and program pin.
+            if fields.len() != 5 {
+                continue;
+            }
+            if fields[1].as_slice() != instance_id.as_bytes() {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "registration journal target mismatch".into(),
+                ));
+            }
+            let request = decode_request(&fields[0]).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!(
+                    "registration journal request: {error:?}"
+                )))?;
+            if request.family != "K-INSTANCE"
+                || request.operation != "register"
+                || request.domain_id != "global"
+                || request.target_id != instance_id
+                || request.payload.len() != 1
+                || user_payload_string(&request, "driverId")?.as_str() != driver_id
+            {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "registration journal identity mismatch".into(),
+                ));
+            }
+            if source.is_some() {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "duplicate registration journal".into(),
+                ));
+            }
+            source = Some(RegistrationSource { request_id, request_bytes: fields[0].clone() });
+        }
+        Ok(source)
+    }
+
+    fn registered_home_is_current(
+        &self,
+        request: &RegistrationSource,
+        instance_id: &str,
+    ) -> Result<bool> {
+        match instance::reconcile_register_replay(
+            &self.connection,
+            self.root,
+            &request.request_id,
+            instance_id,
+            &request.request_bytes,
+        ) {
+            Ok(RegistrationReplay::Replayed) => Ok(true),
+            Ok(RegistrationReplay::Unseen | RegistrationReplay::Pending) => Ok(false),
+            Err(error) => Err(OrchestrationError::V37StoreFailure(format!(
+                "instance home observation: {error:?}"
+            ))),
+        }
+    }
+
+    fn current_install_fact(
+        &self,
+        row: &RegisteredInstance,
+        source: &RegistrationSource,
+        instance_id: &str,
+    ) -> Result<InstallFact> {
+        if !self.registered_home_is_current(source, instance_id)? {
+            return Ok(InstallFact::Unknown);
+        }
+        // H's launch resolver owns the same native catalog check. Reusing it
+        // keeps this read observational: no registration or revision write is
+        // attempted, and true is possible only for the current pinned bytes
+        // and version.
+        match instance::locate_pinned_program(
+            &row.driver_id,
+            &row.program_digest,
+            &row.version,
+        ) {
+            Ok(_) => Ok(InstallFact::Installed),
+            Err(error) if catalog_error_is_missing(&error) => Ok(InstallFact::Missing),
+            Err(_) => Ok(InstallFact::Unknown),
+        }
+    }
+
+    fn read_user_instance(
+        &mut self,
+        request: &V37Request,
+        login: bool,
+    ) -> Result<Vec<u8>> {
+        let row = match self.read_registered_instance(&request.target_id) {
+            Ok(Some(row)) => row,
+            Ok(None) => return Ok(encode_receipt(request, V37Status::Conflict, 0, 0,
+                Default::default())),
+            Err(error) => return Ok(encode_receipt(request, V37Status::Unknown,
+                0, 0, BTreeMap::from([(JsonString::from_str("reason"),
+                    Json::String(JsonString::from_str(&format!("instance row: {error:?}"))))]))),
+        };
+        let current = row.revision;
+        let receipt = |status, result| encode_receipt(request, status, current, current, result);
+        if request.domain_id != "global" || !request.payload.is_empty() {
+            return Ok(receipt(V37Status::Denied, Default::default()));
+        }
+        if request.expected_revision != current {
+            return Ok(receipt(V37Status::Stale, Default::default()));
+        }
+        let source = match self.registration_source(&request.target_id, &row.driver_id) {
+            Ok(Some(source)) => source,
+            Ok(None) => {
+                let result = if login {
+                    BTreeMap::from([(JsonString::from_str("state"),
+                        Json::String(JsonString::from_str("UNKNOWN")))])
+                } else {
+                    BTreeMap::from([(JsonString::from_str("installed"), Json::Bool(false))])
+                };
+                return Ok(receipt(V37Status::Unknown, result));
+            }
+            Err(error) => {
+                let result = if login {
+                    BTreeMap::from([(JsonString::from_str("state"),
+                        Json::String(JsonString::from_str("UNKNOWN")))])
+                } else {
+                    BTreeMap::from([(JsonString::from_str("installed"), Json::Bool(false))])
+                };
+                let mut result = result;
+                result.insert(JsonString::from_str("reason"),
+                    Json::String(JsonString::from_str(&format!("registration source: {error:?}"))));
+                return Ok(receipt(V37Status::Unknown, result));
+            }
+        };
+        if login {
+            match self.registered_home_is_current(&source, &request.target_id) {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Ok(receipt(V37Status::Unknown, BTreeMap::from([
+                    (JsonString::from_str("state"),
+                        Json::String(JsonString::from_str("UNKNOWN"))),
+                ]))),
+            }
+            let state = row.login_state.as_str();
+            if !matches!(state, "UNKNOWN" | "LOGGED_IN" | "LOGGED_OUT") {
+                return Ok(receipt(V37Status::Unknown, BTreeMap::from([
+                    (JsonString::from_str("state"),
+                        Json::String(JsonString::from_str("UNKNOWN"))),
+                ])));
+            }
+            return Ok(receipt(V37Status::Applied, BTreeMap::from([
+                (JsonString::from_str("state"), Json::String(JsonString::from_str(state))),
+            ])));
+        }
+        let fact = match self.current_install_fact(&row, &source, &request.target_id) {
+            Ok(fact) => fact,
+            Err(error) => {
+                return Ok(receipt(V37Status::Unknown, BTreeMap::from([
+                    (JsonString::from_str("installed"), Json::Bool(false)),
+                    (JsonString::from_str("reason"),
+                        Json::String(JsonString::from_str(&format!(
+                            "install observation: {error:?}"
+                        )))),
+                ])));
+            }
+        };
+        let installed = matches!(fact, InstallFact::Installed);
+        let status = match fact {
+            InstallFact::Installed | InstallFact::Missing => V37Status::Applied,
+            InstallFact::Unknown => V37Status::Unknown,
+        };
+        Ok(receipt(status, BTreeMap::from([
+            (JsonString::from_str("installed"), Json::Bool(installed)),
+        ])))
     }
 
     fn register_user_instance(&mut self, request: &V37Request) -> Result<Vec<u8>> {

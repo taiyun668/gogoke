@@ -76,6 +76,32 @@ fn scalar(product: &ProductDatabase<'_>, sql: &str) -> String {
     assert!(statement.step_row().unwrap()); let result = statement.column_text(0).unwrap();
     assert!(!statement.step_row().unwrap()); result
 }
+
+fn instance_request(
+    operation: &str,
+    request_id: &str,
+    instance_id: &str,
+    expected_revision: &str,
+) -> V37Request {
+    let raw = format!(
+        "{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"{operation}\",\"requestId\":\"{request_id}\",\"targetId\":\"{instance_id}\",\"domainId\":\"global\",\"expectedRevision\":\"{expected_revision}\",\"payload\":{{}}}}",
+    );
+    decode_request(raw.as_bytes()).unwrap()
+}
+
+fn register_request() -> V37Request {
+    decode_request(
+        br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerReadA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#,
+    )
+    .unwrap()
+}
+
+fn remove_instance_home(root: &RootLock) {
+    let path = root.canonical_root().canonical_path.join("v37-instances");
+    if path.exists() {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
 fn spec(product: &ProductDatabase<'_>, permission: &str, depth: u8) -> GrantSpec {
     GrantSpec { principal_id: product.owner.principal_id().into(), seat_id: product.owner.seat_id().into(),
         permission: permission.into(), promotion_kind: "GLOBAL_LESSON".into(),
@@ -721,5 +747,89 @@ fn controlled_vertical_midstage_failure_rolls_back_without_an_action_half_row() 
             ),
             "0",
         );
+    });
+}
+
+#[test]
+fn user_instance_reads_native_install_and_keeps_registration_login_unknown() {
+    fixture(|root, product| {
+        let registration = register_request();
+        let registered = product.register_user_instance(&registration).unwrap();
+        let registered = String::from_utf8(registered).unwrap();
+        assert!(registered.contains("\"status\":\"APPLIED\""), "{registered}");
+
+        let login = product.dispatch_user_request(
+            &instance_request("login-state", "loginReadA", "instanceA", "1"),
+        ).unwrap();
+        let login = String::from_utf8(login).unwrap();
+        assert!(login.contains("\"status\":\"APPLIED\""), "{login}");
+        assert!(login.contains("\"state\":\"UNKNOWN\""), "{login}");
+        assert!(login.contains("\"previousRevision\":\"1\""), "{login}");
+        assert!(login.contains("\"revision\":\"1\""), "{login}");
+
+        let install = product.dispatch_user_request(
+            &instance_request("install-state", "installReadA", "instanceA", "1"),
+        ).unwrap();
+        let install = String::from_utf8(install).unwrap();
+        assert!(install.contains("\"status\":\"APPLIED\""), "{install}");
+        assert!(install.contains("\"installed\":true"), "{install}");
+        assert_eq!(scalar(product,
+            "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "1");
+        assert_eq!(scalar(product,
+            "SELECT login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "UNKNOWN");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
+fn user_instance_install_read_rejects_a_changed_registered_digest_without_revision_change() {
+    fixture(|root, product| {
+        let registration = register_request();
+        assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
+            .unwrap().contains("\"status\":\"APPLIED\""));
+        let changed = format!("sha256:{}", "0".repeat(64));
+        let update = Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET program_digest=?1 WHERE instance_id='instanceA'")
+            .unwrap();
+        update.bind_text(1, &changed).unwrap();
+        update.step_done().unwrap();
+
+        let install = product.dispatch_user_request(
+            &instance_request("install-state", "installChangedA", "instanceA", "1"),
+        ).unwrap();
+        let install = String::from_utf8(install).unwrap();
+        assert!(install.contains("\"status\":\"UNKNOWN\""), "{install}");
+        assert!(install.contains("\"installed\":false"), "{install}");
+        assert_eq!(scalar(product,
+            "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "1");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
+fn user_instance_login_read_accepts_only_a_native_observation_on_the_same_home() {
+    fixture(|root, product| {
+        let registration = register_request();
+        assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
+            .unwrap().contains("\"status\":\"APPLIED\""));
+        assert_eq!(instance::record_observation(&mut product.connection, root,
+            &instance::ObservationRequest {
+                request_id: "login-observationA",
+                request_bytes: b"native same-instance account read",
+                instance_id: "instanceA",
+                expected_revision: 1,
+                observation: instance::InstanceObservation::LoggedIn,
+            }).unwrap(), RegistrationDisposition::Applied);
+
+        let login = product.dispatch_user_request(
+            &instance_request("login-state", "loginObservedA", "instanceA", "2"),
+        ).unwrap();
+        let login = String::from_utf8(login).unwrap();
+        assert!(login.contains("\"status\":\"APPLIED\""), "{login}");
+        assert!(login.contains("\"state\":\"LOGGED_IN\""), "{login}");
+        assert!(login.contains("\"previousRevision\":\"2\""), "{login}");
+        assert_eq!(scalar(product,
+            "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "2");
+        remove_instance_home(root);
     });
 }
