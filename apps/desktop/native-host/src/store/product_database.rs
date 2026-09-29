@@ -22,7 +22,8 @@ use super::orchestration::OrchestrationError;
 use super::same_open::{OpenLedger, SameOpenError, VerifiedDatabaseConnection};
 use super::session::{dispatch_service_frame, open_product_database, serve_authenticated_pipe,
     serve_lines, serve_pipe, ServiceFrameSession};
-use crate::ipc::PrivatePipeConnection;
+use super::session_transport::{decode_request, encode_receipt, V37Status};
+use crate::ipc::{PrivatePipeConnection, UserOriginProof};
 use crate::root::RootLock;
 use crate::process::ProcessCustodian;
 use std::io::{BufRead, Write};
@@ -77,10 +78,26 @@ impl<'root> ProductDatabase<'root> {
         ServiceFrameSession::new(service_capability)
     }
 
+    /// Product-owned hosts keep running when their Node service disconnects.
+    /// In that mode the service capability cannot invoke Shutdown.
+    pub fn begin_shared_service_frames(&self, service_capability: &str) -> Result<ServiceFrameSession> {
+        ServiceFrameSession::new_shared(service_capability)
+    }
+
     pub fn dispatch_service_frame(&mut self, state: &mut ServiceFrameSession,
         frame: &[u8]) -> Result<(Vec<u8>, bool)> {
         dispatch_service_frame(&mut self.connection, &self.owner,
             &mut self.process_custodian, state, frame)
+    }
+
+    /// A complete User frame can enter only through the dedicated pipe's
+    /// process-object proof. The current L0 dispatcher deliberately reports
+    /// unsupported until each operation is connected to its native store.
+    pub fn dispatch_user_frame(&mut self, origin: &UserOriginProof, frame: &[u8]) -> Result<Vec<u8>> {
+        origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
+        let request = decode_request(frame).map_err(|_| OrchestrationError::Invalid("v37 user frame"))?;
+        Ok(encode_receipt(&request, V37Status::Unsupported,
+            request.expected_revision, request.expected_revision, Default::default()))
     }
 
     pub fn serve_lines<R: BufRead, W: Write>(&mut self, input: R, output: &mut W) -> Result<()> {

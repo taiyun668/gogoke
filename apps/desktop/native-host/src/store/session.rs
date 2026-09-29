@@ -184,6 +184,7 @@ pub struct ServiceFrameSession {
     capability: String,
     authenticated: bool,
     closed: bool,
+    allow_shutdown: bool,
 }
 
 impl ServiceFrameSession {
@@ -191,7 +192,14 @@ impl ServiceFrameSession {
         if !valid_service_capability(capability) {
             return Err(OrchestrationError::AccessDenied);
         }
-        Ok(Self { capability: capability.to_owned(), authenticated: false, closed: false })
+        Ok(Self { capability: capability.to_owned(), authenticated: false, closed: false,
+            allow_shutdown: true })
+    }
+
+    pub(crate) fn new_shared(capability: &str) -> Result<Self, OrchestrationError> {
+        let mut state = Self::new(capability)?;
+        state.allow_shutdown = false;
+        Ok(state)
     }
 }
 
@@ -216,6 +224,10 @@ pub(crate) fn dispatch_service_frame(
         }
         state.authenticated = true;
         return Ok((b"OK\t{\"authenticated\":true}\t0us".to_vec(), false));
+    }
+    if !state.allow_shutdown && decode_operation_frame(line.as_bytes())
+        .map_err(protocol_error)?.name == "Shutdown" {
+        return Err(OrchestrationError::AccessDenied);
     }
     let started = Instant::now();
     let handled = handle_authenticated_line_with_process(connection, owner, Some(process_custodian), line);
