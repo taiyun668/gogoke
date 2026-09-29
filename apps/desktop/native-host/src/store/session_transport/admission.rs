@@ -487,6 +487,11 @@ fn transition(
         if count(connection,
             "SELECT COUNT(*) FROM gogoke_v37_h_claim AS a JOIN gogoke_v37_h_owner_binding AS b ON b.binding_id=a.binding_id WHERE a.domain_id=?1 AND a.session_id=?2 AND b.state='ACTIVE'",
             &[input.domain_id,input.session_id])? != 1 { return Err(AdmissionError::Denied); }
+        if count(connection,
+            "SELECT COUNT(*) FROM gogoke_v37_instance_homes WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION' AND owner_id=?4 AND generation=?5 AND state='ACTIVE'",
+            &[input.home_id,input.instance_id,input.domain_id,input.session_id,input.generation])? != 1 ||
+            count(connection,"SELECT COUNT(*) FROM gogoke_v37_h_home_fence WHERE home_id=?1",
+                &[input.home_id])? != 0 { return Err(AdmissionError::Denied); }
         if input.expected_revision != revision {
             return Ok(AdmissionResult::Stale);
         }
