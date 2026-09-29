@@ -322,7 +322,7 @@ test("null or mismatched stored STOPPED proof never confirms or releases", async
   }
 });
 
-test("never-resolving native stop returns within 75ms/1ms deadlines and retains custody", async (t) => {
+test("never-resolving native stop retains custody across bounded deadlines", async (t) => {
   for (const hostDeadlineMs of [75, 1]) {
     await t.test(`${hostDeadlineMs}ms`, async () => {
       const native = new MemoryNative();
@@ -336,10 +336,18 @@ test("never-resolving native stop returns within 75ms/1ms deadlines and retains 
         terminateMs: 0,
         observeMs: 0,
         hostDeadlineMs,
+      }).catch((error: unknown) => {
+        // A 1 ms budget can expire before the durable stop intent is written.
+        // In that case the native stop must not start and custody stays held.
+        assert.match(String(error), /CUSTODY_READ_DEADLINE|STOP_INTENT_CAS_DEADLINE/);
+        assert.equal(native.stopCount, 0);
+        return null;
       });
       assert.ok(performance.now() - started < hostDeadlineMs + 100);
-      assert.equal(result.phase, "RESIDUAL");
-      assert.match(result.errors.join(" "), /HOST_STOP_DEADLINE_EXCEEDED/);
+      if (result !== null) {
+        assert.equal(result.phase, "RESIDUAL");
+        assert.match(result.errors.join(" "), /HOST_STOP_DEADLINE_EXCEEDED/);
+      }
       assert.equal(native.confirmCount, 0);
       assert.equal(store.writerReservations.size, 1);
     });

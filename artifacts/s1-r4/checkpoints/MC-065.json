@@ -1,0 +1,67 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-065",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "f1bacdf9299b8e75164fd026a9d6ebc259c31eae",
+  "recorded_utc": "2026-09-24T15:18:38Z",
+  "reason": "OWNER_REQUESTED_PAUSE_AFTER_R2_04_RECEIPT_PATH_FIX",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "custody": {
+    "controller": "Codex",
+    "package": "R2-04_WIP_NOT_CLOSED",
+    "owner_instruction": "PAUSE_AFTER_CHECKPOINT_PUSH",
+    "working_tree_before_checkpoint": "CLEAN",
+    "pr27": "OPEN_DRAFT_WIP_NO_MERGE",
+    "R2_05": "NOT_ENTERED"
+  },
+  "change_this_turn": {
+    "commit": "f1bacdf9299b8e75164fd026a9d6ebc259c31eae",
+    "file": "tools/ci/gogoke-package-service.mjs",
+    "scope": "Installed cloud smoke receipt path validation and failure reporting only",
+    "effect": "The parent creates the receipt directly under RUNNER_TEMP. The medium-integrity child now validates against that shared runner directory instead of its possibly different os.tmpdir. Receipt path validation occurs before the product operation. The failure handler preserves the original error if no safe receipt target exists or a receipt write fails."
+  },
+  "corrected_prior_diagnosis": {
+    "run": 36007934135,
+    "finding": "MC-064 recorded receipt path rejection as the first failure, but the visible stack points to configuredSmokeReceiptPath in the catch branch. The original smoke error may have been masked; this turn does not claim to have established the earlier product operation's outcome.",
+    "next_proof": "Read the replacement cloud run's first actual failure or success after installed smoke executes. Do not infer product success from prior partial logs."
+  },
+  "latest_cloud_at_checkpoint": {
+    "desktop_run": 36017016234,
+    "exact_source_sha": "f1bacdf9299b8e75164fd026a9d6ebc259c31eae",
+    "state": "IN_PROGRESS",
+    "browser_job": "PASS",
+    "notices_job": "PASS",
+    "nsis_job": "IN_PROGRESS_AT_BUILD_UNSIGNED_GOGOKE_INSTALLER",
+    "source_hygiene_run": 36017016321,
+    "source_hygiene": "PASS",
+    "installed_product_smoke": "NOT_RUN_AT_LAST_OBSERVATION",
+    "complete_package_artifact": "NOT_YET_CONFIRMED"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "test_ledger_branch": {
+    "head": "e1df87873a1ad2fcdf54cf2d9d0799f09255cef2",
+    "state": "TEST_DRAFT_NOT_ADOPTED_NO_NEW_WRITE"
+  },
+  "evidence_limits": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "CONTROLLED_PLATFORM_PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "review_and_acceptance": "NOT_CLAIMED",
+    "local_native_compilation": "NOT_PERFORMED"
+  },
+  "architecture_blocker": "NO",
+  "external_action": "DESKTOP_RUN_36017016234_IN_PROGRESS_AT_CHECKPOINT;_NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "workspace": "No uncommitted production code or new local build outputs at checkpoint. Earlier task-owned read-only cloud artifact copies remain described in MC-054 through MC-056 after automatic cleanup-policy rejection.",
+  "next_action": "On Owner resume, re-read current main/execution/authorization/PR/inbox and run 36017016234. If the checkpoint push canceled that exact run, dispatch the existing gogoke-desktop workflow at current execution HEAD. Find the first real failure or inspect PASS machine inventory, installed product smoke receipt and unsigned artifacts. Close only the R2-04 package increment when its required installed-resource/product path evidence exists; keep PR #27 Draft and do not enter R2-05, merge or release without the later authorized boundary."
+}

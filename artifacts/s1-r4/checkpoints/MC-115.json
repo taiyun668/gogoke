@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-115",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "9d21bc71b21609e3877b2c0d6302bdbf7265054c",
+  "recorded_utc": "2026-09-26T22:04:00Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-114.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a WIP remains authorized; formal release is not authorized.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Desktop run 36271742540 at source 59c78fc2539d9738ced83ba833f1f6aae31bc3aa PASS all five jobs: browser, locked notices, both independent Windows native build/test lanes, and byte-for-byte executable comparison. Trusted main signing run 36273711534 PASS; signed candidate artifact 10915569886 binds that source/run/frozen artifact 10916233708. Branch installed smoke 36273803655 FAIL after successful installer, exact executable hash checks and signed-resource Home: direct readiness IPC returned GOGOKE_PRODUCT_SERVICE_FAILED:1, replacing prior exit 78. It did not run product positive/negative service acceptance or uninstall. Branch smoke 36274310365 used the same signed candidate and an exact candidate AppData --root in its direct replay after the failed IPC; product direct IPC again returned exit 1, while the later same-root replay returned status 0. The later success does not verify the first product call. Script revision 9d21bc71 now compares original-guard direct replay on the same root and a fresh temporary root after the failed product call; JS and PowerShell parse checks PASS. Cloud run 36275563376 at that exact script revision is IN_PROGRESS.",
+  "path_reflection": "The original replay with a test-only root showed module path denial 78; the minimal namespaced alias fixed that exact failure. The next replay succeeded only after the product had already failed twice, so it could not establish why the first managed call exits 1. The current one-round comparison tests whether fresh-root initialization is the differentiator before changing native custody. The replay is diagnostic, not product acceptance. On success, remove all temporary installer and service diagnostics and rebuild/sign/smoke final candidate bytes.",
+  "main_drift": "Since MC-114, main added only two design-document changes. Governance, authorization and R2-06a contract remain unchanged; no production merge is needed.",
+  "retained_custody": "Task-owned artifact inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review and was not bypassed.",
+  "blocked_or_not_run": "For source 59c78fc2, installed positive service/readiness, poisoned-module negative, uninstall/data preservation, Owner Win11/SAC and final review remain NOT_RUN or FAIL. PR #27 is Draft; PR #34 is Owner-held OPEN. R2-05 and R2-06b deferred. No architecture blocker.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action_state": "Branch push and run identity read back. Run 36275563376 is the named active external object. No merge or release.",
+  "architecture_blocker": "NO",
+  "next_action": "Read run 36275563376 at script SHA 9d21bc71. If fresh root also fails, inspect its first stderr and repair only the demonstrated service initialization seam. If fresh root succeeds, compare managed Job/environment and obtain actual first-call stderr before changing custody. Then rebuild/sign/smoke exact new product bytes."
+}

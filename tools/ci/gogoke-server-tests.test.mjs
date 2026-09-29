@@ -9,6 +9,7 @@ const viteReport = (status = "passed") => ({
   numPassedTests: 2,
   numFailedTests: 0,
   numPendingTests: 0,
+  numTodoTests: 0,
   testResults: [{ name: target, status }],
 });
 const tap = (tests, passed, failed) =>
@@ -19,6 +20,11 @@ test("Vitest result requires exact files and framework-owned nonzero assertions"
   assert.equal(parseVitestReport(viteReport(), [], 0).state, "FAIL_INSTRUMENT");
   assert.equal(parseVitestReport(viteReport(), [target], null).state, "FAIL_INSTRUMENT");
   assert.equal(parseVitestReport({ ...viteReport(), numTotalTests: 0 }, [target], 0).state, "FAIL_INSTRUMENT");
+  assert.equal(parseVitestReport({ ...viteReport(), numPassedTests: 0 }, [target], 0).state, "FAIL_INSTRUMENT");
+  assert.equal(parseVitestReport({ ...viteReport(), numPassedTests: 1 }, [target], 0).state, "FAIL_INSTRUMENT");
+  assert.equal(parseVitestReport({ ...viteReport(), numTodoTests: undefined }, [target], 0).state, "FAIL_INSTRUMENT");
+  assert.equal(parseVitestReport({ ...viteReport(), numPendingTests: 1, numPassedTests: 1 }, [target], 0).state, "FAIL");
+  assert.equal(parseVitestReport({ ...viteReport(), numTodoTests: 1, numPassedTests: 1 }, [target], 0).state, "FAIL");
   assert.equal(parseVitestReport(viteReport("failed"), [target], 0).state, "FAIL");
 });
 

@@ -1,0 +1,53 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-085",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "b967f8fa1f0bfe15be62e81f26716e273ea74106",
+  "recorded_utc": "2026-09-25T04:43:05Z",
+  "reason": "OWNER_REQUESTED_STOP_DURING_R2_06_CONSTRUCTION",
+  "current_main": "56536f4ab850bc8b962456f95f5d0f2162d0c43a",
+  "main_drift": "Relative to the Owner-merged R2-06 design at main@359f28cb, only docs/directions/2026-09-23-session-memory-dream-architecture.md advanced. No production merge was performed for this drift.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06_IN_PROGRESS_OWNER_STOP_NOT_CANDIDATE",
+  "r2_05": "Unchanged WIP; no acceptance, formal installed-package closure, Goal Acceptance, or release claimed.",
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "pr34": "OPEN_NOT_MERGED; Owner's prior hold remains in effect.",
+  "pr35": "MERGED_BY_OWNER_AT_359f28cb; exact merged R2-06 design blob d752db917a11b4fa093fe5a4e2e5df7a9d9d32ac is the construction boundary.",
+  "wip_implemented": [
+    "The execution branch was synchronized with main@359f28cb before production edits. Windows shell startup now has a pre-WebView signed resource boundary and an external custom-protocol frontend path; native Product Authority still supplies the product task path.",
+    "Deterministic resource-pack and signed-index construction was added. The index binds source commit, version, generation, shell variants, native host, Node, frontend/service files, and installer-owned static files. Resource generation and signed-set pointer paths are WIP.",
+    "A separate candidate P-256 public key is compiled into the shell. The corresponding private key was configured once as GitHub environment secret GOGOKE_CANDIDATE_P256_KEY in candidate-resource-signing; the environment branch policy permits main only. Owner release private key was not used or copied.",
+    "Custom Tauri NSIS template WIP uses the same installer bytes for candidate/formal sidecars, a preflight CLI, distinct HKCU domains, signed receipt version, sibling lifecycle file lock, and gogoke.exe --uninstall registration; no uninstall.exe is deliberately generated.",
+    "Formal release scripts WIP distinguish exact full and resources asset sets with the existing offline Owner signature. Update-chain WIP stages a signed set and resource generation, switches verified runtime/WebView state, and retains old full-update backup instead of recursively deleting unknown files.",
+    "Uninstall front-half verifies installed shell, registration, signed owned-file list and inherited lifecycle-lock custody. Its fixed PowerShell finalizer intentionally deletes nothing and reports NOT_VERIFIED pending a safe same-handle verify-then-delete mechanism."
+  ],
+  "executed_evidence": {
+    "local_python": "12 resource pack/frozen artifact tests PASS at WIP working-tree bytes; not candidate evidence.",
+    "local_static": "git diff --check PASS; worker-reported PowerShell syntax, TypeScript typecheck and 12 focused updater tests PASS. Rust formatting/metadata only; no local native build or test.",
+    "prior_exact_head_ci": "At b967f8fa, desktop CI run 36090915369 and source hygiene run 36090915360 PASS. These runs predate the R2-06 production edits and are not inherited by the WIP.",
+    "r2_06_cloud_native": "NOT_RUN",
+    "dual_clean_windows_byte_comparison": "NOT_RUN",
+    "trusted_candidate_signing_and_installed_smoke": "NOT_RUN",
+    "owner_win11_sac_candidate": "NOT_RUN",
+    "uninstall_completion": "NOT_VERIFIED"
+  },
+  "open_findings": [
+    "Installer preflight currently calls verify_install_set without passing the target install root. verify_install_target was added as WIP but is not wired to the CLI or NSIS, so candidate/formal root collision prevention before copy is not yet proven.",
+    "Desktop workflow pull_request github.sha may be the synthetic PR merge SHA while the trusted workflow_run signer expects the execution head SHA. Verify and align source/run/artifact identity before candidate signing.",
+    "Trusted candidate-signing workflow, verifier and candidate public key are not on default main yet. The main-only environment secret cannot securely sign execution-branch workflow code. No candidate signed artifact exists.",
+    "Full update coordinator releases the lifecycle lock before NSIS reacquires it and retains old backup after success. Concurrency handoff and owned-file backup cleanup remain NOT_VERIFIED.",
+    "PowerShell built-in DeleteOnClose arms deletion before the same opened object can be hashed; runtime Add-Type would compile native code on the Owner machine. The current uninstall finalizer fails closed. Do not replace it with path-only deletion or claim uninstall PASS.",
+    "Rust/NSIS native compilation and the installed custom-protocol/service/native-host axes have not run. A focused pre-cloud readthrough fixed several obvious source/template contradictions but was interrupted at the Owner stop; it is not an independent acceptance review."
+  ],
+  "path_first_reflection": "The shortest safe evidence route is to finish the two identified preflight/source-SHA seams and static type review before one dual-lane cloud build, then read the first actual failure and fix only that cause. Candidate signing requires a trusted default-branch workflow and therefore a separate reviewed infrastructure landing before installed candidate smoke. Uninstall cannot be counted complete by substituting path deletion for the required opened-object check.",
+  "retained_custody": [
+    "The execution worktree remains the Controller-owned R2-06 WIP checkout; no generated native binary exists locally.",
+    "%TEMP%/gogoke-release-check contains disposable script-test key/public material and fake assets only. Automatic review rejected cleanup; it was not retried or bypassed. Remove only after an allowed exact-path cleanup action.",
+    "MC-084's %TEMP%/gk985 and %TEMP%/gogoke-r205-control-985e17d1-redownload remain under its recorded custody because automatic review rejected their cleanup."
+  ],
+  "external_action": "CANDIDATE_SIGNING_ENVIRONMENT_AND_SECRET_CONFIGURED; NO_CANDIDATE_SIGNATURE; NO_OWNER_KEY_USE; NO_MAIN_MERGE; NO_PR34_MERGE; NO_RELEASE; NO_MANUAL_R2_06_CLOUD_DISPATCH; POST_PUSH_AUTOMATIC_CI_UNOBSERVED_AT_CHECKPOINT",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "next_action": "Wait for Owner resume. Then read this checkpoint and current GitHub HEAD/PR/inbox, finish target-root preflight and PR SHA identity alignment, run the first dual-lane Windows cloud build at an exact pushed SHA, resolve its first real failure, and continue R2-06 dependency-safe work. Do not request Owner candidate signing or manual test clicks."
+}

@@ -1,0 +1,78 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-057",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "faa8ae645be85ba52b77e809684d40dad033a1bb",
+  "custody": "OWNER_REQUESTED_TRANSFER_R2-04_TO_GPT_CONSTRUCTION_CONTROLLER;_CODEX_STOPS_AFTER_CHECKPOINT_PUSH;_CODEX_RETURNS_FOR_R2-05_ONLY_ON_OWNER_RESUME",
+  "reason": "OWNER_QUOTA_HANDOFF_DURING_R2-04_FIRST_COMPLETE_PACKAGE_BUILD",
+  "current_main": "db8c5caa381f6a7a632b079a9fb8af0b3e396664",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "completed_before_r2_04": "R2-01/R2-02/R2-03 construction increments checkpointed through MC-056; no candidate, gate acceptance, adoption, Owner Win11 qualification or release",
+  "r2_04_implemented_wip": [
+    "Windows Tauri configuration now requests bundle.externalBin binaries/gogoke-native-host and maps the staged gogoke-service resource directory while retaining installed license notices.",
+    "The existing unsigned Windows CI job now builds the actual T3-derived apps/server build:bundle from the pinned pnpm workspace and deploys its production runtime dependency closure. It stages Node 24.13.1, the fixed controlled Pi fixture and their source license materials.",
+    "The same Windows job builds gogoke-native-host --release --target x86_64-pc-windows-msvc with Rust 1.85.1, binding its compile-time Node digest to the exact Node executable staged for the installer. Tauri remains on Rust 1.89.0.",
+    "The package script inventories exact required file/addon hashes and runtime license files, rejects runtime links that cannot be bundled as physical resources, and bounds cleanup to its own resolved temporary directory. The portable ZIP stages the same native-host and gogoke-service resources.",
+    "After the existing unsigned installer update/readiness/rollback smoke, the new cloud step is intended to verify installed resource bytes and run the installed T3 service, native-host and Node fixture through a controlled Product Goal without a Git draft write. This step has NOT_RUN at handoff."
+  ],
+  "attempted_then_replaced": [
+    {
+      "sha": "a927e95972c5c2fc91291c3c199584c4a8dc6a14",
+      "run": 35950089669,
+      "result": "FAIL at scoped pnpm deploy: ERR_PNPM_UNUSED_PATCH for patches belonging to unrelated T3 workspaces; locked install and real build:bundle had succeeded",
+      "replacement": "566799d6 used pnpm 11.10 scoped deploy with allow-unused-patches only for unrelated workspace patches; deploy reached the next stage"
+    },
+    {
+      "sha": "566799d61a060970f4fbde91aa8340197834eae4",
+      "run": 35951025058,
+      "result": "FAIL at Node LICENSE retrieval: nodejs.org/dist/v24.13.1/LICENSE does not exist; scoped deploy had succeeded",
+      "replacement": "25723fb8 obtains LICENSE from the official Node source tag v24.13.1; no cloud result at that SHA because a later safety fix superseded the run"
+    },
+    {
+      "sha": "25723fb809eb59a4189a80771917fc6e57b621f3",
+      "run": 35951866264,
+      "result": "CANCELLED by newer same-branch push before package result; no PASS or FAIL claimed",
+      "replacement": "faa8ae64 additionally verifies the resolved .bin shim directory stays within its stage root before recursive cleanup"
+    }
+  ],
+  "latest_cloud_at_handoff": {
+    "exact_production_sha": "faa8ae645be85ba52b77e809684d40dad033a1bb",
+    "desktop_run": 35951947953,
+    "desktop_state": "IN_PROGRESS",
+    "desktop_last_observed_steps": [
+      "Generate locked dependency notices: Install pinned cargo-about into isolated runner root",
+      "Browser build and tests: npm run build"
+    ],
+    "complete_package_build": "NOT_RUN_AT_LAST_OBSERVATION",
+    "source_hygiene_run": 35951947954,
+    "source_hygiene": "PASS_EXACT_SHA",
+    "installed_layout_smoke": "NOT_RUN",
+    "owner_win11_smart_app_control": "NOT_RUN"
+  },
+  "remaining_r2_04": [
+    "Read current run 35951947953 and its exact job outcome before deciding the next step. If a step fails, find its first actual failure; fix only the current package contract, push, and rerun on the new exact SHA.",
+    "Confirm pnpm deploy emits a physical Windows x64 native dependency closure, staged Node Authenticode is valid, Tauri externalBin/resource paths survive NSIS install, and installed service/native-host/Node fixture can run the controlled Product Goal from installed paths without cwd or preinstalled Node.",
+    "Resolve the formal license notice gap: the current package inventory records deployed T3 runtime license files and gaps and includes Node/T3 source licenses, but native-host Cargo and complete T3 runtime notices have not yet been merged into the existing generated notices. Do not call a manifest of gaps full notice coverage.",
+    "Keep unsigned installer, Owner-offline SHA256SUMS.windows signing, built-in trust roots and update/readiness/rollback chain. No code signing, release or main merge."
+  ],
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "test_ledger_branch": {
+    "head": "e1df87873a1ad2fcdf54cf2d9d0799f09255cef2",
+    "state": "TEST_DRAFT_NOT_ADOPTED_NO_NEW_WRITE_DURING_R2-04"
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "review": "FROZEN_CANDIDATE_CROSS_MODEL_AND_OWNER_GATES_NOT_RUN",
+  "architecture_blocker": "NO",
+  "external_action": "DESKTOP_RUN_35951947953_IN_PROGRESS;_NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "workspace": "execution worktree clean before checkpoint; earlier task-owned downloaded read-only CI copies retained outside repository per MC-054 through MC-056 after automatic cleanup-policy rejection",
+  "next_action": "GPT Construction Controller resumes R2-04 from execution branch after this checkpoint: re-read current main/execution/checkpoint/PR/inbox and run 35951947953, then close first real cloud failure or verify installed package and notices. Do not enter R2-05 until R2-04 necessary package conditions hold. Codex performs no further R2-04 construction after this checkpoint and returns for R2-05 on Owner request."
+}

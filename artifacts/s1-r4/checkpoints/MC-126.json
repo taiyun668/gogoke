@@ -1,0 +1,24 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-126",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "57de652bcef4db6f0cb9895c25fffa5e1eb90f7f",
+  "recorded_utc": "2026-09-27T05:51:50Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-125.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "inbox_classification": "MC-125 classified exact-source Claude F1, F2, F3 and F4 STILL_PRESENT against a3b6f85e/e6870984. All four are now addressed in this pending source/document diff; cloud verification is NOT_RUN and the states must not be upgraded to ALREADY_FIXED until exact-byte evidence is read back.",
+  "changed_files": [
+    "apps/desktop/src-tauri/installer/gogoke.nsi",
+    "apps/desktop/src-tauri/update/gogoke-uninstall-finalizer.ps1",
+    "tools/ci/gogoke-r206a-installer-negative.ps1",
+    "tools/ci/test_gogoke_uninstall_finalizer_cloud.py",
+    "artifacts/s1-r4/R2-06a-owner-win11-isolated-prep-a3b6.md",
+    "artifacts/s1-r4/checkpoints/MC-126.json"
+  ],
+  "repair_mechanism": "The embedded finalizer now pins LOCALAPPDATA ancestors, opens the exact per-domain lock without sharing or following the final reparse point, validates the opened plain file, and retains it before its first Assert-Instance through DeleteSubKey. NSIS reports an active same-domain install/uninstall only for captured Win32 error 32; all other failures expose their error code. The CI-only negative setup now races B against a held finalizer A at the actual parent-handoff barrier, checks B cannot reach its installer barrier or touch its target, then releases A and verifies a subsequent B registration survives until B's own uninstall.",
+  "owner_touchpoints_and_prep": "The prior a3b6f85e preparation is explicitly SUPERSEDED; old hashes must not be used. Pre-test process and observable-window checks are Controller work. Only optional subjective viewing of product UI/result remains a routine Owner test touchpoint. Preparation lists expected lock file, retained candidate data and unknown install-root residue with cleanup conditions, and places formal-shortcut launch after the exact formal before/after comparison.",
+  "local_verification": "PowerShell parsers accepted the two edited ps1 files; Python syntax compilation passed; git diff --check passed. These static checks do not prove installer/finalizer runtime behavior or new setup bytes. A generated ignored Python bytecode file could not be removed because automatic approval review rejected that exact deletion; it remains ignored and is not staged or published.",
+  "candidate_state": "OLD_A3B6_CANDIDATE_SUPERSEDED_NEW_SOURCE_UNVERIFIED",
+  "next_action": "Commit and push this exact source, dispatch the authorized cloud desktop build/repro/native/JS/source-hygiene lanes, then trusted main candidate signing and installed smoke including the new interleave negative axis. Repair any concrete failures and repeat affected checks. Rebind preparation to final artifact hashes before one Owner Win11/SAC isolated install and product test. Preserve existing formal installation and MC-122 two-file copy. No PR #34 merge, R2-06b, public release, code signing or security-setting change."
+}

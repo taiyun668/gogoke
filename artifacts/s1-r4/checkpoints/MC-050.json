@@ -1,0 +1,60 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-050",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "022d481787dd8b2637cb62c7f4270c77b33ae524",
+  "reason": "R2-02_FIXED_TEST_GRANT_IDEMPOTENCY_AND_AUTHORIZED_LEDGER_DIAGNOSTIC",
+  "current_main": "165f4b234654711c45d05ecd80e9b6553dd93ceb",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-02_WIP_NOT_DELIVERED",
+  "increment": [
+    "Home shows the already validated test fixture report fields and full source/report hashes while retaining explicit not-adopted status. Frontend typecheck and focused Home tests passed locally; actual installed Windows visual acceptance is not run.",
+    "The native authority can issue only the fixed public R2 test delegation envelope under a deterministic operation-derived grant ID; replay cannot issue a second grant, broader ceilings and revoked grants fail closed. This remains private in-process code and is not a product permission ingress.",
+    "The Owner-authorized test ledger branch received one CAS-written diagnostic record through the existing gh login and GitHub write port. Immutable commit/path/blob/SHA-256 readback matched the submitted public bytes; the record is explicitly not a Product Result, adoption or Goal Acceptance."
+  ],
+  "evidence": {
+    "cloud_run": 35925613201,
+    "exact_sha": "022d481787dd8b2637cb62c7f4270c77b33ae524",
+    "scope": "WINDOWS_SERVER_REAL_RUN_NOT_OWNER_WIN11",
+    "server": "PASS_51_FILES_10_NODE_41_VITE_565_EXECUTED_565_PASS_0_SKIP",
+    "native": "PASS_RELEASE_BUILD_2_REAL_PROCESS_AXES_6_FOCUSED_PROBES_391_LIB_TESTS_0_SKIP",
+    "source_hygiene": "PASS_RUN_35925608468",
+    "desktop": "RUN_35925608484_IN_PROGRESS_AT_CHECKPOINT",
+    "product_goal_action_chain": "NOT_RUN",
+    "product_outcome_evaluation_dream": "NOT_RUN",
+    "product_git_fact_write_readback": "NOT_RUN",
+    "owner_win11_installed_product": "NOT_RUN"
+  },
+  "test_ledger_branch": {
+    "head": "1ee82a2758f74c5c6e6507e1729c809523372d1b",
+    "path": "apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/r2-02-git-transport-022d481787dd.json",
+    "git_blob": "ccd25169c5c7151ab5190eb3eaba73a79dcdc55e",
+    "content_sha256": "01cb7d2714a5892267328abccb34b056119949cef405b0a901206ddf0875f9dd",
+    "state": "DRAFT_DIAGNOSTIC_NOT_PRODUCT_RESULT_NOT_ADOPTED",
+    "identity": "EXECUTION_SHA_022d481787dd8b2637cb62c7f4270c77b33ae524_CLOUD_RUN_35925613201"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "review": {
+    "fresh_gpt6_sol_high_focused": "NOT_RUN_COLLABORATION_THREAD_LIMIT",
+    "older_fixed_auditor": "GPT_5_6_SOL_HIGH_PROBLEM_LEADS_ONLY",
+    "candidate": "NOT_CUT"
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "architecture_blocker": "NO",
+  "external_action": "TEST_LEDGER_CAS_WRITE_COMMIT_1ee82a2758f74c5c6e6507e1729c809523372d1b_VERIFIED;_NO_MAIN_WRITE_OR_RELEASE",
+  "workspace_retained": {
+    "owner": "Codex Construction Controller",
+    "paths_relative_to_execution_checkout": [".", "../gogoke-codex-evidence/run-35925613201-server", "../gogoke-codex-evidence/run-35925613201-native", "../gogoke-codex-evidence/r2-02-ledger-write-diagnostic.mjs"],
+    "reason": "Active checkout, exact cloud machine-evidence copies and diagnostic reconciliation script",
+    "cleanup_condition": "After S1-R4 custody ends and durable GitHub artifacts are confirmed retained or no longer required"
+  },
+  "next_action": "Continue R2-02 inside the existing contract: bind an Owner-controlled fixed test admission to the private idempotent grant, then establish the real Task/Package/Lineage/Context/Recipe/Decision/Action selection from the Product Goal. Keep current profile-field equality and pipe capability insufficient on their own. After native Action completion, form validated Result, Objective Outcome, Evaluation and isolated Dream proposal; write and read back a product test fact only on the authorized ledger branch. Keep PR #27 Draft; obtain fresh explicit GPT-6 Sol/high review when collaboration capacity exists."
+}

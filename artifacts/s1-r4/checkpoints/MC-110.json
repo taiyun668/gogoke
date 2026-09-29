@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-110",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "bde58f1fdae798f2986a18fae61b57b08a2e221e",
+  "recorded_utc": "2026-09-26T16:53:37Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-109.json",
+  "current_main": "7feb0f0a535986376f3259b662d68080cca7cc7c",
+  "authorization": "Current main S1-R4 v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a is WIP. No release authorization.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "Production source 7e7dc066 removed per-leaf synchronous FlushFileBuffers while retaining CREATE_NEW, source checks, parent handles and write checks. Desktop 36253735567 PASS all five jobs and independent Windows byte comparison; hygiene 36253743928 PASS; trusted main candidate signer 36255875590 PASS, signed artifact 10910537240. First branch installed smoke 36255991827 FAIL at unchanged 300-second install bound, with shell correct and service directory present but native-host/sidecars absent. Script-only diagnostic revision bde58f1f reused the exact signed source artifact in branch run 36256503521; hygiene 36256564187 PASS. At 300 seconds it counted 7,825 installed files and 1,079 directories. The SAME installer then exited code 2 within the next ten minutes, with 14,220 files and 1,085 directories. Final observed shell/native-host/resource pack/index/candidate manifest/signature leaves existed with expected SHA-256. Install receipt and active resource set were absent. Product service and uninstall NOT_RUN. This shows forward file-copy progress plus a later failure after bundled leaves; neither temporary trace nor per-file flush alone was the installation failure cause. The first installed product invocation's stderr was not captured by NSIS ExecWait.",
+  "current_change": "Bounded diagnostic-only smoke extension will inventory generation stage names after the failed installer exits, then directly invoke the same installed product --gogoke-install-resources with redirected stderr once. This is explicitly a replay after a known failed first invocation; it cannot substitute for first-run evidence or acceptance. It reuses the same signed candidate artifact without rebuilding native bytes. The acceptance bound remains 300 seconds and the run remains FAIL even if replay succeeds.",
+  "main_drift": "main advanced with research/design/direction documents; AGENTS.md, model routing, R2-06a contract, current v2 MANIFEST and authorization receipt did not change. No production merge is needed for the installer diagnosis.",
+  "retained_custody": "Task-owned inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; safe cleanup was rejected by automatic approval review, with no bypass attempted.",
+  "blocked_or_not_run": "First-run installed product stderr, installed service positive/poison-negative, uninstall/data preservation, deterministic leaf-insertion barrier, formal signed install, Owner Win11/SAC, final all-axis and heterogeneous review are NOT_RUN. PR #27 Draft; PR #34 and #49 Owner-held OPEN; R2-06b deferred; no release.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Push the bounded replay/inventory smoke and run it against signed artifact 10910537240, source 7e7dc066. Inspect stderr and generation state after the first installer exit. Fix the evidenced root cause within R2-06a, then rebuild/sign/retest exact new source. Keep the 300-second outcome separate from the later exit evidence; decide any install-bound change only after total duration and failure are understood."
+}

@@ -1,0 +1,31 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-122",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "a3b6f85e38ca0971fdd05096734c2e99aeee7ec4",
+  "recorded_utc": "2026-09-27T04:27:34Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-121.json",
+  "current_main": "d0e739be45c95ca84d092e9cdb2dc46462cbaf9e",
+  "authorization": "Current main MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a is authorized; release and PR #34 merge are not authorized here.",
+  "parallel_inbox_observed_head": "8d231004bd996daa95330046d8fd26613942cc01",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_CLOUD_CANDIDATE_FROZEN_REVIEW_AND_OWNER_WIN11_PENDING",
+  "production_source_commit": "a3b6f85e38ca0971fdd05096734c2e99aeee7ec4",
+  "production_changes": "Added same-user same-domain NSIS registration lock before preflight through registry readback; outer Tauri Node now joins its kill-on-close Job at CreateProcess. The source includes separate cloud-only negative installer instrumentation and a hard-owner-exit Node test. R2-06b full/resource update remains unaccepted.",
+  "executed_evidence": {
+    "desktop": "Exact source desktop run 36291782858 attempt 1 PASS: browser, dependency notices, frozen Windows build, repro Windows build and independent executable byte comparison all succeeded. Both Windows lanes executed outer_job_owner_hard_exit_kills_suspended_node: 1 passed, 0 failed, 0 ignored in each. Frozen artifact 10922842001; repro artifact 10922918376; separate CI-only NSIS test setup artifact 10923067074.",
+    "source_hygiene": "Exact source run 36291794814 PASS; PUBLIC_SOURCE_SCAN files=24538 leaks=0.",
+    "candidate_signing": "Trusted main@d0e739be run 36293506694 attempt 1 PASS, signed exact source run 36291782858; signed candidate artifact 10922689154, uploaded archive digest sha256:3149291e68d13312c0e434f6a44187c33b0258230e48f79fafe81a70da25d91a.",
+    "installed_smoke": "Execution branch workflow run 36293571078 attempt 1 PASS on hosted Windows Medium process. Machine receipt artifact 10923302922 (JSON SHA-256 47962e4378b076b0088506b857cd8047a15fe6e4eaca0bfe25d92d019472df99) binds source a3b6f85e, build 36291782858, signing 36293506694 and production setup SHA-256 13dfcd8cb95394348434f83d0cc610a03cc8c1f88e7b708c41f10692844b53c2. Actual installed product service positive state VALIDATED_TEST_RESULT_NOT_ADOPTED, poison negative rejected with exit 78, uninstall retained data sentinel. Platform is WINDOWS_CLOUD_NOT_OWNER_WIN11.",
+    "installer_negative": "Same hosted Windows run produced artifact 10923377342 (JSON SHA-256 cb74c05fd784552d43879d2be3a2fcd00f5757d6cce6e1264f2b5e5d02d86163). CI-only instrumented setup SHA-256 ffc5244ae43f72cbe19b692bd1c53c89bcb3d6580ebb5895fb0e229820884a4d differs from the frozen production setup. Leaf insertion after signed preflight: installer exit 2, gogoke.exe sentinel SHA-256 2f800c55f8dfe738ce28389c34a40112583240c13c89865b9af4e25dd2588e66 unchanged, no candidate registry. Cross-parent same-domain test: A held barrier, B exit 2 before barrier and without target, A completed, exact A registry confirmed, product uninstall exit 0 and registry absent. Both negative axes PASS as CI instrumentation evidence, not proof that instrumented setup is the frozen production setup."
+  },
+  "review_state": "Fresh Sol/high focused read-only review of a8dc77f4..a3b6f85e found no new static finding and confirmed the three instruments are falsifiable; it did not execute native tests or accept the candidate. Preliminary Claude review in Parallel Inbox covered older source 7e1b4f8c and is superseded for new bytes. Fresh final Astra all-axis risk audit and exact-source external Claude review remain NOT_RUN.",
+  "candidate_state": "R2_06A_CLOUD_FROZEN_CANDIDATE_NOT_ACCEPTED",
+  "blocked_or_not_run": "Owner Windows 11 Smart App Control installed candidate and required executable/child behavior NOT_RUN; formal Owner-signed manifest/install NOT_RUN; final all-axis and heterogeneous review NOT_RUN. R2-05 and PR #34 remain held; R2-06b full/resource update, rollback and crash recovery remain unaccepted; no public release.",
+  "path_reflection": "One cloud build tested the two production custody repairs and created both the frozen setup and a separate CI-barrier setup; one signed-candidate smoke then exercised the existing positive product path and both negative installer axes. The distinct setup hashes and separate machine receipts prevent the instrumented installer from being substituted for the candidate.",
+  "workspace_hygiene": "A task-owned two-file evidence copy remains at %TEMP%\\gogoke-r206a-evidence-a3b6-36293571078. Its directory was verified plain and contains only the two downloaded receipt JSON files. Automated approval review rejected recursive deletion as blocked by policy; no alternate deletion was attempted. Cleanup condition: an approved cleanup path or the Owner's explicit direction. Cloud runner test roots are ephemeral and owned by runner teardown.",
+  "external_action_state": "No local product install, formal manifest signing, merge, adoption, Goal Acceptance, update or public release occurred in this interval. PR #27 OPEN/DRAFT at a3b6f85e; PR #34 OPEN and Owner-held.",
+  "architecture_blocker": "NO",
+  "next_action": "Run fresh exact-a3b6f85e final all-axis risk audit against source, workflow, uploaded machine receipts and current contract; obtain new exact-source external Claude heterogeneous review. Resolve any concrete finding inside R2-06a and rerun affected cloud axes if bytes change. Then perform already-authorized isolated Owner Win11/SAC candidate install and product test, recording exact component/hash/events and preserving the existing formal install. Do not merge PR #34 or begin R2-06b."
+}

@@ -1,0 +1,68 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-081",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "a4569cd2e6df5fd1705b081b2238924dded4da69",
+  "recorded_utc": "2026-09-25T01:50:23Z",
+  "reason": "R2_05_EXACT_CANDIDATE_CLOUD_PASS_OWNER_SAC_INSTALL_BLOCK",
+  "current_main": "46f492ef81c478f823b29661e90c6f4846a95f6d",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "owner_install_condition": "Verify candidate hashes and retain previous installer; on Smart App Control block record 4551/3077/3033 and stop without retry or changing security settings."
+  },
+  "package": "R2-05_F1_F5_IN_PROGRESS_NOT_ACCEPTED",
+  "source_candidate": "041a49660ffe3ecc6e061ef3b20fd54e2ec47535",
+  "source_review": "Fresh focused Home accepted-fact source review PASS; installed readback remains NOT_RUN. Fresh final all-axis source risk review has been requested and is pending.",
+  "cloud": {
+    "native_server_run": "36081440017 SUCCESS at exact source 041a4966; server 51 files 593/593 with zero skip, native library 402/402 with zero ignored, two real-process axes and six focused probes all nonzero PASS",
+    "desktop_run": "36081448198 SUCCESS at exact source 041a4966; Browser, notices, unsigned NSIS, update/readiness/rollback smoke, installed read-only product smoke and artifact uploads PASS",
+    "unsigned_artifact_id": 10842427196,
+    "package_inventory_artifact_id": 10842531988,
+    "installer_sha256": "917ae878985c840d056ee74fe9670236e1fe2f0effbff21f02bc7db843d3d720",
+    "portable_sha256": "3e8269369cbd0a3f263a8dd2deb66530e94484b1030d510e7de9fc8aa59f1dcc",
+    "downloaded_hash_match": true
+  },
+  "owner_machine": {
+    "old_installed_candidate": "6c06568a cloud candidate remained installed; its app, native-host, bundled Node and service entry hashes still matched the previously verified 6c package inventory after the blocked attempt.",
+    "old_ui_failure": "Owner screenshot showed GOGOKE_PRODUCT_SERVICE_FAILED:1 on a new open-fixture click, not a draft. The known installed-root cause is expired fixed test grant plus occupied task slots; test ledger branch stayed d2e210a7 and no blind resend occurred.",
+    "old_process_exit": "Window close request hid the tray application; after 15 seconds without exit, the exact installed Gogoke process was stopped before candidate installation. No Gogoke process remained.",
+    "prior_rollback_installer_sha256": "ad3ae37c4a936b5f7344114c3a0bbed4b32f53ceff49b2f0b5e7f61fec9a8a05",
+    "prior_rollback_installer_hash_match": true,
+    "new_installer_start": "BLOCKED_BY_SMART_APP_CONTROL_BEFORE_EXECUTION",
+    "code_integrity": "Exact candidate installer produced Code Integrity 3033 at 2026-09-25T01:46:49.1897568Z and 3077 at 2026-09-25T01:46:49.4399530Z under VerifiedAndReputableDesktop policy; Start-Process reported Application Control policy block. No retry, alternate executable, security-setting change, or installer execution followed.",
+    "appdata_integrity": "Six files under Windows KnownFolder AppData product root matched byte-for-byte before and after the blocked install attempt.",
+    "installed_readback": "NOT_RUN; exact 041a4966 package was not installed."
+  },
+  "adoption_pr": {
+    "number": 34,
+    "state": "OPEN_NOT_DRAFT_NOT_MERGED_CLEAN",
+    "head_sha": "dacd466e1a870c1820aed0854a676ec23a2d1613",
+    "scope": "Exactly one preexisting test-only result file from the 985e17d1 Owner installed execution; no test ledger branch merge, Goal Acceptance or release.",
+    "checks": "Browser, public source hygiene, dependency notices and unsigned NSIS all SUCCESS at exact PR head",
+    "owner_merge": "NOT_RUN; Owner explicitly chose to keep PR34 open while installed readback is blocked."
+  },
+  "parallel_inbox": {
+    "observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+    "new_entries_since_mc080": 0
+  },
+  "test_ledger_branch": "d2e210a798767273b1b120fa26feeca79ed5c512; no new write",
+  "pr27": "OPEN_DRAFT_NOT_MERGED",
+  "f5_cleanup": "MC-079 verified old leftover paths and hashes and byte-identical private AppData restoration before the new install. Automatic approval review rejected exact-path deletion before execution; all MC-078 leftovers remain, as do Controller-created 6c diagnostic and 041 download stages. No alternate deletion mechanism was used.",
+  "candidate_state": "SOURCE_AND_CLOUD_AXES_PASS_OWNER_MACHINE_EXACT_INSTALL_BLOCKED; NOT_ACCEPTED_NOT_RELEASED",
+  "external_action": "INSTALLER_START_BLOCKED_BEFORE_EXECUTION; OWNER_HOLDS_PR34_OPEN; NO_MAIN_MERGE_NO_ACCEPTED_FACT_READBACK_NO_RELEASE",
+  "architecture_blocker": "NO_CONFIRMED_ARCHITECTURE_BLOCKER; OWNER_MACHINE_PLATFORM_BLOCK_FOR_THIS_EXACT_INSTALLER",
+  "workspace": {
+    "tracked_diff_before_checkpoint": "NONE",
+    "untracked_novel_screenshot_copy": "artifacts/s1-r4/R2-05-owner-win11-novel-985e17d1.png",
+    "retained_local_directories": [
+      "%TEMP%/gogoke-r205-candidate-041a4966",
+      "%TEMP%/gogoke-r205-candidate-6c06568a",
+      "%TEMP%/gogoke-r205-probe-fresh-6c06568a"
+    ],
+    "cleanup_condition": "Exact-path deletion requires a permitted action; retain known hashes and report the automatic approval review block rather than bypass it."
+  },
+  "next_action": "Do not retry this candidate installer or use an alternate launch route. Keep PR34 open per Owner decision. Finish fresh source risk review, record its bounded verdict, recheck Parallel Inbox and remote heads, then request external Claude review of exact source and platform evidence. F1 installed accepted-fact readback and F5 deletion remain explicitly blocked/not run."
+}

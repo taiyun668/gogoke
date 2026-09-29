@@ -1,0 +1,25 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-154",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "e1379bb518a7012d90da970e4407f95f5e98efaa",
+  "recorded_utc": "2026-09-27T20:04:48Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-153.json",
+  "parallel_inbox_observed_head": "8d231004bd996daa95330046d8fd26613942cc01",
+  "r2_06a_g4_cleanup": {
+    "ordinary_view": "Current-user Interactive/Limited tasks, same SID and session as pre-cleanup baseline, unpackaged status 15700. The old empty candidate root, exact old uninstall receipt, candidate data, registration lock and lifecycle lock each matched audit conditions, were deleted and were read back absent in the same view. Tasks were unregistered after each run.",
+    "ordinary_receipt_sha256": {
+      "empty_root": "a9fe2be1e53044b227f96cb50f651867a43456280313fdfec44c74b3cf1735d9",
+      "uninstall_receipt": "dc386cb65fe5052a4efd7080114eb78574ef16b716d0a38dd82a6e4788801dec",
+      "candidate_data": "c892bcf7145886637954614bf7a39a3154e3b4a3bc69c099e6a08f3fdc2ec82c",
+      "registration_lock": "1cd00e33cc1fd63a61becfee7572b9ff08be09b3bbb1b2634c900c23e54ef8e0",
+      "lifecycle_lock": "43499d87355cc42f0e2c027200f2f804b12ecda33c646dafc4ee49c25600593e"
+    },
+    "formal_after": "Independent same-view readback against the ordinary pre-cleanup snapshot matched all 14070 formal installation entries, two formal data entries, formal registry absence, and formal shortcut hashes and targets. The old ordinary candidate objects are absent. Raw formal-after receipt SHA-256 4eef24e791b2c6aa952ecc96fc50433ded5b3d864f9dd71bc51ec67705dac726. The first readback instrument wrongly assumed the old formal installation had a registry key; this was corrected to compare the recorded absence, then the complete readback passed.",
+    "retained": "The partially touched r206a-3bd-audit-evidence directory remains with 22 files and 2 directories after the cleanup instrument stopped; its manifest no longer equals the independently audited original, so it was not deleted further. r206a-g4-readonly, newer evidence, unaudited directories and all formal objects remain retained. No automatic approval rejection occurred.",
+    "non_claim": "G4 cleanup evidence is not R2-06a product acceptance or R2-05 formal installation acceptance."
+  },
+  "cloud": "Manual desktop workflow dispatch run 36346338781 on exact e1379bb5 source is in progress; browser job passed, dependency notices running at observation. Manual source hygiene run 36346343245 on exact e1379bb5 succeeded. Trusted signing and installed smoke await successful desktop build.",
+  "next_action": "Wait for the exact desktop build, inspect artifact identities and reproducibility, then use trusted main signer and exact branch installed smoke. Redo ordinary Win11 candidate installation, product test and uninstall with formal snapshots if executable bytes changed. After R2-06a closure, advance Owner-free R2-06b work and stop at offline formal manifest signing."
+}

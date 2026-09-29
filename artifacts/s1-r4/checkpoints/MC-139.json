@@ -1,0 +1,27 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-139",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "94c97125b05682c6f74a7ad9d02b5837347a7cac",
+  "recorded_utc": "2026-09-27T08:58:38Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-138.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "isolated_handoff_diagnosis": {
+    "instrument": "A local copy of the b025 embedded PowerShell finalizer with synthetic 12,979-entry inventory, exact bootstrap/stdin pattern, and deliberate exit before registration, lifecycle lock, receipt or deletion; local reports %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-b025\\handoff-timing.json and handoff-pin-object.json",
+    "measurement": "The diagnostic PowerShell parsed and validated its 3,504,925-byte synthetic payload in about 2 seconds. Pin-Ancestors of the already installed candidate root failed at its parent gogoke-agent-tmp with GOGOKE_UNINSTALL_OPENED_OBJECT_UNSAFE.",
+    "precise_observation": "The expected directory was %LOCALAPPDATA%\\gogoke-agent-tmp, but GetFinalPathNameByHandleW returned the physical Codex package LocalCache\\Local\\gogoke-agent-tmp directory. The opened object had ordinary directory attributes, not a reparse attribute. The finalizer's strict handle-path comparison rejects this alias before deletion.",
+    "causality_limit": "This diagnostic demonstrates a sufficient mechanism in the same packaged test view, but the real PID 9808 child's internal stage was not observed. CLIXML says progress Completed; MC-138's phrase first-use progress must not be read as a startup stall. No evidence supports widening the 20-second timeout or weakening the path safety check."
+  },
+  "ordinary_user_view_readonly_probe": {
+    "mechanism": "A temporary on-demand scheduled task ran a read-only PowerShell probe as the same Windows user SID in interactive session 1, outside the Codex package; the task was unregistered after each probe. A Shell.Application launch remained a child of the packaged pwsh process and was not used as the ordinary-user view.",
+    "identity": "same user SID as Controller, scheduled process parent svchost, session 1",
+    "candidate": "Logical %LOCALAPPDATA%\\gogoke-agent-tmp\\r206a-win11-install-b025\\gogoke.exe absent; physical file under Codex package LocalCache exists; ordinary HKCU gogoke-candidate registration absent",
+    "formal": "Logical %LOCALAPPDATA%\\Programs\\gogoke\\gogoke.exe exists; ordinary HKCU gogoke registration absent. Packaged-view formal registration exists; the two views must not be treated as identical.",
+    "local_reports": "%LOCALAPPDATA%\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\external-context-scheduled.json and external-context-scheduled2.json"
+  },
+  "decision": "The first candidate install/product probe occurred in Codex package file and HKCU virtualization. It is a real failed test in that view, but it does not establish a defect in an ordinary unpackaged end-user installation and cannot complete the intended Owner Win11 isolation check. Keep the packaged candidate and its data/registration untouched as explicit residue while making an independently snapshotted ordinary-user test. Do not change product source or rerun cloud solely for this alias until the ordinary-user result is known.",
+  "inbox_classification_at_current_b025_bytes": {"F1": "ALREADY_FIXED by source/cloud evidence; ordinary-user Win11 finalizer remains to be tested", "F2": "ALREADY_FIXED; non-32 dynamic branch unobserved", "F3": "ALREADY_FIXED in preparation; add this packaged-view residual and view distinction before final report", "F4": "NEEDS_REVIEW after ordinary-user formal snapshot and candidate cleanup"},
+  "next_action": "In the ordinary-user scheduled-task context, first record full formal root/data/registry/shortcut baseline, candidate root/registration/data absence, SAC and Code Integrity baseline and signed setup identity. Only if all are consistent, run one installation and product test on the same frozen b025 bytes at a fresh real %LOCALAPPDATA% isolated root. Use an ordinary-user process for its exact-instance uninstall. Preserve the packaged-view candidate failure and MC-122 two-file evidence copy; do not cross-view uninstall, manually delete, merge PR #34, start R2-06b, publish, sign code, change security settings or self-accept."
+}

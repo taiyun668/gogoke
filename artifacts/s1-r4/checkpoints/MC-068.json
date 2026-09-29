@@ -1,0 +1,63 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-068",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "b1e878b0178fb301c3c32d8ea2c8e1ab2d32c20e",
+  "recorded_utc": "2026-09-24T17:52:23Z",
+  "reason": "OWNER_REQUESTED_PAUSE_DURING_R2_04_LIVE_TAURI_ENV_CLOUD_RUN",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "manifest_blob_on_main": "17afbba28795338561530927595fda93fd8a2a11",
+    "receipt_blob_on_main": "e30c62097fc363b71f304807620fb1716fe0ad35"
+  },
+  "package": "R2-04_WIP_NOT_DELIVERED",
+  "owner_external_reposition": "Investigate the installed Tauri service failure through direct cloud Medium-process service runs at Tauri's actual app_data_dir root and a fresh root. Print original stderr after token redaction, repair the actual cause, and remove temporary diagnostic output. No new product IPC error classification.",
+  "completed_since_mc067": [
+    {
+      "commit": "ddb7457d79d532ebb3afad6897a39d8293db9110",
+      "change": "Removed the earlier product IPC error-code layers. Added cloud installed-smoke direct same-root and fresh-root stderr comparison after Tauri failure."
+    },
+    {
+      "commit": "b1e878b0178fb301c3c32d8ea2c8e1ab2d32c20e",
+      "change": "Moved direct comparison into the failure site while Tauri remains alive and made both direct runs inherit the same Tauri environment."
+    }
+  ],
+  "cloud_evidence": {
+    "completed_run": 36033281163,
+    "completed_run_sha": "ddb7457d79d532ebb3afad6897a39d8293db9110",
+    "browser": "PASS",
+    "dependency_notices": "PASS",
+    "installed_resource_bytes": "PASS",
+    "installed_tauri_product_entry": "FAIL_GOGOKE_PRODUCT_SERVICE_FAILED_1",
+    "direct_after_tauri_cleanup_same_root": "EXIT_0; stderr only Node SQLite experimental warning",
+    "direct_after_tauri_cleanup_fresh_root": "EXIT_0; stderr only Node SQLite experimental warning",
+    "interpretation": "The actual known-folder product root is not sufficient to reproduce the failure after Tauri cleanup. The first direct comparison did not inherit Tauri's environment or keep Tauri alive, so it does not establish the original cause."
+  },
+  "current_cloud": {
+    "desktop_run": 36036318444,
+    "exact_sha": "b1e878b0178fb301c3c32d8ea2c8e1ab2d32c20e",
+    "state_at_checkpoint": "IN_PROGRESS",
+    "browser": "PASS",
+    "dependency_notices": "PASS",
+    "nsis_job": "IN_PROGRESS_AT_RESTORE_RUST_CACHE",
+    "live_tauri_env_direct_comparison": "NOT_RUN_AT_LAST_OBSERVATION"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "new_entries": 0
+  },
+  "pr27": "OPEN_DRAFT_WIP",
+  "evidence_boundary": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "PARTIAL_NOT_PASS",
+    "owner_win11_smart_app_control": "NOT_RUN",
+    "candidate_review": "NOT_RUN",
+    "adoption_release_merge": "NONE"
+  },
+  "architecture_blocker": "NO_EVIDENCE_OF_ARCHITECTURE_BLOCKER",
+  "workspace": "No uncommitted production changes at checkpoint. No local native build or native executable test. The cloud smoke diagnostic is temporary and must be removed after root-cause repair.",
+  "external_action": "RUN_36036318444_IN_PROGRESS_AT_OBSERVATION; CHECKPOINT_PUSH_MAY_CANCEL_IT; NO_MAIN_WRITE_NO_MERGE_NO_RELEASE",
+  "next_action": "On explicit Owner resume, re-read remote branch/main/authorization/PR/inbox and run 36036318444. If that run was cancelled by this checkpoint push, use the new exact-head cloud run. Read only the installed-smoke failure fragment containing the live Tauri-environment same-root and fresh-root stderr, identify the actual cause, fix it within R2-04, remove temporary stderr diagnostics, and run exact-head cloud evidence again."
+}

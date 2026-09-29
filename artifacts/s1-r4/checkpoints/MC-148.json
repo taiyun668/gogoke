@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-148",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "21f69a7cd3063465d993c33b0e6c2aaecc34d682",
+  "recorded_utc": "2026-09-27T10:24:50Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-147.json",
+  "parallel_inbox_observed_head": "c0c67c89bf8c2ab1e1ef629fa6a17ede2b96c292",
+  "production_source_commit": "f3145614b7c806f8ebd0b161dfebcc6d773f7349",
+  "g4_independent_read_only_audit": "New risk_auditor completed item-by-item current-object audit. Exact scope, PASS_TO_DELETE and KEEP with limitations are in artifacts/s1-r4/reviews/R2-06a-G4-cleanup-audit.md. No deletion yet. Ordinary candidate data and two ordinary locks stay KEEP because current Codex-descended file reads redirect to package view; old ordinary receipt is not current independent proof. Packaged old candidate root/registry/data/locks, old empty ordinary root and finalizer receipt, MC-122 copy, old raw evidence and ten old temp directories have conditional PASS_TO_DELETE. Deletion requires immediate identity/hash/no-reparse/process recheck, exact PowerShell LiteralPath, same-view absence readback; auto-approval refusal means retain, no workaround.",
+  "cloud_status_at_checkpoint": {
+    "desktop_run": 36311064653,
+    "desktop_source": "f3145614b7c806f8ebd0b161dfebcc6d773f7349",
+    "desktop": "IN_PROGRESS: browser/notices/native release and resource tests PASS; frozen and repro Windows lanes building unsigned shell/NSIS",
+    "source_hygiene_run": 36311064617,
+    "source_hygiene": "SUCCESS"
+  },
+  "risk_audit_interim": "Fresh f314 high-risk static auditor finds no emergency F1/G2/G1 guard bypass, but LOW: non-quiet installed-shell --uninstall rejection in package/redirected context only prints to stderr of Windows-subsystem executable; user cannot see required direct-run guidance. Await complete independent axis batch, repair within R2-06a, rerun affected exact-byte checks. f314 is not final accepted source.",
+  "g3": "Packaged formal HKCU key present and ordinary key absent. No formal mutation. R2-05 migration path remains a later Owner decision; see G3 report.",
+  "next_action": "Finish fresh f314 risk audit; repair concrete findings in one batch; rerun cloud build/hygiene/trusted candidate signing/installed smoke for final bytes, then ordinary-view Win11 SAC install/product/uninstall with fresh formal before/after snapshots. Clean only itemized audit-PASS residue with per-item recheck/readback, checkpoint, then continue R2-06b Owner-free WIP to offline formal SHA256SUMS.windows signing boundary."
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-150",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "97ef666dce9f9844e540b60d523bdb8ae510842c",
+  "recorded_utc": "2026-09-27T10:32:23Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-149.json",
+  "parallel_inbox_observed_head": "c0c67c89bf8c2ab1e1ef629fa6a17ede2b96c292",
+  "production_source_commit": "97ef666dce9f9844e540b60d523bdb8ae510842c",
+  "focused_review_and_repair": "Fresh Sol/high auditor reviewed 33035db2 and verified Windows-sys feature/MessageBoxW signature, pre-mutation guard, nonquiet native guidance and unrelated-error isolation. One LOW remained: quiet stderr changed from code-only to code plus prose, risking exact-code consumers. Source 97ef666d keeps quiet code-only and retains nonquiet fixed native guidance. New fresh Astra/xhigh risk audit of exact 97 source is running; no self-acceptance.",
+  "cloud": {
+    "desktop_run": 36312788945,
+    "source_hygiene_run": 36312791405,
+    "head_sha_verified": "97ef666dce9f9844e540b60d523bdb8ae510842c",
+    "source_hygiene": "SUCCESS",
+    "desktop": "IN_PROGRESS: browser/notices underway; no final build artifacts yet",
+    "superseded_runs": "f314 desktop run 36311064653 cancelled by same-branch concurrency; 330 desktop run 36312551402 superseded by 97 run and must not serve as candidate"
+  },
+  "g4": "MC-148 independent audit conditional PASS items remain undeleted. A follow-up independent ordinary Interactive/Limited read-only task completed at 10:30:58Z; negative Codex-view control rejected redirected reads, ordinary no-follow exclusive handles proved old candidate data and two ordinary locks match exact hashes and physical view. Those three change from KEEP to conditional PASS_TO_DELETE; local raw receipt SHA-256 d507e9c27681df6a3d9e5aea4f1ae77568b9bd1dc26a9de9ab6602011cb1ce40. See G4 audit addendum. r206a-g4-readonly and all formal objects remain KEEP. No deletion yet.",
+  "next_action": "Complete exact 97 desktop run, trusted main-only candidate resource signing and exact branch installed smoke. Fix any concrete new failure and rerun affected checks if source bytes change. Then run ordinary-view Win11/SAC install, product and uninstall with current formal before/after snapshots; checkpoint R2-06a, clean only independently audited residue with same-view readback, proceed to Owner-free R2-06b WIP until offline formal SHA256SUMS.windows signing boundary."
+}

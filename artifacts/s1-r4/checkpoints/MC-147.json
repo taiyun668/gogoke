@@ -1,0 +1,26 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-147",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "f3145614b7c806f8ebd0b161dfebcc6d773f7349",
+  "recorded_utc": "2026-09-27T10:14:00Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-146.json",
+  "parallel_inbox_observed_head": "c0c67c89bf8c2ab1e1ef629fa6a17ede2b96c292",
+  "production_source_commit": "f3145614b7c806f8ebd0b161dfebcc6d773f7349",
+  "candidate_state": "G1_G2_REPAIR_COMMITTED_AND_PUSHED_TEST_ONLY_NOT_ACCEPTED",
+  "g1_g2_repair": "Installer .onInit now checks GetCurrentPackageFullName and a delete-on-close physical LocalAppData write-view probe before signed-set/domain selection or any product mutation. Installed-shell uninstall entry does the same before path/resource/lock work. This extra probe is required by direct observation: a Codex-descended process returned no package identity (15700) yet wrote into package LocalCache. Physical no-follow finalizer checks remain unchanged. Finalizer registration-lock CreateFileW now maps only Win32 32 to same-domain busy and emits exact other Win32 codes. CI-only instrumented NSIS has two explicit rejection branches; it does not claim to reproduce an MSIX runner.",
+  "local_validation": "PowerShell finalizer and negative-runner parsing: 0 errors. Read-only package-status probe returned 15700. A transient FILE_FLAG_DELETE_ON_CLOSE LocalAppData probe opened physically in the Codex Package LocalCache and left no file after close. No local native build/test was run.",
+  "cloud_status_at_checkpoint": {
+    "desktop_run": 36311064653,
+    "desktop_source": "f3145614b7c806f8ebd0b161dfebcc6d773f7349",
+    "desktop": "IN_PROGRESS: notices and browser PASS; two independent Windows lanes executing native tests/build",
+    "source_hygiene_run": 36311064617,
+    "source_hygiene": "SUCCESS at exact f314 source"
+  },
+  "g3": "Claude's premise that both views lack a formal key was corrected. Packaged-view formal-before.json has registry (not formalRegistry) with 0.1.2 and old uninstall.exe; ordinary-before/after have formalRegistry=null. Same SID, different HKCU/file views; current Codex-descended shell observes the formal key and redirected AppData. Registration virtualization is the supported mechanism; the exact old installer parent process has no saved receipt, so origin is an inference. See artifacts/s1-r4/R2-06a-G3-formal-012-registry-view.md. Formal bytes/data/shortcuts/registrations remain untouched. R2-05 must choose a same-ordinary-view migration/install/uninstall plan before changing the old formal copy; no formal mutation is needed for the present R2-06a candidate work.",
+  "g4": "Pre-cleanup itemized inventory and redacted old evidence hashes are in artifacts/s1-r4/R2-06a-G4-test-residue-inventory.md. Packaged old candidate has 14226 files, 1087 dirs, 469860460 bytes, no reparse; an extended-length-path reread matched every relative path/length/SHA-256 in the old ordinary installed snapshot with 0 missing, extra or changed. An initial Python comparison falsely marked 547 long paths as reparse; its result was rejected and retained for instrument provenance. Ordinary old candidate has 0 files, 1087 empty dirs, candidate registry absent, two retained data files and locks. LocalCache raw evidence has 61 files, not the review report's 60. No cleanup yet.",
+  "owner_latest_scope": "Owner explicitly authorized continued autonomous R2-06a cloud and ordinary Win11 retest, redacted evidence preservation/push, a new independent read-only cleanup audit, direct cleanup only for audited items and exact absence readback. After R2-06a checkpoint, continue R2-06b non-Owner work on resource-only update, rollback, crash recovery and uninstall/update concurrency; keep it WIP/unaccepted and stop at Owner offline formal SHA256SUMS.windows signing. No PR34 merge, publication, code signing or security-setting modification.",
+  "stop_conditions": "Preserve state and stop if Smart App Control blocks a new component; any formal install file, data, shortcut or registration changes during the new test; G3 requires modifying formal now; or security/scope authorization must change. Do not bypass an automatic deletion approval rejection.",
+  "next_action": "Complete exact f314 desktop cloud run; fix concrete G1/G2 failures and rerun affected checks if bytes change. On passing build, use trusted main-only candidate signer and exact branch installed smoke including new negative branches. Before new ordinary Win11 run, push sanitized evidence and obtain a new read-only auditor's item-by-item cleanup clearance for old candidate data/empty root so the new test begins fresh. Then execute final-byte ordinary install/product/uninstall with formal before/after snapshots, freeze R2-06a, audit and clean only approved residue, checkpoint, then proceed to Owner-free R2-06b WIP."
+}

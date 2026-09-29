@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-109",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "87801e78ff192a652f4cb0c2a1ff8ba3b47c1809",
+  "recorded_utc": "2026-09-26T15:57:00Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-108.json",
+  "current_main": "a81d144dbcc2cdb7855b5becef39e7329d9f7bd7",
+  "authorization": "Current main MANIFEST 17afbba28795338561530927595fda93fd8a2a11 and public authorization receipt e30c62097fc363b71f304807620fb1716fe0ad35 remain exact. R2-06a then R2-05 then R2-06b order remains current; no public release authorization.",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "package": "R2-06A_IN_PROGRESS_NOT_FROZEN",
+  "executed_evidence": "At 87801e78, temporary installer trace was removed. Desktop run 36251115260 PASS all five jobs including two independent Windows build lanes and exact executable byte comparison; source hygiene 36251120759 PASS; trusted main candidate signer 36253186880 PASS, exact signed artifact 10909992411. Branch installed smoke 36253265050 FAIL at the unchanged 300-second install bound, stage install-once. Verified gogoke.exe 6acb5e623f48c3593ebdd489ca1e2d113f2189d41cb2008f9a0cf5f8e2e3190b was installed; service directory existed, native-host and candidate signed sidecars were not yet published. No product service or uninstall executed. This falsifies the hypothesis that temporary trace alone caused the remaining timeout.",
+  "current_change": "Remove per-leaf FlushFileBuffers from GogokePublishFile. The installer still uses CREATE_NEW for every final leaf, keeps verified source and parent custody, checks each ReadFile/WriteFile result, closes handles, and preserves the 300-second installed-smoke bound. No current contract requires synchronous disk flush of all 12,979 files before installer completion; the old flush introduces a synchronous disk operation per file. This is a causal hypothesis to test at a new exact SHA, not yet an executed PASS.",
+  "main_drift": "main added research/design/direction documents after MC-108; AGENTS.md, model routing, R2-06a contract, v2 MANIFEST and authorization receipt did not change. No mechanical main merge is needed for installer production bytes.",
+  "retained_custody": "Task-owned inspection copy at %TEMP%\\gogoke-r206a-inventory-36245682600 remains as MC-108 records; automatic approval review rejected safe cleanup, so no alternate deletion path was used.",
+  "blocked_or_not_run": "Installed candidate service positive/poison-negative, uninstall/data retention, deterministic installer leaf-insertion barrier, formal signed install, Owner Win11/SAC, final all-axis and heterogeneous review remain NOT_RUN. PR #27 Draft; PR #34 and #49 Owner-held OPEN; R2-06b deferred; no release.",
+  "candidate_state": "R2_06A_WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "architecture_blocker": "NO",
+  "next_action": "Push this narrow installer change and run exact-head desktop/hygiene, then trusted-main candidate signer and branch installed smoke. If installation still exceeds 300 seconds, obtain a bounded production-file progress measurement and optimize the measured bottleneck without weakening namespace protection or silently extending the bound. If installed smoke passes, run deterministic leaf-insertion and remaining R2-06a gates."
+}

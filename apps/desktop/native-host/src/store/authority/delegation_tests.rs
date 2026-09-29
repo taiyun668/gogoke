@@ -81,6 +81,108 @@ fn future() -> u64 {
         + 3_600_000
 }
 
+fn r2_test_input(owner: &super::bootstrap::OwnerIssuer, expires_at_epoch_ms: u64) -> DelegationGrantInput {
+    DelegationGrantInput {
+        principal: DelegationPrincipal {
+            principal_id: owner.principal_id().into(),
+            project_id: "project-r2-02-test".into(),
+            domain_id: "domain-r2-02-test".into(),
+            role: "controller".into(),
+            seat_id: owner.seat_id().into(),
+        },
+        binding: DelegationBinding {
+            session_id: "session-r2-02-source".into(),
+            execution_id: "execution-r2-02-source".into(),
+            generation: "1".into(),
+        },
+        expires_at_epoch_ms,
+        ceiling: AuthorityCeiling {
+            allowed_actions: vec!["delegate".into()],
+            allowed_target_principal_ids: vec!["principal-r2-02-worker".into()],
+            allowed_target_domain_ids: vec!["domain-r2-02-test".into()],
+            allowed_sinks: vec!["task-package".into()],
+            allowed_material_classes: vec![],
+            explicit_private_material_ids: vec![],
+            allowed_continuation_responses: vec![],
+            max_material_items: 0,
+            max_material_bytes: 0,
+            max_response_bytes: 32 * 1024,
+        },
+    }
+}
+
+#[test]
+fn fixed_r2_test_grant_replays_once_without_broadening_or_reissuing() {
+    fixture(|connection, owner| {
+        let admitted = super::bootstrap::read_product_identity(connection, owner).unwrap();
+        let request = || r2_test_input(owner, future() - 600_000);
+        let first = issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-operation-one", request()).unwrap();
+        let replay = issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-operation-one", request()).unwrap();
+        assert_eq!(first, replay);
+        assert_eq!(transaction::run(connection, |tx| tx.query(
+            "SELECT count(*) FROM main.gogoke_authority_grant_heads", &[], 1)).unwrap()[0][0], "1");
+        assert_eq!(transaction::run(connection, |tx| tx.query(
+            "SELECT count(*) FROM main.gogoke_authority_events WHERE event_kind='ISSUE'", &[], 1)).unwrap()[0][0], "1");
+        let mut broader = request();
+        broader.ceiling.max_response_bytes += 1;
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-operation-one", broader).is_err());
+        let mut stale = admitted.clone();
+        stale.policy_revision = "999".into();
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, &stale, "r2-test-operation-one", request()).is_err());
+        revoke_owner_delegation(connection, owner, &DelegationGrantIdentity {
+            grant_id: first.reference.grant_id,
+            revision: first.reference.revision,
+        }).unwrap();
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-operation-one", request()).is_err(),
+            "revocation cannot be bypassed by replaying the operation");
+    });
+}
+
+#[test]
+fn fixed_r2_test_grant_renews_after_expiry_only_with_same_envelope_and_never_after_revocation() {
+    fixture(|connection, owner| {
+        let admitted = super::bootstrap::read_product_identity(connection, owner).unwrap();
+        let soon = || r2_test_input(owner, future() - 3_598_500);
+        let first = issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-renew-operation", soon()).unwrap();
+        let live = issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-renew-operation", soon()).unwrap();
+        assert_eq!(first, live, "valid grant replay must not extend its lifetime");
+        std::thread::sleep(std::time::Duration::from_millis(1600));
+        let mut wrong_binding = r2_test_input(owner, future() - 600_000);
+        wrong_binding.binding.generation = "2".into();
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-renew-operation", wrong_binding).is_err(),
+            "an expired grant cannot broaden its binding");
+        let renewed = issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted, "r2-test-renew-operation",
+            r2_test_input(owner, future() - 600_000)).unwrap();
+        assert_eq!(renewed.reference.grant_id, first.reference.grant_id);
+        assert_eq!(renewed.reference.revision, "2");
+        assert!(renewed.expires_at_epoch_ms > first.expires_at_epoch_ms);
+        assert_eq!(transaction::run(connection, |tx| tx.query(
+            "SELECT count(*) FROM main.gogoke_authority_events WHERE grant_id=? AND event_kind='ISSUE'",
+            &[&first.reference.grant_id], 1)).unwrap()[0][0], "1");
+        assert_eq!(transaction::run(connection, |tx| tx.query(
+            "SELECT count(*) FROM main.gogoke_authority_events WHERE grant_id=? AND event_kind='REVISE'",
+            &[&first.reference.grant_id], 1)).unwrap()[0][0], "1");
+        revoke_owner_delegation(connection, owner, &DelegationGrantIdentity {
+            grant_id: renewed.reference.grant_id.clone(),
+            revision: renewed.reference.revision.clone(),
+        }).unwrap();
+        let admitted_after_revocation = super::bootstrap::read_product_identity(connection, owner).unwrap();
+        assert!(issue_r2_test_owner_delegation_once(
+            connection, owner, &admitted_after_revocation, "r2-test-renew-operation",
+            r2_test_input(owner, future() - 600_000)).is_err(),
+            "revoked grant cannot be renewed");
+    });
+}
+
 #[test]
 fn typed_delegation_issue_read_delegate_revision_and_revoke_share_the_authority_core() {
     fixture(|connection, owner| {

@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-152",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "58deb7954f79bf933f1c4f44ec7a71ef3a5b8ef0",
+  "recorded_utc": "2026-09-27T19:46:07Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-151.json",
+  "parallel_inbox_observed_head": "8d231004bd996daa95330046d8fd26613942cc01",
+  "inbox_observation": "The control inbox index at the observed HEAD contains fewer entries than MC-151's observed c0c67c89 HEAD. The removed historical entries are not treated as withdrawn findings; current R2-06a findings remain tracked in execution checkpoints and review artifacts. No control-branch write was made.",
+  "owner_decision_2026_09_27": {
+    "risk_name": "Pinned empty installer directory may become a reparse point in place",
+    "threat_model": "Installer is currentUser with RequestExecutionLevel user. An attacker who can modify that same user's directory already has equivalent write privilege. This case crosses no privilege boundary in the current installation mode.",
+    "disposition": "KNOWN_RESIDUAL_R2_06A_NOT_FIXED",
+    "reopen_precondition": "Before enabling perMachine or any elevated installation, repair this case and rerun relevant validation.",
+    "diagnostic_evidence": "Source 58deb795 cloud desktop run 36344858731 probe job 108691888681 succeeded; artifact 10939969005 digest sha256:a19c5642e21746007e91ca447d32be50246276dbfc23a16921e2db321ec37b6f. The probe and workflow job are removed from the next source revision by Owner direction. This diagnostic is not product acceptance.",
+    "risk_reporting_rule": "For future security findings, record attacker prerequisite privilege and crossed boundary before proposing a fix. Cases without a crossed boundary are recorded as residual; reports omit procedural attack detail."
+  },
+  "changes_prepared": "Removed the 58deb795 diagnostic probe and workflow job. Preserved the uninstall Windows-error-code propagation and its installed smoke assertions.",
+  "cloud_status": "58deb795 source hygiene run 36344861491 SUCCESS; desktop run 36344858731 still building at this checkpoint. Exact new-source build, hygiene, trusted candidate signing and installed smoke remain to run after push.",
+  "g4": "MC-148 independent audit and its ordinary-view supplement authorize conditional per-item cleanup. No deletion yet; each item requires immediate identity/hash/view/process recheck and same-view absence readback. An auto-review rejection leaves that item in place.",
+  "next_action": "Push this change, run affected cloud checks, then clean independently audited G4 residue item by item. Redo affected ordinary Win11 candidate install, product and uninstall with formal before/after snapshots after exact frozen bytes are available. Continue R2-06b Owner-free work after R2-06a checkpoint. Stop on Owner hard-stop conditions."
+}

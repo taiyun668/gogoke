@@ -1,0 +1,43 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-145",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "177d2d1314bcdbb118180201d4c58e54801dee04",
+  "recorded_utc": "2026-09-27T09:34:00Z",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-144.json",
+  "parallel_inbox_observed_head": "b867dcaf26e2161d5bb206e2e3eae61c76ce5803",
+  "production_source_commit": "b025ba44659da52a2747c7c0a281c5bbd7d4b732",
+  "candidate_state": "FROZEN_TEST_ONLY_NOT_ACCEPTED",
+  "owner_win11_sac_ordinary_view": {
+    "context": "Task Scheduler on-demand processes registered with current user, Interactive logon and Limited run level; same SID and session 1 observed. The ordinary logical file/HKCU view differs from the Codex packaged process view. Package identity and token integrity level were not independently read, so no stronger claim is made.",
+    "smart_app_control_state": 1,
+    "setup_sha256": "2419d848017694e6819eb4e8dcd1004116e0a83e4ad4d2cde003b9d8448eb70d",
+    "install": "PASS for exact b025 setup, exit 0; five installed component hashes matched frozen cloud artifact; candidate registry exact, instance ID SHA-256 9896485fdfec67c0deaa28592bdb0ac09b2bb6a9c75e3e0f2e7e90634337cc20",
+    "product": "PASS for actual installed Home DOM, signed resource readiness, Tauri invoke, native Controller admission, native host, fixed Git ledger readback and TEST_ONLY controlled result. CDP screenshot is not independent proof of the composed desktop appearance; ordinary-view second product launch was not run.",
+    "uninstall": "PASS for the first actual ordinary-view --uninstall --quiet: parent exit 0 and exact-instance finalizer DELETED. Candidate registry and all owned files absent; 1,087 empty directories retained. Candidate data 2 files remained byte-identical with tree SHA-256 498070a77bddc1d137cd0d5c10e30fe99cf05168709dcab0045aaf710ba4466d.",
+    "formal_preservation": "PASS for exact before-install versus after-uninstall, before-formal-launch comparisons of formal installation, formal data, two shortcuts and the already-absent ordinary formal HKCU registration. The ordinary formal registration was not present at baseline, so preservation of an existing registration was not tested.",
+    "formal_shortcut": "PASS for original ordinary Start Menu shortcut: formal gogoke.exe SHA-256 21549a4f18b3781c68db0d33d41ac83c4be1868fee08c9bcc1180db0229c8dc8, PID 1692, main window title app.gogoke.desktop-siw, responsive for 5 seconds, closed normally. Only .window-state.json in formal data changed after this launch; the preservation comparison was already complete.",
+    "code_integrity": "No events after RecordId 7097 through completion. Events 7090-7097 were Chrome Vulkan DLL 3033/3089 and are not attributed to Gogoke; no Win32 4551 observed.",
+    "local_receipts": "%LOCALAPPDATA%\\Packages\\<CodexPackageFamily>\\LocalCache\\Local\\gogoke-agent-tmp\\r206a-win11-b025\\ordinary-before.json, ordinary-after-install.json, ordinary\\product-corrected.json, ordinary-after-product.json, ordinary-uninstall-corrected.json, ordinary-after-uninstall.json, ordinary-formal-shortcut-once.json, ordinary-after-formal-launch.json, ordinary-residue.json",
+    "residual_locks": "Ordinary registration-domain lock 0 bytes and sibling lifecycle lock 647 bytes; both plain and exclusively openable after uninstall; preserved."
+  },
+  "codex_packaged_view": {
+    "first_uninstall": "30-second observer timeout; final parent exit UNKNOWN",
+    "second_uninstall": "parent exit 1, GOGOKE_UNINSTALL_LOCK_HANDOFF_UNCONFIRMED; registration, installed candidate and two-file candidate data retained",
+    "diagnostic": "Non-destructive source-copy instrument reproduces finalizer OPENED_OBJECT_UNSAFE at a virtualized LocalAppData ancestor; actual failed child's internal stage was not observed. Do not weaken physical path checking or call the package-view failure PASS.",
+    "formal_install_data_registry_shortcuts": "UNCHANGED from packaged-view preinstall snapshot through final check",
+    "residual": "The exact packaged-view candidate instance is preserved for a separately reviewed recovery/cleanup plan; no cross-view uninstall or manual deletion was attempted."
+  },
+  "independent_post_test_risk_audit": "Read-only risk auditor compared six ordinary-view snapshots entry by entry and directly read the finalizer receipt. It found the scoped ordinary install/product/uninstall/formal protection conclusions supported, no new evidence requiring R2-06a production security-path weakening, and the packaged-view failure still OPEN. It explicitly limited CDP evidence, ordinary formal registry absence, non-32 F2 branch and ordinary second launch. The initial prep claim that both packaged uninstall attempts returned UNCONFIRMED was corrected: only the second has that exit/error.",
+  "inbox_classification_at_current_b025_bytes": {
+    "F1": "ALREADY_FIXED: per-domain uninstall lock in source, deletion-window cloud negative PASS, ordinary Win11 exact-instance teardown PASS; separate packaged path-alias failure OPEN",
+    "F2": "ALREADY_FIXED in source: only GetLastError 32 maps to concurrent install; non-32 dynamic branch NOT_RUN",
+    "F3": "ALREADY_FIXED in preparation and actual residual inventory: ordinary locks/data/empty directories, packaged installed candidate/registration/data, MC-122 copy all explicitly retained",
+    "F4": "ALREADY_FIXED: formal baseline compared before original shortcut launch; window responsiveness and normal close observed"
+  },
+  "external_heterogeneous_review_to_owner": "Owner should transfer an exact-source Claude review of a3b6f85e38ca0971fdd05096734c2e99aeee7ec4..b025ba44659da52a2747c7c0a281c5bbd7d4b732, including F1/F2 repairs, CI interleave instrument validity, packaged-view path-alias failure, candidate identity, ordinary Win11/SAC test receipts and formal-install protection. The inbox at observed head b867dcaf has no exact-b025 result; do not treat the old a3b6 review as current-source acceptance.",
+  "workspace_hygiene": "MC-122's %TEMP%\\gogoke-r206a-evidence-a3b6-36293571078 remains a plain two-file evidence copy. Both files are still present with original SHA-256 47962e4378b076b0088506b857cd8047a15fe6e4eaca0bfe25d92d019472df99 and cb74c05fd784552d43879d2be3a2fcd00f5757d6cce6e1264f2b5e5d02d86163; no cleanup attempted. Local full committed-source scan with positive control: 24,565 files, 0 leaks.",
+  "governance": "PR #27 OPEN/DRAFT and at the current execution branch HEAD when checked; PR #34 OPEN and unmerged. No R2-06b, publication, code signing, security-setting change, formal Owner manifest signing or self-acceptance occurred.",
+  "next_action": "Keep the b025 candidate frozen and unaccepted. Present the exact evidence and scoped PASS/FAIL/NOT_RUN boundary to Owner; the only optional Owner product-test touch is a subjective look at the candidate Home screenshot/result. Owner transfers the exact-b025 Claude review; Controller checks its inbox at a natural checkpoint and triages concrete findings within R2-06a, rerunning affected cloud axes if production bytes change. Preserve the packaged-view candidate and MC-122 copy; any future packaged-view support/cleanup needs a separately audited identity-preserving plan. Do not merge PR #34, start R2-06b, publish, sign code or modify system security settings."
+}

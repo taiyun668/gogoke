@@ -1,0 +1,17 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-215",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_merge": "83193f9ae2bad8d194c8837c5a87fddc3abbfc02",
+  "accepted_delivery": "161448a452988c910476b3f9b10ad1a1c3a68b73",
+  "merged_main": "a6dc43d55d09c09b13cffe5b5dba372c74f77e00",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-214.json",
+  "state": "PR27_MAIN_MERGE_RESOLVED_BYTE_IDENTICAL_CI_PENDING",
+  "owner_instruction": "Build one complete baseline tree for Design 37 by merging origin/main into the accepted S1-R4 execution branch. Current main owns governance and design; accepted delivery owns product code. Keep AGENTS.md from main plus the Owner-approved 2026-09-25 local manifest-signing authorization sentence. Prove product directories unchanged, run cloud CI and hygiene, make PR #27 ready, request Claude premerge review through the parallel inbox, and leave the merge to Owner. Do not revise PR #50 before PR #27 merges.",
+  "merge_conflicts": "The merge had six direct conflicts: .github/workflows/gogoke-candidate-sign.yml, .github/workflows/gogoke-desktop.yml, AGENTS.md, tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1, tools/ci/gogoke_ci_frozen_artifact.py and tools/ci/test_gogoke_ci_frozen_artifact.py. All conflicts were resolved by the source-of-authority rule, with zero unmerged index entries.",
+  "product_byte_proof": "Before committing, git diff --cached --name-status 161448a452988c910476b3f9b10ad1a1c3a68b73 -- apps third_party tools .github returned zero entries. This compares the entire tracked trees under all four prefixes, including deletions and main-only additions; the merge candidate is byte-identical there to the Owner-accepted delivery. No native or release artifact was rebuilt or repacked by this merge.",
+  "governance_design_proof": "Before committing, git diff --cached --name-status origin/main -- docs/design docs/governance docs/model-routing.md docs/directions docs/research returned zero entries. AGENTS.md is the main version with exactly one changed line for Owner private-key manifest signing: Controller was authorized on 2026-09-25 to sign locally with the default key; public publication still requires Owner decision. No private key or secret is copied.",
+  "checks": "Cloud CI and public-source hygiene are pending on the eventual exact merge commit. A staged diff check found no whitespace errors. Product equivalence will be repeated against the committed tree before PR #27 becomes ready.",
+  "next": "Commit and push the merge result, run exact-head cloud checks, update PR #27's final-delivery description and make it ready only after checks pass. Publish a durable request for Claude heterogeneous premerge review in control/gogoke-s1-r4-inbox. Do not merge PR #27 or modify PR #50."
+}

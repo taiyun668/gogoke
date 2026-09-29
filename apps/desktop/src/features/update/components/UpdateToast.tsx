@@ -44,7 +44,7 @@ export function UpdateToast({
 }: UpdateToastProps) {
   const { tx } = useI18n();
 
-  if (postUpdateNotice) {
+  if (postUpdateNotice && state.stage !== "cleanup_pending") {
     return (
       <ToastViewport className="update-toasts" role="region" ariaLive="polite">
         <ToastCard className="update-toast" role="status">
@@ -194,6 +194,21 @@ export function UpdateToast({
         )}
         {state.stage === "restarting" && (
           <ToastBody className="update-toast-body">{tx("Restarting…")}</ToastBody>
+        )}
+        {state.stage === "cleanup_pending" && (
+          <>
+            <ToastBody className="update-toast-body">
+              {tx("Update finalization needs attention.")}
+            </ToastBody>
+            {state.message ? (
+              <ToastBody className="update-toast-body">{state.message}</ToastBody>
+            ) : null}
+            <ToastActions className="update-toast-actions">
+              <button className="secondary" onClick={onDismiss}>
+                {tx("Dismiss")}
+              </button>
+            </ToastActions>
+          </>
         )}
         {state.stage === "error" && (
           <>

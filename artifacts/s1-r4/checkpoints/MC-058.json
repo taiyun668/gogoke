@@ -1,0 +1,61 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-058",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "e120b59390584eafb74de66450f8129612026a8d",
+  "recorded_utc": "2026-09-24T04:16:05Z",
+  "reason": "R2_04_PACKAGE_NOTICES_AND_INSTALLED_IDENTITY_WIP",
+  "current_main": "db8c5caa381f6a7a632b079a9fb8af0b3e396664",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "owner_scope": {
+    "package": "R2-04",
+    "stop_after": "R2-04 closure and durable handoff checkpoint",
+    "R2-05": "Codex construction; not entered by this Controller",
+    "PR": "27 OPEN DRAFT WIP; no main merge or candidate acceptance"
+  },
+  "cloud_evidence": {
+    "requested_run": {"id": 35951947953, "source": "faa8ae645be85ba52b77e809684d40dad033a1bb", "state": "CANCELLED", "nonclaim": "No final package result"},
+    "replacement_run": {
+      "id": 35952167327,
+      "source": "e120b59390584eafb74de66450f8129612026a8d",
+      "state": "FAIL",
+      "browser_job": {"id": 107483039250, "state": "PASS"},
+      "notices_job": {"id": 107483039486, "state": "PASS_DESKTOP_GRAPH_ONLY"},
+      "nsis_job": {"id": 107484579461, "state": "FAIL", "first_failed_step": "26 Verify installed R2-04 resource identity and read-only product entry", "exit": 1},
+      "passed_steps": "T3 bundle, physical runtime staging, native-host cloud build, Rust tests, unsigned NSIS construction, update/readiness/rollback smoke",
+      "first_failure_detail": "Exact failure subcause remains unextracted: job log is approximately 94,000 lines; connector range resource unavailable. The next helper run persists a bounded sanitized failure in the already-uploaded package inventory and a check annotation. Do not repeat the entire log fetch.",
+      "final_unsigned_artifact": "SKIPPED_AFTER_FAILED_INSTALLED_SMOKE",
+      "inventory_artifact_id": 10789930997,
+      "inventory_zip_sha256": "9f14e57563e2affbf5515f3b1528186708d8db50e2f15f0e6e4fb456fb93a13b0d"
+    },
+    "source_hygiene": {"run": 35952167280, "state": "PASS_BASELINE_ONLY"}
+  },
+  "writes_in_this_checkpoint": [
+    {"path": "tools/ci/gogoke-package-service.mjs", "blob": "7454f621393d6465d76193d86a5054c57be8a7a4", "purpose": "Collect real staged T3 and locked native-host license texts, pin any upstream fallback to exact npm version/gitHead, include full service-file identity, exercise installed Tauri ingress, and preserve bounded packaging failures"},
+    {"path": "tools/gogoke-release/generate-npm-notices.test.mjs", "blob": "a596d0175c93620ed5c9aedf6c044a4584841118", "purpose": "Extend existing CI-invoked notice tests with nested license, immutable provenance, and installed closure negative controls"}
+  ],
+  "local_diagnostics": {
+    "level": "ISOLATED_JS_DIAGNOSTIC_NOT_CLOUD_ACCEPTANCE",
+    "node": "22.16.0",
+    "source_syntax_check": "PASS",
+    "notice_and_file_identity_tests": {"executed": 2, "passed": 2, "failed": 0, "skipped": 0},
+    "upstream_basis_diagnostic": "One positive and five rejection assertions passed",
+    "native_compilation": "NOT_PERFORMED",
+    "configured_cloud_new_bytes": "NOT_RUN_AT_CHECKPOINT_CREATION"
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "custody": "Controller owns the two source files above. Both are included atomically with this checkpoint; no source WIP depends on the temporary sandbox. Local diagnostic fixtures are disposable and not production runtime replacements.",
+  "V06": "IN_PROGRESS_NOT_PASS; installed product-path run must pass with complete notices and byte identity",
+  "architecture_blocker": "NO",
+  "next_action": "Push this exact tree, read replacement PR27 cloud check results and the small package inventory. Repair the first concrete failure within R2-04. Verify notice coverage and installed real Tauri/service/native path. On R2-04 closure write exact candidate/run/artifact handoff and STOP; do not enter R2-05 or merge main."
+}

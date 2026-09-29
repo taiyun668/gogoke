@@ -1,0 +1,91 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-064",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "512e14c7f4bd6e7c11428010729ae55d1d3f21c4",
+  "recorded_utc": "2026-09-24T14:09:24Z",
+  "reason": "OWNER_REQUESTED_STOP_AFTER_R2_04_RECEIPT_PATH_FAILURE",
+  "current_main": "7e829e9f01a4258b41a836b27ffb42b29bbdfe12",
+  "authorization_validation": {
+    "state": "VALID_OWNER_MERGED_CURRENT",
+    "authorization_blob": "e30c62097fc363b71f304807620fb1716fe0ad35",
+    "bound_and_current_manifest_blob": "17afbba28795338561530927595fda93fd8a2a11"
+  },
+  "owner_scope": {
+    "package": "R2-04",
+    "stop_now": true,
+    "R2_05": "Reserved to Codex; not entered",
+    "pr27": "OPEN_DRAFT_WIP; no main merge or candidate acceptance"
+  },
+  "durable_progress_since_mc063": {
+    "source_head": "512e14c7f4bd6e7c11428010729ae55d1d3f21c4",
+    "source_commit": "fix: hand off installed smoke evidence to parent",
+    "intent": "Move installed-smoke success evidence from non-administrator child to parent-owned workspace without changing product assertions or retrying product operations."
+  },
+  "cloud_evidence": {
+    "desktop_run": 36007934135,
+    "source_sha": "512e14c7f4bd6e7c11428010729ae55d1d3f21c4",
+    "desktop_state": "FAIL",
+    "source_hygiene_run": 36007934368,
+    "source_hygiene_state": "PASS",
+    "browser_job": {
+      "id": 107661017730,
+      "state": "PASS"
+    },
+    "notices_job": {
+      "id": 107661018209,
+      "state": "PASS"
+    },
+    "nsis_job": {
+      "id": 107663877409,
+      "state": "FAIL",
+      "passed": [
+        "T3 locked bundle and deployment",
+        "pinned Node staging",
+        "native-host cloud build",
+        "package seal and complete license inventory",
+        "release verifier",
+        "unsigned installer build",
+        "portable byte verification",
+        "update/readiness/rollback smoke",
+        "installed resource byte identity",
+        "non-administrator smoke child launch marker"
+      ],
+      "first_failed_step": "26 Verify installed resource identity and read-only product entry",
+      "first_failure": "installed smoke receipt path escaped runner temp",
+      "first_failure_lines": "2884-2902",
+      "current_byte_product_operation": "NOT_EXECUTED_AFTER_RECEIPT_PATH_VALIDATION_FAILURE",
+      "no_resend_claim": "No product invoke result from this run is claimed; previous MC-063 preserves the earlier exact-run product assertions."
+    },
+    "inventory": {
+      "artifact_id": 10812516427,
+      "artifact_name": "gogoke-windows-package-inventory-875170600241569229fe0e7d3da8aea9c8b13695-36007934135",
+      "archive_digest": "sha256:1380067ecf05a2f30903f13efe8e7ca9f502e5be5912b946559e696d4d7e4a07"
+    }
+  },
+  "diagnosis": {
+    "classification": "CI_EVIDENCE_RECEIPT_PATH_VALIDATION_BUG",
+    "basis": "The medium-integrity child started successfully, then configuredSmokeReceiptPath rejected the supplied receipt path as outside runner temp before a receipt was produced. This run does not show a product-path regression.",
+    "write_domain": [
+      "tools/ci/gogoke-package-service.mjs",
+      "tools/ci/gogoke-installed-smoke.ps1"
+    ],
+    "next_fix_boundary": "Repair only runner-temp receipt path canonicalization/validation and preserve parent/child custody, existing installed Tauri/service/native assertions, and no-retry semantics."
+  },
+  "parallel_inbox": {
+    "observed_head": "4d148f7bf8807aeaecfb14113cddee1a1d9b03e1",
+    "classification": "INBOX_UNCHANGED",
+    "new_entries": [],
+    "control_branch_written": false
+  },
+  "evidence_limits": {
+    "R2_04": "WIP_NOT_CLOSED",
+    "V06": "CONTROLLED_PLATFORM_PARTIAL_NOT_PASS",
+    "owner_win11": "NOT_RUN",
+    "review_and_acceptance": "NOT_CLAIMED",
+    "local_native_compilation": "NOT_PERFORMED"
+  },
+  "architecture_blocker": "NO",
+  "next_action": "Resume from MC-064. Fix only the receipt path validation in the named CI write domain, push exact bytes, and read replacement PR27 cloud evidence. On full R2-04 package closure write exact source/run/job/artifact handoff and STOP before R2-05."
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-214",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "161448a452988c910476b3f9b10ad1a1c3a68b73",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-213.json",
+  "state": "DESIGN37_T00_READONLY_RECHECK_PLAN_AMENDMENT_REQUIRED",
+  "owner_decision": "After the Owner-accepted R2-05 postmerge V03/V07 result, enter Design 37 T00 and notify Claude to perform PR #50 third-round independent audit. This is design review, not implementation authorization.",
+  "t00_artifact": "artifacts/gogoke-37/t00/T00-RECHECK-161448a4.json",
+  "baseline_logic": "R2-05 accepted delivery is the execution branch at 161448a452988c910476b3f9b10ad1a1c3a68b73; its code bytes are the same as the preceding R2-05 report commit. PR #34 merged main at a6dc43d55d09c09b13cffe5b5dba372c74f77e00, which supplies the accepted test-only Git fact and current design/governance. Neither tree by itself is a complete integrated Design 37 construction tree.",
+  "plan_identity": "PR #50 remains OPEN, head 51e8b2da4965c25b9f87ee67fcd998126af4b775, status DESIGN_PROPOSAL_NOT_AUTHORIZED. Its PLAN.json maps main d0e739be45c95ca84d092e9cdb2dc46462cbaf9e and execution df63d8b7bde1834d61437bf8c93006e721748ee3, before R2-05 was accepted.",
+  "readback": "All 50 PLAN.json shared-file paths were resolved to Git blobs at the accepted execution delivery, both mapping snapshots, current main and the PR #50 head. Nine of 50 changed since the execution mapping snapshot; 20 of 50 differ between accepted delivery and the PR #50 tree. The changed nine are store/session.rs, nativeHostClient.ts, nativeStoreService.ts, src-tauri/lib.rs, public_runtime/product_entry.rs, desktop package.json and package-lock.json, gogoke-desktop.yml and gogoke-package-service.mjs. The seven declared asset classes were rechecked against actual accepted code; their existing contracts/behaviours are distinguished from future Design 37 implementation. All five conditional shared files were read and assigned an explicit L0 decision pending actual module/evidence choices, without declaring them changed or unchanged prematurely.",
+  "governance_drift": "Among PLAN.json's nine declared source documents, its AGENTS.md Git blob 9f10c92267383e4a1d961e0ee404af3aad381fd9 is stale against origin/main blob 4999956691b175fe0ca483feeb83212118fa1124. Main added logic-first finding review and direct-evidence/live-product requirements; they already apply. The other eight source blobs match current main.",
+  "conclusion": "T00 mapping was performed, but PLAN.json and MANIFEST cannot be finalised unchanged. Rebaseline the plan against accepted product code and current main governance/design, then rerun its named structural checks and obtain independent third-round review. No Design 37 production code, main branch or PR #50 files were changed by Controller.",
+  "next": "Publish the T00 artifact on the execution branch, send Claude a durable PR #50 third-round audit request with exact refs and the T00 artifact, and await its receipt in the parallel inbox. PR #50 merge and any Design 37 implementation remain Owner-controlled later steps."
+}

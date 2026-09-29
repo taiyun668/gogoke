@@ -1,0 +1,444 @@
+"""Windows CI behavior test for the embedded uninstall finalizer.
+
+This test deliberately creates an isolated fake install and an HKCU candidate
+registration. It must run only on an ephemeral GitHub Windows runner.
+"""
+
+import base64
+import ctypes
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import uuid
+
+if os.name == "nt":
+    import msvcrt
+    import winreg
+
+
+SCRIPT = Path(__file__).resolve().parents[2] / "apps/desktop/src-tauri/update/gogoke-uninstall-finalizer.ps1"
+RUST_PARENT = Path(__file__).resolve().parents[2] / "apps/desktop/src-tauri/src/gogoke_uninstall.rs"
+REGISTRY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate"
+FORMAL_REGISTRY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke"
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_READ_ATTRIBUTES = 0x80
+OPEN_EXISTING = 3
+OPEN_ALWAYS = 4
+BACKUP_SEMANTICS = 0x02000000
+INVALID_HANDLE = ctypes.c_void_p(-1).value
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
+if kernel32:
+    kernel32.CreateFileW.argtypes = (
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    )
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.GetFileInformationByHandleEx.argtypes = (
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+    )
+    kernel32.GetFileInformationByHandleEx.restype = ctypes.c_int
+    kernel32.SetFileInformationByHandle.argtypes = (
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+    )
+    kernel32.SetFileInformationByHandle.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+
+
+def identity(path: Path) -> dict[str, str]:
+    handle = kernel32.CreateFileW(
+        str(path), FILE_READ_ATTRIBUTES, 7, None, OPEN_EXISTING,
+        BACKUP_SEMANTICS if path.is_dir() else 0, None,
+    )
+    if handle in (None, INVALID_HANDLE):
+        raise OSError(ctypes.get_last_error(), str(path))
+    try:
+        result = (ctypes.c_ubyte * 24)()
+        if not kernel32.GetFileInformationByHandleEx(handle, 18, result, 24):
+            raise OSError(ctypes.get_last_error(), str(path))
+        raw = bytes(result)
+        return {
+            "volumeSerialNumber": str(int.from_bytes(raw[:8], "little")),
+            "fileId": raw[8:].hex(),
+        }
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def require_cloud() -> None:
+    if (os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true"
+            or not os.environ.get("GITHUB_RUN_ID") or not os.environ.get("RUNNER_TEMP")):
+        raise RuntimeError("Windows GitHub Actions only; never run deletion locally")
+
+
+def parent_helper(payload_path: Path, delete_ready: Path | None = None,
+                  delete_go: Path | None = None) -> int:
+    require_cloud()
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    payload["parentPid"] = os.getpid()
+    parent_source = RUST_PARENT.read_text(encoding="utf-8")
+    bootstrap_match = re.search(
+        r'const FINALIZER_BOOTSTRAP: &str = r#"(.*?)"#;', parent_source, re.DOTALL,
+    )
+    if not bootstrap_match:
+        raise AssertionError("Rust finalizer bootstrap is missing")
+    encoded_bootstrap = base64.b64encode(
+        bootstrap_match.group(1).encode("utf-16-le"),
+    ).decode("ascii")
+    if len(encoded_bootstrap) >= 32767:
+        raise AssertionError("finalizer bootstrap exceeds CreateProcess argument limit")
+    finalizer = SCRIPT.read_bytes()
+    child_env = os.environ.copy()
+    if delete_ready is not None and delete_go is not None:
+        # CI-only in-memory barrier immediately after the final Assert-Root
+        # and before DeleteSubKey. The production embedded script is unchanged.
+        deletion = b"    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($subkey, $false)"
+        if finalizer.count(deletion) != 1:
+            raise AssertionError("finalizer deletion point is not unique")
+        pause = b"""    $ciReady = $env:GOGOKE_CI_DELETE_READY
+    $ciGo = $env:GOGOKE_CI_DELETE_GO
+    $ciMarker = [IO.File]::Open($ciReady, [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $ciBytes = [Text.Encoding]::ASCII.GetBytes('before-delete')
+        $ciMarker.Write($ciBytes, 0, $ciBytes.Length)
+    } finally { $ciMarker.Dispose() }
+    $ciDeadline = [DateTime]::UtcNow.AddMinutes(5)
+    while (-not [IO.File]::Exists($ciGo)) {
+        if ([DateTime]::UtcNow -ge $ciDeadline) { Fail 'GOGOKE_CI_DELETE_BARRIER_TIMEOUT' }
+        Start-Sleep -Milliseconds 50
+    }
+"""
+        finalizer = finalizer.replace(deletion, pause + deletion)
+        child_env["GOGOKE_CI_DELETE_READY"] = str(delete_ready)
+        child_env["GOGOKE_CI_DELETE_GO"] = str(delete_go)
+    embedded = base64.b64encode(finalizer)
+    lock = kernel32.CreateFileW(
+        payload["lockPath"], GENERIC_READ | GENERIC_WRITE, 0, None,
+        OPEN_ALWAYS, 0x00200000, None,  # no-follow final component
+    )
+    if lock in (None, INVALID_HANDLE):
+        raise OSError(ctypes.get_last_error(), payload["lockPath"])
+    descriptor = msvcrt.open_osfhandle(lock, os.O_RDWR)
+    with os.fdopen(descriptor, "r+b", buffering=0) as lock_file:
+        child = subprocess.Popen(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+             "-EncodedCommand", encoded_bootstrap],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=lock_file,
+            creationflags=subprocess.CREATE_NO_WINDOW, env=child_env,
+        )
+        child.stdin.write(embedded + b"\n")
+        encoded_payload = base64.b64encode(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        child.stdin.write(encoded_payload + b"\n")
+        child.stdin.close()
+        lines: list[bytes] = []
+        reader = threading.Thread(target=lambda: lines.append(child.stdout.readline()), daemon=True)
+        reader.start()
+        reader.join(30)
+        if reader.is_alive():
+            child.kill()
+            return 3
+        if lines != [f"READY:{payload['nonce']}\r\n".encode()]:
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+            return 4
+        lock_file.seek(0)
+        if lock_file.read(len(payload["nonce"]) + 6) != f"LOCK:{payload['nonce']}\n".encode():
+            child.kill()
+            return 5
+        # The finalizer now owns the inherited lock handle and waits for this
+        # exact process to exit. The supervising test checks its receipt.
+        return 0
+
+
+def prepare_interleave(parent: Path) -> Path:
+    require_cloud()
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY) as key:
+        if winreg.QueryInfoKey(key)[1] != 0:
+            raise AssertionError("Candidate registration was not fresh")
+        root = parent / "install"
+        root.mkdir()
+        exe = root / "gogoke.exe"
+        exe.write_bytes(b"cloud finalizer A fixture; not a product executable\n")
+        instance = f"ci-interleave-{uuid.uuid4()}"
+        winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(root))
+        winreg.SetValueEx(key, "InstallInstanceId", 0, winreg.REG_SZ, instance)
+        winreg.SetValueEx(key, "InstallDomain", 0, winreg.REG_SZ, "CI_CANDIDATE_RESOURCE")
+        winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ,
+                          f'"{exe}" --uninstall')
+    nonce = str(uuid.uuid4())
+    tag = hashlib.sha256(instance.encode()).hexdigest()[:16]
+    payload = {
+        "root": str(root), "rootIdentity": identity(root),
+        "lockPath": str(parent / "gogoke-install-lifecycle.lock"),
+        "registryKey": "gogoke-candidate", "instance": instance,
+        "domain": "CI_CANDIDATE_RESOURCE", "parentPid": 0,
+        "nonce": nonce,
+        "receipt": str(parent / f"gogoke-uninstall-{tag}-{nonce}.json"),
+        "files": [{"path": str(exe),
+                   "sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
+                   "identity": identity(exe)}],
+        "shortcuts": [],
+    }
+    payload_path = parent / "interleave-payload.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    return payload_path
+
+
+class CloudFinalizerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        require_cloud()
+        for registration in (REGISTRY, FORMAL_REGISTRY):
+            try:
+                winreg.OpenKey(winreg.HKEY_CURRENT_USER, registration).Close()
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError(f"{registration} already exists on cloud runner")
+
+    def test_delete_on_close_can_be_cleared_before_recorded_link_commit(self):
+        with tempfile.TemporaryDirectory(prefix="gogoke-link-disposition-ci-") as temporary:
+            for clear in (False, True):
+                path = Path(temporary) / f"shortcut-{int(clear)}.lnk"
+                handle = kernel32.CreateFileW(
+                    str(path), GENERIC_READ | GENERIC_WRITE | 0x00010000,
+                    0, None, 1, 0x04000000, None,
+                )
+                self.assertNotIn(handle, (None, INVALID_HANDLE), ctypes.get_last_error())
+                try:
+                    if clear:
+                        flags = ctypes.c_uint32(8)  # FileDispositionInfoEx ON_CLOSE, without DELETE
+                        self.assertTrue(
+                            kernel32.SetFileInformationByHandle(
+                                handle, 21, ctypes.byref(flags), ctypes.sizeof(flags)
+                            ),
+                            ctypes.get_last_error(),
+                        )
+                finally:
+                    self.assertTrue(kernel32.CloseHandle(handle))
+                self.assertEqual(path.exists(), clear)
+
+    def test_owned_files_only_and_stale_identity(self):
+        with tempfile.TemporaryDirectory(prefix="gogoke-finalizer-ci-") as temporary:
+            base = Path(temporary)
+            root = base / "项目-gogoke-candidate"
+            root.mkdir()
+            exe = root / "gogoke.exe"
+            owned = root / "owned.bin"
+            unknown = root / "user-note.txt"
+            exe.write_bytes(b"fixture shell")
+            owned.write_bytes(b"fixture owned file")
+            unknown.write_bytes(b"leave this byte-for-byte intact")
+            unknown_bytes = unknown.read_bytes()
+            instance = f"ci-fixture-{uuid.uuid4()}"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY) as key:
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(root))
+                winreg.SetValueEx(key, "InstallInstanceId", 0, winreg.REG_SZ, instance)
+                winreg.SetValueEx(key, "InstallDomain", 0, winreg.REG_SZ, "CI_CANDIDATE_RESOURCE")
+                winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ,
+                                  f'"{exe}" --uninstall')
+            try:
+                for negative in (True, False):
+                    nonce = str(uuid.uuid4())
+                    tag = hashlib.sha256(instance.encode()).hexdigest()[:16]
+                    payload = {
+                        "root": str(root), "rootIdentity": identity(root),
+                        "lockPath": str(base / "gogoke-install-lifecycle.lock"),
+                        "registryKey": "gogoke-candidate", "instance": instance,
+                        "domain": "CI_CANDIDATE_RESOURCE", "parentPid": 0,
+                        "nonce": nonce,
+                        "receipt": str(base / f"gogoke-uninstall-{tag}-{nonce}.json"),
+                        "files": [
+                            {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                             "identity": identity(path)}
+                            for path in (exe, owned)
+                        ],
+                        "shortcuts": [],
+                    }
+                    if negative:
+                        payload["files"][1]["identity"]["fileId"] = "f" * 32
+                    payload_path = base / f"payload-{nonce}.json"
+                    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, __file__, "--parent", str(payload_path)],
+                        timeout=45, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0)
+                    receipt = Path(payload["receipt"])
+                    deadline = time.monotonic() + 90
+                    terminal = None
+                    while time.monotonic() < deadline:
+                        try:
+                            observed = json.loads(receipt.read_text(encoding="utf-8"))
+                            if observed.get("state") in ("FAILED", "DELETED"):
+                                terminal = observed
+                                break
+                        except (OSError, json.JSONDecodeError):
+                            pass
+                        time.sleep(0.2)
+                    self.assertIsNotNone(terminal, "finalizer did not finish its bounded receipt")
+                    if negative:
+                        self.assertEqual(terminal["state"], "FAILED")
+                        self.assertEqual(terminal["detail"], "GOGOKE_UNINSTALL_OBJECT_CHANGED")
+                        self.assertTrue(exe.exists())
+                        self.assertTrue(owned.exists())
+                        continue
+                    self.assertEqual(terminal["state"], "DELETED")
+                    self.assertFalse(exe.exists())
+                    self.assertFalse(owned.exists())
+                    self.assertEqual(unknown.read_bytes(), unknown_bytes)
+                    with self.assertRaises(FileNotFoundError):
+                        winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY)
+            finally:
+                try:
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY)
+                except FileNotFoundError:
+                    pass
+
+    def test_formal_shortcut_requires_recorded_bytes_and_file_id(self):
+        desktop = Path(subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command",
+             "[Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)"],
+            text=True,
+        ).strip())
+        self.assertTrue(desktop.is_dir())
+        shortcut = desktop / "gogoke.lnk"
+        self.assertFalse(shortcut.exists(), "cloud runner must not have an existing Gogoke link")
+        with tempfile.TemporaryDirectory(prefix="gogoke-formal-finalizer-ci-") as temporary:
+            base = Path(temporary)
+            for mutation in ("original", "replaced_changed", "same_file_changed", "replaced_same"):
+                root = base / f"formal-{mutation}"
+                root.mkdir()
+                exe = root / "gogoke.exe"
+                exe.write_bytes(b"fixture shell")
+                original = b"installer-owned shortcut bytes"
+                shortcut.write_bytes(original)
+                instance = f"formal-fixture-{uuid.uuid4()}"
+                record = {
+                    "schema": "gogoke.shortcut-ownership.v1",
+                    "instance": instance,
+                    "root": str(root),
+                    "slot": "desktop",
+                    "folder": "",
+                    "sha256": hashlib.sha256(original).hexdigest(),
+                    "identity": identity(shortcut),
+                }
+                original_identity = record["identity"]
+                raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, FORMAL_REGISTRY) as key:
+                    for name, value in (
+                        ("InstallLocation", str(root)),
+                        ("InstallInstanceId", instance),
+                        ("InstallDomain", "OWNER_RELEASE"),
+                        ("UninstallString", f'"{exe}" --uninstall'),
+                        ("GogokeShortcutDesktopV1", raw),
+                    ):
+                        winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+                try:
+                    if mutation.startswith("replaced"):
+                        replacement = base / f"replacement-{mutation}.lnk"
+                        replacement.write_bytes(
+                            original if mutation == "replaced_same" else b"user replacement"
+                        )
+                        replacement_identity = identity(replacement)
+                        self.assertNotEqual(replacement_identity, original_identity)
+                        shortcut.unlink()
+                        os.replace(replacement, shortcut)
+                    elif mutation == "same_file_changed":
+                        shortcut.write_bytes(b"user edited bytes")
+                    observed_identity = identity(shortcut)
+                    observed_hash = hashlib.sha256(shortcut.read_bytes()).hexdigest()
+                    if mutation == "original":
+                        self.assertEqual(observed_identity, original_identity)
+                        self.assertEqual(observed_hash, record["sha256"])
+                    elif mutation == "same_file_changed":
+                        self.assertEqual(observed_identity, original_identity)
+                        self.assertNotEqual(observed_hash, record["sha256"])
+                    elif mutation == "replaced_same":
+                        self.assertNotEqual(observed_identity, original_identity)
+                        self.assertEqual(observed_hash, record["sha256"])
+                    else:
+                        self.assertNotEqual(observed_identity, original_identity)
+                        self.assertNotEqual(observed_hash, record["sha256"])
+                    nonce = str(uuid.uuid4())
+                    tag = hashlib.sha256(instance.encode()).hexdigest()[:16]
+                    payload = {
+                        "root": str(root), "rootIdentity": identity(root),
+                        "lockPath": str(base / "gogoke-install-lifecycle.lock"),
+                        "registryKey": "gogoke", "instance": instance,
+                        "domain": "OWNER_RELEASE", "parentPid": 0,
+                        "nonce": nonce,
+                        "receipt": str(base / f"gogoke-uninstall-{tag}-{nonce}.json"),
+                        "files": [{
+                            "path": str(exe),
+                            "sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
+                            "identity": identity(exe),
+                        }],
+                        "shortcuts": [{
+                            "registryValue": "GogokeShortcutDesktopV1",
+                            "raw": raw,
+                            "record": record,
+                        }],
+                    }
+                    payload_path = base / f"payload-{nonce}.json"
+                    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, __file__, "--parent", str(payload_path)],
+                        timeout=45, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0)
+                    receipt = Path(payload["receipt"])
+                    deadline = time.monotonic() + 90
+                    terminal = None
+                    while time.monotonic() < deadline:
+                        try:
+                            observed = json.loads(receipt.read_text(encoding="utf-8"))
+                            if observed.get("state") in ("FAILED", "DELETED"):
+                                terminal = observed
+                                break
+                        except (OSError, json.JSONDecodeError):
+                            pass
+                        time.sleep(0.2)
+                    self.assertIsNotNone(terminal)
+                    self.assertEqual(terminal["state"], "DELETED", terminal)
+                    self.assertFalse(exe.exists())
+                    if mutation == "original":
+                        self.assertFalse(shortcut.exists())
+                    else:
+                        self.assertTrue(shortcut.exists())
+                        self.assertEqual(identity(shortcut), observed_identity)
+                        self.assertEqual(
+                            hashlib.sha256(shortcut.read_bytes()).hexdigest(), observed_hash
+                        )
+                finally:
+                    try:
+                        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, FORMAL_REGISTRY)
+                    except FileNotFoundError:
+                        pass
+                    if shortcut.exists():
+                        shortcut.unlink()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--parent":
+        sys.exit(parent_helper(Path(sys.argv[2])))
+    if len(sys.argv) == 3 and sys.argv[1] == "--prepare-interleave":
+        print(prepare_interleave(Path(sys.argv[2])))
+        sys.exit(0)
+    if len(sys.argv) == 5 and sys.argv[1] == "--parent-delete-barrier":
+        sys.exit(parent_helper(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])))
+    unittest.main()

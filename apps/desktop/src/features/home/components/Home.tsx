@@ -6,6 +6,7 @@ import type {
 import { HomeActions } from "./HomeActions";
 import { HomeLatestAgentsSection } from "./HomeLatestAgentsSection";
 import { HomeUsageSection } from "./HomeUsageSection";
+import { HomeProductEntry } from "./HomeProductEntry";
 import type {
   LatestAgentRun,
   UsageMetric,
@@ -62,6 +63,7 @@ export function Home({
           {tx("Orchestrate agents across your local projects.")}
         </div>
       </div>
+      <HomeProductEntry />
       <HomeLatestAgentsSection
         latestAgentRuns={latestAgentRuns}
         isLoadingLatestAgents={isLoadingLatestAgents}

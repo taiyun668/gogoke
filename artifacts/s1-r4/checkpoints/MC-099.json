@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.s1-r4.public-micro-checkpoint.v1",
+  "checkpoint": "MC-099",
+  "repository": "taiyun668/gogoke",
+  "branch": "gpt/s1-r4-r2-execution-r1",
+  "head_before_checkpoint": "f35c4dd3c8b6b88ffb8983006adab9dcda029f1a",
+  "recorded_utc": "2026-09-25T19:20:28Z",
+  "reason": "OWNER_AUTHORIZED_LOCAL_FORMAL_MANIFEST_SIGNING_CORRECTION",
+  "previous_checkpoint": "artifacts/s1-r4/checkpoints/MC-098.json",
+  "current_main": "5f7aa30d569d780428b5ea081ad9e25bcc17a0a1",
+  "authorization": "Current main v2 MANIFEST blob 17afbba28795338561530927595fda93fd8a2a11 and authorization receipt blob e30c62097fc363b71f304807620fb1716fe0ad35 remain current. The Owner explicitly authorizes this Controller to sign the formal SHA256SUMS.windows locally with the existing release private key by the governed tools/sign-gogoke-release-manifest.ps1 path. This corrects MC-098 and R2-06 design section 8's older assignment of that signing act to Owner; the design row is to be corrected in the next design revision, not silently treated as already revised.",
+  "formal_signing_boundary": "The existing private key remains at %USERPROFILE%\\.gogoke\\release-key.txt. Invoke the governed local signing script only when the exact frozen formal manifest and asset hashes are ready; do not read or print private key bytes into agent context, copy the key to the repository, build tree, CI or artifacts, or pass it as command text. Local signing and verification are authorized, but public release remains prohibited until R2-06b completes and Owner explicitly decides to publish; never use -Publish without that decision.",
+  "owner_touch_correction": "Formal SHA256SUMS.windows signing is no longer an Owner touchpoint. Owner retains direction/security boundaries, final acceptance and explicit public release decision. R2-06a candidate CI signing remains separate from this formal release-manifest signature.",
+  "package": "R2-06A_IN_PROGRESS_NOT_CANDIDATE; R2-05_AFTER_06A; R2-06B_AFTER_R2-05",
+  "parallel_inbox_observed_head": "f38204ea624e2a2fbaaf9da400eca592086a8ba1",
+  "parallel_inbox_new_entries": 0,
+  "executed_evidence": "MC-098 holds the exact signed-install failure and daemon ownership repair. Source e4ddfa0c80ad34b5ae2883ec6a965c449f77ca3b public source hygiene run 36178906666 SUCCESS; desktop run 36178902298 remains IN_PROGRESS with Browser and notices jobs active at this checkpoint. No formal manifest has been signed by this Controller yet.",
+  "candidate_state": "WIP_NOT_FROZEN_NOT_ACCEPTED",
+  "external_action": "NO_FORMAL_SIGNATURE_YET; NO_PUBLISH; NO_RELEASE; PR27_DRAFT; PR34_OWNER_HELD",
+  "architecture_blocker": "NO",
+  "next_action": "Continue 06a exact-source cloud build, main-only candidate signing, branch installed smoke, candidate freeze/review and authorized Win11/SAC test. When the formal SHA256SUMS.windows is frozen and hash-verified, sign it locally through the existing governed script without exposing the key, then test the exact same asset bytes without publishing. Complete R2-05 after 06a, then 06b update/rollback/crash recovery. Amend R2-06 design section 8's signing row at its next authorized design revision."
+}
