@@ -252,7 +252,7 @@ foreach ($line in $raw) {
             return_value = $returnValue
             trace_line = $sanitizedLine.Substring(0, [Math]::Min(220, $sanitizedLine.Length))
         })
-        if ($orderedRows.Count -ge 200) { $traceRowsTruncated = $true; break }
+        if ($orderedRows.Count -ge 10000) { $traceRowsTruncated = $true; break }
     } elseif ($returnValue) {
         $orderedRows.Add([ordered]@{
             kind = 'trace_return'
@@ -260,7 +260,7 @@ foreach ($line in $raw) {
             return_value = $returnValue
             trace_line = $null
         })
-        if ($orderedRows.Count -ge 200) { $traceRowsTruncated = $true; break }
+        if ($orderedRows.Count -ge 10000) { $traceRowsTruncated = $true; break }
     }
 }
 $endpointMatch = $markers -contains 'LPAC_TRACE_ENDPOINT_MATCH'
