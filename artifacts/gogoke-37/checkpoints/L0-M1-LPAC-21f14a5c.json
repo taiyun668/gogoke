@@ -18,13 +18,14 @@
       "native_process_axes": "PASS",
       "native_library": "442_PASS_1_FAIL_0_SKIP",
       "failed_test": "process::windows::tests::real_app_container_descendant_reaches_native_seat_pipe",
-      "direct_error": "LPAC pipe client returned Windows raw error 2 (ERROR_FILE_NOT_FOUND) opening the seat pipe; parent exited with code 1",
-      "logical_check": "The SID validator had been repaired and the real LPAC child reached the pipe-open call. The failure was therefore not evidence that Job membership admission failed. Microsoft named-pipe documentation requires the LOCAL namespace for AppContainer clients, which the seat pipe lacked."
+      "direct_error": "The parent cmd process exited with code 1; reading the optional helper diagnostic file returned Windows error 2 because that file did not exist. No child pipe-open error was obtained.",
+      "logical_check": "The initial interpretation of error 2 as the pipe client's error was incorrect: it belonged to the test's read_to_string call. The test did not prove the helper started or reached pipe open."
     },
     "repair_run_36567333084": {
       "head": "21f14a5c5e887e43bb9cb67693fd3f4ed2efb7ff",
-      "change": "Seat pipe name uses the AppContainer LOCAL namespace; same real LPAC test retained",
-      "state_at_checkpoint": "IN_PROGRESS"
+      "change": "Seat pipe name uses the AppContainer LOCAL namespace; this was a hypothesis, not a proven repair",
+      "observed_result": "The same test still timed out, and the diagnostic file was still missing. Native binary compilation independently failed on a service-worker error conversion; that compile issue was corrected in 3d021cd0.",
+      "state_at_checkpoint": "FAILED_HYPOTHESIS_UNCONFIRMED"
     }
   },
   "integration": {
@@ -39,5 +40,6 @@
     "ot4_login": "NOT_REQUESTED",
     "m1_acceptance": "NOT_RUN"
   },
-  "next": "Read exact-head repair run; fix any product or instrument failure, then wire native User origin and same-connection seat dispatch before exercising one real Codex instance. Continue work after this checkpoint under PR 53 authorization."
+  "correction": "2026-09-29: Controller withdrew the original LPAC error attribution after checking the expression that produced the reported Err(2). The same test now captures the cmd/helper output in the existing writable home so the next run can distinguish launch from pipe failures. No pipe compatibility conclusion is claimed.",
+  "next": "Read the direct cmd/helper output from the next exact-head cloud run and repair the actual cause; continue native User origin and same-connection seat dispatch before exercising one real Codex instance. Continue work after this checkpoint under PR 53 authorization."
 }

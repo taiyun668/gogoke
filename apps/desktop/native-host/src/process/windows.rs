@@ -2172,10 +2172,10 @@ mod tests {
         use std::io::{Read, Write};
         let Some(path) = std::env::var_os("GOGOKE_TEST_SEAT_PIPE") else { return; };
         let mut pipe = std::fs::OpenOptions::new().read(true).write(true)
-            .open(PathBuf::from(path))
+            .open(PathBuf::from(path.as_os_str()))
             .unwrap_or_else(|error| {
-                let detail = format!("OpenOptions(seat pipe): {error}; raw_os_error={:?}",
-                    error.raw_os_error());
+                let detail = format!("OpenOptions(seat pipe {}): {error}; raw_os_error={:?}",
+                    PathBuf::from(path.as_os_str()).display(), error.raw_os_error());
                 std::fs::write("pipe-client-error.txt", &detail).expect("write direct pipe error");
                 panic!("{detail}");
             });
@@ -2240,12 +2240,13 @@ mod tests {
             ("GOGOKE_TEST_SEAT_PIPE".into(), pipe_path),
         ]);
         launch.arguments = vec!["/D".into(), "/C".into(),
-            "seat-pipe-helper.exe --exact process::windows::tests::seat_pipe_child_helper --nocapture".into()];
+            "seat-pipe-helper.exe --exact process::windows::tests::seat_pipe_child_helper --nocapture > helper-output.txt 2>&1".into()];
         let mut custodian = ProcessCustodian::new().expect("seat custodian");
         let prepared = custodian.prepare(&request(launch)).expect("prepared LPAC child");
         custodian.activate(&prepared).expect("activated LPAC child");
         let accepted = receiver.recv_timeout(Duration::from_secs(15))
-            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; direct client error={:?}; parent_exit={:?}",
+            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; helper output={:?}; client error={:?}; parent_exit={:?}",
+                std::fs::read_to_string(home.join("helper-output.txt")),
                 std::fs::read_to_string(home.join("pipe-client-error.txt")),
                 process_exit_code(custodian.active(&prepared.ticket).unwrap().process.raw())));
         let (accepted, peer) = accepted.expect("LPAC peer identity");
@@ -2275,6 +2276,7 @@ mod tests {
         drop(custodian);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
+        std::fs::remove_file(home.join("helper-output.txt")).unwrap();
         std::fs::remove_file(helper).unwrap();
         std::fs::remove_file(exe).unwrap();
         std::fs::remove_dir(home).unwrap();
