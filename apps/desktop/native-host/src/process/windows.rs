@@ -9,7 +9,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex, TryLockError};
+use std::sync::{mpsc, Arc, Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 use super::session::{AppContainerProfile, SecurityCapabilities};
@@ -246,6 +246,7 @@ pub enum ProcessCustodyError {
     ProtocolPipe(io::Error),
     ProtocolAttribute(io::Error),
     ProtocolEnvironment(io::Error),
+    ProtocolEvidence { cause: Box<ProcessCustodyError>, stderr_tail: String },
     Isolation(String),
     LaunchCleanup { cause: Box<ProcessCustodyError>, detail: String },
 }
@@ -278,6 +279,7 @@ impl fmt::Display for ProcessCustodyError {
             Self::ProtocolPipe(source) => write!(f, "PROCESS_PROTOCOL_PIPE_FAILED: {source}"),
             Self::ProtocolAttribute(source) => write!(f, "PROCESS_PROTOCOL_ATTRIBUTE_FAILED: {source}"),
             Self::ProtocolEnvironment(source) => write!(f, "PROCESS_PROTOCOL_ENVIRONMENT_FAILED: {source}"),
+            Self::ProtocolEvidence { cause, stderr_tail } => write!(f, "{cause}; PROCESS_STDERR_TAIL: {stderr_tail}"),
             Self::Isolation(reason) => write!(f, "PROCESS_ISOLATION_FAILED: {reason}"),
             Self::LaunchCleanup { cause, detail } => write!(f, "{cause}; PROCESS_LAUNCH_CLEANUP_UNCONFIRMED: {detail}"),
         }
@@ -571,12 +573,76 @@ unsafe impl Send for OwnedHandle {}
 struct ProtocolPipes {
     stdin_write: OwnedHandle,
     stdout_read: OwnedHandle,
+    stderr: StderrCapture,
 }
 
 struct ChildProtocolHandles {
     stdin_read: OwnedHandle,
     stdout_write: OwnedHandle,
+    stderr_write: OwnedHandle,
     parent: ProtocolPipes,
+}
+
+/// Drain the exact child's stderr independently of stdout. A bounded retained
+/// tail must not cause a child blocked on a full stderr pipe to stop serving.
+/// The reader owns its handle; closing the retained Job closes all writers.
+struct StderrCapture {
+    tail: Arc<Mutex<(Vec<u8>, Option<String>)>>,
+    reader: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl StderrCapture {
+    fn start(read: OwnedHandle) -> Result<Self, ProcessCustodyError> {
+        let tail = Arc::new(Mutex::new((Vec::new(), None)));
+        let target = Arc::clone(&tail);
+        let reader = thread::Builder::new().name("gogoke-child-stderr".into()).spawn(move || {
+            let mut bytes = [0u8; 4096];
+            loop {
+                let mut count = 0;
+                let ok = unsafe { ReadFile(read.raw(), bytes.as_mut_ptr().cast(), bytes.len() as u32,
+                    &mut count, ptr::null_mut()) };
+                if ok == 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(109) {
+                        match target.lock() {
+                            Ok(mut state) => state.1 = Some(error.to_string()),
+                            Err(poisoned) => poisoned.into_inner().1 = Some(error.to_string()),
+                        }
+                    }
+                    break;
+                }
+                if count == 0 { break; }
+                let mut state = match target.lock() {
+                    Ok(state) => state,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                state.0.extend_from_slice(&bytes[..count as usize]);
+                let excess = state.0.len().saturating_sub(4096);
+                if excess > 0 { state.0.drain(..excess); }
+            }
+        }).map_err(ProcessCustodyError::ProtocolPipe)?;
+        Ok(Self { tail, reader: Mutex::new(Some(reader)) })
+    }
+
+    fn snapshot(&self, all_writers_stopped: bool) -> String {
+        if all_writers_stopped {
+            match self.reader.lock() {
+                Ok(mut reader) => if let Some(reader) = reader.take() {
+                    if let Err(error) = reader.join() {
+                        return format!("stderr reader panicked: {error:?}");
+                    }
+                },
+                Err(error) => return format!("stderr reader state: {error}"),
+            }
+        }
+        match self.tail.lock() {
+            Ok(state) => match &state.1 {
+                Some(error) => format!("{}; stderr read failed: {error}", String::from_utf8_lossy(&state.0)),
+                None => String::from_utf8_lossy(&state.0).into_owned(),
+            },
+            Err(error) => format!("stderr tail state: {error}"),
+        }
+    }
 }
 
 impl ChildProtocolHandles {
@@ -597,12 +663,16 @@ impl ChildProtocolHandles {
         };
         let (stdin_read, stdin_write) = pipe()?;
         let (stdout_read, stdout_write) = pipe()?;
+        let (stderr_read, stderr_write) = pipe()?;
         stdin_write.clear_inherit().map_err(ProcessCustodyError::HandlePolicy)?;
         stdout_read.clear_inherit().map_err(ProcessCustodyError::HandlePolicy)?;
+        stderr_read.clear_inherit().map_err(ProcessCustodyError::HandlePolicy)?;
+        let stderr = StderrCapture::start(stderr_read)?;
         Ok(Self {
             stdin_read,
             stdout_write,
-            parent: ProtocolPipes { stdin_write, stdout_read },
+            stderr_write,
+            parent: ProtocolPipes { stdin_write, stdout_read, stderr },
         })
     }
 }
@@ -997,7 +1067,8 @@ impl ProcessCustodian {
         -> Result<OriginBoundFrame, ProcessCustodyError> {
         let (custody, process) = self.active.get(ticket).ok_or_else(||
             ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?;
-        let bytes = process.read_protocol_frame(deadline).map_err(ProcessCustodyError::ProtocolPipe)?;
+        let bytes = process.read_protocol_frame(deadline).map_err(|error|
+            self.protocol_error_with_stderr(ticket, ProcessCustodyError::ProtocolPipe(error)))?;
         Ok(OriginBoundFrame { custody: custody.clone(), bytes })
     }
 
@@ -1008,8 +1079,18 @@ impl ProcessCustodian {
         -> Result<OriginBoundFrame, ProcessCustodyError> {
         let (custody, process) = self.active.get(ticket).ok_or_else(||
             ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?;
-        let bytes = process.read_persistent_frame(deadline).map_err(ProcessCustodyError::ProtocolPipe)?;
+        let bytes = process.read_persistent_frame(deadline).map_err(|error|
+            self.protocol_error_with_stderr(ticket, ProcessCustodyError::ProtocolPipe(error)))?;
         Ok(OriginBoundFrame { custody: custody.clone(), bytes })
+    }
+
+    /// This is runtime evidence for the exact retained process. Do not persist
+    /// it to a public artifact: provider errors can contain private account data.
+    pub(crate) fn protocol_error_with_stderr(&self, ticket: &ProcessTicket,
+        cause: ProcessCustodyError) -> ProcessCustodyError {
+        let tail = self.active(ticket).map(ManagedProcess::stderr_tail)
+            .unwrap_or_else(|| "no active stderr custody".into());
+        ProcessCustodyError::ProtocolEvidence { cause: Box::new(cause), stderr_tail: tail }
     }
 
     pub fn stop<RequestClose>(
@@ -1154,6 +1235,13 @@ impl PersistentReadState {
 }
 
 impl ManagedProcess {
+    pub(crate) fn stderr_tail(&self) -> String {
+        let Some(protocol) = &self.protocol else { return "stderr was not admitted".into(); };
+        match active_job_processes(self.job.raw()) {
+            Ok(count) => protocol.stderr.snapshot(count == 0),
+            Err(error) => format!("{}; stderr writer custody: {error}", protocol.stderr.snapshot(false)),
+        }
+    }
     pub fn identity(&self) -> &ProcessIdentity {
         &self.identity
     }
@@ -1743,12 +1831,7 @@ fn create_suspended_protocol(
     job: Handle,
 ) -> Result<(OwnedHandle, OwnedHandle, u32, Option<ProtocolPipes>), SuspendedCreateError> {
     let pipes = ChildProtocolHandles::open()?;
-    let stderr = OpenOptions::new().write(true).open("NUL")
-        .map_err(ProcessCustodyError::ProtocolPipe)?;
-    let stderr_handle = stderr.as_raw_handle().cast();
-    if unsafe { SetHandleInformation(stderr_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
-        return Err(ProcessCustodyError::HandlePolicy(io::Error::last_os_error()).into());
-    }
+    let stderr_handle = pipes.stderr_write.raw();
     let mut inherited = [pipes.stdin_read.raw(), pipes.stdout_write.raw(), stderr_handle];
     let mut jobs = [job];
     let profile = launch.app_container_profile.as_ref().map(|name|
@@ -1784,7 +1867,6 @@ fn create_suspended_protocol(
             &mut startup.startup, &mut info)
     };
     let create_error = if created == 0 { Some(io::Error::last_os_error()) } else { None };
-    let cleared = unsafe { SetHandleInformation(stderr_handle, HANDLE_FLAG_INHERIT, 0) };
     if let Some(error) = create_error { return Err(ProcessCustodyError::CreateProcess(error).into()); }
     let process = OwnedHandle::new(info.process).expect("CreateProcessW returned null process handle");
     let initial_thread = OwnedHandle::new(info.thread).expect("CreateProcessW returned null thread handle");
@@ -1795,15 +1877,10 @@ fn create_suspended_protocol(
             }));
         }
     }
-    if cleared == 0 {
-        let error = io::Error::last_os_error();
-        return Err(SuspendedCreateError::After(PostCreateFailure {
-            cause: ProcessCustodyError::HandlePolicy(error), process, initial_thread,
-        }));
-    }
-    let ChildProtocolHandles { stdin_read, stdout_write, parent } = pipes;
+    let ChildProtocolHandles { stdin_read, stdout_write, stderr_write, parent } = pipes;
     drop(stdin_read);
     drop(stdout_write);
+    drop(stderr_write);
     Ok((process, initial_thread, info.process_id, Some(parent)))
 }
 
@@ -2278,6 +2355,27 @@ mod tests {
             host_deadline_ms: 30_000,
         }
         .phases_fit_deadline());
+    }
+
+    #[test]
+    fn failed_protocol_retains_direct_stderr_and_does_not_block_large_stderr() {
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
+        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
+            "[Console]::Error.Write(('x' * 20000)); [Console]::Error.WriteLine('DIRECT_ERROR_1234'); exit 7".into()];
+        let mut custodian = ProcessCustodian::new().unwrap();
+        let prepared = custodian.prepare(&request(launch)).unwrap();
+        custodian.activate(&prepared).unwrap();
+        let error = custodian.read_persistent_child_frame(&prepared.ticket, Duration::from_secs(10))
+            .err().expect("stdout EOF is a protocol failure");
+        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(())).unwrap();
+        assert!(proof.writer_fence_verified, "must stop the exact Job before final stderr read");
+        let error = custodian.protocol_error_with_stderr(&prepared.ticket, error).to_string();
+        assert!(error.contains("DIRECT_ERROR_1234"), "original stderr must reach error: {error}");
+        let tail = custodian.active(&prepared.ticket).unwrap().stderr_tail();
+        assert!(tail.len() <= 4096);
+        assert!(tail.ends_with("DIRECT_ERROR_1234\r\n"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use crate::root::RootIdentity;
 
 type Handle = *mut c_void;
 const TOKEN_QUERY: u32 = 0x0008;
@@ -34,6 +35,9 @@ const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+const FILE_ID_INFO_CLASS: i32 = 18;
+const INHERITED_ACE: u32 = 0x10;
+const INHERIT_ONLY_ACE: u32 = 0x08;
 const SE_GROUP_ENABLED: u32 = 4;
 const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x10;
 
@@ -59,15 +63,18 @@ struct FileInformation {
 }
 
 impl FileInformation {
-    fn same_object(&self, other: &Self) -> bool {
-        self.volume_serial == other.volume_serial &&
-            self.index_high == other.index_high && self.index_low == other.index_low
-    }
     fn physical_directory(&self) -> bool {
         self.attributes & FILE_ATTRIBUTE_DIRECTORY != 0 &&
             self.attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
     }
+    fn physical_file(&self) -> bool {
+        self.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == 0
+            && self.links == 1
+    }
 }
+
+#[repr(C)]
+struct FileIdInfo { volume_serial_number: u64, file_id: [u8; 16] }
 
 #[repr(C)]
 struct TrusteeW {
@@ -130,6 +137,8 @@ extern "system" {
     fn CreateFileW(path: *const u16, access: u32, sharing: u32,
         security: *const c_void, creation: u32, flags: u32, template: Handle) -> Handle;
     fn GetFileInformationByHandle(handle: Handle, information: *mut FileInformation) -> i32;
+    fn GetFileInformationByHandleEx(handle: Handle, class: i32,
+        information: *mut c_void, length: u32) -> i32;
 }
 
 #[repr(C)]
@@ -150,6 +159,7 @@ pub(crate) enum IsolationError {
     DirectoryNotFresh,
     DirectoryNotPhysical,
     Acl(io::Error),
+    AclWitnessMismatch,
     InvalidRegistryCapability,
 }
 
@@ -164,6 +174,7 @@ impl fmt::Display for IsolationError {
             Self::DirectoryNotFresh => write!(f, "AppContainer directory must be empty before ACL grant"),
             Self::DirectoryNotPhysical => write!(f, "AppContainer directory must be a physical directory"),
             Self::Acl(error) => write!(f, "AppContainer ACL: {error}"),
+            Self::AclWitnessMismatch => write!(f, "AppContainer ACL witness does not match exact SID, rights, inheritance or object identity"),
             Self::InvalidRegistryCapability => write!(f, "registryRead did not derive exactly one capability SID"),
         }
     }
@@ -183,7 +194,15 @@ pub(crate) struct AppContainerProfile {
 pub(crate) struct FreshDirectory {
     path: PathBuf,
     handle: Token,
-    identity: FileInformation,
+    identity: RootIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AclWitness {
+    pub(crate) identity: RootIdentity,
+    pub(crate) package_sid: String,
+    pub(crate) rights: u32,
+    pub(crate) inheritance: u32,
 }
 
 impl AppContainerProfile {
@@ -300,8 +319,10 @@ impl AppContainerProfile {
     pub(crate) fn open_fresh_directory(path: &Path) -> Result<FreshDirectory, IsolationError> {
         require_fresh_physical_path(path)?;
         let handle = open_directory(path, READ_CONTROL | WRITE_DAC)?;
-        let identity = file_information(handle.0)?;
-        if !identity.physical_directory() { return Err(IsolationError::DirectoryNotPhysical); }
+        if !file_information(handle.0)?.physical_directory() {
+            return Err(IsolationError::DirectoryNotPhysical);
+        }
+        let identity = file_identity(handle.0)?;
         require_exact_fresh_path(path, &identity)?;
         Ok(FreshDirectory { path: path.to_path_buf(), handle, identity })
     }
@@ -311,34 +332,13 @@ impl AppContainerProfile {
     /// persistent instance ancestor must never use an inheritable package ACE.
     pub(crate) fn grant_held_fresh_directory(&self, directory: &FreshDirectory,
         writable: bool, inherit: bool) -> Result<(), IsolationError> {
-        if !file_information(directory.handle.0)?.same_object(&directory.identity) {
+        if file_identity(directory.handle.0)? != directory.identity {
             return Err(IsolationError::DirectoryNotPhysical);
         }
         require_exact_fresh_path(&directory.path, &directory.identity)?;
-        let mut old_acl = ptr::null_mut();
-        let mut descriptor = ptr::null_mut();
-        let status = unsafe { GetSecurityInfo(directory.handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
-            ptr::null_mut(), ptr::null_mut(), &mut old_acl, ptr::null_mut(), &mut descriptor) };
-        if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
-        let descriptor = LocalAllocation(descriptor);
-        if old_acl.is_null() { return Err(IsolationError::DirectoryNotPhysical); }
-        let mut entry = ExplicitAccessW {
-            permissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
-                (if writable { FILE_GENERIC_WRITE } else { 0 }),
-            access_mode: GRANT_ACCESS,
-            inheritance: if inherit { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE },
-            trustee: TrusteeW { multiple: ptr::null_mut(), multiple_operation: 0,
-                form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN,
-                name: self.sid.cast() },
-        };
-        let mut new_acl = ptr::null_mut();
-        let status = unsafe { SetEntriesInAclW(1, &mut entry, old_acl, &mut new_acl) };
-        if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
-        let new_acl = LocalAllocation(new_acl);
-        let status = unsafe { SetSecurityInfo(directory.handle.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
-            ptr::null_mut(), ptr::null_mut(), new_acl.0, ptr::null_mut()) };
-        if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
-        drop(descriptor);
+        let rights = directory_rights(writable);
+        let inheritance = if inherit { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE };
+        grant_exact_acl(directory.handle.0, self.sid, &directory.identity, rights, inheritance)?;
         require_exact_fresh_path(&directory.path, &directory.identity)?;
         Ok(())
     }
@@ -348,6 +348,89 @@ impl AppContainerProfile {
         -> Result<(), IsolationError> {
         let directory = Self::open_fresh_directory(path)?;
         self.grant_held_fresh_directory(&directory, true, true)
+    }
+
+    /// Grant only the exact host-resolved instance home or host-created
+    /// worktree root. The caller must supply F's previously recorded identity;
+    /// neither this method nor its witness authorizes a path received on IPC.
+    /// Descendants inherit from this root, never from its shared parent.
+    pub(crate) fn grant_bound_tree(&self, path: &Path, expected: &RootIdentity,
+        writable: bool) -> Result<AclWitness, IsolationError> {
+        let root = open_bound_object(path, expected, true)?;
+        let before = collect_tree(path)?;
+        let rights = directory_rights(writable);
+        let result = grant_exact_acl(root.0, self.sid, expected, rights,
+            OBJECT_AND_CONTAINER_INHERIT)?;
+        require_bound_path(path, expected, true)?;
+        let after = collect_tree(path)?;
+        if before != after { return Err(IsolationError::AclWitnessMismatch); }
+        let witness = self.verify_bound_tree_grant(path, expected, writable)?;
+        if witness.identity != result { return Err(IsolationError::AclWitnessMismatch); }
+        Ok(witness)
+    }
+
+    /// Read back the root ACE and the inherited ACE on every existing child.
+    /// This proves the observed tree now; the host must repeat it
+    /// before use if any untrusted mutation can occur between grant and launch.
+    pub(crate) fn verify_bound_tree_grant(&self, path: &Path,
+        expected: &RootIdentity, writable: bool) -> Result<AclWitness, IsolationError> {
+        require_bound_path(path, expected, true)?;
+        let root = open_physical_object(path, true, READ_CONTROL)?;
+        let rights = directory_rights(writable);
+        if package_aces(root.0, self.sid)?.as_slice() != &[(GRANT_ACCESS, rights,
+            OBJECT_AND_CONTAINER_INHERIT)] {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        for (child, identity, directory) in collect_tree(path)? {
+            let object = open_physical_object(&child, directory, READ_CONTROL)?;
+            if file_identity(object.0)? != identity {
+                return Err(IsolationError::AclWitnessMismatch);
+            }
+            let entries = package_aces(object.0, self.sid)?;
+            if entries.len() != 1 || entries[0].0 != GRANT_ACCESS || entries[0].1 != rights ||
+                entries[0].2 & INHERITED_ACE == 0 ||
+                entries[0].2 & INHERIT_ONLY_ACE != 0 {
+                return Err(IsolationError::AclWitnessMismatch);
+            }
+            require_bound_path(&child, &identity, directory)?;
+        }
+        require_bound_path(path, expected, true)?;
+        Ok(AclWitness { identity: expected.clone(), package_sid: self.package_sid_string()?,
+            rights, inheritance: OBJECT_AND_CONTAINER_INHERIT })
+    }
+
+    /// The program path must come from F's fixed native catalog. Its object
+    /// identity is captured before the grant and rechecked by process custody
+    /// at suspended creation; an arbitrary caller-supplied path is insufficient.
+    pub(crate) fn capture_program_identity(path: &Path) -> Result<RootIdentity, IsolationError> {
+        let object = open_physical_object(path, false, READ_CONTROL)?;
+        let identity = file_identity(object.0)?;
+        require_bound_path(path, &identity, false)?;
+        Ok(identity)
+    }
+
+    pub(crate) fn grant_bound_program(&self, path: &Path, expected: &RootIdentity)
+        -> Result<AclWitness, IsolationError> {
+        let object = open_bound_object(path, expected, false)?;
+        let rights = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        let result = grant_exact_acl(object.0, self.sid, expected, rights, NO_INHERITANCE)?;
+        require_bound_path(path, expected, false)?;
+        let witness = self.verify_bound_program_grant(path, expected)?;
+        if witness.identity != result { return Err(IsolationError::AclWitnessMismatch); }
+        Ok(witness)
+    }
+
+    pub(crate) fn verify_bound_program_grant(&self, path: &Path,
+        expected: &RootIdentity) -> Result<AclWitness, IsolationError> {
+        let object = open_physical_object(path, false, READ_CONTROL)?;
+        let rights = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        if &file_identity(object.0)? != expected ||
+            package_aces(object.0, self.sid)?.as_slice() != &[(GRANT_ACCESS, rights, NO_INHERITANCE)] {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        require_bound_path(path, expected, false)?;
+        Ok(AclWitness { identity: expected.clone(), package_sid: self.package_sid_string()?,
+            rights, inheritance: NO_INHERITANCE })
     }
 
     /// Inspect the exact suspended process handle before durable admission.
@@ -448,6 +531,129 @@ fn open_directory(path: &Path, access: u32) -> Result<Token, IsolationError> {
     Ok(Token(handle))
 }
 
+fn directory_rights(writable: bool) -> u32 {
+    FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
+        (if writable { FILE_GENERIC_WRITE } else { 0 })
+}
+
+fn file_identity(handle: Handle) -> Result<RootIdentity, IsolationError> {
+    let mut info = FileIdInfo { volume_serial_number: 0, file_id: [0; 16] };
+    if unsafe { GetFileInformationByHandleEx(handle, FILE_ID_INFO_CLASS,
+        (&mut info as *mut FileIdInfo).cast(), size_of::<FileIdInfo>() as u32) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    Ok(RootIdentity { volume_serial: info.volume_serial_number, file_id: info.file_id })
+}
+
+fn open_physical_object(path: &Path, directory: bool, access: u32)
+    -> Result<Token, IsolationError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 ||
+        metadata.is_dir() != directory || (!directory && !metadata.is_file()) {
+        return Err(IsolationError::DirectoryNotPhysical);
+    }
+    let object = open_directory(path, access)?;
+    let info = file_information(object.0)?;
+    if !(if directory { info.physical_directory() } else { info.physical_file() }) {
+        return Err(IsolationError::DirectoryNotPhysical);
+    }
+    Ok(object)
+}
+
+fn require_bound_path(path: &Path, expected: &RootIdentity, directory: bool)
+    -> Result<(), IsolationError> {
+    let object = open_physical_object(path, directory, READ_CONTROL)?;
+    if &file_identity(object.0)? != expected { return Err(IsolationError::AclWitnessMismatch); }
+    Ok(())
+}
+
+fn open_bound_object(path: &Path, expected: &RootIdentity, directory: bool)
+    -> Result<Token, IsolationError> {
+    let object = open_physical_object(path, directory, READ_CONTROL | WRITE_DAC)?;
+    if &file_identity(object.0)? != expected { return Err(IsolationError::AclWitnessMismatch); }
+    require_bound_path(path, expected, directory)?;
+    Ok(object)
+}
+
+fn collect_tree(root: &Path) -> Result<Vec<(PathBuf, RootIdentity, bool)>, IsolationError> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut objects = Vec::new();
+    while let Some(parent) = pending.pop() {
+        for child in std::fs::read_dir(&parent).map_err(IsolationError::Acl)? {
+            let path = child.map_err(IsolationError::Acl)?.path();
+            let metadata = std::fs::symlink_metadata(&path).map_err(IsolationError::Acl)?;
+            let directory = metadata.is_dir();
+            let object = open_physical_object(&path, directory, READ_CONTROL)?;
+            let identity = file_identity(object.0)?;
+            require_bound_path(&path, &identity, directory)?;
+            if directory { pending.push(path.clone()); }
+            objects.push((path, identity, directory));
+        }
+    }
+    objects.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(objects)
+}
+
+fn package_aces(handle: Handle, sid: *mut c_void)
+    -> Result<Vec<(u32, u32, u32)>, IsolationError> {
+    let mut acl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe { GetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    let _descriptor = LocalAllocation(descriptor);
+    if acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let mut count = 0u32;
+    let mut raw_entries = ptr::null_mut();
+    let status = unsafe { GetExplicitEntriesFromAclW(acl, &mut count, &mut raw_entries) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    let _entries = LocalAllocation(raw_entries.cast());
+    if count > 0 && raw_entries.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let entries = if count == 0 { &[][..] } else {
+        unsafe { std::slice::from_raw_parts(raw_entries, count as usize) }
+    };
+    let mut matched = Vec::new();
+    for entry in entries {
+        if entry.trustee.form == TRUSTEE_IS_SID && !entry.trustee.name.is_null() &&
+            unsafe { EqualSid(entry.trustee.name.cast(), sid) } != 0 {
+            matched.push((entry.access_mode, entry.permissions, entry.inheritance));
+        }
+    }
+    Ok(matched)
+}
+
+fn grant_exact_acl(handle: Handle, sid: *mut c_void, expected: &RootIdentity,
+    rights: u32, inheritance: u32) -> Result<RootIdentity, IsolationError> {
+    if &file_identity(handle)? != expected { return Err(IsolationError::AclWitnessMismatch); }
+    let before = package_aces(handle, sid)?;
+    if before.as_slice() == &[(GRANT_ACCESS, rights, inheritance)] {
+        return Ok(expected.clone());
+    }
+    if !before.is_empty() { return Err(IsolationError::AclWitnessMismatch); }
+    let mut old_acl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe { GetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), &mut old_acl, ptr::null_mut(), &mut descriptor) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    let _descriptor = LocalAllocation(descriptor);
+    if old_acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let mut entry = ExplicitAccessW { permissions: rights, access_mode: GRANT_ACCESS,
+        inheritance, trustee: TrusteeW { multiple: ptr::null_mut(), multiple_operation: 0,
+            form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN, name: sid.cast() } };
+    let mut new_acl = ptr::null_mut();
+    let status = unsafe { SetEntriesInAclW(1, &mut entry, old_acl, &mut new_acl) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    let new_acl = LocalAllocation(new_acl);
+    let status = unsafe { SetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), new_acl.0, ptr::null_mut()) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    if &file_identity(handle)? != expected ||
+        package_aces(handle, sid)?.as_slice() != &[(GRANT_ACCESS, rights, inheritance)] {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    Ok(expected.clone())
+}
+
 fn require_fresh_physical_path(path: &Path) -> Result<(), IsolationError> {
     let metadata = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
     if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -459,14 +665,10 @@ fn require_fresh_physical_path(path: &Path) -> Result<(), IsolationError> {
     Ok(())
 }
 
-fn require_exact_fresh_path(path: &Path, identity: &FileInformation)
+fn require_exact_fresh_path(path: &Path, identity: &RootIdentity)
     -> Result<(), IsolationError> {
     require_fresh_physical_path(path)?;
-    let observed = open_directory(path, READ_CONTROL)?;
-    let info = file_information(observed.0)?;
-    if !info.physical_directory() || !info.same_object(identity) {
-        return Err(IsolationError::DirectoryNotPhysical);
-    }
+    require_bound_path(path, identity, true)?;
     require_fresh_physical_path(path)
 }
 
@@ -609,6 +811,77 @@ mod tests {
             unsafe { EqualSid(entry.trustee.name.cast(), profile.sid) } != 0));
         drop(held);
         std::fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn bound_nonempty_tree_grants_only_its_recorded_instance_identity() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("gogoke-v37-bound-acl-{}-{nonce}", std::process::id()));
+        let home = base.join("instanceA");
+        let sibling = base.join("instanceB");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        std::fs::write(home.join("gogoke-instance.marker"), b"registered").unwrap();
+        std::fs::write(home.join("sessions").join("state"), b"existing").unwrap();
+        let profile = AppContainerProfile::derived_for_test("Gogoke37.BoundInstanceAcl").unwrap();
+        let identity = crate::root::inspect_root(&home).unwrap().identity;
+        let other = crate::root::inspect_root(&sibling).unwrap().identity;
+        assert!(matches!(profile.grant_bound_tree(&home, &other, true),
+            Err(IsolationError::AclWitnessMismatch)));
+        let witness = profile.grant_bound_tree(&home, &identity, true).unwrap();
+        assert_eq!(witness.identity, identity);
+        assert_eq!(witness.package_sid, profile.sid_identity().unwrap());
+        assert_eq!(witness.rights, directory_rights(true));
+        assert_eq!(witness.inheritance, OBJECT_AND_CONTAINER_INHERIT);
+        assert_eq!(profile.verify_bound_tree_grant(&home, &identity, true).unwrap(), witness);
+        assert_eq!(profile.grant_bound_tree(&home, &identity, true).unwrap(), witness);
+        let sibling_handle = open_physical_object(&sibling, true, READ_CONTROL).unwrap();
+        assert!(package_aces(sibling_handle.0, profile.sid).unwrap().is_empty());
+        drop(sibling_handle);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn inherited_package_ace_from_shared_parent_is_not_a_bound_home_grant() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("gogoke-v37-parent-acl-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&base).unwrap();
+        let profile = AppContainerProfile::derived_for_test("Gogoke37.ParentAcl").unwrap();
+        profile.grant_fresh_session_directory(&base).unwrap();
+        let home = base.join("instanceA");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join("gogoke-instance.marker"), b"registered").unwrap();
+        let identity = crate::root::inspect_root(&home).unwrap().identity;
+        assert!(matches!(profile.grant_bound_tree(&home, &identity, true),
+            Err(IsolationError::AclWitnessMismatch)));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn bound_program_grant_reads_back_exact_file_and_does_not_inherit() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("gogoke-v37-program-acl-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&base).unwrap();
+        let program = base.join("catalog.exe");
+        let other = base.join("other.exe");
+        std::fs::write(&program, b"catalog object").unwrap();
+        std::fs::write(&other, b"other object").unwrap();
+        let profile = AppContainerProfile::derived_for_test("Gogoke37.ProgramAcl").unwrap();
+        let identity = AppContainerProfile::capture_program_identity(&program).unwrap();
+        let other_identity = AppContainerProfile::capture_program_identity(&other).unwrap();
+        assert!(matches!(profile.grant_bound_program(&program, &other_identity),
+            Err(IsolationError::AclWitnessMismatch)));
+        let witness = profile.grant_bound_program(&program, &identity).unwrap();
+        assert_eq!(witness.identity, identity);
+        assert_eq!(witness.inheritance, NO_INHERITANCE);
+        assert_eq!(profile.verify_bound_program_grant(&program, &identity).unwrap(), witness);
+        let other_handle = open_physical_object(&other, false, READ_CONTROL).unwrap();
+        assert!(package_aces(other_handle.0, profile.sid).unwrap().is_empty());
+        drop(other_handle);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

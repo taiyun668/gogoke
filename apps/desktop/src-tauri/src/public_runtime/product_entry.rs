@@ -1326,11 +1326,41 @@ fn canonical_v37_id(value: &str) -> bool {
         && bytes[1..].iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
 }
 
+/// The installed product's Owner plane forwards exact request bytes over its
+/// retained process-object-verified User pipe. It never accepts a host path,
+/// endpoint, process identity, capacity proof or service capability from JS.
+#[tauri::command]
+pub(crate) async fn gogoke_design37_user_operation(
+    app: tauri::AppHandle,
+    frame: String,
+) -> Result<String, String> {
+    if frame.is_empty() || frame.len() > 4 * 1024 * 1024 {
+        return Err("GOGOKE_DESIGN37_USER_FRAME_SIZE_INVALID".to_string());
+    }
+    let product_guard = PRODUCT_RUNTIME_GATE.lock().await;
+    let paths = resolve_runtime_paths(&app)?;
+    let (host, _) = retained_design37_host(&paths)?
+        .ok_or_else(|| "GOGOKE_DESIGN37_USER_HOST_NOT_STARTED".to_string())?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        let _product_guard = product_guard;
+        // Cancellation drops only the response receiver. The blocking owner
+        // retains the guard until the native operation has settled.
+        if sender.send(host.request_user(frame.as_bytes())).is_err() {
+            eprintln!("GOGOKE_DESIGN37_USER_RESPONSE_RECEIVER_CLOSED");
+        }
+    });
+    let response = receiver.await
+        .map_err(|error| format!("GOGOKE_DESIGN37_USER_OWNER_FAILED:{error}"))??;
+    String::from_utf8(response)
+        .map_err(|error| format!("GOGOKE_DESIGN37_USER_RESPONSE_UTF8_FAILED:{error}"))
+}
+
 fn validate_design37_register_receipt(
     bytes: &[u8], request: &Design37RegisterCodexRequest,
 ) -> Result<Design37RegisterCodexReceipt, String> {
     let receipt: Design37RegisterCodexReceipt = serde_json::from_slice(bytes)
-        .map_err(|_| "GOGOKE_DESIGN37_USER_RECEIPT_DECODE_FAILED".to_string())?;
+        .map_err(|error| format!("GOGOKE_DESIGN37_USER_RECEIPT_DECODE_FAILED:{error}"))?;
     if receipt.schema != "gogoke.37.operations.v1" || receipt.family != "K-INSTANCE"
         || receipt.operation != "register" || receipt.request_id != request.request_id
         || receipt.target_id != request.instance_id
