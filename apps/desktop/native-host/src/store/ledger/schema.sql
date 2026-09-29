@@ -31,6 +31,25 @@ CREATE TABLE IF NOT EXISTS v37_ledger_index (
     )
 ) STRICT;
 
+-- A source cursor is contiguous within one adapter session epoch.  The
+-- session is part of the key because a restarted adapter may reuse cursor 1
+-- under a new epoch.  Tombstoned streams are retained after side-chat
+-- deletion so an intentional deletion cannot be mistaken for a recovered
+-- contiguous stream or accept a later append.
+CREATE TABLE IF NOT EXISTS v37_ledger_source_stream (
+    session_id TEXT NOT NULL,
+    source_epoch TEXT NOT NULL,
+    last_cursor INTEGER NOT NULL CHECK (last_cursor >= 1),
+    state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'TOMBSTONED')),
+    PRIMARY KEY (session_id, source_epoch)
+) STRICT;
+INSERT OR IGNORE INTO v37_ledger_source_stream
+    (session_id, source_epoch, last_cursor, state)
+SELECT session_id, source_epoch, MAX(CAST(source_cursor AS INTEGER)), 'ACTIVE'
+FROM v37_ledger_index
+WHERE source_kind = 'v37'
+GROUP BY session_id, source_epoch;
+
 -- After the initial backfill, every old write receives a cursor inside its
 -- original transaction. This table is a reference index, not a second event log.
 INSERT OR IGNORE INTO v37_ledger_index (source_event_id, source_kind)

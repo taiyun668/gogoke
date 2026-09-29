@@ -274,6 +274,24 @@ pub(crate) fn delete_side_events(
 ) -> Result<(), AtomicError> {
     required(domain_id, "domainId")?;
     required(side_id, "sideId")?;
+    // Preserve the source stream's terminal cursor before removing its
+    // projected rows.  A deleted side stream is a durable tombstone: it may
+    // not be resumed with a cursor that would hide the deletion.
+    let mark = Statement::prepare(
+        connection.as_ptr(),
+        "UPDATE v37_ledger_source_stream
+         SET state = 'TOMBSTONED'
+         WHERE EXISTS (
+             SELECT 1 FROM v37_ledger_index AS i
+             WHERE i.source_kind = 'v37' AND i.domain_id = ?
+               AND i.tier = 'SIDE' AND i.side_id = ?
+               AND i.session_id = v37_ledger_source_stream.session_id
+               AND i.source_epoch = v37_ledger_source_stream.source_epoch
+         )",
+    )?;
+    mark.bind_text(1, domain_id)?;
+    mark.bind_text(2, side_id)?;
+    mark.step_done()?;
     let statement = Statement::prepare(
         connection.as_ptr(),
         "DELETE FROM v37_ledger_index WHERE source_kind = 'v37'
@@ -433,6 +451,36 @@ pub(crate) fn record(
             Err(AtomicError::OperationConflict)
         };
     }
+    let source_cursor = cursor(&input.source_cursor)?;
+    if source_cursor > i64::MAX as u64 {
+        return Err(AtomicError::InvalidRecord("sourceCursor"));
+    }
+    let stream = Statement::prepare(
+        connection.as_ptr(),
+        "SELECT last_cursor, state FROM v37_ledger_source_stream
+         WHERE session_id = ? AND source_epoch = ?",
+    )?;
+    stream.bind_text(1, &input.session_id)?;
+    stream.bind_text(2, &input.source_epoch)?;
+    let stream_exists = stream.step_row()?;
+    if stream_exists {
+        let last = cursor(&stream.column_text(0)?)?;
+        let state = stream.column_text(1)?;
+        if state != "ACTIVE" || source_cursor != last.saturating_add(1) {
+            return Err(AtomicError::DurabilityContractFailed(format!(
+                "A.1 source stream violation: session={} epoch={} expected={} received={} state={state}",
+                input.session_id,
+                input.source_epoch,
+                last.saturating_add(1),
+                source_cursor,
+            )));
+        }
+    } else if source_cursor != 1 {
+        return Err(AtomicError::DurabilityContractFailed(format!(
+            "A.1 source stream gap: session={} epoch={} expected=1 received={source_cursor}",
+            input.session_id, input.source_epoch
+        )));
+    }
     let statement = Statement::prepare(
         connection.as_ptr(),
         "INSERT INTO v37_ledger_index
@@ -453,6 +501,28 @@ pub(crate) fn record(
     statement.bind_text(9, &input.occurred_at)?;
     statement.bind_text(10, &input.update_json)?;
     statement.step_done()?;
+    if stream_exists {
+        let update = Statement::prepare(
+            connection.as_ptr(),
+            "UPDATE v37_ledger_source_stream SET last_cursor = ?
+             WHERE session_id = ? AND source_epoch = ? AND state = 'ACTIVE'",
+        )?;
+        update.bind_i64(1, source_cursor as i64)?;
+        update.bind_text(2, &input.session_id)?;
+        update.bind_text(3, &input.source_epoch)?;
+        update.step_done()?;
+    } else {
+        let insert = Statement::prepare(
+            connection.as_ptr(),
+            "INSERT INTO v37_ledger_source_stream
+             (session_id, source_epoch, last_cursor, state)
+             VALUES (?, ?, ?, 'ACTIVE')",
+        )?;
+        insert.bind_text(1, &input.session_id)?;
+        insert.bind_text(2, &input.source_epoch)?;
+        insert.bind_i64(3, source_cursor as i64)?;
+        insert.step_done()?;
+    }
     existing_event(connection, &input.event_id)?
         .ok_or_else(|| AtomicError::DurabilityContractFailed("appended event missing".into()))
 }
@@ -788,6 +858,29 @@ pub(crate) fn recover(
             "A.1 legacy binding divergence: {invalid_binding}"
         )));
     }
+    let invalid_stream = scalar(
+        connection,
+        "SELECT COUNT(*) FROM v37_ledger_source_stream AS s
+         WHERE s.last_cursor < 1 OR
+           (s.state = 'ACTIVE' AND (
+             (SELECT COUNT(*) FROM v37_ledger_index AS i
+              WHERE i.source_kind = 'v37' AND i.session_id = s.session_id
+                AND i.source_epoch = s.source_epoch) <> s.last_cursor OR
+             (SELECT COALESCE(MIN(CAST(i.source_cursor AS INTEGER)), 0)
+              FROM v37_ledger_index AS i
+              WHERE i.source_kind = 'v37' AND i.session_id = s.session_id
+                AND i.source_epoch = s.source_epoch) <> 1 OR
+             EXISTS (SELECT 1 FROM v37_ledger_index AS i
+              WHERE i.source_kind = 'v37' AND i.session_id = s.session_id
+                AND i.source_epoch = s.source_epoch
+              GROUP BY i.source_cursor HAVING COUNT(*) <> 1)
+           ))",
+    )?;
+    if invalid_stream != "0" {
+        return Err(AtomicError::DurabilityContractFailed(format!(
+            "A.1 source stream divergence: {invalid_stream}"
+        )));
+    }
     let epoch = scalar(
         connection,
         "SELECT epoch FROM v37_ledger_meta WHERE singleton = 1",
@@ -842,11 +935,16 @@ mod tests {
         }
     }
 
-    fn event(id: &str, session: &SessionRegistration, tier: Tier) -> EventInput {
+    fn event_at(
+        id: &str,
+        session: &SessionRegistration,
+        tier: Tier,
+        source_cursor: &str,
+    ) -> EventInput {
         EventInput {
             event_id: id.into(),
             source_epoch: "source-epoch".into(),
-            source_cursor: "1".into(),
+            source_cursor: source_cursor.into(),
             domain_id: session.domain_id.clone(),
             seat_id: session.seat_id.clone(),
             session_id: session.session_id.clone(),
@@ -855,6 +953,10 @@ mod tests {
             occurred_at: "2026-09-29T00:00:00Z".into(),
             update_json: r#"{"sessionUpdate":"agent_message_chunk"}"#.into(),
         }
+    }
+
+    fn event(id: &str, session: &SessionRegistration, tier: Tier) -> EventInput {
+        event_at(id, session, tier, "1")
     }
 
     #[test]
@@ -938,9 +1040,21 @@ mod tests {
         )
         .expect("other");
         record(&mut connection, &event("side-private", &side, Tier::Side)).expect("side");
-        record(&mut connection, &event("shared", &lead, Tier::Project)).expect("shared");
-        record(&mut connection, &event("global", &lead, Tier::Global)).expect("global");
-        record(&mut connection, &event("side-latest", &side, Tier::Side)).expect("latest side");
+        record(
+            &mut connection,
+            &event_at("shared", &lead, Tier::Project, "2"),
+        )
+        .expect("shared");
+        record(
+            &mut connection,
+            &event_at("global", &lead, Tier::Global, "3"),
+        )
+        .expect("global");
+        record(
+            &mut connection,
+            &event_at("side-latest", &side, Tier::Side, "2"),
+        )
+        .expect("latest side");
         let lead_reader = Reader {
             domain_id: lead.domain_id.clone(),
             seat_id: lead.seat_id.clone(),
@@ -1094,6 +1208,60 @@ mod tests {
             )
         )
         .is_err());
+        connection.close_checked().expect("close");
+    }
+
+    #[test]
+    fn source_stream_rejects_gap_duplicate_cursor_and_accepts_epoch_rollover() {
+        let _guard = route_b_test_guard();
+        let path = scratch_root();
+        let root = RootLock::acquire(&path).expect("root");
+        let db = path.join("ledger.db");
+        let mut connection = create_new(&root, &db).expect("open");
+        exec(
+            &mut connection,
+            "CREATE TABLE orchestration_events
+             (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
+              occurred_at TEXT, event_type TEXT, payload_json TEXT)",
+        )
+        .expect("legacy table");
+        initialize_schema(&mut connection).expect("schema");
+        let registration = session(
+            "project-a",
+            "seat-a",
+            "session-a",
+            SessionPurpose::Work,
+            None,
+        );
+        register_session(&mut connection, &registration).expect("register");
+        record(
+            &mut connection,
+            &event_at("event-1", &registration, Tier::Seat, "1"),
+        )
+        .expect("first");
+        let gap = event_at("event-3", &registration, Tier::Seat, "3");
+        assert!(matches!(
+            record(&mut connection, &gap),
+            Err(AtomicError::DurabilityContractFailed(message))
+                if message.contains("source stream gap")
+        ));
+        let duplicate_cursor = event_at("event-2", &registration, Tier::Seat, "1");
+        assert!(matches!(
+            record(&mut connection, &duplicate_cursor),
+            Err(AtomicError::DurabilityContractFailed(message))
+                if message.contains("source stream violation")
+        ));
+        record(
+            &mut connection,
+            &event_at("event-2", &registration, Tier::Seat, "2"),
+        )
+        .expect("contiguous");
+        let rollover = EventInput {
+            source_epoch: "source-epoch-2".into(),
+            ..event_at("event-epoch-2", &registration, Tier::Seat, "1")
+        };
+        record(&mut connection, &rollover).expect("epoch rollover");
+        assert_eq!(recover(&connection).expect("recover").cursor, 3);
         connection.close_checked().expect("close");
     }
 }
