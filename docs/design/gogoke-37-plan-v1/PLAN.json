@@ -1020,7 +1020,7 @@
      "state-card",
      "takeover-answers"
     ],
-    "seams": "Layer check on every call: the lead touches lead-layer seats only, inside user-set bounds, never its own binding. Instance change on a busy seat is refused. E.1 settles registry and binding at M1; the rest at M2."
+    "seams": "Layer check on every call: the lead touches lead-layer seats only, inside user-set bounds, never its own binding. Instance change on a busy seat is refused. E.1 settles registry, binding and the persisted project parallel cap at M1; the rest at M2."
    },
    {
     "id": "K-POLICY",
@@ -1061,7 +1061,7 @@
      "concurrency-input",
      "home-lifecycle"
     ],
-    "seams": "Instance home persistent, per-session and per-call directories temporary, vendor memory off, credentials never read. F.1 settles registry, home and login state at M1; versions, re-pin and concurrency at M2."
+    "seams": "Instance home persistent, per-session and per-call directories temporary, vendor memory off, credentials never read. F.1 settles registry, home, login state and the persisted concurrency cap at M1; versions and re-pin at M2."
    },
    {
     "id": "K-WORKTREE",
@@ -1344,14 +1344,15 @@
      "id": "E.1",
      "milestone": "M1",
      "deliverables": [
-      "seat registry, user and lead layers, instance binding"
+      "seat registry, user and lead layers, instance binding",
+      "project parallel cap as a validated, persisted user-layer field in the native store, read by H's admission; no default is invented, a missing value refuses admission"
      ]
     },
     {
      "id": "E.2",
      "milestone": "M2",
      "deliverables": [
-      "orchestration bounds, parallel cap from machine resources as an input to H's admission",
+      "orchestration bounds; the parallel cap suggested from machine resources, applied only through the M1 persisted field",
       "templates copied then tuned and rendered to vendor instruction files",
       "takeover questions, state card",
       "health signals driving compact and renew-session through K-SESSION",
@@ -1383,7 +1384,8 @@
      "id": "F.1",
      "milestone": "M1",
      "deliverables": [
-      "instance registry and home lifecycle with vendor memory off, login state"
+      "instance registry and home lifecycle with vendor memory off, login state",
+      "instance concurrency cap as a validated, persisted user-layer field in the native store, read by H's admission; no default is invented, a missing value refuses admission"
      ]
     },
     {
@@ -1391,7 +1393,6 @@
      "milestone": "M2",
      "deliverables": [
       "versions, new-version notice, re-pin of program identity and re-probe of capabilities after the Owner's manual install or upgrade",
-      "concurrency as an input to H's admission",
       "worktrees under one standard, single and mixed trees, graph, merge with permission, cleanup only after the stop fact and with no active reservation"
      ]
     }
@@ -1883,7 +1884,7 @@
    {
     "id": "OT3",
     "when": "before M1",
-    "what": "Set the user-layer configuration for the test project: lead seat instance, model, effort, permission tier and the lead's orchestration bounds; name the test repository and its allowed write range",
+    "what": "Set the user-layer configuration for the test project: lead seat instance, model, effort, permission tier, the lead's orchestration bounds, the project parallel cap and each test instance's concurrency cap; name the test repository and its allowed write range",
     "why_only_owner": "The user layer belongs to the Owner by design; whether an existing authorization already covers the test repository is to be verified in T00 and, if so, reused.",
     "batch": "Can be answered together with OT2."
    },
