@@ -977,7 +977,20 @@ pub(crate) fn resolve_raw_source_no_event(
     if existing.state == RawSourceState::Resolved {
         return Err(AtomicError::OperationConflict);
     }
-    h_source_binding(connection, operation_id, Some(&existing), None, true)?;
+    let binding = h_source_binding(connection, operation_id, Some(&existing), None, true)?;
+    let event = Statement::prepare(
+        connection.as_ptr(),
+        "SELECT COUNT(*) FROM v37_ledger_index
+         WHERE source_kind = 'v37' AND domain_id = ? AND session_id = ?
+           AND source_epoch = ? AND source_cursor = ?",
+    )?;
+    event.bind_text(1, &binding.domain_id)?;
+    event.bind_text(2, &binding.session_id)?;
+    event.bind_text(3, &existing.key.source_epoch)?;
+    event.bind_text(4, &existing.key.source_cursor)?;
+    if !event.step_row()? || event.column_text(0)? != "0" || event.step_row()? {
+        return Err(AtomicError::OperationConflict);
+    }
     let statement = Statement::prepare(
         connection.as_ptr(),
         "UPDATE v37_ledger_raw_source
