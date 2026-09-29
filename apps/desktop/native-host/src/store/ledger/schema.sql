@@ -83,6 +83,40 @@ BEGIN
     WHERE v37_ledger_source_stream.state = 'ACTIVE';
 END;
 
+-- Provider stdout is retained only as an internal recovery journal.  It has
+-- no ledger cursor of its own and is never joined by the user-facing query
+-- or receipt paths.  The source cursor is the adapter's cursor, while the
+-- operation/ticket/session/generation columns bind one exact frame to H's
+-- durable process custody.
+CREATE TABLE IF NOT EXISTS v37_ledger_raw_source (
+    operation_id TEXT NOT NULL,
+    process_ticket TEXT NOT NULL,
+    custodian_nonce TEXT NOT NULL,
+    domain_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    source_epoch TEXT NOT NULL,
+    source_cursor TEXT NOT NULL CHECK (
+        length(source_cursor) BETWEEN 1 AND 20
+        AND source_cursor NOT GLOB '*[^0-9]*'
+        AND source_cursor <> '0'
+        AND substr(source_cursor, 1, 1) <> '0'
+    ),
+    raw_bytes BLOB NOT NULL CHECK (
+        length(raw_bytes) BETWEEN 1 AND 1048576
+        AND substr(raw_bytes, -1, 1) = X'0A'
+    ),
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'RESOLVED')),
+    resolved_event_id TEXT,
+    PRIMARY KEY (operation_id, source_epoch, source_cursor),
+    UNIQUE (process_ticket, source_epoch, source_cursor),
+    CHECK (
+        (state = 'PENDING' AND resolved_event_id IS NULL)
+        OR
+        (state = 'RESOLVED' AND resolved_event_id IS NOT NULL)
+    )
+) STRICT;
+
 -- After the initial backfill, every old write receives a cursor inside its
 -- original transaction. This table is a reference index, not a second event log.
 INSERT OR IGNORE INTO v37_ledger_index (source_event_id, source_kind)
