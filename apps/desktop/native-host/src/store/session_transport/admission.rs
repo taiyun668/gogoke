@@ -696,7 +696,7 @@ pub(crate) fn verify_home_stop_in_transaction(
         return Err(AdmissionError::Invalid("kind"));
     }
     let row = Statement::prepare(connection.as_ptr(),
-        "SELECT a.stop_fact_id FROM gogoke_v37_h_claim AS a JOIN gogoke_coordination_process_custody AS c ON c.operation_id=a.process_operation_id WHERE a.instance_id=?1 AND a.domain_id=?2 AND a.session_id=?3 AND a.generation=?4 AND a.state IN ('STOPPED','RELEASED') AND c.state='STOPPED' AND c.stop_proof_hash=a.stop_fact_id AND a.stop_fact_id IS NOT NULL")?;
+        "SELECT a.stop_fact_id FROM gogoke_v37_h_claim AS a JOIN gogoke_coordination_process_custody AS c ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id AND c.generation=a.generation WHERE a.instance_id=?1 AND a.domain_id=?2 AND a.session_id=?3 AND a.generation=?4 AND a.state IN ('STOPPED','RELEASED') AND c.state='STOPPED' AND c.stop_proof_hash=a.stop_fact_id AND a.stop_fact_id IS NOT NULL")?;
     for (index, value) in [instance_id, domain_id, owner_id, generation]
         .iter()
         .enumerate()
@@ -784,6 +784,19 @@ mod tests {
     use crate::store::same_open::{create_new, open_existing, route_b_test_guard};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn one_capacity(
+        _: &mut VerifiedDatabaseConnection<'_>,
+    ) -> Result<TrustedLimits, AdmissionError> {
+        Ok(TrustedLimits {
+            project_parallel: 1,
+            instance_concurrency: 1,
+        })
+    }
+
+    fn authorized(_: &mut VerifiedDatabaseConnection<'_>) -> Result<(), AdmissionError> {
+        Ok(())
+    }
+
     #[test]
     fn one_boundary_survives_reopen_unknown_replay_and_home_fence() {
         let _guard = route_b_test_guard();
@@ -843,18 +856,12 @@ mod tests {
             generation: "1",
             expected_revision: 0,
         };
-        let limits = |_| {
-            Ok(TrustedLimits {
-                project_parallel: 1,
-                instance_concurrency: 1,
-            })
-        };
         assert_eq!(
-            reserve_admission(&mut db, &first, limits).unwrap(),
+            reserve_admission(&mut db, &first, one_capacity).unwrap(),
             AdmissionResult::Applied(1)
         );
         assert_eq!(
-            reserve_admission(&mut db, &first, limits).unwrap(),
+            reserve_admission(&mut db, &first, one_capacity).unwrap(),
             AdmissionResult::Replayed(1)
         );
         let changed = AdmissionRequest {
@@ -862,11 +869,11 @@ mod tests {
             ..first
         };
         assert_eq!(
-            reserve_admission(&mut db, &changed, limits).unwrap(),
+            reserve_admission(&mut db, &changed, one_capacity).unwrap(),
             AdmissionResult::Conflict
         );
         assert!(matches!(
-            reserve_admission(&mut db, &second, limits),
+            reserve_admission(&mut db, &second, one_capacity),
             Err(AdmissionError::Denied)
         ));
         let commit = AdmissionRequest {
@@ -876,7 +883,7 @@ mod tests {
             ..first
         };
         assert_eq!(
-            commit_admission(&mut db, &commit, |_| Ok(())).unwrap(),
+            commit_admission(&mut db, &commit, authorized).unwrap(),
             AdmissionResult::Applied(2)
         );
         db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('processA','projectA','1','PREPARED',NULL)").unwrap();
@@ -903,7 +910,7 @@ mod tests {
             Some(AdmissionResult::Unknown)
         );
         assert!(matches!(
-            reserve_admission(&mut db, &second, limits),
+            reserve_admission(&mut db, &second, one_capacity),
             Err(AdmissionError::Denied)
         ));
         db.execute("UPDATE gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='proofA' WHERE operation_id='processA'").unwrap();
@@ -926,7 +933,7 @@ mod tests {
             ..first
         };
         assert_eq!(
-            release_admission(&mut db, &release, |_| Ok(())).unwrap(),
+            release_admission(&mut db, &release, authorized).unwrap(),
             AdmissionResult::Applied(5)
         );
         db.execute("UPDATE gogoke_v37_instance_homes SET state='CLOSED' WHERE home_id='homeA'")
@@ -948,7 +955,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            reserve_admission(&mut db, &second, limits).unwrap(),
+            reserve_admission(&mut db, &second, one_capacity).unwrap(),
             AdmissionResult::Applied(1)
         );
         in_transaction(&mut db, |connection| {
