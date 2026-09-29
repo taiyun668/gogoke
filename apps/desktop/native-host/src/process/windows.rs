@@ -382,6 +382,18 @@ pub struct PreparedCustody {
     pub identity: ProcessIdentity,
 }
 
+/// Bytes read from the exact process pipe owned under this native custody.
+/// No service or model request can attach a different caller to these bytes.
+pub(crate) struct OriginBoundFrame {
+    custody: PreparedCustody,
+    bytes: Vec<u8>,
+}
+
+impl OriginBoundFrame {
+    pub(crate) fn custody(&self) -> &PreparedCustody { &self.custody }
+    pub(crate) fn bytes(&self) -> &[u8] { &self.bytes }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StopBudgets {
     pub grace_ms: u32,
@@ -934,6 +946,16 @@ impl ProcessCustodian {
 
     pub fn active(&self, ticket: &ProcessTicket) -> Option<&ManagedProcess> {
         self.active.get(ticket).map(|(_, process)| process)
+    }
+
+    /// Seat-origin ingress must use this read, never a Node-forwarded byte
+    /// frame paired with a caller-selected ticket.
+    pub(crate) fn read_child_frame(&self, ticket: &ProcessTicket, deadline: Duration)
+        -> Result<OriginBoundFrame, ProcessCustodyError> {
+        let (custody, process) = self.active.get(ticket).ok_or_else(||
+            ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?;
+        let bytes = process.read_protocol_frame(deadline).map_err(ProcessCustodyError::ProtocolPipe)?;
+        Ok(OriginBoundFrame { custody: custody.clone(), bytes })
     }
 
     pub fn stop<RequestClose>(
@@ -2064,6 +2086,27 @@ mod tests {
             std::env::var("SystemRoot").expect("SystemRoot"))]);
         assert!(matches!(prepare_and_activate(&launch, |_| Ok(())),
             Err(ProcessCustodyError::Isolation(_))));
+    }
+
+    #[test]
+    fn two_native_child_pipes_keep_distinct_origin_bindings() {
+        let mut custodian = ProcessCustodian::new().expect("custodian");
+        let mut tickets = Vec::new();
+        for label in ["first-origin", "second-origin"] {
+            let mut launch = ProcessLaunch::new(system_cmd());
+            launch.protocol_stdio = true;
+            launch.arguments = vec!["/D".into(), "/C".into(), format!("echo {label}")];
+            let prepared = custodian.prepare(&request(launch)).expect("prepared child");
+            custodian.activate(&prepared).expect("activated exact child");
+            tickets.push((prepared, label));
+        }
+        for (prepared, label) in &tickets {
+            let frame = custodian.read_child_frame(&prepared.ticket, Duration::from_secs(5))
+                .expect("frame from exact child pipe");
+            assert_eq!(frame.custody(), prepared);
+            assert_eq!(String::from_utf8_lossy(frame.bytes()).trim(), *label);
+        }
+        assert_ne!(tickets[0].0.ticket, tickets[1].0.ticket);
     }
 
     #[test]
