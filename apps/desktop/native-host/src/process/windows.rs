@@ -2146,6 +2146,62 @@ mod tests {
     }
 
     #[test]
+    fn real_app_container_descendant_reaches_native_seat_pipe() {
+        use crate::ipc::PrivatePipeListener;
+        use std::os::windows::ffi::OsStrExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        #[link(name = "userenv")]
+        extern "system" { fn DeleteAppContainerProfile(name: *const u16) -> i32; }
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let home = std::env::temp_dir().join(format!("gogoke-v37-seat-pipe-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&home).unwrap();
+        let name = format!("Gogoke37.seatpipe{}.{nonce}", std::process::id());
+        let profile = AppContainerProfile::ensure(&name, false).expect("test package profile");
+        profile.grant_fresh_session_directory(&home).expect("fresh package directory");
+        let package_sid = profile.package_sid_string().expect("package SID");
+        drop(profile);
+        let exe = home.join("cmd.exe");
+        std::fs::copy(system_cmd(), &exe).expect("isolated command fixture");
+        let endpoint = format!("lpac-{}-{nonce}", std::process::id());
+        let listener = PrivatePipeListener::bind_app_container(&endpoint, &package_sid)
+            .expect("seat listener");
+        let pipe_path = listener.path().to_owned();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            sender.send(listener.accept_app_container()
+                .map(|connection| connection.peer_package_sid().map(str::to_owned)))
+                .expect("seat result receiver");
+        });
+        let mut launch = ProcessLaunch::new(&exe);
+        launch.current_directory = Some(home.clone());
+        launch.protocol_stdio = true;
+        launch.app_container_profile = Some(name.clone());
+        launch.environment = Some(vec![
+            ("SystemRoot".into(), std::env::var("SystemRoot").unwrap()),
+            ("USERPROFILE".into(), home.to_string_lossy().into_owned()),
+            ("LOCALAPPDATA".into(), home.to_string_lossy().into_owned()),
+        ]);
+        launch.arguments = vec!["/V:ON".into(), "/D".into(), "/C".into(),
+            format!("echo G > {pipe_path} & echo !errorlevel! > pipe-result.txt")];
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("real LPAC child");
+        assert!(managed.wait(Duration::from_secs(10)).expect("LPAC exit"));
+        let child_result = std::fs::read_to_string(home.join("pipe-result.txt"))
+            .expect("LPAC pipe result");
+        let accepted = receiver.recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; child result={}", child_result.trim()));
+        server.join().expect("seat listener thread");
+        let accepted = accepted.expect("LPAC peer identity");
+        assert_eq!(child_result.trim(), "0", "LPAC pipe open failed: {}", child_result.trim());
+        assert_eq!(accepted.as_deref(), Some(package_sid.as_str()));
+        drop(managed);
+        let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
+        assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
+        std::fs::remove_file(home.join("pipe-result.txt")).unwrap();
+        std::fs::remove_file(exe).unwrap();
+        std::fs::remove_dir(home).unwrap();
+    }
+
+    #[test]
     fn two_native_child_pipes_keep_distinct_origin_bindings() {
         let mut custodian = ProcessCustodian::new().expect("custodian");
         let mut tickets = Vec::new();
