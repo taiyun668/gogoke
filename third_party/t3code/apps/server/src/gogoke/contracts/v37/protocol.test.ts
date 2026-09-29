@@ -118,6 +118,12 @@ describe("design 37 closed operation protocol", () => {
         capacity: () => "3",
         isTakeoverLead: (seatId: string) => seatId === "leadA",
         takeoverContext: () => takeoverContext,
+        createTemporaryHome: () => caseId === "instance-home-unknown" ? "UNKNOWN" as const :
+          { directoryRef: "opaqueTempA", nativeReceiptId: "createdA" },
+        closeTemporaryHome: () => caseId === "instance-home-no-stop" ? null : "stoppedA",
+        cleanupTemporaryHome: () => "cleanedA",
+        activeInstanceAdmissions: () => caseId === "instance-home-busy" ? 1 : 0,
+        verifyTemporaryHomeIdentity: () => true,
       };
       return { port: new V37M1FakePort(store, options),
         reconstruct: () => new V37M1FakePort(store, options), revoke: () => { grant = false; },
@@ -132,6 +138,9 @@ describe("design 37 closed operation protocol", () => {
       let activeTurn: string | null = caseId === "inbox-steer-ended" ? null : "turnA";
       let ledgerScopeReads = 0;
       const calls: string[] = [];
+      const resumeCalls: string[] = [];
+      let bindingReads = 0;
+      let resumeReconciliations = 0;
       const options = {
         caller: () => caller,
         granted: (_principal: V37TrustedCaller, r: V37Request) => grant &&
@@ -143,7 +152,27 @@ describe("design 37 closed operation protocol", () => {
         },
         verifyPinnedBinary: (digest: string) => digest === "verifiedDigest",
         verifyStopProof: (proof: string) => proof === "verifiedProof",
-        sessionCapabilities: () => ({ compact: caseId !== "session-unsupported", "renew-session": true }),
+        sessionCapabilities: () => ({ compact: caseId !== "session-unsupported",
+          "renew-session": true,
+          resume: caseId.startsWith("session-resume") && caseId !== "session-resume-unsupported" }),
+        sessionBinding: () => {
+          bindingReads += 1;
+          return { driverId: "driverA",
+            instanceId: caseId === "session-resume-binding-mismatch" && bindingReads > 1 ?
+              "instanceB" : "instanceA", pinnedBinaryDigest: "verifiedDigest" };
+        },
+        resumeCustody: () => caseId === "session-resume-custody-unknown" ?
+          "unknown" as const : "confirmed" as const,
+        resumeGeneration: (sessionId: string, oldGeneration: string) => {
+          resumeCalls.push(`${sessionId}:${oldGeneration}`);
+          return caseId === "session-resume-vendor-unknown" ? "unknown" as const :
+            { newGeneration: "2", receiptId: "resumeReceipt" };
+        },
+        reconcileResume: () => {
+          resumeReconciliations += 1;
+          return caseId === "session-resume-vendor-unknown" && resumeReconciliations > 1 ?
+            { newGeneration: "2", receiptId: "reconciledReceipt" } : "unknown" as const;
+        },
         readOutput: () => ({ cursor: "1", events: [{ eventId: "outputA", kind: "message" }] }),
         sendInput: (_sessionId: string, operation: "send" | "append-without-turn") =>
           ({ receiptId: "inputReceipt", createdTurn: operation === "send" }),
@@ -174,7 +203,8 @@ describe("design 37 closed operation protocol", () => {
         },
       };
       return { port: new V37CoreFakePort(store, options),
-        reconstruct: () => new V37CoreFakePort(store, options), deliveryCalls: calls };
+        reconstruct: () => new V37CoreFakePort(store, options), deliveryCalls: calls,
+        resumeCalls };
     });
   });
   it("exercises the common envelope for non-UI fake operations", async () => {

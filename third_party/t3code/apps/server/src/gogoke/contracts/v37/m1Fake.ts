@@ -19,6 +19,10 @@ interface Instance {
   revision: bigint; homeRef: string; programDigest: string; version: string;
   installed: boolean; loggedIn: boolean;
 }
+interface TemporaryHome {
+  revision: bigint; instanceId: string; kind: "SESSION" | "CALL"; ownerId: string;
+  generation: string; directoryRef: string; state: "ACTIVE" | "CLOSED" | "CLEANED" | "UNKNOWN";
+}
 interface Prior { readonly request: string; readonly receipt: V37Receipt; readonly takeoverContextKey?: string; }
 
 export interface V37TakeoverContext {
@@ -33,8 +37,10 @@ export class V37M1FakeStore {
   readonly cards = new Map<string, Card>();
   readonly seats = new Map<string, Seat>();
   readonly instances = new Map<string, Instance>();
+  readonly temporaryHomes = new Map<string, TemporaryHome>();
   readonly replies = new Map<string, Prior>();
   readonly homeRefs = new Set<string>();
+  readonly temporaryDirectoryRefs = new Set<string>();
 }
 
 export interface V37M1FakeOptions {
@@ -47,6 +53,16 @@ export interface V37M1FakeOptions {
   readonly capacity?: (instanceId: string) => string;
   readonly takeoverContext?: (seatId: string) => V37TakeoverContext | null;
   readonly isTakeoverLead?: (seatId: string) => boolean;
+  readonly createTemporaryHome?: (lifecycleId: string, instanceId: string,
+    kind: "SESSION" | "CALL", ownerId: string, generation: string) =>
+    { directoryRef: string; nativeReceiptId: string } | "UNKNOWN" | null;
+  readonly closeTemporaryHome?: (lifecycleId: string, directoryRef: string) =>
+    string | "UNKNOWN" | null;
+  readonly cleanupTemporaryHome?: (lifecycleId: string, directoryRef: string) =>
+    string | "UNKNOWN" | null;
+  readonly activeInstanceAdmissions?: (instanceId: string) => number;
+  readonly verifyTemporaryHomeIdentity?: (lifecycleId: string, directoryRef: string,
+    instanceId: string) => boolean;
 }
 
 const nonempty = (payload: JsonObject, key: string): string => {
@@ -123,7 +139,9 @@ export class V37M1FakePort implements V37Port {
     const card = request.family === "K-QCARD" ? this.store.cards.get(key) : undefined;
     const seat = request.family === "K-SEAT" ? this.store.seats.get(key) : undefined;
     const instance = request.family === "K-INSTANCE" ? this.store.instances.get(key) : undefined;
-    const current = card?.revision ?? seat?.revision ?? instance?.revision ?? 0n;
+    const temporaryHome = request.family === "K-INSTANCE" &&
+      request.operation === "home-lifecycle" ? this.store.temporaryHomes.get(key) : undefined;
+    const current = card?.revision ?? seat?.revision ?? temporaryHome?.revision ?? instance?.revision ?? 0n;
     const reply = (status: V37Receipt["status"], next = current,
       result: JsonObject = {}): V37Receipt => ({ schema: V37_SCHEMA, family: request.family,
       operation: request.operation, requestId: request.requestId, targetId: request.targetId,
@@ -149,7 +167,8 @@ export class V37M1FakePort implements V37Port {
       if (takeoverOperation && prior.takeoverContextKey !== observedKey) {
         return encodeV37Receipt(reply("STALE"));
       }
-      return encodeV37Receipt({ ...prior.receipt, status: "REPLAYED" });
+      return encodeV37Receipt({ ...prior.receipt,
+        status: prior.receipt.status === "UNKNOWN" ? "UNKNOWN" : "REPLAYED" });
     }
     const committed = (receipt: V37Receipt): Uint8Array => {
       this.store.replies.set(replayKey, { request: raw, receipt,
@@ -301,6 +320,81 @@ export class V37M1FakePort implements V37Port {
       return committed(reply("APPLIED", seat.revision, { state: seat.lifecycle }));
     }
 
+    if (request.operation === "home-lifecycle") {
+      const action = nonempty(request.payload, "action");
+      if (action === "CREATE") {
+        if (Object.keys(request.payload).some((name) =>
+          !["action", "instanceId", "kind", "ownerId", "generation"].includes(name))) {
+          throw new Error("V37_M1_INVALID: temporary home payload");
+        }
+        if (temporaryHome) return encodeV37Receipt(reply("CONFLICT"));
+        const instanceId = nonempty(request.payload, "instanceId");
+        const kind = nonempty(request.payload, "kind");
+        if (kind !== "SESSION" && kind !== "CALL") {
+          throw new Error("V37_M1_INVALID: temporary home kind");
+        }
+        const ownerId = nonempty(request.payload, "ownerId");
+        const generation = nonempty(request.payload, "generation");
+        if (!this.store.instances.has(`${request.domainId}:${instanceId}`)) {
+          return encodeV37Receipt(reply("DENIED"));
+        }
+        const created = this.options.createTemporaryHome?.(request.targetId, instanceId,
+          kind, ownerId, generation);
+        if (!created) return encodeV37Receipt(reply("UNSUPPORTED"));
+        if (created === "UNKNOWN") {
+          this.store.temporaryHomes.set(key, { revision: 0n, instanceId, kind, ownerId,
+            generation, directoryRef: "", state: "UNKNOWN" });
+          return committed(reply("UNKNOWN"));
+        }
+        if (!/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(created.directoryRef) ||
+            !created.nativeReceiptId ||
+            this.store.temporaryDirectoryRefs.has(created.directoryRef)) {
+          return encodeV37Receipt(reply("FAILED"));
+        }
+        this.store.temporaryDirectoryRefs.add(created.directoryRef);
+        this.store.temporaryHomes.set(key, { revision: 1n, instanceId, kind, ownerId,
+          generation, directoryRef: created.directoryRef, state: "ACTIVE" });
+        return committed(reply("APPLIED", 1n, { state: "ACTIVE",
+          directoryRef: created.directoryRef, nativeReceiptId: created.nativeReceiptId }));
+      }
+      if (action !== "CLOSE" && action !== "CLEANUP") {
+        throw new Error("V37_M1_INVALID: temporary home action");
+      }
+      if (Object.keys(request.payload).some((name) => name !== "action")) {
+        throw new Error("V37_M1_INVALID: temporary home payload");
+      }
+      if (!temporaryHome || temporaryHome.state === "UNKNOWN" ||
+          temporaryHome.state === "CLEANED") return encodeV37Receipt(reply("CONFLICT"));
+      if (action === "CLOSE") {
+        if (temporaryHome.state !== "ACTIVE") return encodeV37Receipt(reply("CONFLICT"));
+        const proof = this.options.closeTemporaryHome?.(request.targetId, temporaryHome.directoryRef);
+        if (!proof) return encodeV37Receipt(reply("DENIED"));
+        if (proof === "UNKNOWN") {
+          temporaryHome.state = "UNKNOWN";
+          return committed(reply("UNKNOWN"));
+        }
+        temporaryHome.state = "CLOSED";
+        temporaryHome.revision += 1n;
+        return committed(reply("APPLIED", temporaryHome.revision, { state: "CLOSED",
+          directoryRef: temporaryHome.directoryRef, nativeReceiptId: proof }));
+      }
+      if (temporaryHome.state !== "CLOSED" ||
+          this.options.activeInstanceAdmissions?.(temporaryHome.instanceId) !== 0 ||
+          this.options.verifyTemporaryHomeIdentity?.(request.targetId,
+            temporaryHome.directoryRef, temporaryHome.instanceId) !== true) {
+        return encodeV37Receipt(reply("DENIED"));
+      }
+      const proof = this.options.cleanupTemporaryHome?.(request.targetId, temporaryHome.directoryRef);
+      if (!proof) return encodeV37Receipt(reply("DENIED"));
+      if (proof === "UNKNOWN") {
+        temporaryHome.state = "UNKNOWN";
+        return committed(reply("UNKNOWN"));
+      }
+      temporaryHome.state = "CLEANED";
+      temporaryHome.revision += 1n;
+      return committed(reply("APPLIED", temporaryHome.revision, { state: "CLEANED",
+        directoryRef: temporaryHome.directoryRef, nativeReceiptId: proof }));
+    }
     if (request.operation === "register") {
       if (instance) return encodeV37Receipt(reply("CONFLICT"));
       const homeRef = nonempty(request.payload, "homeRef");

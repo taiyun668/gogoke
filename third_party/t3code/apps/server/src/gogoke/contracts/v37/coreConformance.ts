@@ -3,7 +3,9 @@ import { canonicalJson } from "../strictJson.ts";
 import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37Receipt, type V37Request } from "./protocol.ts";
 
 export type V37CoreCase = "session" | "session-more" | "session-release" |
-  "session-unsupported" | "session-unknown" | "ledger" | "ledger-subscription" |
+  "session-unsupported" | "session-unknown" | "session-resume" | "session-resume-unsupported" |
+  "session-resume-custody-unknown" | "session-resume-binding-mismatch" |
+  "session-resume-vendor-unknown" | "ledger" | "ledger-subscription" |
   "ledger-subscription-revoked" | "inbox-race" | "inbox-revoke" | "inbox-unknown" | "inbox-steer" |
   "inbox-steer-fallback" |
   "inbox-steer-ended" | "inbox-steer-race" | "inbox-steer-abort-unknown" | "inbox-failed";
@@ -12,6 +14,7 @@ export interface V37CoreHarness {
   /** Reopen the implementation against the same durable store. */
   reconstruct(): V37Port;
   readonly deliveryCalls?: readonly string[];
+  readonly resumeCalls?: readonly string[];
 }
 export type V37CoreHarnessFactory = (caseId: V37CoreCase) => V37CoreHarness;
 
@@ -52,6 +55,10 @@ export async function runV37CoreContractCases(factory: V37CoreHarnessFactory): P
       { generation: "1", nativeStopProofId: "verifiedProof" }));
     assert.equal(stopped.status, "APPLIED");
     assert.equal(stopped.result.state, "STOPPED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-release", "releaseA", "sessionA", "5",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "resume", "resumeReleased", "sessionA", "6",
+      { generation: "1" }))).status, "CONFLICT");
   }
   {
     const h = factory("session-more");
@@ -118,7 +125,81 @@ export async function runV37CoreContractCases(factory: V37CoreHarnessFactory): P
     assert.equal(unsupported.status, "UNSUPPORTED");
     assert.equal(unsupported.revision, "3");
     assert.equal((await call(h.port, request("K-SESSION", "resume", "unsupportedResume", "sessionU", "3",
-      { generation: "1" }))).status, "UNSUPPORTED");
+      { generation: "1" }))).status, "CONFLICT");
+  }
+  for (const caseId of ["session-resume", "session-resume-unsupported",
+    "session-resume-custody-unknown", "session-resume-binding-mismatch",
+    "session-resume-vendor-unknown"] as const) {
+    const h = factory(caseId);
+    const sessionId = `session${caseId}`;
+    for (const [operation, revision, payload] of [
+      ["admission-reserve", "0", { generation: "1" }],
+      ["admission-commit", "1", { generation: "1" }],
+      ["open", "2", { generation: "1", pinnedBinaryDigest: "verifiedDigest" }],
+    ] as const) {
+      assert.equal((await call(h.port, request("K-SESSION", operation,
+        `${caseId}${operation}`, sessionId, revision, payload))).status, "APPLIED");
+    }
+    assert.equal((await call(h.port, request("K-SESSION", "resume", `${caseId}Running`, sessionId, "3",
+      { generation: "1" }))).status, "CONFLICT");
+    assert.equal((await call(h.port, request("K-SESSION", "stop", `${caseId}Stop`, sessionId, "3",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "resume", `${caseId}Stopping`, sessionId, "4",
+      { generation: "1" }))).status, "CONFLICT");
+    assert.equal((await call(h.reconstruct(), request("K-SESSION", "exit-and-stop-receipt",
+      `${caseId}StopFact`, sessionId, "4",
+      { generation: "1", nativeStopProofId: "verifiedProof" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "resume", `${caseId}WrongGeneration`, sessionId, "5",
+      { generation: "2" }))).status, "CONFLICT");
+    assert.equal((await call(h.port, request("K-SESSION", "reconnect", `${caseId}Reconnect`, sessionId, "5",
+      { generation: "1" }))).status, "CONFLICT");
+    await assert.rejects(() => call(h.port, request("K-SESSION", "resume", `${caseId}WireRef`, sessionId, "5",
+      { generation: "1", continuationRef: "untrusted" })), /resume payload/);
+    const resume = request("K-SESSION", "resume", `${caseId}Resume`, sessionId, "5", { generation: "1" });
+    const first = await call(h.port, resume);
+    if (caseId === "session-resume-unsupported") {
+      assert.equal(first.status, "UNSUPPORTED");
+      assert.equal(first.revision, "5");
+      assert.deepEqual(h.resumeCalls, []);
+    } else if (caseId === "session-resume-binding-mismatch") {
+      assert.equal(first.status, "CONFLICT");
+      assert.equal(first.revision, "5");
+      assert.deepEqual(h.resumeCalls, []);
+    } else if (caseId === "session-resume-custody-unknown") {
+      assert.equal(first.status, "UNKNOWN");
+      assert.equal(first.result.state, "RESUME_UNKNOWN");
+      assert.equal((await call(h.port, request("K-SESSION", "resume", `${caseId}Second`, sessionId, "6",
+        { generation: "1" }))).status, "CONFLICT");
+      assert.equal((await call(h.port, { ...resume, expectedRevision: "6" })).status, "CONFLICT");
+      assert.equal((await call(h.reconstruct(), resume)).status, "UNKNOWN");
+      assert.deepEqual(h.resumeCalls, []);
+    } else if (caseId === "session-resume-vendor-unknown") {
+      assert.equal(first.status, "UNKNOWN");
+      assert.equal(first.result.state, "RESUME_UNKNOWN");
+      assert.equal((await call(h.port, request("K-SESSION", "resume", `${caseId}Second`, sessionId, "6",
+        { generation: "1" }))).status, "CONFLICT");
+      assert.equal((await call(h.port, { ...resume, expectedRevision: "6" })).status, "CONFLICT");
+      assert.equal((await call(h.reconstruct(), resume)).status, "UNKNOWN");
+      const resolved = await call(h.reconstruct(), resume);
+      assert.equal(resolved.status, "REPLAYED");
+      assert.equal(resolved.previousRevision, "6");
+      assert.equal(resolved.revision, "7");
+      assert.equal(canonicalJson(resolved.result), canonicalJson({ state: "RUNNING", oldGeneration: "1",
+        newGeneration: "2", receiptId: "reconciledReceipt" }));
+      assert.deepEqual(h.resumeCalls, [`${sessionId}:1`]);
+    } else {
+      assert.equal(first.status, "APPLIED");
+      assert.equal(canonicalJson(first.result), canonicalJson({ state: "RUNNING", oldGeneration: "1",
+        newGeneration: "2", receiptId: "resumeReceipt" }));
+      assert.equal((await call(h.reconstruct(), resume)).status, "REPLAYED");
+      const reordered = new TextEncoder().encode(JSON.stringify(resume));
+      assert.equal(decodeV37Receipt(await h.port.execute(reordered)).status, "CONFLICT");
+      assert.equal((await call(h.port, request("K-SESSION", "send", `${caseId}OldGeneration`, sessionId, "6",
+        { generation: "1", body: "stale" }))).status, "CONFLICT");
+      assert.equal((await call(h.port, request("K-SESSION", "send", `${caseId}NewGeneration`, sessionId, "6",
+        { generation: "2", body: "continued" }))).status, "APPLIED");
+      assert.deepEqual(h.resumeCalls, [`${sessionId}:1`]);
+    }
   }
   {
     const h = factory("session-unknown");

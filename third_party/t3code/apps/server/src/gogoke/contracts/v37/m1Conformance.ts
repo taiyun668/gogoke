@@ -4,7 +4,8 @@ import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37R
 
 export type V37M1Case = "card-fallback" | "card-native" | "seat-user" | "seat-busy" |
   "seat-lead" | "seat-revoked" | "seat-takeover" | "seat-takeover-unwired" |
-  "instance" | "instance-unverified";
+  "instance" | "instance-unverified" | "instance-home" | "instance-home-no-stop" |
+  "instance-home-busy" | "instance-home-unknown";
 export interface V37M1Harness {
   readonly port: V37Port; reconstruct(): V37Port; revoke(): void;
   setTakeoverContext(context: V37TakeoverContext | null): void;
@@ -216,5 +217,48 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
     assert.equal((await call(h.port, req("K-INSTANCE", "concurrency-input", "capacityRead", "instanceA", "2"))).result.capacity,
       "3");
     assert.equal(JSON.stringify(version.result).includes("credential"), false);
+  }
+  for (const caseId of ["instance-home", "instance-home-no-stop", "instance-home-busy",
+    "instance-home-unknown"] as const) {
+    const h = factory(caseId);
+    assert.equal((await call(h.port, req("K-INSTANCE", "register", `${caseId}Register`, "instanceA", "0",
+      { homeRef: "homeA", programDigest: "verifiedDigest", version: "1" }))).status, "APPLIED");
+    const create = req("K-INSTANCE", "home-lifecycle", `${caseId}Create`, "tempA", "0",
+      { action: "CREATE", instanceId: "instanceA", kind: "SESSION", ownerId: "sessionA",
+        generation: "1" });
+    assert.equal((await call(h.port, { ...create, requestId: `${caseId}WrongInstance`,
+      payload: { ...create.payload, instanceId: "instanceB" } })).status, "DENIED");
+    assert.equal((await call(h.port, { ...create, requestId: `${caseId}OtherDomain`,
+      domainId: "projectB" })).status, "DENIED");
+    await assert.rejects(() => call(h.port, { ...create, requestId: `${caseId}ForgedPath`,
+      payload: { ...create.payload, path: "untrusted-path" } }), /temporary home payload/);
+    const created = await call(h.port, create);
+    assert.equal(created.status, caseId === "instance-home-unknown" ? "UNKNOWN" : "APPLIED");
+    assert.equal((await call(h.reconstruct(), create)).status,
+      caseId === "instance-home-unknown" ? "UNKNOWN" : "REPLAYED");
+    assert.equal((await call(h.port, { ...create, requestId: `${caseId}SecondCreate` })).status,
+      caseId === "instance-home-unknown" ? "CONFLICT" : "STALE");
+    if (caseId === "instance-home-unknown") {
+      assert.equal((await call(h.port, req("K-INSTANCE", "home-lifecycle", "blindCleanup", "tempA", "0",
+        { action: "CLEANUP" }))).status, "CONFLICT");
+      continue;
+    }
+    assert.equal(JSON.stringify(created.result).includes("homeA"), false);
+    assert.equal(JSON.stringify(created.result).includes("credential"), false);
+    const close = req("K-INSTANCE", "home-lifecycle", `${caseId}Close`, "tempA", "1",
+      { action: "CLOSE" });
+    const closed = await call(h.port, close);
+    assert.equal(closed.status, caseId === "instance-home-no-stop" ? "DENIED" : "APPLIED");
+    if (caseId === "instance-home-no-stop") continue;
+    assert.equal((await call(h.port, req("K-INSTANCE", "home-lifecycle", `${caseId}EarlyCleanup`,
+      "tempA", "1", { action: "CLEANUP" }))).status, "STALE");
+    const cleaned = await call(h.port, req("K-INSTANCE", "home-lifecycle", `${caseId}Cleanup`,
+      "tempA", "2", { action: "CLEANUP" }));
+    assert.equal(cleaned.status, caseId === "instance-home-busy" ? "DENIED" : "APPLIED");
+    if (caseId === "instance-home") {
+      assert.equal((await call(h.reconstruct(), req("K-INSTANCE", "home-lifecycle", "afterCleanup",
+        "tempA", "3", { action: "CLEANUP" }))).status, "CONFLICT");
+      assert.equal((await call(h.reconstruct(), close)).status, "REPLAYED");
+    }
   }
 }

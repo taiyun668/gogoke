@@ -1,8 +1,12 @@
 import { rawV37RequestKey } from "./rawRequest.ts";
 import { decodeV37Request, encodeV37Receipt, V37_SCHEMA, V37_U64_MAX, type V37Port, type V37Receipt, type V37Request, type V37TrustedCaller } from "./protocol.ts";
 
-type SessionState = "RESERVED" | "COMMITTED" | "RUNNING" | "STOPPING" | "STOPPED" | "RELEASED" | "GENERATION_UNKNOWN";
-interface Session { state: SessionState; revision: bigint; generation: string; }
+type SessionState = "RESERVED" | "COMMITTED" | "RUNNING" | "STOPPING" | "STOPPED" | "RELEASED" |
+  "GENERATION_UNKNOWN" | "RESUME_UNKNOWN";
+interface SessionBinding { readonly driverId: string; readonly instanceId: string;
+  readonly pinnedBinaryDigest: string; }
+interface Session { state: SessionState; revision: bigint; generation: string;
+  binding?: SessionBinding; pendingResumeRequestId?: string; }
 type InboxState = "PENDING" | "PREPARED" | "UNKNOWN" | "DELIVERED" | "CANCELLED" | "FAILED";
 interface Inbox { state: InboxState; revision: bigint; generation: string; body: string;
   seatId: string; turnId: string; requeuedAs?: string; }
@@ -44,6 +48,13 @@ export interface V37CoreFakeOptions {
     oldGeneration: string) => { readonly newGeneration: string; readonly receiptId: string } | "unsupported" | "unknown";
   readonly reconnectGeneration?: (sessionId: string, claimedGeneration: string) =>
     { readonly generation: string; readonly receiptId: string } | null;
+  /** Trusted H observations. The native continuation reference never enters the request wire. */
+  readonly sessionBinding?: (sessionId: string) => SessionBinding | null;
+  readonly resumeCustody?: (sessionId: string, oldGeneration: string) => "confirmed" | "unknown";
+  readonly resumeGeneration?: (sessionId: string, oldGeneration: string) =>
+    { readonly newGeneration: string; readonly receiptId: string } | "unsupported" | "unknown";
+  readonly reconcileResume?: (sessionId: string, requestId: string) =>
+    { readonly newGeneration: string; readonly receiptId: string } | "stopped" | "unknown";
   readonly currentTurn?: (seatId: string) => string | null;
   readonly steerMode?: (seatId: string) => "NATIVE" | "INTERRUPT_RESUME" | null;
   readonly canRequeueTarget?: (seatId: string, turnId: string,
@@ -63,6 +74,11 @@ function numeric(value: string): bigint {
   const number = BigInt(value);
   if (number > V37_U64_MAX) throw new Error("V37_CORE_INVALID: uint64 overflow");
   return number;
+}
+
+function validNewGeneration(value: string, oldGeneration: string): boolean {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/u.test(value) &&
+    BigInt(value) <= V37_U64_MAX && value !== oldGeneration;
 }
 
 export class V37CoreFakePort implements V37Port {
@@ -104,9 +120,42 @@ export class V37CoreFakePort implements V37Port {
     const replayKey = `${request.family}:${request.domainId}:${request.requestId}`;
     const raw = rawV37RequestKey(bytes);
     const prior = this.store.replies.get(replayKey);
-    if (prior !== undefined) return encodeV37Receipt(prior.request === raw
-      ? { ...prior.receipt, status: prior.receipt.status === "UNKNOWN" ? "UNKNOWN" : "REPLAYED" }
-      : reply("CONFLICT", current, current));
+    if (prior !== undefined) {
+      if (prior.request !== raw) return encodeV37Receipt(reply("CONFLICT", current, current));
+      if (request.family === "K-SESSION" && request.operation === "resume" &&
+          prior.receipt.status === "UNKNOWN") {
+        const session = this.store.sessions.get(storageKey);
+        if (session?.state === "RESUME_UNKNOWN" && session.pendingResumeRequestId === request.requestId) {
+          let outcome: ReturnType<NonNullable<V37CoreFakeOptions["reconcileResume"]>> = "unknown";
+          try {
+            outcome = this.options.reconcileResume?.(request.targetId, request.requestId) ?? "unknown";
+          } catch {
+            // A failed observation cannot authorize another native start.
+          }
+          if (outcome === "stopped") {
+            session.state = "STOPPED";
+            delete session.pendingResumeRequestId;
+            const previous = session.revision;
+            session.revision += 1n;
+            prior.receipt = reply("FAILED", previous, session.revision,
+              { state: "STOPPED", reason: "RESUME_NOT_APPLIED" });
+          } else if (typeof outcome === "object" && outcome !== null &&
+              validNewGeneration(outcome.newGeneration, session.generation) && outcome.receiptId) {
+            const oldGeneration = session.generation;
+            session.generation = outcome.newGeneration;
+            session.state = "RUNNING";
+            delete session.pendingResumeRequestId;
+            const previous = session.revision;
+            session.revision += 1n;
+            prior.receipt = reply("APPLIED", previous, session.revision,
+              { state: "RUNNING", oldGeneration, newGeneration: outcome.newGeneration,
+                receiptId: outcome.receiptId });
+          }
+        }
+      }
+      return encodeV37Receipt({ ...prior.receipt,
+        status: prior.receipt.status === "UNKNOWN" ? "UNKNOWN" : "REPLAYED" });
+    }
     const committed = (receipt: V37Receipt): Uint8Array => {
       this.store.replies.set(replayKey, { request: raw, receipt });
       return encodeV37Receipt(receipt);
@@ -180,6 +229,60 @@ export class V37CoreFakePort implements V37Port {
           { oldGeneration: generation, newGeneration: change.newGeneration,
             receiptId: change.receiptId, state: "RUNNING" }));
       }
+      if (request.operation === "resume") {
+        // A continuation reference, instance, driver, or claimed capability on the wire is not H evidence.
+        if (Object.keys(request.payload).some((key) => key !== "generation")) {
+          throw new Error("V37_CORE_INVALID: resume payload");
+        }
+        if (!session || session.state !== "STOPPED" || session.generation !== generation) {
+          return encodeV37Receipt(reply("CONFLICT", current, current));
+        }
+        if (this.options.sessionCapabilities?.(request.targetId)?.resume !== true ||
+            !this.options.resumeGeneration) {
+          return encodeV37Receipt(reply("UNSUPPORTED", current, current));
+        }
+        const unknown = (): Uint8Array => {
+          session.state = "RESUME_UNKNOWN";
+          session.pendingResumeRequestId = request.requestId;
+          session.revision += 1n;
+          return committed(reply("UNKNOWN", current, session.revision,
+            { state: "RESUME_UNKNOWN", oldGeneration: generation }));
+        };
+        let binding: SessionBinding | null = null;
+        let custody: "confirmed" | "unknown" = "unknown";
+        try {
+          binding = this.options.sessionBinding?.(request.targetId) ?? null;
+          custody = this.options.resumeCustody?.(request.targetId, generation) ?? "unknown";
+        } catch {
+          return unknown();
+        }
+        if (!binding || !session.binding || custody !== "confirmed") return unknown();
+        if (binding.driverId !== session.binding.driverId ||
+            binding.instanceId !== session.binding.instanceId ||
+            binding.pinnedBinaryDigest !== session.binding.pinnedBinaryDigest) {
+          return encodeV37Receipt(reply("CONFLICT", current, current));
+        }
+        if (!this.options.verifyPinnedBinary?.(binding.pinnedBinaryDigest)) {
+          return encodeV37Receipt(reply("DENIED", current, current));
+        }
+        let outcome: ReturnType<NonNullable<V37CoreFakeOptions["resumeGeneration"]>>;
+        try {
+          // The trusted H callback resolves its own durable continuation reference.
+          outcome = this.options.resumeGeneration(request.targetId, generation);
+        } catch {
+          return unknown();
+        }
+        if (outcome === "unsupported") return encodeV37Receipt(reply("UNSUPPORTED", current, current));
+        if (typeof outcome !== "object" || outcome === null ||
+            !validNewGeneration(outcome.newGeneration, generation) ||
+            !outcome.receiptId) return unknown();
+        session.generation = outcome.newGeneration;
+        session.state = "RUNNING";
+        session.revision += 1n;
+        return committed(reply("APPLIED", current, session.revision,
+          { state: "RUNNING", oldGeneration: generation, newGeneration: outcome.newGeneration,
+            receiptId: outcome.receiptId }));
+      }
       if (request.operation === "reconnect") {
         if (!session || !["RUNNING", "GENERATION_UNKNOWN"].includes(session.state)) {
           return encodeV37Receipt(reply("CONFLICT", current, current));
@@ -225,12 +328,19 @@ export class V37CoreFakePort implements V37Port {
           !this.options.verifyPinnedBinary?.(field(request.payload, "pinnedBinaryDigest"))) {
         return encodeV37Receipt(reply("DENIED", current, current));
       }
+      const binding = request.operation === "open" ?
+        this.options.sessionBinding?.(request.targetId) ?? undefined : session?.binding;
+      if (request.operation === "open" && binding &&
+          binding.pinnedBinaryDigest !== field(request.payload, "pinnedBinaryDigest")) {
+        return encodeV37Receipt(reply("DENIED", current, current));
+      }
       if (request.operation === "exit-and-stop-receipt" &&
           !this.options.verifyStopProof?.(field(request.payload, "nativeStopProofId"))) {
         return encodeV37Receipt(reply("DENIED", current, current));
       }
       const next = current + 1n;
-      this.store.sessions.set(storageKey, { state: transition[1], revision: next, generation });
+      this.store.sessions.set(storageKey, { state: transition[1], revision: next, generation,
+        ...(binding ? { binding } : {}) });
       return committed(reply("APPLIED", current, next, { state: transition[1], generation }));
     }
 
