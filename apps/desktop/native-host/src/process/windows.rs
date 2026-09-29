@@ -385,8 +385,9 @@ pub struct PreparedCustody {
     pub identity: ProcessIdentity,
 }
 
-/// Bytes read from the exact process pipe owned under this native custody.
-/// No service or model request can attach a different caller to these bytes.
+/// Output bytes read from the exact process pipe owned under this custody.
+/// This binds output provenance only. A seat's host-operation request needs
+/// its own native-origin channel; stdout alone cannot authorize that request.
 pub(crate) struct OriginBoundFrame {
     custody: PreparedCustody,
     bytes: Vec<u8>,
@@ -951,8 +952,8 @@ impl ProcessCustodian {
         self.active.get(ticket).map(|(_, process)| process)
     }
 
-    /// Seat-origin ingress must use this read, never a Node-forwarded byte
-    /// frame paired with a caller-selected ticket.
+    /// Read an owned child's output without pairing Node-forwarded bytes to
+    /// a caller-selected ticket. This is not host-operation admission.
     pub(crate) fn read_child_frame(&self, ticket: &ProcessTicket, deadline: Duration)
         -> Result<OriginBoundFrame, ProcessCustodyError> {
         let (custody, process) = self.active.get(ticket).ok_or_else(||

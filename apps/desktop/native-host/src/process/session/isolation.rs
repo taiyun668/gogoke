@@ -316,7 +316,7 @@ impl AppContainerProfile {
         if returned < group_offset as u32 { return Err(IsolationError::WrongToken); }
         let count = unsafe { *(groups.as_ptr() as *const u32) } as usize;
         if count > 32 || count != usize::from(self.internet_capability.is_some()) ||
-            returned as usize < group_offset + count * size_of::<SidAndAttributes>() {
+            (returned as usize) < group_offset + count * size_of::<SidAndAttributes>() {
             return Err(IsolationError::WrongToken);
         }
         if let Some(expected) = &self.internet_capability {
