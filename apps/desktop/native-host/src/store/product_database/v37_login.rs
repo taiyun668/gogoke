@@ -9,6 +9,9 @@ use crate::process::AppContainerProfile;
 use crate::process::{DurableStopConfirmation, NativeBinding, OriginBoundFrame,
     PrepareRequest, PreparedCustody, ProcessCustodyError, ProcessLaunch, StopBudgets};
 use crate::root::{inspect_root, RootIdentity};
+#[cfg(all(test, windows))]
+#[path = "v37_login_trace.rs"]
+mod directed_trace;
 use crate::store::atomic::Parser;
 use crate::store::instance::{InstanceObservation, ObservationRequest};
 use std::fs;
@@ -490,6 +493,8 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::V37StoreFailure(format!(
                 "owner login prepare record: {error:?}; abort: {aborted:?}; cleanup: {cleaned:?}")));
         }
+        #[cfg(all(test, windows))]
+        let _trace = directed_trace::before_activation(&prepared);
         if let Err(error) = self.process_custodian.activate(&prepared) {
             let unknown = authority::mark_process_unknown(&mut self.connection,
                 &operation_id, &prepared);
@@ -929,6 +934,8 @@ impl<'root> ProductDatabase<'root> {
                 &prepared_login.runtime_identity)?;
             return Err(error);
         }
+        #[cfg(all(test, windows))]
+        let _trace = directed_trace::before_activation(&prepared);
         if let Err(error) = self.process_custodian.activate(&prepared) {
             let unknown = authority::mark_process_unknown(&mut self.connection,
                 &operation_id, &prepared);
@@ -1199,6 +1206,7 @@ mod tests {
             let prepared = product.process_custodian.prepare(&scope.login).unwrap();
             let operation_id = format!("synthetic-cli-credential-{index}");
             authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+            let _trace = directed_trace::before_activation(&prepared);
             product.process_custodian.activate(&prepared).unwrap();
             authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
             product.process_custodian.active(&prepared.ticket).unwrap().write_persistent_frame(marker).unwrap();

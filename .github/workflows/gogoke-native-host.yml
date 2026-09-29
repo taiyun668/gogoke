@@ -2,6 +2,11 @@ name: gogoke native-host CI
 
 on:
   workflow_dispatch:
+    inputs:
+      trace_canonicalize:
+        description: Record actual pinned CLI Win32 return values with the existing cloud SDK debugger
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -188,6 +193,16 @@ jobs:
             @{ id = 'record-before-activate'; filter = 'failed_production_prepared_record_does_not_activate_child' },
             @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
+          if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
+            $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+            if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) {
+              throw 'Existing SDK debugger unavailable; directed measurement did not run.'
+            }
+            $env:GOGOKE_CI_CDB = $debugger
+            $env:GOGOKE_CI_CDB_LOGROOT = $evidenceRoot
+            $probes = @($probes | Where-Object { $_.id -in @('pinned-codex-account-read', 'pinned-codex-credential-files') })
+            Write-Host "Directed trace only: debugger SHA256=$((Get-FileHash -LiteralPath $debugger -Algorithm SHA256).Hash); full library suite NOT_RUN."
+          }
           $results = @()
           foreach ($probe in $probes) {
             $log = Join-Path $evidenceRoot "focused-$($probe.id).log"
@@ -224,7 +239,7 @@ jobs:
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
       - name: Run all native-host library unit tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
