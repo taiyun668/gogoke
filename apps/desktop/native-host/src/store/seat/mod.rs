@@ -139,12 +139,15 @@ pub(crate) struct CreateSeat<'a> {
     pub(crate) instance_id: &'a str,
     pub(crate) kind: Kind,
     pub(crate) request_id: &'a str,
+    /// Exact ingress bytes, including unknown fields and original whitespace.
+    pub(crate) request_bytes: &'a [u8],
 }
 pub(crate) struct SeatChange<'a> {
     pub(crate) domain_id: &'a str,
     pub(crate) seat_id: &'a str,
     pub(crate) expected_generation: i64,
     pub(crate) request_id: &'a str,
+    pub(crate) request_bytes: &'a [u8],
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SeatReceipt {
@@ -158,7 +161,7 @@ fn valid_id(value: &str) -> bool {
         && value.len() <= 128
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
-fn validate(domain: &str, seat: &str, request: &str) -> Result<(), SeatError> {
+fn validate(domain: &str, seat: &str, request: &str, raw: &[u8]) -> Result<(), SeatError> {
     if !valid_id(domain) {
         return Err(SeatError::Invalid("domain_id"));
     }
@@ -168,14 +171,19 @@ fn validate(domain: &str, seat: &str, request: &str) -> Result<(), SeatError> {
     if !valid_id(request) {
         return Err(SeatError::Invalid("request_id"));
     }
+    if raw.is_empty() || raw.len() > crate::ipc::MAX_FRAME_BYTES {
+        return Err(SeatError::Invalid("request_bytes"));
+    }
     Ok(())
 }
-fn fingerprint(parts: &[&str]) -> String {
+fn fingerprint(parts: &[&str], raw: &[u8]) -> String {
     let mut bytes = Vec::new();
     for part in parts {
         bytes.extend_from_slice(&(part.len() as u64).to_be_bytes());
         bytes.extend_from_slice(part.as_bytes());
     }
+    bytes.extend_from_slice(&(raw.len() as u64).to_be_bytes());
+    bytes.extend_from_slice(raw);
     super::digest::content_hash(&bytes)
 }
 fn transact<T>(
@@ -467,7 +475,12 @@ pub(crate) fn create(
     origin: NativeOrigin<'_>,
     input: CreateSeat<'_>,
 ) -> Result<SeatReceipt, SeatError> {
-    validate(input.domain_id, input.seat_id, input.request_id)?;
+    validate(
+        input.domain_id,
+        input.seat_id,
+        input.request_id,
+        input.request_bytes,
+    )?;
     if !valid_id(input.instance_id) {
         return Err(SeatError::Invalid("instance_id"));
     }
@@ -480,17 +493,20 @@ pub(crate) fn create(
             a.generation.to_string(),
         ),
     };
-    let fp = fingerprint(&[
-        "create",
-        input.domain_id,
-        input.seat_id,
-        input.instance_id,
-        input.kind.sql(),
-        layer_label,
-        parent_label,
-        origin_incarnation,
-        &origin_generation,
-    ]);
+    let fp = fingerprint(
+        &[
+            "create",
+            input.domain_id,
+            input.seat_id,
+            input.instance_id,
+            input.kind.sql(),
+            layer_label,
+            parent_label,
+            origin_incarnation,
+            &origin_generation,
+        ],
+        input.request_bytes,
+    );
     transact(db, |db| {
         if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
             authorize_replay(db, &origin, &receipt)?;
@@ -529,7 +545,12 @@ fn change(
     action: &'static str,
     value: &str,
 ) -> Result<SeatReceipt, SeatError> {
-    validate(input.domain_id, input.seat_id, input.request_id)?;
+    validate(
+        input.domain_id,
+        input.seat_id,
+        input.request_id,
+        input.request_bytes,
+    )?;
     if input.expected_generation < 1 {
         return Err(SeatError::Invalid("generation"));
     }
@@ -541,16 +562,19 @@ fn change(
             a.generation.to_string(),
         ),
     };
-    let fp = fingerprint(&[
-        action,
-        input.domain_id,
-        input.seat_id,
-        &input.expected_generation.to_string(),
-        value,
-        origin_id,
-        origin_incarnation,
-        &origin_generation,
-    ]);
+    let fp = fingerprint(
+        &[
+            action,
+            input.domain_id,
+            input.seat_id,
+            &input.expected_generation.to_string(),
+            value,
+            origin_id,
+            origin_incarnation,
+            &origin_generation,
+        ],
+        input.request_bytes,
+    );
     transact(db, |db| {
         if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
             authorize_replay(db, &origin, &receipt)?;

@@ -3,6 +3,26 @@ use crate::root::RootLock;
 use crate::store::same_open::{create_new, route_b_test_guard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Complete ingress records for the focused native tests. The store receives
+// these bytes verbatim; it does not reconstruct them from typed fields.
+fn wire(request_id: &str) -> &'static [u8] {
+    match request_id {
+        "createLead" => br#"{"op":"create","requestId":"createLead","domainId":"projectA","seatId":"lead","instanceId":"instanceA","kind":"LONG"}"#,
+        "createAnother" => br#"{"op":"create","requestId":"createAnother","domainId":"projectA","seatId":"another","instanceId":"instanceA","kind":"LONG"}"#,
+        "busyBind" => br#"{"op":"bind","requestId":"busyBind","domainId":"projectA","seatId":"lead","expectedGeneration":2,"instanceId":"instanceB"}"#,
+        "bindOnce" => br#"{"op":"bind","requestId":"bindOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"instanceId":"instanceB"}"#,
+        "staleBind" => br#"{"op":"bind","requestId":"staleBind","domainId":"projectA","seatId":"lead","expectedGeneration":1,"instanceId":"instanceA"}"#,
+        "createWorker" => br#"{"op":"create","requestId":"createWorker","domainId":"projectA","seatId":"worker","instanceId":"instanceA","kind":"SHORT"}"#,
+        "forbiddenBind" => br#"{"op":"bind","requestId":"forbiddenBind","domainId":"projectA","seatId":"another","expectedGeneration":1,"instanceId":"instanceB"}"#,
+        "otherProjectCreate" => br#"{"op":"create","requestId":"otherProjectCreate","domainId":"projectB","seatId":"otherProject","instanceId":"instanceA","kind":"SHORT"}"#,
+        "promoteWorker" => br#"{"op":"promote","requestId":"promoteWorker","domainId":"projectA","seatId":"worker","expectedGeneration":1}"#,
+        "reclaimWorker" => br#"{"op":"reclaim","requestId":"reclaimWorker","domainId":"projectA","seatId":"worker","expectedGeneration":2}"#,
+        "reuseWorker" => br#"{"op":"create","requestId":"reuseWorker","domainId":"projectA","seatId":"worker","instanceId":"instanceA","kind":"SHORT"}"#,
+        "afterStopCreate" => br#"{"op":"create","requestId":"afterStopCreate","domainId":"projectA","seatId":"afterStop","instanceId":"instanceA","kind":"SHORT"}"#,
+        _ => panic!("missing complete test request: {request_id}"),
+    }
+}
+
 fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) {
     let _guard = route_b_test_guard();
     let nonce = SystemTime::now()
@@ -52,6 +72,7 @@ fn create_user(
             instance_id: "instanceA",
             kind: Kind::Long,
             request_id,
+            request_bytes: wire(request_id),
         },
     )
     .unwrap()
@@ -68,6 +89,31 @@ fn exact_schema_reopens_and_drift_refuses_repair() {
 }
 
 #[test]
+fn empty_or_oversize_raw_request_is_rejected_before_mutation() {
+    fixture(|db, owner| {
+        let oversized = vec![b'x'; crate::ipc::MAX_FRAME_BYTES + 1];
+        for raw in [&b""[..], oversized.as_slice()] {
+            assert!(matches!(
+                create(
+                    db,
+                    NativeOrigin::user(owner),
+                    CreateSeat {
+                        domain_id: "projectA",
+                        seat_id: "lead",
+                        instance_id: "instanceA",
+                        kind: Kind::Long,
+                        request_id: "createLead",
+                        request_bytes: raw,
+                    }
+                ),
+                Err(SeatError::Invalid("request_bytes"))
+            ));
+        }
+        assert!(get(db, "projectA", "lead").unwrap().is_none());
+    });
+}
+
+#[test]
 fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
     fixture(|db, owner| {
         let original = create_user(db, owner, "lead", "createLead");
@@ -80,11 +126,27 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                 instance_id: "instanceA",
                 kind: Kind::Long,
                 request_id: "createLead",
+                request_bytes: wire("createLead"),
             },
         )
         .unwrap();
         assert!(original_replay.replayed);
         assert_eq!(original_replay.seat, original);
+        assert!(matches!(
+            create(
+                db,
+                NativeOrigin::user(owner),
+                CreateSeat {
+                    domain_id: "projectA",
+                    seat_id: "lead",
+                    instance_id: "instanceA",
+                    kind: Kind::Long,
+                    request_id: "createLead",
+                    request_bytes: br#"{ "op":"create","requestId":"createLead","domainId":"projectA","seatId":"lead","instanceId":"instanceA","kind":"LONG"}"#,
+                }
+            ),
+            Err(SeatError::Conflict)
+        ));
         let busy = set_dispatch_state(db, &original, true).unwrap();
         assert!(matches!(
             bind_instance(
@@ -94,7 +156,8 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                     domain_id: "projectA",
                     seat_id: "lead",
                     expected_generation: busy.generation,
-                    request_id: "busyBind"
+                    request_id: "busyBind",
+                    request_bytes: wire("busyBind"),
                 },
                 "instanceB"
             ),
@@ -109,6 +172,7 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                 seat_id: "lead",
                 expected_generation: idle.generation,
                 request_id: "bindOnce",
+                request_bytes: wire("bindOnce"),
             },
             "instanceB",
         )
@@ -125,6 +189,7 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                     instance_id: "instanceA",
                     kind: Kind::Long,
                     request_id: "createLead",
+                    request_bytes: wire("createLead"),
                 }
             ),
             Err(SeatError::Conflict)
@@ -137,7 +202,8 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                     domain_id: "projectA",
                     seat_id: "lead",
                     expected_generation: 1,
-                    request_id: "staleBind"
+                    request_id: "staleBind",
+                    request_bytes: wire("staleBind"),
                 },
                 "instanceA"
             ),
@@ -151,6 +217,7 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                 seat_id: "lead",
                 expected_generation: idle.generation,
                 request_id: "bindOnce",
+                request_bytes: wire("bindOnce"),
             },
             "instanceB",
         )
@@ -164,8 +231,24 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                 SeatChange {
                     domain_id: "projectA",
                     seat_id: "lead",
+                    expected_generation: idle.generation,
+                    request_id: "bindOnce",
+                    request_bytes: br#"{"op":"bind","requestId":"bindOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"instanceId":"instanceB","hidden":"payload"}"#,
+                },
+                "instanceB"
+            ),
+            Err(SeatError::Conflict)
+        ));
+        assert!(matches!(
+            bind_instance(
+                db,
+                NativeOrigin::user(owner),
+                SeatChange {
+                    domain_id: "projectA",
+                    seat_id: "lead",
                     expected_generation: 1,
-                    request_id: "bindOnce"
+                    request_id: "bindOnce",
+                    request_bytes: wire("bindOnce"),
                 },
                 "instanceA"
             ),
@@ -191,6 +274,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 instance_id: "instanceA",
                 kind: Kind::Short,
                 request_id: "createWorker",
+                request_bytes: wire("createWorker"),
             },
         )
         .unwrap()
@@ -205,7 +289,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                     domain_id: "projectA",
                     seat_id: "another",
                     expected_generation: another.generation,
-                    request_id: "forbiddenBind"
+                    request_id: "forbiddenBind",
+                    request_bytes: wire("forbiddenBind"),
                 },
                 "instanceB"
             ),
@@ -220,7 +305,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                     seat_id: "otherProject",
                     instance_id: "instanceA",
                     kind: Kind::Short,
-                    request_id: "otherProjectCreate"
+                    request_id: "otherProjectCreate",
+                    request_bytes: wire("otherProjectCreate"),
                 }
             ),
             Err(SeatError::Denied)
@@ -233,6 +319,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 seat_id: "worker",
                 expected_generation: worker.generation,
                 request_id: "promoteWorker",
+                request_bytes: wire("promoteWorker"),
             },
         )
         .unwrap()
@@ -246,6 +333,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 seat_id: "worker",
                 expected_generation: promoted.generation,
                 request_id: "reclaimWorker",
+                request_bytes: wire("reclaimWorker"),
             },
         )
         .unwrap()
@@ -261,7 +349,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                     seat_id: "worker",
                     instance_id: "instanceA",
                     kind: Kind::Short,
-                    request_id: "reuseWorker"
+                    request_id: "reuseWorker",
+                    request_bytes: wire("reuseWorker"),
                 }
             ),
             Err(SeatError::Conflict)
@@ -276,7 +365,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                     seat_id: "worker",
                     instance_id: "instanceA",
                     kind: Kind::Short,
-                    request_id: "createWorker"
+                    request_id: "createWorker",
+                    request_bytes: wire("createWorker"),
                 }
             ),
             Err(SeatError::Denied)
@@ -290,7 +380,8 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                     seat_id: "afterStop",
                     instance_id: "instanceA",
                     kind: Kind::Short,
-                    request_id: "afterStopCreate"
+                    request_id: "afterStopCreate",
+                    request_bytes: wire("afterStopCreate"),
                 }
             ),
             Err(SeatError::Denied)
@@ -318,6 +409,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
                 instance_id: "instanceA",
                 kind: Kind::Short,
                 request_id: "createWorker",
+                request_bytes: wire("createWorker"),
             },
         )
         .unwrap()
@@ -327,6 +419,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
             seat_id: "worker",
             expected_generation: worker.generation,
             request_id: "promoteWorker",
+            request_bytes: wire("promoteWorker"),
         };
         let promoted = promote(db, NativeOrigin::lead(&admission), change).unwrap();
         let immediate_replay = promote(
@@ -337,6 +430,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
                 seat_id: "worker",
                 expected_generation: worker.generation,
                 request_id: "promoteWorker",
+                request_bytes: wire("promoteWorker"),
             },
         )
         .unwrap();
@@ -354,6 +448,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
                     seat_id: "worker",
                     expected_generation: worker.generation,
                     request_id: "promoteWorker",
+                    request_bytes: wire("promoteWorker"),
                 }
             ),
             Err(SeatError::Denied)
@@ -369,6 +464,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
                     seat_id: "worker",
                     expected_generation: worker.generation,
                     request_id: "promoteWorker",
+                    request_bytes: wire("promoteWorker"),
                 }
             ),
             Err(SeatError::Conflict)
