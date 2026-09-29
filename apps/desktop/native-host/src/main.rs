@@ -210,7 +210,11 @@ fn run_desktop(
                 let reply = match service.as_mut() {
                     Some(state) => match product.dispatch_service_frame(state, &frame.bytes) {
                         Ok(reply) => reply,
-                        Err(error) => (format!("ERR\t{error:?}\t0us").into_bytes(), true),
+                        // Keep the shared pipe connected until the client has
+                        // read the complete denial. Immediate server-side
+                        // disconnect can discard a partially read byte-pipe
+                        // reply on Windows (observed Win32 233).
+                        Err(error) => (format!("ERR\t{error:?}\t0us").into_bytes(), false),
                     },
                     None => (b"ERR\tSERVICE_NOT_CONNECTED\t0us".to_vec(), true),
                 };
