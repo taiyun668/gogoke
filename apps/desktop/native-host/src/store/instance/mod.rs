@@ -2,10 +2,14 @@
 //! This schema shares the verified product connection but never changes R2 authority tables.
 mod home;
 mod registry;
+mod temporary;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use registry::{register_instance, record_observation, InstanceObservation,
     ObservationRequest, ProgramObservation, Registration, RegistrationDisposition, RegistryError};
+pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_temporary_home,
+    CreateTemporaryHome, TemporaryHomeError, TemporaryHomeReceipt, TemporaryKind,
+    TransitionTemporaryHome};
 
 use super::atomic::Statement;
 use super::orchestration::OrchestrationError;

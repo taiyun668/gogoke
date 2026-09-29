@@ -2,6 +2,7 @@
 //! fence are not yet wired: close and cleanup fail closed and never delete.
 
 use super::registry::{observed_home, RegistryError};
+use crate::process::{AppContainerProfile, IsolationError};
 use crate::root::{inspect_root, RootIdentity, RootLock};
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::digest::sha256_hex;
@@ -60,6 +61,7 @@ pub(crate) enum TemporaryHomeError {
     Sqlite(SameOpenError),
     Registry(RegistryError),
     Admission(AdmissionError),
+    Isolation(IsolationError),
 }
 impl From<io::Error> for TemporaryHomeError {
     fn from(error: io::Error) -> Self { Self::Io(error) }
@@ -75,6 +77,9 @@ impl From<RegistryError> for TemporaryHomeError {
 }
 impl From<AdmissionError> for TemporaryHomeError {
     fn from(error: AdmissionError) -> Self { Self::Admission(error) }
+}
+impl From<IsolationError> for TemporaryHomeError {
+    fn from(error: IsolationError) -> Self { Self::Isolation(error) }
 }
 
 fn valid_id(value: &str) -> bool {
@@ -107,11 +112,11 @@ fn hex(bytes: &[u8]) -> String {
         result.push(DIGITS[(byte & 15) as usize] as char); }
     result
 }
-fn fingerprint(input: &CreateTemporaryHome<'_>) -> String {
+fn fingerprint(input: &CreateTemporaryHome<'_>, sid_identity: &str) -> String {
     let mut framed = Vec::new();
     for value in [&b"temporary-create"[..], input.request_bytes, input.home_id.as_bytes(),
         input.instance_id.as_bytes(), input.domain_id.as_bytes(), input.kind.as_str().as_bytes(),
-        input.owner_id.as_bytes(), input.generation.as_bytes()] {
+        input.owner_id.as_bytes(), input.generation.as_bytes(), sid_identity.as_bytes()] {
         framed.extend_from_slice(&(value.len() as u64).to_be_bytes());
         framed.extend_from_slice(value);
     }
@@ -138,14 +143,17 @@ fn existing_parent(path: &Path) -> Result<Option<RootIdentity>, TemporaryHomeErr
         Err(error) => Err(error.into()),
     }
 }
-fn marker_text(root: &RootLock, input: &CreateTemporaryHome<'_>, identity: &RootIdentity) -> String {
-    format!("gogoke-v37-temporary-home-v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+fn marker_text(root: &RootLock, input: &CreateTemporaryHome<'_>, identity: &RootIdentity,
+    sid_identity: &str) -> String {
+    format!("gogoke-v37-temporary-home-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
         root.canonical_root().identity.opaque(), input.instance_id, input.home_id, input.domain_id,
         input.kind.as_str(), input.owner_id, input.generation, input.request_id,
-        fingerprint(input), identity.opaque())
+        sha256_hex(fingerprint(input, sid_identity).as_bytes()), identity.opaque(), sid_identity)
 }
-fn observed_directory(root: &RootLock, input: &CreateTemporaryHome<'_>)
-    -> Result<Option<RootIdentity>, TemporaryHomeError> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DirectoryStage { Empty(RootIdentity), Marked(RootIdentity, bool) }
+fn directory_stage(root: &RootLock, input: &CreateTemporaryHome<'_>, sid_identity: &str)
+    -> Result<Option<DirectoryStage>, TemporaryHomeError> {
     let root_path = &root.canonical_root().canonical_path;
     if checked_dir(root_path)? != root.canonical_root().identity { return Err(TemporaryHomeError::IdentityChanged); }
     let top = root_path.join(CONTAINER);
@@ -159,19 +167,32 @@ fn observed_directory(root: &RootLock, input: &CreateTemporaryHome<'_>)
     let Some(temporary_identity) = existing_parent(&temporary)? else { return Ok(None); };
     let path = directory(root, input);
     let Some(identity) = existing_parent(&path)? else { return Ok(None); };
-    let marker = path.join(MARKER);
-    let metadata = fs::symlink_metadata(&marker)?;
-    if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0 {
-        return Err(TemporaryHomeError::IdentityChanged);
+    let mut saw_marker = false;
+    let mut saw_other_content = false;
+    for entry in fs::read_dir(&path)? {
+        if entry?.file_name().as_os_str() == std::ffi::OsStr::new(MARKER) { saw_marker = true; }
+        else { saw_other_content = true; }
     }
-    if fs::read_to_string(&marker)? != marker_text(root, input, &identity)
-        || checked_dir(&top)? != top_identity || checked_dir(&instance)? != instance_identity
+    let stage = if !saw_marker && !saw_other_content {
+        DirectoryStage::Empty(identity.clone())
+    } else if saw_marker {
+        let marker = path.join(MARKER);
+        let metadata = fs::symlink_metadata(&marker)?;
+        if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0
+            || fs::read_to_string(&marker)? != marker_text(root, input, &identity, sid_identity) {
+            return Err(TemporaryHomeError::IdentityChanged);
+        }
+        DirectoryStage::Marked(identity.clone(), saw_other_content)
+    } else {
+        return Err(TemporaryHomeError::Unknown);
+    };
+    if checked_dir(&top)? != top_identity || checked_dir(&instance)? != instance_identity
         || checked_dir(&temporary)? != temporary_identity || checked_dir(&path)? != identity {
         return Err(TemporaryHomeError::IdentityChanged);
     }
-    Ok(Some(identity))
+    Ok(Some(stage))
 }
-fn prepare_directory(root: &RootLock, input: &CreateTemporaryHome<'_>)
+fn prepare_empty_directory(root: &RootLock, input: &CreateTemporaryHome<'_>, sid_identity: &str)
     -> Result<RootIdentity, TemporaryHomeError> {
     let root_path = &root.canonical_root().canonical_path;
     if checked_dir(root_path)? != root.canonical_root().identity { return Err(TemporaryHomeError::IdentityChanged); }
@@ -197,15 +218,26 @@ fn prepare_directory(root: &RootLock, input: &CreateTemporaryHome<'_>)
         TemporaryHomeError::Unknown
     } else { TemporaryHomeError::Io(error) })?;
     let identity = checked_dir(&path)?;
-    let mut marker = OpenOptions::new().write(true).create_new(true).open(path.join(MARKER))?;
-    marker.write_all(marker_text(root, input, &identity).as_bytes())?;
-    marker.sync_all()?;
     if checked_dir(&top)? != top_identity || checked_dir(&instance)? != instance_identity
         || checked_dir(&temporary)? != temporary_identity
-        || observed_directory(root, input)? != Some(identity.clone()) {
+        || directory_stage(root, input, sid_identity)? != Some(DirectoryStage::Empty(identity.clone())) {
         return Err(TemporaryHomeError::IdentityChanged);
     }
     Ok(identity)
+}
+fn write_marker_after_grant(root: &RootLock, input: &CreateTemporaryHome<'_>,
+    identity: &RootIdentity, sid_identity: &str) -> Result<(), TemporaryHomeError> {
+    if directory_stage(root, input, sid_identity)? != Some(DirectoryStage::Empty(identity.clone())) {
+        return Err(TemporaryHomeError::Unknown);
+    }
+    let mut marker = OpenOptions::new().write(true).create_new(true)
+        .open(directory(root, input).join(MARKER))?;
+    marker.write_all(marker_text(root, input, identity, sid_identity).as_bytes())?;
+    marker.sync_all()?;
+    if directory_stage(root, input, sid_identity)? != Some(DirectoryStage::Marked(identity.clone(), false)) {
+        return Err(TemporaryHomeError::IdentityChanged);
+    }
+    Ok(())
 }
 
 fn operation(connection: &VerifiedDatabaseConnection<'_>, request_id: &str)
@@ -249,9 +281,11 @@ fn matching_row(row: &(String, String, String, String, String, String, String, S
 /// The caller supplies the native issuer and root pin. H's durable owner binding
 /// is verified on the same connection and transaction as F's create intent.
 pub(crate) fn create_temporary_home(connection: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
-    input: &CreateTemporaryHome<'_>) -> Result<TemporaryHomeReceipt, TemporaryHomeError> {
+    profile: &AppContainerProfile, input: &CreateTemporaryHome<'_>)
+    -> Result<TemporaryHomeReceipt, TemporaryHomeError> {
     validate(input)?;
-    let request_hex = fingerprint(input);
+    let sid_identity = profile.sid_identity()?;
+    let request_hex = fingerprint(input, &sid_identity);
     let persistent = observed_home(root, input.instance_id)?.ok_or(TemporaryHomeError::InstanceChanged)?;
     let persistent_identity = persistent.opaque();
     let prior = transaction(connection, |connection| {
@@ -286,22 +320,38 @@ pub(crate) fn create_temporary_home(connection: &mut VerifiedDatabaseConnection<
     if let Some((phase, receipt, row)) = &prior {
         if phase == "APPLIED" && row.7 == "ACTIVE" && row.5 == directory_ref(input.home_id)
             && row.6 == receipt.as_str() && !receipt.is_empty()
-            && observed_directory(root, input)?.is_some_and(|identity| identity.opaque() == receipt.as_str()) {
+            && matches!(directory_stage(root, input, &sid_identity)?,
+                Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == receipt.as_str()) {
             return Ok(TemporaryHomeReceipt { disposition: "REPLAYED", directory_ref: row.5.clone(),
                 native_receipt_id: receipt.clone() });
         }
         if phase != "PREPARING" && phase != "UNKNOWN" { return Err(TemporaryHomeError::Unknown); }
     }
-    let observed = observed_directory(root, input)?;
+    let observed = directory_stage(root, input, &sid_identity)?;
     let identity = match observed {
-        Some(identity) if prior.as_ref().is_some_and(|(_, receipt, _)| receipt.is_empty()
-            || receipt == &identity.opaque()) => identity,
+        Some(DirectoryStage::Marked(identity, false)) if prior.as_ref().is_some_and(|(_, receipt, _)|
+            receipt.is_empty() || receipt == &identity.opaque()) => identity,
+        Some(DirectoryStage::Empty(identity)) if prior.as_ref().is_some_and(|(_, receipt, _)|
+            receipt.is_empty()) => {
+            profile.grant_fresh_session_directory(&directory(root, input))?;
+            if checked_dir(&directory(root, input))? != identity { return Err(TemporaryHomeError::IdentityChanged); }
+            write_marker_after_grant(root, input, &identity, &sid_identity)?;
+            identity
+        }
         Some(_) => return Err(TemporaryHomeError::Unknown),
         None if prior.as_ref().is_some_and(|(_, receipt, _)| !receipt.is_empty()) =>
             return Err(TemporaryHomeError::Unknown),
-        None => prepare_directory(root, input)?,
+        None => {
+            let identity = prepare_empty_directory(root, input, &sid_identity)?;
+            profile.grant_fresh_session_directory(&directory(root, input))?;
+            if checked_dir(&directory(root, input))? != identity { return Err(TemporaryHomeError::IdentityChanged); }
+            write_marker_after_grant(root, input, &identity, &sid_identity)?;
+            identity
+        },
     };
-    if observed_directory(root, input)? != Some(identity.clone()) { return Err(TemporaryHomeError::IdentityChanged); }
+    if directory_stage(root, input, &sid_identity)? != Some(DirectoryStage::Marked(identity.clone(), false)) {
+        return Err(TemporaryHomeError::IdentityChanged);
+    }
     transaction(connection, |connection| {
         verify_home_owner_in_transaction(connection, input.instance_id, input.domain_id,
             input.kind.as_str(), input.owner_id, input.generation)?;
@@ -340,7 +390,10 @@ pub(crate) fn create_temporary_home(connection: &mut VerifiedDatabaseConnection<
         done.step_done()?;
         Ok(())
     })?;
-    if observed_directory(root, input)? != Some(identity.clone()) { return Err(TemporaryHomeError::Unknown); }
+    if !matches!(directory_stage(root, input, &sid_identity)?,
+        Some(DirectoryStage::Marked(observed, _)) if observed == identity) {
+        return Err(TemporaryHomeError::Unknown);
+    }
     Ok(TemporaryHomeReceipt { disposition: "APPLIED", directory_ref: directory_ref(input.home_id),
         native_receipt_id: identity.opaque() })
 }
@@ -370,7 +423,7 @@ mod tests {
     use crate::store::session_transport::{bind_owner_in_transaction, initialize_admission_schema, OwnerBinding};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &RootLock)) {
+    fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &RootLock, &AppContainerProfile)) {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let root_path = std::env::temp_dir().join(format!("gogoke-v37-temp-home-{}-{nonce}", std::process::id()));
@@ -394,7 +447,8 @@ mod tests {
             kind: "SESSION", owner_id: "sessionA", generation: "1",
         }).unwrap();
         connection.execute("COMMIT").unwrap();
-        run(&mut connection, &root);
+        let profile = AppContainerProfile::derived_for_test("Gogoke37.FTemporaryHome").unwrap();
+        run(&mut connection, &root, &profile);
         connection.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(root_path).unwrap();
@@ -408,27 +462,30 @@ mod tests {
 
     #[test]
     fn create_is_durable_and_exact_request_replay_conflicts_on_changed_bytes() {
-        fixture(|connection, root| {
+        fixture(|connection, root, profile| {
             let first = input(b"create one");
-            let applied = create_temporary_home(connection, root, &first).unwrap();
+            let applied = create_temporary_home(connection, root, profile, &first).unwrap();
             assert_eq!(applied.disposition, "APPLIED");
             assert_eq!(applied.directory_ref, directory_ref(first.home_id));
-            assert_eq!(create_temporary_home(connection, root, &first).unwrap().disposition, "REPLAYED");
-            assert!(matches!(create_temporary_home(connection, root, &input(b"create changed")),
+            assert_eq!(create_temporary_home(connection, root, profile, &first).unwrap().disposition, "REPLAYED");
+            assert!(matches!(create_temporary_home(connection, root, profile, &input(b"create changed")),
                 Err(TemporaryHomeError::RequestConflict)));
+            fs::write(directory(root, &first).join("session-content"), b"later content").unwrap();
+            assert_eq!(create_temporary_home(connection, root, profile, &first).unwrap().disposition, "REPLAYED");
             let transition = TransitionTemporaryHome { request_id: "closeOne", request_bytes: b"close",
                 home_id: "tempA", expected_revision: 1 };
             assert!(matches!(close_temporary_home(connection, root, &transition),
                 Err(TemporaryHomeError::StopFactUnavailable)));
             assert!(matches!(cleanup_temporary_home(connection, root, &transition),
                 Err(TemporaryHomeError::AdmissionFenceUnavailable)));
-            assert!(observed_directory(root, &first).unwrap().is_some());
+            assert!(matches!(directory_stage(root, &first, &profile.sid_identity().unwrap()).unwrap(),
+                Some(DirectoryStage::Marked(_, true))));
         });
     }
 
     #[test]
     fn preparing_intent_recovers_bound_directory_before_receipt() {
-        fixture(|connection, root| {
+        fixture(|connection, root, profile| {
             let first = input(b"create one");
             let home = Statement::prepare(connection.as_ptr(),
                 "INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES(?1,?2,?3,?4,?5,?6,'PREPARING',0)").unwrap();
@@ -440,21 +497,26 @@ mod tests {
             let intent = Statement::prepare(connection.as_ptr(),
                 "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES(?1,?2,?3,'UNKNOWN')").unwrap();
             intent.bind_text(1, first.request_id).unwrap();
-            intent.bind_text(2, &fingerprint(&first)).unwrap();
+            let sid = profile.sid_identity().unwrap();
+            intent.bind_text(2, &fingerprint(&first, &sid)).unwrap();
             intent.bind_text(3, first.home_id).unwrap();
             intent.step_done().unwrap();
-            let identity = prepare_directory(root, &first).unwrap();
-            assert_eq!(create_temporary_home(connection, root, &first).unwrap().disposition, "APPLIED");
-            assert_eq!(observed_directory(root, &first).unwrap(), Some(identity));
+            let identity = prepare_empty_directory(root, &first, &sid).unwrap();
+            assert_eq!(directory_stage(root, &first, &sid).unwrap(), Some(DirectoryStage::Empty(identity.clone())));
+            let other = AppContainerProfile::derived_for_test("Gogoke37.FTemporaryOther").unwrap();
+            assert!(matches!(create_temporary_home(connection, root, &other, &first),
+                Err(TemporaryHomeError::RequestConflict)));
+            assert_eq!(create_temporary_home(connection, root, profile, &first).unwrap().disposition, "APPLIED");
+            assert_eq!(directory_stage(root, &first, &sid).unwrap(), Some(DirectoryStage::Marked(identity, false)));
         });
     }
 
     #[test]
     fn existing_directory_is_not_adopted_without_prior_intent() {
-        fixture(|connection, root| {
+        fixture(|connection, root, profile| {
             let first = input(b"create one");
-            prepare_directory(root, &first).unwrap();
-            assert!(matches!(create_temporary_home(connection, root, &first),
+            prepare_empty_directory(root, &first, &profile.sid_identity().unwrap()).unwrap();
+            assert!(matches!(create_temporary_home(connection, root, profile, &first),
                 Err(TemporaryHomeError::Unknown)));
             assert!(operation(connection, first.request_id).unwrap().is_none());
             assert!(home_row(connection, first.home_id).unwrap().is_none());
@@ -462,11 +524,36 @@ mod tests {
     }
 
     #[test]
+    fn nonempty_directory_before_acl_grant_stays_unknown() {
+        fixture(|connection, root, profile| {
+            let first = input(b"create one");
+            let sid = profile.sid_identity().unwrap();
+            let home = Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES(?1,?2,?3,?4,?5,?6,'PREPARING',0)").unwrap();
+            for (index, value) in [first.home_id,first.instance_id,first.domain_id,first.kind.as_str(),
+                first.owner_id,first.generation].iter().enumerate() {
+                home.bind_text((index+1) as i32, value).unwrap();
+            }
+            home.step_done().unwrap();
+            let intent = Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES(?1,?2,?3,'PREPARING')").unwrap();
+            intent.bind_text(1, first.request_id).unwrap();
+            intent.bind_text(2, &fingerprint(&first, &sid)).unwrap();
+            intent.bind_text(3, first.home_id).unwrap();
+            intent.step_done().unwrap();
+            prepare_empty_directory(root, &first, &sid).unwrap();
+            fs::write(directory(root, &first).join("foreign-content"), b"no grant yet").unwrap();
+            assert!(matches!(create_temporary_home(connection, root, profile, &first),
+                Err(TemporaryHomeError::Unknown)));
+        });
+    }
+
+    #[test]
     fn revoked_owner_binding_rejects_create_before_intent() {
-        fixture(|connection, root| {
+        fixture(|connection, root, profile| {
             connection.execute("UPDATE main.gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='bindingA'").unwrap();
             let first = input(b"create one");
-            assert!(matches!(create_temporary_home(connection, root, &first),
+            assert!(matches!(create_temporary_home(connection, root, profile, &first),
                 Err(TemporaryHomeError::Admission(AdmissionError::Denied))));
             assert!(operation(connection, first.request_id).unwrap().is_none());
             assert!(home_row(connection, first.home_id).unwrap().is_none());
