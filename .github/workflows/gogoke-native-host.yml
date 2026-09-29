@@ -280,6 +280,11 @@ jobs:
           }
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
+      - name: Observe exact LPAC child creation denial with signed Microsoft ProcMon
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          & ./tools/ci/gogoke37-lpac-procmon.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
       - name: Upload native-host machine evidence
         if: always()
         uses: actions/upload-artifact@v4
