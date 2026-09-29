@@ -34,7 +34,15 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ github.workflow }}-gogoke-37-candidate
+  # Ineligible completed builds skip both jobs and must not cancel useful work.
+  # Authorized pushes and dispatches still share the active candidate group.
+  group: >-
+    ${{ github.workflow }}-${{ (github.event_name != 'workflow_run' ||
+    (github.event.workflow_run.conclusion == 'success' &&
+    github.event.workflow_run.event == 'workflow_dispatch' &&
+    github.event.workflow_run.head_repository.full_name == 'taiyun668/gogoke' &&
+    github.event.workflow_run.head_branch == 'codex/gogoke-37-l0')) &&
+    'gogoke-37-candidate' || format('ignored-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
