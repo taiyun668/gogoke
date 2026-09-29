@@ -8,10 +8,10 @@
   },
   "repository": "taiyun668/gogoke",
   "plan": {
-    "provenance_plan_commit": "5ebac04aa3fd53f24ee2d5b33533e04875549c36",
-    "public_plan_merge_commit": "d6933964b8c14db5281c49c190763b78c97785fb",
+    "provenance_plan_commit": "4a37e1da3508dcda08f6b66579243628410950bf",
+    "public_plan_merge_commit": "420df17e147e9ffde5b1a187cb5d6ddcb701ec67",
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "public_plan_manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "public_plan_manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
     "stale_when": "the public plan MANIFEST.json blob differs from the value above"
   },
   "authorized_lines": ["L0", "H", "A", "B1", "B2", "B3", "B4", "B5", "C", "D", "E", "F", "G"],
