@@ -9,18 +9,20 @@ fn wire(request_id: &str) -> &'static [u8] {
     match request_id {
         "createLead" => br#"{"op":"create-from-template","requestId":"createLead","domainId":"projectA","seatId":"lead","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "createAnother" => br#"{"op":"create-from-template","requestId":"createAnother","domainId":"projectA","seatId":"another","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
-        "busyBind" => br#"{"op":"bind","requestId":"busyBind","domainId":"projectA","seatId":"lead","expectedGeneration":2,"instanceId":"instanceB"}"#,
-        "bindOnce" => br#"{"op":"bind","requestId":"bindOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"instanceId":"instanceB"}"#,
-        "staleBind" => br#"{"op":"bind","requestId":"staleBind","domainId":"projectA","seatId":"lead","expectedGeneration":1,"instanceId":"instanceA"}"#,
+        "busyBind" => br#"{"op":"bind-instance","requestId":"busyBind","domainId":"projectA","seatId":"lead","expectedGeneration":2,"expectedRevision":2,"instanceId":"instanceB"}"#,
+        "boundBind" => br#"{"op":"bind-instance","requestId":"boundBind","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":3,"instanceId":"instanceB"}"#,
+        "changeOnce" => br#"{"op":"change-instance","requestId":"changeOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":3,"instanceId":"instanceB"}"#,
+        "staleBind" => br#"{"op":"bind-instance","requestId":"staleBind","domainId":"projectA","seatId":"lead","expectedGeneration":1,"expectedRevision":1,"instanceId":"instanceA"}"#,
+        "staleRevision" => br#"{"op":"change-instance","requestId":"staleRevision","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":2,"instanceId":"instanceB"}"#,
         "createWorker" => br#"{"op":"create-from-template","requestId":"createWorker","domainId":"projectA","seatId":"worker","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
-        "forbiddenBind" => br#"{"op":"bind","requestId":"forbiddenBind","domainId":"projectA","seatId":"another","expectedGeneration":1,"instanceId":"instanceB"}"#,
+        "forbiddenBind" => br#"{"op":"bind-instance","requestId":"forbiddenBind","domainId":"projectA","seatId":"another","expectedGeneration":1,"expectedRevision":1,"instanceId":"instanceB"}"#,
         "otherProjectCreate" => br#"{"op":"create-from-template","requestId":"otherProjectCreate","domainId":"projectB","seatId":"otherProject","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
-        "promoteWorker" => br#"{"op":"promote","requestId":"promoteWorker","domainId":"projectA","seatId":"worker","expectedGeneration":1}"#,
-        "reclaimWorker" => br#"{"op":"reclaim","requestId":"reclaimWorker","domainId":"projectA","seatId":"worker","expectedGeneration":2}"#,
+        "promoteWorker" => br#"{"op":"promote","requestId":"promoteWorker","domainId":"projectA","seatId":"worker","expectedGeneration":1,"expectedRevision":1}"#,
+        "reclaimWorker" => br#"{"op":"reclaim","requestId":"reclaimWorker","domainId":"projectA","seatId":"worker","expectedGeneration":2,"expectedRevision":2}"#,
         "reuseWorker" => br#"{"op":"create-from-template","requestId":"reuseWorker","domainId":"projectA","seatId":"worker","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
         "afterStopCreate" => br#"{"op":"create-from-template","requestId":"afterStopCreate","domainId":"projectA","seatId":"afterStop","templateId":"templateA","instanceId":"instanceA","kind":"SHORT"}"#,
         "createUnbound" => br#"{"op":"create-from-template","requestId":"createUnbound","domainId":"projectA","seatId":"unbound","templateId":"templateA","kind":"SHORT"}"#,
-        "bindUnbound" => br#"{"op":"bind-instance","requestId":"bindUnbound","domainId":"projectA","seatId":"unbound","expectedGeneration":1,"instanceId":"instanceB"}"#,
+        "bindUnbound" => br#"{"op":"bind-instance","requestId":"bindUnbound","domainId":"projectA","seatId":"unbound","expectedGeneration":1,"expectedRevision":1,"instanceId":"instanceB"}"#,
         _ => panic!("missing complete test request: {request_id}"),
     }
 }
@@ -123,12 +125,16 @@ fn legacy_bound_seat_migrates_without_losing_identity_or_binding() {
     db.execute(OPERATIONS).unwrap();
     let insert_instance = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
     insert_instance.step_done().unwrap();
+    drop(insert_instance);
     let insert_lead = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','lead','incarnationA','USER',NULL,'LONG','instanceA','IDLE',1,1)").unwrap();
     insert_lead.step_done().unwrap();
+    drop(insert_lead);
     let insert_child = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','child','incarnationB','LEAD','lead','SHORT','instanceA','IDLE',1,1)").unwrap();
     insert_child.step_done().unwrap();
+    drop(insert_child);
     let insert_operation = Statement::prepare(db.as_ptr(), "INSERT INTO gogoke_v37_seat_operations(domain_id,request_id,fingerprint,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,revision,generation) VALUES('projectA','legacyCreate','legacy-fingerprint','lead','incarnationA','USER',NULL,'LONG','instanceA','IDLE',1,1)").unwrap();
     insert_operation.step_done().unwrap();
+    drop(insert_operation);
 
     initialize_schema(&mut db).unwrap();
     let restored = get(&db, "projectA", "lead").unwrap().unwrap();
@@ -150,6 +156,10 @@ fn legacy_bound_seat_migrates_without_losing_identity_or_binding() {
     .unwrap();
     assert!(snapshot_count.step_row().unwrap());
     assert_eq!(snapshot_count.column_text(0).unwrap(), "0");
+    // Keep the close path free of live SQLite statements.  `sqlite3_close`
+    // returns BUSY while this readback statement is alive, so the native
+    // close ledger has no entry for this generation.
+    drop(snapshot_count);
     initialize_schema(&mut db).unwrap();
 
     db.close_checked().unwrap();
@@ -183,6 +193,150 @@ fn empty_or_oversize_raw_request_is_rejected_before_mutation() {
             ));
         }
         assert!(get(db, "projectA", "lead").unwrap().is_none());
+    });
+}
+
+#[test]
+fn user_issuer_is_checked_against_current_profile_inside_write_group() {
+    fixture(|_db_a, owner_a| {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path_b = std::env::temp_dir().join(format!(
+            "gogoke-v37-seat-owner-seam-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path_b).unwrap();
+        let root_b = RootLock::acquire(&path_b).unwrap();
+        let database_b = path_b.join("state.sqlite");
+        let mut db_b = create_new(&root_b, &database_b).unwrap();
+        db_b.execute("PRAGMA foreign_keys=ON").unwrap();
+        let owner_b = crate::store::authority::initialize_profile(&mut db_b, &root_b).unwrap();
+        crate::store::instance::initialize_schema(&mut db_b).unwrap();
+        initialize_schema(&mut db_b).unwrap();
+
+        // The seam is deliberately unusable outside an active write group.
+        assert!(
+            crate::store::authority::check_owner_in_current_transaction(&db_b, &owner_b).is_err()
+        );
+
+        // The current owner succeeds in the same write group for both the
+        // template publisher and the seat creator.
+        store_template(
+            &mut db_b,
+            NativeOrigin::user(&owner_b),
+            StoreTemplate {
+                domain_id: "projectA",
+                template_id: "templateA",
+                settings_json: br#"{"instruction":"default"}"#,
+            },
+        )
+        .unwrap();
+        create(
+            &mut db_b,
+            NativeOrigin::user(&owner_b),
+            CreateSeat {
+                domain_id: "projectA",
+                seat_id: "currentOwner",
+                template_id: "templateA",
+                instance_id: None,
+                kind: Kind::Short,
+                request_id: "currentOwnerCreate",
+                request_bytes: br#"{"op":"create-from-template","requestId":"currentOwnerCreate","domainId":"projectA","seatId":"currentOwner","templateId":"templateA","kind":"SHORT"}"#,
+            },
+        )
+        .unwrap();
+
+        // An issuer from another verified database is not accepted by either
+        // the template publisher or the User-origin seat path.
+        assert!(matches!(
+            store_template(
+                &mut db_b,
+                NativeOrigin::user(owner_a),
+                StoreTemplate {
+                    domain_id: "projectA",
+                    template_id: "crossDb",
+                    settings_json: br#"{"instruction":"cross"}"#,
+                },
+            ),
+            Err(SeatError::Denied)
+        ));
+        assert!(matches!(
+            create(
+                &mut db_b,
+                NativeOrigin::user(owner_a),
+                CreateSeat {
+                    domain_id: "projectA",
+                    seat_id: "crossDbSeat",
+                    template_id: "templateA",
+                    instance_id: None,
+                    kind: Kind::Short,
+                    request_id: "crossDbCreate",
+                    request_bytes: br#"{"op":"create-from-template","requestId":"crossDbCreate","domainId":"projectA","seatId":"crossDbSeat","templateId":"templateA","kind":"SHORT"}"#,
+                },
+            ),
+            Err(SeatError::Denied)
+        ));
+
+        // A previously valid issuer becomes stale when the current profile's
+        // issuer changes; the write group must reject it before mutation.
+        db_b.execute(
+            "UPDATE gogoke_authority_profile SET issuer_id='forged-issuer' WHERE singleton=1",
+        )
+        .unwrap();
+        assert!(matches!(
+            create(
+                &mut db_b,
+                NativeOrigin::user(&owner_b),
+                CreateSeat {
+                    domain_id: "projectA",
+                    seat_id: "currentOwner",
+                    template_id: "templateA",
+                    instance_id: None,
+                    kind: Kind::Short,
+                    request_id: "currentOwnerCreate",
+                    request_bytes: br#"{"op":"create-from-template","requestId":"currentOwnerCreate","domainId":"projectA","seatId":"currentOwner","templateId":"templateA","kind":"SHORT"}"#,
+                },
+            ),
+            Err(SeatError::Denied)
+        ));
+        assert!(matches!(
+            store_template(
+                &mut db_b,
+                NativeOrigin::user(&owner_b),
+                StoreTemplate {
+                    domain_id: "projectA",
+                    template_id: "staleIssuer",
+                    settings_json: br#"{"instruction":"stale"}"#,
+                },
+            ),
+            Err(SeatError::Denied)
+        ));
+        assert!(matches!(
+            create(
+                &mut db_b,
+                NativeOrigin::user(&owner_b),
+                CreateSeat {
+                    domain_id: "projectA",
+                    seat_id: "staleIssuerSeat",
+                    template_id: "templateA",
+                    instance_id: None,
+                    kind: Kind::Short,
+                    request_id: "staleIssuerCreate",
+                    request_bytes: br#"{"op":"create-from-template","requestId":"staleIssuerCreate","domainId":"projectA","seatId":"staleIssuerSeat","templateId":"templateA","kind":"SHORT"}"#,
+                },
+            ),
+            Err(SeatError::Denied)
+        ));
+        assert!(get(&db_b, "projectA", "staleIssuerSeat").unwrap().is_none());
+
+        db_b.close_checked().unwrap();
+        drop(root_b);
+        std::fs::remove_file(database_b).unwrap();
+        if let Err(error) = std::fs::remove_dir(&path_b) {
+            eprintln!("owned fixture retained: {} ({error})", path_b.display());
+        }
     });
 }
 
@@ -227,6 +381,7 @@ fn create_from_stored_template_copies_settings_before_later_binding() {
                 domain_id: "projectA",
                 seat_id: "unbound",
                 expected_generation: 1,
+                expected_revision: 1,
                 request_id: "bindUnbound",
                 request_bytes: wire("bindUnbound"),
             },
@@ -242,7 +397,7 @@ fn create_from_stored_template_copies_settings_before_later_binding() {
 }
 
 #[test]
-fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
+fn instance_binding_and_change_require_distinct_operations_and_revision() {
     fixture(|db, owner| {
         let original = create_user(db, owner, "lead", "createLead");
         let original_replay = create(
@@ -277,6 +432,7 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
             ),
             Err(SeatError::Conflict)
         ));
+
         let busy = set_dispatch_state(db, &original, true).unwrap();
         assert!(matches!(
             bind_instance(
@@ -286,6 +442,7 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                     domain_id: "projectA",
                     seat_id: "lead",
                     expected_generation: busy.generation,
+                    expected_revision: busy.revision,
                     request_id: "busyBind",
                     request_bytes: wire("busyBind"),
                 },
@@ -294,67 +451,8 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
             Err(SeatError::Busy)
         ));
         let idle = set_dispatch_state(db, &busy, false).unwrap();
-        let changed = bind_instance(
-            db,
-            NativeOrigin::user(owner),
-            SeatChange {
-                domain_id: "projectA",
-                seat_id: "lead",
-                expected_generation: idle.generation,
-                request_id: "bindOnce",
-                request_bytes: wire("bindOnce"),
-            },
-            "instanceB",
-        )
-        .unwrap();
-        assert_eq!(changed.seat.generation, 4);
-        assert_eq!(changed.seat.instance_id, "instanceB");
-        assert!(matches!(
-            create(
-                db,
-                NativeOrigin::user(owner),
-                CreateSeat {
-                    domain_id: "projectA",
-                    seat_id: "lead",
-                    template_id: "templateA",
-                    instance_id: Some("instanceA"),
-                    kind: Kind::Long,
-                    request_id: "createLead",
-                    request_bytes: wire("createLead"),
-                }
-            ),
-            Err(SeatError::Conflict)
-        ));
-        assert!(matches!(
-            bind_instance(
-                db,
-                NativeOrigin::user(owner),
-                SeatChange {
-                    domain_id: "projectA",
-                    seat_id: "lead",
-                    expected_generation: 1,
-                    request_id: "staleBind",
-                    request_bytes: wire("staleBind"),
-                },
-                "instanceA"
-            ),
-            Err(SeatError::Conflict)
-        ));
-        let replay = bind_instance(
-            db,
-            NativeOrigin::user(owner),
-            SeatChange {
-                domain_id: "projectA",
-                seat_id: "lead",
-                expected_generation: idle.generation,
-                request_id: "bindOnce",
-                request_bytes: wire("bindOnce"),
-            },
-            "instanceB",
-        )
-        .unwrap();
-        assert!(replay.replayed);
-        assert_eq!(replay.seat, changed.seat);
+
+        // A bound seat cannot be routed through the first-bind operation.
         assert!(matches!(
             bind_instance(
                 db,
@@ -363,13 +461,50 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                     domain_id: "projectA",
                     seat_id: "lead",
                     expected_generation: idle.generation,
-                    request_id: "bindOnce",
-                    request_bytes: br#"{"op":"bind","requestId":"bindOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"instanceId":"instanceB","hidden":"payload"}"#,
+                    expected_revision: idle.revision,
+                    request_id: "boundBind",
+                    request_bytes: wire("boundBind"),
                 },
                 "instanceB"
             ),
             Err(SeatError::Conflict)
         ));
+
+        // The revision CAS is independent of the generation CAS.
+        assert!(matches!(
+            change_instance(
+                db,
+                NativeOrigin::user(owner),
+                SeatChange {
+                    domain_id: "projectA",
+                    seat_id: "lead",
+                    expected_generation: idle.generation,
+                    expected_revision: idle.revision - 1,
+                    request_id: "staleRevision",
+                    request_bytes: wire("staleRevision"),
+                },
+                "instanceB"
+            ),
+            Err(SeatError::Conflict)
+        ));
+        let changed = change_instance(
+            db,
+            NativeOrigin::user(owner),
+            SeatChange {
+                domain_id: "projectA",
+                seat_id: "lead",
+                expected_generation: idle.generation,
+                expected_revision: idle.revision,
+                request_id: "changeOnce",
+                request_bytes: wire("changeOnce"),
+            },
+            "instanceB",
+        )
+        .unwrap();
+        assert_eq!(changed.seat.generation, 4);
+        assert_eq!(changed.seat.revision, 4);
+        assert_eq!(changed.seat.instance_id, "instanceB");
+
         assert!(matches!(
             bind_instance(
                 db,
@@ -378,14 +513,107 @@ fn binding_refuses_busy_or_stale_generation_and_replay_checks_current_target() {
                     domain_id: "projectA",
                     seat_id: "lead",
                     expected_generation: 1,
-                    request_id: "bindOnce",
-                    request_bytes: wire("bindOnce"),
+                    expected_revision: 1,
+                    request_id: "staleBind",
+                    request_bytes: wire("staleBind"),
                 },
                 "instanceA"
             ),
             Err(SeatError::Conflict)
         ));
-        assert_eq!(idle.generation, 3);
+        let replay = change_instance(
+            db,
+            NativeOrigin::user(owner),
+            SeatChange {
+                domain_id: "projectA",
+                seat_id: "lead",
+                expected_generation: idle.generation,
+                expected_revision: idle.revision,
+                request_id: "changeOnce",
+                request_bytes: wire("changeOnce"),
+            },
+            "instanceB",
+        )
+        .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.seat, changed.seat);
+        assert!(matches!(
+            change_instance(
+                db,
+                NativeOrigin::user(owner),
+                SeatChange {
+                    domain_id: "projectA",
+                    seat_id: "lead",
+                    expected_generation: idle.generation,
+                    expected_revision: idle.revision,
+                    request_id: "changeOnce",
+                    request_bytes: br#"{"op":"change-instance","requestId":"changeOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":3,"instanceId":"instanceB","hidden":"payload"}"#,
+                },
+                "instanceB"
+            ),
+            Err(SeatError::Conflict)
+        ));
+        // Reusing a request ID for the other operation identity is also a
+        // fingerprint conflict, even when the typed target is otherwise valid.
+        assert!(matches!(
+            bind_instance(
+                db,
+                NativeOrigin::user(owner),
+                SeatChange {
+                    domain_id: "projectA",
+                    seat_id: "lead",
+                    expected_generation: idle.generation,
+                    expected_revision: idle.revision,
+                    request_id: "changeOnce",
+                    request_bytes: wire("changeOnce"),
+                },
+                "instanceB"
+            ),
+            Err(SeatError::Conflict)
+        ));
+        assert_eq!(get(db, "projectA", "lead").unwrap().unwrap(), changed.seat);
+    });
+}
+
+#[test]
+fn change_instance_rejects_unbound_seat() {
+    fixture(|db, owner| {
+        let created = create(
+            db,
+            NativeOrigin::user(owner),
+            CreateSeat {
+                domain_id: "projectA",
+                seat_id: "unboundChange",
+                template_id: "templateA",
+                instance_id: None,
+                kind: Kind::Short,
+                request_id: "createUnboundChange",
+                request_bytes: br#"{"op":"create-from-template","requestId":"createUnboundChange","domainId":"projectA","seatId":"unboundChange","templateId":"templateA","kind":"SHORT"}"#,
+            },
+        )
+        .unwrap()
+        .seat;
+        assert_eq!(created.instance_id, "");
+        assert!(matches!(
+            change_instance(
+                db,
+                NativeOrigin::user(owner),
+                SeatChange {
+                    domain_id: "projectA",
+                    seat_id: "unboundChange",
+                    expected_generation: created.generation,
+                    expected_revision: created.revision,
+                    request_id: "unboundChange",
+                    request_bytes: br#"{"op":"change-instance","requestId":"unboundChange","domainId":"projectA","seatId":"unboundChange","expectedRevision":1,"instanceId":"instanceB"}"#,
+                },
+                "instanceB"
+            ),
+            Err(SeatError::Conflict)
+        ));
+        assert_eq!(
+            get(db, "projectA", "unboundChange").unwrap().unwrap(),
+            created
+        );
     });
 }
 
@@ -421,6 +649,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                     domain_id: "projectA",
                     seat_id: "another",
                     expected_generation: another.generation,
+                    expected_revision: another.revision,
                     request_id: "forbiddenBind",
                     request_bytes: wire("forbiddenBind"),
                 },
@@ -451,6 +680,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 domain_id: "projectA",
                 seat_id: "worker",
                 expected_generation: worker.generation,
+                expected_revision: worker.revision,
                 request_id: "promoteWorker",
                 request_bytes: wire("promoteWorker"),
             },
@@ -465,6 +695,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 domain_id: "projectA",
                 seat_id: "worker",
                 expected_generation: promoted.generation,
+                expected_revision: promoted.revision,
                 request_id: "reclaimWorker",
                 request_bytes: wire("reclaimWorker"),
             },
@@ -555,6 +786,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
             domain_id: "projectA",
             seat_id: "worker",
             expected_generation: worker.generation,
+            expected_revision: worker.revision,
             request_id: "promoteWorker",
             request_bytes: wire("promoteWorker"),
         };
@@ -566,6 +798,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
                 domain_id: "projectA",
                 seat_id: "worker",
                 expected_generation: worker.generation,
+                expected_revision: worker.revision,
                 request_id: "promoteWorker",
                 request_bytes: wire("promoteWorker"),
             },
@@ -584,6 +817,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
                     domain_id: "projectA",
                     seat_id: "worker",
                     expected_generation: worker.generation,
+                    expected_revision: worker.revision,
                     request_id: "promoteWorker",
                     request_bytes: wire("promoteWorker"),
                 }
@@ -600,6 +834,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
                     domain_id: "projectA",
                     seat_id: "worker",
                     expected_generation: worker.generation,
+                    expected_revision: worker.revision,
                     request_id: "promoteWorker",
                     request_bytes: wire("promoteWorker"),
                 }

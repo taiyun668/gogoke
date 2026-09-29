@@ -3,7 +3,7 @@
 //! the future ingress must authenticate a live lead session before admission.
 
 use super::atomic::{AtomicError, Json, Parser, Statement};
-use super::authority::OwnerIssuer;
+use super::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 #[cfg(all(test, windows))]
@@ -162,6 +162,7 @@ pub(crate) struct SeatChange<'a> {
     pub(crate) domain_id: &'a str,
     pub(crate) seat_id: &'a str,
     pub(crate) expected_generation: i64,
+    pub(crate) expected_revision: i64,
     pub(crate) request_id: &'a str,
     pub(crate) request_bytes: &'a [u8],
 }
@@ -217,6 +218,15 @@ fn transact<T>(
             Err(error)
         }
     }
+}
+fn check_current_owner(
+    db: &VerifiedDatabaseConnection<'_>,
+    issuer: &OwnerIssuer,
+) -> Result<(), SeatError> {
+    check_owner_in_current_transaction(db, issuer).map_err(|error| match error {
+        super::orchestration::OrchestrationError::Atomic(source) => SeatError::Store(source),
+        _ => SeatError::Denied,
+    })
 }
 fn schema(db: &VerifiedDatabaseConnection<'_>) -> Result<Vec<(String, String)>, SeatError> {
     let q = Statement::prepare(db.as_ptr(), "SELECT name,sql FROM main.sqlite_schema WHERE lower(name) LIKE 'gogoke_v37_seat%' ORDER BY name")?;
@@ -442,9 +452,10 @@ pub(crate) fn store_template(
     origin: NativeOrigin<'_>,
     input: StoreTemplate<'_>,
 ) -> Result<(), SeatError> {
-    if !matches!(origin, NativeOrigin::User(_)) {
-        return Err(SeatError::Denied);
-    }
+    let issuer = match origin {
+        NativeOrigin::User(issuer) => issuer,
+        NativeOrigin::Lead(_) => return Err(SeatError::Denied),
+    };
     if !valid_id(input.domain_id) {
         return Err(SeatError::Invalid("domain_id"));
     }
@@ -453,6 +464,7 @@ pub(crate) fn store_template(
     }
     validate_template_settings(input.settings_json)?;
     transact(db, |db| {
+        check_current_owner(db, issuer)?;
         let existing = Statement::prepare(
             db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_seat_templates WHERE domain_id=?1 AND template_id=?2",
@@ -494,7 +506,10 @@ fn check_origin(
     target: Option<&Seat>,
 ) -> Result<(Layer, Option<String>), SeatError> {
     match origin {
-        NativeOrigin::User(_issuer) => Ok((Layer::User, None)),
+        NativeOrigin::User(issuer) => {
+            check_current_owner(db, issuer)?;
+            Ok((Layer::User, None))
+        }
         NativeOrigin::Lead(admission) => {
             if admission.domain_id != domain {
                 return Err(SeatError::Denied);
@@ -688,6 +703,10 @@ pub(crate) fn create(
         input.request_bytes,
     );
     transact(db, |db| {
+        // Authenticate before looking up a request ID as well as before the
+        // first seat write. This covers both fresh writes and replay/conflict
+        // paths in the same write group.
+        check_origin(db, &origin, input.domain_id, None)?;
         if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
             authorize_replay(db, &origin, &receipt)?;
             return Ok(receipt);
@@ -759,6 +778,9 @@ fn change(
     if input.expected_generation < 1 {
         return Err(SeatError::Invalid("generation"));
     }
+    if input.expected_revision < 1 {
+        return Err(SeatError::Invalid("revision"));
+    }
     let (origin_id, origin_incarnation, origin_generation) = match &origin {
         NativeOrigin::User(_) => ("", "", String::new()),
         NativeOrigin::Lead(a) => (
@@ -773,6 +795,7 @@ fn change(
             input.domain_id,
             input.seat_id,
             &input.expected_generation.to_string(),
+            &input.expected_revision.to_string(),
             value,
             origin_id,
             origin_incarnation,
@@ -781,6 +804,9 @@ fn change(
         input.request_bytes,
     );
     transact(db, |db| {
+        // Keep request replay lookup behind the current issuer check. A
+        // request-ID collision must not become an issuer oracle.
+        check_origin(db, &origin, input.domain_id, None)?;
         if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
             authorize_replay(db, &origin, &receipt)?;
             return Ok(receipt);
@@ -793,6 +819,9 @@ fn change(
         if before.generation != input.expected_generation {
             return Err(SeatError::Conflict);
         }
+        if before.revision != input.expected_revision {
+            return Err(SeatError::Conflict);
+        }
         if before.state == State::Busy {
             return Err(SeatError::Busy);
         }
@@ -802,16 +831,25 @@ fn change(
             .ok_or(SeatError::Conflict)?;
         let next_revision = before.revision.checked_add(1).ok_or(SeatError::Conflict)?;
         let sql = match action {
-            "bind" => {
-                if before.instance_id == value { return Err(SeatError::Conflict); }
+            "bind-instance" => {
+                if !before.instance_id.is_empty() {
+                    return Err(SeatError::Conflict);
+                }
                 if !instance_exists(db, value)? { return Err(SeatError::Unknown); }
-                "UPDATE main.gogoke_v37_seats SET instance_id=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND state='IDLE'"
+                "UPDATE main.gogoke_v37_seats SET instance_id=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND revision=?7 AND state='IDLE'"
+            }
+            "change-instance" => {
+                if before.instance_id.is_empty() || before.instance_id == value {
+                    return Err(SeatError::Conflict);
+                }
+                if !instance_exists(db, value)? { return Err(SeatError::Unknown); }
+                "UPDATE main.gogoke_v37_seats SET instance_id=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND revision=?7 AND state='IDLE'"
             }
             "promote" => {
                 if before.kind != Kind::Short { return Err(SeatError::Conflict); }
-                "UPDATE main.gogoke_v37_seats SET kind=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND state='IDLE'"
+                "UPDATE main.gogoke_v37_seats SET kind=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND revision=?7 AND state='IDLE'"
             }
-            "reclaim" => "UPDATE main.gogoke_v37_seats SET state=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND state='IDLE'",
+            "reclaim" => "UPDATE main.gogoke_v37_seats SET state=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND revision=?7 AND state='IDLE'",
             _ => return Err(SeatError::Invalid("action")),
         };
         let q = Statement::prepare(db.as_ptr(), sql)?;
@@ -821,6 +859,7 @@ fn change(
         q.bind_text(4, input.domain_id)?;
         q.bind_text(5, input.seat_id)?;
         q.bind_i64(6, before.generation)?;
+        q.bind_i64(7, before.revision)?;
         q.step_done()?;
         let seat = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::SchemaDrift)?;
         if seat.generation != next_generation || seat.revision != next_revision {
@@ -842,7 +881,18 @@ pub(crate) fn bind_instance(
     if !valid_id(instance_id) {
         return Err(SeatError::Invalid("instance_id"));
     }
-    change(db, origin, input, "bind", instance_id)
+    change(db, origin, input, "bind-instance", instance_id)
+}
+pub(crate) fn change_instance(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    origin: NativeOrigin<'_>,
+    input: SeatChange<'_>,
+    instance_id: &str,
+) -> Result<SeatReceipt, SeatError> {
+    if !valid_id(instance_id) {
+        return Err(SeatError::Invalid("instance_id"));
+    }
+    change(db, origin, input, "change-instance", instance_id)
 }
 pub(crate) fn promote(
     db: &mut VerifiedDatabaseConnection<'_>,
