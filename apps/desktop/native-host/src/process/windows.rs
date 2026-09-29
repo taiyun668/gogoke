@@ -2643,6 +2643,7 @@ mod tests {
         let pipe_path = listener.path().to_owned();
         let (sender, receiver) = std::sync::mpsc::channel();
         let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let (client_done_sender, client_done_receiver) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
             let mut connection = match listener.accept_app_container() {
                 Ok(connection) => connection,
@@ -2657,6 +2658,9 @@ mod tests {
             assert!(sender.send(Ok((package, peer))).is_ok(), "seat result receiver");
             release_receiver.recv_timeout(Duration::from_secs(15)).expect("host admission result");
             connection.write_frame(b"ok").expect("native Job admission ack");
+            // Keep the server end alive until the helper has consumed the ack.
+            client_done_receiver.recv_timeout(Duration::from_secs(15))
+                .expect("first helper completion before pipe close");
         });
         let mut launch = ProcessLaunch::new(&exe);
         launch.current_directory = Some(home.clone());
@@ -2707,13 +2711,14 @@ mod tests {
         assert!(!custodian.peer_in_active_job(&unrelated.ticket, &peer)
             .expect("missing Job is denied"));
         release_sender.send(()).expect("admit verified Job peer");
-        server.join().expect("seat listener thread");
         assert!(custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(10))
             .expect("LPAC exit"));
         let first_helper_status = std::fs::read_to_string(home.join("first-helper-status.txt"))
             .expect("first LPAC helper completion");
         assert_eq!(first_helper_status, "SUCCESS", "first LPAC helper must complete the protocol; stderr={:?}",
             std::fs::read_to_string(home.join("first-helper-stderr.txt")));
+        client_done_sender.send(()).expect("first helper completed before pipe close");
+        server.join().expect("seat listener thread");
         assert!(!home.join("pipe-client-error.txt").exists(), "LPAC pipe client reported failure");
         assert_eq!(accepted.as_deref(), Some(package_sid.as_str()));
         drop(peer);
