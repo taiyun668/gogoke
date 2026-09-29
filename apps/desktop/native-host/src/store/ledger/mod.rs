@@ -39,7 +39,7 @@ const RAW_SOURCE_COLUMNS: [&str; 12] = [
     "resolved_event_id",
     "no_event_reason",
 ];
-const RAW_SOURCE_SCHEMA: &str = "CREATE TABLE v37_ledger_raw_source (
+const RAW_SOURCE_SCHEMA: &str = "CREATE TABLE main.v37_ledger_raw_source (
     operation_id TEXT NOT NULL,
     process_ticket TEXT NOT NULL,
     custodian_nonce TEXT NOT NULL,
@@ -145,6 +145,8 @@ pub(crate) struct SessionRegistration {
 pub(crate) struct EventInput {
     pub(crate) event_id: String,
     pub(crate) source_epoch: String,
+    /// The normalized K-LEDGER event cursor. It is contiguous within the
+    /// session/epoch event stream and is independent of raw frame ordinals.
     pub(crate) source_cursor: String,
     pub(crate) domain_id: String,
     pub(crate) seat_id: String,
@@ -197,6 +199,8 @@ pub(crate) struct SubscriptionPage {
 pub(crate) struct RawSourceKey {
     pub(crate) operation_id: String,
     pub(crate) source_epoch: String,
+    /// The ordinal of this raw protocol frame under the native H reader.
+    /// It is not the normalized K-LEDGER event cursor.
     pub(crate) source_cursor: String,
 }
 
@@ -348,7 +352,8 @@ fn h_source_binding(
     let statement = Statement::prepare(
         connection.as_ptr(),
         "SELECT a.domain_id, a.session_id, a.generation,
-                c.ticket, c.custodian_nonce, a.state, c.state
+                c.ticket, c.custodian_nonce, a.state, c.state,
+                COALESCE(a.stop_fact_id, ''), COALESCE(c.stop_proof_hash, '')
          FROM main.gogoke_v37_h_claim AS a
          JOIN main.gogoke_coordination_process_custody AS c
            ON c.operation_id = a.process_operation_id
@@ -369,15 +374,20 @@ fn h_source_binding(
     };
     let claim_state = statement.column_text(5)?;
     let custody_state = statement.column_text(6)?;
+    let claim_stop_fact = statement.column_text(7)?;
+    let custody_stop_proof = statement.column_text(8)?;
+    let released_recovery = expected.is_some()
+        && claim_state == "RELEASED"
+        && custody_state == "STOPPED"
+        && !claim_stop_fact.is_empty()
+        && claim_stop_fact == custody_stop_proof;
     let state_ok = if recovery {
         matches!(
             (claim_state.as_str(), custody_state.as_str()),
             ("COMMITTED", "ACTIVE" | "UNKNOWN")
                 | ("UNKNOWN", "UNKNOWN" | "STOPPED")
                 | ("STOPPED", "STOPPED")
-        ) || (expected.is_some()
-            && claim_state == "RELEASED"
-            && custody_state == "STOPPED")
+        ) || released_recovery
     } else {
         claim_state == "COMMITTED" && custody_state == "ACTIVE"
     };
@@ -425,7 +435,7 @@ fn read_raw_source(
                 session_id, generation, source_epoch, source_cursor,
                 hex(raw_bytes), state, COALESCE(resolved_event_id, ''),
                 COALESCE(no_event_reason, '')
-         FROM v37_ledger_raw_source
+         FROM main.v37_ledger_raw_source
          WHERE operation_id = ? AND source_epoch = ? AND source_cursor = ?",
     )?;
     statement.bind_text(1, &key.operation_id)?;
@@ -507,7 +517,7 @@ fn raw_source_columns(
 ) -> Result<Vec<String>, AtomicError> {
     let statement = Statement::prepare(
         connection.as_ptr(),
-        "PRAGMA table_info('v37_ledger_raw_source')",
+        "PRAGMA main.table_info('v37_ledger_raw_source')",
     )?;
     let mut columns = Vec::new();
     while statement.step_row()? {
@@ -545,20 +555,20 @@ fn ensure_raw_source_schema(
         .map_err(AtomicError::from)?;
     let migrated: Result<(), crate::store::same_open::SameOpenError> = (|| {
         connection.execute(
-            "ALTER TABLE v37_ledger_raw_source RENAME TO v37_ledger_raw_source_legacy",
+            "ALTER TABLE main.v37_ledger_raw_source RENAME TO v37_ledger_raw_source_legacy",
         )?;
         connection.execute(RAW_SOURCE_SCHEMA)?;
         connection.execute(
-            "INSERT INTO v37_ledger_raw_source
+            "INSERT INTO main.v37_ledger_raw_source
              (operation_id, process_ticket, custodian_nonce, domain_id, session_id,
               generation, source_epoch, source_cursor, raw_bytes, state,
               resolved_event_id, no_event_reason)
              SELECT operation_id, process_ticket, custodian_nonce, domain_id, session_id,
                     generation, source_epoch, source_cursor, raw_bytes, state,
                     resolved_event_id, NULL
-             FROM v37_ledger_raw_source_legacy",
+             FROM main.v37_ledger_raw_source_legacy",
         )?;
-        connection.execute("DROP TABLE v37_ledger_raw_source_legacy")?;
+        connection.execute("DROP TABLE main.v37_ledger_raw_source_legacy")?;
         Ok(())
     })();
     match migrated {
@@ -809,7 +819,8 @@ fn existing_event(
 /// custody is the only source of process labels: operation/session/generation
 /// are resolved through H on this same connection, while the ticket, nonce,
 /// domain and generation must match the custody object that read the bytes.
-/// No caller-selected label can create a journal row.
+/// No caller-selected label can create a journal row. `source_cursor` is the
+/// raw frame ordinal; normalized event cursors are supplied later by `record`.
 pub(crate) fn capture_raw_source(
     connection: &mut VerifiedDatabaseConnection<'_>,
     frame: &OriginBoundFrame,
@@ -834,7 +845,7 @@ pub(crate) fn capture_raw_source(
     }
     let statement = Statement::prepare(
         connection.as_ptr(),
-        "INSERT INTO v37_ledger_raw_source
+        "INSERT INTO main.v37_ledger_raw_source
          (operation_id, process_ticket, custodian_nonce, domain_id, session_id,
           generation, source_epoch, source_cursor, raw_bytes, state, no_event_reason)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL)",
@@ -879,7 +890,9 @@ pub(crate) fn read_pending_raw_source(
 /// Link a pending raw frame to the already-normalized K-LEDGER event. This
 /// updates only the journal row; normalized query pages and their global
 /// cursor stay unchanged. Repeating the exact resolution is idempotent, while
-/// a different event identity is a conflict.
+/// a different event identity is a conflict. The raw frame ordinal is linked
+/// by event ID and custody/session/epoch binding; it need not equal the
+/// normalized event cursor.
 pub(crate) fn resolve_raw_source(
     connection: &mut VerifiedDatabaseConnection<'_>,
     operation_id: &str,
@@ -907,7 +920,7 @@ pub(crate) fn resolve_raw_source(
     let binding = h_source_binding(connection, operation_id, Some(&existing), None, true)?;
     let event = Statement::prepare(
         connection.as_ptr(),
-        "SELECT domain_id, session_id, source_epoch, source_cursor
+        "SELECT domain_id, session_id, source_epoch
          FROM v37_ledger_index
          WHERE source_kind = 'v37' AND source_event_id = ?",
     )?;
@@ -918,14 +931,13 @@ pub(crate) fn resolve_raw_source(
     if event.column_text(0)? != binding.domain_id
         || event.column_text(1)? != binding.session_id
         || event.column_text(2)? != existing.key.source_epoch
-        || event.column_text(3)? != existing.key.source_cursor
         || event.step_row()?
     {
         return Err(AtomicError::OperationConflict);
     }
     let statement = Statement::prepare(
         connection.as_ptr(),
-        "UPDATE v37_ledger_raw_source
+        "UPDATE main.v37_ledger_raw_source
          SET state = 'RESOLVED', resolved_event_id = ?
          WHERE operation_id = ? AND source_epoch = ? AND source_cursor = ?
            AND state = 'PENDING' AND resolved_event_id IS NULL
@@ -952,7 +964,9 @@ pub(crate) fn resolve_raw_source(
 /// Mark a captured provider frame as terminal without manufacturing a
 /// normalized ledger event. This covers JSON-RPC replies/notifications (and
 /// other protocol frames) that are valid source bytes but carry no K-LEDGER
-/// update. The reason is a bounded code, never raw protocol text.
+/// update. The raw frame ordinal is terminalized independently of the
+/// normalized event stream. The reason is a bounded code, never raw protocol
+/// text.
 pub(crate) fn resolve_raw_source_no_event(
     connection: &mut VerifiedDatabaseConnection<'_>,
     operation_id: &str,
@@ -977,23 +991,10 @@ pub(crate) fn resolve_raw_source_no_event(
     if existing.state == RawSourceState::Resolved {
         return Err(AtomicError::OperationConflict);
     }
-    let binding = h_source_binding(connection, operation_id, Some(&existing), None, true)?;
-    let event = Statement::prepare(
-        connection.as_ptr(),
-        "SELECT COUNT(*) FROM v37_ledger_index
-         WHERE source_kind = 'v37' AND domain_id = ? AND session_id = ?
-           AND source_epoch = ? AND source_cursor = ?",
-    )?;
-    event.bind_text(1, &binding.domain_id)?;
-    event.bind_text(2, &binding.session_id)?;
-    event.bind_text(3, &existing.key.source_epoch)?;
-    event.bind_text(4, &existing.key.source_cursor)?;
-    if !event.step_row()? || event.column_text(0)? != "0" || event.step_row()? {
-        return Err(AtomicError::OperationConflict);
-    }
+    h_source_binding(connection, operation_id, Some(&existing), None, true)?;
     let statement = Statement::prepare(
         connection.as_ptr(),
-        "UPDATE v37_ledger_raw_source
+        "UPDATE main.v37_ledger_raw_source
          SET state = 'NO_EVENT', resolved_event_id = NULL, no_event_reason = ?
          WHERE operation_id = ? AND source_epoch = ? AND source_cursor = ?
            AND state = 'PENDING' AND resolved_event_id IS NULL
@@ -1083,24 +1084,6 @@ pub(crate) fn record(
     }
     if session.purpose == SessionPurpose::FormalReview && input.tier == Tier::Global {
         return Err(AtomicError::InvalidRecord("formal review global tier"));
-    }
-    let raw_terminal = Statement::prepare(
-        connection.as_ptr(),
-        "SELECT state FROM v37_ledger_raw_source
-         WHERE session_id = ? AND source_epoch = ? AND source_cursor = ?",
-    )?;
-    raw_terminal.bind_text(1, &input.session_id)?;
-    raw_terminal.bind_text(2, &input.source_epoch)?;
-    raw_terminal.bind_text(3, &input.source_cursor)?;
-    let mut found_terminal = false;
-    while raw_terminal.step_row()? {
-        if raw_terminal.column_text(0)? == "NO_EVENT" {
-            found_terminal = true;
-        }
-    }
-    drop(raw_terminal);
-    if found_terminal {
-        return Err(AtomicError::OperationConflict);
     }
     if let Some(existing) = existing_event(connection, &input.event_id)? {
         return if existing.input == *input {
@@ -2056,6 +2039,19 @@ mod tests {
         )
         .expect("legacy table");
         initialize_schema(&mut connection).expect("schema");
+        exec(
+            &mut connection,
+            "CREATE TEMP TABLE v37_ledger_raw_source AS
+                 SELECT * FROM main.v37_ledger_raw_source WHERE 0;
+             INSERT INTO temp.v37_ledger_raw_source
+                 (operation_id, process_ticket, custodian_nonce, domain_id,
+                  session_id, generation, source_epoch, source_cursor, raw_bytes,
+                  state, resolved_event_id, no_event_reason)
+             VALUES ('operation-raw', 'temp-ticket', 'temp-nonce', 'project-raw',
+                     'session-raw', '1', 'source-epoch', '1', X'74656D702D736861646F770A',
+                     'NO_EVENT', NULL, 'temp_shadow')",
+        )
+        .expect("temp shadow row");
         let registration = session(
             "project-raw",
             "seat-raw",
@@ -2109,9 +2105,17 @@ mod tests {
         assert_eq!(
             scalar(
                 &connection,
-                "SELECT COUNT(*) FROM v37_ledger_raw_source",
+                "SELECT COUNT(*) FROM main.v37_ledger_raw_source",
             )
             .expect("raw row count"),
+            "1"
+        );
+        assert_eq!(
+            scalar(
+                &connection,
+                "SELECT COUNT(*) FROM temp.v37_ledger_raw_source",
+            )
+            .expect("temp shadow row count"),
             "1"
         );
         drop(custodian);
@@ -2152,6 +2156,8 @@ mod tests {
             "1",
         )
         .expect("capture");
+        // The unit fixture cannot invoke native H admission; these writes
+        // model its durable STOPPED -> RELEASED ordering and proof fields.
         exec(
             &mut connection,
             "UPDATE gogoke_coordination_process_custody
@@ -2162,6 +2168,29 @@ mod tests {
              WHERE process_operation_id = 'operation-recovery'",
         )
         .expect("simulate durable stop followed by H release");
+        exec(
+            &mut connection,
+            "UPDATE gogoke_v37_h_claim
+             SET stop_fact_id = 'different-proof'
+             WHERE process_operation_id = 'operation-recovery'",
+        )
+        .expect("fixture proof mismatch");
+        assert!(matches!(
+            read_pending_raw_source(
+                &connection,
+                "operation-recovery",
+                "source-epoch",
+                "1",
+            ),
+            Err(AtomicError::OperationConflict)
+        ));
+        exec(
+            &mut connection,
+            "UPDATE gogoke_v37_h_claim
+             SET stop_fact_id = 'proof-recovery'
+             WHERE process_operation_id = 'operation-recovery'",
+        )
+        .expect("fixture proof restore");
         assert!(matches!(
             capture_raw_source(
                 &mut connection,
@@ -2243,7 +2272,7 @@ mod tests {
             "CREATE TABLE orchestration_events
              (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
               occurred_at TEXT, event_type TEXT, payload_json TEXT);
-             CREATE TABLE v37_ledger_raw_source (
+             CREATE TABLE main.v37_ledger_raw_source (
                  operation_id TEXT NOT NULL,
                  process_ticket TEXT NOT NULL,
                  custodian_nonce TEXT NOT NULL,
@@ -2258,7 +2287,7 @@ mod tests {
                  PRIMARY KEY (operation_id, source_epoch, source_cursor),
                  UNIQUE (process_ticket, source_epoch, source_cursor)
              ) STRICT;
-             INSERT INTO v37_ledger_raw_source
+             INSERT INTO main.v37_ledger_raw_source
              VALUES ('operation-old', 'ticket-old', 'nonce-old', 'project-old',
                      'session-old', '1', 'epoch-old', '1', X'610A', 'PENDING', NULL)",
         )
@@ -2308,9 +2337,10 @@ mod tests {
             &mut connection,
             &registration,
             "operation-no-event",
-            r#"echo {"jsonrpc":"2.0","id":7,"result":{}}"#,
+            "echo frame-one&echo frame-two",
         );
-        assert!(frame.bytes().starts_with(br#"{"jsonrpc":"2.0""#));
+        assert!(!frame.bytes().is_empty());
+        assert!(frame.bytes().ends_with(b"\n"));
         capture_raw_source(
             &mut connection,
             &frame,
@@ -2318,7 +2348,7 @@ mod tests {
             "source-epoch",
             "1",
         )
-        .expect("capture protocol frame");
+        .expect("capture first protocol frame");
 
         assert!(matches!(
             resolve_raw_source_no_event(
@@ -2379,36 +2409,220 @@ mod tests {
         )
         .expect("terminal row read")
         .is_none());
-        assert!(matches!(
-            record(
+        let second_frame = custodian
+            .read_persistent_child_frame(
+                &frame.custody().ticket,
+                Duration::from_secs(5),
+            )
+            .expect("second exact child frame");
+        assert!(!second_frame.bytes().is_empty());
+        assert!(second_frame.bytes().ends_with(b"\n"));
+        capture_raw_source(
+            &mut connection,
+            &second_frame,
+            "operation-no-event",
+            "source-epoch",
+            "2",
+        )
+        .expect("capture second protocol frame");
+        let normalized = record(
+            &mut connection,
+            &event_at("normalized-from-frame-two", &registration, Tier::Session, "1"),
+        )
+        .expect("normalized event uses its own event cursor");
+        assert_eq!(normalized.input.source_cursor, "1");
+        assert_eq!(
+            resolve_raw_source(
                 &mut connection,
-                &event_at("late-normalized-event", &registration, Tier::Session, "1"),
+                "operation-no-event",
+                "source-epoch",
+                "2",
+                &normalized.input.event_id,
+            )
+            .expect("link second raw frame"),
+            RawSourceResolution {
+                key: RawSourceKey {
+                    operation_id: "operation-no-event".into(),
+                    source_epoch: "source-epoch".into(),
+                    source_cursor: "2".into(),
+                },
+                event_id: "normalized-from-frame-two".into(),
+            }
+        );
+        assert!(matches!(
+            resolve_raw_source(
+                &mut connection,
+                "operation-no-event",
+                "source-epoch",
+                "2",
+                "different-event",
             ),
             Err(AtomicError::OperationConflict)
         ));
+        assert!(read_pending_raw_source(
+            &connection,
+            "operation-no-event",
+            "source-epoch",
+            "2",
+        )
+        .expect("resolved row read")
+        .is_none());
         assert_eq!(
             scalar(
                 &connection,
                 "SELECT state || ':' || no_event_reason
-                 FROM v37_ledger_raw_source",
+                 FROM main.v37_ledger_raw_source
+                 WHERE source_cursor = '1'",
             )
             .expect("terminal disposition"),
             "NO_EVENT:protocol_reply_without_ledger_event"
         );
-        assert!(query(
-            &connection,
-            &Reader {
-                domain_id: registration.domain_id.clone(),
-                seat_id: registration.seat_id.clone(),
-                session_id: registration.session_id.clone(),
-            },
-            &start,
-            10,
+        assert_eq!(
+            scalar(
+                &connection,
+                "SELECT state || ':' || COALESCE(resolved_event_id, '')
+                 FROM main.v37_ledger_raw_source
+                 WHERE source_cursor = '2'",
+            )
+            .expect("resolved disposition"),
+            "RESOLVED:normalized-from-frame-two"
+        );
+        assert_eq!(
+            query(
+                &connection,
+                &Reader {
+                    domain_id: registration.domain_id.clone(),
+                    seat_id: registration.seat_id.clone(),
+                    session_id: registration.session_id.clone(),
+                },
+                &start,
+                10,
+            )
+            .expect("ordinary query excludes raw bytes")
+            .events
+            .len(),
+            1
+        );
+        assert_eq!(recover(&connection).expect("ordinary recovery").cursor, start.cursor + 1);
+        drop(custodian);
+        connection.close_checked().expect("close");
+    }
+
+    #[test]
+    fn normalized_and_raw_frame_cursors_are_independent() {
+        let _guard = route_b_test_guard();
+        let path = scratch_root();
+        let root = RootLock::acquire(&path).expect("root");
+        let db = path.join("ledger.db");
+        let mut connection = create_new(&root, &db).expect("open");
+        exec(
+            &mut connection,
+            "CREATE TABLE orchestration_events
+             (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
+              occurred_at TEXT, event_type TEXT, payload_json TEXT)",
         )
-        .expect("ordinary query excludes raw terminal rows")
-        .events
-        .is_empty());
-        assert_eq!(recover(&connection).expect("ordinary recovery").cursor, start.cursor);
+        .expect("legacy table");
+        let start = initialize_schema(&mut connection).expect("schema");
+        let registration = session(
+            "project-cursor-separation",
+            "seat-cursor-separation",
+            "session-cursor-separation",
+            SessionPurpose::Work,
+            None,
+        );
+        register_session(&mut connection, &registration).expect("register");
+        initialize_raw_h_fixture(&mut connection);
+        let (mut custodian, _prepared, frame_one) = raw_process_fixture_with_command(
+            &mut connection,
+            &registration,
+            "operation-cursor-separation",
+            "echo event-one&echo no-event&echo event-two",
+        );
+        let frame_two = custodian
+            .read_persistent_child_frame(
+                &frame_one.custody().ticket,
+                Duration::from_secs(5),
+            )
+            .expect("second exact child frame");
+        let frame_three = custodian
+            .read_persistent_child_frame(
+                &frame_one.custody().ticket,
+                Duration::from_secs(5),
+            )
+            .expect("third exact child frame");
+        for (frame, ordinal) in [(&frame_one, "1"), (&frame_two, "2"), (&frame_three, "3")] {
+            assert!(!frame.bytes().is_empty());
+            assert!(frame.bytes().ends_with(b"\n"));
+            capture_raw_source(
+                &mut connection,
+                frame,
+                "operation-cursor-separation",
+                "source-epoch",
+                ordinal,
+            )
+            .expect("capture exact frame ordinal");
+        }
+        let first = record(
+            &mut connection,
+            &event_at("normalized-event-one", &registration, Tier::Session, "1"),
+        )
+        .expect("first normalized event");
+        resolve_raw_source(
+            &mut connection,
+            "operation-cursor-separation",
+            "source-epoch",
+            "1",
+            &first.input.event_id,
+        )
+        .expect("link first raw frame");
+        resolve_raw_source_no_event(
+            &mut connection,
+            "operation-cursor-separation",
+            "source-epoch",
+            "2",
+            "protocol_notification_without_ledger_event",
+        )
+        .expect("terminalize second raw frame");
+        let second = record(
+            &mut connection,
+            &event_at("normalized-event-two", &registration, Tier::Session, "2"),
+        )
+        .expect("second normalized event after no-event frame");
+        resolve_raw_source(
+            &mut connection,
+            "operation-cursor-separation",
+            "source-epoch",
+            "3",
+            &second.input.event_id,
+        )
+        .expect("link third raw frame to normalized cursor two");
+        assert_eq!(
+            scalar(
+                &connection,
+                "SELECT last_cursor FROM v37_ledger_source_stream
+                 WHERE session_id = 'session-cursor-separation'
+                   AND source_epoch = 'source-epoch'",
+            )
+            .expect("normalized stream high-water"),
+            "2"
+        );
+        assert_eq!(recover(&connection).expect("recovery").cursor, start.cursor + 2);
+        assert_eq!(
+            query(
+                &connection,
+                &Reader {
+                    domain_id: registration.domain_id.clone(),
+                    seat_id: registration.seat_id.clone(),
+                    session_id: registration.session_id.clone(),
+                },
+                &start,
+                10,
+            )
+            .expect("ordinary query")
+            .events
+            .len(),
+            2
+        );
         drop(custodian);
         connection.close_checked().expect("close");
     }
@@ -2469,7 +2683,7 @@ mod tests {
         assert_eq!(
             scalar(
                 &connection,
-                "SELECT COUNT(*) FROM v37_ledger_raw_source",
+                "SELECT COUNT(*) FROM main.v37_ledger_raw_source",
             )
             .expect("journal count"),
             "0"

@@ -85,11 +85,13 @@ END;
 
 -- Provider stdout is retained only as an internal recovery journal.  It has
 -- no ledger cursor of its own and is never joined by the user-facing query
--- or receipt paths.  The source cursor is the adapter's cursor, while the
+-- or receipt paths.  Its source_cursor is the raw protocol-frame ordinal;
+-- normalized K-LEDGER source_cursor values remain event-only and are linked
+-- to a raw row by resolved_event_id when normalization succeeds.  The
 -- operation/ticket/session/generation columns bind one exact frame to H's
 -- durable process custody. A valid protocol frame without a
 -- normalized K-LEDGER event is terminal NO_EVENT with a bounded reason code.
-CREATE TABLE IF NOT EXISTS v37_ledger_raw_source (
+CREATE TABLE IF NOT EXISTS main.v37_ledger_raw_source (
     operation_id TEXT NOT NULL,
     process_ticket TEXT NOT NULL,
     custodian_nonce TEXT NOT NULL,
