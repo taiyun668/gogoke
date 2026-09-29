@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-LPAC-8A9EB26A",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "direct_evidence": {
+    "native_run_36583666050": {
+      "source_head": "8a9eb26a9f19e56938d87b9139c2ba40f860aa9d",
+      "result": "474 passed, 1 failed, 0 skipped, 475 executed; only real_app_container_descendant_reaches_native_seat_pipe failed",
+      "parent_observation": "The same LPAC parent could read and open both target images with execute access. Rust Command and direct CreateProcessW for both targets returned Windows error 5; ProcessChildProcessPolicy flags were 0x0. The child did not reach the seat pipe.",
+      "boundary": "The observation does not prove that LPAC inherently forbids child creation or identify the denied object. The raw Windows API failure is direct; filesystem ACL and process policy remain hypotheses."
+    },
+    "ineffective_attempt": {
+      "commit": "17e2ee36",
+      "result": "Adding PROCESS_CREATION_CHILD_PROCESS_OVERRIDE to the parent launch did not change Windows error 5 in cloud run 36583666050.",
+      "reversal": "419c89aa",
+      "product_process_diff_after_reversal": "zero versus the parent of 17e2ee36"
+    },
+    "hygiene_run_36583660735": {
+      "source_head": "8a9eb26a9f19e56938d87b9139c2ba40f860aa9d",
+      "result": "PASS"
+    },
+    "native_run_36585501409": {
+      "source_head": "46fa3beef8d48286e0d903011699f668a6048b55",
+      "state_at_checkpoint": "IN_PROGRESS",
+      "scope": "Cloud Windows native process axes and tests for the F resolver and first ledger recovery fixes. Later ledger commits require a separate exact-head run."
+    }
+  },
+  "implementation": {
+    "b1": "The pinned Codex 0.149.0 adapter verifies effective memory-off configuration through the actual app-server before start or resume, checks the returned thread cwd, and maps account/read to bounded login states. A real no-turn CLI probe passed locally; product session launch is not yet wired.",
+    "f": "Native code now has a fail-closed resolver for the pinned program and ACTIVE persistent or SESSION home, including physical identity and H owner/generation binding. Cloud tests are pending.",
+    "a": "The same verified database has a bounded raw protocol-frame BLOB journal with H custody provenance and recovery APIs. Post-8a ledger commits add released-frame recovery and terminal NO_EVENT handling; an independent audit and exact-head cloud tests are pending.",
+    "h": "The Tauri-owned native host and persistent child frame reader exist. Real LPAC descendant creation, full session authority dispatch, direct raw capture and normalized event flow are not yet connected."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false
+  },
+  "next": "Determine the exact denied stage of LPAC descendant CreateProcessW with direct cloud Windows evidence, repair the root cause without widening the intended security boundary, finish native User/session composition and raw ledger call sites, then run exact-head cloud and real product tests. Construction continues after this checkpoint."
+}
