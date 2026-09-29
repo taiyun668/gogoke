@@ -46,9 +46,16 @@ pub(super) fn before_activation(prepared: &PreparedCustody) -> Option<CliTrace> 
     // Software breakpoints change memory and timing for measurement, not the
     // on-disk CLI bytes, its token or ACL. This is not product acceptance.
     // Continue only the loader breakpoint observed in the first cloud trace.
-    let commands = r#"sxe -c ".if (@rip == ntdll!LdrpDoDebuggerBreak+0x35) { .echo GOGOKE_LOADER_BREAK_CONTINUE; gh }" bpe; bp KERNELBASE!GetFinalPathNameByHandleW ".printf \"GOGOKE_FINALPATH_ENTRY tid=%x flags=%x handle=%p\\n\", @$tid, @r9, @rcx; !handle @rcx f; ~.bp /1 poi(@rsp) \".printf \\\"GOGOKE_FINALPATH_RETURN tid=%x value=%x\\\\n\\\", @$tid, @rax; !gle; gc\"; gc"; .echo GOGOKE_CDB_READY; g"#;
+    let mut nt_calls = String::new();
+    for method in ["NtOpenDirectoryObject", "NtOpenSymbolicLinkObject", "NtCreateFile"] {
+        // These calls share the first three arguments: output handle, desired
+        // access, OBJECT_ATTRIBUTES. Only object names are read, never contents.
+        nt_calls.push_str(&format!(r#"bp ntdll!{method} ".printf \"GOGOKE_NT_ENTRY {method} tid=%x access=%x name=%msu\\n\", @$tid, @rdx, poi(@r8+0x10); ~.bp /1 poi(@rsp) \".printf \\\"GOGOKE_NT_RETURN {method} tid=%x status=%x\\\\n\\\", @$tid, @rax; gc\"; gc"; "#));
+    }
+    let final_path = r#"bp KERNELBASE!GetFinalPathNameByHandleW ".printf \"GOGOKE_FINALPATH_ENTRY tid=%x flags=%x handle=%p\\n\", @$tid, @r9, @rcx; !handle @rcx f; ~.bp /1 poi(@rsp) \".printf \\\"GOGOKE_FINALPATH_RETURN tid=%x value=%x\\\\n\\\", @$tid, @rax; !gle; gc\"; gc"; .echo GOGOKE_CDB_READY; g"#;
+    let commands = format!(r#"sxe -c ".if (@rip == ntdll!LdrpDoDebuggerBreak+0x35) {{ .echo GOGOKE_LOADER_BREAK_CONTINUE; gh }}" bpe; {nt_calls}{final_path}"#);
     let mut child = Command::new(debugger).args(["-G", "-pd", "-p", &prepared.identity.pid.to_string(),
-        "-c", commands]).stdin(Stdio::null()).stdout(Stdio::piped())
+        "-c", commands.as_str()]).stdin(Stdio::null()).stdout(Stdio::piped())
         .stderr(Stdio::inherit()).spawn().expect("attach existing SDK debugger to exact fixture PID");
     let stdout = child.stdout.take().expect("directed debugger stdout");
     let (ready, waiting) = mpsc::sync_channel(1);
