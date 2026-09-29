@@ -1234,7 +1234,8 @@ impl ManagedProcess {
                 let unread = &state.pending[state.pending_offset..];
                 let end = unread.iter().position(|byte| *byte == b'\n')
                     .map_or(unread.len(), |index| index + 1);
-                state.partial.extend_from_slice(&unread[..end]);
+                let chunk = unread[..end].to_vec();
+                state.partial.extend_from_slice(&chunk);
                 state.pending_offset += end;
                 let complete = state.partial.last() == Some(&b'\n');
                 if state.pending_offset == state.pending.len() {
