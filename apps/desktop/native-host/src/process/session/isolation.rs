@@ -20,6 +20,10 @@ const PROFILE_ALREADY_EXISTS: u32 = 0x8007_00b7;
 const FILE_OBJECT: u32 = 1;
 const DACL_SECURITY_INFORMATION: u32 = 4;
 const GRANT_ACCESS: u32 = 1;
+const DENY_ACCESS: u32 = 3;
+const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
 const TRUSTEE_IS_SID: u32 = 0;
 const TRUSTEE_IS_UNKNOWN: u32 = 0;
 const OBJECT_AND_CONTAINER_INHERIT: u32 = 3;
@@ -93,6 +97,15 @@ struct ExplicitAccessW {
     trustee: TrusteeW,
 }
 
+#[repr(C)]
+struct AclSizeInformation { ace_count: u32, acl_bytes_in_use: u32, acl_bytes_free: u32 }
+
+#[repr(C)]
+struct AceHeader { ace_type: u8, ace_flags: u8, ace_size: u16 }
+
+#[repr(C)]
+struct AccessAce { header: AceHeader, mask: u32 }
+
 #[link(name = "userenv")]
 extern "system" {
     fn CreateAppContainerProfile(name: *const u16, display: *const u16,
@@ -119,6 +132,9 @@ extern "system" {
         sacl: *mut c_void) -> u32;
     fn GetExplicitEntriesFromAclW(acl: *mut c_void, count: *mut u32,
         entries: *mut *mut ExplicitAccessW) -> u32;
+    fn GetAclInformation(acl: *mut c_void, information: *mut c_void,
+        length: u32, class: u32) -> i32;
+    fn GetAce(acl: *mut c_void, index: u32, ace: *mut *mut c_void) -> i32;
     fn ConvertStringSidToSidW(text: *const u16, sid: *mut *mut c_void) -> i32;
     fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
 }
@@ -160,6 +176,8 @@ pub(crate) enum IsolationError {
     DirectoryNotPhysical,
     Acl(io::Error),
     AclWitnessMismatch,
+    AclWitnessDetail { object: PathBuf, sid: String, expected: String,
+        observed: Vec<(u32, u32, u32)> },
     InvalidRegistryCapability,
 }
 
@@ -175,6 +193,14 @@ impl fmt::Display for IsolationError {
             Self::DirectoryNotPhysical => write!(f, "AppContainer directory must be a physical directory"),
             Self::Acl(error) => write!(f, "AppContainer ACL: {error}"),
             Self::AclWitnessMismatch => write!(f, "AppContainer ACL witness does not match exact SID, rights, inheritance or object identity"),
+            Self::AclWitnessDetail { object, sid, expected, observed } => {
+                write!(f, "AppContainer ACL witness for {:?}, package SID {sid}: expected {expected}; observed", object)?;
+                for (mode, rights, flags) in observed {
+                    write!(f, " (mode={mode}, rights={rights:#x}, flags={flags:#x})")?;
+                }
+                if observed.is_empty() { write!(f, " no package ACE")?; }
+                Ok(())
+            }
             Self::InvalidRegistryCapability => write!(f, "registryRead did not derive exactly one capability SID"),
         }
     }
@@ -377,9 +403,12 @@ impl AppContainerProfile {
         require_bound_path(path, expected, true)?;
         let root = open_physical_object(path, true, READ_CONTROL)?;
         let rights = directory_rights(writable);
-        if package_aces(root.0, self.sid)?.as_slice() != &[(GRANT_ACCESS, rights,
-            OBJECT_AND_CONTAINER_INHERIT)] {
-            return Err(IsolationError::AclWitnessMismatch);
+        let root_aces = package_aces(root.0, self.sid)?;
+        if root_aces.as_slice() != &[(GRANT_ACCESS, rights, OBJECT_AND_CONTAINER_INHERIT)] {
+            return Err(IsolationError::AclWitnessDetail { object: PathBuf::from("."),
+                sid: self.package_sid_string()?,
+                expected: format!("one explicit grant, rights={rights:#x}, flags={OBJECT_AND_CONTAINER_INHERIT:#x}"),
+                observed: root_aces });
         }
         for (child, identity, directory) in collect_tree(path)? {
             let object = open_physical_object(&child, directory, READ_CONTROL)?;
@@ -390,7 +419,13 @@ impl AppContainerProfile {
             if entries.len() != 1 || entries[0].0 != GRANT_ACCESS || entries[0].1 != rights ||
                 entries[0].2 & INHERITED_ACE == 0 ||
                 entries[0].2 & INHERIT_ONLY_ACE != 0 {
-                return Err(IsolationError::AclWitnessMismatch);
+                return Err(IsolationError::AclWitnessDetail {
+                    object: child.strip_prefix(path).map_err(|error| IsolationError::Acl(
+                        io::Error::new(io::ErrorKind::InvalidData,
+                            format!("ACL relative object: {error}"))))?.to_path_buf(),
+                    sid: self.package_sid_string()?,
+                    expected: format!("one inherited effective grant, rights={rights:#x}, inherited flag set, inherit-only flag clear"),
+                    observed: entries });
             }
             require_bound_path(&child, &identity, directory)?;
         }
@@ -603,20 +638,33 @@ fn package_aces(handle: Handle, sid: *mut c_void)
     if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
     let _descriptor = LocalAllocation(descriptor);
     if acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
-    let mut count = 0u32;
-    let mut raw_entries = ptr::null_mut();
-    let status = unsafe { GetExplicitEntriesFromAclW(acl, &mut count, &mut raw_entries) };
-    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
-    let _entries = LocalAllocation(raw_entries.cast());
-    if count > 0 && raw_entries.is_null() { return Err(IsolationError::AclWitnessMismatch); }
-    let entries = if count == 0 { &[][..] } else {
-        unsafe { std::slice::from_raw_parts(raw_entries, count as usize) }
-    };
+    // Read ACE headers directly. EXPLICIT_ACCESS is a reconstructed description
+    // of an ACL, while the inherited flag we witness lives on the actual ACE.
+    let mut size = AclSizeInformation { ace_count: 0, acl_bytes_in_use: 0,
+        acl_bytes_free: 0 };
+    if unsafe { GetAclInformation(acl, (&mut size as *mut AclSizeInformation).cast(),
+        size_of::<AclSizeInformation>() as u32, ACL_SIZE_INFORMATION_CLASS) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
     let mut matched = Vec::new();
-    for entry in entries {
-        if entry.trustee.form == TRUSTEE_IS_SID && !entry.trustee.name.is_null() &&
-            unsafe { EqualSid(entry.trustee.name.cast(), sid) } != 0 {
-            matched.push((entry.access_mode, entry.permissions, entry.inheritance));
+    for index in 0..size.ace_count {
+        let mut ace = ptr::null_mut();
+        if unsafe { GetAce(acl, index, &mut ace) } == 0 {
+            return Err(IsolationError::Acl(io::Error::last_os_error()));
+        }
+        if ace.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+        let header = unsafe { &*ace.cast::<AceHeader>() };
+        let mode = match header.ace_type {
+            ACCESS_ALLOWED_ACE_TYPE => GRANT_ACCESS,
+            ACCESS_DENIED_ACE_TYPE => DENY_ACCESS,
+            other => return Err(IsolationError::Acl(io::Error::new(io::ErrorKind::InvalidData,
+                format!("unsupported DACL ACE type {other:#x} at index {index}")))),
+        };
+        if header.ace_size < 16 { return Err(IsolationError::AclWitnessMismatch); }
+        let access = unsafe { &*ace.cast::<AccessAce>() };
+        let ace_sid = unsafe { ace.cast::<u8>().add(8).cast() };
+        if unsafe { EqualSid(ace_sid, sid) } != 0 {
+            matched.push((mode, access.mask, u32::from(header.ace_flags)));
         }
     }
     Ok(matched)
@@ -647,9 +695,15 @@ fn grant_exact_acl(handle: Handle, sid: *mut c_void, expected: &RootIdentity,
     let status = unsafe { SetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
         ptr::null_mut(), ptr::null_mut(), new_acl.0, ptr::null_mut()) };
     if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
-    if &file_identity(handle)? != expected ||
-        package_aces(handle, sid)?.as_slice() != &[(GRANT_ACCESS, rights, inheritance)] {
+    if &file_identity(handle)? != expected {
         return Err(IsolationError::AclWitnessMismatch);
+    }
+    let observed = package_aces(handle, sid)?;
+    if observed.as_slice() != &[(GRANT_ACCESS, rights, inheritance)] {
+        return Err(IsolationError::AclWitnessDetail { object: PathBuf::from("."),
+            sid: "bound package SID".to_owned(),
+            expected: format!("post-write explicit grant, rights={rights:#x}, flags={inheritance:#x}"),
+            observed });
     }
     Ok(expected.clone())
 }
