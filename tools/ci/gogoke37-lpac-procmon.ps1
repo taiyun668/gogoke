@@ -84,6 +84,23 @@ $denied = @($parent | Where-Object {
 $processEvents = @($parent | Where-Object {
     $_.Operation -match 'Process|Thread|Load Image|CreateFileMapping'
 })
+$createdChildren = @($parent | Where-Object { $_.Operation -eq 'Process Create' } | ForEach-Object {
+    $pidMatch = [regex]::Match($_.Detail, '(?i)(?:^|[,; ]+)PID:\s*(\d+)')
+    if ($pidMatch.Success) {
+        [ordered]@{
+            pid = $pidMatch.Groups[1].Value
+            image = Convert-PathClass $_.Path
+            result = $_.Result
+            time = $_.'Time of Day'
+        }
+    }
+})
+$childPids = @($createdChildren | ForEach-Object { $_.pid } | Select-Object -Unique)
+$childEvents = @(Import-Csv -LiteralPath $csv | Where-Object { $childPids -contains $_.PID })
+$childFailures = @($childEvents | Where-Object {
+    $_.Result -match 'DENIED|PRIVILEGE|BLOCKED|INVALID IMAGE|POLICY|DLL NOT FOUND' -or
+    $_.Operation -eq 'Process Exit'
+})
 $selected = @($denied | Select-Object -First 100 | ForEach-Object {
     [ordered]@{
         time = $_.'Time of Day'
@@ -105,6 +122,17 @@ $summary = [ordered]@{
     parent_event_count = $parent.Count
     parent_denied_count = $denied.Count
     parent_process_event_count = $processEvents.Count
+    created_children = $createdChildren
+    child_event_count = $childEvents.Count
+    selected_child_failures = @($childFailures | Select-Object -First 100 | ForEach-Object {
+        [ordered]@{
+            time = $_.'Time of Day'
+            pid = $_.PID
+            operation = $_.Operation
+            object = Convert-PathClass $_.Path
+            result = $_.Result
+        }
+    })
     selected_process_events = @($processEvents | Select-Object -Last 40 | ForEach-Object {
         [ordered]@{
             time = $_.'Time of Day'
