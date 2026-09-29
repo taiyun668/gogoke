@@ -15,6 +15,20 @@ use std::sync::{Arc, Mutex};
 use std::os::windows::process::CommandExt;
 
 const MAX_HANDSHAKE_LINE: usize = 16 * 1024;
+const STARTUP_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+struct StartupChildGuard(Option<Child>);
+
+impl Drop for StartupChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Design37Host {
@@ -55,8 +69,9 @@ impl Design37Host {
                 )
             })?;
         let host_pid = child.id();
+        let mut startup_child = StartupChildGuard(Some(child));
         let stderr_tail = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take();
+        let stderr = startup_child.0.as_mut().and_then(|child| child.stderr.take());
         if let Some(stderr) = stderr {
             // The host remains long-lived. Drain stderr so a diagnostic cannot
             // block it; the process exit path still reports the exit status.
@@ -81,36 +96,21 @@ impl Design37Host {
                         }
                     }
                 })
-                .map_err(|error| format!("GOGOKE_DESIGN37_HOST_STDERR_FAILED:{error}"))?;
+                .map_err(|error| {
+                    with_stderr_tail(format!("GOGOKE_DESIGN37_HOST_STDERR_FAILED:{error}"), &stderr_tail)
+                })?;
         }
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "GOGOKE_DESIGN37_HOST_STDOUT_MISSING".to_string())?;
-        let mut lines = BufReader::new(stdout).lines();
-        let handshake = (|| -> Result<(String, String, String), String> {
-            let locked = next_line(&mut lines, "LOCKED")?;
-            validate_locked(&locked, root)?;
-            let pipe = next_line(&mut lines, "PIPE")?;
-            let pipe_path = field(&pipe, "PIPE")?;
-            let capability_line = next_line(&mut lines, "CAPABILITY")?;
-            let capability = field(&capability_line, "CAPABILITY")?;
-            if !is_hex_64(&capability) {
-                return Err("GOGOKE_DESIGN37_HOST_CAPABILITY_INVALID".to_string());
-            }
-            let user_pipe_line = next_line(&mut lines, "USER_PIPE")?;
-            let user_pipe = field(&user_pipe_line, "USER_PIPE")?;
-            validate_service_pipe(&pipe_path)?;
-            validate_user_pipe(&user_pipe)?;
-            if pipe_path == user_pipe {
-                return Err("GOGOKE_DESIGN37_PIPE_CHANNELS_NOT_DISTINCT".to_string());
-            }
-            Ok((pipe_path, capability, user_pipe))
-        })()
-        .map_err(|error| with_stderr_tail(error, &stderr_tail))?;
+        let stdout = startup_child
+            .0
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .ok_or_else(|| with_stderr_tail("GOGOKE_DESIGN37_HOST_STDOUT_MISSING".to_string(), &stderr_tail))?;
+        let handshake = read_handshake_with_timeout(stdout, root, &stderr_tail)?;
         let (service_pipe, capability, user_pipe) = handshake;
-        let user_connection = connect_and_verify_user_pipe(&user_pipe, &child)
+        let child = startup_child.0.as_ref().expect("startup child retained");
+        let user_connection = connect_and_verify_user_pipe(&user_pipe, child)
             .map_err(|error| with_stderr_tail(error, &stderr_tail))?;
+        let child = startup_child.0.take().expect("startup child retained");
         Ok(Self {
             child: Mutex::new(child),
             service_pipe,
@@ -238,6 +238,53 @@ fn next_line<R: BufRead>(lines: &mut std::io::Lines<R>, expected: &str) -> Resul
         return Err(format!("GOGOKE_DESIGN37_HOST_{expected}_INVALID"));
     }
     Ok(line)
+}
+
+#[cfg(target_os = "windows")]
+fn read_handshake_with_timeout(
+    stdout: impl Read + Send + 'static,
+    root: &Path,
+    stderr_tail: &Arc<Mutex<Vec<u8>>>,
+) -> Result<(String, String, String), String> {
+    let root = root.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("gogoke-design37-host-handshake".to_string())
+        .spawn(move || {
+            let mut lines = BufReader::new(stdout).lines();
+            let result = (|| -> Result<(String, String, String), String> {
+                let locked = next_line(&mut lines, "LOCKED")?;
+                validate_locked(&locked, &root)?;
+                let pipe = next_line(&mut lines, "PIPE")?;
+                let pipe_path = field(&pipe, "PIPE")?;
+                let capability_line = next_line(&mut lines, "CAPABILITY")?;
+                let capability = field(&capability_line, "CAPABILITY")?;
+                if !is_hex_64(&capability) {
+                    return Err("GOGOKE_DESIGN37_HOST_CAPABILITY_INVALID".to_string());
+                }
+                let user_pipe_line = next_line(&mut lines, "USER_PIPE")?;
+                let user_pipe = field(&user_pipe_line, "USER_PIPE")?;
+                validate_service_pipe(&pipe_path)?;
+                validate_user_pipe(&user_pipe)?;
+                if pipe_path == user_pipe {
+                    return Err("GOGOKE_DESIGN37_PIPE_CHANNELS_NOT_DISTINCT".to_string());
+                }
+                Ok((pipe_path, capability, user_pipe))
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| with_stderr_tail(format!("GOGOKE_DESIGN37_HOST_HANDSHAKE_THREAD_FAILED:{error}"), stderr_tail))?;
+    match receiver.recv_timeout(STARTUP_HANDSHAKE_TIMEOUT) {
+        Ok(result) => result.map_err(|error| with_stderr_tail(error, stderr_tail)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(with_stderr_tail(
+            "GOGOKE_DESIGN37_HOST_HANDSHAKE_TIMEOUT".to_string(),
+            stderr_tail,
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(with_stderr_tail(
+            "GOGOKE_DESIGN37_HOST_HANDSHAKE_FAILED".to_string(),
+            stderr_tail,
+        )),
+    }
 }
 
 #[cfg(target_os = "windows")]
