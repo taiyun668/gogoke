@@ -13,6 +13,7 @@ use std::ptr;
 type Handle = *mut c_void;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_IS_APP_CONTAINER: u32 = 29;
+const TOKEN_CAPABILITIES: u32 = 30;
 const TOKEN_APP_CONTAINER_SID: u32 = 31;
 const PROFILE_ALREADY_EXISTS: u32 = 0x8007_00b7;
 const FILE_OBJECT: u32 = 1;
@@ -32,6 +33,10 @@ const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+const SE_GROUP_ENABLED: u32 = 4;
+
+#[repr(C)]
+struct SidAndAttributes { sid: *mut c_void, attributes: u32 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -105,6 +110,7 @@ extern "system" {
         sacl: *mut c_void) -> u32;
     fn GetExplicitEntriesFromAclW(acl: *mut c_void, count: *mut u32,
         entries: *mut *mut ExplicitAccessW) -> u32;
+    fn ConvertStringSidToSidW(text: *const u16, sid: *mut *mut c_void) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -153,10 +159,12 @@ impl fmt::Display for IsolationError {
 
 pub(crate) struct AppContainerProfile {
     sid: *mut c_void,
+    internet_sid: Option<LocalAllocation>,
+    internet_capability: Option<SidAndAttributes>,
 }
 
 impl AppContainerProfile {
-    pub(crate) fn ensure(name: &str) -> Result<Self, IsolationError> {
+    pub(crate) fn ensure(name: &str, internet_client: bool) -> Result<Self, IsolationError> {
         if !valid_profile_name(name) { return Err(IsolationError::InvalidProfileName); }
         let wide: Vec<u16> = std::ffi::OsStr::new(name).encode_wide().chain(Some(0)).collect();
         let mut sid = ptr::null_mut();
@@ -169,12 +177,31 @@ impl AppContainerProfile {
             return Err(IsolationError::ProfileHResult(hr));
         }
         if sid.is_null() { return Err(IsolationError::MissingSid); }
-        Ok(Self { sid })
+        let mut profile = Self { sid, internet_sid: None, internet_capability: None };
+        if internet_client { profile.enable_internet_client()?; }
+        Ok(profile)
     }
 
     pub(crate) fn security_capabilities(&self) -> SecurityCapabilities {
-        SecurityCapabilities { app_container_sid: self.sid, capabilities: ptr::null_mut(),
-            capability_count: 0, reserved: 0 }
+        SecurityCapabilities { app_container_sid: self.sid,
+            capabilities: self.internet_capability.as_ref().map_or(ptr::null_mut(), |capability|
+                (capability as *const SidAndAttributes).cast_mut().cast()),
+            capability_count: u32::from(self.internet_capability.is_some()), reserved: 0 }
+    }
+
+    fn enable_internet_client(&mut self) -> Result<(), IsolationError> {
+        // Microsoft documents S-1-15-3-1 as the internetClient capability SID.
+        // An absent network grant stays absent; there is no broad network fallback.
+        let text: Vec<u16> = std::ffi::OsStr::new("S-1-15-3-1")
+            .encode_wide().chain(Some(0)).collect();
+        let mut sid = ptr::null_mut();
+        if unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut sid) } == 0 {
+            return Err(IsolationError::Token(io::Error::last_os_error()));
+        }
+        if sid.is_null() { return Err(IsolationError::MissingSid); }
+        self.internet_capability = Some(SidAndAttributes { sid, attributes: SE_GROUP_ENABLED });
+        self.internet_sid = Some(LocalAllocation(sid));
+        Ok(())
     }
 
     /// Grant only a newly created, empty session directory to this package SID.
@@ -273,6 +300,33 @@ impl AppContainerProfile {
         if observed.is_null() || unsafe { EqualSid(observed, self.sid) } == 0 {
             return Err(IsolationError::WrongToken);
         }
+        let mut capability_bytes = 0u32;
+        unsafe { GetTokenInformation(token.0, TOKEN_CAPABILITIES,
+            ptr::null_mut(), 0, &mut capability_bytes); }
+        let alignment = std::mem::align_of::<SidAndAttributes>();
+        let group_offset = (size_of::<u32>() + alignment - 1) & !(alignment - 1);
+        if capability_bytes < group_offset as u32 || capability_bytes > 4096 {
+            return Err(IsolationError::WrongToken);
+        }
+        let mut groups = vec![0usize; (capability_bytes as usize).div_ceil(size_of::<usize>())];
+        if unsafe { GetTokenInformation(token.0, TOKEN_CAPABILITIES,
+            groups.as_mut_ptr().cast(), capability_bytes, &mut returned) } == 0 {
+            return Err(IsolationError::Token(io::Error::last_os_error()));
+        }
+        if returned < group_offset as u32 { return Err(IsolationError::WrongToken); }
+        let count = unsafe { *(groups.as_ptr() as *const u32) } as usize;
+        if count > 32 || count != usize::from(self.internet_capability.is_some()) ||
+            returned as usize < group_offset + count * size_of::<SidAndAttributes>() {
+            return Err(IsolationError::WrongToken);
+        }
+        if let Some(expected) = &self.internet_capability {
+            let actual = unsafe { &*((groups.as_ptr() as *const u8).add(group_offset)
+                as *const SidAndAttributes) };
+            if actual.sid.is_null() || unsafe { EqualSid(actual.sid, expected.sid) } == 0 ||
+                actual.attributes & SE_GROUP_ENABLED == 0 {
+                return Err(IsolationError::WrongToken);
+            }
+        }
         Ok(())
     }
 }
@@ -324,7 +378,7 @@ mod tests {
         let mut sid = ptr::null_mut();
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide.as_ptr(), &mut sid) };
         assert!(hr >= 0 && !sid.is_null(), "derive test package SID HRESULT={hr:#x}");
-        let profile = AppContainerProfile { sid };
+        let profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None };
         let path = std::env::temp_dir().join(format!("gogoke-v37-acl-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         profile.grant_fresh_session_directory(&path).unwrap();
@@ -343,6 +397,7 @@ mod tests {
         let mut raw_entries = ptr::null_mut();
         assert_eq!(unsafe { GetExplicitEntriesFromAclW(acl, &mut count, &mut raw_entries) }, 0);
         let _entries = LocalAllocation(raw_entries.cast());
+        assert!(count > 0 && !raw_entries.is_null());
         let observed = unsafe { std::slice::from_raw_parts(raw_entries, count as usize) };
         assert!(observed.iter().any(|entry| entry.access_mode == GRANT_ACCESS &&
             entry.inheritance == OBJECT_AND_CONTAINER_INHERIT &&
@@ -354,5 +409,21 @@ mod tests {
         std::fs::remove_file(path.join("present")).unwrap();
         drop(handle);
         std::fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn outbound_network_capability_is_explicit_and_exact() {
+        let name: Vec<u16> = std::ffi::OsStr::new("Gogoke37.capabilitytest")
+            .encode_wide().chain(Some(0)).collect();
+        let mut sid = ptr::null_mut();
+        assert!(unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) } >= 0);
+        let mut profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None };
+        assert_eq!(profile.security_capabilities().capability_count, 0);
+        profile.enable_internet_client().unwrap();
+        let capabilities = profile.security_capabilities();
+        assert_eq!(capabilities.capability_count, 1);
+        let actual = unsafe { &*(capabilities.capabilities as *const SidAndAttributes) };
+        assert_eq!(actual.attributes, SE_GROUP_ENABLED);
+        assert_eq!(actual.sid, profile.internet_sid.as_ref().unwrap().0);
     }
 }

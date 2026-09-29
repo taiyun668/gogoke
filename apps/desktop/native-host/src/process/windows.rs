@@ -298,6 +298,8 @@ pub struct ProcessLaunch {
     /// Set only by the trusted native seat composition; the old service pipe
     /// never supplies an AppContainer name or launches a v37 process.
     pub(crate) app_container_profile: Option<String>,
+    /// Outbound network is a separate explicit AppContainer capability.
+    pub(crate) app_container_internet_client: bool,
 }
 
 impl ProcessLaunch {
@@ -310,6 +312,7 @@ impl ProcessLaunch {
             protocol_stdio: false,
             environment: None,
             app_container_profile: None,
+            app_container_internet_client: false,
         }
     }
 }
@@ -1328,6 +1331,10 @@ pub fn may_target_pid(recorded: &ProcessIdentity, observed: Option<&ProcessIdent
 }
 
 fn validate_launch(launch: &ProcessLaunch) -> Result<(), ProcessCustodyError> {
+    if launch.app_container_internet_client && launch.app_container_profile.is_none() {
+        return Err(ProcessCustodyError::InvalidLaunch(
+            "outbound network capability requires an AppContainer identity"));
+    }
     if launch.app_container_profile.is_some() && launch.environment.is_none() {
         return Err(ProcessCustodyError::InvalidLaunch(
             "isolated child requires a complete explicit environment"));
@@ -1443,7 +1450,8 @@ fn create_suspended(
         return create_suspended_protocol(launch, job);
     }
     let mut jobs = [job];
-    let profile = launch.app_container_profile.as_ref().map(|name| AppContainerProfile::ensure(name))
+    let profile = launch.app_container_profile.as_ref().map(|name|
+        AppContainerProfile::ensure(name, launch.app_container_internet_client))
         .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
     let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
     let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
@@ -1518,7 +1526,8 @@ fn create_suspended_protocol(
     }
     let mut inherited = [pipes.stdin_read.raw(), pipes.stdout_write.raw(), stderr_handle];
     let mut jobs = [job];
-    let profile = launch.app_container_profile.as_ref().map(|name| AppContainerProfile::ensure(name))
+    let profile = launch.app_container_profile.as_ref().map(|name|
+        AppContainerProfile::ensure(name, launch.app_container_internet_client))
         .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
     let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
     let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
@@ -2080,12 +2089,59 @@ mod tests {
     #[test]
     fn isolated_launch_refuses_inherited_environment_and_invalid_profile() {
         let mut launch = ProcessLaunch::new(system_cmd());
+        launch.app_container_internet_client = true;
+        assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
+        launch.app_container_internet_client = false;
         launch.app_container_profile = Some("invalid/name".into());
         assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
         launch.environment = Some(vec![("SystemRoot".into(),
             std::env::var("SystemRoot").expect("SystemRoot"))]);
         assert!(matches!(prepare_and_activate(&launch, |_| Ok(())),
             Err(ProcessCustodyError::Isolation(_))));
+    }
+
+    #[test]
+    fn app_container_child_writes_only_granted_fresh_directory() {
+        use std::os::windows::ffi::OsStrExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        #[link(name = "userenv")]
+        extern "system" { fn DeleteAppContainerProfile(name: *const u16) -> i32; }
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("gogoke-v37-lpac-{}-{nonce}", std::process::id()));
+        let allowed = base.join("allowed");
+        let blocked = base.join("blocked");
+        std::fs::create_dir(&base).unwrap();
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&blocked).unwrap();
+        let name = format!("Gogoke37.test{}.{nonce}", std::process::id());
+        let profile = AppContainerProfile::ensure(&name, false).expect("test package profile");
+        profile.grant_fresh_session_directory(&allowed).expect("package directory ACL");
+        drop(profile);
+        let executable = allowed.join("cmd.exe");
+        std::fs::copy(system_cmd(), &executable).expect("isolated executable fixture");
+        let mut launch = ProcessLaunch::new(&executable);
+        launch.current_directory = Some(allowed.clone());
+        launch.protocol_stdio = true;
+        launch.app_container_profile = Some(name.clone());
+        launch.environment = Some(vec![
+            ("SystemRoot".into(), std::env::var("SystemRoot").unwrap()),
+            ("USERPROFILE".into(), allowed.to_string_lossy().into_owned()),
+            ("LOCALAPPDATA".into(), allowed.to_string_lossy().into_owned()),
+        ]);
+        launch.arguments = vec!["/D".into(), "/C".into(),
+            "echo permitted> allowed.txt & echo forbidden> ..\\blocked\\forbidden.txt".into()];
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("real LPAC child");
+        assert!(managed.wait(Duration::from_secs(10)).expect("LPAC exit"));
+        assert!(allowed.join("allowed.txt").is_file(), "LPAC must write its granted directory");
+        assert!(!blocked.join("forbidden.txt").exists(), "LPAC must not write sibling directory");
+        drop(managed);
+        let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
+        assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
+        std::fs::remove_file(allowed.join("allowed.txt")).unwrap();
+        std::fs::remove_file(executable).unwrap();
+        std::fs::remove_dir(allowed).unwrap();
+        std::fs::remove_dir(blocked).unwrap();
+        std::fs::remove_dir(base).unwrap();
     }
 
     #[test]
