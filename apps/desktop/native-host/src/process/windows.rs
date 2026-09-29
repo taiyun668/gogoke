@@ -180,6 +180,8 @@ extern "system" {
     fn PeekNamedPipe(file: Handle, buffer: *mut c_void, buffer_size: u32, read: *mut u32,
         available: *mut u32, bytes_left: *mut u32) -> i32;
     fn GetCurrentProcess() -> Handle;
+    fn GetProcessMitigationPolicy(process: Handle, policy: i32,
+        buffer: *mut c_void, length: usize) -> i32;
     fn DuplicateHandle(source_process: Handle, source: Handle, target_process: Handle,
         target: *mut Handle, access: u32, inherit: i32, options: u32) -> i32;
     fn CancelSynchronousIo(thread: Handle) -> i32;
@@ -2492,7 +2494,17 @@ mod tests {
             }
             format!("raw_signed_child=OK; wait={wait}")
         };
-        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}; {raw_control}"))
+        // PROCESS_MITIGATION_POLICY::ProcessChildProcessPolicy is index 13.
+        // Observe the effective policy; do not alter system or process policy.
+        let mut child_policy_flags = 0u32;
+        let policy_read = unsafe { GetProcessMitigationPolicy(GetCurrentProcess(), 13,
+            (&mut child_policy_flags as *mut u32).cast(), size_of::<u32>()) };
+        let child_policy = if policy_read == 0 {
+            format!("child_policy=WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+        } else {
+            format!("child_policy_flags={child_policy_flags:#x}")
+        };
+        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}; {raw_control}; {child_policy}"))
             .expect("persist direct child launch result");
     }
 
