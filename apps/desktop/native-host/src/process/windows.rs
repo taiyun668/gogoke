@@ -24,11 +24,9 @@ const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
 const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const PROC_THREAD_ATTRIBUTE_JOB_LIST: usize = 0x0002_000d;
-const PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY: usize = 0x0002_000e;
 const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
 const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000f;
 const ALL_APPLICATION_PACKAGES_OPT_OUT: u32 = 1;
-const PROCESS_CREATION_CHILD_PROCESS_OVERRIDE: u32 = 0x02;
 const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS: i32 = 1;
@@ -615,12 +613,10 @@ struct AttributeList {
 
 impl AttributeList {
     fn for_launch(job: &mut [Handle], handles: Option<&mut [Handle]>,
-        isolation: Option<(&mut SecurityCapabilities, &mut u32)>,
-        child_process_policy: Option<&mut u32>) -> Result<Self, ProcessCustodyError> {
+        isolation: Option<(&mut SecurityCapabilities, &mut u32)>) -> Result<Self, ProcessCustodyError> {
         let mut size = 0usize;
         let count = 1u32 + (if handles.is_some() { 1 } else { 0 })
-            + (if isolation.is_some() { 2 } else { 0 })
-            + u32::from(child_process_policy.is_some());
+            + (if isolation.is_some() { 2 } else { 0 });
         unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut size); }
         if size == 0 {
             return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
@@ -654,13 +650,6 @@ impl AttributeList {
             }
             if unsafe { UpdateProcThreadAttribute(result.raw(), 0,
                 PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
-                (policy as *mut u32).cast(), size_of::<u32>(), ptr::null_mut(), ptr::null_mut()) } == 0 {
-                return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
-            }
-        }
-        if let Some(policy) = child_process_policy {
-            if unsafe { UpdateProcThreadAttribute(result.raw(), 0,
-                PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
                 (policy as *mut u32).cast(), size_of::<u32>(), ptr::null_mut(), ptr::null_mut()) } == 0 {
                 return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
             }
@@ -1691,10 +1680,8 @@ fn create_suspended(
         .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
     let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
     let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
-    let mut child_process_policy = profile.as_ref().map(|_| PROCESS_CREATION_CHILD_PROCESS_OVERRIDE);
     let attributes = AttributeList::for_launch(&mut jobs, None,
-        capabilities.as_mut().map(|value| (value, &mut package_policy)),
-        child_process_policy.as_mut())?;
+        capabilities.as_mut().map(|value| (value, &mut package_policy)))?;
     let application = wide_null(launch.application.as_os_str());
     let mut command_line = wide_null(OsStr::new(&build_command_line(
         launch.application.as_os_str(),
@@ -1769,10 +1756,8 @@ fn create_suspended_protocol(
         .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
     let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
     let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
-    let mut child_process_policy = profile.as_ref().map(|_| PROCESS_CREATION_CHILD_PROCESS_OVERRIDE);
     let attributes = AttributeList::for_launch(&mut jobs, Some(&mut inherited),
-        capabilities.as_mut().map(|value| (value, &mut package_policy)),
-        child_process_policy.as_mut())?;
+        capabilities.as_mut().map(|value| (value, &mut package_policy)))?;
     let application = wide_null(launch.application.as_os_str());
     let mut command_line = wide_null(OsStr::new(&build_command_line(
         launch.application.as_os_str(), &launch.arguments,
