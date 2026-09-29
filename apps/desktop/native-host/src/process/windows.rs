@@ -2512,10 +2512,19 @@ mod tests {
         let launched = std::process::Command::new(&path)
             .args(["--exact", "process::windows::tests::seat_pipe_child_helper", "--nocapture"])
             .spawn();
-        let (outcome, spawn_failed) = match launched {
-            Ok(mut process) => (format!("spawn=OK; exit={:?}", process.wait()), false),
-            Err(error) => (format!("spawn=WIN32_{:?}; detail={error}", error.raw_os_error()), true),
+        let (outcome, spawn_failed, first_helper_status) = match launched {
+            Ok(mut process) => match process.wait() {
+                Ok(status) => (format!("spawn=OK; exit={status:?}"), false,
+                    if status.success() { "SUCCESS".to_owned() }
+                    else { format!("EXIT_{:?}", status.code()) }),
+                Err(error) => (format!("spawn=OK; wait=WIN32_{:?}; detail={error}", error.raw_os_error()),
+                    false, format!("WAIT_WIN32_{:?}: {error}", error.raw_os_error())),
+            },
+            Err(error) => (format!("spawn=WIN32_{:?}; detail={error}", error.raw_os_error()),
+                true, format!("SPAWN_WIN32_{:?}: {error}", error.raw_os_error())),
         };
+        fs::write("first-helper-status.txt", &first_helper_status)
+            .expect("persist exact first helper completion");
         let signed_control = std::process::Command::new(system_cmd())
             .args(["/D", "/C", "exit 0"])
             .spawn();
@@ -2698,6 +2707,9 @@ mod tests {
         server.join().expect("seat listener thread");
         assert!(custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(10))
             .expect("LPAC exit"));
+        let first_helper_status = std::fs::read_to_string(home.join("first-helper-status.txt"))
+            .expect("first LPAC helper completion");
+        assert_eq!(first_helper_status, "SUCCESS", "first LPAC helper must complete the protocol");
         assert!(!home.join("pipe-client-error.txt").exists(), "LPAC pipe client reported failure");
         assert_eq!(accepted.as_deref(), Some(package_sid.as_str()));
         drop(peer);
@@ -2705,6 +2717,7 @@ mod tests {
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
         std::fs::remove_file(home.join("parent-launch.txt")).unwrap();
+        std::fs::remove_file(home.join("first-helper-status.txt")).unwrap();
         std::fs::remove_file(helper).unwrap();
         std::fs::remove_file(exe).unwrap();
         std::fs::remove_dir(home).unwrap();
