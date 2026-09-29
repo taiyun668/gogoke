@@ -80,7 +80,7 @@ pub(crate) fn run_seat_io(
         return Err(SeatIoError::MissingPeerIdentity);
     }
     let value = NEXT_CHANNEL.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
-        |value| (value != u64::MAX).then_some(value + 1))
+        |value| value.checked_add(1))
         .map_err(|_| SeatIoError::ChannelExhausted)?;
     let channel = SeatChannelId(value);
     let (admission_sender, admission_receiver) = mpsc::sync_channel(1);
