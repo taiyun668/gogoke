@@ -245,7 +245,7 @@ fn checked_identity(path: &Path) -> Result<RootIdentity, RegistryError> {
     Ok(inspect_root(path).map_err(RegistryError::Root)?.identity)
 }
 
-fn observed_home(root: &RootLock, instance_id: &str) -> Result<Option<RootIdentity>, RegistryError> {
+pub(super) fn observed_home(root: &RootLock, instance_id: &str) -> Result<Option<RootIdentity>, RegistryError> {
     let root_path = &root.canonical_root().canonical_path;
     if checked_identity(root_path)? != root.canonical_root().identity { return Err(RegistryError::IdentityChanged); }
     let parent = root_path.join(CONTAINER);
