@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tauri::Manager;
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use std::sync::Arc;
+use std::time::Duration;
+use tauri::Manager;
 
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
 // The draft path performs bounded Git preflight, CAS write and immutable readback
@@ -203,19 +203,27 @@ fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, 
             .resource_dir()
             .map_err(|_| "GOGOKE_PRODUCT_RESOURCE_DIR_UNAVAILABLE".to_string())?,
     )?;
-    let verified = app.try_state::<crate::resource_trust::ResourceState>()
+    let verified = app
+        .try_state::<crate::resource_trust::ResourceState>()
         .map(|state| state.current())
         .transpose()?;
     if verified.is_none() && !cfg!(debug_assertions) {
         return Err("GOGOKE_PRODUCT_VERIFIED_RESOURCES_UNAVAILABLE".to_string());
     }
-    if let Some(resources) = &verified { resources.verify_runtime_files()?; }
-    let service_root = verified.as_ref()
+    if let Some(resources) = &verified {
+        resources.verify_runtime_files()?;
+    }
+    let service_root = verified
+        .as_ref()
         .map(|resources| resources.service_root.clone())
         .unwrap_or_else(|| resource_dir.join("gogoke-service"));
-    let node_runtime = require_file(service_root.join("runtime").join("node.exe"), "node-runtime")?;
+    let node_runtime = require_file(
+        service_root.join("runtime").join("node.exe"),
+        "node-runtime",
+    )?;
     let service_entry = require_file(
-        verified.as_ref()
+        verified
+            .as_ref()
             .map(|resources| resources.generation_root.join("dist").join("bin.mjs"))
             .unwrap_or_else(|| service_root.join("dist").join("bin.mjs")),
         "service-entry",
@@ -254,7 +262,9 @@ fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, 
         service_entry,
         native_host,
         product_root,
-        source_commit: verified.as_ref().map(|resources| resources.source_commit.clone()),
+        source_commit: verified
+            .as_ref()
+            .map(|resources| resources.source_commit.clone()),
         runtime_lease: verified.as_ref().map(|resources| resources.runtime_lease()),
     })
 }
@@ -271,7 +281,11 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
         || !response.native_host.reachable
         || response.ledger_readback.state != "COMMITTED_BYTES_VERIFIED_NOT_ADOPTED"
         || response.ledger_readback.git_blob.len() != 40
-        || !response.ledger_readback.git_blob.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !response
+            .ledger_readback
+            .git_blob
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
     {
         return Err("GOGOKE_PRODUCT_RESPONSE_NOT_ADMITTED".to_string());
     }
@@ -328,14 +342,24 @@ fn validate_product_response(response: &ProductGoalView) -> Result<(), String> {
             || draft.repository != "taiyun668/gogoke"
             || draft.branch != "s1-r4-ledger-test/r2-02"
             || draft.commit.len() != 40
-            || !draft.commit.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            || !draft.path.starts_with("apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/")
+            || !draft
+                .commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !draft
+                .path
+                .starts_with("apps/desktop/test-fixtures/s1-r4/ledger/r2-02-results/")
             || !draft.path.ends_with(".json")
             || draft.git_blob.len() != 40
-            || !draft.git_blob.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !draft
+                .git_blob
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             || !draft.content_hash.starts_with("sha256:")
             || draft.content_hash.len() != 71
-            || !draft.content_hash[7..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !draft.content_hash[7..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             return Err("GOGOKE_TEST_LEDGER_DRAFT_NOT_VERIFIED".to_string());
         }
@@ -363,7 +387,15 @@ async fn run_product_service(
         let identity = draft_identity.map(|(sha, hash)| (sha.to_owned(), hash.to_owned()));
         let (reply, receiver) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
-            managed_service::run(paths, request, timeout, identity, product_guard, service_guard, reply);
+            managed_service::run(
+                paths,
+                request,
+                timeout,
+                identity,
+                product_guard,
+                service_guard,
+                reply,
+            );
         });
         return receiver
             .await
@@ -405,9 +437,9 @@ mod managed_service {
         FreeEnvironmentStringsW, GetEnvironmentStringsW,
     };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, QueryInformationJobObject,
-        SetInformationJobObject, TerminateJobObject, JobObjectBasicAccountingInformation,
-        JobObjectExtendedLimitInformation, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Pipes::CreatePipe;
@@ -416,8 +448,8 @@ mod managed_service {
         InitializeProcThreadAttributeList, ResumeThread, TerminateProcess,
         UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
         CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-        STARTF_USESTDHANDLES, STARTUPINFOEXW,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW,
     };
 
     const CLEANUP_WAIT: Duration = Duration::from_secs(5);
@@ -429,7 +461,9 @@ mod managed_service {
         let mut chunk = [0u8; 1024];
         loop {
             let count = reader.read(&mut chunk)?;
-            if count == 0 { break; }
+            if count == 0 {
+                break;
+            }
             tail.extend_from_slice(&chunk[..count]);
             if tail.len() > FAILURE_OUTPUT_TAIL_BYTES {
                 tail.drain(..tail.len() - FAILURE_OUTPUT_TAIL_BYTES);
@@ -443,7 +477,9 @@ mod managed_service {
             error.push_str(":");
             error.push_str(stream);
             error.push_str("_TAIL:");
-            error.push_str(&String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(FAILURE_OUTPUT_TAIL_BYTES)..]));
+            error.push_str(&String::from_utf8_lossy(
+                &bytes[bytes.len().saturating_sub(FAILURE_OUTPUT_TAIL_BYTES)..],
+            ));
         }
         error
     }
@@ -463,11 +499,15 @@ mod managed_service {
             if module_paths.is_empty() || !module_paths.contains(&paths.service_entry) {
                 return Err("GOGOKE_MODULE_ENTRY_NOT_LEASED".to_string());
             }
-            let normalized = module_paths.iter()
-                .map(|path| node_compatible_windows_path(path.clone())
-                    .and_then(|path| path.to_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| "GOGOKE_MODULE_POLICY_PATH_UNSUPPORTED".to_string())))
+            let normalized = module_paths
+                .iter()
+                .map(|path| {
+                    node_compatible_windows_path(path.clone()).and_then(|path| {
+                        path.to_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| "GOGOKE_MODULE_POLICY_PATH_UNSUPPORTED".to_string())
+                    })
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let bytes = serde_json::to_vec(&normalized)
                 .map_err(|_| "GOGOKE_MODULE_POLICY_ENCODE_FAILED".to_string())?;
@@ -475,9 +515,12 @@ mod managed_service {
             // The policy lease denies DELETE sharing on its parent directory.
             // Keep it beside the native root so RootLock can pin that root.
             let path = paths.product_root.with_file_name(format!(
-                ".gogoke-module-policy-{}.json", uuid::Uuid::new_v4().simple()
+                ".gogoke-module-policy-{}.json",
+                uuid::Uuid::new_v4().simple()
             ));
-            let mut output = OpenOptions::new().write(true).create_new(true)
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
                 .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
                 .open(&path)
                 .map_err(|_| "GOGOKE_MODULE_POLICY_CREATE_FAILED".to_string())?;
@@ -493,16 +536,23 @@ mod managed_service {
                 let _ = std::fs::remove_file(&path);
                 return Err(error);
             }
-            let mut policy = Self { path, import_specifier: String::new(), lease: Some(lease) };
+            let mut policy = Self {
+                path,
+                import_specifier: String::new(),
+                lease: Some(lease),
+            };
             let policy_path = node_compatible_windows_path(policy.path.clone())?;
-            let policy_path = policy_path.to_str()
+            let policy_path = policy_path
+                .to_str()
                 .ok_or_else(|| "GOGOKE_MODULE_POLICY_PATH_UNSUPPORTED".to_string())?;
             let path_literal = serde_json::to_string(policy_path)
                 .map_err(|_| "GOGOKE_MODULE_POLICY_ENCODE_FAILED".to_string())?;
             let hash_literal = serde_json::to_string(&hash)
                 .map_err(|_| "GOGOKE_MODULE_POLICY_ENCODE_FAILED".to_string())?;
-            let bootstrap = format!("{}\ninstallGuard({path_literal}, {hash_literal});\n",
-                include_str!("module_guard.mjs"));
+            let bootstrap = format!(
+                "{}\ninstallGuard({path_literal}, {hash_literal});\n",
+                include_str!("module_guard.mjs")
+            );
             let encoded = base64::engine::general_purpose::STANDARD.encode(bootstrap);
             policy.import_specifier = format!("--import=data:text/javascript;base64,{encoded}");
             Ok(Some(policy))
@@ -517,8 +567,7 @@ mod managed_service {
     }
 
     #[cfg(test)]
-    static TEST_JOB_HANDLE: std::sync::atomic::AtomicUsize =
-        std::sync::atomic::AtomicUsize::new(0);
+    static TEST_JOB_HANDLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     #[cfg(test)]
     pub(super) fn test_job_handle() -> HANDLE {
@@ -604,8 +653,10 @@ mod managed_service {
             args.push(OsStr::new(policy.import_specifier.as_str()));
         }
         args.extend([
-            paths.service_entry.as_os_str(), OsStr::new("--root"),
-            paths.product_root.as_os_str(), OsStr::new("--native-host"),
+            paths.service_entry.as_os_str(),
+            OsStr::new("--root"),
+            paths.product_root.as_os_str(),
+            OsStr::new("--native-host"),
             paths.native_host.as_os_str(),
         ]);
         let mut result = Vec::new();
@@ -632,7 +683,9 @@ mod managed_service {
         // ends at the second equals sign.
         // Their name ends at the second equals sign, not the first.
         let start = usize::from(entry.first() == Some(&(b'=' as u16)));
-        let end = entry[start..].iter().position(|unit| *unit == b'=' as u16)
+        let end = entry[start..]
+            .iter()
+            .position(|unit| *unit == b'=' as u16)
             .map(|offset| start + offset)
             .ok_or("GOGOKE_PRODUCT_SERVICE_ENVIRONMENT_FAILED")?;
         if end == 0 || end >= i32::MAX as usize {
@@ -644,8 +697,11 @@ mod managed_service {
     fn key_order(left: &[u16], right: &[u16]) -> Ordering {
         match unsafe {
             CompareStringOrdinal(
-                left.as_ptr(), left.len() as i32,
-                right.as_ptr(), right.len() as i32, 1,
+                left.as_ptr(),
+                left.len() as i32,
+                right.as_ptr(),
+                right.len() as i32,
+                1,
             )
         } {
             CSTR_LESS_THAN => Ordering::Less,
@@ -678,16 +734,21 @@ mod managed_service {
             let key = environment_key(entry)?;
             let node_option = key_order(key, &"NODE_OPTIONS".encode_utf16().collect::<Vec<_>>())
                 == Ordering::Equal;
-            let node_path = key_order(key, &"NODE_PATH".encode_utf16().collect::<Vec<_>>())
-                == Ordering::Equal;
-            let draft_key = ["GOGOKE_EXECUTION_EVIDENCE_SHA", "GOGOKE_SERVICE_ENTRY_SHA256"]
-                .iter().any(|name| key_order(key, &name.encode_utf16().collect::<Vec<_>>())
-                    == Ordering::Equal);
+            let node_path =
+                key_order(key, &"NODE_PATH".encode_utf16().collect::<Vec<_>>()) == Ordering::Equal;
+            let draft_key = [
+                "GOGOKE_EXECUTION_EVIDENCE_SHA",
+                "GOGOKE_SERVICE_ENTRY_SHA256",
+            ]
+            .iter()
+            .any(|name| {
+                key_order(key, &name.encode_utf16().collect::<Vec<_>>()) == Ordering::Equal
+            });
             if !node_option && !node_path && !(identity.is_some() && draft_key) {
                 // Canonicalize case-insensitive duplicates before sorting.
                 if let Some(prior) = entries.iter().position(|prior| {
-                    environment_key(prior).is_ok_and(|prior_key|
-                        key_order(prior_key, key) == Ordering::Equal)
+                    environment_key(prior)
+                        .is_ok_and(|prior_key| key_order(prior_key, key) == Ordering::Equal)
                 }) {
                     entries[prior] = entry.to_vec();
                 } else {
@@ -747,18 +808,30 @@ mod managed_service {
             result.initialized = true;
             if unsafe {
                 UpdateProcThreadAttribute(
-                    result.ptr(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                    handles.as_ptr().cast(), size_of_val(handles), null_mut(), null(),
+                    result.ptr(),
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                    handles.as_ptr().cast(),
+                    size_of_val(handles),
+                    null_mut(),
+                    null(),
                 )
-            } == 0 {
+            } == 0
+            {
                 return Err("GOGOKE_PRODUCT_SERVICE_HANDLE_LIST_FAILED".to_string());
             }
             if unsafe {
                 UpdateProcThreadAttribute(
-                    result.ptr(), 0, PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
-                    (job as *const HANDLE).cast(), size_of::<HANDLE>(), null_mut(), null(),
+                    result.ptr(),
+                    0,
+                    PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                    (job as *const HANDLE).cast(),
+                    size_of::<HANDLE>(),
+                    null_mut(),
+                    null(),
                 )
-            } == 0 {
+            } == 0
+            {
                 return Err("GOGOKE_PRODUCT_SERVICE_JOB_FAILED".to_string());
             }
             Ok(result)
@@ -799,11 +872,14 @@ mod managed_service {
         let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
         if unsafe {
             QueryInformationJobObject(
-                raw(job), JobObjectBasicAccountingInformation,
+                raw(job),
+                JobObjectBasicAccountingInformation,
                 (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32, null_mut(),
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                null_mut(),
             )
-        } == 0 {
+        } == 0
+        {
             Err("GOGOKE_PRODUCT_SERVICE_JOB_QUERY_FAILED".to_string())
         } else {
             Ok(info.ActiveProcesses)
@@ -876,11 +952,13 @@ mod managed_service {
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if unsafe {
             SetInformationJobObject(
-                raw(&job), JobObjectExtendedLimitInformation,
+                raw(&job),
+                JobObjectExtendedLimitInformation,
                 (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
                 size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )
-        } == 0 {
+        } == 0
+        {
             return Err("GOGOKE_PRODUCT_SERVICE_JOB_FAILED".to_string());
         }
         let inherited = [raw(&stdin_read), raw(&stdout_write), raw(&stderr_write)];
@@ -895,7 +973,10 @@ mod managed_service {
         startup.lpAttributeList = attributes.ptr();
         let executable = wide(paths.node_runtime.as_os_str())?;
         let mut command = command_line(paths, policy);
-        let service_root = paths.service_entry.parent().and_then(std::path::Path::parent)
+        let service_root = paths
+            .service_entry
+            .parent()
+            .and_then(std::path::Path::parent)
             .ok_or("GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE")?;
         let current_dir = wide(service_root.as_os_str())?;
         let environment = environment(identity)?;
@@ -903,35 +984,58 @@ mod managed_service {
         let mut info = PROCESS_INFORMATION::default();
         let created = unsafe {
             CreateProcessW(
-                executable.as_ptr(), command.as_mut_ptr(), null(), null(), 1,
-                CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT
+                executable.as_ptr(),
+                command.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                CREATE_SUSPENDED
+                    | CREATE_NO_WINDOW
+                    | CREATE_UNICODE_ENVIRONMENT
                     | EXTENDED_STARTUPINFO_PRESENT,
-                environment.as_ptr().cast(), current_dir.as_ptr(),
-                &startup.StartupInfo, &mut info,
+                environment.as_ptr().cast(),
+                current_dir.as_ptr(),
+                &startup.StartupInfo,
+                &mut info,
             )
         };
         if created == 0 {
-            return Err(format!("GOGOKE_PRODUCT_SERVICE_START_FAILED:{}", unsafe { GetLastError() }));
+            return Err(format!("GOGOKE_PRODUCT_SERVICE_START_FAILED:{}", unsafe {
+                GetLastError()
+            }));
         }
         let process = owned(info.hProcess);
         let thread = owned(info.hThread);
-        let mut managed = ManagedProcess { process, job, process_id: info.dwProcessId, assigned: false };
+        let mut managed = ManagedProcess {
+            process,
+            job,
+            process_id: info.dwProcessId,
+            assigned: false,
+        };
         #[cfg(test)]
         if std::env::var_os("GOGOKE_TEST_OUTER_JOB_CREATE_PAUSE").is_some() {
             println!("GOGOKE_OUTER_JOB_CREATED:{}", managed.process_id);
-            std::io::stdout().flush().expect("flush exact Node PID to test parent");
-            loop { std::thread::park(); }
+            std::io::stdout()
+                .flush()
+                .expect("flush exact Node PID to test parent");
+            loop {
+                std::thread::park();
+            }
         }
         // JOB_LIST already contains the suspended child when CreateProcess returns.
         // Retain the existing explicit same-Job check before its thread can run.
         if unsafe { AssignProcessToJobObject(raw(&managed.job), raw(&managed.process)) } == 0 {
             terminate(&managed);
-            if unsafe { WaitForSingleObject(raw(&managed.process), CLEANUP_WAIT.as_millis() as u32) }
-                != WAIT_OBJECT_0
+            if unsafe {
+                WaitForSingleObject(raw(&managed.process), CLEANUP_WAIT.as_millis() as u32)
+            } != WAIT_OBJECT_0
             {
                 // Caller will receive an error while this owner retains the
                 // suspended process and lease until termination is confirmed.
-                send_reply(reply, Err("GOGOKE_PRODUCT_SERVICE_JOB_ASSIGN_EXIT_UNCONFIRMED".to_string()));
+                send_reply(
+                    reply,
+                    Err("GOGOKE_PRODUCT_SERVICE_JOB_ASSIGN_EXIT_UNCONFIRMED".to_string()),
+                );
                 retain_until_exit(&managed);
             }
             return Err("GOGOKE_PRODUCT_SERVICE_JOB_ASSIGN_FAILED".to_string());
@@ -940,7 +1044,10 @@ mod managed_service {
         if unsafe { ResumeThread(raw(&thread)) } == u32::MAX {
             terminate(&managed);
             if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
-                send_reply(reply, Err("GOGOKE_PRODUCT_SERVICE_RESUME_EXIT_UNCONFIRMED".to_string()));
+                send_reply(
+                    reply,
+                    Err("GOGOKE_PRODUCT_SERVICE_RESUME_EXIT_UNCONFIRMED".to_string()),
+                );
                 retain_until_exit(&managed);
             }
             return Err("GOGOKE_PRODUCT_SERVICE_RESUME_FAILED".to_string());
@@ -981,7 +1088,10 @@ mod managed_service {
         // The paths own an Arc<RuntimeLease>; keep them in this detached
         // owner, including during unbounded post-error exit confirmation.
         if std::fs::create_dir_all(&paths.product_root).is_err() {
-            send_reply(&mut reply, Err("GOGOKE_PRODUCT_ROOT_UNAVAILABLE".to_string()));
+            send_reply(
+                &mut reply,
+                Err("GOGOKE_PRODUCT_ROOT_UNAVAILABLE".to_string()),
+            );
             return;
         }
         let policy = match ModulePolicy::new(&paths) {
@@ -991,53 +1101,75 @@ mod managed_service {
                 return;
             }
         };
-        let (managed, stdin, stdout, stderr) = match launch(&paths, policy.as_ref(), identity.as_ref(), &mut reply) {
-            Ok(value) => value,
-            Err(error) => {
-                send_reply(&mut reply, Err(error));
-                return;
-            }
-        };
+        let (managed, stdin, stdout, stderr) =
+            match launch(&paths, policy.as_ref(), identity.as_ref(), &mut reply) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_reply(&mut reply, Err(error));
+                    return;
+                }
+            };
         #[cfg(test)]
-        TEST_JOB_HANDLE.store(raw(&managed.job) as usize, std::sync::atomic::Ordering::SeqCst);
+        TEST_JOB_HANDLE.store(
+            raw(&managed.job) as usize,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         let stdout_reader = std::thread::spawn(move || {
             let mut bytes = Vec::new();
             File::from(stdout).read_to_end(&mut bytes).map(|_| bytes)
         });
         let stderr_reader = std::thread::spawn(move || read_tail(File::from(stderr)));
         let writer = std::thread::spawn(move || File::from(stdin).write_all(&request));
-        let failure = match unsafe {
-            WaitForSingleObject(raw(&managed.process), timeout.as_millis() as u32)
-        } {
-            WAIT_OBJECT_0 => None,
-            WAIT_TIMEOUT => {
-                terminate(&managed);
-                Some("GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())
-            }
-            _ => {
-                terminate(&managed);
-                Some("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
-            }
-        };
+        let failure =
+            match unsafe { WaitForSingleObject(raw(&managed.process), timeout.as_millis() as u32) }
+            {
+                WAIT_OBJECT_0 => None,
+                WAIT_TIMEOUT => {
+                    terminate(&managed);
+                    Some("GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())
+                }
+                _ => {
+                    terminate(&managed);
+                    Some("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
+                }
+            };
         if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
             terminate(&managed);
             if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
-                send_reply(&mut reply, Err("GOGOKE_PRODUCT_SERVICE_EXIT_UNCONFIRMED".to_string()));
+                send_reply(
+                    &mut reply,
+                    Err("GOGOKE_PRODUCT_SERVICE_EXIT_UNCONFIRMED".to_string()),
+                );
                 retain_until_exit(&managed);
                 return;
             }
         }
-        let write_result = writer.join()
+        let write_result = writer
+            .join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string())
-            .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string()));
-        let output = stdout_reader.join()
+            .and_then(|value| {
+                value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string())
+            });
+        let output = stdout_reader
+            .join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
-            .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string()));
-        let stderr_tail = stderr_reader.join()
+            .and_then(|value| {
+                value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
+            });
+        let stderr_tail = stderr_reader
+            .join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED".to_string())
-            .and_then(|value| value.map_err(|error| format!("GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED:WIN32_{}", error.raw_os_error().unwrap_or(0))));
+            .and_then(|value| {
+                value.map_err(|error| {
+                    format!(
+                        "GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED:WIN32_{}",
+                        error.raw_os_error().unwrap_or(0)
+                    )
+                })
+            });
         let mut exit_code = 0;
-        let exit_code_available = unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
+        let exit_code_available =
+            unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
         let result = if let Some(error) = failure {
             Err(error)
         } else if !exit_code_available {
@@ -1068,20 +1200,26 @@ async fn run_product_process(
     request: &ProductGoalRequest,
     product_guard: tokio::sync::MutexGuard<'static, ()>,
 ) -> Result<ProductGoalView, String> {
-    let request_bytes =
-        serde_json::to_vec(request).map_err(|_| "GOGOKE_PRODUCT_REQUEST_ENCODE_FAILED".to_string())?;
+    let request_bytes = serde_json::to_vec(request)
+        .map_err(|_| "GOGOKE_PRODUCT_REQUEST_ENCODE_FAILED".to_string())?;
     let draft_identity = if request.publish_test_draft == Some(true) {
         if request.run_controlled_task != Some(true) {
             return Err("GOGOKE_TEST_DRAFT_REQUIRES_CONTROLLED_TASK".to_string());
         }
-        let sha = paths.source_commit.as_deref()
+        let sha = paths
+            .source_commit
+            .as_deref()
             .ok_or_else(|| "GOGOKE_TEST_DRAFT_VERIFIED_SOURCE_UNAVAILABLE".to_string())?;
         if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("GOGOKE_TEST_DRAFT_VERIFIED_SOURCE_INVALID".to_string());
         }
-        let entry = tokio::fs::read(&paths.service_entry).await
+        let entry = tokio::fs::read(&paths.service_entry)
+            .await
             .map_err(|_| "GOGOKE_TEST_DRAFT_SERVICE_HASH_UNAVAILABLE".to_string())?;
-        Some((sha.to_owned(), format!("sha256:{:x}", Sha256::digest(&entry))))
+        Some((
+            sha.to_owned(),
+            format!("sha256:{:x}", Sha256::digest(&entry)),
+        ))
     } else {
         None
     };
@@ -1089,15 +1227,28 @@ async fn run_product_process(
         if request.publish_test_draft != Some(true)
             || driver_id.len() != 27
             || !driver_id.starts_with("mock_novel_")
-            || !driver_id[11..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !driver_id[11..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             return Err("GOGOKE_NOVEL_FIXTURE_DRIVER_ID_INVALID".to_string());
         }
     }
-    let timeout = if draft_identity.is_some() { DRAFT_SERVICE_TIMEOUT } else { SERVICE_TIMEOUT };
-    let output = run_product_service(paths, &request_bytes, timeout,
-        draft_identity.as_ref().map(|(sha, hash)| (sha.as_str(), hash.as_str())),
-        Some(product_guard)).await?;
+    let timeout = if draft_identity.is_some() {
+        DRAFT_SERVICE_TIMEOUT
+    } else {
+        SERVICE_TIMEOUT
+    };
+    let output = run_product_service(
+        paths,
+        &request_bytes,
+        timeout,
+        draft_identity
+            .as_ref()
+            .map(|(sha, hash)| (sha.as_str(), hash.as_str())),
+        Some(product_guard),
+    )
+    .await?;
     let response: ProductGoalView = serde_json::from_slice(&output)
         .map_err(|_| "GOGOKE_PRODUCT_RESPONSE_DECODE_FAILED".to_string())?;
     validate_product_response(&response)?;
@@ -1112,8 +1263,10 @@ async fn run_product_process(
         || response.fixture_driver_id != request.fixture_driver_id
         || response.ledger_merge_pull_number != request.ledger_merge_pull_number
         || (request.ledger_merge_pull_number.is_some()) != response.ledger_merge.is_some()
-        || response.ledger_merge.as_ref().is_some_and(|merge|
-            Some(merge.pull_number) != request.ledger_merge_pull_number)
+        || response
+            .ledger_merge
+            .as_ref()
+            .is_some_and(|merge| Some(merge.pull_number) != request.ledger_merge_pull_number)
         || (request.run_controlled_task == Some(true)) != response.controlled_task.is_some()
         || (request.publish_test_draft == Some(true)) != response.test_ledger_draft.is_some()
     {
@@ -1142,7 +1295,14 @@ struct ProductReadinessView {
 
 pub(crate) async fn verify_product_startup(app: &tauri::AppHandle) -> Result<(), String> {
     let paths = resolve_runtime_paths(app)?;
-    let output = run_product_service(paths, b"{\"operation\":\"readiness\"}", SERVICE_TIMEOUT, None, None).await?;
+    let output = run_product_service(
+        paths,
+        b"{\"operation\":\"readiness\"}",
+        SERVICE_TIMEOUT,
+        None,
+        None,
+    )
+    .await?;
     let response: ProductReadinessView = serde_json::from_slice(&output)
         .map_err(|_| "GOGOKE_PRODUCT_READINESS_DECODE_FAILED".to_string())?;
     if response.state != "PRODUCT_SERVICE_NATIVE_CONTROLLER_ADMITTED"
@@ -1156,6 +1316,17 @@ pub(crate) async fn verify_product_startup(app: &tauri::AppHandle) -> Result<(),
         return Err("GOGOKE_PRODUCT_READINESS_NOT_ADMITTED".to_string());
     }
     Ok(())
+}
+
+/// Start the long-lived Design 37 host from the verified installed resource
+/// set.  The caller owns the returned handle for the lifetime of the Tauri
+/// session and must pass its endpoint to the Node service's `connectExisting`
+/// seam; this function intentionally does not alter the existing R2 path.
+pub(crate) fn spawn_design37_host(
+    app: &tauri::AppHandle,
+) -> Result<super::design37_host::Design37Host, String> {
+    let paths = resolve_runtime_paths(app)?;
+    super::design37_host::Design37Host::spawn(&paths.native_host, &paths.product_root)
 }
 
 #[tauri::command]
@@ -1186,10 +1357,13 @@ mod tests {
         if std::env::var("GOGOKE_TEST_OUTER_JOB_CREATE_PAUSE").as_deref() != Ok("1") {
             return; // The parent test activates this helper in a separate process.
         }
-        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
-            .expect("cloud test requires the staged signed Node runtime"));
-        let root = PathBuf::from(std::env::var_os("GOGOKE_TEST_OUTER_JOB_ROOT")
-            .expect("parent-owned fixture root"));
+        let node = PathBuf::from(
+            std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+                .expect("cloud test requires the staged signed Node runtime"),
+        );
+        let root = PathBuf::from(
+            std::env::var_os("GOGOKE_TEST_OUTER_JOB_ROOT").expect("parent-owned fixture root"),
+        );
         managed_service::test_launch_paused(node, root);
     }
 
@@ -1202,8 +1376,8 @@ mod tests {
         use std::sync::mpsc;
         use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, TerminateProcess, WaitForSingleObject,
-            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+            OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE,
         };
 
         struct ExactProcessCleanup {
@@ -1219,7 +1393,8 @@ mod tests {
                     if let Some(pid) = self.node_pid {
                         // The owner still holds its process handle here, so
                         // this PID cannot have been reused for another process.
-                        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+                        let handle =
+                            unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
                         if !handle.is_null() {
                             self.node = Some(unsafe { OwnedHandle::from_raw_handle(handle as _) });
                         }
@@ -1239,11 +1414,17 @@ mod tests {
             }
         }
 
-        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
-            .expect("cloud test requires the staged signed Node runtime"));
-        assert!(node.is_file(), "controlled Node must be the staged cloud executable");
+        let node = PathBuf::from(
+            std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+                .expect("cloud test requires the staged signed Node runtime"),
+        );
+        assert!(
+            node.is_file(),
+            "controlled Node must be the staged cloud executable"
+        );
         let root = std::env::temp_dir().join(format!(
-            "gogoke-outer-job-exit-{}", uuid::Uuid::new_v4().simple()
+            "gogoke-outer-job-exit-{}",
+            uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(root.join("service/dist"))
             .expect("parent-owned service directory for Node current directory");
@@ -1255,48 +1436,73 @@ mod tests {
             .spawn()
             .expect("spawn exact owning test process");
         let mut cleanup = ExactProcessCleanup {
-            owner, node: None, node_pid: None, owner_reaped: false,
+            owner,
+            node: None,
+            node_pid: None,
+            owner_reaped: false,
         };
         let stdout = cleanup.owner.stdout.take().expect("owner stdout pipe");
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let marker = BufReader::new(stdout).lines()
+            let marker = BufReader::new(stdout)
+                .lines()
                 .filter_map(Result::ok)
-                .find_map(|line| line.split_once("GOGOKE_OUTER_JOB_CREATED:")
-                    .and_then(|(_, pid)| pid.split_whitespace().next())
-                    .and_then(|pid| pid.parse::<u32>().ok()));
+                .find_map(|line| {
+                    line.split_once("GOGOKE_OUTER_JOB_CREATED:")
+                        .and_then(|(_, pid)| pid.split_whitespace().next())
+                        .and_then(|pid| pid.parse::<u32>().ok())
+                });
             let _ = sender.send(marker);
         });
-        let pid = receiver.recv_timeout(Duration::from_secs(30))
+        let pid = receiver
+            .recv_timeout(Duration::from_secs(30))
             .expect("one bounded wait for post-CreateProcess marker")
             .expect("owner must report exact suspended Node PID");
         cleanup.node_pid = Some(pid);
         let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
-        assert!(!handle.is_null(), "open exact suspended Node before owner termination");
+        assert!(
+            !handle.is_null(),
+            "open exact suspended Node before owner termination"
+        );
         cleanup.node = Some(unsafe { OwnedHandle::from_raw_handle(handle as _) });
-        let node_handle = cleanup.node.as_ref().expect("exact Node handle").as_raw_handle() as _;
-        assert_eq!(unsafe { WaitForSingleObject(node_handle, 0) }, WAIT_TIMEOUT,
-            "Node must still be suspended when owner is terminated");
-        cleanup.owner.kill().expect("hard-terminate exact owning test process");
+        let node_handle = cleanup
+            .node
+            .as_ref()
+            .expect("exact Node handle")
+            .as_raw_handle() as _;
+        assert_eq!(
+            unsafe { WaitForSingleObject(node_handle, 0) },
+            WAIT_TIMEOUT,
+            "Node must still be suspended when owner is terminated"
+        );
+        cleanup
+            .owner
+            .kill()
+            .expect("hard-terminate exact owning test process");
         let owner_status = cleanup.owner.wait().expect("confirm owner process exit");
         cleanup.owner_reaped = true;
         assert!(!owner_status.success(), "owner must exit by termination");
         let node_wait = unsafe { WaitForSingleObject(node_handle, 5000) };
         drop(cleanup); // On failure, terminate and reap the exact Node before asserting.
         std::fs::remove_dir_all(&root).expect("remove parent-owned test fixture");
-        assert_eq!(node_wait, WAIT_OBJECT_0,
-            "closing the hard-terminated owner's kill-on-close Job must exit exact Node");
+        assert_eq!(
+            node_wait, WAIT_OBJECT_0,
+            "closing the hard-terminated owner's kill-on-close Job must exit exact Node"
+        );
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn managed_product_failure_reports_bounded_service_output() {
         use std::fs;
-        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
-            .expect("cloud test requires the staged signed Node runtime"));
+        let node = PathBuf::from(
+            std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+                .expect("cloud test requires the staged signed Node runtime"),
+        );
         assert!(node.is_file());
         let root = std::env::temp_dir().join(format!(
-            "gogoke-service-output-test-{}", uuid::Uuid::new_v4().simple()
+            "gogoke-service-output-test-{}",
+            uuid::Uuid::new_v4().simple()
         ));
         let dist = root.join("service/dist");
         fs::create_dir_all(&dist).expect("owned fixture directory");
@@ -1314,9 +1520,23 @@ mod tests {
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
-        managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, None, service_guard, reply);
-        let error = receiver.blocking_recv().expect("managed owner reply").unwrap_err();
-        assert!(error.starts_with("GOGOKE_PRODUCT_SERVICE_FAILED:17"), "{error}");
+        managed_service::run(
+            paths,
+            b"{}".to_vec(),
+            Duration::from_secs(10),
+            None,
+            None,
+            service_guard,
+            reply,
+        );
+        let error = receiver
+            .blocking_recv()
+            .expect("managed owner reply")
+            .unwrap_err();
+        assert!(
+            error.starts_with("GOGOKE_PRODUCT_SERVICE_FAILED:17"),
+            "{error}"
+        );
         assert!(error.contains(":STDOUT_TAIL:service detail"), "{error}");
         assert!(error.contains(":STDERR_TAIL:host detail"), "{error}");
         fs::remove_dir_all(&root).expect("remove settled owned fixture");
@@ -1326,11 +1546,14 @@ mod tests {
     #[test]
     fn managed_product_launch_rejects_poisoned_generation_module() {
         use std::fs;
-        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
-            .expect("cloud test requires the staged signed Node runtime"));
+        let node = PathBuf::from(
+            std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+                .expect("cloud test requires the staged signed Node runtime"),
+        );
         assert!(node.is_file());
         let root = std::env::temp_dir().join(format!(
-            "gogoke-module-guard-test-{}", uuid::Uuid::new_v4().simple()
+            "gogoke-module-guard-test-{}",
+            uuid::Uuid::new_v4().simple()
         ));
         let dist = root.join("service/generations/signed/dist");
         // Node searches this ancestor after the selected generation but
@@ -1345,12 +1568,18 @@ mod tests {
         ).expect("owned entry");
         fs::write(poison.join("package.json"), b"{\"main\":\"index.cjs\"}\n")
             .expect("owned poison metadata");
-        fs::write(poison.join("index.cjs"), format!(
-            "require('node:fs').writeFileSync({}, 'executed');\n",
-            serde_json::to_string(&marker.to_string_lossy().to_string()).expect("marker literal")
-        )).expect("owned poison module");
+        fs::write(
+            poison.join("index.cjs"),
+            format!(
+                "require('node:fs').writeFileSync({}, 'executed');\n",
+                serde_json::to_string(&marker.to_string_lossy().to_string())
+                    .expect("marker literal")
+            ),
+        )
+        .expect("owned poison module");
         let mut lease = crate::resource_trust::RuntimeLease::default();
-        lease.pin_generated_file(&entry, &fs::read(&entry).expect("entry bytes"))
+        lease
+            .pin_generated_file(&entry, &fs::read(&entry).expect("entry bytes"))
             .expect("pin exact entry");
         let paths = ProductRuntimePaths {
             node_runtime: node,
@@ -1362,10 +1591,23 @@ mod tests {
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
-        managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(10), None, None, service_guard, reply);
+        managed_service::run(
+            paths,
+            b"{}".to_vec(),
+            Duration::from_secs(10),
+            None,
+            None,
+            service_guard,
+            reply,
+        );
         let result = receiver.blocking_recv().expect("managed owner reply");
         let error = result.expect_err("poisoned generation module must be rejected");
-        assert!(error.starts_with("GOGOKE_PRODUCT_SERVICE_FAILED:78:STDERR_TAIL:GOGOKE_MODULE_NOT_LISTED"), "{error}");
+        assert!(
+            error.starts_with(
+                "GOGOKE_PRODUCT_SERVICE_FAILED:78:STDERR_TAIL:GOGOKE_MODULE_NOT_LISTED"
+            ),
+            "{error}"
+        );
         assert!(!marker.exists(), "poison module body must never execute");
         fs::remove_dir_all(&root).expect("remove owned fixture after settled Job");
     }
@@ -1379,19 +1621,32 @@ mod tests {
         use std::time::{Duration, Instant};
         use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
         use windows_sys::Win32::System::JobObjects::{
-            IsProcessInJob, QueryInformationJobObject, JobObjectBasicAccountingInformation,
+            IsProcessInJob, JobObjectBasicAccountingInformation, QueryInformationJobObject,
             JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         };
-        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, WaitForSingleObject};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, WaitForSingleObject,
+        };
 
-        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
-            .expect("cloud test requires the staged signed Node runtime"));
-        assert!(node.is_file(), "controlled Node must be the staged cloud executable");
-        let holder = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_HOLD_CHILD_PATH")
-            .expect("cloud test requires the signed file-holding child"));
-        assert!(holder.is_file(), "controlled child must be a cloud executable");
+        let node = PathBuf::from(
+            std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+                .expect("cloud test requires the staged signed Node runtime"),
+        );
+        assert!(
+            node.is_file(),
+            "controlled Node must be the staged cloud executable"
+        );
+        let holder = PathBuf::from(
+            std::env::var_os("GOGOKE_CONTROLLED_HOLD_CHILD_PATH")
+                .expect("cloud test requires the signed file-holding child"),
+        );
+        assert!(
+            holder.is_file(),
+            "controlled child must be a cloud executable"
+        );
         let root = std::env::temp_dir().join(format!(
-            "gogoke-product-job-test-{}", uuid::Uuid::new_v4().simple()
+            "gogoke-product-job-test-{}",
+            uuid::Uuid::new_v4().simple()
         ));
         let service = root.join("service");
         let dist = service.join("dist");
@@ -1429,7 +1684,8 @@ mod tests {
              const hold = setInterval(() => {{ if (existsSync({release_literal})) {{ clearInterval(hold); process.exit(0); }} }}, 25);\n"
         )).expect("owned test service script");
         let mut pinned = crate::resource_trust::RuntimeLease::default();
-        pinned.pin_generated_file(&entry, &fs::read(&entry).expect("owned service bytes"))
+        pinned
+            .pin_generated_file(&entry, &fs::read(&entry).expect("owned service bytes"))
             .expect("lease owned service entry");
         let lease = Arc::new(pinned);
         let weak = Arc::downgrade(&lease);
@@ -1448,12 +1704,23 @@ mod tests {
         let owner = std::thread::spawn(move || {
             // Cold PowerShell startup on a shared cloud runner is fixture setup,
             // not the Job-settlement boundary under test.
-            managed_service::run(paths, b"{}".to_vec(), Duration::from_secs(30), None, Some(gate), service_guard, reply);
+            managed_service::run(
+                paths,
+                b"{}".to_vec(),
+                Duration::from_secs(30),
+                None,
+                Some(gate),
+                service_guard,
+                reply,
+            );
         });
         let fixture_started = Instant::now();
         let deadline = fixture_started + Duration::from_secs(20);
-        while (!marker.is_file() || !child_ready.is_file() || managed_service::test_job_handle().is_null())
-            && Instant::now() < deadline {
+        while (!marker.is_file()
+            || !child_ready.is_file()
+            || managed_service::test_job_handle().is_null())
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(20));
         }
         let marker_text = fs::read_to_string(&marker).expect("root process marker");
@@ -1464,41 +1731,71 @@ mod tests {
         assert_eq!(fields[2], nonce, "root marker nonce");
         if !child_ready.is_file() {
             let child_handle = unsafe { OpenProcess(0x0010_1000, 0, child_pid) };
-            let child_wait = if child_handle.is_null() { None } else {
-                let child_handle = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(child_handle as _) };
+            let child_wait = if child_handle.is_null() {
+                None
+            } else {
+                let child_handle = unsafe {
+                    std::os::windows::io::OwnedHandle::from_raw_handle(child_handle as _)
+                };
                 Some(unsafe { WaitForSingleObject(child_handle.as_raw_handle() as _, 0) })
             };
             panic!("child fixture did not become ready within {:?}; child_wait={child_wait:?}; job_present={}",
                 fixture_started.elapsed(), !managed_service::test_job_handle().is_null());
         }
-        assert_eq!(fs::read_to_string(&child_ready).expect("child self-ready marker"),
-            format!("{nonce} {child_pid}"));
+        assert_eq!(
+            fs::read_to_string(&child_ready).expect("child self-ready marker"),
+            format!("{nonce} {child_pid}")
+        );
         let root_handle = unsafe { OpenProcess(0x0010_1000, 0, root_pid) };
         let child_handle = unsafe { OpenProcess(0x0010_1001, 0, child_pid) };
-        assert!(!root_handle.is_null() && !child_handle.is_null(), "exact live root and child handles");
-        let root_handle = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(root_handle as _) };
-        let child = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(child_handle as _) };
+        assert!(
+            !root_handle.is_null() && !child_handle.is_null(),
+            "exact live root and child handles"
+        );
+        let root_handle =
+            unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(root_handle as _) };
+        let child =
+            unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(child_handle as _) };
         let job = managed_service::test_job_handle();
         let mut root_in_job = 0;
         let mut child_in_job = 0;
-        assert_ne!(unsafe { IsProcessInJob(root_handle.as_raw_handle() as _, job, &mut root_in_job) }, 0);
-        assert_ne!(unsafe { IsProcessInJob(child.as_raw_handle() as _, job, &mut child_in_job) }, 0);
+        assert_ne!(
+            unsafe { IsProcessInJob(root_handle.as_raw_handle() as _, job, &mut root_in_job) },
+            0
+        );
+        assert_ne!(
+            unsafe { IsProcessInJob(child.as_raw_handle() as _, job, &mut child_in_job) },
+            0
+        );
         let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-        assert_ne!(unsafe { QueryInformationJobObject(job, JobObjectBasicAccountingInformation,
-            (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-            std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-            std::ptr::null_mut()) }, 0);
+        assert_ne!(
+            unsafe {
+                QueryInformationJobObject(
+                    job,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
         let active_before_release = accounting.ActiveProcesses;
         let root_wait_before = unsafe { WaitForSingleObject(root_handle.as_raw_handle() as _, 0) };
         let child_wait_before = unsafe { WaitForSingleObject(child.as_raw_handle() as _, 0) };
         let lease_held_before = weak.upgrade().is_some();
         let gate_held_before = PRODUCT_RUNTIME_GATE.try_lock().is_err();
         let held_open_probe = fs::OpenOptions::new().write(true).open(&held_file);
-        let held_open_denied = held_open_probe.as_ref().err()
-            .and_then(std::io::Error::raw_os_error) == Some(32);
+        let held_open_denied = held_open_probe
+            .as_ref()
+            .err()
+            .and_then(std::io::Error::raw_os_error)
+            == Some(32);
         drop(held_open_probe);
         fs::write(&release, b"release").expect("release owned root barrier");
-        owner.join().expect("process owner settles after cancelling reply");
+        owner
+            .join()
+            .expect("process owner settles after cancelling reply");
         // These are the two acceptance operations. Each is attempted exactly
         // once, immediately after owner settlement, with no retry or sleep.
         let file_delete = fs::remove_file(&held_file);
@@ -1527,13 +1824,28 @@ mod tests {
         fs::remove_dir(&root).expect("remove owned fixture root");
         assert_eq!(root_in_job, 1, "root must be in exact Gogoke Job");
         assert_eq!(child_in_job, 1, "child must be in exact Gogoke Job");
-        assert!(active_before_release >= 2, "Job must contain active root and child");
+        assert!(
+            active_before_release >= 2,
+            "Job must contain active root and child"
+        );
         assert_eq!(root_wait_before, WAIT_TIMEOUT);
         assert_eq!(child_wait_before, WAIT_TIMEOUT);
-        assert!(held_open_denied, "child file holder must deny mutation before release");
-        assert!(lease_held_before && gate_held_before, "cancelled caller cannot release custody while Job active");
-        assert_eq!(root_wait_after, WAIT_OBJECT_0, "owned root handle must signal before settlement");
-        assert!(lease_released_after && gate_released_after, "owner releases custody after settlement");
+        assert!(
+            held_open_denied,
+            "child file holder must deny mutation before release"
+        );
+        assert!(
+            lease_held_before && gate_held_before,
+            "cancelled caller cannot release custody while Job active"
+        );
+        assert_eq!(
+            root_wait_after, WAIT_OBJECT_0,
+            "owned root handle must signal before settlement"
+        );
+        assert!(
+            lease_released_after && gate_released_after,
+            "owner releases custody after settlement"
+        );
         let lane = std::env::var("GOGOKE_BUILD_LANE").expect("cloud build lane");
         assert!(lane == "frozen" || lane == "repro", "controlled build lane");
         let receipt = serde_json::json!({
@@ -1553,10 +1865,14 @@ mod tests {
             "leaseHeldWhileJobActive": true,
             "gateHeldWhileJobActive": true,
         });
-        let receipt_path = PathBuf::from(std::env::var_os("RUNNER_TEMP").expect("cloud runner temp"))
-            .join(format!("gogoke-job-custody-delete-{lane}.json"));
-        fs::write(receipt_path, serde_json::to_vec_pretty(&receipt).expect("receipt JSON"))
-            .expect("write cloud custody receipt");
+        let receipt_path =
+            PathBuf::from(std::env::var_os("RUNNER_TEMP").expect("cloud runner temp"))
+                .join(format!("gogoke-job-custody-delete-{lane}.json"));
+        fs::write(
+            receipt_path,
+            serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+        )
+        .expect("write cloud custody receipt");
     }
 
     #[test]
