@@ -2475,6 +2475,14 @@ mod tests {
         // uses an absolute signed image and does not connect to the seat pipe.
         let signed = system_cmd();
         let application = wide_null(signed.as_os_str());
+        let signed_image = unsafe { CreateFileW(application.as_ptr(), 0x0002_0021, 7,
+            ptr::null(), 3, 0, ptr::null_mut()) };
+        let signed_execute_open = if signed_image as isize == -1 {
+            format!("WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+        } else {
+            unsafe { CloseHandle(signed_image) };
+            "OK".to_owned()
+        };
         let mut command = wide_null(OsStr::new(&format!("\"{}\" /D /C exit 0", signed.display())));
         let mut startup: StartupInfoW = unsafe { zeroed() };
         startup.cb = size_of::<StartupInfoW>() as u32;
@@ -2494,6 +2502,27 @@ mod tests {
             }
             format!("raw_signed_child=OK; wait={wait}")
         };
+        let mut helper_command = wide_null(OsStr::new(&format!(
+            "\"{}\" --exact process::windows::tests::seat_pipe_child_helper --nocapture",
+            path.display())));
+        let mut helper_startup: StartupInfoW = unsafe { zeroed() };
+        helper_startup.cb = size_of::<StartupInfoW>() as u32;
+        let mut helper_info: ProcessInformation = unsafe { zeroed() };
+        let helper_created = unsafe { CreateProcessW(wide.as_ptr(), helper_command.as_mut_ptr(),
+            ptr::null(), ptr::null(), 0, CREATE_NO_WINDOW, ptr::null(), ptr::null(),
+            &mut helper_startup, &mut helper_info) };
+        let raw_helper = if helper_created == 0 {
+            format!("raw_helper=WIN32_{:?}", io::Error::last_os_error().raw_os_error())
+        } else {
+            let process = OwnedHandle::new(helper_info.process).expect("raw helper process handle");
+            let _thread = OwnedHandle::new(helper_info.thread).expect("raw helper thread handle");
+            let wait = unsafe { WaitForSingleObject(process.raw(), 20_000) };
+            if wait != 0 {
+                unsafe { TerminateProcess(process.raw(), 1) };
+                unsafe { WaitForSingleObject(process.raw(), 5000) };
+            }
+            format!("raw_helper=OK; wait={wait}")
+        };
         // PROCESS_MITIGATION_POLICY::ProcessChildProcessPolicy is index 13.
         // Observe the effective policy; do not alter system or process policy.
         let mut child_policy_flags = 0u32;
@@ -2504,7 +2533,7 @@ mod tests {
         } else {
             format!("child_policy_flags={child_policy_flags:#x}")
         };
-        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}; {raw_control}; {child_policy}"))
+        fs::write("parent-launch.txt", format!("read={read}; execute_open={execute_open}; {outcome}; {control}; signed_execute_open={signed_execute_open}; {raw_control}; {raw_helper}; {child_policy}"))
             .expect("persist direct child launch result");
     }
 
