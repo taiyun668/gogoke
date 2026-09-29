@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+use super::session::{AppContainerProfile, SecurityCapabilities};
 
 type Handle = *mut c_void;
 
@@ -22,6 +23,9 @@ const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
 const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const PROC_THREAD_ATTRIBUTE_JOB_LIST: usize = 0x0002_000d;
+const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
+const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000f;
+const ALL_APPLICATION_PACKAGES_OPT_OUT: u32 = 1;
 const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS: i32 = 1;
@@ -234,6 +238,7 @@ pub enum ProcessCustodyError {
     ProtocolPipe(io::Error),
     ProtocolAttribute(io::Error),
     ProtocolEnvironment(io::Error),
+    Isolation(String),
     LaunchCleanup { cause: Box<ProcessCustodyError>, detail: String },
 }
 
@@ -265,6 +270,7 @@ impl fmt::Display for ProcessCustodyError {
             Self::ProtocolPipe(source) => write!(f, "PROCESS_PROTOCOL_PIPE_FAILED: {source}"),
             Self::ProtocolAttribute(source) => write!(f, "PROCESS_PROTOCOL_ATTRIBUTE_FAILED: {source}"),
             Self::ProtocolEnvironment(source) => write!(f, "PROCESS_PROTOCOL_ENVIRONMENT_FAILED: {source}"),
+            Self::Isolation(reason) => write!(f, "PROCESS_ISOLATION_FAILED: {reason}"),
             Self::LaunchCleanup { cause, detail } => write!(f, "{cause}; PROCESS_LAUNCH_CLEANUP_UNCONFIRMED: {detail}"),
         }
     }
@@ -289,6 +295,9 @@ pub struct ProcessLaunch {
     /// A complete host-constructed environment. None retains the legacy R2
     /// behavior; v37 callers must supply this before admission.
     pub environment: Option<Vec<(String, String)>>,
+    /// Set only by the trusted native seat composition; the old service pipe
+    /// never supplies an AppContainer name or launches a v37 process.
+    pub(crate) app_container_profile: Option<String>,
 }
 
 impl ProcessLaunch {
@@ -300,6 +309,7 @@ impl ProcessLaunch {
             hide_window: true,
             protocol_stdio: false,
             environment: None,
+            app_container_profile: None,
         }
     }
 }
@@ -574,9 +584,11 @@ struct AttributeList {
 }
 
 impl AttributeList {
-    fn for_launch(job: &mut [Handle], handles: Option<&mut [Handle]>) -> Result<Self, ProcessCustodyError> {
+    fn for_launch(job: &mut [Handle], handles: Option<&mut [Handle]>,
+        isolation: Option<(&mut SecurityCapabilities, &mut u32)>) -> Result<Self, ProcessCustodyError> {
         let mut size = 0usize;
-        let count = if handles.is_some() { 2 } else { 1 };
+        let count = 1u32 + (if handles.is_some() { 1 } else { 0 })
+            + (if isolation.is_some() { 2 } else { 0 });
         unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut size); }
         if size == 0 {
             return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
@@ -598,6 +610,19 @@ impl AttributeList {
                 UpdateProcThreadAttribute(result.raw(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                     handles.as_mut_ptr().cast(), size_of_val(handles), ptr::null_mut(), ptr::null_mut())
             } == 0 {
+                return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
+            }
+        }
+        if let Some((capabilities, policy)) = isolation {
+            if unsafe { UpdateProcThreadAttribute(result.raw(), 0,
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                (capabilities as *mut SecurityCapabilities).cast(),
+                size_of::<SecurityCapabilities>(), ptr::null_mut(), ptr::null_mut()) } == 0 {
+                return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
+            }
+            if unsafe { UpdateProcThreadAttribute(result.raw(), 0,
+                PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                (policy as *mut u32).cast(), size_of::<u32>(), ptr::null_mut(), ptr::null_mut()) } == 0 {
                 return Err(ProcessCustodyError::ProtocolAttribute(io::Error::last_os_error()));
             }
         }
@@ -1281,6 +1306,10 @@ pub fn may_target_pid(recorded: &ProcessIdentity, observed: Option<&ProcessIdent
 }
 
 fn validate_launch(launch: &ProcessLaunch) -> Result<(), ProcessCustodyError> {
+    if launch.app_container_profile.is_some() && launch.environment.is_none() {
+        return Err(ProcessCustodyError::InvalidLaunch(
+            "isolated child requires a complete explicit environment"));
+    }
     if !launch.application.is_absolute() {
         return Err(ProcessCustodyError::InvalidLaunch(
             "application path must be absolute",
@@ -1392,7 +1421,12 @@ fn create_suspended(
         return create_suspended_protocol(launch, job);
     }
     let mut jobs = [job];
-    let attributes = AttributeList::for_launch(&mut jobs, None)?;
+    let profile = launch.app_container_profile.as_ref().map(|name| AppContainerProfile::ensure(name))
+        .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
+    let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
+    let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
+    let attributes = AttributeList::for_launch(&mut jobs, None,
+        capabilities.as_mut().map(|value| (value, &mut package_policy)))?;
     let application = wide_null(launch.application.as_os_str());
     let mut command_line = wide_null(OsStr::new(&build_command_line(
         launch.application.as_os_str(),
@@ -1439,6 +1473,13 @@ fn create_suspended(
         OwnedHandle::new(info.process).expect("CreateProcessW returned null process handle");
     let initial_thread =
         OwnedHandle::new(info.thread).expect("CreateProcessW returned null thread handle");
+    if let Some(profile) = &profile {
+        if let Err(error) = profile.verify_suspended_process(process.raw()) {
+            return Err(SuspendedCreateError::After(PostCreateFailure {
+                cause: ProcessCustodyError::Isolation(error.to_string()), process, initial_thread,
+            }));
+        }
+    }
     Ok((process, initial_thread, info.process_id, None))
 }
 
@@ -1455,7 +1496,12 @@ fn create_suspended_protocol(
     }
     let mut inherited = [pipes.stdin_read.raw(), pipes.stdout_write.raw(), stderr_handle];
     let mut jobs = [job];
-    let attributes = AttributeList::for_launch(&mut jobs, Some(&mut inherited))?;
+    let profile = launch.app_container_profile.as_ref().map(|name| AppContainerProfile::ensure(name))
+        .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
+    let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
+    let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
+    let attributes = AttributeList::for_launch(&mut jobs, Some(&mut inherited),
+        capabilities.as_mut().map(|value| (value, &mut package_policy)))?;
     let application = wide_null(launch.application.as_os_str());
     let mut command_line = wide_null(OsStr::new(&build_command_line(
         launch.application.as_os_str(), &launch.arguments,
@@ -1486,6 +1532,13 @@ fn create_suspended_protocol(
     if let Some(error) = create_error { return Err(ProcessCustodyError::CreateProcess(error).into()); }
     let process = OwnedHandle::new(info.process).expect("CreateProcessW returned null process handle");
     let initial_thread = OwnedHandle::new(info.thread).expect("CreateProcessW returned null thread handle");
+    if let Some(profile) = &profile {
+        if let Err(error) = profile.verify_suspended_process(process.raw()) {
+            return Err(SuspendedCreateError::After(PostCreateFailure {
+                cause: ProcessCustodyError::Isolation(error.to_string()), process, initial_thread,
+            }));
+        }
+    }
     if cleared == 0 {
         let error = io::Error::last_os_error();
         return Err(SuspendedCreateError::After(PostCreateFailure {
@@ -2000,6 +2053,17 @@ mod tests {
 
         launch.environment = Some(vec![("Path".into(), "x".into()), ("PATH".into(), "y".into())]);
         assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
+    }
+
+    #[test]
+    fn isolated_launch_refuses_inherited_environment_and_invalid_profile() {
+        let mut launch = ProcessLaunch::new(system_cmd());
+        launch.app_container_profile = Some("invalid/name".into());
+        assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
+        launch.environment = Some(vec![("SystemRoot".into(),
+            std::env::var("SystemRoot").expect("SystemRoot"))]);
+        assert!(matches!(prepare_and_activate(&launch, |_| Ok(())),
+            Err(ProcessCustodyError::Isolation(_))));
     }
 
     #[test]

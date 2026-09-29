@@ -8,6 +8,8 @@
 
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod session;
 
 #[cfg(windows)]
 pub use windows::*;
