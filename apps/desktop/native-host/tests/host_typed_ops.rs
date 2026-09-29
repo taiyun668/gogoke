@@ -211,11 +211,6 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     user.write_all(&[0x47]).expect("User preface");
     let host_path = host().to_string_lossy().replace('\\', "\\\\");
     let user_request = format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"register\",\"requestId\":\"registerA\",\"targetId\":\"instanceA\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{\"driverId\":\"codex\",\"programPath\":\"{host_path}\",\"version\":\"test\"}}}}");
-    write_frame(&mut user, user_request.as_bytes());
-    assert!(read_frame(&mut user).contains("\"status\":\"APPLIED\""));
-    write_frame(&mut user, user_request.as_bytes());
-    assert!(read_frame(&mut user).contains("\"status\":\"REPLAYED\""));
-
     let authenticate = format!("{{\"capability\":\"{capability}\",\"operation\":\"AuthenticateService\"}}");
     let connect_service = || {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -234,6 +229,12 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     write_frame(&mut first, user_request.as_bytes());
     assert!(read_frame(&mut first).starts_with("ERR"), "service promoted User request");
     drop(first);
+    // The same fresh request must still apply through User. A prior User
+    // commit would make an accidental service replay invisible here.
+    write_frame(&mut user, user_request.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"APPLIED\""));
+    write_frame(&mut user, user_request.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"REPLAYED\""));
     let mut second = connect_service();
     write_frame(&mut second, br#"{"operation":"Shutdown"}"#);
     assert!(read_frame(&mut second).starts_with("ERR"), "shared service stopped host");

@@ -2,6 +2,7 @@
 mod wire;
 mod admission;
 mod seat_io;
+mod runtime;
 
 pub(crate) use wire::{decode_request, encode_receipt, V37Request, V37Status, V37WireError};
 pub(crate) use seat_io::{run_seat_io, SeatChannelId, SeatIoAdmission, SeatIoError,

@@ -2434,6 +2434,24 @@ mod tests {
     }
 
     #[test]
+    fn seat_pipe_parent_helper() {
+        let Some(child) = std::env::var_os("GOGOKE_TEST_SEAT_CHILD") else { return; };
+        let path = PathBuf::from(child);
+        let read = fs::File::open(&path)
+            .map(|_| "OK".to_owned())
+            .unwrap_or_else(|error| format!("WIN32_{:?}", error.raw_os_error()));
+        let launched = std::process::Command::new(&path)
+            .args(["--exact", "process::windows::tests::seat_pipe_child_helper", "--nocapture"])
+            .spawn();
+        let outcome = match launched {
+            Ok(mut process) => format!("spawn=OK; exit={:?}", process.wait()),
+            Err(error) => format!("spawn=WIN32_{:?}; detail={error}", error.raw_os_error()),
+        };
+        fs::write("parent-launch.txt", format!("read={read}; {outcome}"))
+            .expect("persist direct child launch result");
+    }
+
+    #[test]
     fn real_app_container_descendant_reaches_native_seat_pipe() {
         use crate::ipc::PrivatePipeListener;
         use std::os::windows::ffi::OsStrExt;
@@ -2448,8 +2466,8 @@ mod tests {
         profile.grant_fresh_session_directory(&home).expect("fresh package directory");
         let package_sid = profile.package_sid_string().expect("package SID");
         drop(profile);
-        let exe = home.join("cmd.exe");
-        write_executable_with_directory_acl(&system_cmd(), &exe);
+        let exe = home.join("seat-pipe-parent.exe");
+        write_executable_with_directory_acl(&std::env::current_exe().expect("native test image"), &exe);
         let helper = home.join("seat-pipe-helper.exe");
         write_executable_with_directory_acl(&std::env::current_exe().expect("native test image"), &helper);
         let endpoint = format!("lpac-{}-{nonce}", std::process::id());
@@ -2482,16 +2500,16 @@ mod tests {
             ("USERPROFILE".into(), home.to_string_lossy().into_owned()),
             ("LOCALAPPDATA".into(), home.to_string_lossy().into_owned()),
             ("GOGOKE_TEST_SEAT_PIPE".into(), pipe_path),
+            ("GOGOKE_TEST_SEAT_CHILD".into(), helper.to_string_lossy().into_owned()),
         ]);
-        launch.arguments = vec!["/D".into(), "/C".into(),
-            "cmd.exe /D /C echo nested> nested.txt & seat-pipe-helper.exe --exact process::windows::tests::seat_pipe_child_helper --nocapture > helper-output.txt 2>&1".into()];
+        launch.arguments = vec!["--exact".into(),
+            "process::windows::tests::seat_pipe_parent_helper".into(), "--nocapture".into()];
         let mut custodian = ProcessCustodian::new().expect("seat custodian");
         let prepared = custodian.prepare(&request(launch)).expect("prepared LPAC child");
         custodian.activate(&prepared).expect("activated LPAC child");
         let accepted = receiver.recv_timeout(Duration::from_secs(15))
-            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; nested_cmd={:?}; helper output={:?}; client error={:?}; parent_exit={:?}",
-                std::fs::read_to_string(home.join("nested.txt")),
-                std::fs::read_to_string(home.join("helper-output.txt")),
+            .unwrap_or_else(|_| panic!("LPAC pipe connection timed out; direct child launch={:?}; client error={:?}; parent_exit={:?}",
+                std::fs::read_to_string(home.join("parent-launch.txt")),
                 std::fs::read_to_string(home.join("pipe-client-error.txt")),
                 process_exit_code(custodian.active(&prepared.ticket).unwrap().process.raw())));
         let (accepted, peer) = accepted.expect("LPAC peer identity");
@@ -2521,8 +2539,7 @@ mod tests {
         drop(custodian);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
-        std::fs::remove_file(home.join("helper-output.txt")).unwrap();
-        std::fs::remove_file(home.join("nested.txt")).unwrap();
+        std::fs::remove_file(home.join("parent-launch.txt")).unwrap();
         std::fs::remove_file(helper).unwrap();
         std::fs::remove_file(exe).unwrap();
         std::fs::remove_dir(home).unwrap();
