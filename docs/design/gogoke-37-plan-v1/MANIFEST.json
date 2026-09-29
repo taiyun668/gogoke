@@ -1,0 +1,17 @@
+{
+  "schema": "gogoke.37.plan-manifest.v1",
+  "status": "DESIGN_PROPOSAL_NOT_AUTHORIZED",
+  "mapping_snapshot": {
+    "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
+  },
+  "sha256": {
+    "PLAN.md": "7d30aca4f209988ca4fa8eecc9f744c9ee31baeb1aeadcce79c3f5fd71c7c5cd",
+    "PLAN.json": "ad54af72b9fc6b892bec13376bbce72596dcd3dabcdea692a182ed4e0c4a4dfd",
+    "verify_plan.py": "d153206e570bfa55ca115099da29b314d2e6b87eb3bbe4e4a05bfe333db7c177"
+  },
+  "excluded": [
+    "MANIFEST.json",
+    "VALIDATION.json"
+  ],
+  "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance"
+}
