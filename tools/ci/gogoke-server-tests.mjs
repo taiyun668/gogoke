@@ -132,7 +132,7 @@ function main() {
   if (nodeRun.error) node.spawn_error = nodeRun.error;
   if (!node.native_host_bound) node.state = "FAIL_INSTRUMENT";
 
-  const selectionOk = files.length === 51 && nodeFiles.length === 10 && viteFiles.length === 41 &&
+  const selectionOk = files.length === 52 && nodeFiles.length === 10 && viteFiles.length === 42 &&
     nodeFiles.includes(productTest);
   const categories = [vite, node];
   const result = {
