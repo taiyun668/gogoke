@@ -87,7 +87,7 @@ END;
 -- no ledger cursor of its own and is never joined by the user-facing query
 -- or receipt paths.  The source cursor is the adapter's cursor, while the
 -- operation/ticket/session/generation columns bind one exact frame to H's
--- durable process custody. A valid protocol reply/notification without a
+-- durable process custody. A valid protocol frame without a
 -- normalized K-LEDGER event is terminal NO_EVENT with a bounded reason code.
 CREATE TABLE IF NOT EXISTS v37_ledger_raw_source (
     operation_id TEXT NOT NULL,
