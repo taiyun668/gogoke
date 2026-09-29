@@ -1108,7 +1108,7 @@ mod platform {
 
         fn spawn_user_test_process(mode: &str, path: &str) -> Child {
             Command::new(std::env::current_exe().expect("test executable"))
-                .args(["--exact", "ipc::platform::tests::user_pipe_child_helper", "--nocapture"])
+                .args(["user_pipe_child_helper", "--nocapture"])
                 .env("GOGOKE_IPC_USER_TEST_MODE", mode)
                 .env("GOGOKE_IPC_USER_TEST_PATH", path)
                 .stdin(Stdio::piped())
