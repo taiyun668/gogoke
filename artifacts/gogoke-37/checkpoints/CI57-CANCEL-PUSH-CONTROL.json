@@ -1,15 +1,26 @@
 {
   "schema": "gogoke.37.candidate-cancellation-control.v1",
-  "state": "PUSH_TRIGGER_PREPARED_RESULT_PENDING",
+  "state": "SECOND_PUSH_TRIGGER_PREPARED_RESULT_PENDING",
   "purpose": "Verify workflow-level cancellation when a new authorized branch push has both signing and installation jobs skipped by their event guards.",
   "workflow": ".github/workflows/gogoke-candidate-sign.yml",
-  "consumer_run_id": 36640351536,
-  "consumer_source": "3ae3e858e57b7d906f66cc55a38990aeedb55573",
+  "consumer_run_id": 36640653771,
+  "consumer_source": "7767720790ba625cf6f54f4b9834f4a74b213898",
   "deliberately_invalid_signing_run_id": 36634561919,
   "invalid_run_identity": "gogoke native-host CI, workflow_dispatch, codex/gogoke-37-l0; neither the required main branch nor candidate-sign workflow nor signing workflow name",
   "safety": "Production Assert-Run must reject this signing-run identity before artifact download or installation if it gets that far. No candidate key is present in the consumer. No installer or release is exercised by this control.",
   "push_trigger": "This real checkpoint commit on codex/gogoke-37-l0",
   "expected": "Consumer is cancelled by the push-triggered run in the same fixed concurrency group; both push-run execution jobs remain skipped.",
   "actual": "NOT_YET_READ_BACK",
-  "non_claims": "This is a cancellation and negative-identity control only, not a signed-candidate smoke pass or a product milestone."
+  "non_claims": "This is a cancellation and negative-identity control only, not a signed-candidate smoke pass or a product milestone.",
+  "first_run_readback": {
+    "run_id": 36640351536,
+    "conclusion": "failure",
+    "result": "EXPECTED_SIGNING_IDENTITY_REJECTION_BEFORE_DOWNLOAD_OR_INSTALL",
+    "cancellation": "NOT_PROVEN_RUN_ALREADY_COMPLETED_BEFORE_PUSH"
+  },
+  "pre_push_readback": {
+    "conclusion": "",
+    "headSha": "7767720790ba625cf6f54f4b9834f4a74b213898",
+    "status": "queued"
+  }
 }
