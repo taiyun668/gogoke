@@ -6,7 +6,7 @@ mod registry;
 mod temporary;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
-pub(crate) use catalog::{discover_program, CatalogError};
+pub(crate) use catalog::{discover_program, locate_pinned_program, CatalogError};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation,
     InstanceObservation, ObservationRequest, ProgramObservation, Registration,

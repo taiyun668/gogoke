@@ -168,7 +168,12 @@ fn package_fact(path: &Path, expected_version: &str) -> Result<(), CatalogError>
     Ok(())
 }
 
-fn discover_at(roaming: &Path, driver_id: &str) -> Result<ProgramObservation, CatalogError> {
+struct LocatedProgram {
+    application: PathBuf,
+    observation: ProgramObservation,
+}
+
+fn discover_at(roaming: &Path, driver_id: &str) -> Result<LocatedProgram, CatalogError> {
     if driver_id != CODEX_DRIVER {
         return Err(CatalogError::UnknownDriver);
     }
@@ -198,7 +203,7 @@ fn discover_at(roaming: &Path, driver_id: &str) -> Result<ProgramObservation, Ca
     // A package replacement during binary measurement cannot establish a pin.
     package_fact(&root_package, CODEX_VERSION)?;
     package_fact(&platform_package, PLATFORM_VERSION)?;
-    Ok(observed)
+    Ok(LocatedProgram { application: binary, observation: observed })
 }
 
 /// Native F.1 program observation for `K-INSTANCE/register`. Only `driverId`
@@ -207,7 +212,25 @@ pub(crate) fn discover_program(driver_id: &str) -> Result<ProgramObservation, Ca
     if driver_id != CODEX_DRIVER {
         return Err(CatalogError::UnknownDriver);
     }
-    discover_at(&roaming_app_data()?, driver_id)
+    Ok(discover_at(&roaming_app_data()?, driver_id)?.observation)
+}
+
+/// H resolves its launch path from the same native catalog and compares the
+/// currently observed bytes to the durable instance pin. The path never
+/// crosses the User/service wire; process custody must recheck the executable
+/// at suspended creation and verify the launched image object again.
+fn locate_pinned_at(roaming: &Path, driver_id: &str, digest: &str,
+    version: &str) -> Result<PathBuf, CatalogError> {
+    let located = discover_at(roaming, driver_id)?;
+    if !located.observation.matches_pin(digest, version) {
+        return Err(CatalogError::IdentityChanged);
+    }
+    Ok(located.application)
+}
+
+pub(crate) fn locate_pinned_program(driver_id: &str, digest: &str,
+    version: &str) -> Result<PathBuf, CatalogError> {
+    locate_pinned_at(&roaming_app_data()?, driver_id, digest, version)
 }
 
 #[cfg(all(test, windows))]
@@ -253,6 +276,19 @@ mod tests {
                 discover_at(root, "claude"),
                 Err(CatalogError::UnknownDriver)
             ));
+        });
+    }
+
+    #[test]
+    fn launch_location_requires_the_same_native_catalog_pin() {
+        fixture(|root, _, _, binary| {
+            let digest = crate::store::digest::content_hash(b"controlled fixture executable bytes");
+            assert_eq!(locate_pinned_at(root, "codex", &digest, CODEX_VERSION).unwrap(), binary);
+            assert!(matches!(locate_pinned_at(root, "codex", "sha256:changed", CODEX_VERSION),
+                Err(CatalogError::IdentityChanged)));
+            fs::write(binary, b"changed fixture executable bytes").unwrap();
+            assert!(matches!(locate_pinned_at(root, "codex", &digest, CODEX_VERSION),
+                Err(CatalogError::IdentityChanged)));
         });
     }
 

@@ -52,6 +52,10 @@ pub(crate) struct ProgramObservation {
 }
 
 impl ProgramObservation {
+    pub(crate) fn matches_pin(&self, digest: &str, version: &str) -> bool {
+        self.digest == digest && self.version == version
+    }
+
     /// Capture bytes through one file handle. The version is a display fact
     /// supplied by the trusted native probe, not derived from the file name.
     pub(crate) fn observe(path: &Path, version: &str) -> Result<Self, RegistryError> {
