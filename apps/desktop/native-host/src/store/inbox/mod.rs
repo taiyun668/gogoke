@@ -86,6 +86,7 @@ impl CardEnvelope<'_> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StoredOperation {
     pub(crate) request_hex: String,
+    pub(crate) message_id: String,
     pub(crate) phase: String,
     pub(crate) previous_revision: u64,
     pub(crate) revision: u64,
@@ -197,14 +198,15 @@ fn read_message(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
 
 fn read_operation(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
     request_id: &str) -> Result<Option<StoredOperation>, InboxError> {
-    let statement = Statement::prepare(connection.as_ptr(), "SELECT request_hex,phase,previous_revision,revision,result_state,reason,native_receipt_id FROM main.gogoke_v37_inbox_operations WHERE domain_id=? AND request_id=?")?;
+    let statement = Statement::prepare(connection.as_ptr(), "SELECT request_hex,message_id,phase,previous_revision,revision,result_state,reason,native_receipt_id FROM main.gogoke_v37_inbox_operations WHERE domain_id=? AND request_id=?")?;
     statement.bind_text(1, domain_id)?;
     statement.bind_text(2, request_id)?;
     if !statement.step_row()? { return Ok(None); }
-    Ok(Some(StoredOperation { request_hex: statement.column_text(0)?, phase: statement.column_text(1)?,
-        previous_revision: parse_revision(statement.column_text(2)?)?,
-        revision: parse_revision(statement.column_text(3)?)?, result_state: statement.column_text(4)?,
-        reason: statement.column_text(5)?, native_receipt_id: statement.column_text(6)? }))
+    Ok(Some(StoredOperation { request_hex: statement.column_text(0)?,
+        message_id: statement.column_text(1)?, phase: statement.column_text(2)?,
+        previous_revision: parse_revision(statement.column_text(3)?)?,
+        revision: parse_revision(statement.column_text(4)?)?, result_state: statement.column_text(5)?,
+        reason: statement.column_text(6)?, native_receipt_id: statement.column_text(7)? }))
 }
 
 /// K-INBOX check-unknown is read only. The same verified connection checks the
@@ -220,7 +222,13 @@ pub(crate) fn check_unknown(connection: &mut VerifiedDatabaseConnection<'_>,
             if value.state == "PREPARED" { value.state = "UNKNOWN".to_owned(); }
         }
         let operation = match request_id {
-            Some(id) => read_operation(connection,domain_id,id)?,
+            Some(id) => {
+                let operation = read_operation(connection,domain_id,id)?;
+                if operation.as_ref().is_some_and(|value| value.message_id != message_id) {
+                    return Err(InboxError::Conflict);
+                }
+                operation
+            },
             None => None,
         };
         Ok((message,operation))
@@ -264,11 +272,21 @@ fn save_operation(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str, 
     Ok(())
 }
 
+fn require_one_change(connection: &VerifiedDatabaseConnection<'_>) -> Result<(), InboxError> {
+    let row = Statement::prepare(connection.as_ptr(), "SELECT changes()")?;
+    if !row.step_row()? || row.column_text(0)? != "1" {
+        return Err(InboxError::Conflict);
+    }
+    Ok(())
+}
+
 fn replay(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str, request_id: &str,
-    request_bytes: &[u8]) -> Result<Option<StoredOperation>, InboxError> {
+    message_id: &str, request_bytes: &[u8]) -> Result<Option<StoredOperation>, InboxError> {
     let previous = read_operation(connection, domain_id, request_id)?;
     if let Some(ref operation) = previous {
-        if operation.request_hex != raw_hex(request_bytes) { return Err(InboxError::Conflict); }
+        if operation.request_hex != raw_hex(request_bytes) || operation.message_id != message_id {
+            return Err(InboxError::Conflict);
+        }
     }
     Ok(previous)
 }
@@ -309,7 +327,7 @@ pub(crate) fn edit_message(connection: &mut VerifiedDatabaseConnection<'_>,
     envelope.validate()?;
     transact(connection, |connection| {
         if !authorized(connection)? { return Err(InboxError::Denied); }
-        if let Some(prior) = replay(connection,envelope.domain_id,envelope.request_id,envelope.request_bytes)? {
+        if let Some(prior) = replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,envelope.request_bytes)? {
             return Ok(prior);
         }
         let current = read_message(connection,envelope.domain_id,envelope.message_id)?;
@@ -392,7 +410,7 @@ pub(crate) fn reserve_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
     envelope.validate()?;
     transact(connection, |connection| {
         if !authorized(connection)? { return Err(InboxError::Denied); }
-        if let Some(prior) = replay(connection,envelope.domain_id,envelope.request_id,envelope.request_bytes)? {
+        if let Some(prior) = replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,envelope.request_bytes)? {
             return Ok((prior,None));
         }
         let message = read_message(connection,envelope.domain_id,envelope.message_id)?.ok_or(InboxError::Conflict)?;
@@ -404,6 +422,7 @@ pub(crate) fn reserve_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
             statement.bind_text((index+1) as i32,value)?;
         }
         statement.step_done()?;
+        require_one_change(connection)?;
         save_operation(connection,envelope.domain_id,envelope.request_id,&raw_hex(envelope.request_bytes),
             envelope.message_id,"PREPARED",message.revision,message.revision,"PREPARED","","")?;
         let operation = read_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)?;
@@ -411,17 +430,29 @@ pub(crate) fn reserve_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
     })
 }
 
-/// H abort must be confirmed before this returns a queued message. Without
-/// confirmation the durable state becomes UNKNOWN and cannot be retried.
+/// H must provide a typed native abort fact before a prepared delivery can
+/// return to PENDING. There is no constructor until H exposes that fact; a
+/// Node boolean or model text cannot stand in for it.
+pub(crate) struct NativeAbortProof {
+    domain_id: String,
+    message_id: String,
+    request_id: String,
+    receipt_id: String,
+}
+
 pub(crate) fn abort_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
-    envelope: &InboxEnvelope<'_>, confirmed: bool, reason: &str) -> Result<StoredOperation, InboxError> {
+    envelope: &InboxEnvelope<'_>, proof: Option<&NativeAbortProof>, reason: &str) -> Result<StoredOperation, InboxError> {
     transact(connection, |connection| {
-        let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
+        let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
         if prior.phase != "PREPARED" { return Ok(prior); }
+        if proof.is_some_and(|fact| fact.domain_id != envelope.domain_id ||
+            fact.message_id != envelope.message_id || fact.request_id != envelope.request_id ||
+            fact.receipt_id.is_empty()) { return Err(InboxError::Denied); }
+        let confirmed = proof.is_some();
         let next = if confirmed { prior.revision } else { prior.revision.checked_add(1).ok_or(InboxError::Invalid("revision overflow"))? };
         let state = if confirmed { "PENDING" } else { "UNKNOWN" };
         let phase = if !confirmed { "UNKNOWN" } else if reason == "DENIED" { "DENIED" } else { "CONFLICT" };
-        update_delivery(connection,envelope,phase,state,prior.revision,next,reason,"")?;
+        update_delivery(connection,envelope,phase,state,"PREPARED",prior.revision,next,reason,"")?;
         read_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)
     })
 }
@@ -434,55 +465,69 @@ pub(crate) fn mark_commit_unknown(connection: &mut VerifiedDatabaseConnection<'_
     -> Result<StoredOperation, InboxError> {
     transact(connection, |connection| {
         if !authorized(connection)? { return Err(InboxError::Denied); }
-        let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
+        let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
         if prior.phase != "PREPARED" { return Ok(prior); }
         let next = prior.revision.checked_add(1).ok_or(InboxError::Invalid("revision overflow"))?;
-        update_delivery(connection,envelope,"UNKNOWN","UNKNOWN",prior.revision,next,"","")?;
+        update_delivery(connection,envelope,"UNKNOWN","UNKNOWN","PREPARED",prior.revision,next,"","")?;
         read_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)
     })
 }
 
-pub(crate) enum DeliveryOutcome<'a> { Completed { native_receipt_id: &'a str }, Failed { reason: &'a str } }
+/// This type cannot be assembled from a string receipt. A future H adapter
+/// must expose a checked constructor from its durable completion/failure fact.
+pub(crate) struct NativeDeliveryProof {
+    domain_id: String,
+    message_id: String,
+    request_id: String,
+    outcome: NativeDeliveryOutcome,
+}
 
-/// Only trusted H completion may call this. A completed delivery requires an
-/// actual native receipt ID; a missing receipt leaves the original UNKNOWN.
+enum NativeDeliveryOutcome { Completed { native_receipt_id: String }, Failed { reason: String } }
+
+/// Only a typed H fact may resolve UNKNOWN. No constructor exists in C until
+/// H exposes its durable, exact-request completion or confirmed failure.
 pub(crate) fn settle_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
-    envelope: &InboxEnvelope<'_>, outcome: DeliveryOutcome<'_>) -> Result<StoredOperation, InboxError> {
+    envelope: &InboxEnvelope<'_>, proof: &NativeDeliveryProof) -> Result<StoredOperation, InboxError> {
     transact(connection, |connection| {
-        let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
+        let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
         if prior.phase != "UNKNOWN" { return Ok(prior); }
-        let (phase,state,reason,receipt) = match outcome {
-            DeliveryOutcome::Completed { native_receipt_id } => {
+        if proof.domain_id != envelope.domain_id || proof.message_id != envelope.message_id ||
+            proof.request_id != envelope.request_id { return Err(InboxError::Denied); }
+        let (phase,state,reason,receipt) = match &proof.outcome {
+            NativeDeliveryOutcome::Completed { native_receipt_id } => {
                 required(native_receipt_id,"native receipt")?;
                 let used = Statement::prepare(connection.as_ptr(), "SELECT 1 FROM main.gogoke_v37_inbox_operations WHERE domain_id=? AND native_receipt_id=? AND phase='APPLIED' LIMIT 1")?;
                 used.bind_text(1,envelope.domain_id)?;
                 used.bind_text(2,native_receipt_id)?;
                 if used.step_row()? { return Err(InboxError::Conflict); }
-                ("APPLIED","DELIVERED","",native_receipt_id)
+                ("APPLIED","DELIVERED","",native_receipt_id.as_str())
             }
-            DeliveryOutcome::Failed { reason } => { required(reason,"failure reason")?; ("FAILED","FAILED",reason,"") }
+            NativeDeliveryOutcome::Failed { reason } => { required(reason,"failure reason")?; ("FAILED","FAILED",reason.as_str(),"") }
         };
         // Completion resolves the same request's UNKNOWN; it does not consume a
         // second message revision or turn one delivery into two logical writes.
-        update_delivery(connection,envelope,phase,state,prior.revision,prior.revision,reason,receipt)?;
+        update_delivery(connection,envelope,phase,state,"UNKNOWN",prior.revision,prior.revision,reason,receipt)?;
         read_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)
     })
 }
 
 fn update_delivery(connection: &VerifiedDatabaseConnection<'_>, envelope: &InboxEnvelope<'_>,
-    phase: &str, state: &str, previous: u64, next: u64, reason: &str,
+    phase: &str, state: &str, expected_state: &str, previous: u64, next: u64, reason: &str,
     receipt: &str) -> Result<(), InboxError> {
-    let statement = Statement::prepare(connection.as_ptr(), "UPDATE main.gogoke_v37_inbox_messages SET state=?,revision=? WHERE domain_id=? AND message_id=? AND revision=?")?;
-    for (index,value) in [state,&next.to_string(),envelope.domain_id,envelope.message_id,&previous.to_string()].iter().enumerate() {
+    let statement = Statement::prepare(connection.as_ptr(), "UPDATE main.gogoke_v37_inbox_messages SET state=?,revision=? WHERE domain_id=? AND message_id=? AND revision=? AND state=?")?;
+    for (index,value) in [state,&next.to_string(),envelope.domain_id,envelope.message_id,&previous.to_string(),expected_state].iter().enumerate() {
         statement.bind_text((index+1) as i32,value)?;
     }
     statement.step_done()?;
-    let statement = Statement::prepare(connection.as_ptr(), "UPDATE main.gogoke_v37_inbox_operations SET phase=?,previous_revision=?,revision=?,result_state=?,reason=?,native_receipt_id=? WHERE domain_id=? AND request_id=? AND phase IN ('PREPARED','UNKNOWN')")?;
+    require_one_change(connection)?;
+    let operation_phase = if expected_state == "PREPARED" { "PREPARED" } else { "UNKNOWN" };
+    let statement = Statement::prepare(connection.as_ptr(), "UPDATE main.gogoke_v37_inbox_operations SET phase=?,previous_revision=?,revision=?,result_state=?,reason=?,native_receipt_id=? WHERE domain_id=? AND request_id=? AND phase=?")?;
     for (index,value) in [phase,&envelope.expected_revision.to_string(),&next.to_string(),state,reason,receipt,
-        envelope.domain_id,envelope.request_id].iter().enumerate() {
+        envelope.domain_id,envelope.request_id,operation_phase].iter().enumerate() {
         statement.bind_text((index+1) as i32,value)?;
     }
     statement.step_done()?;
+    require_one_change(connection)?;
     Ok(())
 }
 
@@ -592,8 +637,8 @@ pub(crate) fn raise_card(connection: &mut VerifiedDatabaseConnection<'_>, envelo
 
 pub(crate) enum CardDecision<'a> { AnswerOption(&'a str), AnswerFree(&'a str), Expire, Recover }
 
-/// Caller must compare request/seat/turn/generation to the stored Card and
-/// resolve current native authority through `authorized` in this transaction.
+/// Every decision, including expire and recover, must name the exact request,
+/// seat, turn and generation. The callback additionally checks native grant.
 pub(crate) fn decide_card(connection: &mut VerifiedDatabaseConnection<'_>, envelope: &CardEnvelope<'_>,
     request_ref: &str, seat_id: &str, turn_id: &str, generation: &str,
     decision: CardDecision<'_>,
@@ -606,9 +651,8 @@ pub(crate) fn decide_card(connection: &mut VerifiedDatabaseConnection<'_>, envel
         let card = read_card(connection,envelope.domain_id,envelope.card_id)?.ok_or(InboxError::Conflict)?;
         if card.revision != envelope.expected_revision { return Err(InboxError::Stale); }
         if card.state != "OPEN" { return Err(InboxError::Conflict); }
-        if matches!(&decision, CardDecision::AnswerOption(_) | CardDecision::AnswerFree(_)) &&
-            (card.request_ref != request_ref || card.seat_id != seat_id ||
-                card.turn_id != turn_id || card.generation != generation) {
+        if card.request_ref != request_ref || card.seat_id != seat_id ||
+            card.turn_id != turn_id || card.generation != generation {
             return Err(InboxError::Conflict);
         }
         let (state,answer) = match decision {
@@ -698,13 +742,38 @@ mod tests {
             assert!(none.is_none());
             assert_eq!(mark_commit_unknown(connection,&deliver,|_| Ok(true)).unwrap().phase,"UNKNOWN");
             assert_eq!(read_message(connection,"projectA","messageA").unwrap().unwrap().state,"UNKNOWN");
-            let done = settle_delivery(connection,&deliver,DeliveryOutcome::Completed {
-                native_receipt_id: "nativeReceiptA" }).unwrap();
-            assert_eq!(done.phase,"APPLIED");
-            assert_eq!(done.result_state,"DELIVERED");
-            assert_eq!((done.previous_revision,done.revision),(2,3));
-            assert_eq!(done.native_receipt_id,"nativeReceiptA");
-            assert_eq!(read_message(connection,"projectA","messageA").unwrap().unwrap().state,"DELIVERED");
+            assert_eq!(read_message(connection,"projectA","messageA").unwrap().unwrap().state,"UNKNOWN");
+            // No typed H completion proof exists yet. A string receipt cannot
+            // convert this durable UNKNOWN to DELIVERED.
+            let wrong_target = InboxEnvelope { message_id: "messageB", ..deliver };
+            assert!(matches!(mark_commit_unknown(connection,&wrong_target,|_| Ok(true)),
+                Err(InboxError::Conflict)));
+            assert!(matches!(check_unknown(connection,"projectA","messageB",Some("deliverA"),|_| Ok(true)),
+                Err(InboxError::Conflict)));
+        });
+    }
+
+    #[test]
+    fn unproven_h_abort_cannot_requeue_or_release_the_original_send() {
+        fixture(|connection| {
+            initialize_schema(connection).unwrap();
+            let enqueue = InboxEnvelope { domain_id: "projectA", request_id: "enqueueA",
+                request_bytes: b"enqueue A", message_id: "messageA", expected_revision: 0 };
+            edit_message(connection,&enqueue,InboxEdit::Enqueue {
+                sender_seat_id: "senderA", seat_id: "seatA", turn_id: "turnA",
+                generation: "1", body: "body" }, |_| Ok(true)).unwrap();
+            let delivery = InboxEnvelope { domain_id: "projectA", request_id: "deliveryA",
+                request_bytes: b"delivery A", message_id: "messageA", expected_revision: 1 };
+            reserve_delivery(connection,&delivery,"1",Some("turnA"),|_| Ok(true)).unwrap();
+            let unresolved = abort_delivery(connection,&delivery,None,"TURN_ENDED").unwrap();
+            assert_eq!(unresolved.phase,"UNKNOWN");
+            assert_eq!(read_message(connection,"projectA","messageA").unwrap().unwrap().state,"UNKNOWN");
+            let requeue = InboxEnvelope { domain_id: "projectA", request_id: "requeueA",
+                request_bytes: b"requeue A", message_id: "messageA", expected_revision: 2 };
+            assert!(matches!(edit_message(connection,&requeue,InboxEdit::Requeue {
+                new_message_id: "messageB", seat_id: "seatA", turn_id: "turnB",
+                generation: "2" }, |_| Ok(true)),Err(InboxError::Conflict)));
+            assert!(read_message(connection,"projectA","messageB").unwrap().is_none());
         });
     }
 
@@ -723,7 +792,9 @@ mod tests {
                 &options,|_| Ok(true)),Err(InboxError::Conflict)));
             let recover = CardEnvelope { domain_id: "projectA",card_id: "cardA",request_id: "recoverA",
                 request_bytes: b"recover exact wire",expected_revision: 1 };
-            assert_eq!(decide_card(connection,&recover,"","","","",CardDecision::Recover,
+            assert!(matches!(decide_card(connection,&recover,"","","","",CardDecision::Recover,
+                |_| Ok(true)),Err(InboxError::Conflict)));
+            assert_eq!(decide_card(connection,&recover,"questionA","seatA","turnA","1",CardDecision::Recover,
                 |_| Ok(true)).unwrap().card.revision,2);
             let answer = CardEnvelope { domain_id: "projectA",card_id: "cardA",request_id: "answerA",
                 request_bytes: b"answer exact wire",expected_revision: 2 };
