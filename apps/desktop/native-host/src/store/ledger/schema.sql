@@ -50,6 +50,39 @@ FROM v37_ledger_index
 WHERE source_kind = 'v37'
 GROUP BY session_id, source_epoch;
 
+-- Keep the source index and its high-water row in one SQLite write.  The Rust
+-- admission checks provide typed errors; these triggers also protect the
+-- invariant if a future migration writes the index directly.
+CREATE TRIGGER IF NOT EXISTS v37_ledger_source_stream_validate
+BEFORE INSERT ON v37_ledger_index
+WHEN NEW.source_kind = 'v37'
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM v37_ledger_source_stream
+            WHERE session_id = NEW.session_id AND source_epoch = NEW.source_epoch
+        ) AND CAST(NEW.source_cursor AS INTEGER) <> 1
+        THEN RAISE(ABORT, 'A.1 source stream must start at cursor 1')
+        WHEN EXISTS (
+            SELECT 1 FROM v37_ledger_source_stream
+            WHERE session_id = NEW.session_id AND source_epoch = NEW.source_epoch
+              AND (state <> 'ACTIVE' OR CAST(NEW.source_cursor AS INTEGER) <> last_cursor + 1)
+        )
+        THEN RAISE(ABORT, 'A.1 source stream cursor is not contiguous')
+    END;
+END;
+CREATE TRIGGER IF NOT EXISTS v37_ledger_source_stream_advance
+AFTER INSERT ON v37_ledger_index
+WHEN NEW.source_kind = 'v37'
+BEGIN
+    INSERT INTO v37_ledger_source_stream
+        (session_id, source_epoch, last_cursor, state)
+    VALUES (NEW.session_id, NEW.source_epoch, CAST(NEW.source_cursor AS INTEGER), 'ACTIVE')
+    ON CONFLICT (session_id, source_epoch) DO UPDATE SET
+        last_cursor = excluded.last_cursor
+    WHERE v37_ledger_source_stream.state = 'ACTIVE';
+END;
+
 -- After the initial backfill, every old write receives a cursor inside its
 -- original transaction. This table is a reference index, not a second event log.
 INSERT OR IGNORE INTO v37_ledger_index (source_event_id, source_kind)

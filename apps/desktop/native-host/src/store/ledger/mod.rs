@@ -501,28 +501,6 @@ pub(crate) fn record(
     statement.bind_text(9, &input.occurred_at)?;
     statement.bind_text(10, &input.update_json)?;
     statement.step_done()?;
-    if stream_exists {
-        let update = Statement::prepare(
-            connection.as_ptr(),
-            "UPDATE v37_ledger_source_stream SET last_cursor = ?
-             WHERE session_id = ? AND source_epoch = ? AND state = 'ACTIVE'",
-        )?;
-        update.bind_i64(1, source_cursor as i64)?;
-        update.bind_text(2, &input.session_id)?;
-        update.bind_text(3, &input.source_epoch)?;
-        update.step_done()?;
-    } else {
-        let insert = Statement::prepare(
-            connection.as_ptr(),
-            "INSERT INTO v37_ledger_source_stream
-             (session_id, source_epoch, last_cursor, state)
-             VALUES (?, ?, ?, 'ACTIVE')",
-        )?;
-        insert.bind_text(1, &input.session_id)?;
-        insert.bind_text(2, &input.source_epoch)?;
-        insert.bind_i64(3, source_cursor as i64)?;
-        insert.step_done()?;
-    }
     existing_event(connection, &input.event_id)?
         .ok_or_else(|| AtomicError::DurabilityContractFailed("appended event missing".into()))
 }
@@ -1239,6 +1217,21 @@ mod tests {
             &event_at("event-1", &registration, Tier::Seat, "1"),
         )
         .expect("first");
+        // The trigger is the atomicity backstop for any future direct index
+        // writer: a rejected insert must not advance the durable high-water
+        // row or leave a partially accepted source event.
+        assert!(exec(
+            &mut connection,
+            "INSERT INTO v37_ledger_index
+             (source_event_id, source_kind, source_cursor, source_epoch,
+              domain_id, seat_id, session_id, tier, occurred_at, update_json)
+             VALUES ('direct-gap', 'v37', '3', 'source-epoch',
+                     'project-a', 'seat-a', 'session-a', 'SEAT',
+                     '2026-09-29T00:00:00Z',
+                     '{\"sessionUpdate\":\"agent_message_chunk\"}')",
+        )
+        .is_err());
+        assert_eq!(recover(&connection).expect("rollback recovery").cursor, 1);
         let gap = event_at("event-3", &registration, Tier::Seat, "3");
         assert!(matches!(
             record(&mut connection, &gap),
