@@ -47,6 +47,7 @@ export type CodexSessionEvent =
 export class Codex0149Session {
   private readonly transport: CodexSessionTransport;
   private phaseValue: CodexSessionPhase = "new";
+  private memoryOffCwd: string | null = null;
   private threadIdValue: string | null = null;
   private turnIdValue: string | null = null;
   private turnStatusValue: CodexTurnStatus = "idle";
@@ -120,6 +121,48 @@ export class Codex0149Session {
     }
   }
 
+  /** Effective configuration comes from this exact app-server process. A
+   * requested command-line override alone is not a memory-off observation. */
+  async verifyMemoryOff(cwd: string): Promise<void> {
+    this.ready("config/read");
+    const targetCwd = nonempty(cwd, "cwd");
+    this.memoryOffCwd = null;
+    this.confirm("config/read", await this.call("config/read", {
+      cwd: targetCwd, includeLayers: true,
+    }), (value) => {
+      const config = object(object(value, "config/read").config, "config/read.config");
+      const features = object(config.features, "config/read.features");
+      const memories = object(config.memories, "config/read.memories");
+      if (features.memories !== false || memories.generate_memories !== false ||
+          memories.use_memories !== false) {
+        throw new CodexProtocolError("MEMORY_NOT_DISABLED", "effective config/read values");
+      }
+    });
+    this.memoryOffCwd = targetCwd;
+  }
+
+  /** This read never refreshes a token and never returns account details. A
+   * local account object proves only credential presence, not validity. */
+  async observeLocalAccount(): Promise<"LOGGED_OUT" | "CREDENTIAL_PRESENT" | "UNKNOWN"> {
+    this.ready("account/read");
+    return this.confirm("account/read", await this.call("account/read", {}), (value) => {
+      const response = object(value, "account/read");
+      if (typeof response.requiresOpenaiAuth !== "boolean" ||
+          !Object.hasOwn(response, "account")) {
+        throw new CodexProtocolError("INVALID_RESPONSE", "account/read fields");
+      }
+      if (response.account === null) {
+        return response.requiresOpenaiAuth ? "LOGGED_OUT" : "UNKNOWN";
+      }
+      const account = object(response.account, "account/read.account");
+      if (account.type !== "apiKey" && account.type !== "chatgpt" &&
+          account.type !== "amazonBedrock") {
+        throw new CodexProtocolError("INVALID_RESPONSE", "account/read.account.type");
+      }
+      return "CREDENTIAL_PRESENT";
+    });
+  }
+
   private ready(method: string): void {
     if (this.phaseValue !== "ready") throw new CodexProtocolError("INVALID_STATE", method);
     if (this.inFlight) throw new CodexProtocolError("INVALID_STATE", "another request is in flight");
@@ -128,6 +171,10 @@ export class Codex0149Session {
     this.ready(method);
     if (this.threadIdValue === null) throw new CodexProtocolError("INVALID_STATE", `${method}: no thread`);
     return this.threadIdValue;
+  }
+  private requireMemoryOff(method: string, cwd: string): void {
+    // H supplies one canonical directory string for both operations.
+    if (this.memoryOffCwd !== cwd) throw new CodexProtocolError("MEMORY_NOT_VERIFIED", method);
   }
   private async call(method: string, params: Readonly<JsonRecord>): Promise<unknown> {
     if (this.inFlight) throw new CodexProtocolError("INVALID_STATE", "another request is in flight");
@@ -166,20 +213,26 @@ export class Codex0149Session {
 
   async startThread(cwd: string): Promise<string> {
     this.ready("thread/start");
+    const targetCwd = nonempty(cwd, "cwd");
+    this.requireMemoryOff("thread/start", targetCwd);
     if (this.threadIdValue !== null) throw new CodexProtocolError("INVALID_STATE", "thread already bound");
-    const id = this.confirm("thread/start", await this.call("thread/start", { cwd: nonempty(cwd, "cwd") }),
+    const id = this.confirm("thread/start", await this.call("thread/start", { cwd: targetCwd }),
       (value) => threadIdOf(value, "thread/start"));
     this.threadIdValue = id;
     return id;
   }
 
-  async resume(threadId: string): Promise<void> {
+  async resume(threadId: string, cwd: string): Promise<void> {
     this.ready("thread/resume");
+    const targetCwd = nonempty(cwd, "cwd");
+    this.requireMemoryOff("thread/resume", targetCwd);
     if (this.threadIdValue !== null) throw new CodexProtocolError("INVALID_STATE", "thread already bound");
     const wanted = nonempty(threadId, "threadId");
     this.confirm("thread/resume", await this.call("thread/resume", { threadId: wanted }), (value) => {
       if (threadIdOf(value, "thread/resume") !== wanted)
         throw new CodexProtocolError("INVALID_RESPONSE", "thread/resume returned a different thread");
+      if (object(object(value, "thread/resume").thread, "thread/resume.thread").cwd !== targetCwd)
+        throw new CodexProtocolError("INVALID_RESPONSE", "thread/resume returned a different cwd");
     });
     this.threadIdValue = wanted;
   }
