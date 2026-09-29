@@ -29,8 +29,8 @@
     },
     {
       "path": "apps/desktop/native-host/src/store/mod.rs",
-      "status": "NOT_IMPLEMENTED",
-      "reason": "Real-line extension remains pending; no dead stub was added"
+      "status": "MODIFIED",
+      "reason": "Registers the F instance schema and H native-only v37 wire modules; caller binding and actual operations remain pending"
     },
     {
       "path": "apps/desktop/native-host/src/store/protocol.rs",
@@ -40,7 +40,7 @@
     {
       "path": "apps/desktop/native-host/src/store/session.rs",
       "status": "MODIFIED",
-      "reason": "L0 denies unwired v37 ingress before mutation and preserves original pipe errors; real H dispatcher remains pending"
+      "reason": "L0 denies unwired v37 ingress before mutation; after authority bootstrap it initializes the F global instance schema. Real H dispatcher remains pending"
     },
     {
       "path": "apps/desktop/native-host/src/store/orchestration.rs",

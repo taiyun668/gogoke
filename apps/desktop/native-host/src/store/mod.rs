@@ -46,6 +46,9 @@ pub mod orchestration;
 #[cfg(windows)]
 pub(crate) mod instance;
 
+#[cfg(windows)]
+pub(crate) mod session_transport;
+
 pub mod protocol;
 
 #[cfg(windows)]

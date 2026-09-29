@@ -124,6 +124,9 @@ describe("design 37 closed operation protocol", () => {
         takeoverContext: () => takeoverContext,
         createTemporaryHome: () => caseId === "instance-home-unknown" ? "UNKNOWN" as const :
           { directoryRef: "opaqueTempA", nativeReceiptId: "createdA" },
+        verifyTemporaryHomeOwner: (_instanceId: string, ownerDomainId: string,
+          ownerId: string, generation: string) => ownerDomainId === "projectA" &&
+          ownerId === "sessionA" && generation === "1",
         closeTemporaryHome: () => caseId === "instance-home-no-stop" ? null : "stoppedA",
         cleanupTemporaryHome: () => "cleanedA",
         activeInstanceAdmissions: () => caseId === "instance-home-busy" ? 1 : 0,

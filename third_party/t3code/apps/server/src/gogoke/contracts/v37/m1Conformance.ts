@@ -235,10 +235,13 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
     assert.equal((await call(h.port, instanceReq("K-INSTANCE", "register", `${caseId}Register`, "instanceA", "0",
       { driverId: "codex" }))).status, "APPLIED");
     const create = instanceReq("K-INSTANCE", "home-lifecycle", `${caseId}Create`, "tempA", "0",
-      { action: "CREATE", instanceId: "instanceA", kind: "SESSION", ownerId: "sessionA",
+      { action: "CREATE", instanceId: "instanceA", ownerDomainId: "projectA",
+        kind: "SESSION", ownerId: "sessionA",
         generation: "1" });
     assert.equal((await call(h.port, { ...create, requestId: `${caseId}WrongInstance`,
       payload: { ...create.payload, instanceId: "instanceB" } })).status, "DENIED");
+    assert.equal((await call(h.port, { ...create, requestId: `${caseId}WrongOwnerDomain`,
+      payload: { ...create.payload, ownerDomainId: "projectB" } })).status, "DENIED");
     assert.equal((await call(h.port, { ...create, requestId: `${caseId}OtherDomain`,
       domainId: "projectB" })).status, "DENIED");
     await assert.rejects(() => call(h.port, { ...create, requestId: `${caseId}ForgedPath`,

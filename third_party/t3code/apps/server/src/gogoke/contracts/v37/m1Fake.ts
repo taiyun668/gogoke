@@ -20,7 +20,8 @@ interface Instance {
   installed: boolean; loginState: "UNKNOWN" | "LOGGED_IN" | "LOGGED_OUT";
 }
 interface TemporaryHome {
-  revision: bigint; instanceId: string; kind: "SESSION" | "CALL"; ownerId: string;
+  revision: bigint; instanceId: string; ownerDomainId: string;
+  kind: "SESSION" | "CALL"; ownerId: string;
   generation: string; directoryRef: string; state: "ACTIVE" | "CLOSED" | "CLEANED" | "UNKNOWN";
 }
 interface Prior { readonly request: string; readonly receipt: V37Receipt; readonly takeoverContextKey?: string; }
@@ -56,8 +57,10 @@ export interface V37M1FakeOptions {
   readonly takeoverContext?: (seatId: string) => V37TakeoverContext | null;
   readonly isTakeoverLead?: (seatId: string) => boolean;
   readonly createTemporaryHome?: (lifecycleId: string, instanceId: string,
-    kind: "SESSION" | "CALL", ownerId: string, generation: string) =>
+    ownerDomainId: string, kind: "SESSION" | "CALL", ownerId: string, generation: string) =>
     { directoryRef: string; nativeReceiptId: string } | "UNKNOWN" | null;
+  readonly verifyTemporaryHomeOwner?: (instanceId: string, ownerDomainId: string,
+    ownerId: string, generation: string) => boolean;
   readonly closeTemporaryHome?: (lifecycleId: string, directoryRef: string) =>
     string | "UNKNOWN" | null;
   readonly cleanupTemporaryHome?: (lifecycleId: string, directoryRef: string) =>
@@ -330,7 +333,7 @@ export class V37M1FakePort implements V37Port {
       const action = nonempty(request.payload, "action");
       if (action === "CREATE") {
         if (Object.keys(request.payload).some((name) =>
-          !["action", "instanceId", "kind", "ownerId", "generation"].includes(name))) {
+          !["action", "instanceId", "ownerDomainId", "kind", "ownerId", "generation"].includes(name))) {
           throw new Error("V37_M1_INVALID: temporary home payload");
         }
         if (temporaryHome) return encodeV37Receipt(reply("CONFLICT"));
@@ -340,15 +343,18 @@ export class V37M1FakePort implements V37Port {
           throw new Error("V37_M1_INVALID: temporary home kind");
         }
         const ownerId = nonempty(request.payload, "ownerId");
+        const ownerDomainId = nonempty(request.payload, "ownerDomainId");
         const generation = nonempty(request.payload, "generation");
-        if (!this.store.instances.has(`${request.domainId}:${instanceId}`)) {
+        if (!this.store.instances.has(`${request.domainId}:${instanceId}`) ||
+            this.options.verifyTemporaryHomeOwner?.(instanceId, ownerDomainId,
+              ownerId, generation) !== true) {
           return encodeV37Receipt(reply("DENIED"));
         }
         const created = this.options.createTemporaryHome?.(request.targetId, instanceId,
-          kind, ownerId, generation);
+          ownerDomainId, kind, ownerId, generation);
         if (!created) return encodeV37Receipt(reply("UNSUPPORTED"));
         if (created === "UNKNOWN") {
-          this.store.temporaryHomes.set(key, { revision: 0n, instanceId, kind, ownerId,
+          this.store.temporaryHomes.set(key, { revision: 0n, instanceId, ownerDomainId, kind, ownerId,
             generation, directoryRef: "", state: "UNKNOWN" });
           return committed(reply("UNKNOWN"));
         }
@@ -358,7 +364,7 @@ export class V37M1FakePort implements V37Port {
           return encodeV37Receipt(reply("FAILED"));
         }
         this.store.temporaryDirectoryRefs.add(created.directoryRef);
-        this.store.temporaryHomes.set(key, { revision: 1n, instanceId, kind, ownerId,
+        this.store.temporaryHomes.set(key, { revision: 1n, instanceId, ownerDomainId, kind, ownerId,
           generation, directoryRef: created.directoryRef, state: "ACTIVE" });
         return committed(reply("APPLIED", 1n, { state: "ACTIVE",
           directoryRef: created.directoryRef, nativeReceiptId: created.nativeReceiptId }));

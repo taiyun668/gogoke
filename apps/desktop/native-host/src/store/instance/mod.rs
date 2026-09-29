@@ -25,7 +25,7 @@ fn observed_schema(
 ) -> Result<Vec<(String, String)>, OrchestrationError> {
     let statement = Statement::prepare(
         connection.as_ptr(),
-        "SELECT name,sql FROM main.sqlite_schema WHERE name LIKE 'gogoke_v37_instance%' ORDER BY name",
+        "SELECT name,sql FROM main.sqlite_schema WHERE substr(name,1,19)='gogoke_v37_instance' ORDER BY name",
     )?;
     let mut rows = Vec::new();
     while statement.step_row()? {
