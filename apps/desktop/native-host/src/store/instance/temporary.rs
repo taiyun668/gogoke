@@ -7,7 +7,8 @@ use crate::root::{inspect_root, RootIdentity, RootLock};
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::digest::sha256_hex;
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
-use crate::store::session_transport::{verify_home_owner_in_transaction, AdmissionError};
+use crate::store::session_transport::{verify_home_owner_in_transaction,
+    verify_home_stop_in_transaction, fence_home_admission_in_transaction, AdmissionError};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::windows::fs::MetadataExt;
@@ -49,13 +50,13 @@ pub(crate) enum TemporaryHomeError {
     Invalid(&'static str),
     RequestConflict,
     HomeConflict,
+    StaleRevision,
     InstanceChanged,
     IdentityChanged,
     Unknown,
     CommitUnknown(SameOpenError),
     RollbackUnknown(SameOpenError),
     StopFactUnavailable,
-    AdmissionFenceUnavailable,
     Io(io::Error),
     Atomic(AtomicError),
     Sqlite(SameOpenError),
@@ -405,13 +406,294 @@ pub(crate) struct TransitionTemporaryHome<'a> {
     pub(crate) expected_revision: i64,
 }
 
-pub(crate) fn close_temporary_home(_connection: &mut VerifiedDatabaseConnection<'_>,
-    _root: &RootLock, _input: &TransitionTemporaryHome<'_>) -> Result<TemporaryHomeReceipt, TemporaryHomeError> {
-    Err(TemporaryHomeError::StopFactUnavailable)
+type HomeRow = (String, String, String, String, String, String, String, String, String);
+
+fn transition_fingerprint(operation: &str, input: &TransitionTemporaryHome<'_>, sid: &str) -> String {
+    let mut framed = Vec::new();
+    let revision = input.expected_revision.to_string();
+    for value in [operation.as_bytes(), input.request_bytes, input.home_id.as_bytes(),
+        revision.as_bytes(), sid.as_bytes()] {
+        framed.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        framed.extend_from_slice(value);
+    }
+    hex(&framed)
 }
-pub(crate) fn cleanup_temporary_home(_connection: &mut VerifiedDatabaseConnection<'_>,
-    _root: &RootLock, _input: &TransitionTemporaryHome<'_>) -> Result<TemporaryHomeReceipt, TemporaryHomeError> {
-    Err(TemporaryHomeError::AdmissionFenceUnavailable)
+fn validate_transition(input: &TransitionTemporaryHome<'_>, revision: i64)
+    -> Result<(), TemporaryHomeError> {
+    if !valid_id(input.request_id) || !valid_id(input.home_id)
+        || input.request_bytes.is_empty() || input.request_bytes.len() > 65_536 {
+        return Err(TemporaryHomeError::Invalid("transition"));
+    }
+    if input.expected_revision != revision { return Err(TemporaryHomeError::StaleRevision); }
+    Ok(())
+}
+fn transition_operation(connection: &VerifiedDatabaseConnection<'_>, request_id: &str)
+    -> Result<Option<(String, String, String, String)>, TemporaryHomeError> {
+    let row = Statement::prepare(connection.as_ptr(),
+        "SELECT request_hex,target_id,phase,COALESCE(receipt_json,'') FROM main.gogoke_v37_instance_operations WHERE request_id=?1")?;
+    row.bind_text(1, request_id)?;
+    if row.step_row()? { Ok(Some((row.column_text(0)?,row.column_text(1)?,row.column_text(2)?,row.column_text(3)?))) }
+    else { Ok(None) }
+}
+fn transition_path(root: &RootLock, instance_id: &str, home_id: &str) -> std::path::PathBuf {
+    root.canonical_root().canonical_path.join(CONTAINER).join(instance_id)
+        .join(TEMPORARY_CONTAINER).join(directory_ref(home_id))
+}
+fn transition_parent(root: &RootLock, row: &HomeRow) -> Result<RootIdentity, TemporaryHomeError> {
+    let root_path = &root.canonical_root().canonical_path;
+    if checked_dir(root_path)? != root.canonical_root().identity { return Err(TemporaryHomeError::IdentityChanged); }
+    let top = root_path.join(CONTAINER);
+    checked_dir(&top)?;
+    let instance = top.join(&row.0);
+    let instance_identity = checked_dir(&instance)?;
+    if observed_home(root, &row.0)? != Some(instance_identity) {
+        return Err(TemporaryHomeError::InstanceChanged);
+    }
+    Ok(checked_dir(&instance.join(TEMPORARY_CONTAINER))?)
+}
+fn create_marker_for_row(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    home_id: &str, row: &HomeRow, sid: &str) -> Result<String, TemporaryHomeError> {
+    let tag = b"temporary-create";
+    let prefix = format!("{:016x}{}", tag.len(), hex(tag));
+    let query = Statement::prepare(connection.as_ptr(),
+        "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED'")?;
+    query.bind_text(1, home_id)?;
+    let mut create = None;
+    while query.step_row()? {
+        let request_id = query.column_text(0)?;
+        let request_hex = query.column_text(1)?;
+        if request_hex.starts_with(&prefix) {
+            if create.replace((request_id, request_hex)).is_some() { return Err(TemporaryHomeError::Unknown); }
+        }
+    }
+    let (request_id, request_hex) = create.ok_or(TemporaryHomeError::Unknown)?;
+    Ok(format!("gogoke-v37-temporary-home-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        root.canonical_root().identity.opaque(), row.0, home_id, row.1, row.2, row.3, row.4,
+        request_id, sha256_hex(request_hex.as_bytes()), row.6, sid))
+}
+fn transition_stage(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    home_id: &str, row: &HomeRow, sid: &str)
+    -> Result<Option<DirectoryStage>, TemporaryHomeError> {
+    transition_parent(root, row)?;
+    let path = transition_path(root, &row.0, home_id);
+    let Some(identity) = existing_parent(&path)? else { return Ok(None); };
+    let mut marker = false;
+    let mut other = false;
+    for entry in fs::read_dir(&path)? {
+        if entry?.file_name().as_os_str() == std::ffi::OsStr::new(MARKER) { marker = true; }
+        else { other = true; }
+    }
+    let stage = if marker {
+        let marker_path = path.join(MARKER);
+        let metadata = fs::symlink_metadata(&marker_path)?;
+        if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0
+            || fs::read_to_string(&marker_path)? != create_marker_for_row(connection, root, home_id, row, sid)? {
+            return Err(TemporaryHomeError::IdentityChanged);
+        }
+        DirectoryStage::Marked(identity.clone(), other)
+    } else if !other { DirectoryStage::Empty(identity.clone()) }
+    else { return Err(TemporaryHomeError::Unknown); };
+    if checked_dir(&path)? != identity { return Err(TemporaryHomeError::IdentityChanged); }
+    Ok(Some(stage))
+}
+fn exact_stopped_home(connection: &mut VerifiedDatabaseConnection<'_>, home_id: &str,
+    row: &HomeRow) -> Result<String, TemporaryHomeError> {
+    let stop = verify_home_stop_in_transaction(connection, &row.0, &row.1, &row.2, &row.3, &row.4)?;
+    let claim = Statement::prepare(connection.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_h_claim AS a JOIN main.gogoke_coordination_process_custody AS c ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id AND c.generation=a.generation WHERE a.home_id=?1 AND a.instance_id=?2 AND a.domain_id=?3 AND a.session_id=?4 AND a.generation=?5 AND a.state IN ('STOPPED','RELEASED') AND a.stop_fact_id=?6 AND c.state='STOPPED' AND c.stop_proof_hash=?6")?;
+    for (index, value) in [home_id,&row.0,&row.1,&row.3,&row.4,&stop].iter().enumerate() {
+        claim.bind_text((index+1) as i32, value)?;
+    }
+    if !claim.step_row()? || claim.column_text(0)? != "1" { return Err(TemporaryHomeError::StopFactUnavailable); }
+    Ok(stop)
+}
+fn row_identity(row: &HomeRow, home_id: &str) -> Result<(), TemporaryHomeError> {
+    if row.5 != directory_ref(home_id) || row.6.is_empty() { return Err(TemporaryHomeError::IdentityChanged); }
+    Ok(())
+}
+fn receipt(disposition: &'static str, row: &HomeRow) -> TemporaryHomeReceipt {
+    TemporaryHomeReceipt { disposition, directory_ref: row.5.clone(), native_receipt_id: row.6.clone() }
+}
+
+pub(crate) fn close_temporary_home(connection: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, profile: &AppContainerProfile, input: &TransitionTemporaryHome<'_>)
+    -> Result<TemporaryHomeReceipt, TemporaryHomeError> {
+    validate_transition(input, 1)?;
+    let sid = profile.sid_identity()?;
+    let request_hex = transition_fingerprint("temporary-close", input, &sid);
+    transaction(connection, |connection| {
+        let row = home_row(connection, input.home_id)?.ok_or(TemporaryHomeError::HomeConflict)?;
+        row_identity(&row, input.home_id)?;
+        if let Some((stored, target, phase, stored_receipt)) = transition_operation(connection, input.request_id)? {
+            if stored != request_hex || target != input.home_id { return Err(TemporaryHomeError::RequestConflict); }
+            if phase == "APPLIED" && matches!(row.7.as_str(), "CLOSED" | "CLEANUP_UNKNOWN" | "CLEANED") {
+                let stop = exact_stopped_home(connection, input.home_id, &row)?;
+                if stored_receipt != format!("\"{}\"", hex(stop.as_bytes())) {
+                    return Err(TemporaryHomeError::Unknown);
+                }
+                if row.7 == "CLEANED" {
+                    if transition_stage(connection, root, input.home_id, &row, &sid)?.is_some() {
+                        return Err(TemporaryHomeError::Unknown);
+                    }
+                } else if !matches!(transition_stage(connection, root, input.home_id, &row, &sid)?,
+                    Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6) {
+                    return Err(TemporaryHomeError::Unknown);
+                }
+                return Ok(receipt("REPLAYED", &row));
+            }
+            return Err(TemporaryHomeError::Unknown);
+        }
+        if row.7 != "ACTIVE" || row.8 != "1" { return Err(TemporaryHomeError::StaleRevision); }
+        let stop = exact_stopped_home(connection, input.home_id, &row)?;
+        if !matches!(transition_stage(connection, root, input.home_id, &row, &sid)?,
+            Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6) {
+            return Err(TemporaryHomeError::IdentityChanged);
+        }
+        let op = Statement::prepare(connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase,receipt_json) VALUES(?1,?2,?3,'APPLIED',?4)")?;
+        op.bind_text(1, input.request_id)?; op.bind_text(2, &request_hex)?;
+        op.bind_text(3, input.home_id)?; op.bind_text(4, &format!("\"{}\"", hex(stop.as_bytes())))?;
+        op.step_done()?;
+        let update = Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_homes SET state='CLOSED',revision=2 WHERE home_id=?1 AND state='ACTIVE' AND revision=1")?;
+        update.bind_text(1, input.home_id)?; update.step_done()?;
+        Ok(receipt("APPLIED", &row))
+    })
+}
+
+fn cleanup_receipt(root: &RootLock, parent: &RootIdentity, home_id: &str,
+    row: &HomeRow, sid: &str, stop: &str, fence: &str, marker: &str) -> String {
+    let mut framed = Vec::new();
+    let root_identity = root.canonical_root().identity.opaque();
+    let parent_identity = parent.opaque();
+    let marker_hash = sha256_hex(marker.as_bytes());
+    for value in [&b"temporary-cleanup-v1"[..], root_identity.as_bytes(),
+        parent_identity.as_bytes(), home_id.as_bytes(), row.6.as_bytes(), sid.as_bytes(),
+        stop.as_bytes(), fence.as_bytes(), marker_hash.as_bytes()] {
+        framed.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        framed.extend_from_slice(value);
+    }
+    format!("\"{}\"", hex(&framed))
+}
+fn remove_content_preserving_marker(path: &Path) -> Result<(), TemporaryHomeError> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_name().as_os_str() == std::ffi::OsStr::new(MARKER) { continue; }
+        let child = entry.path();
+        let metadata = fs::symlink_metadata(&child)?;
+        if metadata.file_attributes() & REPARSE_POINT != 0 {
+            if metadata.is_dir() { fs::remove_dir(&child)?; }
+            else { fs::remove_file(&child)?; }
+        } else if metadata.is_dir() { fs::remove_dir_all(&child)?; }
+        else { fs::remove_file(&child)?; }
+    }
+    Ok(())
+}
+
+pub(crate) fn cleanup_temporary_home(connection: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, profile: &AppContainerProfile, input: &TransitionTemporaryHome<'_>)
+    -> Result<TemporaryHomeReceipt, TemporaryHomeError> {
+    validate_transition(input, 2)?;
+    let sid = profile.sid_identity()?;
+    let request_hex = transition_fingerprint("temporary-cleanup", input, &sid);
+    let prepared = transaction(connection, |connection| {
+        let mut row = home_row(connection, input.home_id)?.ok_or(TemporaryHomeError::HomeConflict)?;
+        row_identity(&row, input.home_id)?;
+        let prior = transition_operation(connection, input.request_id)?;
+        if let Some((stored,target,_,_)) = &prior {
+            if stored != &request_hex || target != input.home_id { return Err(TemporaryHomeError::RequestConflict); }
+        }
+        let stop = exact_stopped_home(connection, input.home_id, &row)?;
+        let parent = transition_parent(root, &row)?;
+        let marker = create_marker_for_row(connection, root, input.home_id, &row, &sid)?;
+        if prior.is_none() {
+            if row.7 != "CLOSED" || row.8 != "2" { return Err(TemporaryHomeError::StaleRevision); }
+            if !matches!(transition_stage(connection, root, input.home_id, &row, &sid)?,
+                Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6) {
+                return Err(TemporaryHomeError::IdentityChanged);
+            }
+        } else if !matches!(row.7.as_str(), "CLEANUP_UNKNOWN" | "CLEANED") {
+            return Err(TemporaryHomeError::Unknown);
+        }
+        let fence = fence_home_admission_in_transaction(connection, input.home_id,
+            &row.0, &row.1, &row.2, &row.3, &row.4)?;
+        let expected = cleanup_receipt(root, &parent, input.home_id, &row, &sid,
+            &stop, &fence, &marker);
+        if let Some((_,_,phase,stored_receipt)) = prior {
+            if stored_receipt != expected { return Err(TemporaryHomeError::Unknown); }
+            if phase == "APPLIED" && row.7 == "CLEANED" {
+                if transition_stage(connection, root, input.home_id, &row, &sid)?.is_some() {
+                    return Err(TemporaryHomeError::Unknown);
+                }
+                return Ok((row, parent, expected, true));
+            }
+            if phase != "PREPARING" && phase != "UNKNOWN" || row.7 != "CLEANUP_UNKNOWN" || row.8 != "3" {
+                return Err(TemporaryHomeError::Unknown);
+            }
+        } else {
+            let op = Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase,receipt_json) VALUES(?1,?2,?3,'PREPARING',?4)")?;
+            op.bind_text(1, input.request_id)?; op.bind_text(2, &request_hex)?;
+            op.bind_text(3, input.home_id)?; op.bind_text(4, &expected)?; op.step_done()?;
+            let update = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_homes SET state='CLEANUP_UNKNOWN',revision=3 WHERE home_id=?1 AND state='CLOSED' AND revision=2")?;
+            update.bind_text(1, input.home_id)?; update.step_done()?;
+            row.7 = "CLEANUP_UNKNOWN".to_owned();
+            row.8 = "3".to_owned();
+        }
+        Ok((row, parent, expected, false))
+    })?;
+    let (row, parent, expected, replayed) = prepared;
+    if replayed { return Ok(receipt("REPLAYED", &row)); }
+    let path = transition_path(root, &row.0, input.home_id);
+    if transition_parent(root, &row)? != parent { return Err(TemporaryHomeError::IdentityChanged); }
+    match transition_stage(connection, root, input.home_id, &row, &sid)? {
+        Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6 => {
+            remove_content_preserving_marker(&path)?;
+            if transition_parent(root, &row)? != parent { return Err(TemporaryHomeError::IdentityChanged); }
+            if transition_stage(connection, root, input.home_id, &row, &sid)?
+                != Some(DirectoryStage::Marked(identity.clone(), false)) {
+                return Err(TemporaryHomeError::Unknown);
+            }
+            fs::remove_file(path.join(MARKER))?;
+            if transition_parent(root, &row)? != parent { return Err(TemporaryHomeError::IdentityChanged); }
+            if transition_stage(connection, root, input.home_id, &row, &sid)?
+                != Some(DirectoryStage::Empty(identity.clone())) {
+                return Err(TemporaryHomeError::Unknown);
+            }
+            fs::remove_dir(&path)?;
+        }
+        Some(DirectoryStage::Empty(identity)) if identity.opaque() == row.6 => fs::remove_dir(&path)?,
+        None => (),
+        Some(_) => return Err(TemporaryHomeError::Unknown),
+    }
+    transaction(connection, |connection| {
+        let current = home_row(connection, input.home_id)?.ok_or(TemporaryHomeError::Unknown)?;
+        if current != row || current.7 != "CLEANUP_UNKNOWN" || current.8 != "3" {
+            return Err(TemporaryHomeError::Unknown);
+        }
+        let Some((stored,target,phase,stored_receipt)) = transition_operation(connection, input.request_id)? else {
+            return Err(TemporaryHomeError::Unknown);
+        };
+        if stored != request_hex || target != input.home_id || stored_receipt != expected
+            || (phase != "PREPARING" && phase != "UNKNOWN") { return Err(TemporaryHomeError::Unknown); }
+        let stop = exact_stopped_home(connection, input.home_id, &current)?;
+        let fence = fence_home_admission_in_transaction(connection, input.home_id,
+            &current.0, &current.1, &current.2, &current.3, &current.4)?;
+        let parent = transition_parent(root, &current)?;
+        let marker = create_marker_for_row(connection, root, input.home_id, &current, &sid)?;
+        if cleanup_receipt(root, &parent, input.home_id, &current, &sid, &stop, &fence, &marker) != expected
+            || transition_stage(connection, root, input.home_id, &current, &sid)?.is_some() {
+            return Err(TemporaryHomeError::Unknown);
+        }
+        let update = Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_homes SET state='CLEANED',revision=4 WHERE home_id=?1 AND state='CLEANUP_UNKNOWN' AND revision=3")?;
+        update.bind_text(1, input.home_id)?; update.step_done()?;
+        let op = Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_operations SET phase='APPLIED' WHERE request_id=?1 AND phase IN ('PREPARING','UNKNOWN')")?;
+        op.bind_text(1, input.request_id)?; op.step_done()?;
+        Ok(receipt("APPLIED", &current))
+    })
 }
 
 #[cfg(test)]
@@ -420,7 +702,9 @@ mod tests {
     use crate::store::instance::initialize_schema;
     use crate::store::instance::registry::{register_instance, ProgramObservation, Registration};
     use crate::store::same_open::{create_new, route_b_test_guard};
-    use crate::store::session_transport::{bind_owner_in_transaction, initialize_admission_schema, OwnerBinding};
+    use crate::store::authority::initialize_process_custody_schema;
+    use crate::store::session_transport::{bind_owner_in_transaction, initialize_admission_schema,
+        release_admission, AdmissionRequest, AdmissionResult, OwnerBinding};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &RootLock, &AppContainerProfile)) {
@@ -434,6 +718,7 @@ mod tests {
         connection.execute("PRAGMA foreign_keys=ON").unwrap();
         initialize_schema(&mut connection).unwrap();
         initialize_admission_schema(&mut connection).unwrap();
+        initialize_process_custody_schema(&mut connection).unwrap();
         let program_path = root_path.join("test-program.bin");
         fs::write(&program_path, b"fixture program bytes").unwrap();
         let program = ProgramObservation::observe(&program_path, "0.149.0").unwrap();
@@ -460,6 +745,21 @@ mod tests {
             owner_id: "sessionA", generation: "1" }
     }
 
+    fn stopped_claim(connection: &mut VerifiedDatabaseConnection<'_>, home_id: &str) {
+        connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','11','1','fixture-program','sha256:fixture','profileA','projectA','1','STOPPED','proofA')").unwrap();
+        let claim = Statement::prepare(connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('projectA','sessionA','instanceA',?1,'bindingA','1','STOPPED',1,'processA','proofA')").unwrap();
+        claim.bind_text(1, home_id).unwrap();
+        claim.step_done().unwrap();
+    }
+
+    fn release_stopped_claim(connection: &mut VerifiedDatabaseConnection<'_>) {
+        let request = AdmissionRequest { domain_id: "projectA", session_id: "sessionA",
+            request_id: "releaseA", raw_bytes: b"release stopped claim", instance_id: "instanceA",
+            home_id: "tempA", generation: "1", expected_revision: 1 };
+        assert_eq!(release_admission(connection, &request, |_| Ok(())).unwrap(), AdmissionResult::Applied(2));
+    }
+
     #[test]
     fn create_is_durable_and_exact_request_replay_conflicts_on_changed_bytes() {
         fixture(|connection, root, profile| {
@@ -474,10 +774,8 @@ mod tests {
             assert_eq!(create_temporary_home(connection, root, profile, &first).unwrap().disposition, "REPLAYED");
             let transition = TransitionTemporaryHome { request_id: "closeOne", request_bytes: b"close",
                 home_id: "tempA", expected_revision: 1 };
-            assert!(matches!(close_temporary_home(connection, root, &transition),
-                Err(TemporaryHomeError::StopFactUnavailable)));
-            assert!(matches!(cleanup_temporary_home(connection, root, &transition),
-                Err(TemporaryHomeError::AdmissionFenceUnavailable)));
+            assert!(matches!(close_temporary_home(connection, root, profile, &transition),
+                Err(TemporaryHomeError::Admission(AdmissionError::Denied))));
             assert!(matches!(directory_stage(root, &first, &profile.sid_identity().unwrap()).unwrap(),
                 Some(DirectoryStage::Marked(_, true))));
         });
@@ -557,6 +855,120 @@ mod tests {
                 Err(TemporaryHomeError::Admission(AdmissionError::Denied))));
             assert!(operation(connection, first.request_id).unwrap().is_none());
             assert!(home_row(connection, first.home_id).unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn close_and_cleanup_require_exact_stop_release_and_preserve_replay() {
+        fixture(|connection, root, profile| {
+            let first = input(b"create one");
+            create_temporary_home(connection, root, profile, &first).unwrap();
+            let path = directory(root, &first);
+            fs::create_dir(path.join("session-data")).unwrap();
+            fs::write(path.join("session-data").join("output"), b"temporary session content").unwrap();
+            stopped_claim(connection, "differentHome");
+            let close = TransitionTemporaryHome { request_id: "closeA", request_bytes: b"close exact",
+                home_id: first.home_id, expected_revision: 1 };
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::StopFactUnavailable)));
+            connection.execute("UPDATE main.gogoke_v37_h_claim SET home_id='tempA' WHERE session_id='sessionA'").unwrap();
+            assert_eq!(close_temporary_home(connection, root, profile, &close).unwrap().disposition, "APPLIED");
+            assert_eq!(close_temporary_home(connection, root, profile, &close).unwrap().disposition, "REPLAYED");
+            let changed = TransitionTemporaryHome { request_bytes: b"close changed", ..close };
+            assert!(matches!(close_temporary_home(connection, root, profile, &changed),
+                Err(TemporaryHomeError::RequestConflict)));
+            let cleanup = TransitionTemporaryHome { request_id: "cleanupA", request_bytes: b"cleanup exact",
+                home_id: first.home_id, expected_revision: 2 };
+            assert!(matches!(cleanup_temporary_home(connection, root, profile, &cleanup),
+                Err(TemporaryHomeError::Admission(AdmissionError::Denied))));
+            assert!(path.exists());
+            release_stopped_claim(connection);
+            assert_eq!(cleanup_temporary_home(connection, root, profile, &cleanup).unwrap().disposition, "APPLIED");
+            assert!(!path.exists());
+            assert_eq!(cleanup_temporary_home(connection, root, profile, &cleanup).unwrap().disposition, "REPLAYED");
+            let row = home_row(connection, first.home_id).unwrap().unwrap();
+            assert_eq!((&row.7[..], &row.8[..]), ("CLEANED", "4"));
+        });
+    }
+
+    #[test]
+    fn cleanup_recovers_after_marker_removed_but_before_final_receipt() {
+        fixture(|connection, root, profile| {
+            let first = input(b"create one");
+            create_temporary_home(connection, root, profile, &first).unwrap();
+            stopped_claim(connection, first.home_id);
+            let close = TransitionTemporaryHome { request_id: "closeA", request_bytes: b"close exact",
+                home_id: first.home_id, expected_revision: 1 };
+            close_temporary_home(connection, root, profile, &close).unwrap();
+            release_stopped_claim(connection);
+            let cleanup = TransitionTemporaryHome { request_id: "cleanupA", request_bytes: b"cleanup exact",
+                home_id: first.home_id, expected_revision: 2 };
+            let sid = profile.sid_identity().unwrap();
+            transaction(connection, |connection| {
+                let row = home_row(connection, first.home_id)?.unwrap();
+                let stop = exact_stopped_home(connection, first.home_id, &row)?;
+                let parent = transition_parent(root, &row)?;
+                let marker = create_marker_for_row(connection, root, first.home_id, &row, &sid)?;
+                let fence = fence_home_admission_in_transaction(connection, first.home_id,
+                    &row.0, &row.1, &row.2, &row.3, &row.4)?;
+                let expected = cleanup_receipt(root, &parent, first.home_id, &row, &sid,
+                    &stop, &fence, &marker);
+                let op = Statement::prepare(connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase,receipt_json) VALUES(?1,?2,?3,'PREPARING',?4)")?;
+                op.bind_text(1, cleanup.request_id)?;
+                op.bind_text(2, &transition_fingerprint("temporary-cleanup", &cleanup, &sid))?;
+                op.bind_text(3, cleanup.home_id)?; op.bind_text(4, &expected)?; op.step_done()?;
+                connection.execute("UPDATE main.gogoke_v37_instance_homes SET state='CLEANUP_UNKNOWN',revision=3 WHERE home_id='tempA'")?;
+                Ok(())
+            }).unwrap();
+            let path = directory(root, &first);
+            fs::remove_file(path.join(MARKER)).unwrap();
+            assert_eq!(cleanup_temporary_home(connection, root, profile, &cleanup).unwrap().disposition, "APPLIED");
+            assert!(!path.exists());
+        });
+    }
+
+    #[test]
+    fn call_home_close_stays_unknown_without_native_completion_fact() {
+        fixture(|connection, root, profile| {
+            connection.execute("BEGIN IMMEDIATE").unwrap();
+            bind_owner_in_transaction(connection, &OwnerBinding {
+                binding_id: "bindingCall", instance_id: "instanceA", domain_id: "projectA",
+                kind: "CALL", owner_id: "callA", generation: "1",
+            }).unwrap();
+            connection.execute("COMMIT").unwrap();
+            let call = CreateTemporaryHome { request_id: "callCreate", request_bytes: b"call create",
+                home_id: "callA", instance_id: "instanceA", domain_id: "projectA",
+                kind: TemporaryKind::Call, owner_id: "callA", generation: "1" };
+            create_temporary_home(connection, root, profile, &call).unwrap();
+            let close = TransitionTemporaryHome { request_id: "callClose", request_bytes: b"call close",
+                home_id: "callA", expected_revision: 1 };
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::Admission(AdmissionError::Unknown))));
+            assert!(directory(root, &call).exists());
+        });
+    }
+
+    #[test]
+    fn changed_marker_blocks_cleanup_before_fence_or_delete() {
+        fixture(|connection, root, profile| {
+            let first = input(b"create one");
+            create_temporary_home(connection, root, profile, &first).unwrap();
+            stopped_claim(connection, first.home_id);
+            let close = TransitionTemporaryHome { request_id: "closeA", request_bytes: b"close exact",
+                home_id: first.home_id, expected_revision: 1 };
+            close_temporary_home(connection, root, profile, &close).unwrap();
+            release_stopped_claim(connection);
+            fs::write(directory(root, &first).join(MARKER), b"changed marker").unwrap();
+            let cleanup = TransitionTemporaryHome { request_id: "cleanupA", request_bytes: b"cleanup exact",
+                home_id: first.home_id, expected_revision: 2 };
+            assert!(matches!(cleanup_temporary_home(connection, root, profile, &cleanup),
+                Err(TemporaryHomeError::IdentityChanged)));
+            let fence = Statement::prepare(connection.as_ptr(),
+                "SELECT COUNT(*) FROM main.gogoke_v37_h_home_fence WHERE home_id='tempA'").unwrap();
+            assert!(fence.step_row().unwrap());
+            assert_eq!(fence.column_text(0).unwrap(), "0");
+            assert!(directory(root, &first).exists());
         });
     }
 }
