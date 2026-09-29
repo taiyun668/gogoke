@@ -1,6 +1,7 @@
 import { canonicalJson, parseStrictJsonBytes } from "../strictJson.ts";
 import type { JsonObject, JsonValue } from "../model.ts";
 import { decodeV37Request, encodeV37Receipt, V37_SCHEMA, type V37Port, type V37Receipt, type V37Request, type V37TrustedCaller } from "./protocol.ts";
+import { rawV37RequestKey } from "./rawRequest.ts";
 
 type CardState = "OPEN" | "ANSWERED" | "EXPIRED";
 interface Card {
@@ -11,12 +12,21 @@ interface Card {
 interface Seat {
   revision: bigint; layer: "USER" | "LEAD"; lifecycle: "SHORT" | "LONG" | "RECLAIMED";
   settings: JsonObject; instanceId?: string;
+  takeover?: { epoch: string; takerSeatId: string; instanceId: string | null;
+    questionIds: readonly string[]; answers: JsonObject };
 }
 interface Instance {
   revision: bigint; homeRef: string; programDigest: string; version: string;
   installed: boolean; loggedIn: boolean;
 }
-interface Prior { readonly request: string; readonly receipt: V37Receipt; }
+interface Prior { readonly request: string; readonly receipt: V37Receipt; readonly takeoverContextKey?: string; }
+
+export interface V37TakeoverContext {
+  readonly epoch: string;
+  readonly takerSeatId: string;
+  readonly instanceId: string | null;
+  readonly questionIds: readonly string[];
+}
 
 export class V37M1FakeStore {
   readonly templates = new Map<string, JsonObject>();
@@ -35,6 +45,8 @@ export interface V37M1FakeOptions {
   readonly nativeCardCapability?: (driverId: string) => boolean | null;
   readonly isSeatBusy?: (seatId: string) => boolean;
   readonly capacity?: (instanceId: string) => string;
+  readonly takeoverContext?: (seatId: string) => V37TakeoverContext | null;
+  readonly isTakeoverLead?: (seatId: string) => boolean;
 }
 
 const nonempty = (payload: JsonObject, key: string): string => {
@@ -47,6 +59,29 @@ const nonempty = (payload: JsonObject, key: string): string => {
 
 const copy = (value: JsonObject): JsonObject =>
   parseStrictJsonBytes(new TextEncoder().encode(canonicalJson(value))) as JsonObject;
+
+const contextKey = (context: V37TakeoverContext | null | undefined, isLead: boolean): string =>
+  canonicalJson({ context: context ? { epoch: context.epoch,
+    takerSeatId: context.takerSeatId, instanceId: context.instanceId,
+    questionIds: [...context.questionIds] } : null, isLead });
+
+const validContext = (context: V37TakeoverContext | null | undefined,
+  instanceId: string | undefined): context is V37TakeoverContext => !!context &&
+  typeof context.epoch === "string" && context.epoch.length > 0 &&
+  typeof context.takerSeatId === "string" && context.takerSeatId.length > 0 &&
+  context.instanceId === (instanceId ?? null) && Array.isArray(context.questionIds) &&
+  context.questionIds.length > 0 &&
+  new Set(context.questionIds).size === context.questionIds.length &&
+  context.questionIds.every((id) => /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(id) &&
+    !["__proto__", "constructor", "prototype"].includes(id));
+
+const currentTakeover = (seat: Seat, context: V37TakeoverContext | null | undefined,
+  isLead: boolean): boolean => isLead && validContext(context, seat.instanceId) &&
+  seat.takeover !== undefined && seat.takeover.epoch === context.epoch &&
+  seat.takeover.takerSeatId === context.takerSeatId &&
+  seat.takeover.instanceId === context.instanceId &&
+  seat.takeover.questionIds.length === context.questionIds.length &&
+  seat.takeover.questionIds.every((id, index) => id === context.questionIds[index]);
 
 function cardOptions(payload: JsonObject): readonly { id: string; recommended: boolean }[] {
   const raw = payload.options;
@@ -97,13 +132,24 @@ export class V37M1FakePort implements V37Port {
         !this.options.granted(caller, request)) {
       return encodeV37Receipt(reply("DENIED"));
     }
+    const takeoverOperation = request.family === "K-SEAT" &&
+      (request.operation === "state-card" || request.operation === "takeover-answers");
+    const observedTakeover = takeoverOperation ? this.options.takeoverContext?.(request.targetId) : undefined;
+    const observedLead = takeoverOperation && this.options.isTakeoverLead?.(request.targetId) === true;
+    const observedKey = takeoverOperation ? contextKey(observedTakeover, observedLead) : undefined;
     const replayKey = `${request.family}:${request.domainId}:${request.requestId}`;
-    const canonical = canonicalJson(request as unknown as JsonValue);
+    const raw = rawV37RequestKey(bytes);
     const prior = this.store.replies.get(replayKey);
-    if (prior) return encodeV37Receipt(prior.request === canonical
-      ? { ...prior.receipt, status: "REPLAYED" } : reply("CONFLICT"));
+    if (prior) {
+      if (prior.request !== raw) return encodeV37Receipt(reply("CONFLICT"));
+      if (takeoverOperation && prior.takeoverContextKey !== observedKey) {
+        return encodeV37Receipt(reply("STALE"));
+      }
+      return encodeV37Receipt({ ...prior.receipt, status: "REPLAYED" });
+    }
     const committed = (receipt: V37Receipt): Uint8Array => {
-      this.store.replies.set(replayKey, { request: canonical, receipt });
+      this.store.replies.set(replayKey, { request: raw, receipt,
+        ...(observedKey === undefined ? {} : { takeoverContextKey: observedKey }) });
       return encodeV37Receipt(receipt);
     };
     if (BigInt(request.expectedRevision) !== current) return encodeV37Receipt(reply("STALE"));
@@ -175,11 +221,59 @@ export class V37M1FakePort implements V37Port {
         return encodeV37Receipt(reply("DENIED"));
       }
       if (request.operation === "state-card") {
+        const ready = currentTakeover(seat, observedTakeover, observedLead);
         return committed(reply("APPLIED", current, { state: seat.lifecycle,
-          layer: seat.layer, settings: copy(seat.settings), instanceId: seat.instanceId ?? null }));
+          layer: seat.layer, settings: copy(seat.settings), instanceId: seat.instanceId ?? null,
+          takeoverReady: ready,
+          takeoverEpoch: ready ? seat.takeover!.epoch : null,
+          takeoverAnswers: ready ? copy(seat.takeover!.answers) : null }));
       }
       if (seat.lifecycle === "RECLAIMED") return encodeV37Receipt(reply("CONFLICT"));
-      if (request.operation === "tune") {
+      if (request.operation === "takeover-answers") {
+        if (this.options.isTakeoverLead?.(request.targetId) !== true) {
+          return encodeV37Receipt(reply("DENIED"));
+        }
+        if (!validContext(observedTakeover, seat.instanceId)) {
+          return encodeV37Receipt(reply("UNSUPPORTED"));
+        }
+        if (caller.seatId !== observedTakeover.takerSeatId) {
+          return encodeV37Receipt(reply("DENIED"));
+        }
+        if (nonempty(request.payload, "takeoverEpoch") !== observedTakeover.epoch) {
+          return encodeV37Receipt(reply("STALE"));
+        }
+        const questions = observedTakeover.questionIds;
+        const raw = request.payload.answers;
+        if (!Array.isArray(raw) || raw.length !== questions.length) {
+          return encodeV37Receipt(reply("CONFLICT"));
+        }
+        const answers: Record<string, JsonValue> = {};
+        for (const item of raw) {
+          if (item === null || Array.isArray(item) || typeof item !== "object") {
+            return encodeV37Receipt(reply("CONFLICT"));
+          }
+          const answer = item as JsonObject;
+          if (typeof answer.questionId !== "string" || !questions.includes(answer.questionId) ||
+              Object.hasOwn(answers, answer.questionId) || typeof answer.answer !== "string" ||
+              answer.answer.trim() !== answer.answer || answer.answer.length === 0) {
+            return encodeV37Receipt(reply("CONFLICT"));
+          }
+          const unknown = answer.answer === "UNKNOWN";
+          const evidence = unknown ? answer.howToFind : answer.sourceRef;
+          if (typeof evidence !== "string" || evidence.trim() !== evidence || evidence.length === 0 ||
+              (unknown && answer.sourceRef !== undefined) ||
+              (!unknown && answer.howToFind !== undefined)) {
+            return encodeV37Receipt(reply("CONFLICT"));
+          }
+          answers[answer.questionId] = unknown
+            ? { answer: "UNKNOWN", howToFind: evidence }
+            : { answer: answer.answer, sourceRef: evidence };
+        }
+        seat.takeover = { epoch: observedTakeover.epoch,
+          takerSeatId: observedTakeover.takerSeatId,
+          instanceId: observedTakeover.instanceId,
+          questionIds: [...questions], answers };
+      } else if (request.operation === "tune") {
         const setting = nonempty(request.payload, "setting");
         if (setting === "__proto__" || setting === "constructor" || setting === "prototype" ||
             request.payload.value === undefined) throw new Error("V37_M1_INVALID: setting");
@@ -191,6 +285,7 @@ export class V37M1FakePort implements V37Port {
           return encodeV37Receipt(reply("CONFLICT"));
         }
         seat.instanceId = nonempty(request.payload, "instanceId");
+        delete seat.takeover;
       } else if (request.operation === "reclaim") {
         seat.lifecycle = "RECLAIMED";
       } else if (request.operation === "short-to-long") {
@@ -198,7 +293,11 @@ export class V37M1FakePort implements V37Port {
         seat.lifecycle = "LONG";
       } else return encodeV37Receipt(reply("UNSUPPORTED"));
       seat.revision += 1n;
-      return committed(reply("APPLIED", seat.revision, { state: seat.lifecycle }));
+      return committed(reply("APPLIED", seat.revision,
+        request.operation === "takeover-answers"
+          ? { state: seat.lifecycle, takeoverReady: currentTakeover(seat, observedTakeover, observedLead),
+            takeoverEpoch: seat.takeover!.epoch }
+          : { state: seat.lifecycle }));
     }
 
     if (request.operation === "register") {

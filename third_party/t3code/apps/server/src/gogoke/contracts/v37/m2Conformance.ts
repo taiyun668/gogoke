@@ -1,10 +1,14 @@
 import * as assert from "node:assert/strict";
+import { runV37Conformance } from "./conformance.ts";
 import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37Receipt, type V37Request } from "./protocol.ts";
 
 export type V37M2Case = "side" | "side-delete-denied" | "gate-pass" | "gate-reject" |
-  "trigger" | "worktree-no-grant" | "worktree-no-stop" | "worktree-active-reservation" |
+  "permission-table" | "trigger" | "worktree-no-grant" | "worktree-no-stop" | "worktree-active-reservation" |
   "worktree-ready" | "worktree-merge-unknown";
-export interface V37M2Harness { readonly port: V37Port; reconstruct(): V37Port; }
+export interface V37M2Harness {
+  readonly port: V37Port; reconstruct(): V37Port; revoke(): void;
+  mutatePermissionTable(): void; advancePolicy(): void;
+}
 export type V37M2HarnessFactory = (caseId: V37M2Case) => V37M2Harness;
 
 const req = (family: V37Request["family"], operation: V37Request["operation"],
@@ -78,6 +82,32 @@ export async function runV37M2ContractCases(factory: V37M2HarnessFactory): Promi
     assert.equal(rejected.result.reason, "Evidence is incomplete");
     assert.equal((await call(h.port, req("K-POLICY", "stage-transition", "rejectedStage", "gateB", "2"))).status,
       "CONFLICT");
+  }
+  {
+    const h = factory("permission-table");
+    const table = await call(h.port, req("K-POLICY", "call-permission-table", "permissionRead", "policyA", "1",
+      { caller: { role: "host" }, entries: { forged: true } }));
+    assert.equal(table.status, "APPLIED");
+    assert.equal(table.previousRevision, "1");
+    assert.equal(table.revision, "1");
+    assert.equal((table.result.entries as { seatA: string }).seatA, "seatB");
+    assert.equal(JSON.stringify(table.result).includes("forged"), false);
+    h.mutatePermissionTable();
+    const replay = await call(h.reconstruct(), req("K-POLICY", "call-permission-table", "permissionRead", "policyA", "1",
+      { caller: { role: "host" }, entries: { forged: true } }));
+    assert.equal(replay.status, "REPLAYED");
+    assert.equal((replay.result.entries as { seatA: string }).seatA, "seatB");
+    assert.equal((await call(h.port, req("K-POLICY", "call-permission-table", "permissionRead", "policyA", "1",
+      { caller: { role: "seat" }, entries: { forged: true } }))).status, "CONFLICT");
+    await runV37Conformance(h.port, req("K-POLICY", "call-permission-table", "permissionCommon", "policyA", "1"));
+    assert.equal((await call(h.reconstruct(), req("K-POLICY", "call-permission-table", "staleTable", "policyA", "0"))).status,
+      "STALE");
+    h.advancePolicy();
+    assert.equal((await call(h.reconstruct(), req("K-POLICY", "call-permission-table", "permissionRead", "policyA", "1",
+      { caller: { role: "host" }, entries: { forged: true } }))).status, "DENIED");
+    h.revoke();
+    assert.equal((await call(h.reconstruct(), req("K-POLICY", "call-permission-table", "revokedTable", "policyA", "1"))).status,
+      "DENIED");
   }
   {
     const h = factory("trigger");

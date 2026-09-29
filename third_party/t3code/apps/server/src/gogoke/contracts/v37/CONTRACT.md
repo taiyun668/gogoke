@@ -24,12 +24,15 @@ or failed operation does not advance a revision. Read operations do not change
 their source revision. A real implementation must serialize the version check,
 write, and receipt on its owning store connection. A process restart must
 recover request IDs and committed receipts before accepting new writes.
+The test fakes compare the received wire bytes, including JSON key order;
+parsing and re-encoding cannot decide request identity.
 
 The catalog in `catalog.ts` is the closed operation list. The following is the
 operation-specific contract that implementations and the shared conformance
 suite must enforce. The generic fake checks only the common
-envelope/revision/replay rules for non-UI operations; K-UI returns
-`UNSUPPORTED` until an integrator can forward an underlying exact receipt.
+envelope/revision/replay rules for non-UI operations; its K-UI path returns
+`UNSUPPORTED`. The separate test-only `uiFake.ts` forwards a host-mapped
+source operation and returns its receipt bytes exactly, without a UI store.
 `coreFake.ts` additionally exercises the
 operation-specific H/A/C paths used by `coreConformance.ts`. `m1Fake.ts` and
 `m2Fake.ts` add test-only state machines exercised by the matching reusable
@@ -44,12 +47,12 @@ Current fake behavioral coverage is deliberately narrower than the catalog:
 | K-LEDGER | record, scoped query, subscribe/resume/end with source epoch, cursor gap and scope checks | real projection of old events and native subscription store |
 | K-INBOX | enqueue/edit/cancel, delivery and unknown check, steer for exact live turn, confirmed-failure requeue into a new checked target | real H delivery chain and native target eligibility |
 | K-QCARD | raise, answer, expire, recover; native capability pass-through refusal | real adapter capability and native storage |
-| K-SEAT | create from stored template, tune, bind, busy change refusal, reclaim, short-to-long, state card | takeover answers; real user bounds and occupancy |
-| K-INSTANCE | register, observed reads, repin after upgrade | home lifecycle; real memory-off and pin measurements |
+| K-SEAT | create from stored template, tune, bind, busy change refusal, reclaim, short-to-long, state card, takeover answers tied to host-provided opaque epoch, current question set, taker and instance binding; cited/unknown answers; currentness rechecked on state-card; binding resets answers | real host option facts, **H dispatch admission NOT_RUN**, user bounds and occupancy |
+| K-INSTANCE | register, observed reads, repin after upgrade | home lifecycle UNSUPPORTED: no exact native create/close/cleanup receipt or path ownership contract; real memory-off and pin measurements |
 | K-SIDE | create, resume, archive, restore, delete, scoped reads | real D store and A tier deletion |
-| K-POLICY | gate submit/decide/stage, trigger register/recover/cancel | permission-table read, escalate, real coordinator scheduler |
+| K-POLICY | current scoped permission-table read from a native observation with current authority check, raw-byte replay/collision and immutable stored receipt; gate submit/decide/stage, trigger register/recover/cancel | escalate UNSUPPORTED: configured route, cap/stall trigger, ledger commit and delivery outcome need one host transaction; real coordinator scheduler |
 | K-WORKTREE | create/register, classify/graph, merge, cleanup and unknown merge | real Git and OS confinement |
-| K-UI | none; both operations return UNSUPPORTED | exact forwarding and read models |
+| K-UI | separate stateless forwarding fake checks host-mapped read/action source, outer and source grants, full mapped request and exact receipt bytes/correlation including UNKNOWN | production G mapping and all A1-A4 read models remain NOT_IMPLEMENTED; generic fake still UNSUPPORTED |
 
 All real paths, including the shared files listed as pending, are `NOT_RUN` or
 `NOT_IMPLEMENTED`. The fake callbacks model native observations but do not

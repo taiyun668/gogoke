@@ -1,9 +1,14 @@
 import * as assert from "node:assert/strict";
+import type { V37TakeoverContext } from "./m1Fake.ts";
 import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37Receipt, type V37Request } from "./protocol.ts";
 
 export type V37M1Case = "card-fallback" | "card-native" | "seat-user" | "seat-busy" |
-  "seat-lead" | "seat-revoked" | "instance" | "instance-unverified";
-export interface V37M1Harness { readonly port: V37Port; reconstruct(): V37Port; revoke(): void; }
+  "seat-lead" | "seat-revoked" | "seat-takeover" | "seat-takeover-unwired" |
+  "instance" | "instance-unverified";
+export interface V37M1Harness {
+  readonly port: V37Port; reconstruct(): V37Port; revoke(): void;
+  setTakeoverContext(context: V37TakeoverContext | null): void;
+}
 export type V37M1HarnessFactory = (caseId: V37M1Case) => V37M1Harness;
 
 const req = (family: V37Request["family"], operation: V37Request["operation"],
@@ -83,6 +88,72 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
     const denied = await call(h.reconstruct(), req("K-SEAT", "state-card", "revokedRead", "seatR", "1"));
     assert.equal(denied.status, "DENIED");
     assert.equal(denied.revision, "1");
+  }
+  {
+    const h = factory("seat-takeover-unwired");
+    assert.equal((await call(h.port, req("K-SEAT", "create-from-template", "unwiredLead", "leadA", "0",
+      { layer: "USER", templateId: "templateA" }))).status, "APPLIED");
+    assert.equal((await call(h.port, req("K-SEAT", "takeover-answers", "unwiredAnswers", "leadA", "1",
+      { takeoverEpoch: "epochA", answers: [{ questionId: "purpose", answer: "UNKNOWN", howToFind: "Inspect repository" }] }))).status,
+      "UNSUPPORTED");
+  }
+  {
+    const h = factory("seat-takeover");
+    assert.equal((await call(h.port, req("K-SEAT", "create-from-template", "takeoverLead", "leadA", "0",
+      { layer: "USER", templateId: "templateA" }))).status, "APPLIED");
+    const missing = await call(h.port, req("K-SEAT", "takeover-answers", "missingAnswer", "leadA", "1",
+      { takeoverEpoch: "epochA", answers: [{ questionId: "purpose", answer: "Build app", sourceRef: "repo:README" }] }));
+    assert.equal(missing.status, "CONFLICT");
+    assert.equal(missing.revision, "1");
+    assert.equal((await call(h.port, req("K-SEAT", "takeover-answers", "inventedAnswer", "leadA", "1",
+      { takeoverEpoch: "epochA", answers: [{ questionId: "purpose", answer: "Build app", sourceRef: "repo:README" },
+        { questionId: "authority", answer: "Owner", sourceRef: "" }] }))).status, "CONFLICT");
+    const answers = req("K-SEAT", "takeover-answers", "takeoverAnswers", "leadA", "1",
+      { takeoverEpoch: "epochA", answers: [{ questionId: "purpose", answer: "Build app", sourceRef: "repo:README" },
+        { questionId: "authority", answer: "UNKNOWN", howToFind: "Inspect decision register" }] });
+    assert.equal((await call(h.port, answers)).status, "APPLIED");
+    assert.equal((await call(h.reconstruct(), answers)).status, "REPLAYED");
+    const card = await call(h.reconstruct(), req("K-SEAT", "state-card", "takeoverCard", "leadA", "2"));
+    assert.equal(card.result.takeoverReady, true);
+    assert.equal((card.result.takeoverAnswers as Record<string, { howToFind?: string }>).authority?.howToFind,
+      "Inspect decision register");
+    h.setTakeoverContext({ epoch: "epochA", takerSeatId: "lead", instanceId: null,
+      questionIds: ["purpose", "authority", "workspace"] });
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "state-card", "takeoverCard", "leadA", "2"))).status,
+      "STALE");
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "state-card", "changedQuestions", "leadA", "2"))).result.takeoverReady,
+      false);
+    h.setTakeoverContext({ epoch: "epochA", takerSeatId: "otherLead", instanceId: null,
+      questionIds: ["purpose", "authority"] });
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "state-card", "changedTaker", "leadA", "2"))).result.takeoverReady,
+      false);
+    assert.equal((await call(h.port, req("K-SEAT", "takeover-answers", "wrongTaker", "leadA", "2",
+      { ...answers.payload, takeoverEpoch: "epochA" }))).status, "DENIED");
+    h.setTakeoverContext({ epoch: "epochB", takerSeatId: "lead", instanceId: null,
+      questionIds: ["purpose", "authority"] });
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "state-card", "changedEpoch", "leadA", "2"))).result.takeoverReady,
+      false);
+    assert.equal((await call(h.port, req("K-SEAT", "takeover-answers", "oldEpoch", "leadA", "2",
+      answers.payload))).status, "STALE");
+    assert.equal((await call(h.port, req("K-SEAT", "change-instance", "takeoverSwap", "leadA", "2",
+      { instanceId: "instanceB" }))).status, "CONFLICT");
+    assert.equal((await call(h.port, req("K-SEAT", "bind-instance", "takeoverBind", "leadA", "2",
+      { instanceId: "instanceA" }))).status, "APPLIED");
+    const afterBind = await call(h.reconstruct(), req("K-SEAT", "state-card", "afterBind", "leadA", "3"));
+    assert.equal(afterBind.result.takeoverReady, false);
+    h.setTakeoverContext({ epoch: "epochC", takerSeatId: "lead", instanceId: "instanceA",
+      questionIds: ["purpose", "authority"] });
+    assert.equal((await call(h.port, req("K-SEAT", "takeover-answers", "answersAfterBind", "leadA", "3",
+      { ...answers.payload, takeoverEpoch: "epochC" }))).status, "APPLIED");
+    assert.equal((await call(h.port, req("K-SEAT", "change-instance", "successfulSwap", "leadA", "4",
+      { instanceId: "instanceB" }))).status, "APPLIED");
+    h.setTakeoverContext({ epoch: "epochD", takerSeatId: "lead", instanceId: "instanceB",
+      questionIds: ["purpose", "authority"] });
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "state-card", "afterSwap", "leadA", "5"))).result.takeoverReady,
+      false);
+    h.revoke();
+    assert.equal((await call(h.reconstruct(), req("K-SEAT", "takeover-answers", "revokedAnswers", "leadA", "5",
+      answers.payload))).status, "DENIED");
   }
   {
     const h = factory("seat-busy");

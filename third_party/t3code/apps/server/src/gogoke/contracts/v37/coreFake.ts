@@ -1,4 +1,4 @@
-import { canonicalJson } from "../strictJson.ts";
+import { rawV37RequestKey } from "./rawRequest.ts";
 import { decodeV37Request, encodeV37Receipt, V37_SCHEMA, V37_U64_MAX, type V37Port, type V37Receipt, type V37Request, type V37TrustedCaller } from "./protocol.ts";
 
 type SessionState = "RESERVED" | "COMMITTED" | "RUNNING" | "STOPPING" | "STOPPED" | "RELEASED" | "GENERATION_UNKNOWN";
@@ -102,13 +102,13 @@ export class V37CoreFakePort implements V37Port {
     };
     if (denied()) return encodeV37Receipt(reply("DENIED", current, current));
     const replayKey = `${request.family}:${request.domainId}:${request.requestId}`;
-    const canonical = canonicalJson(request as unknown as Parameters<typeof canonicalJson>[0]);
+    const raw = rawV37RequestKey(bytes);
     const prior = this.store.replies.get(replayKey);
-    if (prior !== undefined) return encodeV37Receipt(prior.request === canonical
+    if (prior !== undefined) return encodeV37Receipt(prior.request === raw
       ? { ...prior.receipt, status: prior.receipt.status === "UNKNOWN" ? "UNKNOWN" : "REPLAYED" }
       : reply("CONFLICT", current, current));
     const committed = (receipt: V37Receipt): Uint8Array => {
-      this.store.replies.set(replayKey, { request: canonical, receipt });
+      this.store.replies.set(replayKey, { request: raw, receipt });
       return encodeV37Receipt(receipt);
     };
 

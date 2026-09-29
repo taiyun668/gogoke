@@ -1,6 +1,6 @@
-import { canonicalJson } from "../strictJson.ts";
-import type { JsonObject, JsonValue } from "../model.ts";
-import { decodeV37Request, encodeV37Receipt, V37_SCHEMA, type V37Port, type V37Receipt, type V37Request, type V37TrustedCaller } from "./protocol.ts";
+import type { JsonObject } from "../model.ts";
+import { decodeV37Receipt, decodeV37Request, encodeV37Receipt, V37_SCHEMA, V37_U64_MAX, type V37Port, type V37Receipt, type V37Request, type V37TrustedCaller } from "./protocol.ts";
+import { rawV37RequestKey } from "./rawRequest.ts";
 
 interface Side { revision: bigint; state: "ACTIVE" | "ARCHIVED" | "DELETED"; sourceCursor: string; }
 interface Gate { revision: bigint; state: "SUBMITTED" | "PASSED" | "REJECTED" | "ADVANCED"; reason?: string; }
@@ -30,6 +30,8 @@ export interface V37M2FakeOptions {
   readonly removeSideLedgerTier?: (sideId: string) => boolean;
   readonly scheduleTrigger?: (triggerId: string) => boolean;
   readonly cancelTrigger?: (triggerId: string) => boolean;
+  readonly permissionTable?: (caller: V37TrustedCaller) =>
+    { revision: string; entries: JsonObject } | null;
 }
 
 function field(payload: JsonObject, name: string): string {
@@ -66,16 +68,39 @@ export class V37M2FakePort implements V37Port {
     const caller = this.options.caller();
     if (caller === null || caller.domainId !== request.domainId ||
         !this.options.granted(caller, request)) return encodeV37Receipt(reply("DENIED"));
+    const policyRead = request.family === "K-POLICY" && request.operation === "call-permission-table";
+    const observed = policyRead ? this.options.permissionTable?.(caller) : undefined;
+    if (policyRead && !observed) return encodeV37Receipt(reply("UNSUPPORTED"));
+    if (observed && (!/^(?:0|[1-9][0-9]*)$/u.test(observed.revision) ||
+        BigInt(observed.revision) > V37_U64_MAX)) return encodeV37Receipt(reply("FAILED"));
+    if (observed && observed.revision !== caller.policyRevision) {
+      return encodeV37Receipt(reply("DENIED"));
+    }
+    const policyReply = (status: V37Receipt["status"], result: JsonObject = {}): V37Receipt => ({
+      ...reply(status, BigInt(observed!.revision), result), previousRevision: observed!.revision,
+    });
     const replayKey = `${request.family}:${request.domainId}:${request.requestId}`;
-    const canonical = canonicalJson(request as unknown as JsonValue);
+    const raw = rawV37RequestKey(bytes);
     const prior = this.store.replies.get(replayKey);
-    if (prior) return encodeV37Receipt(prior.request === canonical
-      ? { ...prior.receipt, status: prior.receipt.status === "UNKNOWN" ? "UNKNOWN" : "REPLAYED" }
-      : reply("CONFLICT"));
+    if (prior) {
+      if (prior.request !== raw) return encodeV37Receipt(observed ? policyReply("CONFLICT") : reply("CONFLICT"));
+      if (observed && prior.receipt.revision !== observed.revision) {
+        return encodeV37Receipt(policyReply("STALE"));
+      }
+      return encodeV37Receipt({ ...prior.receipt,
+        status: prior.receipt.status === "UNKNOWN" ? "UNKNOWN" : "REPLAYED" });
+    }
     const commit = (receipt: V37Receipt): Uint8Array => {
-      this.store.replies.set(replayKey, { request: canonical, receipt });
-      return encodeV37Receipt(receipt);
+      const encoded = encodeV37Receipt(receipt);
+      this.store.replies.set(replayKey, { request: raw, receipt: decodeV37Receipt(encoded) });
+      return encoded;
     };
+    if (observed) {
+      if (request.expectedRevision !== observed.revision) {
+        return encodeV37Receipt(policyReply("STALE"));
+      }
+      return commit(policyReply("APPLIED", { entries: observed.entries }));
+    }
     if (BigInt(request.expectedRevision) !== current) return encodeV37Receipt(reply("STALE"));
 
     if (request.family === "K-SIDE") {
@@ -108,9 +133,6 @@ export class V37M2FakePort implements V37Port {
     }
 
     if (request.family === "K-POLICY") {
-      if (request.operation === "call-permission-table") {
-        return encodeV37Receipt(reply("UNSUPPORTED"));
-      }
       if (request.operation.startsWith("trigger-")) {
         if (request.operation === "trigger-register") {
           if (trigger) return encodeV37Receipt(reply("CONFLICT"));

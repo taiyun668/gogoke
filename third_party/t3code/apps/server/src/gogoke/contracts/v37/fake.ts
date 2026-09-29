@@ -1,6 +1,6 @@
-import { canonicalJson } from "../strictJson.ts";
 import { V37_DURABLE_OWNER, V37_READ_OPERATIONS } from "./catalog.ts";
 import { decodeV37Request, encodeV37Receipt, type V37Port, type V37Receipt, type V37Request, type V37TrustedCaller, V37_SCHEMA } from "./protocol.ts";
+import { rawV37RequestKey } from "./rawRequest.ts";
 
 type Authorize = (caller: V37TrustedCaller, request: V37Request) => boolean;
 type ResolveCaller = () => V37TrustedCaller | null;
@@ -44,9 +44,9 @@ export class V37FakePort implements V37Port {
     }
     const replayKey = `${request.family}:${request.domainId}:${request.requestId}`;
     const previous = this.store.requests.get(replayKey);
-    const canonical = canonicalJson(request as unknown as Parameters<typeof canonicalJson>[0]);
+    const raw = rawV37RequestKey(bytes);
     if (previous !== undefined) {
-      return encodeV37Receipt(previous.bytes === canonical
+      return encodeV37Receipt(previous.bytes === raw
         ? { ...previous.receipt, status: "REPLAYED" }
         : receipt("CONFLICT", current));
     }
@@ -56,7 +56,7 @@ export class V37FakePort implements V37Port {
     const isRead = V37_READ_OPERATIONS[request.family].includes(request.operation);
     const next = isRead ? current : current + 1n;
     const applied = receipt("APPLIED", next, { durableOwner: V37_DURABLE_OWNER[request.family] });
-    this.store.requests.set(replayKey, { bytes: canonical, receipt: applied });
+    this.store.requests.set(replayKey, { bytes: raw, receipt: applied });
     if (!isRead) this.store.revisions.set(key, next);
     return encodeV37Receipt(applied);
   }

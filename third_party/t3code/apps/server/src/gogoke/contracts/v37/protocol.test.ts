@@ -8,10 +8,12 @@ import { V37FakePort, V37FakeStore } from "./fake.ts";
 import { runV37CoreContractCases } from "./coreConformance.ts";
 import { V37CoreFakePort, V37CoreFakeStore } from "./coreFake.ts";
 import { runV37M1ContractCases } from "./m1Conformance.ts";
-import { V37M1FakePort, V37M1FakeStore } from "./m1Fake.ts";
+import { V37M1FakePort, V37M1FakeStore, type V37TakeoverContext } from "./m1Fake.ts";
 import { runV37M2ContractCases } from "./m2Conformance.ts";
 import { V37M2FakePort, V37M2FakeStore } from "./m2Fake.ts";
-import { decodeV37Receipt, decodeV37Request, encodeV37Request, V37_SCHEMA, V37UnwiredPort, type V37Request, type V37TrustedCaller } from "./protocol.ts";
+import { runV37UiContractCases } from "./uiConformance.ts";
+import { V37UiForwardingFakePort } from "./uiFake.ts";
+import { decodeV37Receipt, decodeV37Request, encodeV37Receipt, encodeV37Request, V37_SCHEMA, V37UnwiredPort, type V37Port, type V37Request, type V37TrustedCaller } from "./protocol.ts";
 
 const caller: V37TrustedCaller = {
   principalId: "owner", seatId: "lead", domainId: "projectA", role: "user",
@@ -25,14 +27,56 @@ function request(family: V37Request["family"], operation: V37Request["operation"
 }
 
 describe("design 37 closed operation protocol", () => {
+  it("runs exact UI source-forwarding cases without a UI state store", async () => {
+    await runV37UiContractCases((caseId) => {
+      const forwarded: V37Request[] = [];
+      const sourceRequest: V37Request = { schema: V37_SCHEMA,
+        family: caseId === "action" ? "K-INBOX" : caseId === "bad-family" ? "K-SIDE" : "K-SEAT",
+        operation: caseId === "action" ? "steer" : caseId === "bad-family" ? "resume" : "state-card",
+        requestId: "sourceA", targetId: "seatA", domainId: "projectA",
+        expectedRevision: "4", payload: {} };
+      const sourceBytes = encodeV37Receipt({ schema: V37_SCHEMA,
+        family: sourceRequest.family, operation: sourceRequest.operation,
+        requestId: sourceRequest.requestId, targetId: sourceRequest.targetId,
+        status: caseId === "action" ? "UNKNOWN" : "APPLIED",
+        previousRevision: "4", revision: "4", result: { state: "UNKNOWN" } });
+      const source = { execute: async (bytes: Uint8Array) => {
+        forwarded.push(decodeV37Request(bytes));
+        const receipt = decodeV37Receipt(sourceBytes);
+        return caseId === "bad-family" ? encodeV37Receipt({ ...receipt, family: "K-SESSION" })
+          : caseId === "bad-operation" ? encodeV37Receipt({ ...receipt, operation: "tune" })
+          : caseId === "bad-request-id" ? encodeV37Receipt({ ...receipt, requestId: "wrongId" })
+          : caseId === "bad-target-id" ? encodeV37Receipt({ ...receipt, targetId: "wrongSeat" })
+          : sourceBytes;
+      } };
+      const port = new V37UiForwardingFakePort({
+        caller: () => caller,
+        granted: (_principal, r) =>
+          !(caseId === "outer-denied" && r.family === "K-UI") &&
+          !(caseId === "source-denied" && r.family !== "K-UI"),
+        resolve: () => caseId === "unmapped" ? null : {
+          ...sourceRequest,
+          domainId: caseId === "cross-domain" ? "projectB" : "projectA",
+          operation: caseId === "read-write" ? "tune" : sourceRequest.operation,
+        },
+        source,
+      });
+      return { port, sourceBytes, expectedSourceRequest: sourceRequest, forwarded };
+    });
+  });
   it("runs reusable side, policy and worktree behavior cases on the fake", async () => {
     await runV37M2ContractCases((caseId) => {
       const store = new V37M2FakeStore();
+      let grant = true;
+      const permissionEntries = { seatA: "seatB" };
+      let policyRevision = "1";
       const principal = caseId.startsWith("worktree-") ?
         { ...caller, seatId: "seatA", role: "seat" as const } : caller;
       const options = {
         caller: () => principal,
-        granted: () => true,
+        granted: () => grant,
+        permissionTable: () => caseId === "permission-table" ?
+          { revision: policyRevision, entries: permissionEntries } : null,
         verifyRepository: (repositoryId: string) => repositoryId === "verifiedRepo",
         verifyIsolation: () => true,
         stopConfirmed: () => caseId !== "worktree-no-stop",
@@ -45,7 +89,10 @@ describe("design 37 closed operation protocol", () => {
         cancelTrigger: () => true,
       };
       return { port: new V37M2FakePort(store, options),
-        reconstruct: () => new V37M2FakePort(store, options) };
+        reconstruct: () => new V37M2FakePort(store, options),
+        revoke: () => { grant = false; },
+        mutatePermissionTable: () => { permissionEntries.seatA = "seatC"; },
+        advancePolicy: () => { policyRevision = "2"; } };
     });
   });
   it("runs reusable QCard, seat and instance behavior cases on the fake", async () => {
@@ -53,6 +100,9 @@ describe("design 37 closed operation protocol", () => {
       const store = new V37M1FakeStore();
       store.templates.set("templateA", { instruction: "default" });
       let grant = true;
+      let takeoverContext: V37TakeoverContext | null = caseId === "seat-takeover-unwired" ? null :
+        { epoch: "epochA", takerSeatId: "lead", instanceId: null,
+          questionIds: ["purpose", "authority"] };
       const principal = caseId === "seat-lead" ?
         { ...caller, seatId: "leadSeat", role: "lead" as const } : caller;
       const options = {
@@ -64,9 +114,12 @@ describe("design 37 closed operation protocol", () => {
           digest === "verifiedDigest" || digest === "newVerifiedDigest",
         isSeatBusy: () => caseId === "seat-busy",
         capacity: () => "3",
+        isTakeoverLead: (seatId: string) => seatId === "leadA",
+        takeoverContext: () => takeoverContext,
       };
       return { port: new V37M1FakePort(store, options),
-        reconstruct: () => new V37M1FakePort(store, options), revoke: () => { grant = false; } };
+        reconstruct: () => new V37M1FakePort(store, options), revoke: () => { grant = false; },
+        setTakeoverContext: (context: V37TakeoverContext | null) => { takeoverContext = context; } };
     });
   });
   it("runs operational session, ledger and inbox contract cases on the fake", async () => {
@@ -173,6 +226,37 @@ describe("design 37 closed operation protocol", () => {
     const retry = decodeV37Receipt(await port.execute(encodeV37Request({ ...b, expectedRevision: "1" })));
     assert.equal(retry.status, "APPLIED");
     assert.equal(retry.revision, "2");
+  });
+
+  it("treats reordered valid wire bytes as a request-ID collision", async () => {
+    const m1Store = new V37M1FakeStore();
+    m1Store.templates.set("templateA", { instruction: "default" });
+    const cases: readonly { name: string; port: V37Port; request: V37Request }[] = [
+      { name: "generic", port: new V37FakePort(new V37FakeStore(), () => caller, () => true),
+        request: request("K-INBOX", "enqueue", "rawBytesGeneric") },
+      { name: "core", port: new V37CoreFakePort(new V37CoreFakeStore(),
+        { caller: () => caller, granted: () => true }),
+      request: { ...request("K-SESSION", "admission-reserve", "rawBytesCore"),
+        payload: { generation: "1" } } },
+      { name: "M1", port: new V37M1FakePort(m1Store,
+        { caller: () => caller, granted: () => true }),
+      request: { ...request("K-SEAT", "create-from-template", "rawBytesM1"),
+        payload: { layer: "USER", templateId: "templateA" } } },
+      { name: "M2", port: new V37M2FakePort(new V37M2FakeStore(),
+        { caller: () => caller, granted: () => true }),
+      request: request("K-POLICY", "gate-submit", "rawBytesM2") },
+    ];
+    for (const { name, port, request: r } of cases) {
+      const original = encodeV37Request(r);
+      const reordered = new TextEncoder().encode(JSON.stringify({ payload: r.payload,
+        expectedRevision: r.expectedRevision, domainId: r.domainId, targetId: r.targetId,
+        requestId: r.requestId, operation: r.operation, family: r.family, schema: r.schema }));
+      assert.deepEqual(decodeV37Request(reordered), decodeV37Request(original), name);
+      assert.notDeepEqual(reordered, original, name);
+      assert.equal(decodeV37Receipt(await port.execute(original)).status, "APPLIED", name);
+      assert.equal(decodeV37Receipt(await port.execute(original)).status, "REPLAYED", name);
+      assert.equal(decodeV37Receipt(await port.execute(reordered)).status, "CONFLICT", name);
+    }
   });
 
   it("retains deduplication and revisions across fake port reconstruction", async () => {
