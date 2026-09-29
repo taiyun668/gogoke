@@ -1001,6 +1001,17 @@ impl ProcessCustodian {
         Ok(OriginBoundFrame { custody: custody.clone(), bytes })
     }
 
+    /// Persistent provider stdout still comes from the exact active process
+    /// object held by this custodian. A decoded Node message or a ticket string
+    /// alone cannot establish this source for the ledger.
+    pub(crate) fn read_persistent_child_frame(&self, ticket: &ProcessTicket, deadline: Duration)
+        -> Result<OriginBoundFrame, ProcessCustodyError> {
+        let (custody, process) = self.active.get(ticket).ok_or_else(||
+            ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?;
+        let bytes = process.read_persistent_frame(deadline).map_err(ProcessCustodyError::ProtocolPipe)?;
+        Ok(OriginBoundFrame { custody: custody.clone(), bytes })
+    }
+
     pub fn stop<RequestClose>(
         &mut self,
         ticket: &ProcessTicket,
@@ -2312,14 +2323,20 @@ mod tests {
         for id in [1, 2] {
             let request = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"thread/start\"}}\n");
             managed.write_persistent_frame(request.as_bytes()).expect("repeated request write");
-            let notification = managed.read_persistent_frame(Duration::from_secs(5)).unwrap();
-            assert_eq!(String::from_utf8_lossy(&notification).trim_end(),
+            let notification = custodian.read_persistent_child_frame(&prepared.ticket,
+                Duration::from_secs(5)).unwrap();
+            assert_eq!(notification.custody(), &prepared);
+            assert_eq!(String::from_utf8_lossy(notification.bytes()).trim_end(),
                 "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\"}");
-            let server_request = managed.read_persistent_frame(Duration::from_secs(5)).unwrap();
-            assert_eq!(String::from_utf8_lossy(&server_request).trim_end(),
+            let server_request = custodian.read_persistent_child_frame(&prepared.ticket,
+                Duration::from_secs(5)).unwrap();
+            assert_eq!(server_request.custody(), &prepared);
+            assert_eq!(String::from_utf8_lossy(server_request.bytes()).trim_end(),
                 "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"approval\"}");
-            let response = managed.read_persistent_frame(Duration::from_secs(5)).unwrap();
-            assert_eq!(String::from_utf8_lossy(&response).trim_end(), request.trim_end());
+            let response = custodian.read_persistent_child_frame(&prepared.ticket,
+                Duration::from_secs(5)).unwrap();
+            assert_eq!(response.custody(), &prepared);
+            assert_eq!(String::from_utf8_lossy(response.bytes()).trim_end(), request.trim_end());
         }
         assert_eq!(managed.write_persistent_frame(b"two\nframes\n").unwrap_err().kind(),
             io::ErrorKind::InvalidInput);
