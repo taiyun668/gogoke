@@ -807,11 +807,13 @@ fn user_instance_install_read_rejects_a_changed_registered_digest_without_revisi
 }
 
 #[test]
-fn user_instance_login_read_accepts_only_a_native_observation_on_the_same_home() {
+fn user_instance_login_read_replays_a_durable_login_observation() {
     fixture(|root, product| {
         let registration = register_request();
         assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
             .unwrap().contains("\"status\":\"APPLIED\""));
+        // These synthetic bytes exercise the trusted observation persistence
+        // contract; they do not claim to perform a provider account read.
         assert_eq!(instance::record_observation(&mut product.connection, root,
             &instance::ObservationRequest {
                 request_id: "login-observationA",
@@ -830,6 +832,46 @@ fn user_instance_login_read_accepts_only_a_native_observation_on_the_same_home()
         assert!(login.contains("\"previousRevision\":\"2\""), "{login}");
         assert_eq!(scalar(product,
             "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "2");
+
+        // A later non-login observation makes the prior login fact stale even
+        // though the durable row still contains LOGGED_IN.
+        assert_eq!(instance::record_observation(&mut product.connection, root,
+            &instance::ObservationRequest {
+                request_id: "install-observationA",
+                request_bytes: b"native install observation",
+                instance_id: "instanceA",
+                expected_revision: 2,
+                observation: instance::InstanceObservation::InstallUnknown,
+            }).unwrap(), RegistrationDisposition::Applied);
+        let stale = product.dispatch_user_request(
+            &instance_request("login-state", "loginStaleA", "instanceA", "3"),
+        ).unwrap();
+        let stale = String::from_utf8(stale).unwrap();
+        assert!(stale.contains("\"status\":\"UNKNOWN\""), "{stale}");
+        assert!(stale.contains("\"state\":\"UNKNOWN\""), "{stale}");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
+fn user_instance_login_read_does_not_promote_a_durable_login_without_current_observation() {
+    fixture(|root, product| {
+        let registration = register_request();
+        assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
+            .unwrap().contains("\"status\":\"APPLIED\""));
+        let update = Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='instanceA'")
+            .unwrap();
+        update.step_done().unwrap();
+
+        let login = product.dispatch_user_request(
+            &instance_request("login-state", "loginForgedA", "instanceA", "1"),
+        ).unwrap();
+        let login = String::from_utf8(login).unwrap();
+        assert!(login.contains("\"status\":\"UNKNOWN\""), "{login}");
+        assert!(login.contains("\"state\":\"UNKNOWN\""), "{login}");
+        assert!(login.contains("\"previousRevision\":\"1\""), "{login}");
+        assert!(login.contains("\"revision\":\"1\""), "{login}");
         remove_instance_home(root);
     });
 }

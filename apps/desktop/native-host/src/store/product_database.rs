@@ -333,6 +333,76 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
+    /// A persisted login value is current only when the latest revision was
+    /// produced by one APPLIED native login observation for this instance.
+    /// Registration and older observations cannot establish present login.
+    fn current_login_observation(
+        &self,
+        instance_id: &str,
+        revision: u64,
+        state: &str,
+    ) -> Result<bool> {
+        if revision <= 1 {
+            return Ok(false);
+        }
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_hex FROM main.gogoke_v37_instance_operations \
+             WHERE target_id=?1 AND phase='APPLIED'")?;
+        query.bind_text(1, instance_id)?;
+        let expected_revision = (revision - 1).to_string();
+        let mut current = None;
+        while query.step_row()? {
+            let fields = decode_framed_hex(&query.column_text(0)?)?;
+            // Registration fingerprints have five fields. F.1 observations
+            // have six; any other APPLIED shape cannot prove current login.
+            if fields.len() != 6 {
+                continue;
+            }
+            if fields[0].as_slice() != b"observe"
+                || fields[1].is_empty()
+                || fields[2].as_slice() != instance_id.as_bytes()
+            {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "login observation identity is invalid".into(),
+                ));
+            }
+            let observed_revision = std::str::from_utf8(&fields[3])
+                .map_err(|_| OrchestrationError::V37StoreFailure(
+                    "login observation revision is invalid".into()))?;
+            if observed_revision != expected_revision {
+                continue;
+            }
+            let field = fields[4].as_slice();
+            let value = fields[5].as_slice();
+            if field != b"login" && field != b"install" {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "login observation field is invalid".into(),
+                ));
+            }
+            if field == b"login"
+                && value != b"UNKNOWN" && value != b"LOGGED_IN" && value != b"LOGGED_OUT"
+            {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "login observation value is invalid".into(),
+                ));
+            }
+            if field == b"install"
+                && value != b"UNKNOWN" && value != b"INSTALLED" && value != b"MISSING"
+            {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "install observation value is invalid".into(),
+                ));
+            }
+            if current.is_some() {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "duplicate current instance observation".into(),
+                ));
+            }
+            current = Some(field == b"login" && value == state.as_bytes());
+        }
+        Ok(current == Some(true))
+    }
+
     fn read_user_instance(
         &mut self,
         request: &V37Request,
@@ -388,6 +458,18 @@ impl<'root> ProductDatabase<'root> {
             }
             let state = row.login_state.as_str();
             if !matches!(state, "UNKNOWN" | "LOGGED_IN" | "LOGGED_OUT") {
+                return Ok(receipt(V37Status::Unknown, BTreeMap::from([
+                    (JsonString::from_str("state"),
+                        Json::String(JsonString::from_str("UNKNOWN"))),
+                ])));
+            }
+            if state != "UNKNOWN"
+                && !matches!(self.current_login_observation(
+                    &request.target_id,
+                    current,
+                    state,
+                ), Ok(true))
+            {
                 return Ok(receipt(V37Status::Unknown, BTreeMap::from([
                     (JsonString::from_str("state"),
                         Json::String(JsonString::from_str("UNKNOWN"))),
