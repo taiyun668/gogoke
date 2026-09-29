@@ -2,7 +2,11 @@ import * as assert from "node:assert/strict";
 import { canonicalJson } from "../strictJson.ts";
 import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37Receipt, type V37Request } from "./protocol.ts";
 
-export type V37CoreCase = "session" | "ledger" | "inbox-race" | "inbox-revoke" | "inbox-unknown";
+export type V37CoreCase = "session" | "session-more" | "session-release" |
+  "session-unsupported" | "session-unknown" | "ledger" | "ledger-subscription" |
+  "ledger-subscription-revoked" | "inbox-race" | "inbox-revoke" | "inbox-unknown" | "inbox-steer" |
+  "inbox-steer-fallback" |
+  "inbox-steer-ended" | "inbox-steer-race" | "inbox-steer-abort-unknown" | "inbox-failed";
 export interface V37CoreHarness {
   readonly port: V37Port;
   /** Reopen the implementation against the same durable store. */
@@ -50,6 +54,91 @@ export async function runV37CoreContractCases(factory: V37CoreHarnessFactory): P
     assert.equal(stopped.result.state, "STOPPED");
   }
   {
+    const h = factory("session-more");
+    for (const [operation, revision, payload] of [
+      ["admission-reserve", "0", { generation: "1" }],
+      ["admission-commit", "1", { generation: "1" }],
+      ["open", "2", { generation: "1", pinnedBinaryDigest: "verifiedDigest" }],
+    ] as const) {
+      assert.equal((await call(h.port, request("K-SESSION", operation, `more${operation}`, "sessionB", revision, payload))).status,
+        "APPLIED");
+    }
+    const capability = await call(h.port, request("K-SESSION", "capability-probe", "probeB", "sessionB", "3",
+      { generation: "1" }));
+    assert.equal((capability.result.capabilities as { compact: boolean }).compact, true);
+    assert.equal(capability.revision, capability.previousRevision);
+    const output = await call(h.port, request("K-SESSION", "output-stream", "outputB", "sessionB", "3",
+      { generation: "1", afterCursor: "0" }));
+    assert.equal(output.result.cursor, "1");
+    assert.equal(output.revision, output.previousRevision);
+    const sent = await call(h.port, request("K-SESSION", "send", "sendB", "sessionB", "3",
+      { generation: "1", body: "start" }));
+    assert.equal(sent.result.createdTurn, true);
+    const appended = await call(h.port, request("K-SESSION", "append-without-turn", "appendB", "sessionB", "4",
+      { generation: "1", body: "context" }));
+    assert.equal(appended.result.createdTurn, false);
+    const compact = await call(h.port, request("K-SESSION", "compact", "compactB", "sessionB", "5",
+      { generation: "1" }));
+    assert.equal(compact.result.oldGeneration, "1");
+    assert.equal(compact.result.newGeneration, "2");
+    assert.equal((await call(h.port, request("K-SESSION", "send", "oldGenSend", "sessionB", "6",
+      { generation: "1", body: "wrong generation" }))).status, "CONFLICT");
+    const renew = await call(h.reconstruct(), request("K-SESSION", "renew-session", "renewB", "sessionB", "6",
+      { generation: "2" }));
+    assert.equal(renew.result.oldGeneration, "2");
+    assert.equal(renew.result.newGeneration, "3");
+    assert.equal((await call(h.port, request("K-SESSION", "reconnect", "reconnectB", "sessionB", "7",
+      { generation: "3" }))).result.newGeneration, "3");
+    assert.equal((await call(h.port, request("K-SESSION", "stop", "stopB", "sessionB", "8",
+      { generation: "3" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "exit-and-stop-receipt", "stopFactB", "sessionB", "9",
+      { generation: "3", nativeStopProofId: "verifiedProof" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-release", "releaseB", "sessionB", "10",
+      { generation: "3" }))).result.state, "RELEASED");
+  }
+  {
+    const h = factory("session-release");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "reserveRelease", "sessionR", "0",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.reconstruct(), request("K-SESSION", "admission-release", "releaseReserved", "sessionR", "1",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-commit", "commitReleased", "sessionR", "2",
+      { generation: "1" }))).status, "CONFLICT");
+  }
+  {
+    const h = factory("session-unsupported");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "unsupportedReserve", "sessionU", "0",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-commit", "unsupportedCommit", "sessionU", "1",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "open", "unsupportedOpen", "sessionU", "2",
+      { generation: "1", pinnedBinaryDigest: "verifiedDigest" }))).status, "APPLIED");
+    const unsupported = await call(h.port, request("K-SESSION", "compact", "unsupportedCompact", "sessionU", "3",
+      { generation: "1" }));
+    assert.equal(unsupported.status, "UNSUPPORTED");
+    assert.equal(unsupported.revision, "3");
+    assert.equal((await call(h.port, request("K-SESSION", "resume", "unsupportedResume", "sessionU", "3",
+      { generation: "1" }))).status, "UNSUPPORTED");
+  }
+  {
+    const h = factory("session-unknown");
+    for (const [operation, revision, payload] of [
+      ["admission-reserve", "0", { generation: "1" }],
+      ["admission-commit", "1", { generation: "1" }],
+      ["open", "2", { generation: "1", pinnedBinaryDigest: "verifiedDigest" }],
+    ] as const) {
+      assert.equal((await call(h.port, request("K-SESSION", operation, `unknown${operation}`, "sessionX", revision, payload))).status,
+        "APPLIED");
+    }
+    const change = request("K-SESSION", "compact", "unknownCompact", "sessionX", "3", { generation: "1" });
+    assert.equal((await call(h.port, change)).status, "UNKNOWN");
+    assert.equal((await call(h.reconstruct(), change)).status, "UNKNOWN");
+    assert.equal((await call(h.port, request("K-SESSION", "send", "blockedInput", "sessionX", "4",
+      { generation: "1", body: "must wait" }))).status, "CONFLICT");
+    assert.equal((await call(h.port, request("K-SESSION", "reconnect", "resolveGeneration", "sessionX", "4",
+      { generation: "1" }))).result.newGeneration, "2");
+  }
+  {
     const h = factory("ledger");
     const first = request("K-LEDGER", "record", "ledgerA", "ledger", "0",
       { sourceEventId: "oldMessageA", sourceCursor: "1", scope: "PROJECT" });
@@ -73,6 +162,50 @@ export async function runV37CoreContractCases(factory: V37CoreHarnessFactory): P
       { epoch: "2", afterCursor: "0", scope: "PROJECT" }))).status, "STALE");
   }
   {
+    const h = factory("ledger-subscription");
+    assert.equal((await call(h.port, request("K-LEDGER", "record", "subEventA", "ledger", "0",
+      { sourceEventId: "eventA", sourceCursor: "1", scope: "PROJECT" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-LEDGER", "record", "subGlobal", "ledger", "1",
+      { sourceEventId: "eventGlobal", sourceCursor: "2", scope: "GLOBAL" }))).status, "APPLIED");
+    const subscribe = request("K-LEDGER", "subscribe", "subscribeA", "subA", "0",
+      { scope: "PROJECT", epoch: "1", afterCursor: "0" });
+    const first = await call(h.port, subscribe);
+    assert.equal(canonicalJson(first.result.events!), canonicalJson([{ sourceEventId: "eventA", cursor: "1" }]));
+    assert.equal(first.result.cursor, "2");
+    assert.equal((await call(h.reconstruct(), subscribe)).status, "REPLAYED");
+    assert.equal((await call(h.port, request("K-LEDGER", "subscribe", "globalSubscribe", "subGlobal", "0",
+      { scope: "GLOBAL", epoch: "1", afterCursor: "0" }))).status, "DENIED");
+    assert.equal((await call(h.port, request("K-LEDGER", "record", "subEventB", "ledger", "2",
+      { sourceEventId: "eventB", sourceCursor: "3", scope: "PROJECT" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-LEDGER", "resume-subscription", "rewindSub", "subA", "1",
+      { epoch: "1", afterCursor: "1" }))).result.reason, "CURSOR_REWIND");
+    assert.equal((await call(h.port, request("K-LEDGER", "resume-subscription", "gapSub", "subA", "1",
+      { epoch: "1", afterCursor: "3" }))).result.reason, "CURSOR_GAP");
+    const resumed = await call(h.reconstruct(), request("K-LEDGER", "resume-subscription", "resumeSub", "subA", "1",
+      { epoch: "1", afterCursor: "2" }));
+    assert.equal(canonicalJson(resumed.result.events!), canonicalJson([{ sourceEventId: "eventB", cursor: "3" }]));
+    assert.equal(resumed.result.cursor, "3");
+    assert.equal((await call(h.port, request("K-LEDGER", "end-subscription", "endSub", "subA", "2", {}))).status,
+      "APPLIED");
+    assert.equal((await call(h.port, request("K-LEDGER", "resume-subscription", "resumeEnded", "subA", "3",
+      { epoch: "1", afterCursor: "3" }))).status, "CONFLICT");
+    assert.equal((await call(h.port, request("K-LEDGER", "scoped-query", "aheadQuery", "ledger", "3",
+      { epoch: "1", afterCursor: "4", scope: "PROJECT" }))).result.reason, "CURSOR_AHEAD");
+  }
+  {
+    const h = factory("ledger-subscription-revoked");
+    assert.equal((await call(h.port, request("K-LEDGER", "record", "revokedEvent", "ledger", "0",
+      { sourceEventId: "firstEvent", sourceCursor: "1", scope: "PROJECT" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-LEDGER", "subscribe", "revokedSubscribe", "subR", "0",
+      { scope: "PROJECT", epoch: "1", afterCursor: "0" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-LEDGER", "record", "revokedSecond", "ledger", "1",
+      { sourceEventId: "secondEvent", sourceCursor: "2", scope: "PROJECT" }))).status, "APPLIED");
+    const denied = await call(h.reconstruct(), request("K-LEDGER", "resume-subscription", "revokedResume", "subR", "1",
+      { epoch: "1", afterCursor: "1" }));
+    assert.equal(denied.status, "DENIED");
+    assert.equal(denied.revision, "1");
+  }
+  {
     const h = factory("inbox-race");
     const enqueue = request("K-INBOX", "enqueue", "enqueueA", "messageA", "0",
       { seatId: "seatA", turnId: "turnA", generation: "1", body: "first" });
@@ -94,7 +227,7 @@ export async function runV37CoreContractCases(factory: V37CoreHarnessFactory): P
       { generation: "1" }));
     assert.equal(denied.status, "DENIED");
     assert.equal(denied.revision, "1");
-    assert.deepEqual(h.deliveryCalls, ["prepare"]);
+    assert.deepEqual(h.deliveryCalls, ["prepare", "abort"]);
   }
   {
     const h = factory("inbox-unknown");
@@ -109,5 +242,74 @@ export async function runV37CoreContractCases(factory: V37CoreHarnessFactory): P
     assert.equal(check.result.state, "UNKNOWN");
     assert.equal(check.revision, check.previousRevision);
     assert.equal((await call(h.port, request("K-INBOX", "requeue", "requeueUnknown", "messageU", "2", {}))).status, "CONFLICT");
+  }
+  for (const caseId of ["inbox-steer", "inbox-steer-fallback"] as const) {
+    const h = factory(caseId);
+    assert.equal((await call(h.port, request("K-INBOX", "enqueue", "steerEnqueue", "messageS", "0",
+      { seatId: "seatA", turnId: "turnA", generation: "1", body: "interrupt" }))).status, "APPLIED");
+    const steered = await call(h.port, request("K-INBOX", "steer", "steerMessage", "messageS", "1",
+      { turnId: "turnA", generation: "1" }));
+    assert.equal(steered.status, "APPLIED");
+    assert.equal(steered.result.state, "DELIVERED");
+    assert.equal(steered.result.mode, caseId === "inbox-steer-fallback" ? "INTERRUPT_RESUME" : "NATIVE");
+    assert.deepEqual(h.deliveryCalls, ["prepare", "beginCommitted", "completion"]);
+    assert.equal((await call(h.port, request("K-INBOX", "edit", "editSteered", "messageS", "2",
+      { body: "too late" }))).status, "CONFLICT");
+  }
+  for (const caseId of ["inbox-steer-ended", "inbox-steer-race"] as const) {
+    const h = factory(caseId);
+    assert.equal((await call(h.port, request("K-INBOX", "enqueue", `${caseId}Enqueue`, "messageE", "0",
+      { seatId: "seatA", turnId: "turnA", generation: "1", body: "wait" }))).status, "APPLIED");
+    const ended = await call(h.port, request("K-INBOX", "steer", `${caseId}Steer`, "messageE", "1",
+      { turnId: "turnA", generation: "1" }));
+    assert.equal(ended.status, "CONFLICT");
+    assert.equal(ended.result.reason, "TURN_ENDED");
+    assert.equal(ended.revision, "1");
+    const queued = await call(h.reconstruct(), request("K-INBOX", "check-unknown", `${caseId}Check`, "messageE", "1", {}));
+    assert.equal(queued.result.state, "PENDING");
+    assert.deepEqual(h.deliveryCalls, caseId === "inbox-steer-race" ? ["prepare", "abort"] : []);
+  }
+  {
+    const h = factory("inbox-steer-abort-unknown");
+    assert.equal((await call(h.port, request("K-INBOX", "enqueue", "abortUnknownEnqueue", "messageAbort", "0",
+      { seatId: "seatA", turnId: "turnA", generation: "1", body: "do not redirect" }))).status,
+      "APPLIED");
+    const uncertain = await call(h.port, request("K-INBOX", "steer", "abortUnknownSteer", "messageAbort", "1",
+      { turnId: "turnA", generation: "1" }));
+    assert.equal(uncertain.status, "UNKNOWN");
+    assert.equal(uncertain.result.state, "UNKNOWN");
+    assert.deepEqual(h.deliveryCalls, ["prepare", "abort"]);
+    assert.equal((await call(h.reconstruct(), request("K-INBOX", "check-unknown", "abortUnknownCheck", "messageAbort", "2",
+      {}))).result.state, "UNKNOWN");
+  }
+  {
+    const h = factory("inbox-failed");
+    assert.equal((await call(h.port, request("K-INBOX", "enqueue", "failedEnqueue", "messageF", "0",
+      { seatId: "seatA", turnId: "turnA", generation: "1", body: "retry later" }))).status, "APPLIED");
+    const failed = await call(h.port, request("K-INBOX", "deliver", "failedDeliver", "messageF", "1",
+      { generation: "1" }));
+    assert.equal(failed.status, "FAILED");
+    assert.equal(failed.result.error, "native delivery rejected");
+    await assert.rejects(() => call(h.port, request("K-INBOX", "requeue", "missingTarget", "messageF", "2",
+      { newMessageId: "messageMissing", seatId: "seatA", generation: "1" })), /payload.turnId/);
+    const staleTarget = await call(h.port, request("K-INBOX", "requeue", "staleTarget", "messageF", "2",
+      { newMessageId: "messageStale", seatId: "seatA", turnId: "endedTurn", generation: "1" }));
+    assert.equal(staleTarget.status, "DENIED");
+    assert.equal(staleTarget.revision, "2");
+    const requeued = await call(h.reconstruct(), request("K-INBOX", "requeue", "requeueFailed", "messageF", "2",
+      { newMessageId: "messageNew", seatId: "seatA", turnId: "turnA", generation: "1" }));
+    assert.equal(requeued.status, "APPLIED");
+    assert.equal(requeued.result.newMessageId, "messageNew");
+    assert.equal(requeued.revision, "3");
+    const old = await call(h.port, request("K-INBOX", "check-unknown", "oldCheck", "messageF", "3", {}));
+    assert.equal(old.result.state, "FAILED");
+    assert.equal(old.result.requeuedAs, "messageNew");
+    assert.equal((await call(h.reconstruct(), request("K-INBOX", "deliver", "failedDeliver", "messageF", "1",
+      { generation: "1" }))).result.error, "native delivery rejected");
+    assert.equal((await call(h.port, request("K-INBOX", "check-unknown", "newCheck", "messageNew", "1", {}))).result.state,
+      "PENDING");
+    assert.equal((await call(h.port, request("K-INBOX", "requeue", "requeueAgain", "messageF", "3",
+      { newMessageId: "messageAgain", seatId: "seatA", turnId: "turnA", generation: "1" }))).status,
+      "CONFLICT");
   }
 }

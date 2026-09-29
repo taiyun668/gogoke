@@ -34,18 +34,18 @@
     },
     {
       "path": "apps/desktop/native-host/src/store/protocol.rs",
-      "status": "NOT_IMPLEMENTED",
-      "reason": "Real-line extension remains pending; no dead stub was added"
+      "status": "MODIFIED",
+      "reason": "L0 rejects v37 markers before legacy dispatch on the shared Node channel; real native-origin parsing remains pending"
     },
     {
       "path": "apps/desktop/native-host/src/store/session.rs",
-      "status": "NOT_IMPLEMENTED",
-      "reason": "Real-line extension remains pending; no dead stub was added"
+      "status": "MODIFIED",
+      "reason": "L0 denies unwired v37 ingress before mutation and preserves original pipe errors; real H dispatcher remains pending"
     },
     {
       "path": "apps/desktop/native-host/src/store/orchestration.rs",
-      "status": "NOT_IMPLEMENTED",
-      "reason": "Real-line extension remains pending; no dead stub was added"
+      "status": "MODIFIED",
+      "reason": "Error variants retain original I/O and private-pipe causes; legacy event projection into the v37 ledger remains pending"
     },
     {
       "path": "apps/desktop/native-host/src/store/authority/mod.rs",

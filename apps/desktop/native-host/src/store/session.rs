@@ -136,12 +136,10 @@ pub fn serve_lines<R: BufRead, W: Write>(
     input: R,
     output: &mut W,
 ) -> Result<(), OrchestrationError> {
-    writeln!(output, "READY").map_err(|_| OrchestrationError::Invalid("stdout"))?;
-    output
-        .flush()
-        .map_err(|_| OrchestrationError::Invalid("stdout"))?;
+    writeln!(output, "READY").map_err(OrchestrationError::Io)?;
+    output.flush().map_err(OrchestrationError::Io)?;
     for line in input.lines() {
-        let line = line.map_err(|_| OrchestrationError::Invalid("stdin"))?;
+        let line = line.map_err(OrchestrationError::Io)?;
         if line.is_empty() {
             continue;
         }
@@ -152,10 +150,8 @@ pub fn serve_lines<R: BufRead, W: Write>(
             Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
             Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
         };
-        writeln!(output, "{reply}").map_err(|_| OrchestrationError::Invalid("stdout"))?;
-        output
-            .flush()
-            .map_err(|_| OrchestrationError::Invalid("stdout"))?;
+        writeln!(output, "{reply}").map_err(OrchestrationError::Io)?;
+        output.flush().map_err(OrchestrationError::Io)?;
         if should_stop {
             break;
         }
@@ -187,7 +183,7 @@ pub(crate) fn serve_authenticated_pipe(
     if !valid_service_capability(expected_capability) {
         return Err(OrchestrationError::AccessDenied);
     }
-    let frame = pipe.read_frame().map_err(|_| OrchestrationError::Invalid("pipe read"))?;
+    let frame = pipe.read_frame().map_err(OrchestrationError::Ipc)?;
     let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
     let decoded = decode_operation_frame(line.as_bytes()).map_err(protocol_error)?;
     let fields = authority_fields(line)?;
@@ -197,9 +193,9 @@ pub(crate) fn serve_authenticated_pipe(
         return Err(OrchestrationError::AccessDenied);
     }
     pipe.write_frame(b"OK\t{\"authenticated\":true}\t0us")
-        .map_err(|_| OrchestrationError::Invalid("pipe write"))?;
+        .map_err(OrchestrationError::Ipc)?;
     loop {
-        let frame = pipe.read_frame().map_err(|_| OrchestrationError::Invalid("pipe read"))?;
+        let frame = pipe.read_frame().map_err(OrchestrationError::Ipc)?;
         let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
         let started = Instant::now();
         let handled = handle_authenticated_line_with_process(connection, owner, Some(process_custodian), line);
@@ -208,7 +204,7 @@ pub(crate) fn serve_authenticated_pipe(
             Ok(body) => format!("OK\t{}\t{}us", body, started.elapsed().as_micros()),
             Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
         };
-        pipe.write_frame(reply.as_bytes()).map_err(|_| OrchestrationError::Invalid("pipe write"))?;
+        pipe.write_frame(reply.as_bytes()).map_err(OrchestrationError::Ipc)?;
         if should_stop { break; }
     }
     Ok(())
@@ -221,7 +217,7 @@ pub fn serve_pipe(
     loop {
         let frame = pipe
             .read_frame()
-            .map_err(|_| OrchestrationError::Invalid("pipe read"))?;
+            .map_err(OrchestrationError::Ipc)?;
         let line = std::str::from_utf8(&frame).map_err(|_| OrchestrationError::Invalid("utf8"))?;
         let started = Instant::now();
         let handled = handle_unprivileged_line(connection, line);
@@ -231,7 +227,7 @@ pub fn serve_pipe(
             Err(error) => format!("ERR\t{error:?}\t{}us", started.elapsed().as_micros()),
         };
         pipe.write_frame(reply.as_bytes())
-            .map_err(|_| OrchestrationError::Invalid("pipe write"))?;
+            .map_err(OrchestrationError::Ipc)?;
         if should_stop {
             break;
         }
@@ -258,7 +254,9 @@ mod service_capability_tests {
         let rejected = Err(OrchestrationError::AccessDenied);
         let exact = r#"{"operation":"Shutdown"}"#;
         let nested = r#"{"operation":"GetReceipt","nested":{"operation":"Shutdown"}}"#;
+        let v37 = r#"{"operation":"Shutdown","schema":"gogoke.37.operations.v1"}"#;
         assert!(nested.contains("\"operation\":\"Shutdown\""));
+        assert!(!successful_shutdown(v37, &success));
         assert!(successful_shutdown(exact, &success));
         assert!(!successful_shutdown(exact, &rejected));
         assert!(!successful_shutdown(nested, &success));
@@ -2188,6 +2186,7 @@ fn handle_line(
 
 fn protocol_error(error: ProtocolError) -> OrchestrationError {
     match error {
+        ProtocolError::V37Unwired => OrchestrationError::AccessDenied,
         ProtocolError::ForbiddenField(_) => OrchestrationError::Invalid("forbidden field"),
         ProtocolError::UnknownOperation(_) => OrchestrationError::Invalid("unknown operation"),
         ProtocolError::Oversize => OrchestrationError::Invalid("oversize"),
@@ -2389,6 +2388,36 @@ mod context_tests {
     use crate::root::RootLock;
     use crate::store::same_open::route_b_test_guard;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn v37_ingress_is_denied_before_dispatch_and_legacy_shutdown_survives() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root_path = std::env::temp_dir().join(format!("gogoke-v37-unwired-{nonce}"));
+        std::fs::create_dir(&root_path).unwrap();
+        let root = RootLock::acquire(&root_path).unwrap();
+        let database = root_path.join("state.sqlite");
+        let mut connection = open_product_database(&root, &database).unwrap();
+        let owner = authority::initialize_profile(&mut connection, &root).unwrap();
+
+        for frame in [
+            r#"{"operation":"Shutdown","schema":"gogoke.37.operations.v1"}"#,
+            r#"{"operation":"CommitOrchestration","schema":"gogoke.37.operations.v9"}"#,
+            r#"{"operation":"Shutdown","requestId":"r","payload":}"#,
+        ] {
+            assert!(matches!(handle_unprivileged_line(&mut connection, frame), Err(OrchestrationError::AccessDenied)));
+            assert!(matches!(handle_authenticated_line(&mut connection, &owner, frame), Err(OrchestrationError::AccessDenied)));
+        }
+        assert_eq!(super::super::orchestration::count_rows(&mut connection, "orchestration_events").unwrap(), 0);
+        assert_eq!(super::super::orchestration::count_rows(&mut connection, "orchestration_command_receipts").unwrap(), 0);
+        assert_eq!(handle_unprivileged_line(&mut connection, r#"{"operation":"Shutdown"}"#).unwrap(), "{\"shutdown\":true}");
+
+        connection.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).unwrap();
+        std::fs::remove_file(root_path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        std::fs::remove_dir(root_path).unwrap();
+    }
 
     #[test]
     fn novel_fixture_driver_registration_replays_and_tampering_fails_closed() {

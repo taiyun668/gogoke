@@ -73,16 +73,49 @@ describe("design 37 closed operation protocol", () => {
     await runV37CoreContractCases((caseId) => {
       const store = new V37CoreFakeStore();
       let grant = true;
+      let activeTurn: string | null = caseId === "inbox-steer-ended" ? null : "turnA";
+      let ledgerScopeReads = 0;
       const calls: string[] = [];
       const options = {
         caller: () => caller,
         granted: (_principal: V37TrustedCaller, r: V37Request) => grant &&
           !(r.family === "K-LEDGER" && r.operation === "scoped-query" && r.payload.scope === "GLOBAL"),
+        canReadLedgerScope: (_principal: V37TrustedCaller, scope: string) => {
+          ledgerScopeReads += 1;
+          return scope !== "GLOBAL" &&
+            !(caseId === "ledger-subscription-revoked" && ledgerScopeReads > 1);
+        },
         verifyPinnedBinary: (digest: string) => digest === "verifiedDigest",
         verifyStopProof: (proof: string) => proof === "verifiedProof",
-        prepareDelivery: async () => { calls.push("prepare"); if (caseId === "inbox-revoke") grant = false; },
+        sessionCapabilities: () => ({ compact: caseId !== "session-unsupported", "renew-session": true }),
+        readOutput: () => ({ cursor: "1", events: [{ eventId: "outputA", kind: "message" }] }),
+        sendInput: (_sessionId: string, operation: "send" | "append-without-turn") =>
+          ({ receiptId: "inputReceipt", createdTurn: operation === "send" }),
+        changeGeneration: (_sessionId: string, _operation: "compact" | "renew-session", oldGeneration: string) =>
+          caseId === "session-unknown" ? "unknown" as const :
+            { newGeneration: (BigInt(oldGeneration) + 1n).toString(), receiptId: "generationReceipt" },
+        reconnectGeneration: (_sessionId: string, claimedGeneration: string) =>
+          ({ generation: caseId === "session-unknown" ? "2" : claimedGeneration,
+            receiptId: "reconnectReceipt" }),
+        currentTurn: () => activeTurn,
+        steerMode: () => caseId === "inbox-steer-fallback" ? "INTERRUPT_RESUME" as const : "NATIVE" as const,
+        canRequeueTarget: (seatId: string, turnId: string, generation: string) =>
+          seatId === "seatA" && turnId === "turnA" && generation === "1",
+        prepareDelivery: async () => {
+          calls.push("prepare");
+          if (caseId === "inbox-revoke") grant = false;
+          if (caseId === "inbox-steer-race" || caseId === "inbox-steer-abort-unknown") activeTurn = null;
+        },
+        abortPreparedDelivery: async () => {
+          calls.push("abort"); return caseId !== "inbox-steer-abort-unknown";
+        },
         beginCommitted: async () => { calls.push("beginCommitted"); },
-        completeDelivery: async () => { calls.push("completion"); return "unknown" as const; },
+        completeDelivery: async () => {
+          calls.push("completion");
+          return caseId === "inbox-failed" ?
+            { state: "failed" as const, error: "native delivery rejected" } :
+            caseId === "inbox-unknown" ? "unknown" as const : "completed" as const;
+        },
       };
       return { port: new V37CoreFakePort(store, options),
         reconstruct: () => new V37CoreFakePort(store, options), deliveryCalls: calls };

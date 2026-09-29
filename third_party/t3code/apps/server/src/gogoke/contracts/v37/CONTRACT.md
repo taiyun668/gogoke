@@ -31,8 +31,7 @@ suite must enforce. The generic fake checks only the common
 envelope/revision/replay rules for non-UI operations; K-UI returns
 `UNSUPPORTED` until an integrator can forward an underlying exact receipt.
 `coreFake.ts` additionally exercises the
-five session operations, two ledger operations, and inbox enqueue/edit/cancel/
-deliver/check-unknown paths used by `coreConformance.ts`. `m1Fake.ts` and
+operation-specific H/A/C paths used by `coreConformance.ts`. `m1Fake.ts` and
 `m2Fake.ts` add test-only state machines exercised by the matching reusable
 conformance cases. Neither fake is product behavior or acceptance. The status
 of every planned shared file is in `SHARED_STATUS.json`.
@@ -41,9 +40,9 @@ Current fake behavioral coverage is deliberately narrower than the catalog:
 
 | Family | Fake behavior exercised | Still unsupported or untested |
 | --- | --- | --- |
-| K-SESSION | reserve, commit, open, stop, stop receipt | other nine operations; real custody and admission |
-| K-LEDGER | record, scoped query | subscriptions; real projection of old events |
-| K-INBOX | enqueue, edit, cancel, deliver, check unknown; unknown requeue refusal | steer and resolved requeue; real H delivery chain |
+| K-SESSION | reserve/commit/release, open/stop/stop receipt, send/append, capability/output reads, compact/renew generation receipts, reconnect including unknown generation | resume remains UNSUPPORTED; real custody, admission and adapter proof |
+| K-LEDGER | record, scoped query, subscribe/resume/end with source epoch, cursor gap and scope checks | real projection of old events and native subscription store |
+| K-INBOX | enqueue/edit/cancel, delivery and unknown check, steer for exact live turn, confirmed-failure requeue into a new checked target | real H delivery chain and native target eligibility |
 | K-QCARD | raise, answer, expire, recover; native capability pass-through refusal | real adapter capability and native storage |
 | K-SEAT | create from stored template, tune, bind, busy change refusal, reclaim, short-to-long, state card | takeover answers; real user bounds and occupancy |
 | K-INSTANCE | register, observed reads, repin after upgrade | home lifecycle; real memory-off and pin measurements |
@@ -60,7 +59,7 @@ establish that a same-user child is confined to an allowed worktree.
 | --- | --- | --- |
 | K-SESSION / H | `admission-reserve` creates one pending reservation across E cap and F instance capacity; `admission-commit` consumes it exactly once; `admission-release` releases only an uncommitted or stopped claim. `open` requires a committed reservation and pinned executable; `send` and `append-without-turn` require an active generation; `stop` enters stopping and only `exit-and-stop-receipt` with native custody proof makes it stopped. `resume`, `reconnect`, `compact`, and `renew-session` bind old/new generations explicitly and never hide an unknown stop. A capability miss is `UNSUPPORTED`, not success. | B emits tagged vendor-raw output; A normalizes. E requests compact/renew here rather than constructing vendor commands. |
 | K-LEDGER / A | `record` appends once by source event ID and owning source cursor. `scoped-query`, `subscribe`, `resume-subscription`, and `end-subscription` expose one cursor/epoch; duplicates are suppressed by source ID and gaps are explicit. A project reader never receives GLOBAL entries. | Existing `store/orchestration.rs` event IDs and ordering are projected into this **same** ledger. Do not copy those events to an independently authoritative history. Side-chat turns have their own tier; deletion targets that tier only. |
-| K-INBOX / C | `enqueue` creates pending message ID/revision/seat/turn/generation. `edit` and `cancel` compare the message revision, so exactly one racing mutation wins. `steer` targets a live turn. `deliver` rechecks current grant and uses H prepare → beginCommitted → completion; delivered requires that receipt. `check-unknown` is read only; `requeue` changes a resolved eligible item, never duplicates an uncertain delivery. | E and G use the same message identity and receipt. |
+| K-INBOX / C | `enqueue` creates pending message ID/revision/seat/turn/generation. `edit` and `cancel` compare the message revision, so exactly one racing mutation wins. `steer` inserts a queued message into the exact live turn; if that turn ended, it stays queued and cannot move to the next turn. `deliver` and `steer` recheck the current grant and use H prepare → beginCommitted → completion; delivered requires that receipt. If a prepared steer finds its turn ended, H must confirm abort before the item remains queued; unconfirmed abort is UNKNOWN. `check-unknown` is read only. `requeue` only follows confirmed failure: a new ID and explicitly checked seat/turn/generation create a new pending item; the old item stays FAILED, advances one revision and records the new ID, while its original failure receipt remains available. | E and G use the same message identity and receipt. |
 | K-QCARD / C | `raise` creates a card bound to request/seat/turn/generation with options, one recommended option, and a free answer. `answer` wins once; duplicates conflict. `expire` closes unanswered cards; `recover` restores only a still-open card after restart. | B native cards pass through; C owns a fallback card only for an adapter whose capability report says no native card. |
 | K-SIDE / D | `create` records its registry in D's native store in the coordinator domain. `resume`, `archive`, `restore`, and `delete` make active → archived → active/deleted transitions; deleted is terminal. `pending-delta` and `read-thread` use an A ledger source cursor and scoped grant. | A stores side-chat turns in a separate tier. A native fork is permitted only if it reproduces ledger replay behavior. |
 | K-SEAT / E | `create-from-template` copies the template, never aliases it. `tune`, `bind-instance`, `change-instance`, `reclaim`, `short-to-long`, `state-card`, and `takeover-answers` compare seat revision. A busy seat cannot change instance. Lead callers can touch lead-layer seats only within user bounds and never their own binding; the user may tune or reclaim the lead. | F supplies instance references; H holds active admission; G reads E state. |
