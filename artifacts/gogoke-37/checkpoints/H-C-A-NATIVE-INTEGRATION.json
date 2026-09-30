@@ -1,9 +1,9 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "ACTIVE_DESKTOP_FIXTURE_COMPLETION_CORRECTION_NATIVE_GREEN",
+  "state": "ACTIVE_WAITING_EXACT_FROZEN_AND_REPRO_INSTALLER_ASSETS",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "a65b27026f79de33b8773b5cbfcffab3725f3464",
+  "last_pushed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -514,5 +514,31 @@
     "correction": "Use original existing terminal-receipt completion loop and unchanged deadline to additionally observe actual exclusive lifecycle lock release. One no-write OPEN_EXISTING query returns pending only for WinError32; other instrument errors fail explicitly. No new sleep, retry budget, product finalizer code, assertions or security settings changed.",
     "new_fixture": "AST parse and public hygiene PASS; only cloud execution remains.",
     "original_log_sha256": "1d7b89db7ca6692539d1aea2094dd95f2009cd9581e960cebf58e9bd19a1e2c7"
+  },
+  "desktop_b989_in_progress": {
+    "source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+    "run": 36724062942,
+    "attempt": 1,
+    "event": "workflow_dispatch",
+    "browser": "PASS",
+    "browser_original_log_sha256": "35e1f519b8ff73b35c57bf76853fc0d0e83adf3624585d628b60a54bef8dfb05",
+    "cloud_finalizer_controls": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "license_notices": "PASS",
+    "hygiene_run": 36724070827,
+    "hygiene": "PASS",
+    "frozen_and_repro": "IN_PROGRESS_NOT_PASS",
+    "byte_comparison": "NOT_RUN_YET",
+    "task_custody": {
+      "frozen": "PASS",
+      "repro": "PASS"
+    },
+    "native_component_evidence": "a65b2702..b989cd53 diff is zero in apps/desktop/native-host and native workflow. Native 20/20 focused and 562/562 full evidence remains bound to original a65 source; only desktop fixture and checkpoint changed.",
+    "superseded_runs": "Prior desktop runs replaced/cancelled; not claimed all-green. Duplicate same-source automatic run cancelled; manual dispatch is retained for candidate signing.",
+    "local_cli_metadata": "0.149.0 package metadata only. Actual executable identity/digest/version and isolated F registration remain NOT_RUN."
   }
 }
