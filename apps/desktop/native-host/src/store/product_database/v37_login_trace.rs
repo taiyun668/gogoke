@@ -59,11 +59,27 @@ pub(super) fn before_activation(prepared: &PreparedCustody) -> Option<CliTrace> 
         ("NtMapViewOfSection", r#".printf \"GOGOKE_NT_ENTRY NtMapViewOfSection tid=%x section=%p process=%p\\n\", @$tid, @rcx, @rdx;"#),
     ];
     for (method, entry) in methods {
-        nt_calls.push_str(&format!(r#".if ((wo(ntdll!{method}+0x12) != 0x050f) or (by(ntdll!{method}+0x14) != 0xc3) or (wo(ntdll!{method}+0x15) != 0x2ecd) or (by(ntdll!{method}+0x17) != 0xc3)) {{ .echo GOGOKE_CDB_UNSUPPORTED_SYSCALL_STUB; qd }}; u ntdll!{method} L10; bp ntdll!{method} "{entry} gc"; bp ntdll!{method}+0x14 ".printf \"GOGOKE_NT_RETURN {method} tid=%x status=%x\\n\", @$tid, @rax; gc"; bp ntdll!{method}+0x17 ".printf \"GOGOKE_NT_RETURN {method} tid=%x status=%x\\n\", @$tid, @rax; gc"; "#));
+        nt_calls.push_str(&format!(r#".if ((wo(ntdll!{method}+0x12) != 0x050f) or (by(ntdll!{method}+0x14) != 0xc3) or (wo(ntdll!{method}+0x15) != 0x2ecd) or (by(ntdll!{method}+0x17) != 0xc3)) {{ .echo GOGOKE_CDB_UNSUPPORTED_SYSCALL_STUB; qd }}
+u ntdll!{method} L10
+bp ntdll!{method} "{entry} gc"
+bp ntdll!{method}+0x14 ".printf \"GOGOKE_NT_RETURN {method} tid=%x status=%x\\n\", @$tid, @rax; gc"
+bp ntdll!{method}+0x17 ".printf \"GOGOKE_NT_RETURN {method} tid=%x status=%x\\n\", @$tid, @rax; gc"
+"#));
     }
-    let commands = format!(r#"sxe -c ".if (@rip == ntdll!LdrpDoDebuggerBreak+0x35) {{ .echo GOGOKE_LOADER_BREAK_CONTINUE; gh }}" bpe; {nt_calls}.echo GOGOKE_CDB_READY; g"#);
+    let commands = format!(r#"sxe -c ".if (@rip == ntdll!LdrpDoDebuggerBreak+0x35) {{ .echo GOGOKE_LOADER_BREAK_CONTINUE; gh }}" bpe
+{nt_calls}.echo GOGOKE_CDB_READY
+g
+"#);
+    // The debugger's initial -c command has a bounded line size. A command
+    // file keeps each guarded setup/breakpoint command on its own short line.
+    let command_path = evidence.join(format!("cli-state-commands-{}-{}.txt",
+        prepared.identity.pid, prepared.identity.creation_time_100ns));
+    let mut command_file = std::fs::OpenOptions::new().create_new(true).write(true)
+        .open(&command_path).expect("exclusive direct-error command file");
+    command_file.write_all(commands.as_bytes()).and_then(|_| command_file.sync_all())
+        .expect("flush direct-error commands before attachment");
     let mut child = Command::new(debugger).args(["-G", "-pd", "-p", &prepared.identity.pid.to_string(),
-        "-c", commands.as_str()]).stdin(Stdio::null()).stdout(Stdio::piped())
+        "-cf"]).arg(&command_path).stdin(Stdio::null()).stdout(Stdio::piped())
         .stderr(Stdio::inherit()).spawn().expect("attach existing SDK debugger to exact fixture PID");
     let stdout = child.stdout.take().expect("directed debugger stdout");
     let (ready, waiting) = mpsc::sync_channel(1);
