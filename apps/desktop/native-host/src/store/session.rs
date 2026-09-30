@@ -87,6 +87,8 @@ pub fn open_product_database<'root>(
     let _owner_issuer = super::authority::initialize_profile(&mut connection, root)?;
     super::instance::initialize_schema(&mut connection)?;
     super::seat::initialize_schema(&mut connection)?;
+    super::worktree::initialize_schema(&mut connection)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!("worktree schema: {error:?}")))?;
     super::ledger::initialize_schema(&mut connection)?;
     super::session_transport::initialize_admission_schema(&mut connection)
         .map_err(|error| OrchestrationError::V37StoreFailure(format!("{error:?}")))?;

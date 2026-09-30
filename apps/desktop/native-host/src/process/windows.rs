@@ -1264,6 +1264,16 @@ struct PersistentReadState {
 }
 
 impl PersistentReadState {
+    fn eof(&mut self, source: io::Error) -> io::Error {
+        let error = if self.partial.is_empty() {
+            io::Error::new(io::ErrorKind::UnexpectedEof, format!("child stdout closed: {source}"))
+        } else {
+            io::Error::new(io::ErrorKind::InvalidData, format!(
+                "unterminated persistent frame ({} bytes); stdout closure: {source}", self.partial.len()))
+        };
+        self.fail(error)
+    }
+
     fn fail(&mut self, error: io::Error) -> io::Error {
         let saved = (error.kind(), error.to_string(), error.raw_os_error());
         self.terminal = Some(saved);
@@ -1420,14 +1430,13 @@ impl ManagedProcess {
             if unsafe { PeekNamedPipe(protocol.stdout_read.raw(), ptr::null_mut(), 0,
                 ptr::null_mut(), &mut available, ptr::null_mut()) } == 0 {
                 let source = io::Error::last_os_error();
-                let error = if matches!(source.raw_os_error(), Some(109 | 233)) {
-                    io::Error::new(io::ErrorKind::UnexpectedEof, format!("child stdout closed: {source}"))
-                } else { source };
-                return Err(state.fail(error));
+                return Err(if matches!(source.raw_os_error(), Some(109 | 233)) {
+                    state.eof(source)
+                } else { state.fail(source) });
             }
             if available == 0 {
                 match self.wait(Duration::ZERO) {
-                    Ok(true) => return Err(state.fail(io::Error::new(io::ErrorKind::UnexpectedEof,
+                    Ok(true) => return Err(state.eof(io::Error::new(io::ErrorKind::UnexpectedEof,
                         "process exited before complete persistent frame"))),
                     Ok(false) => {},
                     Err(error) => return Err(state.fail(error)),
@@ -1439,10 +1448,13 @@ impl ManagedProcess {
             let mut read = 0u32;
             if unsafe { ReadFile(protocol.stdout_read.raw(), buffer.as_mut_ptr().cast(),
                 available.min(buffer.len() as u32), &mut read, ptr::null_mut()) } == 0 {
-                return Err(state.fail(io::Error::last_os_error()));
+                let source = io::Error::last_os_error();
+                return Err(if matches!(source.raw_os_error(), Some(109 | 233)) {
+                    state.eof(source)
+                } else { state.fail(source) });
             }
             if read == 0 {
-                return Err(state.fail(io::Error::new(io::ErrorKind::UnexpectedEof,
+                return Err(state.eof(io::Error::new(io::ErrorKind::UnexpectedEof,
                     "partial persistent frame")));
             }
             state.pending.extend_from_slice(&buffer[..read as usize]);
@@ -2546,6 +2558,21 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(managed.read_persistent_frame(Duration::from_secs(1)).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof, "terminal stream cannot regain certainty");
+    }
+
+    #[test]
+    fn persistent_reader_distinguishes_unterminated_output_from_empty_eof() {
+        let mut launch = ProcessLaunch::new(system_cmd());
+        launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
+        launch.arguments = vec!["/D".into(), "/C".into(), "<nul set /p =partial".into()];
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("owned no-LF child");
+        let error = managed.read_persistent_frame(Duration::from_secs(5))
+            .expect_err("partial output must not become a successful empty result");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("7 bytes"));
+        assert_eq!(managed.read_persistent_frame(Duration::from_secs(1)).unwrap_err().kind(),
+            io::ErrorKind::InvalidData, "terminal stream preserves partial-frame uncertainty");
     }
 
     #[test]

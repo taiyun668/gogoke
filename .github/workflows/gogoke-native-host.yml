@@ -33,6 +33,18 @@ jobs:
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
           if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
+      - name: Bind F tests to the installed Git backend image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $entry = Get-Command git.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $execPath = & $entry --exec-path
+          if ($LASTEXITCODE -ne 0 -or @($execPath).Count -ne 1) { throw 'Git backend discovery failed' }
+          $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+          $backend = Join-Path $mingw 'bin/git.exe'
+          if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_GIT_PATH=$backend"
+          Write-Output "Git backend SHA256=$((Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash)"
       - uses: dtolnay/rust-toolchain@1.85.1
       - name: Pin Codex CLI for native instance registration tests
         shell: pwsh
@@ -186,6 +198,8 @@ jobs:
             @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
             @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
             @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
+            @{ id = 'native-worktree-core'; filter = 'store::worktree::tests::' },
+            @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
             @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
             @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
