@@ -17,6 +17,7 @@ use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -309,7 +310,11 @@ impl GitProgramPin {
         }
         let digest = content_hash(&bytes);
         let mut pin = Self {
-            path: canonical,
+            // Git derives its installation-relative resources from the image
+            // path. Its mingw backend treats a verbatim prefix as //?/ rather
+            // than a drive path. Keep the same held file/byte pin, but launch
+            // the native local DOS spelling so its resources resolve exactly.
+            path: git_launch_path(&canonical)?,
             digest,
             version: String::new(),
             _file: file,
@@ -349,6 +354,19 @@ impl GitProgramPin {
             return Err(WorktreeError::Denied);
         }
         Ok(())
+    }
+}
+
+fn git_launch_path(canonical: &Path) -> Result<PathBuf> {
+    match canonical.components().next() {
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_)) => {
+                let wide: Vec<u16> = canonical.as_os_str().encode_wide().collect();
+                Ok(PathBuf::from(std::ffi::OsString::from_wide(&wide[4..])))
+            }
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::Disk(_)) => Ok(canonical.to_path_buf()),
+        _ => Err(WorktreeError::Invalid("Git requires a native local DOS image path")),
     }
 }
 

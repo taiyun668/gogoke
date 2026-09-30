@@ -8,6 +8,12 @@ namespace {
 constexpr DWORD kMaxPathUnits = 32768;
 constexpr wchar_t kNtEnv[] = L"GOGOKE_LPAC_PATH_NT_ROOT";
 constexpr wchar_t kDosEnv[] = L"GOGOKE_LPAC_PATH_DOS_ROOT";
+constexpr wchar_t kCountEnv[] = L"GOGOKE_LPAC_PATH_ROOT_COUNT";
+constexpr wchar_t kNtEnv1[] = L"GOGOKE_LPAC_PATH_NT_ROOT_1";
+constexpr wchar_t kDosEnv1[] = L"GOGOKE_LPAC_PATH_DOS_ROOT_1";
+constexpr wchar_t kNtEnv2[] = L"GOGOKE_LPAC_PATH_NT_ROOT_2";
+constexpr wchar_t kDosEnv2[] = L"GOGOKE_LPAC_PATH_DOS_ROOT_2";
+constexpr DWORD kMaxRoots = 3;
 using FinalPath = DWORD (WINAPI *)(HANDLE, LPWSTR, DWORD, DWORD);
 FinalPath g_original = nullptr;
 
@@ -44,24 +50,70 @@ bool within_root(const wchar_t* path, DWORD path_len,
     return path_len == root_len || path[root_len] == L'\\';
 }
 
-bool read_mapping(wchar_t (&nt)[kMaxPathUnits], DWORD* nt_len,
-                  wchar_t (&dos)[kMaxPathUnits], DWORD* dos_len) {
-    *nt_len = GetEnvironmentVariableW(kNtEnv, nt, kMaxPathUnits);
-    *dos_len = GetEnvironmentVariableW(kDosEnv, dos, kMaxPathUnits);
-    if (!*nt_len || !*dos_len || *nt_len >= kMaxPathUnits ||
-        *dos_len >= kMaxPathUnits) return false;
-    // The host supplies the exact handle-derived F home; environment data
-    // selects a spelling only. It does not authorize opening the target.
-    if (*nt_len < 9 || nt[0] != L'\\' ||
+struct Mapping {
+    wchar_t nt[kMaxPathUnits];
+    wchar_t dos[kMaxPathUnits];
+    DWORD nt_len;
+    DWORD dos_len;
+};
+
+bool environment_present(const wchar_t* name) {
+    SetLastError(ERROR_SUCCESS);
+    const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+    return size != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+}
+
+bool read_mapping(const wchar_t* nt_name, const wchar_t* dos_name, Mapping* mapping) {
+    mapping->nt_len = GetEnvironmentVariableW(nt_name, mapping->nt, kMaxPathUnits);
+    mapping->dos_len = GetEnvironmentVariableW(dos_name, mapping->dos, kMaxPathUnits);
+    const DWORD nt_len = mapping->nt_len, dos_len = mapping->dos_len;
+    const wchar_t* nt = mapping->nt;
+    const wchar_t* dos = mapping->dos;
+    if (!nt_len || !dos_len || nt_len >= kMaxPathUnits ||
+        dos_len >= kMaxPathUnits) return false;
+    // The host supplies only handle-derived native roots. Environment data
+    // selects a spelling only; it never authorizes opening a target.
+    if (nt_len < 9 || nt[0] != L'\\' ||
         CompareStringOrdinal(nt, 8, L"\\Device\\", 8, TRUE) != CSTR_EQUAL)
         return false;
-    if (*dos_len < 7 || dos[0] != L'\\' || dos[1] != L'\\' ||
+    if (dos_len < 7 || dos[0] != L'\\' || dos[1] != L'\\' ||
         dos[2] != L'?' || dos[3] != L'\\' ||
         !((dos[4] >= L'A' && dos[4] <= L'Z') ||
           (dos[4] >= L'a' && dos[4] <= L'z')) ||
         dos[5] != L':' || dos[6] != L'\\') return false;
-    if (nt[*nt_len - 1] == L'\\' || dos[*dos_len - 1] == L'\\')
+    if (nt[nt_len - 1] == L'\\' || dos[dos_len - 1] == L'\\')
         return false;
+    return true;
+}
+
+bool read_mappings(Mapping (&mappings)[kMaxRoots], DWORD* count) {
+    wchar_t value[4] = {};
+    SetLastError(ERROR_SUCCESS);
+    const DWORD length = GetEnvironmentVariableW(kCountEnv, value, 4);
+    if (!length) {
+        if (GetLastError() != ERROR_ENVVAR_NOT_FOUND ||
+            environment_present(kNtEnv1) || environment_present(kDosEnv1) ||
+            environment_present(kNtEnv2) || environment_present(kDosEnv2)) return false;
+        *count = 1;
+    } else if (length == 1 && (value[0] == L'2' || value[0] == L'3')) {
+        *count = static_cast<DWORD>(value[0]-L'0');
+    } else return false;
+    if (!read_mapping(kNtEnv,kDosEnv,&mappings[0])) return false;
+    if (*count >= 2) {
+        if (!read_mapping(kNtEnv1,kDosEnv1,&mappings[1])) return false;
+    } else if (environment_present(kNtEnv1) || environment_present(kDosEnv1)) return false;
+    if (*count == 3) {
+        if (!read_mapping(kNtEnv2,kDosEnv2,&mappings[2])) return false;
+    } else if (environment_present(kNtEnv2) || environment_present(kDosEnv2)) return false;
+    for (DWORD i=0; i<*count; ++i) {
+        for (DWORD j=i+1; j<*count; ++j) {
+            const auto& a=mappings[i]; const auto& b=mappings[j];
+            if (within_root(a.nt,a.nt_len,b.nt,b.nt_len) ||
+                within_root(b.nt,b.nt_len,a.nt,a.nt_len) ||
+                within_root(a.dos,a.dos_len,b.dos,b.dos_len) ||
+                within_root(b.dos,b.dos_len,a.dos,a.dos_len)) return false;
+        }
+    }
     return true;
 }
 
@@ -73,20 +125,27 @@ DWORD WINAPI compatible_final_path(HANDLE file, LPWSTR output,
         return SetLastError(original_error), result;
 
     // Fixed stack storage avoids heap activity and caps every Win32 length.
-    wchar_t nt_root[kMaxPathUnits], dos_root[kMaxPathUnits];
-    DWORD nt_root_len = 0, dos_root_len = 0;
-    if (!read_mapping(nt_root, &nt_root_len, dos_root, &dos_root_len))
+    Mapping mappings[kMaxRoots] = {};
+    DWORD root_count = 0;
+    if (!read_mappings(mappings, &root_count))
         return SetLastError(original_error), result;
     wchar_t actual_nt[kMaxPathUnits];
     const DWORD actual_len = g_original(file, actual_nt, kMaxPathUnits,
                                         VOLUME_NAME_NT);
-    if (!actual_len || actual_len >= kMaxPathUnits ||
-        !within_root(actual_nt, actual_len, nt_root, nt_root_len))
+    if (!actual_len || actual_len >= kMaxPathUnits)
         return SetLastError(original_error), result;
-    const DWORD suffix_len = actual_len - nt_root_len;
-    if (dos_root_len > kMaxPathUnits - 1 - suffix_len)
+    const Mapping* selected=nullptr;
+    for (DWORD i=0; i<root_count; ++i) {
+        if (within_root(actual_nt,actual_len,mappings[i].nt,mappings[i].nt_len)) {
+            if (selected) return SetLastError(original_error), result;
+            selected=&mappings[i];
+        }
+    }
+    if (!selected) return SetLastError(original_error), result;
+    const DWORD suffix_len = actual_len - selected->nt_len;
+    if (selected->dos_len > kMaxPathUnits - 1 - suffix_len)
         return SetLastError(original_error), result;
-    const DWORD translated_len = dos_root_len + suffix_len;
+    const DWORD translated_len = selected->dos_len + suffix_len;
     // Win32 returns required size INCLUDING NUL for a short or zero buffer;
     // on success it returns the copied length EXCLUDING NUL.
     if (capacity <= translated_len) {
@@ -94,9 +153,9 @@ DWORD WINAPI compatible_final_path(HANDLE file, LPWSTR output,
         return translated_len + 1;
     }
     if (!output) return SetLastError(original_error), result;
-    for (DWORD i = 0; i < dos_root_len; ++i) output[i] = dos_root[i];
+    for (DWORD i = 0; i < selected->dos_len; ++i) output[i] = selected->dos[i];
     for (DWORD i = 0; i < suffix_len; ++i)
-        output[dos_root_len + i] = actual_nt[nt_root_len + i];
+        output[selected->dos_len + i] = actual_nt[selected->nt_len + i];
     output[translated_len] = L'\0';
     SetLastError(ERROR_SUCCESS);
     return translated_len;

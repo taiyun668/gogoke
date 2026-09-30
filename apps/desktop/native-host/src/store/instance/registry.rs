@@ -433,6 +433,14 @@ pub(super) fn resolve_registered_codex_home(
     if current != observed {
         return Err(RegistryError::IdentityChanged);
     }
+    // A legacy nested temporary container must never receive the persistent
+    // home's recursive launch grant. Preserve it and refuse this instance;
+    // neither readback nor a new request migrates or deletes its contents.
+    match fs::symlink_metadata(path.join("temporary-homes")) {
+        Ok(_) => return Err(RegistryError::Invalid("legacy nested temporary-home layout")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) => return Err(RegistryError::Io(error)),
+    }
     Ok((path, current))
 }
 

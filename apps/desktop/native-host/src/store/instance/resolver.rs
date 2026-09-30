@@ -198,8 +198,8 @@ mod tests {
                 .canonical_path
                 .join("v37-instances")
                 .join("instanceA");
-            let expected_session = expected_instance
-                .join("temporary-homes")
+            let expected_session = root.canonical_root().canonical_path
+                .join("v37-temporary-homes").join("instanceA")
                 .join(format!("temp-home-{}", sha256_hex(b"tempA")));
             assert_eq!(resolved.instance.path, expected_instance);
             assert_eq!(resolved.session.path, expected_session);
@@ -211,6 +211,19 @@ mod tests {
                 resolved.session.identity,
                 inspect_root(&resolved.session.path).unwrap().identity
             );
+        });
+    }
+
+    #[test]
+    fn legacy_nested_temporary_home_is_preserved_and_refused_before_launch() {
+        fixture(|connection, root, _profile| {
+            let home = root.canonical_root().canonical_path.join("v37-instances").join("instanceA");
+            let legacy = home.join("temporary-homes");
+            fs::create_dir(&legacy).unwrap();
+            fs::write(legacy.join("preserved"), b"owned legacy state").unwrap();
+            assert!(matches!(resolve_codex_instance_home(connection, root, "instanceA"),
+                Err(LaunchHomeError::Registry(RegistryError::Invalid("legacy nested temporary-home layout")))));
+            assert_eq!(fs::read(legacy.join("preserved")).unwrap(), b"owned legacy state");
         });
     }
 

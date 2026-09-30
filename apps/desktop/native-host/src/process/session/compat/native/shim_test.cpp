@@ -9,6 +9,14 @@ constexpr wchar_t kNtRoot[] = L"\\Device\\HarddiskVolume3\\seat\\home";
 constexpr wchar_t kDosRoot[] = L"\\\\?\\C:\\tmp\\seat\\home";
 constexpr wchar_t kChild[] = L"\\Device\\HarddiskVolume3\\seat\\home\\auth.json";
 constexpr wchar_t kDosChild[] = L"\\\\?\\C:\\tmp\\seat\\home\\auth.json";
+constexpr wchar_t kNtWorktree[] = L"\\Device\\HarddiskVolume3\\seat\\worktree";
+constexpr wchar_t kDosWorktree[] = L"\\\\?\\C:\\tmp\\seat\\worktree";
+constexpr wchar_t kNtWorktreeChild[] = L"\\Device\\HarddiskVolume3\\seat\\worktree\\README.md";
+constexpr wchar_t kDosWorktreeChild[] = L"\\\\?\\C:\\tmp\\seat\\worktree\\README.md";
+constexpr wchar_t kNtSession[] = L"\\Device\\HarddiskVolume3\\seat\\session";
+constexpr wchar_t kDosSession[] = L"\\\\?\\C:\\tmp\\seat\\session";
+constexpr wchar_t kNtSessionChild[] = L"\\Device\\HarddiskVolume3\\seat\\session\\state.sqlite";
+constexpr wchar_t kDosSessionChild[] = L"\\\\?\\C:\\tmp\\seat\\session\\state.sqlite";
 const wchar_t* mock_nt = kChild;
 DWORD mock_dos_error = ERROR_ACCESS_DENIED;
 DWORD mock_nt_error = 0;
@@ -59,6 +67,128 @@ void reset() {
     observed_handle = nullptr;
     SetEnvironmentVariableW(kNtEnv, kNtRoot);
     SetEnvironmentVariableW(kDosEnv, kDosRoot);
+    SetEnvironmentVariableW(kCountEnv, nullptr);
+    SetEnvironmentVariableW(kNtEnv1, nullptr);
+    SetEnvironmentVariableW(kDosEnv1, nullptr);
+    SetEnvironmentVariableW(kNtEnv2, nullptr);
+    SetEnvironmentVariableW(kDosEnv2, nullptr);
+}
+
+void dual_roots() {
+    SetEnvironmentVariableW(kCountEnv,L"2");
+    SetEnvironmentVariableW(kNtEnv1,kNtWorktree);
+    SetEnvironmentVariableW(kDosEnv1,kDosWorktree);
+}
+
+void three_roots() {
+    dual_roots();
+    SetEnvironmentVariableW(kCountEnv,L"3");
+    SetEnvironmentVariableW(kNtEnv2,kNtSession);
+    SetEnvironmentVariableW(kDosEnv2,kDosSession);
+}
+
+void test_three_distinct_roots() {
+    wchar_t output[128]={};
+    const HANDLE handle=reinterpret_cast<HANDLE>(0x1234);
+    reset(); three_roots(); mock_nt=kNtSessionChild;
+    DWORD n=compatible_final_path(handle,output,128,0);
+    CHECK(n==lstrlenW(kDosSessionChild) && lstrcmpW(output,kDosSessionChild)==0);
+    CHECK(nt_queries==1 && observed_handle==handle && GetLastError()==ERROR_SUCCESS);
+    reset(); three_roots(); mock_nt=kNtSessionChild;
+    const DWORD exact=lstrlenW(kDosSessionChild);
+    wchar_t short_buffer[128];
+    for (auto& unit:short_buffer) unit=L'X';
+    n=compatible_final_path(handle,short_buffer,exact,0);
+    CHECK(n==exact+1 && short_buffer[0]==L'X' &&
+        GetLastError()==ERROR_INSUFFICIENT_BUFFER);
+    reset(); three_roots(); mock_nt=kNtSessionChild;
+    n=compatible_final_path(handle,output,exact+1,0);
+    CHECK(n==exact && output[exact]==L'\0' && GetLastError()==ERROR_SUCCESS);
+    reset(); three_roots(); mock_nt=kNtWorktreeChild;
+    n=compatible_final_path(handle,output,128,0);
+    CHECK(n==lstrlenW(kDosWorktreeChild) && lstrcmpW(output,kDosWorktreeChild)==0);
+    reset(); three_roots(); mock_nt=kChild;
+    n=compatible_final_path(handle,output,128,0);
+    CHECK(n==lstrlenW(kDosChild) && lstrcmpW(output,kDosChild)==0);
+    reset(); three_roots(); mock_nt=L"\\Device\\HarddiskVolume3\\seat\\session-more\\state.sqlite";
+    n=compatible_final_path(handle,output,128,0);
+    CHECK(n==0 && GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); three_roots(); SetEnvironmentVariableW(kNtEnv2,kNtRoot);
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); three_roots(); SetEnvironmentVariableW(kDosEnv2,kDosWorktree);
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); dual_roots(); SetEnvironmentVariableW(kNtEnv2,kNtSession);
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); three_roots(); SetEnvironmentVariableW(kDosEnv2,nullptr);
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+}
+
+void test_distinct_roots_and_exact_buffer() {
+    wchar_t output[128] = {};
+    const HANDLE handle=reinterpret_cast<HANDLE>(0x1234);
+    reset(); dual_roots();
+    mock_nt=kNtWorktreeChild;
+    DWORD n=compatible_final_path(handle,output,128,0);
+    CHECK(n==lstrlenW(kDosWorktreeChild));
+    CHECK(lstrcmpW(output,kDosWorktreeChild)==0);
+    CHECK(observed_handle==handle && nt_queries==1 && GetLastError()==ERROR_SUCCESS);
+    reset(); dual_roots(); mock_nt=kChild;
+    n=compatible_final_path(handle,output,128,0);
+    CHECK(n==lstrlenW(kDosChild) && lstrcmpW(output,kDosChild)==0);
+
+    reset(); dual_roots(); mock_nt=kNtWorktreeChild;
+    const DWORD exact=lstrlenW(kDosWorktreeChild);
+    wchar_t short_buffer[128];
+    for (auto& unit:short_buffer) unit=L'X';
+    n=compatible_final_path(handle,short_buffer,exact,0);
+    CHECK(n==exact+1 && GetLastError()==ERROR_INSUFFICIENT_BUFFER);
+    CHECK(short_buffer[0]==L'X' && short_buffer[exact-1]==L'X');
+    reset(); dual_roots(); mock_nt=kNtWorktreeChild;
+    n=compatible_final_path(handle,output,exact+1,0);
+    CHECK(n==exact && output[exact]==L'\0' && GetLastError()==ERROR_SUCCESS);
+    reset(); dual_roots(); mock_nt=kNtWorktreeChild;
+    n=compatible_final_path(handle,nullptr,0,0);
+    CHECK(n==exact+1 && GetLastError()==ERROR_INSUFFICIENT_BUFFER);
+    reset(); dual_roots(); mock_nt=kNtWorktreeChild;
+    n=compatible_final_path(handle,nullptr,exact+1,0);
+    CHECK(n==0 && GetLastError()==ERROR_ACCESS_DENIED);
+
+    reset(); dual_roots(); mock_nt=L"\\Device\\HarddiskVolume3\\seat\\worktree-extra\\README.md";
+    n=compatible_final_path(handle,output,128,0);
+    CHECK(n==0 && GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); dual_roots(); mock_nt=L"\\Device\\HarddiskVolume3\\seat\\sibling\\README.md";
+    n=compatible_final_path(handle,output,128,0);
+    CHECK(n==0 && GetLastError()==ERROR_ACCESS_DENIED);
+}
+
+void test_malformed_and_conflicting_root_list() {
+    wchar_t output[128] = {};
+    const HANDLE handle=reinterpret_cast<HANDLE>(0x1234);
+    reset(); SetEnvironmentVariableW(kCountEnv,L"4");
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); SetEnvironmentVariableW(kCountEnv,L"2");
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); SetEnvironmentVariableW(kNtEnv1,kNtWorktree);
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); dual_roots(); SetEnvironmentVariableW(kNtEnv1,kNtRoot);
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); dual_roots(); SetEnvironmentVariableW(kNtEnv1,L"\\Device\\HarddiskVolume3\\seat\\home\\nested");
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); dual_roots(); SetEnvironmentVariableW(kDosEnv1,L"\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\seat\\worktree");
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
+    reset(); dual_roots(); SetEnvironmentVariableW(kDosEnv1,kDosRoot);
+    CHECK(compatible_final_path(handle,output,128,0)==0 && nt_queries==0 &&
+        GetLastError()==ERROR_ACCESS_DENIED);
 }
 
 void test_buffer_and_scope() {
@@ -187,6 +317,9 @@ void test_iat_shape() {
 
 int main() {
     test_buffer_and_scope();
+    test_distinct_roots_and_exact_buffer();
+    test_three_distinct_roots();
+    test_malformed_and_conflicting_root_list();
     test_passthrough_and_invalid_mapping();
     test_iat_shape();
     if (failures) fprintf(stderr, "%d fixed shim tests failed\n", failures);

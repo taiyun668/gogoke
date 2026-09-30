@@ -31,6 +31,7 @@ const NO_INHERITANCE: u32 = 0;
 const FILE_GENERIC_READ: u32 = 0x0012_0089;
 const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
 const FILE_GENERIC_EXECUTE: u32 = 0x0012_00a0;
+const DELETE_ACCESS: u32 = 0x0001_0000;
 const READ_CONTROL: u32 = 0x0002_0000;
 const WRITE_DAC: u32 = 0x0004_0000;
 const FILE_SHARE_ALL: u32 = 7;
@@ -568,7 +569,10 @@ fn open_directory(path: &Path, access: u32) -> Result<Token, IsolationError> {
 
 fn directory_rights(writable: bool) -> u32 {
     FILE_GENERIC_READ | FILE_GENERIC_EXECUTE |
-        (if writable { FILE_GENERIC_WRITE } else { 0 })
+        // SQLite and other owned runtime files need rename/delete as well as
+        // data writes. Grant object DELETE only within this exact writable
+        // tree; neither read-only trees nor its parent get delete-child.
+        (if writable { FILE_GENERIC_WRITE | DELETE_ACCESS } else { 0 })
 }
 
 fn file_identity(handle: Handle) -> Result<RootIdentity, IsolationError> {

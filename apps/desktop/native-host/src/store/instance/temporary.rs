@@ -15,7 +15,7 @@ use std::os::windows::fs::MetadataExt;
 use std::path::Path;
 
 const CONTAINER: &str = "v37-instances";
-const TEMPORARY_CONTAINER: &str = "temporary-homes";
+const TEMPORARY_CONTAINER: &str = "v37-temporary-homes";
 const MARKER: &str = "gogoke-temporary-home.marker";
 const REPARSE_POINT: u32 = 0x400;
 
@@ -115,7 +115,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 fn fingerprint(input: &CreateTemporaryHome<'_>, sid_identity: &str) -> String {
     let mut framed = Vec::new();
-    for value in [&b"temporary-create"[..], input.request_bytes, input.home_id.as_bytes(),
+    for value in [&b"temporary-create-detached"[..], input.request_bytes, input.home_id.as_bytes(),
         input.instance_id.as_bytes(), input.domain_id.as_bytes(), input.kind.as_str().as_bytes(),
         input.owner_id.as_bytes(), input.generation.as_bytes(), sid_identity.as_bytes()] {
         framed.extend_from_slice(&(value.len() as u64).to_be_bytes());
@@ -127,8 +127,8 @@ fn directory_ref(home_id: &str) -> String {
     format!("temp-home-{}", sha256_hex(home_id.as_bytes()))
 }
 fn directory(root: &RootLock, input: &CreateTemporaryHome<'_>) -> std::path::PathBuf {
-    root.canonical_root().canonical_path.join(CONTAINER).join(input.instance_id)
-        .join(TEMPORARY_CONTAINER).join(directory_ref(input.home_id))
+    root.canonical_root().canonical_path.join(TEMPORARY_CONTAINER).join(input.instance_id)
+        .join(directory_ref(input.home_id))
 }
 fn checked_dir(path: &Path) -> Result<RootIdentity, TemporaryHomeError> {
     let metadata = fs::symlink_metadata(path)?;
@@ -146,7 +146,7 @@ fn existing_parent(path: &Path) -> Result<Option<RootIdentity>, TemporaryHomeErr
 }
 fn marker_text(root: &RootLock, input: &CreateTemporaryHome<'_>, identity: &RootIdentity,
     sid_identity: &str) -> String {
-    format!("gogoke-v37-temporary-home-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+    format!("gogoke-v37-temporary-home-detached-v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
         root.canonical_root().identity.opaque(), input.instance_id, input.home_id, input.domain_id,
         input.kind.as_str(), input.owner_id, input.generation, input.request_id,
         sha256_hex(fingerprint(input, sid_identity).as_bytes()), identity.opaque(), sid_identity)
@@ -164,7 +164,9 @@ fn directory_stage(root: &RootLock, input: &CreateTemporaryHome<'_>, sid_identit
     if observed_home(root, input.instance_id)? != Some(instance_identity.clone()) {
         return Err(TemporaryHomeError::InstanceChanged);
     }
-    let temporary = instance.join(TEMPORARY_CONTAINER);
+    let temporary_top = root_path.join(TEMPORARY_CONTAINER);
+    let Some(temporary_top_identity) = existing_parent(&temporary_top)? else { return Ok(None); };
+    let temporary = temporary_top.join(input.instance_id);
     let Some(temporary_identity) = existing_parent(&temporary)? else { return Ok(None); };
     let path = directory(root, input);
     let Some(identity) = existing_parent(&path)? else { return Ok(None); };
@@ -188,6 +190,7 @@ fn directory_stage(root: &RootLock, input: &CreateTemporaryHome<'_>, sid_identit
         return Err(TemporaryHomeError::Unknown);
     };
     if checked_dir(&top)? != top_identity || checked_dir(&instance)? != instance_identity
+        || checked_dir(&temporary_top)? != temporary_top_identity
         || checked_dir(&temporary)? != temporary_identity || checked_dir(&path)? != identity {
         return Err(TemporaryHomeError::IdentityChanged);
     }
@@ -208,7 +211,13 @@ fn prepare_empty_directory(root: &RootLock, input: &CreateTemporaryHome<'_>, sid
     if observed_home(root, input.instance_id)? != Some(instance_identity.clone()) {
         return Err(TemporaryHomeError::InstanceChanged);
     }
-    let temporary = instance.join(TEMPORARY_CONTAINER);
+    let temporary_top = root_path.join(TEMPORARY_CONTAINER);
+    match fs::create_dir(&temporary_top) {
+        Ok(()) => (), Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+        Err(error) => return Err(error.into()),
+    }
+    let temporary_top_identity = checked_dir(&temporary_top)?;
+    let temporary = temporary_top.join(input.instance_id);
     match fs::create_dir(&temporary) {
         Ok(()) => (), Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
         Err(error) => return Err(error.into()),
@@ -220,6 +229,7 @@ fn prepare_empty_directory(root: &RootLock, input: &CreateTemporaryHome<'_>, sid
     } else { TemporaryHomeError::Io(error) })?;
     let identity = checked_dir(&path)?;
     if checked_dir(&top)? != top_identity || checked_dir(&instance)? != instance_identity
+        || checked_dir(&temporary_top)? != temporary_top_identity
         || checked_dir(&temporary)? != temporary_identity
         || directory_stage(root, input, sid_identity)? != Some(DirectoryStage::Empty(identity.clone())) {
         return Err(TemporaryHomeError::IdentityChanged);
@@ -436,8 +446,8 @@ fn transition_operation(connection: &VerifiedDatabaseConnection<'_>, request_id:
     else { Ok(None) }
 }
 fn transition_path(root: &RootLock, instance_id: &str, home_id: &str) -> std::path::PathBuf {
-    root.canonical_root().canonical_path.join(CONTAINER).join(instance_id)
-        .join(TEMPORARY_CONTAINER).join(directory_ref(home_id))
+    root.canonical_root().canonical_path.join(TEMPORARY_CONTAINER).join(instance_id)
+        .join(directory_ref(home_id))
 }
 fn transition_parent(root: &RootLock, row: &HomeRow) -> Result<RootIdentity, TemporaryHomeError> {
     let root_path = &root.canonical_root().canonical_path;
@@ -449,11 +459,13 @@ fn transition_parent(root: &RootLock, row: &HomeRow) -> Result<RootIdentity, Tem
     if observed_home(root, &row.0)? != Some(instance_identity) {
         return Err(TemporaryHomeError::InstanceChanged);
     }
-    Ok(checked_dir(&instance.join(TEMPORARY_CONTAINER))?)
+    let temporary_top = root_path.join(TEMPORARY_CONTAINER);
+    checked_dir(&temporary_top)?;
+    Ok(checked_dir(&temporary_top.join(&row.0))?)
 }
 fn create_marker_for_row(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     home_id: &str, row: &HomeRow, sid: &str) -> Result<String, TemporaryHomeError> {
-    let tag = b"temporary-create";
+    let tag = b"temporary-create-detached";
     let prefix = format!("{:016x}{}", tag.len(), hex(tag));
     let query = Statement::prepare(connection.as_ptr(),
         "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED'")?;
@@ -467,7 +479,7 @@ fn create_marker_for_row(connection: &VerifiedDatabaseConnection<'_>, root: &Roo
         }
     }
     let (request_id, request_hex) = create.ok_or(TemporaryHomeError::Unknown)?;
-    Ok(format!("gogoke-v37-temporary-home-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+    Ok(format!("gogoke-v37-temporary-home-detached-v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
         root.canonical_root().identity.opaque(), row.0, home_id, row.1, row.2, row.3, row.4,
         request_id, sha256_hex(request_hex.as_bytes()), row.6, sid))
 }
@@ -850,6 +862,31 @@ mod tests {
                 Err(TemporaryHomeError::Admission(AdmissionError::Denied))));
             assert!(matches!(directory_stage(root, &first, &profile.sid_identity().unwrap()).unwrap(),
                 Some(DirectoryStage::Marked(_, true))));
+        });
+    }
+
+    #[test]
+    fn legacy_create_intent_is_not_reinterpreted_in_detached_layout() {
+        fixture(|connection, root, profile| {
+            let first = input(b"legacy create");
+            let sid = profile.sid_identity().unwrap();
+            let current = fingerprint(&first, &sid);
+            let current_tag = b"temporary-create-detached";
+            let legacy_tag = b"temporary-create";
+            let current_prefix = format!("{:016x}{}", current_tag.len(), hex(current_tag));
+            let legacy = format!("{:016x}{}{}", legacy_tag.len(), hex(legacy_tag),
+                current.strip_prefix(&current_prefix).expect("versioned creation fingerprint"));
+            let intent = Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES(?1,?2,?3,'UNKNOWN')").unwrap();
+            intent.bind_text(1, first.request_id).unwrap();
+            intent.bind_text(2, &legacy).unwrap();
+            intent.bind_text(3, first.home_id).unwrap();
+            intent.step_done().unwrap();
+            assert!(matches!(create_temporary_home(connection, root, profile, &first),
+                Err(TemporaryHomeError::RequestConflict)));
+            assert!(!root.canonical_root().canonical_path.join(TEMPORARY_CONTAINER).exists(),
+                "an old request cannot authorize a new physical location");
+            assert_eq!(operation(connection, first.request_id).unwrap().unwrap().2, "UNKNOWN");
         });
     }
 

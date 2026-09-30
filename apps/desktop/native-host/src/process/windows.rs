@@ -2618,12 +2618,18 @@ mod tests {
         let base = std::env::temp_dir().join(format!("gogoke-v37-lpac-{}-{nonce}", std::process::id()));
         let allowed = base.join("allowed");
         let blocked = base.join("blocked");
+        let readonly = base.join("readonly");
         std::fs::create_dir(&base).unwrap();
         std::fs::create_dir(&allowed).unwrap();
         std::fs::create_dir(&blocked).unwrap();
+        std::fs::create_dir(&readonly).unwrap();
+        std::fs::write(blocked.join("keep.txt"), b"blocked file").unwrap();
+        std::fs::write(readonly.join("keep.txt"), b"read-only file").unwrap();
         let name = format!("Gogoke37.test{}.{nonce}", std::process::id());
         let profile = AppContainerProfile::ensure(&name, false).expect("test package profile");
         profile.grant_fresh_session_directory(&allowed).expect("package directory ACL");
+        let readonly_identity = crate::root::inspect_root(&readonly).unwrap().identity;
+        profile.grant_bound_tree(&readonly, &readonly_identity, false).expect("read-only tree ACL");
         drop(profile);
         let executable = allowed.join("cmd.exe");
         write_executable_with_directory_acl(&system_cmd(), &executable);
@@ -2637,18 +2643,27 @@ mod tests {
             ("LOCALAPPDATA".into(), allowed.to_string_lossy().into_owned()),
         ]);
         launch.arguments = vec!["/D".into(), "/C".into(),
-            "echo permitted> allowed.txt & echo forbidden> ..\\blocked\\forbidden.txt".into()];
+            concat!("echo transient> transient.txt & ren transient.txt renamed.txt & del renamed.txt & ",
+                "del ..\\blocked\\keep.txt & del ..\\readonly\\keep.txt & ",
+                "echo permitted> allowed.txt & echo forbidden> ..\\blocked\\forbidden.txt").into()];
         let managed = prepare_and_activate(&launch, |_| Ok(())).expect("real LPAC child");
         assert!(managed.wait(Duration::from_secs(10)).expect("LPAC exit"));
         assert!(allowed.join("allowed.txt").is_file(), "LPAC must write its granted directory");
+        assert!(!allowed.join("transient.txt").exists() && !allowed.join("renamed.txt").exists(),
+            "the actual LPAC child must rename and delete its own writable file");
         assert!(!blocked.join("forbidden.txt").exists(), "LPAC must not write sibling directory");
+        assert_eq!(std::fs::read(blocked.join("keep.txt")).unwrap(), b"blocked file");
+        assert_eq!(std::fs::read(readonly.join("keep.txt")).unwrap(), b"read-only file");
         drop(managed);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
         std::fs::remove_file(allowed.join("allowed.txt")).unwrap();
         std::fs::remove_file(executable).unwrap();
         std::fs::remove_dir(allowed).unwrap();
+        std::fs::remove_file(blocked.join("keep.txt")).unwrap();
         std::fs::remove_dir(blocked).unwrap();
+        std::fs::remove_file(readonly.join("keep.txt")).unwrap();
+        std::fs::remove_dir(readonly).unwrap();
         std::fs::remove_dir(base).unwrap();
     }
 
