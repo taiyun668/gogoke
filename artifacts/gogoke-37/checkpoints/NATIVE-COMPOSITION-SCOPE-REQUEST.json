@@ -1,11 +1,20 @@
 {
   "schema": "gogoke.37.construction-scope-request.v1",
-  "state": "PROPOSED_NOT_AUTHORIZED",
+  "state": "WITHDRAWN_UNNECESSARY_OWNER_TOUCHPOINT",
   "repository": "taiyun668/gogoke",
   "source_head": "b4085f9ce175f78ce367db706a569b80bee3033a",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
-  "logic": "The frozen PLAN.json write_scope plus shared_files list does not include the existing ProductDatabase composition or its v37 child modules. Native H/F must enter the existing single verified DB/OwnerIssuer/ProcessCustodian composition. A wiring dependency does not itself authorize absent paths; the separate candidate-chain scope precedent explicitly preserves this distinction.",
+  "superseded_historical_logic": "The frozen PLAN.json write_scope plus shared_files list does not include the existing ProductDatabase composition or its v37 child modules. Native H/F must enter the existing single verified DB/OwnerIssuer/ProcessCustodian composition. A wiring dependency does not itself authorize absent paths; the separate candidate-chain scope precedent explicitly preserves this distinction.",
+  "correction": "The earlier conclusion inferred missing construction authorization from missing composition paths without reconciling the existing Owner authorization for all L0-G lines and M1-M3, the explicit instruction to resolve implementation bugs and continue, and origin/main AGENTS.md Scope Discipline. These paths are necessary minimal wiring for the authorized same-DB product entry, not a new goal, contract, permission tier or security boundary. The Controller owns integration and records the exact dependency; another Owner authorization is not required. The separate trusted-main candidate-chain scope and its pending main activation are not generalized by this correction.",
+  "authorization_basis": "Owner-merged PR #56 and PUBLIC_AUTHORIZATION_RECEIPT.json bound to manifest 2d3b34a7903e7b0223d043786863706c2297c78c, together with the Owner instruction to continue all authorized lines and milestones without checkpoint stops.",
+  "integration_change_record": {
+    "writer": "CONTROLLER_ONLY",
+    "requesting_lines": ["L0", "H", "F"],
+    "affected_contracts": ["K-INSTANCE", "K-SEAT", "K-SESSION", "K-WORKTREE"],
+    "dependent_lines": ["E", "A", "B1", "C", "F", "H"],
+    "rule": "Implement only the exact minimal composition described below. Workers retain their assigned ownership; no frozen PLAN or MANIFEST change, no independent authority or service-to-user promotion. Dependency changes must be communicated before dependent work resumes."
+  },
   "existing_branch_state": "Earlier construction already changed these six unlisted paths for User ingress, instance login and seat/admission wiring. No separate authorization for these paths was found in repository scope receipts. This proposal neither treats that historical implementation as authorization nor discards it.",
   "requested_changes": [
     {
@@ -52,6 +61,6 @@
     "state": "PRESERVED_NOT_COMMITTED_NOT_CLOUD_TESTED",
     "planned_behavior": "Separate Owner source configuration observes/pins actual Git and source facts; closed K-WORKTREE create takes logical IDs, reads exact original outcome before any fresh Git operation, and refuses UNKNOWN or mismatched source/pin."
   },
-  "owner_action_needed": "Authorize these exact six existing composition paths for the minimal authorized H/F/L0 delivery, or have Claude revise the plan and complete MANIFEST reauthorization. This does not request new product permissions or main merge authority.",
-  "not_done": "No additional source implementation proceeds across this unresolved path boundary; M1 and OT4 readiness remain incomplete."
+  "owner_action_needed": "NONE_FOR_THIS_MINIMAL_COMPOSITION; existing Owner-only touchpoints and trusted-main activation remain unchanged.",
+  "not_done": "Preserved WIP has not yet been committed or cloud-tested. M1 and OT4 readiness remain incomplete; continuous authorized construction resumes."
 }

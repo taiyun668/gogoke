@@ -1,6 +1,7 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "STOPPED_NATIVE_COMPOSITION_SCOPE_CLARIFICATION",
+  "state": "ACTIVE_AUTHORIZED_REPAIRS_REQUIRED",
+  "prior_stop_correction": "The missing-path inference was an unnecessary Owner touchpoint, not evidence that PR #56 lacked authority for necessary minimal L0/H/F composition. The scope request is withdrawn; preserve WIP, keep the bound contracts and security boundaries, and continue within existing authorization. This correction grants no public release, main merge or self-acceptance authority.",
   "source_sha": "b4085f9ce175f78ce367db706a569b80bee3033a",
   "inbox_observed": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
@@ -63,7 +64,7 @@
   "ot4": "NOT_REQUESTED",
   "m1_complete": false,
   "acceptance": false,
-  "roundtrip_review": "Direct NT errors removed the SQLite failure without widening root scope. Full native suite exposed target-path and test-fixture gaps in one batch. A renewed literal scope check found ProductDatabase composition absent from the bound path lists, including earlier branch changes; preserve and obtain precise authority instead of treating earlier edits or a necessary dependency as permission.",
+  "roundtrip_review": "Direct NT errors removed the SQLite failure without widening root scope. Full native suite exposed target-path and test-fixture gaps in one batch. The later path-list check incorrectly treated necessary integration as requiring another Owner authorization. Reconcile the full existing authorization and Scope Discipline before escalating; retain exact file ownership and fix the four measured failures under the current contracts.",
   "same_production_source_cpp_shim_step": "PASS",
   "multi_root_native_fixture": "FAIL_ROOT_CONTAINMENT_PATH_SPELLING_REQUIRES_INSTRUMENT_REVIEW"
 }
