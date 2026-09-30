@@ -8,11 +8,53 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ($env:GITHUB_REF -cne 'refs/heads/main' -or $env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke') {
+if ($env:GITHUB_ACTIONS -cne 'true' -or $env:GITHUB_REF -cne 'refs/heads/main' -or
+    $env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke' -or
+    $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$') {
     throw 'Candidate signing requires the trusted default-branch workflow.'
 }
 if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $RunId -le 0 -or $RunAttempt -le 0 -or $ArtifactId -le 0) {
     throw 'Candidate signing source identity is malformed.'
+}
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+if ((git -C $repoRoot rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
+    throw 'Candidate signer is not the exact trusted main checkout.'
+}
+$authorizationMain = '8a984b6ac402d217a8897adaa4a7dcc56fbf68e3'
+$manifestBlob = '2d3b34a7903e7b0223d043786863706c2297c78c'
+$manifestPath = 'docs/design/gogoke-37-plan-v1/MANIFEST.json'
+$receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
+if ((git -C $repoRoot rev-parse "HEAD:$manifestPath").Trim() -cne $manifestBlob) {
+    throw 'Trusted signer main has a different design 37 manifest.'
+}
+$receipt = Get-Content -LiteralPath (Join-Path $repoRoot $receiptPath) -Raw | ConvertFrom-Json
+if ($receipt.schema -cne 'gogoke.37.public-authorization.v1' -or
+    $receipt.repository -cne 'taiyun668/gogoke' -or
+    $receipt.plan.public_plan_manifest_blob -cne $manifestBlob) {
+    throw 'Trusted signer main authorization receipt does not bind the approved plan.'
+}
+$receiptBlob = '8020812e3abf35887829f50c78ec9f513272bf70'
+if ((git -C $repoRoot rev-parse "HEAD:$receiptPath").Trim() -cne $receiptBlob) {
+    throw 'Trusted signer main public authorization receipt blob changed.'
+}
+foreach ($binding in @(@($manifestPath, $manifestBlob), @($receiptPath, $receiptBlob))) {
+    $current = gh api "repos/taiyun668/gogoke/contents/$($binding[0])?ref=main" | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $current.type -cne 'file' -or $current.sha -cne $binding[1]) {
+        throw 'Current main authorization changed before candidate signing.'
+    }
+}
+$comparison = gh api "repos/taiyun668/gogoke/compare/$authorizationMain...$SourceCommit" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $comparison.status -cnotin @('ahead', 'identical') -or
+    $comparison.merge_base_commit.sha -cne $authorizationMain) {
+    throw 'Candidate source is not descended from the authorized main commit.'
+}
+$sourceManifest = gh api "repos/taiyun668/gogoke/contents/$manifestPath`?ref=$SourceCommit" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $sourceManifest.type -cne 'file' -or $sourceManifest.sha -cne $manifestBlob) {
+    throw 'Candidate source has a different design 37 manifest.'
+}
+$sourceReceipt = gh api "repos/taiyun668/gogoke/contents/$receiptPath`?ref=$SourceCommit" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $sourceReceipt.type -cne 'file' -or $sourceReceipt.sha -cne $receiptBlob) {
+    throw 'Candidate source has a different public authorization receipt.'
 }
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
 $indexPath = Join-Path $artifactRoot 'resource-index.json'
@@ -24,20 +66,23 @@ foreach ($path in @($indexPath, $packPath)) {
 $run = gh api "repos/taiyun668/gogoke/actions/runs/$RunId" | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $run.repository.full_name -cne 'taiyun668/gogoke' -or
     $run.head_repository.full_name -cne 'taiyun668/gogoke' -or
-    $run.head_branch -cne 'gpt/s1-r4-r2-execution-r1' -or
+    $run.head_branch -cne 'codex/gogoke-37-l0' -or
     $run.head_sha -cne $SourceCommit -or $run.run_attempt -ne $RunAttempt -or
-    $run.conclusion -cne 'success' -or $run.name -cne 'gogoke desktop CI') {
+    $run.event -cne 'workflow_dispatch' -or $run.status -cne 'completed' -or
+    $run.conclusion -cne 'success' -or $run.name -cne 'gogoke desktop CI' -or
+    $run.path -cne '.github/workflows/gogoke-desktop.yml') {
     throw 'Candidate resource artifact did not come from the successful controlled source run.'
 }
 $artifactList = gh api "repos/taiyun668/gogoke/actions/runs/$RunId/artifacts" | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) { throw 'Candidate source artifact inventory unavailable.' }
+if ($LASTEXITCODE -ne 0 -or $artifactList.total_count -gt 30) {
+    throw 'Candidate source artifact inventory unavailable or unbounded.'
+}
 $expectedName = "gogoke-windows-frozen-$SourceCommit-$RunId"
 $matches = @($artifactList.artifacts | Where-Object {
     $_.id -eq $ArtifactId -and $_.name -ceq $expectedName -and -not $_.expired -and $_.size_in_bytes -gt 0
 })
 if ($matches.Count -ne 1) { throw 'Candidate source artifact identity is ambiguous or unavailable.' }
 
-$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 python (Join-Path $repoRoot 'tools\ci\gogoke_resource_pack.py') verify --pack $packPath --index $indexPath
 if ($LASTEXITCODE -ne 0) { throw 'Trusted resource pack verifier rejected candidate bytes.' }
 $index = Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json

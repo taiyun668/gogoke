@@ -148,7 +148,8 @@ try {
         $env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke') {
         throw 'Candidate installed smoke requires GitHub-hosted Windows Actions'
     }
-    if ($env:GITHUB_REF -cne 'refs/heads/gpt/s1-r4-r2-execution-r1' -or
+    if ($env:GITHUB_REF -cne 'refs/heads/codex/gogoke-37-l0' -or
+        $env:GITHUB_SHA -cne $ExpectedSourceCommit -or
         $env:GITHUB_RUN_ID -cne [string]$ExpectedSmokeRunId -or
         $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSmokeRunAttempt) {
         throw 'Expected execution-branch smoke identity differs from the current GitHub Actions run'
