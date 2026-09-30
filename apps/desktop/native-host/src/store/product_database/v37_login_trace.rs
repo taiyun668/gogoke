@@ -51,6 +51,8 @@ pub(super) fn before_activation(prepared: &PreparedCustody) -> Option<CliTrace> 
     // not inspect any file contents, credential bytes or query buffers.
     let mut nt_calls = String::new();
     let methods = [
+        ("NtOpenFile", r#".printf \"GOGOKE_NT_ENTRY NtOpenFile tid=%x access=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x30), poi(@r8+0x10);"#),
+        ("NtDeleteFile", r#".printf \"GOGOKE_NT_ENTRY NtDeleteFile tid=%x name=%msu\\n\", @$tid, poi(@rcx+0x10);"#),
         ("NtCreateFile", r#".printf \"GOGOKE_NT_ENTRY NtCreateFile tid=%x access=%x disposition=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x40), dwo(@rsp+0x48), poi(@r8+0x10);"#),
         ("NtQueryAttributesFile", r#".printf \"GOGOKE_NT_ENTRY NtQueryAttributesFile tid=%x name=%msu\\n\", @$tid, poi(@rcx+0x10);"#),
         ("NtQueryFullAttributesFile", r#".printf \"GOGOKE_NT_ENTRY NtQueryFullAttributesFile tid=%x name=%msu\\n\", @$tid, poi(@rcx+0x10);"#),
