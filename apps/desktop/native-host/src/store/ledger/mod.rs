@@ -389,7 +389,10 @@ fn h_source_binding(
                 | ("STOPPED", "STOPPED")
         ) || released_recovery
     } else {
-        claim_state == "COMMITTED" && custody_state == "ACTIVE"
+        // A held native stdout object still proves its original source when
+        // an uncertain input/commit fenced current custody. This permits
+        // saving facts, never another input or a launch after restart.
+        claim_state == "COMMITTED" && matches!(custody_state.as_str(),"ACTIVE"|"UNKNOWN")
     };
     if !state_ok || statement.step_row()? {
         return Err(AtomicError::OperationConflict);
@@ -413,6 +416,19 @@ fn h_source_binding(
             || custody.binding.generation != binding.generation
         {
             return Err(AtomicError::OperationConflict);
+        }
+        if custody_state=="UNKNOWN" {
+            let identity=Statement::prepare(connection.as_ptr(),
+                "SELECT pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id FROM main.gogoke_coordination_process_custody WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3")?;
+            identity.bind_text(1,operation_id)?;identity.bind_text(2,custody.ticket.opaque())?;
+            identity.bind_text(3,&custody.custodian_nonce)?;
+            if !identity.step_row()? || identity.column_text(0)?!=custody.identity.pid.to_string()
+                || identity.column_text(1)?!=custody.identity.creation_time_100ns.to_string()
+                || identity.column_text(2)?!=custody.identity.image_path.to_string_lossy()
+                || identity.column_text(3)?!=custody.binding.binary_digest_sha256
+                || identity.column_text(4)?!=custody.binding.profile_id || identity.step_row()? {
+                return Err(AtomicError::OperationConflict);
+            }
         }
     }
     Ok(binding)
@@ -876,13 +892,23 @@ pub(crate) fn read_pending_raw_source(
     source_epoch: &str,
     source_cursor: &str,
 ) -> Result<Option<RawSourceRecord>, AtomicError> {
+    let record=read_captured_raw_source(connection,operation_id,source_epoch,source_cursor)?;
+    Ok(record.filter(|record|record.state==RawSourceState::Pending))
+}
+
+/// Native C readback needs the original captured card after A terminalizes
+/// its source. The same H recovery binding remains mandatory for every
+/// state; terminalization never creates another raw history or a new grant.
+pub(crate) fn read_captured_raw_source(
+    connection: &VerifiedDatabaseConnection<'_>,
+    operation_id: &str,
+    source_epoch: &str,
+    source_cursor: &str,
+) -> Result<Option<RawSourceRecord>, AtomicError> {
     let key = raw_key(operation_id, source_epoch, source_cursor)?;
     let Some(record) = read_raw_source(connection, &key)? else {
         return Ok(None);
     };
-    if record.state != RawSourceState::Pending {
-        return Ok(None);
-    }
     h_source_binding(connection, operation_id, Some(&record), None, true)?;
     Ok(Some(record))
 }

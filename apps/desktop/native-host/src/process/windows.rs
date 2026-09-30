@@ -3633,7 +3633,7 @@ mod tests {
         };
         assert_eq!(
             proof.proof_hash(),
-            "sha256:6de76f072fd07f424de91943871f249eb3bdc2f22b7b33dcf302cd14fdd38e7e"
+            "sha256:b0e763947d3d243bc78caff93e0c9daec371baff218878d62ec5c2355dba16fc"
         );
     }
 
@@ -3724,7 +3724,9 @@ mod tests {
         let error = terminate_job(ptr::null_mut(), STOP_TIMEOUT_EXIT_CODE)
             .expect_err("null job handle must fail through the actual Windows API");
         assert_ne!(error.raw_os_error(), Some(0));
-        let members = job_member_snapshot(ptr::null_mut());
+        // QueryInformationJobObject(NULL) selects the caller's current Job.
+        // A process pseudo-handle is a real wrong-object-type negative case.
+        let members = job_member_snapshot(unsafe { GetCurrentProcess() });
         assert!(members.contains("JobObjectBasicProcessIdList failed win32=Some("),
             "invalid Job query must preserve the native error code: {members}");
 

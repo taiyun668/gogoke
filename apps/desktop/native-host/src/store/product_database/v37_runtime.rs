@@ -20,6 +20,7 @@ pub(super) struct NativeSession {
     model: String,
     effort: String,
     pub(super) thread_id: Option<String>,
+    pub(super) turn_id: Option<String>,
     pub(super) raw_capture: super::v37_output::NativeRawCapture,
     stop_proof: Option<NativeStopProof>,
     next_rpc_id: u64,
@@ -28,6 +29,12 @@ pub(super) struct NativeSession {
 struct RpcObservation {
     reply: Reply,
     frame: OriginBoundFrame,
+}
+
+impl NativeSession {
+    pub(super) fn allows_input(&self) -> bool {
+        self.stop_proof.is_none() && !self.raw_capture.has_pending() && !self.raw_capture.source_failed()
+    }
 }
 
 fn failure<T, E: std::fmt::Debug>(result: std::result::Result<T, E>) -> Result<T> {
@@ -144,7 +151,7 @@ impl<'root> ProductDatabase<'root> {
         self.native_sessions.insert(key.clone(), NativeSession { evidence, custody: custody.clone(),
             operation_id: operation_id.clone(), open_request_id: request.request_id.clone(),
             open_request_bytes: request.raw_bytes.clone(), domain_id: request.domain_id.clone(),
-            session_id: request.target_id.clone(), model, effort, thread_id: None, raw_capture: Default::default(), stop_proof: None,
+            session_id: request.target_id.clone(), model, effort, thread_id: None, turn_id: None, raw_capture: Default::default(), stop_proof: None,
             next_rpc_id: 4 });
         if let Err(error) = authority::record_prepared_process(&mut self.connection, &operation_id, &custody) {
             let abort = self.process_custodian.abort_prepared(&custody);
@@ -358,6 +365,14 @@ impl<'root> ProductDatabase<'root> {
         // captured; neither durable STOPPED nor custody release precedes it.
         self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
             .raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?;
+        // The stopped process object and its original stdout reader still
+        // belong to this custody. Project its captured tail before changing
+        // the H binding or releasing any guard. A quiet reader is not EOF:
+        // retain the same stop proof for readback, without another OS stop.
+        self.drain_native_output(&key)?;
+        if !self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?.raw_capture.source_exhausted() {
+            return Err(OrchestrationError::Invalid("native stopped stdout terminal boundary not yet observed; custody retained"));
+        }
         authority::mark_process_stopped(&mut self.connection, &operation, &proof)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let stopped = (|| -> Result<()> {
@@ -503,7 +518,7 @@ impl<'root> ProductDatabase<'root> {
 
     /// Actual process-owned JSONL, with durable native step intent before
     /// writing and A's original provider bytes before interpreting responses.
-    fn native_rpc(&mut self, key: &(String, String), step_id: &str,
+    pub(super) fn native_rpc(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<Reply>> {
         self.native_rpc_observation(key, step_id, number, command).map(|result| result.map(|result| result.reply))
     }
@@ -513,6 +528,9 @@ impl<'root> ProductDatabase<'root> {
         let id = number.map(RpcId::client).transpose().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native RPC ID: {error:?}")))?;
         let run = self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.stop_proof.is_some() {
+            return Err(OrchestrationError::Invalid("native RPC stop is awaiting durable reconciliation"));
+        }
         if run.raw_capture.has_pending() {
             return Err(OrchestrationError::Invalid("native RPC has retained uncaptured source"));
         }
@@ -554,6 +572,10 @@ impl<'root> ProductDatabase<'root> {
                         failure(run.evidence.verify_observed_cwd(cwd))?;
                     }
                     let reply = failure(rpc::complete_response(&mut self.connection, &self.owner, &step, &frame, &raw.key))?;
+                    if let Reply::Turn {turn_id,status:codex_rpc::TurnStatus::InProgress,..}=&reply {
+                        self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.turn_id=Some(turn_id.clone());
+                        self.process_native_pending_output(key)?;
+                    }
                     return Ok(Some(RpcObservation { reply, frame }));
                 }
                 Reply::RemoteError { raw_frame, .. } => {

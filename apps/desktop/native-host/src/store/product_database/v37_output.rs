@@ -11,6 +11,7 @@ pub(super) struct NativeRawCapture {
     cursor: u64,
     pending: Option<OriginBoundFrame>,
     source_error: Option<String>,
+    source_eof: bool,
 }
 
 #[cfg(all(test,windows))]
@@ -19,6 +20,24 @@ mod tests {
     use crate::root::RootLock;
     use crate::store::same_open::{create_new,route_b_test_guard};
     use std::time::{Duration,SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn stop_requires_clean_original_eof_not_a_generic_source_error() {
+        use crate::process::ProcessCustodyError;
+        for kind in [std::io::ErrorKind::WouldBlock,std::io::ErrorKind::InvalidData,std::io::ErrorKind::PermissionDenied] {
+            let mut capture=NativeRawCapture::default();
+            capture.record_source_error(ProcessCustodyError::ProtocolEvidence {
+                cause:Box::new(ProcessCustodyError::ProtocolPipe(std::io::Error::new(kind,"original reader error"))),
+                stderr_tail:"retained diagnostic".into()});
+            assert!(capture.source_failed());
+            assert!(!capture.source_exhausted(),"a failed reader does not prove its tail exhausted: {kind:?}");
+        }
+        let mut capture=NativeRawCapture::default();
+        capture.record_source_error(ProcessCustodyError::ProtocolEvidence {
+            cause:Box::new(ProcessCustodyError::ProtocolPipe(std::io::Error::new(std::io::ErrorKind::UnexpectedEof,"clean closed stdout"))),
+            stderr_tail:String::new()});
+        assert!(capture.source_exhausted());
+    }
 
     #[test]
     fn native_raw_capture_keeps_original_frame_on_sql_failure_and_preserves_tail_at_eof() {
@@ -54,6 +73,7 @@ mod tests {
         assert!(custodian.read_persistent_child_frame(&custody.ticket,Duration::from_secs(5)).is_err());
         assert!(!source.poll_capture(&mut db,&custodian,&custody,"operation-raw").unwrap());
         let eof=source.source_error.clone().expect("original EOF/error remains explicit");
+        assert!(source.source_exhausted(),"the actual held pipe exhausted its complete frames");
         assert!(!source.poll_capture(&mut db,&custodian,&custody,"operation-raw").unwrap());
         assert_eq!(source.source_error.as_ref(),Some(&eof));
         assert_eq!(source.cursor,2);
@@ -72,6 +92,31 @@ mod tests {
 
 impl NativeRawCapture {
     pub(super) fn has_pending(&self) -> bool { self.pending.is_some() }
+    pub(super) fn source_failed(&self) -> bool { self.source_error.is_some() }
+    pub(super) fn source_exhausted(&self) -> bool { self.source_eof }
+
+    fn record_source_error(&mut self,error:crate::process::ProcessCustodyError) {
+        fn is_eof(error:&crate::process::ProcessCustodyError)->bool {
+            match error {
+                crate::process::ProcessCustodyError::ProtocolPipe(source)=>source.kind()==std::io::ErrorKind::UnexpectedEof,
+                crate::process::ProcessCustodyError::ProtocolEvidence {cause,..}=>is_eof(cause),
+                _=>false,
+            }
+        }
+        self.source_eof=is_eof(&error);
+        self.source_error=Some(error.to_string());
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_sql_fixture_cursor(&mut self,cursor:u64) {
+        assert!(self.pending.is_none() && cursor>=self.cursor);
+        self.cursor=cursor;
+    }
+
+    #[cfg(test)]
+    pub(super) fn model_fixture_source_error(&mut self,value:Option<String>) {
+        self.source_error=value;
+    }
 
     pub(super) fn retain(&mut self, frame: OriginBoundFrame) -> Result<()> {
         if self.pending.is_some() { return Err(OrchestrationError::OperationConflict); }
@@ -100,7 +145,7 @@ impl NativeRawCapture {
             match custodian.poll_persistent_child_frame(&custody.ticket) {
                 Ok(Some(frame))=>self.retain(frame)?,
                 Ok(None)=>return Ok(false),
-                Err(error)=>{self.source_error=Some(error.to_string()); return Ok(false);}
+                Err(error)=>{self.record_source_error(error); return Ok(false);}
             }
         }
         self.capture(connection,operation,&custody.custodian_nonce)?;
@@ -109,7 +154,7 @@ impl NativeRawCapture {
 }
 
 impl<'root> ProductDatabase<'root> {
-    fn drain_native_output(&mut self, key: &(String,String)) -> Result<()> {
+    pub(super) fn drain_native_output(&mut self, key: &(String,String)) -> Result<()> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         let custody=run.custody.clone();
         let operation=run.operation_id.clone();
@@ -152,6 +197,8 @@ impl<'root> ProductDatabase<'root> {
         run.evidence.verify_live(&mut self.connection,self.root,&self.owner,&operation,claim.revision)
             .map_err(OrchestrationError::V37StoreFailure)?;
         self.drain_native_output(&key)?;
+        let (card_refs,card_refs_incomplete)=self.native_card_refs(&key,&seat_id,&generation)?;
+        let card_refs_signature=card_refs.canonical();
         let source_error=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
             .raw_capture.source_error.as_ref().map(|text|Json::String(JsonString::from_str(text))).unwrap_or(Json::Null);
         let position=ledger::recover(&self.connection)?;
@@ -178,6 +225,8 @@ impl<'root> ProductDatabase<'root> {
                 && result.get(&JsonString::from_str("rawHighwater"))
                     .is_some_and(|value|matches!(value,Json::String(text) if text.to_well_formed_string().as_deref()==Some(raw_cursor.as_str())))
                 && result.get(&JsonString::from_str("sourceError")).is_some_and(|value|value.canonical()==source_error.canonical());
+            let unchanged=unchanged && result.get(&JsonString::from_str("nativeCardRefs")).is_some_and(|value|value.canonical()==card_refs_signature)
+                && result.get(&JsonString::from_str("nativeCardRefsIncomplete")).is_some_and(|value|matches!(value,Json::Bool(value) if *value==card_refs_incomplete));
             return Ok(encode_receipt(request,if unchanged {V37Status::Replayed} else {V37Status::Stale},revision,revision,
                 if unchanged {result} else {Default::default()}));
         }
@@ -212,6 +261,8 @@ impl<'root> ProductDatabase<'root> {
                 (JsonString::from_str("rawHighwater"),Json::String(JsonString::from_str(&raw_cursor))),
                 (JsonString::from_str("unresolvedRawFrames"),Json::String(JsonString::from_str(&unresolved))),
                 (JsonString::from_str("sourceError"),source_error),
+                (JsonString::from_str("nativeCardRefs"),card_refs),
+                (JsonString::from_str("nativeCardRefsIncomplete"),Json::Bool(card_refs_incomplete)),
             ]);
             let bytes=encode_receipt(request,V37Status::Applied,revision,revision,result);
             if bytes.len()>crate::ipc::MAX_FRAME_BYTES {return Err(OrchestrationError::Invalid("native output receipt bound"));}
@@ -230,6 +281,26 @@ impl<'root> ProductDatabase<'root> {
                 Err(primary)
             }
         }
+    }
+
+    // Output carries references to C's current unresolved cards, not a
+    // second card history. Full native payloads are read through K-QCARD.
+    fn native_card_refs(&self,key:&(String,String),seat:&str,generation:&str)->Result<(Json,bool)> {
+        let thread=self.native_sessions.get(key).and_then(|run|run.thread_id.as_deref()).unwrap_or("");
+        let cards=Statement::prepare(self.connection.as_ptr(),
+            "SELECT card_id,revision,state,turn_id FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND seat_id=?2 AND generation=?3 AND vendor_thread_id=?4 AND state IN ('OPEN','ANSWER_UNKNOWN') ORDER BY card_id LIMIT 33")?;
+        for (index,value) in [key.0.as_str(),seat,generation,thread].iter().enumerate() {cards.bind_text((index+1) as i32,value)?;}
+        let mut refs=Vec::new();let mut incomplete=false;
+        while cards.step_row()? {
+            if refs.len()==32 {incomplete=true;break;}
+            refs.push(Json::Object(BTreeMap::from([
+                (JsonString::from_str("cardId"),Json::String(JsonString::from_str(&cards.column_text(0)?))),
+                (JsonString::from_str("revision"),Json::String(JsonString::from_str(&cards.column_text(1)?))),
+                (JsonString::from_str("state"),Json::String(JsonString::from_str(&cards.column_text(2)?))),
+                (JsonString::from_str("turnId"),Json::String(JsonString::from_str(&cards.column_text(3)?))),
+            ])));
+        }
+        Ok((Json::Array(refs),incomplete))
     }
 
     pub(super) fn process_native_pending_output(&mut self, key: &(String,String)) -> Result<()> {
@@ -280,12 +351,31 @@ impl<'root> ProductDatabase<'root> {
             }
             let output=codex_output::normalize(&raw.raw_bytes,&thread_id).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native output: {error:?}")))?;
-            let update=match output {
-                Output::Update(update) | Output::TurnTerminal {update,..} => update,
-                // C's native-card route consumes the retained original frame.
-                // Unmapped protocol frames stay pending and visible as such.
-                Output::Question(_) | Output::Unhandled {..} => continue,
+            let (update,terminal_turn)=match output {
+                Output::Update(update) => (update,None),
+                Output::TurnTerminal {update,turn_id,..} => (update,Some(turn_id)),
+                Output::Question(card) => {
+                    if self.native_sessions.get(key).and_then(|run|run.turn_id.as_deref())!=Some(card.turn_id.as_str()) {
+                        // Questions may arrive before the matching turn/start
+                        // response. Keep their original source until observed.
+                        continue;
+                    }
+                    self.raise_codex_card(key,&raw.key)?;
+                    self.reconcile_native_card_closures(key,&raw,&card)?;
+                    ledger::resolve_raw_source_no_event(&mut self.connection,&operation,&nonce,&raw_cursor,"NATIVE_QUESTION_CARD")?;
+                    continue;
+                }
+                Output::Unhandled {method} => {
+                    if method=="serverRequest/resolved" {
+                        self.expire_observed_native_cards(key,&raw,None)?;
+                        ledger::resolve_raw_source_no_event(&mut self.connection,&operation,&nonce,&raw_cursor,"NATIVE_SERVER_REQUEST_RESOLVED")?;
+                    }
+                    continue;
+                }
             };
+            if let Some(turn_id)=terminal_turn.as_deref() {
+                self.expire_observed_native_cards(key,&raw,Some(turn_id))?;
+            }
             self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let normalized=(|| -> Result<()> {
                 authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
@@ -334,6 +424,109 @@ impl<'root> ProductDatabase<'root> {
                     return Err(primary);
                 }
             }
+            if let Some(turn_id)=terminal_turn {
+                let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+                if run.turn_id.as_deref()==Some(turn_id.as_str()) {run.turn_id=None;}
+            }
+        }
+        Ok(())
+    }
+
+    // A close fact can already be terminal before a delayed question is
+    // projected into C. Read the original later source facts again; never
+    // reopen a card merely because the earlier expiry scan found no row.
+    fn reconcile_native_card_closures(&mut self,key:&(String,String),question_source:&ledger::RawSourceRecord,
+        question:&crate::store::session_transport::codex_rpc::QuestionCard) -> Result<()> {
+        use crate::store::session_transport::codex_rpc::{self,Reply,RpcId,TurnStatus};
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT r.source_cursor FROM main.v37_ledger_raw_source r LEFT JOIN main.v37_ledger_index i ON i.source_kind='v37' AND i.source_event_id=r.resolved_event_id WHERE r.operation_id=?1 AND r.source_epoch=?2 AND CAST(r.source_cursor AS INTEGER)>CAST(?3 AS INTEGER) AND (r.no_event_reason='NATIVE_SERVER_REQUEST_RESOLVED' OR i.update_json LIKE '%\"codexMethod\":\"turn/completed\"%') ORDER BY CAST(r.source_cursor AS INTEGER)")?;
+        query.bind_text(1,&question_source.key.operation_id)?;query.bind_text(2,&question_source.key.source_epoch)?;
+        query.bind_text(3,&question_source.key.source_cursor)?;
+        let mut cursors=Vec::new();while query.step_row()? {cursors.push(query.column_text(0)?);}drop(query);
+        let vendor=match &question.request_id {RpcId::Number(value)=>Json::Number(value.to_string()).canonical(),
+            RpcId::String(value)=>Json::String(JsonString::from_str(value)).canonical()};
+        for cursor in cursors {
+            let source=ledger::read_captured_raw_source(&self.connection,&question_source.key.operation_id,
+                &question_source.key.source_epoch,&cursor)?.ok_or(OrchestrationError::OperationConflict)?;
+            match codex_rpc::decode(&source.raw_bytes,None).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native retained card closure: {error:?}")))? {
+                Reply::TurnNotification {thread_id,turn_id,status,..} if thread_id==question.thread_id
+                    && turn_id==question.turn_id && status!=TurnStatus::InProgress => {
+                    self.expire_observed_native_cards(key,&source,Some(&turn_id))?;
+                    let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+                    if run.turn_id.as_deref()==Some(turn_id.as_str()) {run.turn_id=None;}
+                }
+                Reply::Event {method,..} if method=="serverRequest/resolved" => {
+                    let Json::Object(fields)=Parser::parse(std::str::from_utf8(&source.raw_bytes).map_err(|error|
+                        OrchestrationError::V37StoreFailure(format!("native closure UTF-8: {error}")))?)? else {return Err(OrchestrationError::Invalid("native closure object"));};
+                    let Some(Json::Object(params))=fields.get(&JsonString::from_str("params")) else {return Err(OrchestrationError::Invalid("native closure params"));};
+                    if params.get(&JsonString::from_str("threadId")).map(Json::canonical)==Some(Json::String(JsonString::from_str(&question.thread_id)).canonical())
+                        && params.get(&JsonString::from_str("requestId")).map(Json::canonical).as_deref()==Some(vendor.as_str()) {
+                        self.expire_observed_native_cards(key,&source,None)?;
+                    }
+                }
+                _=>{}
+            }
+        }
+        Ok(())
+    }
+
+    // A's original lifecycle notification can expire an OPEN card. It never
+    // proves answer consumption and cannot overwrite ANSWER_UNKNOWN/ANSWERED.
+    fn expire_observed_native_cards(&mut self,key:&(String,String),source:&ledger::RawSourceRecord,
+        terminal_turn:Option<&str>) -> Result<()> {
+        use crate::store::inbox::{self,CardEnvelope,InboxError};
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let thread=run.thread_id.as_deref().ok_or(OrchestrationError::AccessDenied)?;
+        let seat=run.evidence.seat_id();
+        if source.key.operation_id!=run.operation_id || source.process_ticket!=run.custody.ticket.opaque()
+            || source.custodian_nonce!=run.custody.custodian_nonce || source.domain_id!=key.0
+            || source.session_id!=key.1 || source.generation!=run.custody.binding.generation {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let vendor_id=if terminal_turn.is_none() {
+            let Json::Object(fields)=Parser::parse(std::str::from_utf8(&source.raw_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native lifecycle UTF-8: {error}")))?)? else {
+                return Err(OrchestrationError::Invalid("native lifecycle object"));
+            };
+            let Some(Json::Object(params))=fields.get(&JsonString::from_str("params")) else {
+                return Err(OrchestrationError::Invalid("native lifecycle params"));
+            };
+            if params.get(&JsonString::from_str("threadId")).map(Json::canonical)!=Some(Json::String(JsonString::from_str(thread)).canonical()) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let Some(id)=params.get(&JsonString::from_str("requestId")) else {return Err(OrchestrationError::Invalid("native lifecycle requestId"));};
+            if !matches!(id,Json::Number(_)|Json::String(_)) {return Err(OrchestrationError::Invalid("native lifecycle requestId"));}
+            Some(id.canonical())
+        } else {None};
+        let cards=Statement::prepare(self.connection.as_ptr(),
+            "SELECT card_id,revision,vendor_request_id,turn_id FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND seat_id=?2 AND generation=?3 AND vendor_thread_id=?4 AND state='OPEN'")?;
+        for (index,value) in [key.0.as_str(),seat,source.generation.as_str(),thread].iter().enumerate() {cards.bind_text((index+1) as i32,value)?;}
+        let mut open=Vec::new();
+        while cards.step_row()? {
+            let id=cards.column_text(2)?;let turn=cards.column_text(3)?;
+            if vendor_id.as_deref().is_some_and(|expected|expected!=id) || terminal_turn.is_some_and(|expected|expected!=turn) {continue;}
+            let revision=cards.column_text(1)?.parse::<u64>().map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native card revision: {error}")))?;
+            open.push((cards.column_text(0)?,revision,id,turn));
+        }
+        drop(cards);
+        let seat=seat.to_owned();
+        let descriptor=Json::Object(BTreeMap::from([
+            (JsonString::from_str("operationId"),Json::String(JsonString::from_str(&source.key.operation_id))),
+            (JsonString::from_str("sourceEpoch"),Json::String(JsonString::from_str(&source.key.source_epoch))),
+            (JsonString::from_str("sourceCursor"),Json::String(JsonString::from_str(&source.key.source_cursor))),
+            (JsonString::from_str("frameSha256"),Json::String(JsonString::from_str(&crate::store::digest::sha256_hex(&source.raw_bytes)))),
+        ])).canonical();
+        for (card,revision,id,turn) in open {
+            let expiry=format!("expire{}",crate::store::digest::sha256_hex(format!("{}\n{}",card,descriptor).as_bytes()));
+            let envelope=CardEnvelope {domain_id:&key.0,card_id:&card,request_id:&expiry,
+                request_bytes:descriptor.as_bytes(),expected_revision:revision};
+            inbox::expire_native_card(&mut self.connection,&envelope,&id,&seat,&turn,&source.generation,|db| {
+                authority::check_owner_in_current_transaction(db,&self.owner).map_err(InboxError::Authority)?;
+                let current=ledger::read_captured_raw_source(db,&source.key.operation_id,&source.key.source_epoch,&source.key.source_cursor)?;
+                Ok(current.as_ref()==Some(source))
+            }).map_err(|error|OrchestrationError::V37StoreFailure(format!("native observed card expiry: {error:?}")))?;
         }
         Ok(())
     }

@@ -25,6 +25,9 @@ pub(crate) enum InboxError {
     Open(SameOpenError),
     CommitUnknown(SameOpenError),
     RollbackUnknown(SameOpenError),
+    Authority(crate::store::orchestration::OrchestrationError),
+    Codec(crate::store::session_transport::codex_rpc::RpcError),
+    InvalidEvidence(String),
 }
 impl From<AtomicError> for InboxError {
     fn from(error: AtomicError) -> Self { Self::Sqlite(error) }
@@ -981,11 +984,30 @@ pub(crate) fn raise_native_card(connection: &mut VerifiedDatabaseConnection<'_>,
 
 /// Records the answer intent and moves the card to ANSWER_UNKNOWN. H may send
 /// only after this transaction commits; no receipt is inferred from the write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeAnswerDisposition { New, Existing }
+
+pub(crate) struct NativeAnswerIntent {
+    pub(crate) operation: NativeCardOperation,
+    pub(crate) disposition: NativeAnswerDisposition,
+}
+
 pub(crate) fn begin_native_answer(connection: &mut VerifiedDatabaseConnection<'_>,
     envelope: &CardEnvelope<'_>, vendor_request_id: &str, seat_id: &str, turn_id: &str,
     generation: &str, answer: NativeAnswer<'_>,
     authorized: impl FnOnce(&VerifiedDatabaseConnection<'_>) -> Result<bool, InboxError>)
     -> Result<NativeCardOperation, InboxError> {
+    begin_native_answer_intent(connection,envelope,vendor_request_id,seat_id,turn_id,generation,answer,authorized)
+        .map(|intent|intent.operation)
+}
+
+/// Only the transaction that creates the original intent grants one send.
+/// Re-reading ANSWER_UNKNOWN cannot grant another external write.
+pub(crate) fn begin_native_answer_intent(connection: &mut VerifiedDatabaseConnection<'_>,
+    envelope: &CardEnvelope<'_>, vendor_request_id: &str, seat_id: &str, turn_id: &str,
+    generation: &str, answer: NativeAnswer<'_>,
+    authorized: impl FnOnce(&VerifiedDatabaseConnection<'_>) -> Result<bool, InboxError>)
+    -> Result<NativeAnswerIntent, InboxError> {
     envelope.validate()?;
     vendor_request_identity(vendor_request_id)?;
     required(seat_id,"seat")?;
@@ -999,7 +1021,9 @@ pub(crate) fn begin_native_answer(connection: &mut VerifiedDatabaseConnection<'_
     if matches!(answer_kind,"FREE" | "WIRE") { vendor_nonempty(answer_text,"answer")?; }
     transact(connection, |connection| {
         if !authorized(connection)? { return Err(InboxError::Denied); }
-        if let Some(prior) = native_card_replay(connection,envelope)? { return Ok(prior); }
+        if let Some(prior) = native_card_replay(connection,envelope)? {
+            return Ok(NativeAnswerIntent { operation:prior, disposition:NativeAnswerDisposition::Existing });
+        }
         let card = read_native_card(connection,envelope.domain_id,envelope.card_id)?.ok_or(InboxError::Conflict)?;
         if card.revision != envelope.expected_revision { return Err(InboxError::Stale); }
         if card.state != "OPEN" || !native_binding_matches(&card,vendor_request_id,seat_id,turn_id,generation) {
@@ -1029,7 +1053,8 @@ pub(crate) fn begin_native_answer(connection: &mut VerifiedDatabaseConnection<'_
         statement.step_done()?;
         require_one_change(connection)?;
         let changed = read_native_card(connection,envelope.domain_id,envelope.card_id)?.ok_or(InboxError::Unknown)?;
-        save_native_operation(connection,envelope,&changed,"UNKNOWN",answer_kind,answer_text,"","")
+        let operation=save_native_operation(connection,envelope,&changed,"UNKNOWN",answer_kind,answer_text,"","")?;
+        Ok(NativeAnswerIntent { operation, disposition:NativeAnswerDisposition::New })
     })
 }
 
@@ -1067,9 +1092,9 @@ pub(crate) fn expire_native_card(connection: &mut VerifiedDatabaseConnection<'_>
     })
 }
 
-/// The proof has private fields and no constructor in C. H must eventually
-/// build it from the adapter's durable exact-request receipt; text or a Node
-/// boolean cannot resolve ANSWER_UNKNOWN.
+/// Private proof fields are built only from the adapter's durable exact
+/// native-write receipt below. Text or a Node boolean cannot resolve
+/// ANSWER_UNKNOWN.
 pub(crate) struct NativeCardAnswerProof {
     domain_id: String,
     card_id: String,
@@ -1091,7 +1116,12 @@ enum NativeAnswerOutcome {
 pub(crate) fn settle_native_answer(connection: &mut VerifiedDatabaseConnection<'_>,
     envelope: &CardEnvelope<'_>, proof: &NativeCardAnswerProof)
     -> Result<NativeCardOperation, InboxError> {
-    transact(connection, |connection| {
+    transact(connection, |connection| settle_native_answer_in_transaction(connection,envelope,proof))
+}
+
+fn settle_native_answer_in_transaction(connection: &VerifiedDatabaseConnection<'_>,
+    envelope: &CardEnvelope<'_>, proof: &NativeCardAnswerProof)
+    -> Result<NativeCardOperation, InboxError> {
         let prior = native_card_replay(connection,envelope)?.ok_or(InboxError::Conflict)?;
         if prior.phase != "UNKNOWN" { return Ok(prior); }
         let card = read_native_card(connection,envelope.domain_id,envelope.card_id)?.ok_or(InboxError::Conflict)?;
@@ -1127,6 +1157,104 @@ pub(crate) fn settle_native_answer(connection: &mut VerifiedDatabaseConnection<'
             }
         }
         read_native_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)
+}
+
+/// For Codex's no-ACK answer response, completion means the original exact
+/// frame was written by H and its WRITTEN fact committed. It never means the
+/// vendor consumed the answer. Only native Owner authority can build this
+/// proof; caller strings, resolved notifications and uncertain writes cannot.
+pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &crate::store::authority::OwnerIssuer, envelope: &CardEnvelope<'_>,
+    session_id: &str, step_id: &str) -> Result<NativeCardOperation, InboxError> {
+    use crate::store::session_transport::codex_rpc::{self,Reply};
+    envelope.validate()?;
+    if !valid_id(session_id) || !valid_id(step_id) {return Err(InboxError::Invalid("native answer step"));}
+    transact(connection,|connection| {
+        crate::store::authority::check_owner_in_current_transaction(connection,owner)
+            .map_err(InboxError::Authority)?;
+        let prior=native_card_replay(connection,envelope)?.ok_or(InboxError::Conflict)?;
+        if prior.phase!="UNKNOWN" {
+            return if matches!(prior.phase.as_str(),"ANSWERED"|"FAILED") {Ok(prior)} else {Err(InboxError::Conflict)};
+        }
+        let card=read_native_card(connection,envelope.domain_id,envelope.card_id)?.ok_or(InboxError::Conflict)?;
+        if card.state!="ANSWER_UNKNOWN" || card.revision!=prior.revision || prior.answer_kind!="WIRE" || card.answer_kind!="WIRE"
+            || prior.answer!=card.answer || !native_binding_matches(&card,&prior.vendor_request_id,
+                &prior.seat_id,&prior.turn_id,&prior.generation) {return Err(InboxError::Conflict);}
+        let mut command_bytes=card.answer.as_bytes().to_vec();command_bytes.push(b'\n');
+        let command_hex=raw_hex(&command_bytes);
+        let step=Statement::prepare(connection.as_ptr(),
+            "SELECT s.process_operation_id,s.custodian_nonce,s.open_request_id,s.ticket FROM main.gogoke_v37_rpc_steps s JOIN main.gogoke_v37_h_claim h ON h.domain_id=s.domain_id AND h.session_id=s.session_id AND h.generation=s.generation AND h.process_operation_id=s.process_operation_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=s.process_operation_id AND c.ticket=s.ticket AND c.custodian_nonce=s.custodian_nonce AND c.generation=s.generation AND c.domain_id=s.domain_id AND c.pid=s.pid AND c.creation_time_100ns=s.creation_time AND c.image_path=s.image_path AND c.binary_digest_sha256=s.binary_digest AND c.profile_id=s.profile_id JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id AND sb.session_id=h.session_id AND sb.generation=h.generation WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id=?3 AND s.phase='WRITTEN' AND s.requires_response=0 AND s.command_hex=?4 AND s.generation=?5 AND sb.seat_id=?6 AND ((h.state='COMMITTED' AND c.state IN ('ACTIVE','UNKNOWN')) OR (h.state='UNKNOWN' AND c.state='UNKNOWN') OR (h.state IN ('STOPPED','RELEASED') AND c.state='STOPPED' AND h.stop_fact_id=c.stop_proof_hash AND length(c.stop_proof_hash)>0))")?;
+        for (index,value) in [envelope.domain_id,session_id,step_id,command_hex.as_str(),card.generation.as_str(),card.seat_id.as_str()].iter().enumerate() {
+            step.bind_text((index+1) as i32,value)?;
+        }
+        if !step.step_row()? {return Err(InboxError::Denied);}
+        let operation=step.column_text(0)?;let nonce=step.column_text(1)?;let open_id=step.column_text(2)?;let ticket=step.column_text(3)?;
+        if step.step_row()? {return Err(InboxError::Conflict);}drop(step);
+        let decode_hex=|value:&str| -> Result<Vec<u8>,InboxError> {
+            if value.len()%2!=0 {return Err(InboxError::Invalid("native answer source hex"));}
+            value.as_bytes().chunks_exact(2).map(|pair| {
+                let text=std::str::from_utf8(pair).map_err(|error|InboxError::InvalidEvidence(format!("native answer source hex UTF-8: {error}")))?;
+                u8::from_str_radix(text,16).map_err(|error|InboxError::InvalidEvidence(format!("native answer source hex number: {error}")))
+            }).collect()
+        };
+        // C stores only A's source descriptor and hash, not a second raw
+        // provider history. Recover that exact source under the same custody.
+        let raised=Statement::prepare(connection.as_ptr(),
+            "SELECT request_hex FROM main.gogoke_v37_qcard_native_operations WHERE domain_id=?1 AND card_id=?2 AND state='RAISED'")?;
+        raised.bind_text(1,envelope.domain_id)?;raised.bind_text(2,envelope.card_id)?;
+        if !raised.step_row()? {return Err(InboxError::Denied);}
+        let descriptor_bytes=decode_hex(&raised.column_text(0)?)?;
+        if raised.step_row()? {return Err(InboxError::Conflict);}drop(raised);
+        let descriptor_text=std::str::from_utf8(&descriptor_bytes).map_err(|error|InboxError::InvalidEvidence(format!("native card descriptor UTF-8: {error}")))?;
+        let descriptor_json=Parser::parse(descriptor_text)?;
+        if descriptor_json.canonical()!=descriptor_text {return Err(InboxError::Denied);}
+        let Json::Object(descriptor)=descriptor_json else {return Err(InboxError::Denied);};
+        if descriptor.len()!=4 {return Err(InboxError::Denied);}
+        let source_field=|name:&str|->Result<String,InboxError> {
+            match descriptor.get(&JsonString::from_str(name)) {
+                Some(Json::String(value))=>value.to_well_formed_string().ok_or(InboxError::Denied),
+                _=>Err(InboxError::Denied),
+            }
+        };
+        if source_field("operationId")?!=operation || source_field("sourceEpoch")?!=nonce {return Err(InboxError::Denied);}
+        let source_cursor=source_field("sourceCursor")?;let source_digest=source_field("frameSha256")?;
+        let source=Statement::prepare(connection.as_ptr(),
+            "SELECT hex(raw_bytes) FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND source_cursor=?3 AND custodian_nonce=?2 AND domain_id=?4 AND session_id=?5 AND generation=?6 AND process_ticket=?7")?;
+        for (index,value) in [operation.as_str(),nonce.as_str(),source_cursor.as_str(),envelope.domain_id,session_id,card.generation.as_str(),ticket.as_str()].iter().enumerate() {source.bind_text((index+1) as i32,value)?;}
+        if !source.step_row()? {return Err(InboxError::Denied);}
+        let source_hex=source.column_text(0)?;
+        if source.step_row()? {return Err(InboxError::Conflict);}drop(source);
+        let raw=decode_hex(&source_hex)?;
+        if crate::store::digest::sha256_hex(&raw)!=source_digest {return Err(InboxError::Denied);}
+        let Reply::Question(question)=codex_rpc::decode(&raw,None).map_err(InboxError::Codec)? else {return Err(InboxError::Denied);};
+        if question.thread_id!=card.vendor_thread_id || question.turn_id!=card.turn_id || question.item_id!=card.vendor_item_id {return Err(InboxError::Denied);}
+        let Json::Object(frame)=Parser::parse(&card.answer)? else {return Err(InboxError::Invalid("native answer object"));};
+        if frame.len()!=2 || frame.get(&JsonString::from_str("id")).map(Json::canonical).as_deref()!=Some(card.vendor_request_id.as_str()) {return Err(InboxError::Denied);}
+        let Some(Json::Object(result))=frame.get(&JsonString::from_str("result")) else {return Err(InboxError::Invalid("native answer result"));};
+        let Some(Json::Object(answers))=result.get(&JsonString::from_str("answers")) else {return Err(InboxError::Invalid("native answers"));};
+        let mut answer_values=std::collections::BTreeMap::new();
+        for (id,value) in answers {
+            let Json::Object(values)=value else {return Err(InboxError::Invalid("native answer values"));};
+            let Some(Json::Array(values))=values.get(&JsonString::from_str("answers")) else {return Err(InboxError::Invalid("native answer values"));};
+            let mut texts=Vec::new();
+            for value in values {let Json::String(text)=value else {return Err(InboxError::Invalid("native answer text"));};
+                texts.push(text.to_well_formed_string().ok_or(InboxError::Invalid("native answer text"))?);}
+            answer_values.insert(id.to_well_formed_string().ok_or(InboxError::Invalid("native question ID"))?,texts);
+        }
+        let expected=question.answer(answer_values).map_err(InboxError::Codec)?.encode(None).map_err(InboxError::Codec)?;
+        if expected!=command_bytes {return Err(InboxError::Denied);}
+        let thread=Statement::prepare(connection.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation WHERE s.domain_id=?1 AND s.session_id=?2 AND s.open_request_id=?3 AND s.process_operation_id=?4 AND s.custodian_nonce=?5 AND s.step_id='thread-start' AND s.phase='OBSERVED'")?;
+        for (index,value) in [envelope.domain_id,session_id,open_id.as_str(),operation.as_str(),nonce.as_str()].iter().enumerate() {thread.bind_text((index+1) as i32,value)?;}
+        if !thread.step_row()? {return Err(InboxError::Denied);}
+        let observed=codex_rpc::decode_stored_thread_start(&decode_hex(&thread.column_text(0)?)?,&decode_hex(&thread.column_text(1)?)?).map_err(InboxError::Codec)?;
+        if observed!=card.vendor_thread_id || thread.step_row()? {return Err(InboxError::Denied);}drop(thread);
+        let receipt_basis=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",envelope.domain_id,session_id,step_id,operation,nonce,command_hex,prior.request_hex);
+        let proof=NativeCardAnswerProof {domain_id:envelope.domain_id.into(),card_id:envelope.card_id.into(),
+            request_id:envelope.request_id.into(),vendor_request_id:card.vendor_request_id,seat_id:card.seat_id,
+            turn_id:card.turn_id,generation:card.generation,outcome:NativeAnswerOutcome::Completed {
+                native_receipt_id:format!("h-qanswer-{}",crate::store::digest::sha256_hex(receipt_basis.as_bytes()))}};
+        settle_native_answer_in_transaction(connection,envelope,&proof)
     })
 }
 
@@ -1317,13 +1445,18 @@ mod tests {
 
             let answer = CardEnvelope { domain_id: "projectA", card_id: "nativeA", request_id: "nativeAnswerA",
                 request_bytes: b"native answer exact wire", expected_revision: 1 };
-            let unknown = begin_native_answer(connection,&answer,"44","seatA","turnA","1",
+            let intent = begin_native_answer_intent(connection,&answer,"44","seatA","turnA","1",
                 NativeAnswer::Option("allow"), |_| Ok(true)).unwrap();
+            assert_eq!(intent.disposition,NativeAnswerDisposition::New,"only the original transaction grants a send");
+            let unknown=intent.operation;
             assert_eq!(unknown.phase,"UNKNOWN");
             assert_eq!(unknown.answer_kind,"OPTION");
             assert_eq!(query_native_card(connection,"projectA","nativeA",|_| Ok(true)).unwrap().unwrap().state,"ANSWER_UNKNOWN");
             initialize_schema(connection).unwrap();
             assert_eq!(read_native_operation(connection,"projectA","nativeAnswerA").unwrap().unwrap().phase,"UNKNOWN");
+            assert_eq!(begin_native_answer_intent(connection,&answer,"44","seatA","turnA","1",
+                NativeAnswer::Option("allow"), |_| Ok(true)).unwrap().disposition,
+                NativeAnswerDisposition::Existing,"recovered UNKNOWN never grants a second send");
             assert_eq!(begin_native_answer(connection,&answer,"44","seatA","turnA","1",
                 NativeAnswer::Option("allow"), |_| Ok(true)).unwrap(),unknown);
             let another = CardEnvelope { request_id: "nativeAnswerB", request_bytes: b"second answer wire", expected_revision: 2, ..answer };
@@ -1371,5 +1504,82 @@ mod tests {
             assert_eq!(observed.question_id,"问题.1");
             assert_eq!(observed.header," 选择 ");
         });
+    }
+
+    #[test]
+    fn native_answer_exact_written_fact_rejects_other_bytes_and_recovers_settle_failure() {
+        use crate::store::authority;
+        use crate::store::ledger;
+        use crate::store::session_transport::{codex_rpc::{Command,RpcId},rpc_journal};
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-qcard-written-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        let owner=authority::initialize_profile(&mut db,&root).unwrap();
+        initialize_schema(&mut db).unwrap();rpc_journal::initialize_schema(&mut db).unwrap();
+        db.execute("CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY,event_id TEXT UNIQUE,stream_id TEXT,occurred_at TEXT,event_type TEXT,payload_json TEXT)").unwrap();
+        ledger::initialize_schema(&mut db).unwrap();
+        // These rows model the original native facts for the SQL proof and
+        // failure controls. This is not an actual CLI/writer/model test.
+        db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,state TEXT,stop_fact_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT,session_id TEXT,generation TEXT,seat_id TEXT) STRICT").unwrap();
+        authority::initialize_process_custody_schema(&mut db).unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim VALUES('projectA','sessionA','1','operationA','COMMITTED',NULL)").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','1','seatA')").unwrap();
+        db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('operationA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','projectA','1','ACTIVE',NULL)").unwrap();
+        let question_frame=b"{\"id\":44,\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"threadA\",\"turnId\":\"turnA\",\"itemId\":\"itemA\",\"questions\":[{\"id\":\"q\",\"header\":\"Choose\",\"question\":\"Which?\",\"isOther\":true,\"isSecret\":false,\"options\":null}]}}\n";
+        let thread_frame=b"{\"id\":3,\"result\":{\"thread\":{\"id\":\"threadA\",\"cwd\":\"sealed-tree\"}}}\n";
+        for (cursor,bytes) in [("1",thread_frame.as_slice()),("2",question_frame.as_slice())] {
+            let raw=Statement::prepare(db.as_ptr(),"INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES('operationA','ticketA','nonceA','projectA','sessionA','1','nonceA',?1,?2,'PENDING')").unwrap();
+            raw.bind_text(1,cursor).unwrap();raw.bind_blob(2,bytes).unwrap();raw.step_done().unwrap();
+        }
+        let descriptor=Json::Object(std::collections::BTreeMap::from([
+            (JsonString::from_str("operationId"),Json::String("operationA".into())),
+            (JsonString::from_str("sourceEpoch"),Json::String("nonceA".into())),
+            (JsonString::from_str("sourceCursor"),Json::String("2".into())),
+            (JsonString::from_str("frameSha256"),Json::String(crate::store::digest::sha256_hex(question_frame).into())),
+        ])).canonical();
+        let Json::Object(question_json)=Parser::parse(std::str::from_utf8(question_frame).unwrap()).unwrap() else {panic!("question fixture object");};
+        let payload=question_json.get(&JsonString::from_str("params")).unwrap().canonical();
+        let question=NativeQuestion {vendor_request_id:"44",vendor_thread_id:"threadA",vendor_item_id:"itemA",auto_resolution_ms:"",
+            question_payload:&payload,question_id:"q",header:"Choose",question:"Which?",answer_shape:NativeAnswerShape::FreeText,
+            options:&[],seat_id:"seatA",turn_id:"turnA",generation:"1"};
+        let raise=CardEnvelope {domain_id:"projectA",card_id:"cardA",request_id:"raiseA",request_bytes:descriptor.as_bytes(),expected_revision:0};
+        raise_native_card(&mut db,&raise,&question,|_|Ok(true)).unwrap();
+        let command=Command::QuestionAnswer {request_id:RpcId::Number(44),answers:std::collections::BTreeMap::from([("q".into(),vec!["exact answer".into()])])};
+        let wire=command.encode(None).unwrap();let text=std::str::from_utf8(wire.strip_suffix(b"\n").unwrap()).unwrap();
+        let answer=CardEnvelope {domain_id:"projectA",card_id:"cardA",request_id:"answerA",request_bytes:b"original exact User answer",expected_revision:1};
+        let intent=begin_native_answer_intent(&mut db,&answer,"44","seatA","turnA","1",NativeAnswer::Wire(text),|_|Ok(true)).unwrap();
+        assert_eq!(intent.disposition,NativeAnswerDisposition::New);
+        let start=Command::ThreadStart {cwd:"sealed-tree".into(),model:"gpt-6-sol".into()}.encode(Some(&RpcId::Number(3))).unwrap();
+        for (id,bytes,response,phase,cursor) in [("thread-start",start.as_slice(),1,"OBSERVED",Some("1")),("qanswerA",wire.as_slice(),0,"INTENT",None)] {
+            let step=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA',?1,'operationA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','1',?2,?3,?4,?5,?6)").unwrap();
+            step.bind_text(1,id).unwrap();step.bind_text(2,&raw_hex(bytes)).unwrap();step.bind_i64(3,response).unwrap();step.bind_text(4,phase).unwrap();
+            if let Some(cursor)=cursor {step.bind_text(5,"nonceA").unwrap();step.bind_text(6,cursor).unwrap();}
+            // Unbound SQLite parameters are NULL for the INTENT fixture.
+            step.step_done().unwrap();
+        }
+        assert!(matches!(settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA"),Err(InboxError::Denied)),"INTENT is not a completed native write");
+        db.execute("UPDATE gogoke_v37_rpc_steps SET phase='WRITTEN',command_hex='7b7d0a' WHERE step_id='qanswerA'").unwrap();
+        assert!(matches!(settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA"),Err(InboxError::Denied)),"another exact command cannot settle this answer");
+        let restore=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_rpc_steps SET command_hex=?1 WHERE step_id='qanswerA'").unwrap();
+        restore.bind_text(1,&raw_hex(&wire)).unwrap();restore.step_done().unwrap();drop(restore);
+        db.execute("CREATE TRIGGER inject_answer_settle_failure BEFORE UPDATE ON gogoke_v37_qcard_native_operations WHEN NEW.state='ANSWERED' BEGIN SELECT RAISE(ABORT,'injected answer receipt write failure'); END").unwrap();
+        assert!(settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA").is_err());
+        assert_eq!(query_native_card(&mut db,"projectA","cardA",|_|Ok(true)).unwrap().unwrap().state,"ANSWER_UNKNOWN");
+        db.execute("DROP TRIGGER inject_answer_settle_failure").unwrap();
+        db.close_checked().unwrap();
+        let mut db=crate::store::same_open::open_existing(&root,&path.join("state.sqlite")).unwrap();
+        // Execute the production reopen initializer, not a substitute state
+        // assignment: live custody becomes UNKNOWN while WRITTEN is history.
+        authority::initialize_process_custody_schema(&mut db).unwrap();
+        let custody=Statement::prepare(db.as_ptr(),"SELECT state FROM main.gogoke_coordination_process_custody WHERE operation_id='operationA'").unwrap();
+        assert!(custody.step_row().unwrap());assert_eq!(custody.column_text(0).unwrap(),"UNKNOWN");drop(custody);
+        let completed=settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA").unwrap();
+        assert_eq!(completed.phase,"ANSWERED");assert!(completed.native_receipt_id.starts_with("h-qanswer-"));
+        assert_eq!(settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA").unwrap(),completed,
+            "same stored receipt recovered without another writer invocation");
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 }

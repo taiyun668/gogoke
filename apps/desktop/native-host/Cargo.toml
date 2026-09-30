@@ -26,3 +26,11 @@ gogoke-lpac-path-compat = { path = "src/process/session/compat" }
 cc = "=1.4.2"
 
 [workspace]
+
+# The actual pinned CLI images are hashed by native test code. Optimize only
+# this test package while retaining the test profile's debug assertions and
+# overflow checks; release construction and production budgets are unchanged.
+[profile.test.package.gogoke-native-host]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true

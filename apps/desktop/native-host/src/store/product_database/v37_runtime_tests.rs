@@ -86,6 +86,49 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let key = ("projectA".to_owned(), "sessionA".to_owned());
     let live = product.native_sessions.get(&key).unwrap();
     let custody = live.custody.clone();
+    let process_operation=live.operation_id.clone();
+    let thread=live.thread_id.clone().unwrap();
+    // These are explicitly synthetic A/C ordering controls, not provider
+    // questions, EOF observations, Owner login or model-delivery evidence.
+    // The production composition below still uses the real opened session.
+    let maximum=Statement::prepare(product.connection.as_ptr(),"SELECT COALESCE(MAX(CAST(source_cursor AS INTEGER)),0) FROM main.v37_ledger_raw_source WHERE operation_id=?1").unwrap();
+    maximum.bind_text(1,&process_operation).unwrap();assert!(maximum.step_row().unwrap());
+    let mut cursor=maximum.column_text(0).unwrap().parse::<u64>().unwrap();drop(maximum);
+    let question=|id:i64| format!("{{\"id\":{id},\"method\":\"item/tool/requestUserInput\",\"params\":{{\"threadId\":{},\"turnId\":\"syntheticTurn\",\"itemId\":\"syntheticItem\",\"questions\":[{{\"id\":\"q\",\"header\":\"Choose\",\"question\":\"Which?\",\"isOther\":true,\"isSecret\":false,\"options\":null}}]}}}}\n",Json::String(JsonString::from_str(&thread)).canonical());
+    let resolved=format!("{{\"method\":\"serverRequest/resolved\",\"params\":{{\"threadId\":{},\"requestId\":1001}}}}\n",Json::String(JsonString::from_str(&thread)).canonical());
+    let tail=format!("{{\"method\":\"item/agentMessage/delta\",\"params\":{{\"threadId\":{},\"turnId\":\"syntheticTurn\",\"itemId\":\"syntheticItem\",\"delta\":\"synthetic EOF tail\"}}}}\n",Json::String(JsonString::from_str(&thread)).canonical());
+    let append=|product:&mut ProductDatabase<'_>,cursor:&mut u64,bytes:&[u8]| {
+        *cursor+=1;
+        let raw=Statement::prepare(product.connection.as_ptr(),"INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES(?1,?2,?3,'projectA','sessionA','2',?3,?4,?5,'PENDING')").unwrap();
+        raw.bind_text(1,&process_operation).unwrap();raw.bind_text(2,custody.ticket.opaque()).unwrap();
+        raw.bind_text(3,&custody.custodian_nonce).unwrap();raw.bind_text(4,&cursor.to_string()).unwrap();raw.bind_blob(5,bytes).unwrap();raw.step_done().unwrap();
+    };
+    append(&mut product,&mut cursor,question(1001).as_bytes());
+    append(&mut product,&mut cursor,resolved.as_bytes());
+    product.native_sessions.get_mut(&key).unwrap().raw_capture.install_sql_fixture_cursor(cursor);
+    product.process_native_pending_output(&key).unwrap();
+    product.native_sessions.get_mut(&key).unwrap().turn_id=Some("syntheticTurn".into());
+    product.process_native_pending_output(&key).unwrap();
+    let closed=Statement::prepare(product.connection.as_ptr(),"SELECT card_id,state FROM main.gogoke_v37_qcard_native WHERE domain_id='projectA' AND vendor_request_id='1001'").unwrap();
+    assert!(closed.step_row().unwrap());let closed_id=closed.column_text(0).unwrap();
+    assert_eq!(closed.column_text(1).unwrap(),"EXPIRED","an earlier durable resolved cannot be lost by delayed projection");drop(closed);
+    let answer_closed=operation("K-QCARD","answer","answer-closed",&closed_id,2,r#"{"generation":"2","answers":{"q":["ignored"]}}"#);
+    assert!(product.dispatch_user_request(&answer_closed).is_err(),"known closure rejects a new answer before native writer");
+    append(&mut product,&mut cursor,question(1002).as_bytes());append(&mut product,&mut cursor,tail.as_bytes());
+    let run=product.native_sessions.get_mut(&key).unwrap();run.raw_capture.install_sql_fixture_cursor(cursor);
+    run.raw_capture.model_fixture_source_error(Some("MODELED_EOF_CONTROL_NOT_A_PROVIDER_OBSERVATION".into()));
+    product.process_native_pending_output(&key).unwrap();
+    let tail_row=Statement::prepare(product.connection.as_ptr(),"SELECT state FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND source_cursor=?3").unwrap();
+    tail_row.bind_text(1,&process_operation).unwrap();tail_row.bind_text(2,&custody.custodian_nonce).unwrap();tail_row.bind_text(3,&cursor.to_string()).unwrap();
+    assert!(tail_row.step_row().unwrap());assert_eq!(tail_row.column_text(0).unwrap(),"RESOLVED","fenced input cannot block captured question plus normalized EOF tail");drop(tail_row);
+    let run=product.native_sessions.get_mut(&key).unwrap();assert!(!run.allows_input());
+    // Restore only the modeled control; the real CLI pipe never closed.
+    run.raw_capture.model_fixture_source_error(None);
+    // Leave a new synthetic A question/tail pending until the real native
+    // stop below. It must be projected while stopped custody is retained.
+    append(&mut product,&mut cursor,question(1003).as_bytes());append(&mut product,&mut cursor,tail.as_bytes());
+    product.native_sessions.get_mut(&key).unwrap().raw_capture.install_sql_fixture_cursor(cursor);
+    let stopped_tail_cursor=cursor;
     let reused_open = operation("K-SESSION", "send", "open-session", "sessionA", 2,
         r#"{"generation":"2","body":"must never reach the provider"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reused_open).unwrap()).unwrap().status,
@@ -114,12 +157,20 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert!(retained.raw_capture.has_pending(),"stop cannot drop the original uncaptured response");
     assert!(product.process_custodian.active(&custody.ticket).is_some(),"proof and guards retained until durable confirmation");
     product.connection.execute("DROP TRIGGER inject_pending_capture_failure").unwrap();
+    // Use the production uncertain-custody transition while the same
+    // original stopped object/frame remains held. This is not a new grant.
+    authority::mark_process_unknown(&mut product.connection,&process_operation,&custody).unwrap();
     // Inject a same-store write failure after the real native stop and its
     // custody proof. The original request must finish without a second stop.
     product.connection.execute("CREATE TRIGGER inject_h_stop_failure BEFORE UPDATE ON gogoke_v37_h_claim WHEN NEW.state='STOPPED' BEGIN SELECT RAISE(ABORT,'injected H stop receipt failure'); END").unwrap();
     assert!(product.dispatch_user_request(&stop).is_err());
     assert!(product.native_sessions.get(&key).unwrap().stop_proof.is_some());
     assert!(!product.native_sessions.get(&key).unwrap().raw_capture.has_pending(),"same original response captured after SQL fault removed");
+    let after_stop=Statement::prepare(product.connection.as_ptr(),"SELECT state FROM main.gogoke_v37_qcard_native WHERE domain_id='projectA' AND vendor_request_id='1003'").unwrap();
+    assert!(after_stop.step_row().unwrap(),"captured question projected after actual OS stop, before custody release");drop(after_stop);
+    let after_stop=Statement::prepare(product.connection.as_ptr(),"SELECT state FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND source_cursor=?3").unwrap();
+    after_stop.bind_text(1,&process_operation).unwrap();after_stop.bind_text(2,&custody.custodian_nonce).unwrap();after_stop.bind_text(3,&stopped_tail_cursor.to_string()).unwrap();
+    assert!(after_stop.step_row().unwrap());assert_eq!(after_stop.column_text(0).unwrap(),"RESOLVED","real stop must not orphan the modeled A tail");drop(after_stop);
     product.connection.execute("DROP TRIGGER inject_h_stop_failure").unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Applied);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
