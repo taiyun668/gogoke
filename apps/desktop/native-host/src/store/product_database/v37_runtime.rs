@@ -925,6 +925,7 @@ impl<'root> ProductDatabase<'root> {
             existing.bind_text(1,&request.domain_id)?;existing.bind_text(2,&request.target_id)?;
             existing.bind_text(3,&step)?;
             let has_step=existing.step_row()?;drop(existing);
+            let mut send_error=None;
             if !has_step {
                 let run=self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?;
                 let number=run.next_rpc_id;
@@ -932,7 +933,10 @@ impl<'root> ProductDatabase<'root> {
                 let sent=self.native_rpc(&key,&step,Some(number),
                     &Command::ThreadCompactStart {thread_id:c.thread_id.clone()});
                 if !matches!(sent,Ok(Some(Reply::Ack {..}))) {
-                    return self.generation_error(request,&format!("original compact RPC: {sent:?}"));
+                    // A remote error can already be durably OBSERVED. Read
+                    // that original response before assigning UNKNOWN so a
+                    // definite method-not-found keeps its UNSUPPORTED meaning.
+                    send_error=Some(format!("original compact RPC: {sent:?}"));
                 }
             } else {
                 failure(rpc::reconcile_written_compact_from_a(&mut self.connection,&self.owner,
@@ -956,7 +960,7 @@ impl<'root> ProductDatabase<'root> {
                 }
             }
             if !matches!(ack,Ok(Some(_))) {
-                return self.generation_error(request,&format!("original compact ACK source: {ack:?}"));
+                return self.generation_error(request,&format!("original compact RPC: {send_error:?}; ACK source: {ack:?}"));
             }
             self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let marked=(||->Result<()> {

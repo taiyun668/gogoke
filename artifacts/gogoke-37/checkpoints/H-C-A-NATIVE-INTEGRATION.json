@@ -1,9 +1,9 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "PAUSED_BY_OWNER_WIP_PRESERVED_NOT_ACCEPTED",
+  "state": "ACTIVE_DIRECT_NATIVE_RESUME_DIAGNOSTIC_AND_SOURCE_REPAIR",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "c2718a2763d0c3970473414624e890d11ae50670",
+  "last_pushed_source": "410dc333a06639180951a91de6823459a6e23f2d",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -242,7 +242,7 @@
     "newer_source": "NOT_RUN_PENDING_FIXED_H_COMPOUND_SOURCE"
   },
   "pause": {
-    "owner_instruction": "先收一下",
+    "owner_instruction": "å…ˆæ”¶ä¸€ä¸‹",
     "scope": "Stop construction and subordinate activity; preserve the named implementation and checkpoint without native build, publication, merge or acceptance.",
     "base_source": "c2718a2763d0c3970473414624e890d11ae50670",
     "files_sha256": {
@@ -280,5 +280,64 @@
     "m1_complete": false,
     "acceptance": false,
     "ot4": "NOT_REQUESTED"
+  },
+  "resume": {
+    "owner_instruction": "继续推进",
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_unchanged": true,
+    "receipt_unchanged": true,
+    "inbox_head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "pause_superseded": true
+  },
+  "native_410d_complete": {
+    "source": "410dc333a06639180951a91de6823459a6e23f2d",
+    "run": 36716584044,
+    "artifact": 11097032581,
+    "focused_artifact": 11096977270,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562,
+      "passed": 561,
+      "failed": 1,
+      "skipped": 0,
+      "elapsed_seconds": 226.51
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "hygiene_run": 36716589792,
+    "hygiene": "PASS",
+    "desktop_run": 36716595201,
+    "desktop": "RUNNING_NOT_FINAL_READBACK",
+    "failure": "Actual same-thread resume returns UNKNOWN at original runtime test line 212. Original reason is present in returned receipt but status-only assertion omitted it. New assertions print original receipt; no root cause guessed.",
+    "sha256": {
+      "machine-result.json": "9e813cf2ac4c88ed275ac72991d53a963fe4eb03f8d9e7b9fb6e7e40da1af196",
+      "lib-tests.log": "b18f3eb38c1a0bc6b9edfc850c9dc187e6145c3dae2b39cfe19f8d07d5fc5d11",
+      "focused-native-codex-session-open.log": "f7e1c172ca30e34a6c06016a7748474deba1f2733dd521fd83828cbaf4e81a03"
+    },
+    "scope": "CLOUD_WINDOWS_SERVER_NOT_OWNER_WIN11_OR_AUTHENTICATED_MODEL"
+  },
+  "h_compound_source_review": {
+    "identity": "fresh Sol/high fixed410dc333 independent read-only review",
+    "finding": "One confirmed defect: original compact -32601 is already OBSERVED but native_rpc error returns early to UNKNOWN, preventing UNSUPPORTED. Root now reads the original ACK/error before classification; all other failures retain original send error plus source result.",
+    "other_axes": "No second source-confirmed finding across original stop proof, same-ID start/recovery, reconnect, Owner cancellation, revisions, C fences, prestart pin and 8-to-9 migration.",
+    "limits": "Source material only. Not native behavior, valid mutation or acceptance. Followup reused same seat NON_FRESH."
+  },
+  "next_source_controls": {
+    "c": "Explicit synthetic compound intent on actual opened session: original captured question remains readable but unavailable for new answer; no C answer intent is created; enqueue denied; pending message deliver conflicted with unchanged revision/state; exact synthetic intent removed gives positive availability control.",
+    "physical_read": "Explicit instrument-only contradictory custody generation requires output/capability conflict, then original generation restored.",
+    "instrument_correction": "Reviewer identified empty deliver payload as invalid before generation fence. Corrected to exact required generation field before cloud run; invalid measurement not counted as product bug.",
+    "native": "NOT_RUN_ON_THIS_FOLLOWUP_SOURCE",
+    "diagnostic": "18 named status assertions retain original receipt instead of losing its reason."
   }
 }

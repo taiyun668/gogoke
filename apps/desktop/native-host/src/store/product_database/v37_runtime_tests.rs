@@ -74,7 +74,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let output=operation("K-SESSION","output-stream","read-native-output","sessionA",3,
         r#"{"generation":"2","afterCursor":"0"}"#);
     let actual_output=h::decode_receipt(&product.dispatch_user_request(&output).unwrap()).unwrap();
-    assert_eq!(actual_output.status,V37Status::Applied);
+    assert_eq!(actual_output.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&actual_output.raw_bytes));
     assert_eq!(actual_output.previous_revision,actual_output.revision,"output read never advances H");
     // A SQLite highwater control checks read-receipt currentness. This is not
     // another provider output or authentication observation.
@@ -91,7 +91,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let native_flags=operation("K-SESSION","capability-probe","loaded-features-open","sessionA",3,
         r#"{"generation":"2"}"#);
     let observed_flags=h::decode_receipt(&product.dispatch_user_request(&native_flags).unwrap()).unwrap();
-    assert_eq!(observed_flags.status,V37Status::Applied);
+    assert_eq!(observed_flags.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&observed_flags.raw_bytes));
     let observed_flags=observed_flags.into_result();
     let Some(Json::Object(features))=observed_flags.get(&JsonString::from_str("loadedThreadFeatures")) else {
         panic!("loaded thread feature response absent");
@@ -100,6 +100,17 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert!(matches!(features.get(&JsonString::from_str("multi_agent_v2")),Some(Json::Bool(false))));
     assert!(matches!(features.get(&JsonString::from_str("default_mode_request_user_input")),Some(Json::Bool(true))));
     let key = ("projectA".to_owned(), "sessionA".to_owned());
+    // Instrument-only contradictory candidate generation: a mutable H claim
+    // alone cannot authorize reading a different physical session as old.
+    let physical_generation=product.native_sessions.get(&key).unwrap().custody.binding.generation.clone();
+    product.native_sessions.get_mut(&key).unwrap().custody.binding.generation="3".into();
+    let mismatched_output=operation("K-SESSION","output-stream","physical-output-mismatch","sessionA",3,
+        r#"{"generation":"2","afterCursor":"0"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&mismatched_output).unwrap()).unwrap().status,V37Status::Conflict);
+    let mismatched_capability=operation("K-SESSION","capability-probe","physical-capability-mismatch","sessionA",3,
+        r#"{"generation":"2"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&mismatched_capability).unwrap()).unwrap().status,V37Status::Conflict);
+    product.native_sessions.get_mut(&key).unwrap().custody.binding.generation=physical_generation;
     let live = product.native_sessions.get(&key).unwrap();
     let custody = live.custody.clone();
     let process_operation=live.operation_id.clone();
@@ -119,6 +130,55 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
         raw.bind_text(1,&process_operation).unwrap();raw.bind_text(2,custody.ticket.opaque()).unwrap();
         raw.bind_text(3,&custody.custodian_nonce).unwrap();raw.bind_text(4,&cursor.to_string()).unwrap();raw.bind_blob(5,bytes).unwrap();raw.step_done().unwrap();
     };
+    // Synthetic compound intent on the actual opened native session. This
+    // checks C's production fence without sending compact or a model input.
+    product.native_sessions.get_mut(&key).unwrap().turn_id=Some("syntheticTurn".into());
+    let queued=operation("K-INBOX","enqueue","enqueue-before-change","fenced-message",0,
+        r#"{"seatId":"seatA","turnId":"syntheticTurn","generation":"2","body":"retained queue marker"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&queued).unwrap()).unwrap().status,V37Status::Applied);
+    let modeled_change=operation("K-SESSION","compact","synthetic-c-fence","sessionA",3,
+        r#"{"generation":"2"}"#);
+    crate::store::session_transport::generation_change::begin(&product.connection,
+        "projectA","synthetic-c-fence",&modeled_change.raw_bytes,"compact","sessionA","2",
+        &process_operation,custody.ticket.opaque(),&custody.custodian_nonce,&thread,"seatA",3,cursor as i64).unwrap();
+    let blocked_queue=operation("K-INBOX","enqueue","enqueue-during-change","new-fenced-message",0,
+        r#"{"seatId":"seatA","turnId":"syntheticTurn","generation":"2","body":"must not reserve"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&blocked_queue).unwrap()).unwrap().status,V37Status::Denied);
+    let blocked_delivery=operation("K-INBOX","deliver","deliver-during-change","fenced-message",1,r#"{"generation":"2"}"#);
+    let denied_delivery=h::decode_receipt(&product.dispatch_user_request(&blocked_delivery).unwrap()).unwrap();
+    assert_eq!(denied_delivery.status,V37Status::Conflict,"original receipt: {}",String::from_utf8_lossy(&denied_delivery.raw_bytes));
+    assert!(Json::Object(denied_delivery.into_result()).canonical().contains("GENERATION_CHANGE_IN_PROGRESS"));
+    let unchanged=Statement::prepare(product.connection.as_ptr(),
+        "SELECT revision,state FROM main.gogoke_v37_inbox_messages WHERE message_id='fenced-message'").unwrap();
+    assert!(unchanged.step_row().unwrap());assert_eq!(unchanged.column_text(0).unwrap(),"1");
+    assert_eq!(unchanged.column_text(1).unwrap(),"PENDING");drop(unchanged);
+    append(&mut product,&mut cursor,question(1000).as_bytes());
+    product.native_sessions.get_mut(&key).unwrap().raw_capture.install_sql_fixture_cursor(cursor);
+    product.process_native_pending_output(&key).unwrap();
+    let captured=Statement::prepare(product.connection.as_ptr(),
+        "SELECT card_id,revision,state FROM main.gogoke_v37_qcard_native WHERE domain_id='projectA' AND vendor_request_id='1000'").unwrap();
+    assert!(captured.step_row().unwrap(),"pending generation change retains captured original question");
+    let fenced_card=captured.column_text(0).unwrap();
+    let fenced_revision=captured.column_text(1).unwrap().parse::<u64>().unwrap();
+    assert_eq!(captured.column_text(2).unwrap(),"OPEN");drop(captured);
+    let recover_fenced=operation("K-QCARD","recover","recover-generation-fenced",&fenced_card,fenced_revision,"{}");
+    let recovery=h::decode_receipt(&product.dispatch_user_request(&recover_fenced).unwrap()).unwrap();
+    assert_eq!(recovery.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&recovery.raw_bytes));
+    let result=Json::Object(recovery.into_result()).canonical();
+    assert!(result.contains("\"availableForAnswer\":false"));
+    assert!(result.contains("GENERATION_CHANGE_IN_PROGRESS"));
+    let new_answer=operation("K-QCARD","answer","answer-generation-fenced",&fenced_card,fenced_revision,
+        r#"{"generation":"2","answers":{"q":["must not write"]}}"#);
+    assert!(product.dispatch_user_request(&new_answer).is_err(),"compound intent cannot grant a new native answer writer");
+    let writer=Statement::prepare(product.connection.as_ptr(),
+        "SELECT count(*) FROM main.gogoke_v37_qcard_native_operations WHERE request_id='answer-generation-fenced'").unwrap();
+    assert!(writer.step_row().unwrap());assert_eq!(writer.column_text(0).unwrap(),"0");drop(writer);
+    // Remove only the modeled test intent, not any production transition.
+    product.connection.execute("DELETE FROM gogoke_v37_h_generation_change WHERE request_id='synthetic-c-fence'").unwrap();
+    let recover_ready=operation("K-QCARD","recover","recover-generation-ready",&fenced_card,fenced_revision,"{}");
+    let ready=h::decode_receipt(&product.dispatch_user_request(&recover_ready).unwrap()).unwrap();
+    assert!(Json::Object(ready.into_result()).canonical().contains("\"availableForAnswer\":true"),
+        "control: the same captured question is answer-eligible without the modeled compound intent");
     append(&mut product,&mut cursor,question(1001).as_bytes());
     append(&mut product,&mut cursor,resolved.as_bytes());
     product.native_sessions.get_mut(&key).unwrap().raw_capture.install_sql_fixture_cursor(cursor);
@@ -209,7 +269,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let resume=operation("K-SESSION","resume","resume-session","sessionA",4,
         r#"{"generation":"2"}"#);
     let continued=h::decode_receipt(&product.dispatch_user_request(&resume).expect("real native thread/resume")).unwrap();
-    assert_eq!(continued.status,V37Status::Applied);
+    assert_eq!(continued.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&continued.raw_bytes));
     assert_eq!(continued.previous_revision,4);
     assert_eq!(continued.revision,5);
     let continued_result=continued.into_result();
@@ -243,7 +303,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let resumed_flags=operation("K-SESSION","capability-probe","loaded-features-resumed","sessionA",5,
         r#"{"generation":"3"}"#);
     let observed_flags=h::decode_receipt(&product.dispatch_user_request(&resumed_flags).unwrap()).unwrap();
-    assert_eq!(observed_flags.status,V37Status::Applied);
+    assert_eq!(observed_flags.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&observed_flags.raw_bytes));
     let observed_flags=observed_flags.into_result();
     let Some(Json::Object(features))=observed_flags.get(&JsonString::from_str("loadedThreadFeatures")) else {
         panic!("resumed loaded thread feature response absent");
@@ -262,7 +322,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let resumed_again=operation("K-SESSION","resume","resume-after-stop","sessionA",6,
         r#"{"generation":"3"}"#);
     let uncertain=h::decode_receipt(&product.dispatch_user_request(&resumed_again).unwrap()).unwrap();
-    assert_eq!(uncertain.status,V37Status::Unknown);
+    assert_eq!(uncertain.status,V37Status::Unknown,"original receipt: {}",String::from_utf8_lossy(&uncertain.raw_bytes));
     assert_eq!(uncertain.revision,7);
     let still_stopped=Statement::prepare(product.connection.as_ptr(),
         "SELECT generation,state,revision FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
@@ -277,7 +337,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
         V37Status::Conflict,"candidate fences every new ID before OS start");
     product.connection.execute("DROP TRIGGER inject_resume_rpc_commit_failure").unwrap();
     let reconciled=h::decode_receipt(&product.dispatch_user_request(&resumed_again).unwrap()).unwrap();
-    assert_eq!(reconciled.status,V37Status::Replayed);
+    assert_eq!(reconciled.status,V37Status::Replayed,"original receipt: {}",String::from_utf8_lossy(&reconciled.raw_bytes));
     assert_eq!(reconciled.previous_revision,7);
     assert_eq!(reconciled.revision,8);
     // Actual thread/inject_items through the User product entry; the native
@@ -288,12 +348,12 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert!(product.dispatch_user_request(&append).is_err(),"actual native ACK stays in original A/RPC when the final H receipt fails");
     product.connection.execute("DROP TRIGGER inject_append_receipt_failure").unwrap();
     let appended=h::decode_receipt(&product.dispatch_user_request(&append).unwrap()).unwrap();
-    assert_eq!(appended.status,V37Status::Replayed);
+    assert_eq!(appended.status,V37Status::Replayed,"original receipt: {}",String::from_utf8_lossy(&appended.raw_bytes));
     assert_eq!(appended.revision,9);
     let stale_append=operation("K-SESSION","append-without-turn","append-stale","sessionA",8,
         r#"{"generation":"4","body":"stale request must not be injected"}"#);
     let stale=h::decode_receipt(&product.dispatch_user_request(&stale_append).unwrap()).unwrap();
-    assert_eq!(stale.status,V37Status::Stale);assert_eq!(stale.previous_revision,9);assert_eq!(stale.revision,9);
+    assert_eq!(stale.status,V37Status::Stale,"original receipt: {}",String::from_utf8_lossy(&stale.raw_bytes));assert_eq!(stale.previous_revision,9);assert_eq!(stale.revision,9);
     let original_append_result=Json::Object(appended.into_result()).canonical();
     assert!(original_append_result.contains("\"createdTurn\":false"));
     // This local state assertion verifies the host's state machine only.
@@ -303,7 +363,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let first_step_count={let row=Statement::prepare(product.connection.as_ptr(),"SELECT count(*) FROM gogoke_v37_rpc_steps WHERE step_id LIKE 'append-%'").unwrap();
         assert!(row.step_row().unwrap());row.column_text(0).unwrap()};
     let replay=h::decode_receipt(&product.dispatch_user_request(&append).unwrap()).unwrap();
-    assert_eq!(replay.status,V37Status::Replayed);
+    assert_eq!(replay.status,V37Status::Replayed,"original receipt: {}",String::from_utf8_lossy(&replay.raw_bytes));
     assert_eq!(Json::Object(replay.into_result()).canonical(),original_append_result);
     let step_count=Statement::prepare(product.connection.as_ptr(),"SELECT count(*) FROM gogoke_v37_rpc_steps WHERE step_id LIKE 'append-%'").unwrap();
     assert!(step_count.step_row().unwrap());assert_eq!(step_count.column_text(0).unwrap(),first_step_count);drop(step_count);
@@ -316,7 +376,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let renew=operation("K-SESSION","renew-session","renew-after-append","sessionA",9,
         r#"{"generation":"4"}"#);
     let renewed=h::decode_receipt(&product.dispatch_user_request(&renew).unwrap()).unwrap();
-    assert_eq!(renewed.status,V37Status::Applied);
+    assert_eq!(renewed.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&renewed.raw_bytes));
     assert_eq!(renewed.previous_revision,9);assert_eq!(renewed.revision,10);
     let renewed_result=Json::Object(renewed.into_result()).canonical();
     assert!(renewed_result.contains("\"oldGeneration\":\"4\""));
@@ -330,7 +390,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let current_caps=operation("K-SESSION","capability-probe","cap-renewed","sessionA",10,
         r#"{"generation":"5"}"#);
     let caps=h::decode_receipt(&product.dispatch_user_request(&current_caps).unwrap()).unwrap();
-    assert_eq!(caps.status,V37Status::Applied);
+    assert_eq!(caps.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&caps.raw_bytes));
     let cap_result=Json::Object(caps.into_result()).canonical();
     assert!(cap_result.contains("\"generation\":\"5\""));
     // Lose the H internal-stop commit after the actual old Job proof. The
@@ -339,7 +399,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let renew_uncertain=operation("K-SESSION","renew-session","renew-after-fault","sessionA",10,
         r#"{"generation":"5"}"#);
     let unknown=h::decode_receipt(&product.dispatch_user_request(&renew_uncertain).unwrap()).unwrap();
-    assert_eq!(unknown.status,V37Status::Unknown);
+    assert_eq!(unknown.status,V37Status::Unknown,"original receipt: {}",String::from_utf8_lossy(&unknown.raw_bytes));
     assert_eq!(unknown.previous_revision,10);assert_eq!(unknown.revision,11);
     let competing=operation("K-SESSION","renew-session","renew-competing","sessionA",11,
         r#"{"generation":"5"}"#);
@@ -348,11 +408,11 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let unresolved_reconnect=operation("K-SESSION","reconnect","reconnect-unknown","sessionA",11,
         r#"{"generation":"5"}"#);
     let read_only=h::decode_receipt(&product.dispatch_user_request(&unresolved_reconnect).unwrap()).unwrap();
-    assert_eq!(read_only.status,V37Status::Unknown);
+    assert_eq!(read_only.status,V37Status::Unknown,"original receipt: {}",String::from_utf8_lossy(&read_only.raw_bytes));
     assert_eq!(read_only.previous_revision,11);assert_eq!(read_only.revision,11);
     product.connection.execute("DROP TRIGGER fail_renew_old_h_stop").unwrap();
     let recovered=h::decode_receipt(&product.dispatch_user_request(&renew_uncertain).unwrap()).unwrap();
-    assert_eq!(recovered.status,V37Status::Replayed);
+    assert_eq!(recovered.status,V37Status::Replayed,"original receipt: {}",String::from_utf8_lossy(&recovered.raw_bytes));
     assert_eq!(recovered.previous_revision,11);assert_eq!(recovered.revision,12);
     let recovered_result=Json::Object(recovered.into_result()).canonical();
     assert!(recovered_result.contains("\"newGeneration\":\"6\""));
@@ -363,7 +423,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let reconnect=operation("K-SESSION","reconnect","reconnect-renewed","sessionA",12,
         r#"{"generation":"6"}"#);
     let reconnected=h::decode_receipt(&product.dispatch_user_request(&reconnect).unwrap()).unwrap();
-    assert_eq!(reconnected.status,V37Status::Applied);
+    assert_eq!(reconnected.status,V37Status::Applied,"original receipt: {}",String::from_utf8_lossy(&reconnected.raw_bytes));
     assert_eq!(reconnected.previous_revision,12);assert_eq!(reconnected.revision,13);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reconnect).unwrap()).unwrap().status,
         V37Status::Replayed);
@@ -375,7 +435,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let owner_interrupted_renew=operation("K-SESSION","renew-session","renew-owner-interrupted","sessionA",13,
         r#"{"generation":"6"}"#);
     let owner_pending=h::decode_receipt(&product.dispatch_user_request(&owner_interrupted_renew).unwrap()).unwrap();
-    assert_eq!(owner_pending.status,V37Status::Unknown);
+    assert_eq!(owner_pending.status,V37Status::Unknown,"original receipt: {}",String::from_utf8_lossy(&owner_pending.raw_bytes));
     assert_eq!(owner_pending.previous_revision,13);assert_eq!(owner_pending.revision,14);
     product.connection.execute("DROP TRIGGER fail_owner_renew_stop").unwrap();
     let third_stop=operation("K-SESSION","stop","stop-reconciled","sessionA",14,
