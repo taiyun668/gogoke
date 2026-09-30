@@ -587,7 +587,7 @@ pub(crate) fn decode_stored_thread_start(
         cwd: string(field(params, "cwd")?, "thread cwd")?,
         model: string(field(params, "model")?, "thread model")?,
     };
-    if command.encode(Some(&id))? != command_frame {
+    if !stored_thread_command_matches(&command,&id,command_frame)? {
         return Err(RpcError::Invalid("stored thread command mismatch"));
     }
     match decode(response_frame, Some((&id, &command)))? {
@@ -615,7 +615,7 @@ pub(crate) fn decode_stored_thread_resume(
         cwd: string(field(params, "cwd")?, "thread cwd")?,
         model: string(field(params, "model")?, "thread model")?,
     };
-    if command.encode(Some(&id))? != command_frame {
+    if !stored_thread_command_matches(&command,&id,command_frame)? {
         return Err(RpcError::Invalid("stored resume command mismatch"));
     }
     match decode(response_frame, Some((&id, &command)))? {
@@ -623,6 +623,20 @@ pub(crate) fn decode_stored_thread_resume(
         Reply::RemoteError { raw_frame, .. } => Err(RpcError::RemoteResponse(raw_frame)),
         _ => Err(RpcError::Invalid("stored resume response")),
     }
+}
+
+/// Historical records keep their exact bytes. Accept only the two encodings
+/// this product actually emitted, without rewriting their original history or
+/// allowing callers to select a legacy configuration for a new native write.
+fn stored_thread_command_matches(command:&Command,id:&RpcId,frame:&[u8])->Result<bool,RpcError> {
+    let current=command.encode(Some(id))?;
+    if current==frame {return Ok(true);}
+    if !matches!(command,Command::ThreadStart{..}|Command::ThreadResume{..}) {return Ok(false);}
+    let Json::Object(mut fields)=Parser::parse(std::str::from_utf8(frame_body(&current)?)?)? else {return Err(RpcError::Invalid("native thread command"));};
+    let Some(Json::Object(params))=fields.get_mut(&k("params")) else {return Err(RpcError::Invalid("native thread params"));};
+    params.insert(k("config"),legacy_memory_off());
+    let mut original=Json::Object(fields).canonical().into_bytes();original.push(b'\n');
+    Ok(original==frame)
 }
 
 /// Recovery decodes the command actually persisted before its native write.
@@ -891,6 +905,15 @@ fn required(value: &str, field: &'static str) -> Result<(), RpcError> {
     }
 }
 fn memory_off() -> Json {
+    // ConfigManager appends these to the process CLI override list. Dotted
+    // leaves retain unrelated flags; a whole features table replaces them.
+    obj([
+        ("features.memories",Json::Bool(false)),
+        ("memories.generate_memories",Json::Bool(false)),
+        ("memories.use_memories",Json::Bool(false)),
+    ])
+}
+fn legacy_memory_off() -> Json {
     obj([
         ("features", obj([("memories", Json::Bool(false))])),
         (
@@ -944,6 +967,27 @@ fn optional_bool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thread_overrides_preserve_process_features_and_exact_old_history() {
+        let id=RpcId::Number(2);
+        let command=Command::ThreadStart{cwd:"D:/sealed-tree".into(),model:"m".into()};
+        let current=command.encode(Some(&id)).unwrap();
+        let encoded=std::str::from_utf8(&current).unwrap();
+        assert!(encoded.contains("\"features.memories\":false"));
+        assert!(encoded.contains("\"memories.generate_memories\":false"));
+        assert!(encoded.contains("\"memories.use_memories\":false"));
+        assert!(!encoded.contains("\"features\":{"),"a table override must not erase the process's other feature flags");
+        let response=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        assert_eq!(decode_stored_thread_start(&current,response).unwrap(),"thread-a");
+        let original=b"{\"id\":2,\"method\":\"thread/start\",\"params\":{\"config\":{\"features\":{\"memories\":false},\"memories\":{\"generate_memories\":false,\"use_memories\":false}},\"cwd\":\"D:/sealed-tree\",\"ephemeral\":false,\"model\":\"m\"}}\n";
+        assert_eq!(decode_stored_thread_start(original,response).unwrap(),"thread-a","original history remains readable byte for byte");
+        let wrong=std::str::from_utf8(original).unwrap().replace("\"memories\":false","\"memories\":true");
+        assert!(decode_stored_thread_start(wrong.as_bytes(),response).is_err());
+        let extra=std::str::from_utf8(original).unwrap().replace("\"features\":{","\"features\":{\"default_mode_request_user_input\":true,");
+        assert!(decode_stored_thread_start(extra.as_bytes(),response).is_err());
+        let resume=b"{\"id\":2,\"method\":\"thread/resume\",\"params\":{\"config\":{\"features\":{\"memories\":false},\"memories\":{\"generate_memories\":false,\"use_memories\":false}},\"cwd\":\"D:/sealed-tree\",\"model\":\"m\",\"threadId\":\"thread-a\"}}\n";
+        assert_eq!(decode_stored_thread_resume(resume,response).unwrap(),"thread-a");
+    }
 
     #[test]
     fn loaded_thread_feature_pages_keep_the_original_rpc_and_opaque_cursor() {

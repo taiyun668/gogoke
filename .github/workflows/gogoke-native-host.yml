@@ -255,6 +255,13 @@ jobs:
           }
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
+      - name: Retain original focused logs before the full library run
+        if: ${{ !cancelled() && !inputs.trace_canonicalize }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-focused-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-native-host-evidence/focused-*
+          if-no-files-found: error
       - name: Run all native-host library unit tests
         if: ${{ !cancelled() && !inputs.trace_canonicalize }}
         shell: pwsh

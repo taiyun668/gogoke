@@ -3,7 +3,7 @@
   "state": "FIXING_SOURCE_FOR_ONE_CLOUD_NATIVE_INTEGRATION_RUN",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "039360deb2514e45dca73b923257034c31c606e9",
+  "last_pushed_source": "d163a8aa7c109cba7b36a12897cd943c795c138d",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -160,5 +160,48 @@
     "lib_log_sha256": "d06f93deef2f78ea04219792140a0f2556cd4ba2e3b89edbea508044f5654fed",
     "focused_log_sha256": "726ed6dac11af44e45849c13077b07078de13a8edeca4ee11bb57502831ff1b5",
     "claims": "Complete FAIL; no inference of Owner Win11, authenticated models, M1 acceptance or release."
+  },
+  "native_d163_complete": {
+    "source": "d163a8aa7c109cba7b36a12897cd943c795c138d",
+    "run": 36708880984,
+    "artifact": 11094325595,
+    "release": "PASS",
+    "server": "PASS",
+    "axes_passed": 3,
+    "shim_passed": 2,
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 559,
+      "passed": 553,
+      "failed": 6,
+      "skipped": 0,
+      "elapsed_seconds": 238.6
+    },
+    "actual_config": "The original loaded-thread response reports memories=false and multi_agent_v2=false but default_mode_request_user_input=false, contrary to the configured launch true.",
+    "cause": "Fixed 0.149 ConfigManager appends request config to the CLI override list. Our thread/start and thread/resume config supplied a whole features table containing only memories=false. The vendor override builder replaces that table and loses other startup feature leaves.",
+    "repair": "Use the existing three memory-off dotted leaves instead of whole tables; retain exact decoding of only the old canonical encoding for historical source records, never offer a legacy writer. Native loaded-thread readback on new source remains pending.",
+    "instrument": "The synthetic original-refusal test incorrectly tried to prepare a fresh write after database reopen had correctly made custody UNKNOWN. H replaces that fixture action with an explicit past UNKNOWN intent, preserving the production denial.",
+    "machine_sha256": "2dfdc209af4766e0af793845266d12af6fb820fb61315a5d020601acd5278b79",
+    "focused_log_sha256": "f6ede0232e8f04c43e1d5fb7695ea86724e76acc125c7838df3862ea86e2174c"
+  },
+  "temporary_home_history": {
+    "source_sha256": "60eb32834096a8610d364b5c48bdff2c655072331c0280201c3dec08c54de6f1",
+    "cause": "Three old fixtures omitted immutable original H episodes and successful generation mappings. A separate production close guard depended only on the mutable current claim and lost stopped old homes after actual resume.",
+    "repair": "Use the original registered home, episode, generation, custody stop proof and successful ancestry; retain same-generation contradiction denial, directory identity/marker and actual home occupancy fence. Synthetic SQL controls declared as such; native tests NOT_RUN.",
+    "formal_home_cleanup": "NOT_EXECUTED"
+  },
+  "direct_evidence_retention": "Existing focused logs are uploaded as native-host-focused source/run/attempt before the full library job continues. They are partial evidence only and cannot satisfy a full gate or candidate signer. All existing test commands, counts, limits and full final artifact remain.",
+  "fixed_source_provenance": {
+    "annotated_tag": "rust-v0.149.0",
+    "tag_object": "a4e15bf371341b067c8278d3b70b1a8c7b3d793e",
+    "dereferenced_commit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "private_cached_files": 21,
+    "hash_mismatches": 0,
+    "private_manifest_sha256": "f5194a3c44567b142545058d5ff531334bcf5b94376491b13046ecca84cca40d"
   }
 }

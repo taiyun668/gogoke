@@ -583,12 +583,97 @@ pub(super) fn resolve_active_session_home(
 fn exact_stopped_home(connection: &mut VerifiedDatabaseConnection<'_>, home_id: &str,
     row: &HomeRow) -> Result<String, TemporaryHomeError> {
     let stop = verify_home_stop_in_transaction(connection, &row.0, &row.1, &row.2, &row.3, &row.4)?;
-    let claim = Statement::prepare(connection.as_ptr(),
-        "SELECT COUNT(*) FROM main.gogoke_v37_h_claim AS a JOIN main.gogoke_coordination_process_custody AS c ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id AND c.generation=a.generation WHERE a.home_id=?1 AND a.instance_id=?2 AND a.domain_id=?3 AND a.session_id=?4 AND a.generation=?5 AND a.state IN ('STOPPED','RELEASED') AND a.stop_fact_id=?6 AND c.state='STOPPED' AND c.stop_proof_hash=?6")?;
+    // H's claim is the current admission pointer and moves to the new home on
+    // resume. The stopped process episode remains the original home's proof.
+    let original = Statement::prepare(connection.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode AS e
+           JOIN main.gogoke_v37_h_generation AS g ON g.domain_id=e.domain_id
+             AND g.session_id=e.session_id AND g.generation=e.generation
+             AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id
+           JOIN main.gogoke_coordination_process_custody AS c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+             AND c.generation=e.generation
+           JOIN main.gogoke_v37_h_owner_binding AS b ON b.binding_id=e.binding_id
+             AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id
+             AND b.kind='SESSION' AND b.owner_id=e.session_id AND b.generation=e.generation
+          WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3
+            AND e.session_id=?4 AND e.generation=?5 AND e.phase='STOPPED'
+            AND e.stop_fact_id=?6 AND e.result_revision IS NOT NULL
+            AND c.state='STOPPED' AND c.stop_proof_hash=?6")?;
     for (index, value) in [home_id,&row.0,&row.1,&row.3,&row.4,&stop].iter().enumerate() {
-        claim.bind_text((index+1) as i32, value)?;
+        original.bind_text((index+1) as i32, value)?;
     }
-    if !claim.step_row()? || claim.column_text(0)? != "1" { return Err(TemporaryHomeError::StopFactUnavailable); }
+    if !original.step_row()? || original.column_text(0)? != "1" {
+        return Err(TemporaryHomeError::StopFactUnavailable);
+    }
+    drop(original);
+    let current = Statement::prepare(connection.as_ptr(),
+        "SELECT generation FROM main.gogoke_v37_h_claim
+          WHERE domain_id=?1 AND session_id=?2 AND instance_id=?3")?;
+    current.bind_text(1, &row.1)?;
+    current.bind_text(2, &row.3)?;
+    current.bind_text(3, &row.0)?;
+    if !current.step_row()? { return Err(TemporaryHomeError::StopFactUnavailable); }
+    let current_generation = current.column_text(0)?;
+    if current.step_row()? { return Err(TemporaryHomeError::StopFactUnavailable); }
+    drop(current);
+    if current_generation == row.4 {
+        // Before rollover, a contradictory current pointer is still a denial.
+        let same = Statement::prepare(connection.as_ptr(),
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_claim AS a
+               JOIN main.gogoke_v37_h_process_episode AS e
+                 ON e.domain_id=a.domain_id AND e.session_id=a.session_id
+                 AND e.generation=a.generation
+                 AND e.process_operation_id=a.process_operation_id
+              WHERE a.domain_id=?1 AND a.session_id=?2 AND a.instance_id=?3
+                AND a.home_id=?4 AND a.generation=?5
+                AND a.binding_id=e.binding_id AND a.state IN ('STOPPED','RELEASED')
+                AND a.stop_fact_id=?6 AND e.stop_fact_id=?6")?;
+        for (index, value) in [row.1.as_str(),row.3.as_str(),row.0.as_str(),
+            home_id,row.4.as_str(),stop.as_str()].iter().enumerate() {
+            same.bind_text((index+1) as i32, value)?;
+        }
+        if !same.step_row()? || same.column_text(0)? != "1" {
+            return Err(TemporaryHomeError::StopFactUnavailable);
+        }
+    } else {
+        // Follow only successful, mapped H generations from the current
+        // pointer back to this home's generation. UNION terminates on a
+        // corrupted cyclic ancestry without accepting an unrelated claim.
+        let ancestry = Statement::prepare(connection.as_ptr(),
+            "WITH RECURSIVE chain(generation,old_generation) AS (
+               SELECT e.generation,e.old_generation
+                 FROM main.gogoke_v37_h_claim AS a
+                 JOIN main.gogoke_v37_h_generation AS g
+                   ON g.domain_id=a.domain_id AND g.session_id=a.session_id
+                   AND g.generation=a.generation
+                   AND g.process_operation_id=a.process_operation_id
+                 JOIN main.gogoke_v37_h_process_episode AS e
+                   ON e.domain_id=g.domain_id AND e.session_id=g.session_id
+                   AND e.generation=g.generation AND e.request_id=g.request_id
+                   AND e.process_operation_id=g.process_operation_id
+                WHERE a.domain_id=?1 AND a.session_id=?2 AND a.instance_id=?3
+                  AND a.generation=?4 AND a.home_id=e.home_id
+                  AND a.binding_id=e.binding_id AND e.instance_id=a.instance_id
+                  AND e.phase IN ('ACTIVE','STOPPED')
+               UNION
+               SELECT p.generation,p.old_generation FROM chain AS child
+                 JOIN main.gogoke_v37_h_process_episode AS p
+                   ON p.domain_id=?1 AND p.session_id=?2
+                   AND p.generation=child.old_generation AND p.instance_id=?3
+                 JOIN main.gogoke_v37_h_generation AS pg
+                   ON pg.domain_id=p.domain_id AND pg.session_id=p.session_id
+                   AND pg.generation=p.generation AND pg.request_id=p.request_id
+                   AND pg.process_operation_id=p.process_operation_id
+                WHERE p.phase IN ('ACTIVE','STOPPED')
+             ) SELECT COUNT(*) FROM chain WHERE generation=?5")?;
+        for (index, value) in [&row.1,&row.3,&row.0,&current_generation,&row.4].iter().enumerate() {
+            ancestry.bind_text((index+1) as i32, value)?;
+        }
+        if !ancestry.step_row()? || ancestry.column_text(0)? != "1" {
+            return Err(TemporaryHomeError::StopFactUnavailable);
+        }
+    }
     Ok(stop)
 }
 fn row_identity(row: &HomeRow, home_id: &str) -> Result<(), TemporaryHomeError> {
@@ -830,11 +915,35 @@ mod tests {
     }
 
     fn stopped_claim(connection: &mut VerifiedDatabaseConnection<'_>, home_id: &str) {
+        // Synthetic same-schema H history for this F stop-proof control. The
+        // original episode home comes from the F row actually created by the
+        // fixture; `home_id` may deliberately give the current claim a wrong
+        // home in the negative control below. No process/vendor ran here.
+        let original = Statement::prepare(connection.as_ptr(),
+            "SELECT home_id FROM main.gogoke_v37_instance_homes WHERE instance_id='instanceA'
+               AND domain_id='projectA' AND kind='SESSION' AND owner_id='sessionA'
+               AND generation='1' AND state='ACTIVE'").unwrap();
+        assert!(original.step_row().unwrap());
+        let original_home = original.column_text(0).unwrap();
+        assert!(!original.step_row().unwrap());
+        drop(original);
         connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','11','1','fixture-program','sha256:fixture','profileA','projectA','1','STOPPED','proofA')").unwrap();
         let claim = Statement::prepare(connection.as_ptr(),
             "INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('projectA','sessionA','instanceA',?1,'bindingA','1','STOPPED',1,'processA','proofA')").unwrap();
         claim.bind_text(1, home_id).unwrap();
         claim.step_done().unwrap();
+        drop(claim);
+        let episode = Statement::prepare(connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,
+                generation,old_generation,raw_hex,previous_revision,result_revision,
+                process_operation_id,instance_id,home_id,binding_id,phase,stop_fact_id)
+             VALUES('projectA','openA','sessionA','1',NULL,'6f70656e2d66697874757265',0,1,
+                'processA','instanceA',?1,'bindingA','STOPPED','proofA')").unwrap();
+        episode.bind_text(1,&original_home).unwrap();
+        episode.step_done().unwrap();
+        connection.execute("INSERT INTO main.gogoke_v37_h_generation(domain_id,session_id,
+            generation,request_id,process_operation_id)
+            VALUES('projectA','sessionA','1','openA','processA')").unwrap();
     }
 
     fn release_stopped_claim(connection: &mut VerifiedDatabaseConnection<'_>) {
@@ -842,6 +951,24 @@ mod tests {
             request_id: "releaseA", raw_bytes: b"release stopped claim", instance_id: "instanceA",
             home_id: "tempA", generation: "1", expected_revision: 1 };
         assert_eq!(release_admission(connection, &request, |_| Ok(())).unwrap(), AdmissionResult::Applied(2));
+    }
+
+    fn synthetic_successful_resume(connection: &mut VerifiedDatabaseConnection<'_>,
+        root: &RootLock, profile: &AppContainerProfile) {
+        // Same-schema durable H rows, not evidence that a native process ran.
+        connection.execute("BEGIN IMMEDIATE").unwrap();
+        bind_owner_in_transaction(connection, &OwnerBinding {
+            binding_id: "bindingB", instance_id: "instanceA", domain_id: "projectA",
+            kind: "SESSION", owner_id: "sessionA", generation: "2",
+        }).unwrap();
+        connection.execute("COMMIT").unwrap();
+        let next = CreateTemporaryHome { request_id: "tempCreateB", request_bytes: b"new home",
+            home_id: "tempB", instance_id: "instanceA", domain_id: "projectA",
+            kind: TemporaryKind::Session, owner_id: "sessionA", generation: "2" };
+        create_temporary_home(connection, root, profile, &next).unwrap();
+        connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('processB','ticketB','nonceB','12','2','fixture-program','sha256:fixture','profileA','projectA','2','ACTIVE')").unwrap();
+        connection.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,phase) VALUES('projectA','resumeB','sessionA','2','1','726573756d652d66697874757265',1,2,'processB','instanceA','tempB','bindingB','ACTIVE')").unwrap();
+        connection.execute("UPDATE main.gogoke_v37_h_claim SET generation='2',home_id='tempB',binding_id='bindingB',process_operation_id='processB',stop_fact_id=NULL,state='COMMITTED',revision=2 WHERE domain_id='projectA' AND session_id='sessionA' AND generation='1' AND state='STOPPED'").unwrap();
     }
 
     #[test]
@@ -978,6 +1105,11 @@ mod tests {
             stopped_claim(connection, "differentHome");
             let close = TransitionTemporaryHome { request_id: "closeA", request_bytes: b"close exact",
                 home_id: first.home_id, expected_revision: 1 };
+            connection.execute("DELETE FROM main.gogoke_v37_h_generation WHERE domain_id='projectA' AND session_id='sessionA' AND generation='1'").unwrap();
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::Admission(AdmissionError::Denied))),
+                "a stopped custody row without its original H generation is not a stop receipt");
+            connection.execute("INSERT INTO main.gogoke_v37_h_generation(domain_id,session_id,generation,request_id,process_operation_id) VALUES('projectA','sessionA','1','openA','processA')").unwrap();
             assert!(matches!(close_temporary_home(connection, root, profile, &close),
                 Err(TemporaryHomeError::StopFactUnavailable)));
             connection.execute("UPDATE main.gogoke_v37_h_claim SET home_id='tempA' WHERE session_id='sessionA'").unwrap();
@@ -997,6 +1129,53 @@ mod tests {
             assert_eq!(cleanup_temporary_home(connection, root, profile, &cleanup).unwrap().disposition, "REPLAYED");
             let row = home_row(connection, first.home_id).unwrap().unwrap();
             assert_eq!((&row.7[..], &row.8[..]), ("CLEANED", "4"));
+        });
+    }
+
+    #[test]
+    fn stopped_original_home_survives_successful_generation_rollover() {
+        fixture(|connection, root, profile| {
+            let first = input(b"old home");
+            create_temporary_home(connection, root, profile, &first).unwrap();
+            let old_path = directory(root, &first);
+            fs::write(old_path.join("session-content"), b"old data").unwrap();
+            stopped_claim(connection, first.home_id);
+            let close = TransitionTemporaryHome { request_id: "closeOld",
+                request_bytes: b"close old", home_id: first.home_id, expected_revision: 1 };
+            connection.execute("UPDATE main.gogoke_v37_h_process_episode SET home_id='wrongOriginalHome' WHERE process_operation_id='processA'").unwrap();
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::StopFactUnavailable)));
+            connection.execute("UPDATE main.gogoke_v37_h_process_episode SET home_id='tempA' WHERE process_operation_id='processA'").unwrap();
+            connection.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='wrongProof' WHERE operation_id='processA'").unwrap();
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::Admission(AdmissionError::Denied))));
+            connection.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='proofA' WHERE operation_id='processA'").unwrap();
+            connection.execute("DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id='processA'").unwrap();
+            connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('otherProcess','wrongTicket','otherNonce','11','1','fixture-program','sha256:fixture','profileA','projectA','1','STOPPED','proofA')").unwrap();
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::Admission(AdmissionError::Denied))),
+                "another ticket's custody cannot replace the original process");
+            connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','11','1','fixture-program','sha256:fixture','profileA','projectA','1','STOPPED','proofA')").unwrap();
+            synthetic_successful_resume(connection, root, profile);
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::StopFactUnavailable)),
+                "a current claim in a new generation needs its successful mapping");
+            connection.execute("INSERT INTO main.gogoke_v37_h_generation(domain_id,session_id,generation,request_id,process_operation_id) VALUES('projectA','sessionA','2','resumeB','processB')").unwrap();
+            connection.execute("UPDATE main.gogoke_v37_h_process_episode SET old_generation='unrelated' WHERE process_operation_id='processB'").unwrap();
+            assert!(matches!(close_temporary_home(connection, root, profile, &close),
+                Err(TemporaryHomeError::StopFactUnavailable)),
+                "a mapped but unrelated generation cannot authorize the old home");
+            connection.execute("UPDATE main.gogoke_v37_h_process_episode SET old_generation='1' WHERE process_operation_id='processB'").unwrap();
+            connection.execute("UPDATE main.gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='bindingA'").unwrap();
+            assert_eq!(close_temporary_home(connection, root, profile, &close).unwrap().disposition, "APPLIED");
+            assert_eq!(close_temporary_home(connection, root, profile, &close).unwrap().disposition, "REPLAYED");
+            let cleanup = TransitionTemporaryHome { request_id: "cleanupOld",
+                request_bytes: b"cleanup old", home_id: first.home_id, expected_revision: 2 };
+            assert_eq!(cleanup_temporary_home(connection, root, profile, &cleanup).unwrap().disposition, "APPLIED");
+            assert!(!old_path.exists());
+            assert_eq!(cleanup_temporary_home(connection, root, profile, &cleanup).unwrap().disposition, "REPLAYED");
+            assert_eq!(close_temporary_home(connection, root, profile, &close).unwrap().disposition, "REPLAYED");
+            assert_eq!(home_row(connection, "tempB").unwrap().unwrap().7, "ACTIVE");
         });
     }
 
