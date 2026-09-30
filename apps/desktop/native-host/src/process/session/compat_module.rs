@@ -698,9 +698,9 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();
-        let home = path.join("v37-instances").join("instanceA");
-        fs::create_dir_all(&home).unwrap();
         let root = RootLock::acquire(&path).unwrap();
+        let home = root.canonical_root().path.join("v37-instances").join("instanceA");
+        fs::create_dir_all(&home).unwrap();
         let expected = crate::root::inspect_root(&home).unwrap().identity;
         let name = format!("Gogoke37.CompatShared.{stamp}");
         let profile = AppContainerProfile::ensure(&name, false).unwrap();

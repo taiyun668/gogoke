@@ -11,6 +11,11 @@ pub(crate) mod runtime;
 pub(crate) use wire::{decode_receipt, decode_request, encode_receipt, V37Receipt, V37Request,
     V37Status, V37WireError};
 pub(crate) use journal::{complete_stdin_request, mark_stdin_write_unknown,
+    complete_codex_turn_request,
+    recover_codex_turn_request,
+    reconcile_observed_codex_sends,
+    prepare_codex_request,
+    mark_codex_write_unknown,
     prepare_stdin_request, read_stdin_journal, JournalDecision, JournalError,
     JournalState, PrepareDisposition, StdinJournalKey, StdinJournalRecord, StdinRequest};
 pub(crate) use seat_io::{run_seat_io, SeatChannelId, SeatIoAdmission, SeatIoError,

@@ -55,7 +55,7 @@ pub(super) fn before_identity(identity: &crate::process::ProcessIdentity) -> Opt
     // not inspect any file contents, credential bytes or query buffers.
     let mut nt_calls = String::new();
     let methods = [
-        ("NtOpenFile", r#".printf \"GOGOKE_NT_ENTRY NtOpenFile tid=%x access=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x30), poi(@r8+0x10); .if (@rdx == 0x100000) { k 8; }"#),
+        ("NtOpenFile", r#".printf \"GOGOKE_NT_ENTRY NtOpenFile tid=%x access=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x30), poi(@r8+0x10); .if (@rdx == 0x100000) { k 8; };"#),
         ("NtDeleteFile", r#".printf \"GOGOKE_NT_ENTRY NtDeleteFile tid=%x name=%msu\\n\", @$tid, poi(@rcx+0x10);"#),
         ("NtCreateFile", r#".printf \"GOGOKE_NT_ENTRY NtCreateFile tid=%x access=%x disposition=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x40), dwo(@rsp+0x48), poi(@r8+0x10);"#),
         ("NtQueryAttributesFile", r#".printf \"GOGOKE_NT_ENTRY NtQueryAttributesFile tid=%x name=%msu\\n\", @$tid, poi(@rcx+0x10);"#),

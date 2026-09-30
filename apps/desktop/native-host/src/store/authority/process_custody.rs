@@ -77,7 +77,7 @@ pub(crate) fn mark_stopped(
     let hash = proof.proof_hash();
     transaction::run(connection, |tx| {
         let prior = tx.query("SELECT pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM gogoke_coordination_process_custody WHERE operation_id=? AND ticket=? AND custodian_nonce=?",
-            &[operation_id, proof.ticket.opaque(), &proof.custodian_nonce], 1)?;
+            &[operation_id, proof.ticket.opaque(), &proof.custodian_nonce], 9)?;
         let expected = [proof.identity.pid.to_string(), proof.identity.creation_time_100ns.to_string(),
             proof.identity.image_path.to_string_lossy().into_owned(), proof.binding.binary_digest_sha256.clone(),
             proof.binding.profile_id.clone(), proof.binding.domain_id.clone(), proof.binding.generation.clone()];

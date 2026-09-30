@@ -6,7 +6,7 @@
 //! terminal row is accepted only when the receipt came from an
 //! `OriginBoundFrame` read from the exact native process custody.
 
-use super::{decode_receipt, decode_request, V37Receipt, V37Status};
+use super::{codex_rpc, decode_receipt, decode_request, encode_receipt, V37Receipt, V37Status};
 use crate::process::OriginBoundFrame;
 use crate::store::atomic::{AtomicError, Json, JsonString, Statement};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
@@ -22,7 +22,9 @@ pub(crate) enum JournalError {
     Store(AtomicError),
     Sqlite(SameOpenError),
     CommitUnknown(SameOpenError),
-    RollbackUnknown(SameOpenError),
+    RollbackUnknown { primary: Box<JournalError>, rollback: SameOpenError },
+    Codec(codex_rpc::RpcError),
+    RemoteError,
 }
 
 impl From<AtomicError> for JournalError {
@@ -37,6 +39,10 @@ impl From<SameOpenError> for JournalError {
     }
 }
 
+impl From<codex_rpc::RpcError> for JournalError {
+    fn from(error: codex_rpc::RpcError) -> Self { Self::Codec(error) }
+}
+
 pub(crate) struct StdinRequest<'a> {
     /// Trusted H/session identity supplied by the native Controller path.
     pub(crate) domain_id: &'a str,
@@ -44,7 +50,8 @@ pub(crate) struct StdinRequest<'a> {
     /// The process ticket is checked against the same verified custody row.
     pub(crate) ticket: &'a str,
     pub(crate) generation: &'a str,
-    /// Exact bytes that will be passed to the persistent stdin writer.
+    /// Exact original v37 request bytes. The legacy adapter writes these to
+    /// stdin; native Codex commands have their own correlated RPC journal.
     pub(crate) request_bytes: &'a [u8],
 }
 
@@ -199,6 +206,10 @@ fn generation_from_payload(request: &super::V37Request) -> Result<String, Journa
 }
 
 fn parse_request(input: &StdinRequest<'_>) -> Result<super::V37Request, JournalError> {
+    parse_operation(input, true)
+}
+
+fn parse_operation(input: &StdinRequest<'_>, child_frame: bool) -> Result<super::V37Request, JournalError> {
     for (value, name) in [
         (input.domain_id, "domain_id"),
         (input.session_id, "session_id"),
@@ -207,7 +218,11 @@ fn parse_request(input: &StdinRequest<'_>) -> Result<super::V37Request, JournalE
         require_id(value, name)?;
     }
     require_generation(input.generation)?;
-    frame_bytes(input.request_bytes, "request frame")?;
+    if child_frame {
+        frame_bytes(input.request_bytes, "request frame")?;
+    } else if input.request_bytes.is_empty() || input.request_bytes.len() > MAX_FRAME_BYTES {
+        return Err(JournalError::Invalid("original operation size"));
+    }
     let request =
         decode_request(input.request_bytes).map_err(|_| JournalError::Invalid("request frame"))?;
     if request.family != "K-SESSION"
@@ -258,12 +273,10 @@ fn in_transaction<T>(
                 .map_err(JournalError::CommitUnknown)?;
             Ok(value)
         }
-        Err(error) => {
-            connection
-                .execute("ROLLBACK")
-                .map_err(JournalError::RollbackUnknown)?;
-            Err(error)
-        }
+        Err(primary) => match connection.execute("ROLLBACK") {
+            Ok(()) => Err(primary),
+            Err(rollback) => Err(JournalError::RollbackUnknown { primary: Box::new(primary), rollback }),
+        },
     }
 }
 
@@ -421,7 +434,9 @@ fn read_row(
     let session_id = statement.column_text(4)?;
     let generation = statement.column_text(5)?;
     let request_bytes = unhex(&statement.column_text(6)?)?;
-    frame_bytes(&request_bytes, "stored request frame")?;
+    if request_bytes.is_empty() || request_bytes.len() > MAX_FRAME_BYTES {
+        return Err(JournalError::Invalid("stored original operation size"));
+    }
     let state = state_from_wire(&statement.column_text(7)?)?;
     let receipt_hex = statement.column_text(8)?;
     let receipt_status_text = statement.column_text(9)?;
@@ -582,6 +597,21 @@ pub(crate) fn prepare_stdin_request(
     input: &StdinRequest<'_>,
 ) -> Result<JournalDecision, JournalError> {
     let request = parse_request(input)?;
+    prepare_decoded(connection, input, &request)
+}
+
+/// A native User operation is retained byte for byte. It is not the provider
+/// command written to stdin and does not acquire a synthetic LF for identity.
+pub(crate) fn prepare_codex_request(
+    connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+) -> Result<JournalDecision, JournalError> {
+    let request = parse_operation(input, false)?;
+    if request.operation != "send" { return Err(JournalError::Invalid("Codex send operation")); }
+    prepare_decoded(connection, input, &request)
+}
+
+fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+    request: &super::V37Request) -> Result<JournalDecision, JournalError> {
     in_transaction(connection, |connection| {
         if let Some(record) = read_row(connection, input.domain_id, &request.request_id)? {
             input_matches(input, &request, &record)?;
@@ -667,6 +697,19 @@ pub(crate) fn mark_stdin_write_unknown(
     input: &StdinRequest<'_>,
 ) -> Result<JournalDecision, JournalError> {
     let request = parse_request(input)?;
+    mark_decoded_unknown(connection, input, &request)
+}
+
+pub(crate) fn mark_codex_write_unknown(
+    connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+) -> Result<JournalDecision, JournalError> {
+    let request = parse_operation(input, false)?;
+    if request.operation != "send" { return Err(JournalError::Invalid("Codex send operation")); }
+    mark_decoded_unknown(connection, input, &request)
+}
+
+fn mark_decoded_unknown(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+    request: &super::V37Request) -> Result<JournalDecision, JournalError> {
     in_transaction(connection, |connection| {
         let record = read_row(connection, input.domain_id, &request.request_id)?
             .ok_or(JournalError::Unknown)?;
@@ -737,7 +780,18 @@ pub(crate) fn complete_stdin_request(
 ) -> Result<JournalDecision, JournalError> {
     let request = parse_request(input)?;
     let receipt = receipt_for_frame(input, &request, frame)?;
-    in_transaction(connection, |connection| {
+    in_transaction(connection, |connection|
+        complete_decoded(connection, input, &request, Some(frame), frame.bytes(), &receipt))
+}
+
+fn complete_decoded(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &StdinRequest<'_>,
+    request: &super::V37Request,
+    frame: Option<&OriginBoundFrame>,
+    receipt_bytes: &[u8],
+    receipt: &V37Receipt,
+) -> Result<JournalDecision, JournalError> {
         let record = read_row(connection, input.domain_id, &request.request_id)?
             .ok_or(JournalError::Unknown)?;
         input_matches(input, &request, &record)?;
@@ -755,9 +809,9 @@ pub(crate) fn complete_stdin_request(
             use_case,
         )?;
         binding_matches(&record, &binding)?;
-        frame_matches(frame, &binding)?;
+        if let Some(frame) = frame { frame_matches(frame, &binding)?; }
         if let Some(existing) = record.receipt_bytes.as_deref() {
-            if existing == frame.bytes() {
+            if existing == receipt_bytes {
                 return Ok(existing_decision(record));
             }
             let resolving_unknown = record.state == JournalState::Unknown
@@ -776,7 +830,7 @@ pub(crate) fn complete_stdin_request(
         } else {
             "RECEIPTED"
         };
-        let receipt_hex = hex(frame.bytes());
+        let receipt_hex = hex(receipt_bytes);
         let status = receipt.status.wire();
         let previous = receipt.previous_revision.to_string();
         let revision = receipt.revision.to_string();
@@ -816,7 +870,236 @@ pub(crate) fn complete_stdin_request(
             disposition,
             record: updated,
         })
+}
+
+fn payload_string(request: &super::V37Request, name: &'static str) -> Result<String, JournalError> {
+    let Some(Json::String(value)) = request.payload.get(&JsonString::from_str(name)) else {
+        return Err(JournalError::Invalid(name));
+    };
+    value.to_well_formed_string().filter(|text| !text.is_empty() && !text.contains('\0'))
+        .ok_or(JournalError::Invalid(name))
+}
+
+fn native_thread_id(
+    connection: &VerifiedDatabaseConnection<'_>,
+    input: &StdinRequest<'_>,
+    binding: &HBinding,
+) -> Result<String, JournalError> {
+    let query = Statement::prepare(connection.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
+         JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+           AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+           AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+           AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+         WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id='thread-start'
+           AND s.process_operation_id=?3 AND s.ticket=?4 AND s.custodian_nonce=?5
+           AND s.generation=?6 AND s.phase='OBSERVED'")?;
+    for (index,value) in [input.domain_id,input.session_id,
+        binding.process_operation_id.as_str(),binding.ticket.as_str(),
+        binding.custodian_nonce.as_str(),input.generation].iter().enumerate() {
+        query.bind_text((index+1) as i32,value)?;
+    }
+    if !query.step_row()? { return Err(JournalError::Denied); }
+    let command = unhex(&query.column_text(0)?)?;
+    let response = unhex(&query.column_text(1)?)?;
+    if query.step_row()? { return Err(JournalError::Conflict); }
+    codex_rpc::decode_stored_thread_start(&command,&response).map_err(JournalError::Codec)
+}
+
+fn seat_matches_original_request(
+    connection: &VerifiedDatabaseConnection<'_>,
+    input: &StdinRequest<'_>,
+    seat_id: &str,
+) -> Result<(), JournalError> {
+    let query=Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_seat_binding sb
+         JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id AND h.session_id=sb.session_id
+           AND h.generation=sb.generation
+         JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
+           AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation
+           AND e.instance_id=h.instance_id AND e.state='BUSY'
+         WHERE sb.domain_id=?1 AND sb.session_id=?2 AND sb.seat_id=?3 AND sb.generation=?4")?;
+    for (index,value) in [input.domain_id,input.session_id,seat_id,input.generation].iter().enumerate() {
+        query.bind_text((index+1) as i32,value)?;
+    }
+    if !query.step_row()? || query.step_row()? { return Err(JournalError::Denied); }
+    Ok(())
+}
+
+fn codex_response_observed(
+    connection: &VerifiedDatabaseConnection<'_>,
+    input: &StdinRequest<'_>,
+    binding: &HBinding,
+    encoded_command: &[u8],
+    frame_bytes: &[u8],
+) -> Result<(), JournalError> {
+    let command_hex=hex(encoded_command);
+    let query=Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_rpc_steps s
+         JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+           AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+           AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+           AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+         WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+           AND s.ticket=?4 AND s.custodian_nonce=?5 AND s.generation=?6
+           AND s.phase='OBSERVED' AND s.command_hex=?7 AND r.raw_bytes=?8")?;
+    for (index,value) in [input.domain_id,input.session_id,
+        binding.process_operation_id.as_str(),binding.ticket.as_str(),
+        binding.custodian_nonce.as_str(),input.generation,command_hex.as_str()].iter().enumerate() {
+        query.bind_text((index+1) as i32,value)?;
+    }
+    query.bind_blob(8,frame_bytes)?;
+    if !query.step_row()? || query.step_row()? { return Err(JournalError::Denied); }
+    Ok(())
+}
+
+/// K-SESSION send completes only after the exact native Codex turn response
+/// has been captured by A and correlated by the RPC journal. The returned
+/// receipt is produced here from the original user request, never supplied by
+/// Codex, Node, or the caller.
+pub(crate) fn complete_codex_turn_request(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &StdinRequest<'_>,
+    frame: &OriginBoundFrame,
+    rpc_id: &codex_rpc::RpcId,
+    command: &codex_rpc::Command,
+    expected_thread_id: &str,
+) -> Result<JournalDecision, JournalError> {
+    in_transaction(connection, |connection| {
+        let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
+            input.generation,BindingUse::Complete)?;
+        frame_matches(frame,&binding)?;
+        complete_codex_turn_in_transaction(connection,input,frame.bytes(),rpc_id,command,expected_thread_id)
     })
+}
+
+fn complete_codex_turn_in_transaction(
+    connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+    response: &[u8], rpc_id: &codex_rpc::RpcId, command: &codex_rpc::Command,
+    expected_thread_id: &str,
+) -> Result<JournalDecision, JournalError> {
+    let request=parse_operation(input, false)?;
+    let seat_id=validate_codex_send(&request,command,expected_thread_id)?;
+    let encoded_command=command.encode(Some(rpc_id))?;
+    let reply=codex_rpc::decode(response,Some((rpc_id,command)))?;
+    let turn_id=match reply {
+        codex_rpc::Reply::Turn { turn_id, status: codex_rpc::TurnStatus::InProgress | codex_rpc::TurnStatus::Completed, .. } => turn_id,
+        codex_rpc::Reply::RemoteError { .. } => return Err(JournalError::RemoteError),
+        _ => return Err(JournalError::Invalid("Codex turn response")),
+    };
+        let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
+            input.generation,BindingUse::Complete)?;
+        seat_matches_original_request(connection,input,&seat_id)?;
+        if native_thread_id(connection,input,&binding)? != expected_thread_id {
+            return Err(JournalError::Conflict);
+        }
+        codex_response_observed(connection,input,&binding,&encoded_command,response)?;
+        let revision=request.expected_revision.checked_add(1)
+            .ok_or(JournalError::Invalid("revision overflow"))?;
+        let result=std::collections::BTreeMap::from([(
+            JsonString::from_str("turnId"),Json::String(JsonString::from_str(&turn_id))) ]);
+        let mut receipt_bytes=encode_receipt(&request,V37Status::Applied,
+            request.expected_revision,revision,result);
+        receipt_bytes.push(b'\n');
+        frame_bytes(&receipt_bytes,"native receipt")?;
+        let receipt=decode_receipt(&receipt_bytes).map_err(|_| JournalError::Invalid("native receipt"))?;
+        let prior = read_row(connection, input.domain_id, &request.request_id)?.ok_or(JournalError::Unknown)?;
+        if prior.state != JournalState::Receipted {
+            let update = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_claim SET revision=?1 WHERE domain_id=?2 AND session_id=?3 AND generation=?4 AND state='COMMITTED' AND revision=?5")?;
+            update.bind_i64(1, i64::try_from(receipt.revision).map_err(|_| JournalError::Invalid("receipt revision"))?)?;
+            update.bind_text(2, input.domain_id)?;
+            update.bind_text(3, input.session_id)?;
+            update.bind_text(4, input.generation)?;
+            update.bind_i64(5, i64::try_from(request.expected_revision).map_err(|_| JournalError::Invalid("request revision"))?)?;
+            update.step_done()?;
+            if changes(connection)? != 1 { return Err(JournalError::Conflict); }
+        }
+        complete_decoded(connection,input,&request,None,&receipt_bytes,&receipt)
+}
+
+/// Recover only an already OBSERVED exact RPC/A outcome. No OS handle is
+/// reconstructed and no provider command is sent. Absent response stays UNKNOWN.
+pub(crate) fn recover_codex_turn_request(
+    connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+) -> Result<Option<JournalDecision>, JournalError> {
+    let request=parse_operation(input,false)?;
+    in_transaction(connection, |connection| {
+        let prior=read_row(connection,input.domain_id,&request.request_id)?.ok_or(JournalError::Unknown)?;
+        input_matches(input,&request,&prior)?;
+        if prior.state == JournalState::Receipted {
+            let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
+                input.generation,BindingUse::Read)?;
+            binding_matches(&prior,&binding)?;
+            return Ok(Some(existing_decision(prior)));
+        }
+        let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
+            input.generation,BindingUse::Complete)?;
+        binding_matches(&prior,&binding)?;
+        let step_id=format!("send-{}",&crate::store::digest::sha256_hex(input.request_bytes)[..40]);
+        let query=Statement::prepare(connection.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
+             JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+               AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+               AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+               AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+             WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+               AND s.ticket=?4 AND s.custodian_nonce=?5 AND s.generation=?6
+               AND s.step_id=?7 AND s.phase='OBSERVED'")?;
+        for (index,value) in [input.domain_id,input.session_id,binding.process_operation_id.as_str(),
+            input.ticket,binding.custodian_nonce.as_str(),input.generation,step_id.as_str()].iter().enumerate() {
+            query.bind_text((index+1) as i32,value)?;
+        }
+        if !query.step_row()? { return Ok(None); }
+        let command_bytes=unhex(&query.column_text(0)?)?;
+        let response=unhex(&query.column_text(1)?)?;
+        if query.step_row()? { return Err(JournalError::Conflict); }
+        drop(query);
+        let (id,command)=codex_rpc::decode_stored_turn_start(&command_bytes)?;
+        let thread_id=native_thread_id(connection,input,&binding)?;
+        complete_codex_turn_in_transaction(connection,input,&response,&id,&command,&thread_id).map(Some)
+    })
+}
+
+/// Stop first settles already observed send outcomes while the original
+/// generation is still committed. Its own revision check then uses that fact.
+/// Unobserved writes stay UNKNOWN; this function never sends to the child.
+pub(crate) fn reconcile_observed_codex_sends(
+    connection: &mut VerifiedDatabaseConnection<'_>, domain_id: &str,
+    session_id: &str, generation: &str,
+) -> Result<(), JournalError> {
+    let query=Statement::prepare(connection.as_ptr(),
+        "SELECT request_id FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND operation='send' AND phase IN ('PREPARED','UNKNOWN')")?;
+    query.bind_text(1,domain_id)?; query.bind_text(2,session_id)?; query.bind_text(3,generation)?;
+    let mut ids=Vec::new();
+    while query.step_row()? { ids.push(query.column_text(0)?); }
+    drop(query);
+    for id in ids {
+        let record=read_row(connection,domain_id,&id)?.ok_or(JournalError::Unknown)?;
+        let input=StdinRequest {domain_id,session_id,ticket:&record.ticket,
+            generation,request_bytes:&record.request_bytes};
+        recover_codex_turn_request(connection,&input)?;
+    }
+    Ok(())
+}
+
+fn validate_codex_send(
+    request: &super::V37Request,
+    command: &codex_rpc::Command,
+    expected_thread_id: &str,
+) -> Result<String, JournalError> {
+    if request.operation != "send" || request.payload.len()!=3 {
+        return Err(JournalError::Invalid("Codex send operation"));
+    }
+    let seat_id=payload_string(&request,"seatId")?;
+    let text=payload_string(&request,"text")?;
+    let codex_rpc::Command::TurnStart { thread_id, text: command_text, .. } = command else {
+        return Err(JournalError::Invalid("Codex turn command"));
+    };
+    if command_text != &text || thread_id != expected_thread_id || expected_thread_id.is_empty() {
+        return Err(JournalError::Conflict);
+    }
+    Ok(seat_id)
 }
 
 /// Read one journal row after restart without mutating the database or
@@ -870,6 +1153,28 @@ mod tests {
     const REQUEST: &[u8] = br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"body":"hello","generation":"1"}}
 "#;
 
+    #[test]
+    fn codex_send_uses_exact_original_payload_and_thread() {
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"seatId":"seatA","generation":"1","text":"hello"}}
+"#;
+        let request=parse_request(&input(raw)).unwrap();
+        let command=codex_rpc::Command::TurnStart {thread_id:"threadA".into(),
+            cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"hello".into()};
+        assert_eq!(validate_codex_send(&request,&command,"threadA").unwrap(),"seatA");
+        assert!(matches!(validate_codex_send(&request,&command,"threadB"),Err(JournalError::Conflict)));
+        let changed=codex_rpc::Command::TurnStart {thread_id:"threadA".into(),
+            cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"changed".into()};
+        assert!(matches!(validate_codex_send(&request,&changed,"threadA"),Err(JournalError::Conflict)));
+        let extra=String::from_utf8(raw.to_vec()).unwrap().replace("\"text\":\"hello\"",
+            "\"text\":\"hello\",\"callerGrant\":\"fake\"");
+        let extra_request=parse_request(&input(extra.as_bytes())).unwrap();
+        assert!(matches!(validate_codex_send(&extra_request,&command,"threadA"),
+            Err(JournalError::Invalid("Codex send operation"))));
+        let inbox=String::from_utf8(raw.to_vec()).unwrap().replace("\"K-SESSION\",\"operation\":\"send\"",
+            "\"K-INBOX\",\"operation\":\"steer\"");
+        assert!(matches!(parse_request(&input(inbox.as_bytes())),Err(JournalError::Denied)));
+    }
+
     fn input<'a>(bytes: &'a [u8]) -> StdinRequest<'a> {
         StdinRequest {
             domain_id: "projectA",
@@ -878,6 +1183,73 @@ mod tests {
             generation: "1",
             request_bytes: bytes,
         }
+    }
+
+    #[test]
+    fn observed_codex_response_recovers_original_receipt_after_write_failure() {
+        // SQL fault control only. Stored RPC bytes are an explicit fixture,
+        // not evidence of CLI authentication, model delivery, or M1 behavior.
+        let _guard = route_b_test_guard();
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!("gogoke-codex-receipt-recovery-{stamp}"));
+        std::fs::create_dir(&folder).unwrap();
+        let root = RootLock::acquire(&folder).unwrap();
+        let path = folder.join("state.sqlite");
+        let mut db = create_new(&root,&path).unwrap();
+        setup_schema(&mut db);
+        insert_fake_custody(&mut db);
+        crate::store::seat::initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO gogoke_v37_instances VALUES('instanceA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','seatIncarnationA','USER','LONG','instanceA','BUSY',1,1)").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','seatA','seatIncarnationA','1')").unwrap();
+        super::super::rpc_journal::initialize_schema(&mut db).unwrap();
+        db.execute("CREATE TABLE orchestration_events(event_id TEXT PRIMARY KEY,sequence INTEGER UNIQUE) STRICT").unwrap();
+        crate::store::ledger::initialize_schema(&mut db).unwrap();
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"seatId":"seatA","generation":"1","text":"hello"}}"#;
+        let stdin=input(raw);
+        prepare_codex_request(&mut db,&stdin).unwrap();
+        let step_id=format!("send-{}",&crate::store::digest::sha256_hex(raw)[..40]);
+        let commands=[
+            ("thread-start".to_owned(),codex_rpc::Command::ThreadStart {cwd:"fixture-directory".into(),model:"m".into()},
+             codex_rpc::RpcId::Number(3), b"{\"id\":3,\"result\":{\"thread\":{\"id\":\"threadA\",\"cwd\":\"fixture-directory\"}}}\n".as_slice()),
+            (step_id.clone(),codex_rpc::Command::TurnStart {thread_id:"threadA".into(),cwd:"fixture-directory".into(),
+             model:"m".into(),effort:"high".into(),text:"hello".into()},codex_rpc::RpcId::Number(4),
+             b"{\"id\":4,\"result\":{\"turn\":{\"id\":\"turnA\",\"status\":\"inProgress\"}}}\n".as_slice()),
+        ];
+        assert!(recover_codex_turn_request(&mut db,&stdin).unwrap().is_none());
+        for (index,(step,command,id,response)) in commands.iter().enumerate() {
+            let cursor=(index+1).to_string();
+            let source=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES('processA','pct1_ticketA','nonceA','projectA','sessionA','1','epochA',?1,?2,'PENDING')").unwrap();
+            source.bind_text(1,&cursor).unwrap(); source.bind_blob(2,response).unwrap(); source.step_done().unwrap();
+            let rpc=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA',?1,'processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?2,1,'OBSERVED','epochA',?3)").unwrap();
+            rpc.bind_text(1,step).unwrap(); rpc.bind_text(2,&hex(&command.encode(Some(id)).unwrap())).unwrap();
+            rpc.bind_text(3,&cursor).unwrap(); rpc.step_done().unwrap();
+        }
+        db.execute("CREATE TRIGGER fail_original_receipt BEFORE UPDATE ON gogoke_v37_h_stdin_journal WHEN NEW.phase='RECEIPTED' BEGIN SELECT RAISE(ABORT,'receipt write fault'); END").unwrap();
+        assert!(recover_codex_turn_request(&mut db,&stdin).is_err());
+        let revision=Statement::prepare(db.as_ptr(),"SELECT revision FROM gogoke_v37_h_claim WHERE session_id='sessionA'").unwrap();
+        assert!(revision.step_row().unwrap()); assert_eq!(revision.column_text(0).unwrap(),"1"); drop(revision);
+        assert_eq!(read_row(&db,"projectA","sendA").unwrap().unwrap().state,JournalState::Prepared);
+        db.execute("DROP TRIGGER fail_original_receipt").unwrap();
+        // Restart loses all volatile state; persisted raw response is sufficient.
+        db.close_checked().unwrap();
+        let mut db=open_existing(&root,&path).unwrap();
+        reconcile_observed_codex_sends(&mut db,"projectA","sessionA","1").unwrap();
+        let decision=recover_codex_turn_request(&mut db,&stdin).unwrap().unwrap();
+        assert_eq!(decision.record.state,JournalState::Receipted);
+        assert_eq!(decision.record.request_bytes,raw);
+        assert_eq!(decision.record.receipt_revision,Some(2));
+        db.execute("UPDATE gogoke_v37_h_claim SET state='STOPPED',revision=3,stop_fact_id='proofA' WHERE session_id='sessionA'").unwrap();
+        db.execute("UPDATE gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='proofA' WHERE operation_id='processA'").unwrap();
+        let history=read_stdin_journal(&db,&StdinJournalKey {domain_id:"projectA",request_id:"sendA",
+            session_id:"sessionA",ticket:"pct1_ticketA",generation:"1"}).unwrap().unwrap();
+        assert_eq!(history,decision.record,"stop preserves the original send revision and receipt");
+        assert_eq!(recover_codex_turn_request(&mut db,&stdin).unwrap().unwrap().record,decision.record);
+        let changed=String::from_utf8(raw.to_vec()).unwrap().replace("hello","changed");
+        assert!(matches!(recover_codex_turn_request(&mut db,&input(changed.as_bytes())),Err(JournalError::Conflict)));
+        db.close_checked().unwrap(); drop(root); std::fs::remove_dir_all(folder).unwrap();
     }
 
     fn setup_schema(connection: &mut VerifiedDatabaseConnection<'_>) {

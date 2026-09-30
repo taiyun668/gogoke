@@ -37,7 +37,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     seat::set_project_parallel_cap(&mut product.connection, &product.owner, "projectA", 1).unwrap();
     seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
         domain_id: "projectA", template_id: "templateA",
-        settings_json: br#"{"permissionTier":"NETWORKED_WRITE","model":"gpt-6-sol","effort":"high"}"#,
+        settings_json: br#"{"effort":"high","model":"gpt-6-sol","permissionTier":"NETWORKED_WRITE"}"#,
     }).unwrap();
     seat::create(&mut product.connection, NativeOrigin::user(&product.owner), CreateSeat {
         domain_id: "projectA", seat_id: "seatA", template_id: "templateA", instance_id: Some("instanceA"),
@@ -74,6 +74,20 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let live = product.native_sessions.get(&key).unwrap();
     let custody = live.custody.clone();
     let operation_id = live.operation_id.clone();
+    let reused_open = operation("K-SESSION", "send", "open-session", "sessionA", 2,
+        r#"{"seatId":"seatA","generation":"2","text":"must never reach the provider"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reused_open).unwrap()).unwrap().status,
+        V37Status::Conflict);
+    let reserved_send = operation("K-SESSION", "send", "reserved-send", "sessionA", 2,
+        r#"{"seatId":"seatA","generation":"2","text":"intention only"}"#);
+    let reserved_input = h::StdinRequest { domain_id: "projectA", session_id: "sessionA",
+        ticket: custody.ticket.opaque(), generation: "2", request_bytes: &reserved_send.raw_bytes };
+    h::prepare_codex_request(&mut product.connection, &reserved_input).unwrap();
+    let reused_send = operation("K-SESSION", "stop", "reserved-send", "sessionA", 2,
+        r#"{"seatId":"seatA","generation":"2"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reused_send).unwrap()).unwrap().status,
+        V37Status::Conflict);
+    assert!(product.native_sessions.contains_key(&key), "conflict does not stop the actual child");
     authority::mark_process_unknown(&mut product.connection, &operation_id, &custody).unwrap();
     let stop = operation("K-SESSION", "stop", "stop-session", "sessionA", 2, r#"{"seatId":"seatA","generation":"2"}"#);
     // Inject a same-store write failure after the real native stop and its
@@ -93,6 +107,13 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     product.close_checked().unwrap();
     let mut product = ProductDatabase::open(&root, &database).unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status, V37Status::Replayed);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
+    let release = operation("K-SESSION", "admission-release", "release-session", "sessionA", 3,
+        r#"{"seatId":"seatA","generation":"2"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&release).unwrap()).unwrap().status, V37Status::Applied);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
+    product.close_checked().unwrap();
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     product.close_checked().unwrap();
     drop(root);

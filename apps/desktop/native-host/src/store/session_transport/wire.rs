@@ -72,6 +72,10 @@ pub(crate) struct V37Receipt {
     result: BTreeMap<JsonString, Json>,
 }
 
+impl V37Receipt {
+    pub(crate) fn into_result(self) -> BTreeMap<JsonString, Json> { self.result }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum V37Status {
     Applied,

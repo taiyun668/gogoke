@@ -1,7 +1,7 @@
 //! Actual native Codex sessions. The User channel selects logical identities;
 //! E/F/H supply all paths, pins, permissions and custody on the same store.
 use super::*;
-use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets, NativeStopProof};
+use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets, NativeStopProof, OriginBoundFrame};
 use crate::store::ledger::{self, SessionPurpose, SessionRegistration};
 use crate::store::seat::{self, NativeOrigin};
 use crate::store::session_transport::{self as h, runtime, launch::LaunchEvidence,
@@ -22,6 +22,12 @@ pub(super) struct NativeSession {
     thread_id: Option<String>,
     raw_cursor: u64,
     stop_proof: Option<NativeStopProof>,
+    next_rpc_id: u64,
+}
+
+struct RpcObservation {
+    reply: Reply,
+    frame: OriginBoundFrame,
 }
 
 fn failure<T, E: std::fmt::Debug>(result: std::result::Result<T, E>) -> Result<T> {
@@ -138,7 +144,8 @@ impl<'root> ProductDatabase<'root> {
         self.native_sessions.insert(key.clone(), NativeSession { evidence, custody: custody.clone(),
             operation_id: operation_id.clone(), open_request_id: request.request_id.clone(),
             open_request_bytes: request.raw_bytes.clone(), domain_id: request.domain_id.clone(),
-            session_id: request.target_id.clone(), model, effort, thread_id: None, raw_cursor: 0, stop_proof: None });
+            session_id: request.target_id.clone(), model, effort, thread_id: None, raw_cursor: 0, stop_proof: None,
+            next_rpc_id: 4 });
         if let Err(error) = authority::record_prepared_process(&mut self.connection, &operation_id, &custody) {
             let abort = self.process_custodian.abort_prepared(&custody);
             return Err(OrchestrationError::V37StoreFailure(format!(
@@ -239,7 +246,7 @@ impl<'root> ProductDatabase<'root> {
                 drop(prior);
                 self.confirm_native_stop(&(request.domain_id.clone(), request.target_id.clone()))?;
                 let fact = Statement::prepare(self.connection.as_ptr(),
-                    "SELECT c.stop_proof_hash FROM main.gogoke_v37_h_claim a JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id WHERE a.domain_id=?1 AND a.session_id=?2 AND a.state='STOPPED' AND c.state='STOPPED' AND a.stop_fact_id=c.stop_proof_hash")?;
+                    "SELECT c.stop_proof_hash FROM main.gogoke_v37_h_claim a JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id WHERE a.domain_id=?1 AND a.session_id=?2 AND a.state IN ('STOPPED','RELEASED') AND c.state='STOPPED' AND a.stop_fact_id=c.stop_proof_hash")?;
                 fact.bind_text(1, &request.domain_id)?;
                 fact.bind_text(2, &request.target_id)?;
                 if !fact.step_row()? { return Err(OrchestrationError::OperationConflict); }
@@ -296,13 +303,21 @@ impl<'root> ProductDatabase<'root> {
         let custody = run.custody.clone();
         let operation = run.operation_id.clone();
         if !previously_intended {
+            // Recover a trustworthy already-observed send before the stop
+            // increments this claim. An old stop revision remains stale.
+            failure(h::reconcile_observed_codex_sends(&mut self.connection,
+                &request.domain_id,&request.target_id,&generation))?;
             let claim = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
                 &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
             if claim.generation != generation || custody.binding.generation != generation
-                || claim.process_operation_id.as_deref() != Some(&operation)
-                || u64::try_from(claim.revision).ok() != Some(request.expected_revision) {
+                || claim.process_operation_id.as_deref() != Some(&operation) {
                 return Ok(encode_receipt(request, V37Status::Conflict,
                     request.expected_revision, request.expected_revision, Default::default()));
+            }
+            if u64::try_from(claim.revision).ok() != Some(request.expected_revision) {
+                return Ok(encode_receipt(request,V37Status::Stale,request.expected_revision,
+                    u64::try_from(claim.revision).map_err(|error|
+                        OrchestrationError::V37StoreFailure(format!("stop current revision: {error}")))?,Default::default()));
             }
             failure(self.connection.execute("BEGIN IMMEDIATE"))?;
             let intended = (|| -> Result<()> {
@@ -385,10 +400,106 @@ impl<'root> ProductDatabase<'root> {
         Ok(())
     }
 
+    pub(super) fn dispatch_native_send(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if request.payload.len() != 3 {
+            return Ok(encode_receipt(request, V37Status::Denied, request.expected_revision,
+                request.expected_revision, Default::default()));
+        }
+        let seat_id = user_payload_string(request, "seatId")?;
+        let generation = user_payload_string(request, "generation")?;
+        let text = user_payload_string(request, "text")?;
+        // Read an already observed outcome before requiring a new live child.
+        let prior = Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_hex,ticket,generation FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND request_id=?2")?;
+        prior.bind_text(1, &request.domain_id)?;
+        prior.bind_text(2, &request.request_id)?;
+        if prior.step_row()? {
+            if prior.column_text(0)? != hex(&request.raw_bytes) || prior.column_text(2)? != generation {
+                return Ok(encode_receipt(request, V37Status::Conflict, request.expected_revision,
+                    request.expected_revision, Default::default()));
+            }
+            let ticket = prior.column_text(1)?;
+            drop(prior);
+            let mut stored = failure(h::read_stdin_journal(&self.connection, &h::StdinJournalKey {
+                domain_id: &request.domain_id, request_id: &request.request_id,
+                session_id: &request.target_id, ticket: &ticket, generation: &generation,
+            }))?.ok_or(OrchestrationError::Invalid("native send journal disappeared"))?;
+            if stored.state != h::JournalState::Receipted {
+                let input = h::StdinRequest { domain_id: &request.domain_id,
+                    session_id: &request.target_id, ticket: &ticket, generation: &generation,
+                    request_bytes: &request.raw_bytes };
+                match failure(h::recover_codex_turn_request(&mut self.connection,&input))? {
+                    Some(recovered) => stored = recovered.record,
+                    None => return Ok(encode_receipt(request, V37Status::Unknown,
+                        request.expected_revision, request.expected_revision, Default::default())),
+                }
+            }
+            if let Some(bytes) = stored.receipt_bytes {
+                let receipt = failure(h::decode_receipt(&bytes))?;
+                return Ok(encode_receipt(request, V37Status::Replayed,
+                    receipt.previous_revision, receipt.revision, receipt.into_result()));
+            }
+            return Ok(encode_receipt(request, V37Status::Unknown, request.expected_revision,
+                request.expected_revision, Default::default()));
+        }
+        drop(prior);
+        let key = (request.domain_id.clone(), request.target_id.clone());
+        let run = self.native_sessions.get(&key).ok_or(OrchestrationError::Invalid("native send has no live custody"))?;
+        let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
+            &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
+        if current.generation != generation || u64::try_from(current.revision).ok() != Some(request.expected_revision) {
+            return Ok(encode_receipt(request, V37Status::Stale, request.expected_revision,
+                request.expected_revision, Default::default()));
+        }
+        failure(run.evidence.verify_live(&mut self.connection, self.root, &self.owner,
+            &run.operation_id, current.revision))?;
+        let thread_id = run.thread_id.clone().ok_or(OrchestrationError::Invalid("native send thread absent"))?;
+        let command = Command::TurnStart { thread_id: thread_id.clone(),
+            cwd: run.evidence.cwd().to_string_lossy().into_owned(), model: run.model.clone(),
+            effort: run.effort.clone(), text };
+        let custody = run.custody.clone();
+        let input = h::StdinRequest { domain_id: &request.domain_id, session_id: &request.target_id,
+            ticket: custody.ticket.opaque(), generation: &generation, request_bytes: &request.raw_bytes };
+        let intention = failure(h::prepare_codex_request(&mut self.connection, &input))?;
+        if intention.disposition != h::PrepareDisposition::Prepared {
+            return Ok(encode_receipt(request, V37Status::Unknown, request.expected_revision,
+                request.expected_revision, Default::default()));
+        }
+        let run = self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?;
+        let number = run.next_rpc_id;
+        run.next_rpc_id = number.checked_add(1).ok_or(OrchestrationError::Invalid("native RPC ordinal overflow"))?;
+        let step_id = format!("send-{}", &crate::store::digest::sha256_hex(&request.raw_bytes)[..40]);
+        let observed = self.native_rpc_observation(&key, &step_id, Some(number), &command);
+        let observation = match observed {
+            Ok(Some(observation)) => observation,
+            other => {
+                let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                let original = match other {
+                    Err(error) => format!("{error:?}"),
+                    _ => "native turn response absent".into(),
+                };
+                let unknown = authority::mark_process_unknown(&mut self.connection, &run.operation_id, &custody);
+                let journal = h::mark_codex_write_unknown(&mut self.connection, &input);
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "native send: {original}; custody UNKNOWN: {unknown:?}; original request UNKNOWN: {journal:?}")));
+            }
+        };
+        let id = failure(RpcId::client(number))?;
+        let completed = failure(h::complete_codex_turn_request(&mut self.connection, &input,
+            &observation.frame, &id, &command, &thread_id))?;
+        completed.record.receipt_bytes.ok_or(OrchestrationError::Invalid("native turn receipt absent"))
+    }
+
     /// Actual process-owned JSONL, with durable native step intent before
     /// writing and A's original provider bytes before interpreting responses.
     fn native_rpc(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<Reply>> {
+        self.native_rpc_observation(key, step_id, number, command).map(|result| result.map(|result| result.reply))
+    }
+
+    fn native_rpc_observation(&mut self, key: &(String, String), step_id: &str,
+        number: Option<u64>, command: &Command) -> Result<Option<RpcObservation>> {
         let id = number.map(RpcId::client).transpose().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native RPC ID: {error:?}")))?;
         let run = self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
@@ -421,7 +532,8 @@ impl<'root> ProductDatabase<'root> {
             match observed {
                 Reply::Initialized { .. } | Reply::MemoryOff { .. } | Reply::Thread { .. }
                 | Reply::Turn { .. } | Reply::Ack { .. } => {
-                    return failure(rpc::complete_response(&mut self.connection, &self.owner, &step, &frame, &raw.key)).map(Some);
+                    let reply = failure(rpc::complete_response(&mut self.connection, &self.owner, &step, &frame, &raw.key))?;
+                    return Ok(Some(RpcObservation { reply, frame }));
                 }
                 Reply::RemoteError { raw_frame, .. } => {
                     let text = String::from_utf8_lossy(&raw_frame[raw_frame.len().saturating_sub(4096)..]);

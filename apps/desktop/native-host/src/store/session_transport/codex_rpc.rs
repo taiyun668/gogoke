@@ -494,6 +494,63 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
     }
 }
 
+/// Reconstruct a thread ID only from the exact native RPC command and the A
+/// source frame persisted for its observed response. The command must be our
+/// canonical, ephemeral, memory-off thread/start encoding.
+pub(crate) fn decode_stored_thread_start(
+    command_frame: &[u8],
+    response_frame: &[u8],
+) -> Result<String, RpcError> {
+    let body = frame_body(command_frame)?;
+    let Json::Object(fields) = Parser::parse(std::str::from_utf8(body)?)? else {
+        return Err(RpcError::Invalid("stored thread command"));
+    };
+    if fields.len() != 3 || string(field(&fields, "method")?, "method")? != "thread/start" {
+        return Err(RpcError::Invalid("stored thread method"));
+    }
+    let id = parse_id(field(&fields, "id")?)?;
+    let params = object(field(&fields, "params")?, "thread params")?;
+    let command = Command::ThreadStart {
+        cwd: string(field(params, "cwd")?, "thread cwd")?,
+        model: string(field(params, "model")?, "thread model")?,
+    };
+    if command.encode(Some(&id))? != command_frame {
+        return Err(RpcError::Invalid("stored thread command mismatch"));
+    }
+    match decode(response_frame, Some((&id, &command)))? {
+        Reply::Thread { thread_id, .. } => Ok(thread_id),
+        _ => Err(RpcError::Invalid("stored thread response")),
+    }
+}
+
+/// Recovery decodes the command actually persisted before its native write.
+/// Exact re-encoding rejects added fields or another method/input shape.
+pub(crate) fn decode_stored_turn_start(frame: &[u8]) -> Result<(RpcId, Command), RpcError> {
+    let Json::Object(fields) = Parser::parse(std::str::from_utf8(frame_body(frame)?)?)? else {
+        return Err(RpcError::Invalid("stored turn command"));
+    };
+    if fields.len() != 3 || string(field(&fields, "method")?, "method")? != "turn/start" {
+        return Err(RpcError::Invalid("stored turn method"));
+    }
+    let id = parse_id(field(&fields, "id")?)?;
+    let params = object(field(&fields, "params")?, "turn params")?;
+    let Json::Array(inputs) = field(params, "input")? else {
+        return Err(RpcError::Invalid("stored turn input"));
+    };
+    if inputs.len() != 1 { return Err(RpcError::Invalid("stored turn input count")); }
+    let command = Command::TurnStart {
+        thread_id: string(field(params, "threadId")?, "thread id")?,
+        cwd: string(field(params, "cwd")?, "cwd")?,
+        model: string(field(params, "model")?, "model")?,
+        effort: string(field(params, "effort")?, "effort")?,
+        text: string(field(object(&inputs[0], "text input")?, "text")?, "text")?,
+    };
+    if command.encode(Some(&id))? != frame {
+        return Err(RpcError::Invalid("stored turn command mismatch"));
+    }
+    Ok((id, command))
+}
+
 fn parse_question(id: RpcId, params: Option<&Json>) -> Result<QuestionCard, RpcError> {
     let params = object(
         params.ok_or(RpcError::Invalid("question params"))?,
@@ -892,6 +949,14 @@ mod tests {
             model: "m".into(),
         };
         let frame=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        let stored=start.encode(Some(&id)).unwrap();
+        assert_eq!(decode_stored_thread_start(&stored,frame).unwrap(),"thread-a");
+        let changed=String::from_utf8(stored.clone()).unwrap().replace("\"ephemeral\":true","\"ephemeral\":false");
+        assert!(matches!(decode_stored_thread_start(changed.as_bytes(),frame),
+            Err(RpcError::Invalid("stored thread command mismatch"))));
+        assert!(matches!(decode_stored_thread_start(&stored,
+            b"{\"id\":3,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n"),
+            Err(RpcError::WrongId)));
         assert!(
             matches!(decode(frame,Some((&id,&start))).unwrap(),Reply::Thread{thread_id,..} if thread_id=="thread-a")
         );

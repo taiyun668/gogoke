@@ -33,6 +33,9 @@ const ALL_APPLICATION_PACKAGES_OPT_OUT: u32 = 1;
 const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS: i32 = 1;
+const JOB_OBJECT_BASIC_PROCESS_ID_LIST_CLASS: i32 = 3;
+const JOB_MEMBER_SNAPSHOT_CAPACITY: usize = 128;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
 const STILL_ACTIVE: u32 = 259;
 const WAIT_OBJECT_0: u32 = 0;
@@ -156,6 +159,13 @@ struct JobObjectBasicAccountingInformation {
     total_terminated_processes: u32,
 }
 
+#[repr(C)]
+struct JobObjectBasicProcessIdList {
+    assigned_processes: u32,
+    process_ids_in_list: u32,
+    first_pid: usize,
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn CreateFileW(name: *const u16, desired_access: u32, share_mode: u32,
@@ -203,6 +213,7 @@ extern "system" {
         information_length: u32,
         return_length: *mut u32,
     ) -> i32;
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
     fn IsProcessInJob(process: Handle, job: Handle, result: *mut i32) -> i32;
     fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
@@ -1758,8 +1769,12 @@ impl ManagedProcess {
         });
 
         let accounting_before = job_accounting(self.job.raw());
+        let members_before = match &accounting_before {
+            Ok(accounting) if accounting.active_processes == 0 => None,
+            _ => Some(job_member_snapshot(self.job.raw())),
+        };
         #[cfg(test)]
-        eprintln!("GOGOKE_STOP_DECISION pid={} parent_grace_exited={} elapsed_ms={} job={accounting_before:?}",
+        eprintln!("GOGOKE_STOP_DECISION pid={} parent_grace_exited={} elapsed_ms={} job={accounting_before:?} members_before={members_before:?}",
             self.identity.pid, proof.parent_exited, started.elapsed().as_millis());
         let active_before = accounting_before.map(|value| value.active_processes);
         match active_before {
@@ -1769,12 +1784,14 @@ impl ManagedProcess {
                 if let Err(error) = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE) {
                     proof.errors.push(format!("TERMINATE_JOB_FAILED: {error}"));
                     proof.active_job_processes = self.active_job_processes().ok();
+                    record_residual_job_members(&mut proof, members_before.as_deref(), self.job.raw());
                     return proof;
                 }
                 proof.kill_succeeded = true;
             }
             Err(error) => {
                 proof.errors.push(format!("JOB_IDENTITY_UNKNOWN: {error}"));
+                record_residual_job_members(&mut proof, members_before.as_deref(), self.job.raw());
                 return proof;
             }
         }
@@ -1802,11 +1819,13 @@ impl ManagedProcess {
                 }
                 Err(error) => {
                     proof.errors.push(format!("JOB_OBSERVE_FAILED: {error}"));
+                    record_residual_job_members(&mut proof, members_before.as_deref(), self.job.raw());
                     return proof;
                 }
             }
             if Instant::now() >= observe_deadline {
                 proof.errors.push("JOB_DESCENDANTS_REMAIN".to_owned());
+                record_residual_job_members(&mut proof, members_before.as_deref(), self.job.raw());
                 return proof;
             }
             thread::sleep(Duration::from_millis(10));
@@ -1832,6 +1851,9 @@ impl ManagedProcess {
         } else {
             StopDisposition::ResidualCustody
         };
+        if proof.disposition == StopDisposition::ResidualCustody {
+            record_residual_job_members(&mut proof, members_before.as_deref(), self.job.raw());
+        }
         proof
     }
 }
@@ -2150,6 +2172,69 @@ fn job_accounting(job: Handle) -> io::Result<JobObjectBasicAccountingInformation
     } else {
         Ok(accounting)
     }
+}
+
+/// One bounded native Job member observation. Each opened PID is checked back
+/// against this exact Job before its identity is attributed; a departed or
+/// reused PID is reported as such instead of being named as a descendant.
+fn job_member_snapshot(job: Handle) -> String {
+    let bytes = size_of::<JobObjectBasicProcessIdList>()
+        + (JOB_MEMBER_SNAPSHOT_CAPACITY - 1) * size_of::<usize>();
+    let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
+    let mut returned = 0u32;
+    if unsafe { QueryInformationJobObject(job, JOB_OBJECT_BASIC_PROCESS_ID_LIST_CLASS,
+        storage.as_mut_ptr().cast(), bytes as u32, &mut returned) } == 0 {
+        let error = io::Error::last_os_error();
+        return format!("JobObjectBasicProcessIdList failed win32={:?} detail={error} returned_bytes={returned}",
+            error.raw_os_error());
+    }
+    // SAFETY: storage is usize-aligned and sized for the header and 128 IDs.
+    let header = unsafe { &*(storage.as_ptr().cast::<JobObjectBasicProcessIdList>()) };
+    let count = header.process_ids_in_list as usize;
+    if count > JOB_MEMBER_SNAPSHOT_CAPACITY {
+        return format!("JobObjectBasicProcessIdList invalid count assigned={} listed={} capacity={}",
+            header.assigned_processes, count, JOB_MEMBER_SNAPSHOT_CAPACITY);
+    }
+    let mut members = Vec::with_capacity(count);
+    for index in 0..count {
+        // SAFETY: count was bounded by the capacity passed to the kernel.
+        let raw_pid = unsafe { (&header.first_pid as *const usize).add(index).read() };
+        let Ok(pid) = u32::try_from(raw_pid) else {
+            members.push(format!("raw_pid={raw_pid} invalid_u32"));
+            continue;
+        };
+        let Some(process) = OwnedHandle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) }) else {
+            let error = io::Error::last_os_error();
+            members.push(format!("pid={pid} OpenProcess win32={:?} detail={error}", error.raw_os_error()));
+            continue;
+        };
+        let mut in_job = 0;
+        if unsafe { IsProcessInJob(process.raw(), job, &mut in_job) } == 0 {
+            let error = io::Error::last_os_error();
+            members.push(format!("pid={pid} IsProcessInJob win32={:?} detail={error}", error.raw_os_error()));
+            continue;
+        }
+        if in_job == 0 {
+            members.push(format!("pid={pid} departed_or_reused"));
+            continue;
+        }
+        match capture_identity(process.raw(), pid) {
+            Ok(identity) => members.push(format!("pid={} creation_100ns={} image={:?}",
+                identity.pid, identity.creation_time_100ns, identity.image_path)),
+            Err(error) => members.push(format!("pid={pid} capture_identity win32={:?} detail={error}",
+                error.raw_os_error())),
+        }
+    }
+    format!("assigned={} listed={} partial={} returned_bytes={} members=[{}]",
+        header.assigned_processes, count, count < header.assigned_processes as usize,
+        returned, members.join("; "))
+}
+
+fn record_residual_job_members(proof: &mut StopProof, pre_kill: Option<&str>, job: Handle) {
+    if let Some(snapshot) = pre_kill {
+        proof.errors.push(format!("JOB_MEMBERS_PRE_KILL: {snapshot}"));
+    }
+    proof.errors.push(format!("JOB_MEMBERS_RESIDUAL: {}", job_member_snapshot(job)));
 }
 
 fn terminate_job(job: Handle, exit_code: u32) -> io::Result<()> {
@@ -3598,6 +3683,9 @@ mod tests {
         let error = terminate_job(ptr::null_mut(), STOP_TIMEOUT_EXIT_CODE)
             .expect_err("null job handle must fail through the actual Windows API");
         assert_ne!(error.raw_os_error(), Some(0));
+        let members = job_member_snapshot(ptr::null_mut());
+        assert!(members.contains("JobObjectBasicProcessIdList failed win32=Some("),
+            "invalid Job query must preserve the native error code: {members}");
 
         let mut launch = ProcessLaunch::new(powershell());
         launch.arguments = vec![
