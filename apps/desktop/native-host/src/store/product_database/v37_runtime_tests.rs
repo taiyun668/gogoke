@@ -96,9 +96,9 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let Some(Json::Object(features))=observed_flags.get(&JsonString::from_str("loadedThreadFeatures")) else {
         panic!("loaded thread feature response absent");
     };
-    assert_eq!(features.get(&JsonString::from_str("memories")),Some(&Json::Bool(false)));
-    assert_eq!(features.get(&JsonString::from_str("multi_agent_v2")),Some(&Json::Bool(false)));
-    assert_eq!(features.get(&JsonString::from_str("default_mode_request_user_input")),Some(&Json::Bool(true)));
+    assert!(matches!(features.get(&JsonString::from_str("memories")),Some(Json::Bool(false))));
+    assert!(matches!(features.get(&JsonString::from_str("multi_agent_v2")),Some(Json::Bool(false))));
+    assert!(matches!(features.get(&JsonString::from_str("default_mode_request_user_input")),Some(Json::Bool(true))));
     let key = ("projectA".to_owned(), "sessionA".to_owned());
     let live = product.native_sessions.get(&key).unwrap();
     let custody = live.custody.clone();
@@ -209,10 +209,8 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert_eq!(continued.previous_revision,4);
     assert_eq!(continued.revision,5);
     let continued_result=continued.into_result();
-    assert_eq!(continued_result.get(&JsonString::from_str("oldGeneration")),
-        Some(&Json::String(JsonString::from_str("2"))));
-    assert_eq!(continued_result.get(&JsonString::from_str("newGeneration")),
-        Some(&Json::String(JsonString::from_str("3"))));
+    assert_eq!(continued_result.get(&JsonString::from_str("oldGeneration")).map(Json::canonical),Some(Json::String(JsonString::from_str("2")).canonical()));
+    assert_eq!(continued_result.get(&JsonString::from_str("newGeneration")).map(Json::canonical),Some(Json::String(JsonString::from_str("3")).canonical()));
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap().status,
         V37Status::Replayed,"original request replay cannot start a second process");
     let admission=Statement::prepare(product.connection.as_ptr(),
@@ -246,9 +244,9 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let Some(Json::Object(features))=observed_flags.get(&JsonString::from_str("loadedThreadFeatures")) else {
         panic!("resumed loaded thread feature response absent");
     };
-    assert_eq!(features.get(&JsonString::from_str("memories")),Some(&Json::Bool(false)));
-    assert_eq!(features.get(&JsonString::from_str("multi_agent_v2")),Some(&Json::Bool(false)));
-    assert_eq!(features.get(&JsonString::from_str("default_mode_request_user_input")),Some(&Json::Bool(true)));
+    assert!(matches!(features.get(&JsonString::from_str("memories")),Some(Json::Bool(false))));
+    assert!(matches!(features.get(&JsonString::from_str("multi_agent_v2")),Some(Json::Bool(false))));
+    assert!(matches!(features.get(&JsonString::from_str("default_mode_request_user_input")),Some(Json::Bool(true))));
     let second_stop=operation("K-SESSION","stop","stop-resumed","sessionA",5,
         r#"{"seatId":"seatA","generation":"3"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&second_stop).unwrap()).unwrap().status,
@@ -278,16 +276,42 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert_eq!(reconciled.status,V37Status::Replayed);
     assert_eq!(reconciled.previous_revision,7);
     assert_eq!(reconciled.revision,8);
-    let third_stop=operation("K-SESSION","stop","stop-reconciled","sessionA",8,
+    // Actual thread/inject_items through the User product entry; the native
+    // empty ACK proves injection submission and does not start a model turn.
+    let append=operation("K-SESSION","append-without-turn","append-reconciled","sessionA",8,
+        r#"{"generation":"4","body":"cloud no-model append marker"}"#);
+    product.connection.execute("CREATE TRIGGER inject_append_receipt_failure BEFORE UPDATE ON gogoke_v37_h_stdin_journal WHEN NEW.phase='RECEIPTED' AND NEW.operation='append-without-turn' BEGIN SELECT RAISE(ABORT,'injected append receipt failure'); END").unwrap();
+    assert!(product.dispatch_user_request(&append).is_err(),"actual native ACK stays in original A/RPC when the final H receipt fails");
+    product.connection.execute("DROP TRIGGER inject_append_receipt_failure").unwrap();
+    let appended=h::decode_receipt(&product.dispatch_user_request(&append).unwrap()).unwrap();
+    assert_eq!(appended.status,V37Status::Replayed);
+    assert_eq!(appended.revision,9);
+    let original_append_result=Json::Object(appended.into_result()).canonical();
+    assert!(original_append_result.contains("\"createdTurn\":false"));
+    assert!(product.native_sessions.get(&key).unwrap().turn_id.is_none());
+    let first_step_count={let row=Statement::prepare(product.connection.as_ptr(),"SELECT count(*) FROM gogoke_v37_rpc_steps WHERE step_id LIKE 'append-%'").unwrap();
+        assert!(row.step_row().unwrap());row.column_text(0).unwrap()};
+    let replay=h::decode_receipt(&product.dispatch_user_request(&append).unwrap()).unwrap();
+    assert_eq!(replay.status,V37Status::Replayed);
+    assert_eq!(Json::Object(replay.into_result()).canonical(),original_append_result);
+    let step_count=Statement::prepare(product.connection.as_ptr(),"SELECT count(*) FROM gogoke_v37_rpc_steps WHERE step_id LIKE 'append-%'").unwrap();
+    assert!(step_count.step_row().unwrap());assert_eq!(step_count.column_text(0).unwrap(),first_step_count);drop(step_count);
+    let changed=operation("K-SESSION","append-without-turn","append-reconciled","sessionA",8,
+        r#"{"generation":"4","body":"changed input must not be injected"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&changed).unwrap()).unwrap().status,V37Status::Conflict);
+    let third_stop=operation("K-SESSION","stop","stop-reconciled","sessionA",9,
         r#"{"seatId":"seatA","generation":"4"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&third_stop).unwrap()).unwrap().status,
         V37Status::Applied);
-    let release = operation("K-SESSION", "admission-release", "release-session", "sessionA", 9,
+    let release = operation("K-SESSION", "admission-release", "release-session", "sessionA", 10,
         r#"{"seatId":"seatA","generation":"4"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&release).unwrap()).unwrap().status, V37Status::Applied);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     product.close_checked().unwrap();
     let mut product = ProductDatabase::open(&root, &database).unwrap();
+    let replay=h::decode_receipt(&product.dispatch_user_request(&append).unwrap()).unwrap();
+    assert_eq!(replay.status,V37Status::Replayed,"stopped/released historical original append needs no new process");
+    assert_eq!(Json::Object(replay.into_result()).canonical(),original_append_result);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     product.close_checked().unwrap();
     drop(root);

@@ -324,7 +324,7 @@ fn has_process_episode_schema(db: &VerifiedDatabaseConnection<'_>) -> Result<boo
 }
 
 /// A native-only proof that a prepared C steer has no H writer step and that
-/// A captured the exact terminal notification from this same live process.
+/// A captured the exact terminal notification from its original process.
 /// The caller must hold BEGIN IMMEDIATE through its C state transition.
 #[derive(Debug)]
 pub(crate) struct ConfirmedTurnEnd {
@@ -334,10 +334,10 @@ pub(crate) struct ConfirmedTurnEnd {
 
 pub(crate) fn confirm_turn_ended_without_step_in_transaction(
     db: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str,
-    generation: &str, process_operation_id: &str, ticket: &str,
+    seat_id: &str, generation: &str, process_operation_id: &str, ticket: &str,
     custodian_nonce: &str, step_id: &str, thread_id: &str, turn_id: &str,
 ) -> Result<Option<ConfirmedTurnEnd>> {
-    for (value,name) in [(domain,"domain"),(session,"session"),
+    for (value,name) in [(domain,"domain"),(session,"session"),(seat_id,"seat"),
         (generation,"generation"),(process_operation_id,"process operation"),
         (ticket,"ticket"),(custodian_nonce,"nonce"),(step_id,"step"),
         (thread_id,"thread"),(turn_id,"turn")] {
@@ -351,20 +351,39 @@ pub(crate) fn confirm_turn_ended_without_step_in_transaction(
     let source=Statement::prepare(db.as_ptr(),
         "SELECT r.source_epoch,r.source_cursor,hex(r.raw_bytes)
            FROM main.v37_ledger_raw_source r
-           JOIN main.gogoke_v37_h_claim a
-             ON a.process_operation_id=r.operation_id AND a.domain_id=r.domain_id
-             AND a.session_id=r.session_id AND a.generation=r.generation
-             AND a.state='COMMITTED'
+           JOIN main.gogoke_v37_h_process_episode e
+             ON e.process_operation_id=r.operation_id AND e.domain_id=r.domain_id
+             AND e.session_id=r.session_id AND e.generation=r.generation
+             AND e.seat_id=?7 AND e.seat_incarnation IS NOT NULL
+             AND length(e.seat_incarnation)>0
+           JOIN main.gogoke_v37_h_generation g
+             ON g.domain_id=e.domain_id AND g.session_id=e.session_id
+             AND g.generation=e.generation AND g.request_id=e.request_id
+             AND g.process_operation_id=e.process_operation_id
            JOIN main.gogoke_coordination_process_custody c
              ON c.operation_id=r.operation_id AND c.domain_id=r.domain_id
              AND c.generation=r.generation AND c.ticket=r.process_ticket
-             AND c.custodian_nonce=r.custodian_nonce AND c.state='ACTIVE'
+             AND c.custodian_nonce=r.custodian_nonce
+           JOIN main.gogoke_v37_h_owner_binding b
+             ON b.binding_id=e.binding_id AND b.instance_id=e.instance_id
+             AND b.domain_id=e.domain_id AND b.kind='SESSION'
+             AND b.owner_id=e.session_id AND b.generation=e.generation
+           LEFT JOIN main.gogoke_v37_h_claim a
+             ON a.process_operation_id=e.process_operation_id
+             AND a.domain_id=e.domain_id AND a.session_id=e.session_id
+             AND a.generation=e.generation
           WHERE r.domain_id=?1 AND r.session_id=?2 AND r.generation=?3
             AND r.operation_id=?4 AND r.process_ticket=?5
             AND r.custodian_nonce=?6 AND r.state='RESOLVED'
+             AND ((e.phase='ACTIVE' AND c.state='ACTIVE'
+                   AND a.state='COMMITTED' AND b.state='ACTIVE')
+               OR (e.phase='STOPPED' AND c.state='STOPPED'
+                   AND e.stop_fact_id IS NOT NULL
+                   AND e.stop_fact_id=c.stop_proof_hash
+                   AND b.state IN ('ACTIVE','REVOKED')))
           ORDER BY CAST(r.source_cursor AS INTEGER) DESC")?;
     for (index,value) in [domain,session,generation,process_operation_id,
-        ticket,custodian_nonce].iter().enumerate() {
+        ticket,custodian_nonce,seat_id].iter().enumerate() {
         source.bind_text((index+1) as i32,value)?;
     }
     while source.step_row()? {
@@ -1040,6 +1059,58 @@ mod tests {
     }
 
     #[test]
+    fn stopped_generation_can_confirm_original_turn_end_without_writer_step() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-stopped-steer-abort-{}-{stamp}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        db.execute("CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY,event_id TEXT UNIQUE,stream_id TEXT,occurred_at TEXT,event_type TEXT,payload_json TEXT)").unwrap();
+        ledger::initialize_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        // This is a SQL control for H's historical predicate. It does not
+        // claim an observed provider turn or exercise a model.
+        db.execute("CREATE TABLE gogoke_v37_h_process_episode(domain_id TEXT,request_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,seat_id TEXT,seat_incarnation TEXT,binding_id TEXT,instance_id TEXT,phase TEXT,stop_fact_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_generation(domain_id TEXT,session_id TEXT,generation TEXT,request_id TEXT,process_operation_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_coordination_process_custody(operation_id TEXT,domain_id TEXT,generation TEXT,ticket TEXT,custodian_nonce TEXT,state TEXT,stop_proof_hash TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT,instance_id TEXT,domain_id TEXT,kind TEXT,owner_id TEXT,generation TEXT,state TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,state TEXT) STRICT").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES('project','open1','session','1','old-process','seatA','incarnationA','bindingA','instanceA','STOPPED','proofA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_generation VALUES('project','session','1','open1','old-process')").unwrap();
+        db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('old-process','project','1','ticketA','nonceA','STOPPED','proofA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','project','SESSION','session','1','REVOKED')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim VALUES('project','session','2','new-process','COMMITTED')").unwrap();
+        let terminal=b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"threadA\",\"turn\":{\"id\":\"turnA\",\"status\":\"completed\"}}}\n";
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state,resolved_event_id) VALUES('old-process','ticketA','nonceA','project','session','1','epochA','1',?1,'RESOLVED','terminal-event')").unwrap();
+        insert.bind_blob(1,terminal).unwrap();insert.step_done().unwrap();drop(insert);
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let proof=confirm_turn_ended_without_step_in_transaction(&db,"project","session",
+            "seatA","1","old-process","ticketA","nonceA","steer-original",
+            "threadA","turnA").unwrap().unwrap();
+        assert_eq!(proof.source_epoch,"epochA");
+        assert_eq!(proof.source_cursor,"1");
+        for (seat,ticket,turn) in [("otherSeat","ticketA","turnA"),
+            ("seatA","otherTicket","turnA"),("seatA","ticketA","otherTurn")] {
+            assert!(confirm_turn_ended_without_step_in_transaction(&db,"project","session",
+                seat,"1","old-process",ticket,"nonceA","steer-original",
+                "threadA",turn).unwrap().is_none());
+        }
+        db.execute("INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase) VALUES('project','session','open1','steer-original','old-process','ticketA','nonceA','1','2','image','digest','profile','1','7b7d0a',0,'INTENT')").unwrap();
+        assert!(confirm_turn_ended_without_step_in_transaction(&db,"project","session",
+            "seatA","1","old-process","ticketA","nonceA","steer-original",
+            "threadA","turnA").unwrap().is_none(),"any old H step forbids confirmed abort");
+        db.execute("DELETE FROM gogoke_v37_rpc_steps WHERE step_id='steer-original'").unwrap();
+        db.execute("UPDATE gogoke_v37_h_process_episode SET stop_fact_id='different-proof' WHERE process_operation_id='old-process'").unwrap();
+        assert!(confirm_turn_ended_without_step_in_transaction(&db,"project","session",
+            "seatA","1","old-process","ticketA","nonceA","steer-original",
+            "threadA","turnA").unwrap().is_none(),"a mismatched stop proof cannot authorize abort");
+        db.execute("COMMIT").unwrap();
+        db.close_checked().unwrap();drop(root);fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn no_event_sql_failure_rolls_back_observed_and_same_source_can_finish() {
         let _guard=route_b_test_guard();
         let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -1125,17 +1196,17 @@ mod tests {
         let mut db = create_new(&root, &path.join("state.sqlite")).unwrap();
         initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase) VALUES('domain','session','open','step','operation','ticket','nonce','1','2','image','digest','profile','3','7b7d0a',1,'INTENT')").unwrap();
-        assert!(has_unresolved(&db, "domain", "session").unwrap());
+        assert!(has_unresolved(&db, "domain", "session", "operation").unwrap());
         db.execute("UPDATE gogoke_v37_rpc_steps SET phase='WRITTEN',requires_response=0")
             .unwrap();
-        assert!(!has_unresolved(&db, "domain", "session").unwrap());
+        assert!(!has_unresolved(&db, "domain", "session", "operation").unwrap());
         db.execute("UPDATE gogoke_v37_rpc_steps SET requires_response=1")
             .unwrap();
-        assert!(has_unresolved(&db, "domain", "session").unwrap());
+        assert!(has_unresolved(&db, "domain", "session", "operation").unwrap());
         db.execute("UPDATE gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch='epoch',source_cursor='1'").unwrap();
-        assert!(!has_unresolved(&db, "domain", "session").unwrap());
+        assert!(!has_unresolved(&db, "domain", "session", "operation").unwrap());
         db.execute("UPDATE gogoke_v37_rpc_steps SET phase='UNKNOWN',source_epoch=NULL,source_cursor=NULL,original_error='pipe error'").unwrap();
-        assert!(has_unresolved(&db, "domain", "session").unwrap());
+        assert!(has_unresolved(&db, "domain", "session", "operation").unwrap());
         db.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();

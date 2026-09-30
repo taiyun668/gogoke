@@ -203,6 +203,7 @@ impl<'root> ProductDatabase<'root> {
         if request.operation == "resume" { return self.dispatch_native_resume(request); }
         if request.operation == "stop" { return self.dispatch_native_stop(request); }
         if request.operation == "send" { return self.dispatch_native_send(request); }
+        if request.operation == "append-without-turn" { return self.dispatch_native_send(request); }
         if request.operation == "output-stream" { return self.dispatch_native_output(request); }
         if request.operation == "capability-probe" { return self.dispatch_native_capability(request); }
         if !matches!(request.operation.as_str(), "admission-reserve" | "admission-commit" | "admission-release") {

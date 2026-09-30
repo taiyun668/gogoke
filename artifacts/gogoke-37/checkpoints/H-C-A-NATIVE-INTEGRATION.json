@@ -3,7 +3,7 @@
   "state": "FIXING_SOURCE_FOR_ONE_CLOUD_NATIVE_INTEGRATION_RUN",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "fa30b3afcb8ae29139b696ecc2a3c6ad9ac583bd",
+  "last_pushed_source": "03bcfbbe210ea19934e62bfee67f1cb57b2cd3e3",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -97,5 +97,23 @@
     "fresh_sol_review": "NOT_RUN_BUILT_IN_THREAD_LIMIT_REJECTED_NO_SIDE_CHANNEL_CREATED",
     "retained_seam": "The frozen enqueue turnId is required. No fabricated turn for a session which has never had a real turn; valid past-turn idle append is supported."
   },
-  "h_fixed_candidate": "Per-process stop request fence; original stop proof commit window; real thread/resume; same-ID UNKNOWN H WRITTEN plus A PENDING reconciliation without a second input; historical first-generation proof and loaded-thread flags controls. Native evidence pending."
+  "h_fixed_candidate": "Per-process stop request fence; original stop proof commit window; real thread/resume; same-ID UNKNOWN H WRITTEN plus A PENDING reconciliation without a second input; historical first-generation proof and loaded-thread flags controls. Native evidence pending.",
+  "integration_cloud": {
+    "source": "03bcfbbe210ea19934e62bfee67f1cb57b2cd3e3",
+    "native_run": 36705147156,
+    "native_artifact": 11091722263,
+    "server": "PASS",
+    "release": "PASS",
+    "required_axes_passed": 3,
+    "lpac_path_shim_passed": 2,
+    "focused_and_library": "NOT_EXECUTED_TEST_COMPILATION_FAILED",
+    "root_cause": "Existing has_unresolved test calls omitted the new original process operation parameter; new runtime assertions compared Json which intentionally has neither PartialEq nor Debug. Production release compilation succeeded. Root corrects only calls and uses native bool pattern or canonical-value comparisons.",
+    "hygiene_run": 36705331824,
+    "hygiene": "PASS",
+    "desktop_run": 36705327668,
+    "desktop": "RUNNING_NOT_READ_BACK",
+    "machine_sha256": "5dcce6e0074655a008a5f035e97df62c3dc04ea26fec8f3a189a4e0adf494680",
+    "lib_log_sha256": "767783a4d7c9a65da17905e09d03d76779d7e92681dd6bd96e4aa02e7cd9ee69"
+  },
+  "next_native_input_batch": "K-SESSION append-without-turn uses the existing exact original H stdin journal and actual thread/inject_items; only original ACK completes createdTurn=false. Preflight codec before intent, same-ID recovery without resend after injected final receipt failure, raw collision, stopped/released historical replay; actual cloud execution pending. Historical original STOPPED steer abort uses exact episode seat snapshot and custody stop proof plus A terminal and absence of any original H step; no write permission added."
 }

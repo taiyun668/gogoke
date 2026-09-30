@@ -530,7 +530,8 @@ pub(crate) fn abort_native_steer_if_ended(connection: &mut VerifiedDatabaseConne
         }
         let fact=crate::store::session_transport::rpc_journal::
             confirm_turn_ended_without_step_in_transaction(connection,envelope.domain_id,
-                session_id,generation,process_operation_id,ticket,nonce,step_id,thread_id,turn_id)
+                session_id,&message.seat_id,generation,process_operation_id,ticket,nonce,
+                step_id,thread_id,turn_id)
             .map_err(|error|InboxError::InvalidEvidence(format!("H confirmed abort: {error:?}")))?;
         let Some(fact)=fact else {return Ok(None);};
         let proof={

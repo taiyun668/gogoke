@@ -653,6 +653,24 @@ pub(crate) fn decode_stored_turn_start(frame: &[u8]) -> Result<(RpcId, Command),
     Ok((id, command))
 }
 
+/// Decode the exact command retained for an append; reject extra fields and
+/// a changed role/input shape by re-encoding the production command.
+pub(crate) fn decode_stored_append(frame:&[u8])->Result<(RpcId,Command),RpcError> {
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(frame_body(frame)?)?)? else {return Err(RpcError::Invalid("stored append command"));};
+    if fields.len()!=3 || string(field(&fields,"method")?,"method")?!="thread/inject_items" {return Err(RpcError::Invalid("stored append method"));}
+    let id=parse_id(field(&fields,"id")?)?;
+    let params=object(field(&fields,"params")?,"append params")?;
+    let Json::Array(items)=field(params,"items")? else {return Err(RpcError::Invalid("stored append items"));};
+    if items.len()!=1 {return Err(RpcError::Invalid("stored append item count"));}
+    let item=object(&items[0],"append item")?;
+    let Json::Array(content)=field(item,"content")? else {return Err(RpcError::Invalid("stored append content"));};
+    if content.len()!=1 {return Err(RpcError::Invalid("stored append content count"));}
+    let command=Command::AppendWithoutTurn {thread_id:string(field(params,"threadId")?,"thread id")?,
+        text:string(field(object(&content[0],"append text")?,"text")?,"text")?};
+    if command.encode(Some(&id))?!=frame {return Err(RpcError::Invalid("stored append command mismatch"));}
+    Ok((id,command))
+}
+
 fn parse_question(id: RpcId, params: Option<&Json>) -> Result<QuestionCard, RpcError> {
     let params = object(
         params.ok_or(RpcError::Invalid("question params"))?,
@@ -994,6 +1012,11 @@ mod tests {
             text: "later context".into(),
         };
         let original = append.encode(Some(&id)).unwrap();
+        let (stored_id,stored)=decode_stored_append(&original).unwrap();
+        assert_eq!(stored_id,id);
+        assert_eq!(stored.encode(Some(&stored_id)).unwrap(),original);
+        let changed=String::from_utf8(original.clone()).unwrap().replace("\"role\":\"user\"","\"role\":\"assistant\"");
+        assert!(decode_stored_append(changed.as_bytes()).is_err(),"a different item role cannot use the original append completion");
         assert_eq!(original, b"{\"id\":41,\"method\":\"thread/inject_items\",\"params\":{\"items\":[{\"content\":[{\"text\":\"later context\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"}],\"threadId\":\"thread-a\"}}\n".to_vec());
         assert!(matches!(decode(b"{\"id\":41,\"result\":{}}\n", Some((&id, &append))),
             Ok(Reply::Ack { id: RpcId::Number(41) })));

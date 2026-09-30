@@ -25,7 +25,7 @@ pub(crate) enum JournalError {
     RollbackUnknown { primary: Box<JournalError>, rollback: SameOpenError },
     Codec(codex_rpc::RpcError),
     Rpc(super::rpc_journal::RpcJournalError),
-    RemoteError,
+    RemoteError(Vec<u8>),
 }
 
 impl From<AtomicError> for JournalError {
@@ -637,7 +637,7 @@ pub(crate) fn prepare_codex_request(
     connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
 ) -> Result<JournalDecision, JournalError> {
     let request = parse_operation(input, false)?;
-    if request.operation != "send" { return Err(JournalError::Invalid("Codex send operation")); }
+    if !matches!(request.operation.as_str(),"send"|"append-without-turn") { return Err(JournalError::Invalid("Codex send operation")); }
     prepare_decoded(connection, input, &request)
 }
 
@@ -735,7 +735,7 @@ pub(crate) fn mark_codex_write_unknown(
     connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
 ) -> Result<JournalDecision, JournalError> {
     let request = parse_operation(input, false)?;
-    if request.operation != "send" { return Err(JournalError::Invalid("Codex send operation")); }
+    if !matches!(request.operation.as_str(),"send"|"append-without-turn") { return Err(JournalError::Invalid("Codex send operation")); }
     mark_decoded_unknown(connection, input, &request)
 }
 
@@ -1011,8 +1011,9 @@ fn complete_codex_turn_in_transaction(
     let encoded_command=command.encode(Some(rpc_id))?;
     let reply=codex_rpc::decode(response,Some((rpc_id,command)))?;
     let turn_id=match reply {
-        codex_rpc::Reply::Turn { turn_id, status: codex_rpc::TurnStatus::InProgress | codex_rpc::TurnStatus::Completed, .. } => turn_id,
-        codex_rpc::Reply::RemoteError { .. } => return Err(JournalError::RemoteError),
+        codex_rpc::Reply::Turn { turn_id, status: codex_rpc::TurnStatus::InProgress | codex_rpc::TurnStatus::Completed, .. } if request.operation=="send" => Some(turn_id),
+        codex_rpc::Reply::Ack { .. } if request.operation=="append-without-turn"=>None,
+        codex_rpc::Reply::RemoteError { raw_frame,.. } => return Err(JournalError::RemoteError(raw_frame)),
         _ => return Err(JournalError::Invalid("Codex turn response")),
     };
         let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
@@ -1024,9 +1025,12 @@ fn complete_codex_turn_in_transaction(
         codex_response_observed(connection,input,&binding,&encoded_command,response)?;
         let revision=request.expected_revision.checked_add(1)
             .ok_or(JournalError::Invalid("revision overflow"))?;
-        let result=std::collections::BTreeMap::from([
-            (JsonString::from_str("turnId"),Json::String(JsonString::from_str(&turn_id))),
-            (JsonString::from_str("createdTurn"),Json::Bool(true)) ]);
+        let mut result=std::collections::BTreeMap::from([
+            (JsonString::from_str("generation"),Json::String(JsonString::from_str(input.generation))),
+            (JsonString::from_str("receiptId"),Json::String(JsonString::from_str(&format!("rpc-{}",&crate::store::digest::sha256_hex(&encoded_command)[..40])))),
+            (JsonString::from_str("createdTurn"),Json::Bool(turn_id.is_some())) ]);
+        if let Some(turn_id)=turn_id {result.insert(JsonString::from_str("turnId"),Json::String(JsonString::from_str(&turn_id)));}
+        else {result.insert(JsonString::from_str("deliveryBasis"),Json::String(JsonString::from_str("NATIVE_INJECT_ITEMS_ACK")));}
         let mut receipt_bytes=encode_receipt(&request,V37Status::Applied,
             request.expected_revision,revision,result);
         receipt_bytes.push(b'\n');
@@ -1065,7 +1069,7 @@ pub(crate) fn recover_codex_turn_request(
         let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
             input.generation,BindingUse::Complete)?;
         binding_matches(&prior,&binding)?;
-        let step_id=format!("send-{}",&crate::store::digest::sha256_hex(input.request_bytes)[..40]);
+        let step_id=format!("{}-{}",if request.operation=="append-without-turn" {"append"} else {"send"},&crate::store::digest::sha256_hex(input.request_bytes)[..40]);
         let query=Statement::prepare(connection.as_ptr(),
             "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
              JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
@@ -1084,7 +1088,7 @@ pub(crate) fn recover_codex_turn_request(
         let response=unhex(&query.column_text(1)?)?;
         if query.step_row()? { return Err(JournalError::Conflict); }
         drop(query);
-        let (id,command)=codex_rpc::decode_stored_turn_start(&command_bytes)?;
+        let (id,command)=if request.operation=="append-without-turn" {codex_rpc::decode_stored_append(&command_bytes)?} else {codex_rpc::decode_stored_turn_start(&command_bytes)?};
         let thread_id=native_thread_id(connection,input,&binding)?;
         complete_codex_turn_in_transaction(connection,input,&response,&id,&command,&thread_id).map(Some)
     })
@@ -1098,7 +1102,7 @@ pub(crate) fn reconcile_observed_codex_sends(
     session_id: &str, generation: &str,
 ) -> Result<(), JournalError> {
     let query=Statement::prepare(connection.as_ptr(),
-        "SELECT request_id FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND operation='send' AND phase IN ('PREPARED','UNKNOWN')")?;
+        "SELECT request_id FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND operation IN ('send','append-without-turn') AND phase IN ('PREPARED','UNKNOWN')")?;
     query.bind_text(1,domain_id)?; query.bind_text(2,session_id)?; query.bind_text(3,generation)?;
     let mut ids=Vec::new();
     while query.step_row()? { ids.push(query.column_text(0)?); }
@@ -1117,12 +1121,13 @@ fn validate_codex_send(
     command: &codex_rpc::Command,
     expected_thread_id: &str,
 ) -> Result<(), JournalError> {
-    if request.operation != "send" || request.payload.len()!=2 {
+    if !matches!(request.operation.as_str(),"send"|"append-without-turn") || request.payload.len()!=2 {
         return Err(JournalError::Invalid("Codex send operation"));
     }
     let text=payload_string(&request,"body")?;
-    let codex_rpc::Command::TurnStart { thread_id, text: command_text, .. } = command else {
-        return Err(JournalError::Invalid("Codex turn command"));
+    let (thread_id,command_text)=match (request.operation.as_str(),command) {
+        ("send",codex_rpc::Command::TurnStart {thread_id,text,..}) | ("append-without-turn",codex_rpc::Command::AppendWithoutTurn {thread_id,text})=>(thread_id,text),
+        _=>return Err(JournalError::Invalid("Codex turn command")),
     };
     if command_text != &text || thread_id != expected_thread_id || expected_thread_id.is_empty() {
         return Err(JournalError::Conflict);

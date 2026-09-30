@@ -907,9 +907,12 @@ impl<'root> ProductDatabase<'root> {
         failure(run.evidence.verify_live(&mut self.connection, self.root, &self.owner,
             &run.operation_id, current.revision))?;
         let thread_id = run.thread_id.clone().ok_or(OrchestrationError::Invalid("native send thread absent"))?;
-        let command = Command::TurnStart { thread_id: thread_id.clone(),
+        let command = if request.operation=="append-without-turn" {Command::AppendWithoutTurn {thread_id:thread_id.clone(),text}} else {Command::TurnStart { thread_id: thread_id.clone(),
             cwd: run.evidence.cwd().to_string_lossy().into_owned(), model: run.model.clone(),
-            effort: run.effort.clone(), text };
+            effort: run.effort.clone(), text }};
+        // Reject a command which cannot be encoded before occupying the H
+        // intent. The largest legal ID bounds every ID the runtime allocates.
+        failure(command.encode(Some(&failure(RpcId::client(9_007_199_254_740_991))?)))?;
         let custody = run.custody.clone();
         let input = h::StdinRequest { domain_id: &request.domain_id, session_id: &request.target_id,
             ticket: custody.ticket.opaque(), generation: &generation, request_bytes: &request.raw_bytes };
@@ -921,7 +924,7 @@ impl<'root> ProductDatabase<'root> {
         let run = self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?;
         let number = run.next_rpc_id;
         run.next_rpc_id = number.checked_add(1).ok_or(OrchestrationError::Invalid("native RPC ordinal overflow"))?;
-        let step_id = format!("send-{}", &crate::store::digest::sha256_hex(&request.raw_bytes)[..40]);
+        let step_id = format!("{}-{}",if request.operation=="append-without-turn" {"append"} else {"send"}, &crate::store::digest::sha256_hex(&request.raw_bytes)[..40]);
         let observed = self.native_rpc_observation(&key, &step_id, Some(number), &command);
         let observation = match observed {
             Ok(Some(observation)) => observation,
