@@ -961,7 +961,7 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::V37StoreFailure(format!(
                 "login active record: {error:?}; stop: {stop:?}; unknown record: {unknown:?}")));
         }
-        let execution = self.observe_account_via_active_cli(&prepared);
+        let execution = self.observe_account_via_active_cli(&prepared, &prepared_login.runtime_home);
         let close = self.process_custodian.close_child_input(&prepared.ticket)
             .map_err(|error| format!("account/read stdin close: {error}"));
         let stop = self.process_custodian.stop(&prepared.ticket,
@@ -1001,21 +1001,44 @@ impl<'root> ProductDatabase<'root> {
         self.record_trusted_account_read(request, &prepared, &frame)
     }
 
-    fn observe_account_via_active_cli(&self, prepared: &PreparedCustody)
+    fn observe_account_via_active_cli(&self, prepared: &PreparedCustody, cwd: &Path)
         -> Result<OriginBoundFrame> {
+        use crate::store::session_transport::codex_rpc::{self, Command, RpcId, Reply};
         let process = self.process_custodian.active(&prepared.ticket)
             .ok_or(OrchestrationError::Invalid("login process absent"))?;
         process.write_persistent_frame(INITIALIZE)
             .map_err(|error| OrchestrationError::Process(
                 self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
                     ProcessCustodyError::ProtocolPipe(error))))?;
-        self.read_rpc_response(prepared, "1")?;
+        let initialize = self.read_rpc_response(prepared, "1")?;
+        let init_command = Command::Initialize { client_version: "0.1.0".into() };
+        let init_id = RpcId::client(1).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native initialize ID: {error:?}")))?;
+        match codex_rpc::decode(initialize.bytes(), Some((&init_id, &init_command))) {
+            Ok(Reply::Initialized { .. }) => (),
+            result => return Err(OrchestrationError::V37StoreFailure(format!("native initialize observation: {result:?}"))),
+        }
         let process = self.process_custodian.active(&prepared.ticket)
             .ok_or(OrchestrationError::Invalid("login process absent"))?;
         process.write_persistent_frame(INITIALIZED)
             .map_err(|error| OrchestrationError::Process(
                 self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
                     ProcessCustodyError::ProtocolPipe(error))))?;
+        // Measure the fixed CLI's effective memory settings in this actual
+        // native-owned home. This is a config read, not a model invocation.
+        let config_command = Command::ConfigRead { cwd: cwd.to_string_lossy().into_owned() };
+        let config_id = RpcId::client(3).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native config ID: {error:?}")))?;
+        let config_bytes = config_command.encode(Some(&config_id)).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native config request: {error:?}")))?;
+        process.write_persistent_frame(&config_bytes).map_err(|error|
+            OrchestrationError::Process(self.process_custodian.protocol_error_with_stderr(
+                &prepared.ticket, ProcessCustodyError::ProtocolPipe(error))))?;
+        let config = self.read_rpc_response(prepared, "3")?;
+        match codex_rpc::decode(config.bytes(), Some((&config_id, &config_command))) {
+            Ok(Reply::MemoryOff { .. }) => (),
+            result => return Err(OrchestrationError::V37StoreFailure(format!("native effective memory observation: {result:?}"))),
+        }
         process.write_persistent_frame(ACCOUNT_READ)
             .map_err(|error| OrchestrationError::Process(
                 self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
@@ -1042,7 +1065,8 @@ impl<'root> ProductDatabase<'root> {
                 RpcIdentity::RemoteError => return Err(OrchestrationError::Process(
                     self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
                         ProcessCustodyError::ProtocolPipe(std::io::Error::new(
-                            std::io::ErrorKind::Other, "account RPC native error"))))),
+                            std::io::ErrorKind::Other, format!("account RPC native error: {}",
+                                String::from_utf8_lossy(&frame.bytes()[frame.bytes().len().saturating_sub(4096)..]))))))),
                 RpcIdentity::Wrong => return Err(OrchestrationError::Process(
                     self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
                         ProcessCustodyError::ProtocolPipe(std::io::Error::new(

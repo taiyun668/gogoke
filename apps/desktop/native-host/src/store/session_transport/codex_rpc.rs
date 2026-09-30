@@ -1,0 +1,941 @@
+//! Fixed Codex 0.149 app-server JSONL codec, not a v37 authority or receipt.
+//! H supplies a live ProcessCustodian frame and its native thread/cwd/model
+//! evidence. This module only encodes commands and correlates protocol bytes.
+
+use crate::store::atomic::{AtomicError, Json, JsonString, Parser};
+use std::collections::{BTreeMap, BTreeSet};
+
+const MAX_FRAME: usize = 1024 * 1024;
+const MAX_DEPTH: usize = 128;
+const MAX_SAFE_ID: i64 = 9_007_199_254_740_991;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RpcId {
+    Number(i64),
+    String(String),
+}
+impl RpcId {
+    pub(crate) fn client(number: u64) -> Result<Self, RpcError> {
+        if number == 0 || number > MAX_SAFE_ID as u64 {
+            return Err(RpcError::Invalid("client id"));
+        }
+        Ok(Self::Number(number as i64))
+    }
+    fn json(&self) -> Result<Json, RpcError> {
+        match self {
+            Self::Number(value) if (-MAX_SAFE_ID..=MAX_SAFE_ID).contains(value) => {
+                Ok(Json::Number(value.to_string()))
+            }
+            Self::String(value) if nonempty(value) => Ok(s(value)),
+            _ => Err(RpcError::Invalid("rpc id")),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum RpcError {
+    Invalid(&'static str),
+    FrameTooLarge,
+    PartialFrame,
+    WrongId,
+    Json(AtomicError),
+    Utf8(std::str::Utf8Error),
+}
+impl From<AtomicError> for RpcError {
+    fn from(error: AtomicError) -> Self {
+        Self::Json(error)
+    }
+}
+impl From<std::str::Utf8Error> for RpcError {
+    fn from(error: std::str::Utf8Error) -> Self {
+        Self::Utf8(error)
+    }
+}
+
+/// The caller must obtain cwd, model, and effort from native H evidence.
+/// These are protocol parameters only: no grant, permission tier, or path
+/// authority is inferred from successful encoding or a Codex ACK.
+#[derive(Debug)]
+pub(crate) enum Command {
+    Initialize {
+        client_version: String,
+    },
+    Initialized,
+    ConfigRead {
+        cwd: String,
+    },
+    ThreadStart {
+        cwd: String,
+        model: String,
+    },
+    ThreadResume {
+        thread_id: String,
+        cwd: String,
+        model: String,
+    },
+    TurnStart {
+        thread_id: String,
+        cwd: String,
+        model: String,
+        effort: String,
+        text: String,
+    },
+    TurnSteer {
+        thread_id: String,
+        expected_turn_id: String,
+        text: String,
+    },
+    TurnInterrupt {
+        thread_id: String,
+        turn_id: String,
+    },
+    QuestionAnswer {
+        request_id: RpcId,
+        answers: BTreeMap<String, Vec<String>>,
+    },
+}
+
+impl Command {
+    fn method(&self) -> Option<&'static str> {
+        match self {
+            Self::Initialize { .. } => Some("initialize"),
+            Self::Initialized => Some("initialized"),
+            Self::ConfigRead { .. } => Some("config/read"),
+            Self::ThreadStart { .. } => Some("thread/start"),
+            Self::ThreadResume { .. } => Some("thread/resume"),
+            Self::TurnStart { .. } => Some("turn/start"),
+            Self::TurnSteer { .. } => Some("turn/steer"),
+            Self::TurnInterrupt { .. } => Some("turn/interrupt"),
+            Self::QuestionAnswer { .. } => None,
+        }
+    }
+
+    pub(crate) fn encode(&self, id: Option<&RpcId>) -> Result<Vec<u8>, RpcError> {
+        let value = match self {
+            Self::QuestionAnswer {
+                request_id,
+                answers,
+            } => {
+                if id.is_some() || answers.is_empty() {
+                    return Err(RpcError::Invalid("question answer"));
+                }
+                let mut entries = BTreeMap::new();
+                for (question, values) in answers {
+                    if !nonempty(question)
+                        || values.is_empty()
+                        || values.iter().any(|value| !nonempty(value))
+                    {
+                        return Err(RpcError::Invalid("question answers"));
+                    }
+                    entries.insert(
+                        k(question),
+                        obj([(
+                            "answers",
+                            Json::Array(values.iter().map(|v| s(v)).collect()),
+                        )]),
+                    );
+                }
+                obj([
+                    ("id", request_id.json()?),
+                    (
+                        "result",
+                        Json::Object(BTreeMap::from([(k("answers"), Json::Object(entries))])),
+                    ),
+                ])
+            }
+            other => {
+                let params = other.params()?;
+                let method = other.method().ok_or(RpcError::Invalid("method"))?;
+                let mut fields = BTreeMap::from([(k("method"), s(method)), (k("params"), params)]);
+                match (other, id) {
+                    (Self::Initialized, None) => {}
+                    (Self::Initialized, Some(_)) | (_, None) => {
+                        return Err(RpcError::Invalid("request id"))
+                    }
+                    (_, Some(id)) => {
+                        fields.insert(k("id"), id.json()?);
+                    }
+                }
+                Json::Object(fields)
+            }
+        };
+        let mut bytes = value.canonical().into_bytes();
+        bytes.push(b'\n');
+        if bytes.len() > MAX_FRAME {
+            return Err(RpcError::FrameTooLarge);
+        }
+        Ok(bytes)
+    }
+
+    fn params(&self) -> Result<Json, RpcError> {
+        match self {
+            Self::Initialize { client_version } => {
+                required(client_version, "client version")?;
+                return Ok(obj([
+                    (
+                        "clientInfo",
+                        obj([("name", s("gogoke")), ("version", s(client_version))]),
+                    ),
+                    ("capabilities", obj([])),
+                ]));
+            }
+            Self::Initialized => return Ok(obj([])),
+            Self::ConfigRead { cwd } => {
+                required(cwd, "cwd")?;
+                return Ok(obj([("cwd", s(cwd)), ("includeLayers", Json::Bool(true))]));
+            }
+            Self::ThreadStart { cwd, model } => {
+                required(cwd, "cwd")?;
+                required(model, "model")?;
+                return Ok(obj([
+                    ("cwd", s(cwd)),
+                    ("model", s(model)),
+                    ("ephemeral", Json::Bool(true)),
+                    ("config", memory_off()),
+                ]));
+            }
+            Self::ThreadResume {
+                thread_id,
+                cwd,
+                model,
+            } => {
+                required(thread_id, "thread id")?;
+                required(cwd, "cwd")?;
+                required(model, "model")?;
+                return Ok(obj([
+                    ("threadId", s(thread_id)),
+                    ("cwd", s(cwd)),
+                    ("model", s(model)),
+                    ("config", memory_off()),
+                ]));
+            }
+            Self::TurnStart {
+                thread_id,
+                cwd,
+                model,
+                effort,
+                text,
+            } => {
+                for (value, field) in [
+                    (thread_id, "thread id"),
+                    (cwd, "cwd"),
+                    (model, "model"),
+                    (effort, "effort"),
+                    (text, "text"),
+                ] {
+                    required(value, field)?;
+                }
+                return Ok(obj([
+                    ("threadId", s(thread_id)),
+                    ("cwd", s(cwd)),
+                    ("model", s(model)),
+                    ("effort", s(effort)),
+                    ("input", text_input(text)),
+                ]));
+            }
+            Self::TurnSteer {
+                thread_id,
+                expected_turn_id,
+                text,
+            } => {
+                required(thread_id, "thread id")?;
+                required(expected_turn_id, "turn id")?;
+                required(text, "text")?;
+                return Ok(obj([
+                    ("threadId", s(thread_id)),
+                    ("expectedTurnId", s(expected_turn_id)),
+                    ("input", text_input(text)),
+                ]));
+            }
+            Self::TurnInterrupt { thread_id, turn_id } => {
+                required(thread_id, "thread id")?;
+                required(turn_id, "turn id")?;
+                return Ok(obj([("threadId", s(thread_id)), ("turnId", s(turn_id))]));
+            }
+            Self::QuestionAnswer { .. } => return Err(RpcError::Invalid("question answer params")),
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum TurnStatus {
+    InProgress,
+    Completed,
+    Interrupted,
+    Failed,
+}
+
+#[derive(Debug)]
+pub(crate) struct Question {
+    pub(crate) id: String,
+    pub(crate) header: String,
+    pub(crate) question: String,
+    pub(crate) is_other: bool,
+    pub(crate) is_secret: bool,
+    pub(crate) options: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct QuestionCard {
+    pub(crate) request_id: RpcId,
+    pub(crate) thread_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) item_id: String,
+    pub(crate) auto_resolution_ms: Option<u64>,
+    pub(crate) questions: Vec<Question>,
+}
+impl QuestionCard {
+    pub(crate) fn answer(
+        &self,
+        answers: BTreeMap<String, Vec<String>>,
+    ) -> Result<Command, RpcError> {
+        let expected: BTreeSet<_> = self
+            .questions
+            .iter()
+            .map(|question| question.id.as_str())
+            .collect();
+        if expected.len() != answers.len()
+            || answers.keys().any(|id| !expected.contains(id.as_str()))
+            || answers
+                .values()
+                .any(|values| values.is_empty() || values.iter().any(|value| !nonempty(value)))
+        {
+            return Err(RpcError::Invalid("question answer ids"));
+        }
+        Ok(Command::QuestionAnswer {
+            request_id: self.request_id.clone(),
+            answers,
+        })
+    }
+}
+
+/// Responses are correlated against the one H-journaled in-flight command.
+/// Notifications and unknown server requests are raw events, never authority.
+#[derive(Debug)]
+pub(crate) enum Reply {
+    Initialized {
+        id: RpcId,
+    },
+    MemoryOff {
+        id: RpcId,
+        cwd: String,
+    },
+    Thread {
+        id: RpcId,
+        thread_id: String,
+        cwd: String,
+    },
+    Turn {
+        id: RpcId,
+        turn_id: String,
+        status: TurnStatus,
+    },
+    Ack {
+        id: RpcId,
+    },
+    /// Parsed provider observation. H must bind it to current native custody.
+    TurnNotification {
+        thread_id: String,
+        turn_id: String,
+        status: TurnStatus,
+        raw_frame: Vec<u8>,
+    },
+    CompactionItem {
+        thread_id: String,
+        item_id: String,
+        raw_frame: Vec<u8>,
+    },
+    RemoteError {
+        id: RpcId,
+        raw_frame: Vec<u8>,
+    },
+    Event {
+        method: String,
+        raw_frame: Vec<u8>,
+    },
+    ServerRequest {
+        id: RpcId,
+        method: String,
+        raw_frame: Vec<u8>,
+    },
+    Question(QuestionCard),
+}
+
+pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Result<Reply, RpcError> {
+    let body = frame_body(frame)?;
+    let Json::Object(fields) = Parser::parse(std::str::from_utf8(body)?)? else {
+        return Err(RpcError::Invalid("top-level object"));
+    };
+    if let Some(method_value) = fields.get(&k("method")) {
+        if fields.contains_key(&k("result")) || fields.contains_key(&k("error")) {
+            return Err(RpcError::Invalid("method/result overlap"));
+        }
+        let method = string(method_value, "method")?;
+        if let Some(id_value) = fields.get(&k("id")) {
+            let id = parse_id(id_value)?;
+            if method == "item/tool/requestUserInput" {
+                return Ok(Reply::Question(parse_question(
+                    id,
+                    fields.get(&k("params")),
+                )?));
+            }
+            return Ok(Reply::ServerRequest {
+                id,
+                method,
+                raw_frame: frame.to_vec(),
+            });
+        }
+        return notification(method, fields.get(&k("params")), frame);
+    }
+    let id = parse_id(
+        fields
+            .get(&k("id"))
+            .ok_or(RpcError::Invalid("response id"))?,
+    )?;
+    let Some((expected, command)) = pending else {
+        return Err(RpcError::WrongId);
+    };
+    if &id != expected {
+        return Err(RpcError::WrongId);
+    }
+    let result = fields.get(&k("result"));
+    let error = fields.get(&k("error"));
+    if result.is_some() == error.is_some() {
+        return Err(RpcError::Invalid("result/error exclusivity"));
+    }
+    if error.is_some() {
+        return Ok(Reply::RemoteError {
+            id,
+            raw_frame: frame.to_vec(),
+        });
+    }
+    let result = result.expect("exclusive result");
+    match command {
+        Command::Initialize { .. } => {
+            object(result, "initialize result")?;
+            Ok(Reply::Initialized { id })
+        }
+        Command::ConfigRead { cwd } => {
+            let config = object(
+                field(object(result, "config/read result")?, "config")?,
+                "config",
+            )?;
+            let features = object(field(config, "features")?, "features")?;
+            let memories = object(field(config, "memories")?, "memories")?;
+            if !matches!(features.get(&k("memories")), Some(Json::Bool(false)))
+                || !matches!(
+                    memories.get(&k("generate_memories")),
+                    Some(Json::Bool(false))
+                )
+                || !matches!(memories.get(&k("use_memories")), Some(Json::Bool(false)))
+            {
+                return Err(RpcError::Invalid("effective memory not disabled"));
+            }
+            Ok(Reply::MemoryOff {
+                id,
+                cwd: cwd.clone(),
+            })
+        }
+        Command::ThreadStart { cwd, .. } | Command::ThreadResume { cwd, .. } => {
+            let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
+            let found = string(field(thread, "id")?, "thread id")?;
+            let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
+            if &actual_cwd != cwd {
+                return Err(RpcError::Invalid("thread cwd mismatch"));
+            }
+            if let Command::ThreadResume { thread_id, .. } = command {
+                if &found != thread_id {
+                    return Err(RpcError::Invalid("thread id mismatch"));
+                }
+            }
+            Ok(Reply::Thread {
+                id,
+                thread_id: found,
+                cwd: actual_cwd,
+            })
+        }
+        Command::TurnStart { .. } => {
+            let turn = object(field(object(result, "turn result")?, "turn")?, "turn")?;
+            let turn_id = string(field(turn, "id")?, "turn id")?;
+            let status = match string(field(turn, "status")?, "turn status")?.as_str() {
+                "inProgress" => TurnStatus::InProgress,
+                "completed" => TurnStatus::Completed,
+                "interrupted" => TurnStatus::Interrupted,
+                "failed" => TurnStatus::Failed,
+                _ => return Err(RpcError::Invalid("turn status")),
+            };
+            Ok(Reply::Turn {
+                id,
+                turn_id,
+                status,
+            })
+        }
+        Command::TurnSteer {
+            expected_turn_id, ..
+        } => {
+            let found = string(
+                field(object(result, "turn steer result")?, "turnId")?,
+                "turn id",
+            )?;
+            if &found != expected_turn_id {
+                return Err(RpcError::Invalid("turn id mismatch"));
+            }
+            Ok(Reply::Ack { id })
+        }
+        Command::TurnInterrupt { .. } => {
+            if !object(result, "interrupt result")?.is_empty() {
+                return Err(RpcError::Invalid("interrupt result"));
+            }
+            Ok(Reply::Ack { id })
+        }
+        Command::Initialized | Command::QuestionAnswer { .. } => {
+            Err(RpcError::Invalid("unexpected response"))
+        }
+    }
+}
+
+fn parse_question(id: RpcId, params: Option<&Json>) -> Result<QuestionCard, RpcError> {
+    let params = object(
+        params.ok_or(RpcError::Invalid("question params"))?,
+        "question params",
+    )?;
+    let thread_id = string(field(params, "threadId")?, "thread id")?;
+    let turn_id = string(field(params, "turnId")?, "turn id")?;
+    let item_id = string(field(params, "itemId")?, "item id")?;
+    let auto_resolution_ms = match params.get(&k("autoResolutionMs")) {
+        None | Some(Json::Null) => None,
+        Some(Json::Number(value)) => {
+            let value = value
+                .parse::<u64>()
+                .map_err(|_| RpcError::Invalid("autoResolutionMs"))?;
+            if value > MAX_SAFE_ID as u64 {
+                return Err(RpcError::Invalid("autoResolutionMs"));
+            }
+            Some(value)
+        }
+        _ => return Err(RpcError::Invalid("autoResolutionMs")),
+    };
+    let Json::Array(entries) = field(params, "questions")? else {
+        return Err(RpcError::Invalid("questions"));
+    };
+    if entries.is_empty() {
+        return Err(RpcError::Invalid("questions"));
+    }
+    let mut seen = BTreeSet::new();
+    let mut questions = Vec::new();
+    for entry in entries {
+        let entry = object(entry, "question")?;
+        let id = string(field(entry, "id")?, "question id")?;
+        if !seen.insert(id.clone()) {
+            return Err(RpcError::Invalid("duplicate question id"));
+        }
+        let header = string(field(entry, "header")?, "question header")?;
+        let question = string(field(entry, "question")?, "question text")?;
+        let is_other = optional_bool(entry, "isOther")?;
+        let is_secret = optional_bool(entry, "isSecret")?;
+        let options = match entry.get(&k("options")) {
+            None | Some(Json::Null) => None,
+            Some(Json::Array(options)) => Some(
+                options
+                    .iter()
+                    .map(|option| {
+                        let option = object(option, "option")?;
+                        Ok((
+                            string(field(option, "label")?, "option label")?,
+                            string(field(option, "description")?, "option description")?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, RpcError>>()?,
+            ),
+            _ => return Err(RpcError::Invalid("options")),
+        };
+        questions.push(Question {
+            id,
+            header,
+            question,
+            is_other,
+            is_secret,
+            options,
+        });
+    }
+    Ok(QuestionCard {
+        request_id: id,
+        thread_id,
+        turn_id,
+        item_id,
+        auto_resolution_ms,
+        questions,
+    })
+}
+
+fn notification(method: String, params: Option<&Json>, raw: &[u8]) -> Result<Reply, RpcError> {
+    if method == "turn/started" || method == "turn/completed" {
+        let params = object(
+            params.ok_or(RpcError::Invalid("turn notification params"))?,
+            "turn notification",
+        )?;
+        let thread_id = string(field(params, "threadId")?, "notification thread id")?;
+        let turn = object(field(params, "turn")?, "notification turn")?;
+        let turn_id = string(field(turn, "id")?, "notification turn id")?;
+        let status = if method == "turn/started" {
+            TurnStatus::InProgress
+        } else {
+            match string(field(turn, "status")?, "terminal status")?.as_str() {
+                "completed" => TurnStatus::Completed,
+                "interrupted" => TurnStatus::Interrupted,
+                "failed" => TurnStatus::Failed,
+                _ => return Err(RpcError::Invalid("terminal status")),
+            }
+        };
+        return Ok(Reply::TurnNotification {
+            thread_id,
+            turn_id,
+            status,
+            raw_frame: raw.to_vec(),
+        });
+    }
+    if method == "item/completed" {
+        let params = object(
+            params.ok_or(RpcError::Invalid("item notification params"))?,
+            "item notification",
+        )?;
+        let item = object(field(params, "item")?, "item")?;
+        if matches!(item.get(&k("type")),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some("contextCompaction"))
+        {
+            return Ok(Reply::CompactionItem {
+                thread_id: string(field(params, "threadId")?, "item thread id")?,
+                item_id: string(field(item, "id")?, "item id")?,
+                raw_frame: raw.to_vec(),
+            });
+        }
+    }
+    Ok(Reply::Event {
+        method,
+        raw_frame: raw.to_vec(),
+    })
+}
+
+fn frame_body(frame: &[u8]) -> Result<&[u8], RpcError> {
+    if frame.len() > MAX_FRAME {
+        return Err(RpcError::FrameTooLarge);
+    }
+    if frame.len() < 2 || frame.last() != Some(&b'\n') || frame[..frame.len() - 1].contains(&b'\n')
+    {
+        return Err(RpcError::PartialFrame);
+    }
+    let body = if frame.get(frame.len() - 2) == Some(&b'\r') {
+        &frame[..frame.len() - 2]
+    } else {
+        &frame[..frame.len() - 1]
+    };
+    if body.is_empty() || body.contains(&b'\r') || !depth_ok(body) {
+        return Err(RpcError::Invalid("frame shape"));
+    }
+    Ok(body)
+}
+fn depth_ok(bytes: &[u8]) -> bool {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for &byte in bytes {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else if byte == b'"' {
+            quoted = true;
+        } else if byte == b'{' || byte == b'[' {
+            depth += 1;
+            if depth > MAX_DEPTH {
+                return false;
+            }
+        } else if byte == b'}' || byte == b']' {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    !quoted && depth == 0
+}
+fn parse_id(value: &Json) -> Result<RpcId, RpcError> {
+    match value {
+        Json::String(value) => {
+            let value = value
+                .to_well_formed_string()
+                .ok_or(RpcError::Invalid("rpc id Unicode"))?;
+            if !nonempty(&value) {
+                return Err(RpcError::Invalid("rpc id"));
+            }
+            Ok(RpcId::String(value))
+        }
+        Json::Number(value) => {
+            let parsed = value
+                .parse::<i64>()
+                .map_err(|_| RpcError::Invalid("rpc numeric id"))?;
+            if !(-MAX_SAFE_ID..=MAX_SAFE_ID).contains(&parsed) {
+                return Err(RpcError::Invalid("rpc numeric id"));
+            }
+            Ok(RpcId::Number(parsed))
+        }
+        _ => Err(RpcError::Invalid("rpc id")),
+    }
+}
+fn k(value: &str) -> JsonString {
+    JsonString::from_str(value)
+}
+fn s(value: &str) -> Json {
+    Json::String(k(value))
+}
+fn obj<const N: usize>(fields: [(&str, Json); N]) -> Json {
+    Json::Object(
+        fields
+            .into_iter()
+            .map(|(key, value)| (k(key), value))
+            .collect(),
+    )
+}
+fn nonempty(value: &str) -> bool {
+    !value.is_empty() && !value.contains('\0')
+}
+fn required(value: &str, field: &'static str) -> Result<(), RpcError> {
+    if nonempty(value) {
+        Ok(())
+    } else {
+        Err(RpcError::Invalid(field))
+    }
+}
+fn memory_off() -> Json {
+    obj([
+        ("features", obj([("memories", Json::Bool(false))])),
+        (
+            "memories",
+            obj([
+                ("generate_memories", Json::Bool(false)),
+                ("use_memories", Json::Bool(false)),
+            ]),
+        ),
+    ])
+}
+fn text_input(text: &str) -> Json {
+    Json::Array(vec![obj([("type", s("text")), ("text", s(text))])])
+}
+fn object<'a>(
+    value: &'a Json,
+    field: &'static str,
+) -> Result<&'a BTreeMap<JsonString, Json>, RpcError> {
+    let Json::Object(fields) = value else {
+        return Err(RpcError::Invalid(field));
+    };
+    Ok(fields)
+}
+fn field<'a>(
+    fields: &'a BTreeMap<JsonString, Json>,
+    name: &'static str,
+) -> Result<&'a Json, RpcError> {
+    fields.get(&k(name)).ok_or(RpcError::Invalid(name))
+}
+fn string(value: &Json, field: &'static str) -> Result<String, RpcError> {
+    let Json::String(value) = value else {
+        return Err(RpcError::Invalid(field));
+    };
+    let value = value
+        .to_well_formed_string()
+        .ok_or(RpcError::Invalid(field))?;
+    required(&value, field)?;
+    Ok(value)
+}
+fn optional_bool(
+    fields: &BTreeMap<JsonString, Json>,
+    name: &'static str,
+) -> Result<bool, RpcError> {
+    match fields.get(&k(name)) {
+        None => Ok(false),
+        Some(Json::Bool(value)) => Ok(*value),
+        _ => Err(RpcError::Invalid(name)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_initialize_and_native_thread_turn_fields() {
+        let id = RpcId::client(1).unwrap();
+        let init = Command::Initialize {
+            client_version: "0.1.0".into(),
+        };
+        let bytes = init.encode(Some(&id)).unwrap();
+        assert_eq!(bytes,b"{\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{},\"clientInfo\":{\"name\":\"gogoke\",\"version\":\"0.1.0\"}}}\n".to_vec());
+        assert!(matches!(
+            decode(
+                br#"{"id":1,"result":{"userAgent":"codex/0.149"}}
+"#,
+                Some((&id, &init))
+            )
+            .unwrap(),
+            Reply::Initialized { .. }
+        ));
+        assert_eq!(
+            Command::Initialized.encode(None).unwrap(),
+            b"{\"method\":\"initialized\",\"params\":{}}\n".to_vec()
+        );
+        let start = Command::ThreadStart {
+            cwd: "D:/sealed-tree".into(),
+            model: "gpt-6-sol".into(),
+        };
+        let encoded =
+            String::from_utf8(start.encode(Some(&RpcId::client(2).unwrap())).unwrap()).unwrap();
+        assert!(encoded.contains("\"ephemeral\":true"));
+        assert!(encoded.contains("\"model\":\"gpt-6-sol\""));
+        assert!(encoded.contains("\"use_memories\":false"));
+        let turn = Command::TurnStart {
+            thread_id: "thread-a".into(),
+            cwd: "D:/sealed-tree".into(),
+            model: "gpt-6-sol".into(),
+            effort: "high".into(),
+            text: "hello".into(),
+        };
+        let encoded =
+            String::from_utf8(turn.encode(Some(&RpcId::client(3).unwrap())).unwrap()).unwrap();
+        assert!(encoded.contains("\"effort\":\"high\""));
+        assert!(encoded.contains("\"input\":[{\"text\":\"hello\",\"type\":\"text\"}]"));
+    }
+
+    #[test]
+    fn effective_memory_off_requires_three_direct_config_facts() {
+        let id = RpcId::client(4).unwrap();
+        let read = Command::ConfigRead {
+            cwd: "D:/sealed-tree".into(),
+        };
+        let request = String::from_utf8(read.encode(Some(&id)).unwrap()).unwrap();
+        assert!(request.contains("\"includeLayers\":true"));
+        let good=b"{\"id\":4,\"result\":{\"config\":{\"features\":{\"memories\":false},\"memories\":{\"generate_memories\":false,\"use_memories\":false}}}}\n";
+        assert!(
+            matches!(decode(good,Some((&id,&read))).unwrap(),Reply::MemoryOff{cwd,..} if cwd=="D:/sealed-tree")
+        );
+        let bad=b"{\"id\":4,\"result\":{\"config\":{\"features\":{\"memories\":false},\"memories\":{\"generate_memories\":true,\"use_memories\":false}}}}\n";
+        assert!(matches!(
+            decode(bad, Some((&id, &read))),
+            Err(RpcError::Invalid("effective memory not disabled"))
+        ));
+    }
+
+    #[test]
+    fn response_id_shape_error_and_duplicate_key_fail_closed() {
+        let id = RpcId::client(7).unwrap();
+        let command = Command::TurnSteer {
+            thread_id: "t".into(),
+            expected_turn_id: "turn-a".into(),
+            text: "x".into(),
+        };
+        assert!(matches!(
+            decode(
+                b"{\"id\":8,\"result\":{\"turnId\":\"turn-a\"}}\n",
+                Some((&id, &command))
+            ),
+            Err(RpcError::WrongId)
+        ));
+        assert!(matches!(
+            decode(
+                b"{\"id\":7,\"result\":{},\"error\":{}}\n",
+                Some((&id, &command))
+            ),
+            Err(RpcError::Invalid("result/error exclusivity"))
+        ));
+        assert!(matches!(
+            decode(
+                b"{\"id\":7,\"id\":7,\"result\":{}}\n",
+                Some((&id, &command))
+            ),
+            Err(RpcError::Json(_))
+        ));
+        assert!(matches!(
+            decode(
+                b"{\"id\":7,\"result\":{\"turnId\":\"a\",\"turnId\":\"b\"}}\n",
+                Some((&id, &command))
+            ),
+            Err(RpcError::Json(_))
+        ));
+        assert!(matches!(
+            decode(b"{\"id\":7,\"result\":{}}", Some((&id, &command))),
+            Err(RpcError::PartialFrame)
+        ));
+        let mut oversized = vec![b' '; MAX_FRAME];
+        oversized.push(b'\n');
+        assert!(matches!(
+            decode(&oversized, Some((&id, &command))),
+            Err(RpcError::FrameTooLarge)
+        ));
+        assert!(matches!(
+            decode(
+                b"{\"id\":7,\"result\":{}}\n{\"id\":7}\n",
+                Some((&id, &command))
+            ),
+            Err(RpcError::PartialFrame)
+        ));
+        let error = b"{\"id\":7,\"error\":{\"code\":-32001,\"message\":\"original detail\"}}\n";
+        match decode(error, Some((&id, &command))).unwrap() {
+            Reply::RemoteError { raw_frame, .. } => assert_eq!(raw_frame, error.to_vec()),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thread_turn_and_question_are_correlated_without_authority() {
+        let id = RpcId::client(2).unwrap();
+        let start = Command::ThreadStart {
+            cwd: "D:/sealed-tree".into(),
+            model: "m".into(),
+        };
+        let frame=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        assert!(
+            matches!(decode(frame,Some((&id,&start))).unwrap(),Reply::Thread{thread_id,..} if thread_id=="thread-a")
+        );
+        let turn = Command::TurnStart {
+            thread_id: "thread-a".into(),
+            cwd: "D:/sealed-tree".into(),
+            model: "m".into(),
+            effort: "high".into(),
+            text: "go".into(),
+        };
+        assert!(matches!(
+            decode(
+                b"{\"id\":2,\"result\":{\"turn\":{\"id\":\"turn-a\",\"status\":\"inProgress\"}}}\n",
+                Some((&id, &turn))
+            )
+            .unwrap(),
+            Reply::Turn {
+                status: TurnStatus::InProgress,
+                ..
+            }
+        ));
+        let question=b"{\"id\":\"ask-1\",\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"thread-a\",\"turnId\":\"turn-a\",\"itemId\":\"item-a\",\"questions\":[{\"id\":\"q1\",\"header\":\"Choice\",\"question\":\"Proceed?\",\"options\":[{\"label\":\"Yes\",\"description\":\"Proceed\"}]}]}}\n";
+        let Reply::Question(card) = decode(question, Some((&id, &turn))).unwrap() else {
+            panic!("question");
+        };
+        assert_eq!(card.thread_id, "thread-a");
+        assert!(card.answer(BTreeMap::new()).is_err());
+        let answer = card
+            .answer(BTreeMap::from([("q1".into(), vec!["Yes".into()])]))
+            .unwrap();
+        let encoded = String::from_utf8(answer.encode(None).unwrap()).unwrap();
+        assert!(encoded.contains("\"id\":\"ask-1\""));
+        assert!(encoded.contains("\"answers\":{\"q1\":{\"answers\":[\"Yes\"]}}"));
+        assert!(
+            matches!(decode(b"{\"method\":\"future/new\",\"params\":{\"ok\":true}}\n",None).unwrap(),Reply::Event{method,..} if method=="future/new")
+        );
+        assert!(
+            matches!(decode(b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-a\",\"turn\":{\"id\":\"turn-a\",\"status\":\"completed\"}}}\n",None).unwrap(),
+            Reply::TurnNotification {thread_id,turn_id,status:TurnStatus::Completed,..}
+                if thread_id=="thread-a" && turn_id=="turn-a")
+        );
+        assert!(
+            matches!(decode(b"{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-a\",\"item\":{\"type\":\"contextCompaction\",\"id\":\"item-a\"}}}\n",None).unwrap(),
+            Reply::CompactionItem {item_id,..} if item_id=="item-a")
+        );
+    }
+}
