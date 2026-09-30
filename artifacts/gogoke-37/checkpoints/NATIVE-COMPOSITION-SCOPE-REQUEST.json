@@ -1,0 +1,57 @@
+{
+  "schema": "gogoke.37.construction-scope-request.v1",
+  "state": "PROPOSED_NOT_AUTHORIZED",
+  "repository": "taiyun668/gogoke",
+  "source_head": "b4085f9ce175f78ce367db706a569b80bee3033a",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "logic": "The frozen PLAN.json write_scope plus shared_files list does not include the existing ProductDatabase composition or its v37 child modules. Native H/F must enter the existing single verified DB/OwnerIssuer/ProcessCustodian composition. A wiring dependency does not itself authorize absent paths; the separate candidate-chain scope precedent explicitly preserves this distinction.",
+  "existing_branch_state": "Earlier construction already changed these six unlisted paths for User ingress, instance login and seat/admission wiring. No separate authorization for these paths was found in repository scope receipts. This proposal neither treats that historical implementation as authorization nor discards it.",
+  "requested_changes": [
+    {
+      "path": "apps/desktop/native-host/src/store/product_database.rs",
+      "change": "Minimal User dispatch and ownership/lifetime of H/F state on the existing composition; no raw DB/issuer accessors."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_seat.rs",
+      "change": "Owner-private instance/seat/source configuration; no service/model routing into this plane."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_session.rs",
+      "change": "Same-store admission and logical-ID-only worktree/session entry; native E/F facts provide paths, pins and permissions."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_session_tests.rs",
+      "change": "Direct native integration and original-request/negative/restart tests for those entry points."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+      "change": "Keep existing actual pinned CLI login/account observation composition and direct errors; never read/copy credentials."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_login_trace.rs",
+      "change": "Cloud-only direct errors from the actual prepared CLI PID, absent from release builds; no acceptance inference."
+    }
+  ],
+  "preserved_boundaries": [
+    "Bound design37 goal, contract families, permission tiers and authority model unchanged",
+    "One existing verified native DB, OwnerIssuer and ProcessCustodian; no copied DB or second authority",
+    "RootLock, E/F current identities, exact program bytes, LPAC/Job custody, original-request UNKNOWN fencing and stop facts",
+    "Test seats write only host-created isolated worktrees for the private gogoke-seat-testbed; no formal data, registration or shortcuts touched",
+    "No local native build, credential reads/copies, security-setting changes, code signing, public release, main merge or self acceptance"
+  ],
+  "reviewable_wip": {
+    "root_owned_uncommitted_paths": [
+      "apps/desktop/native-host/src/store/product_database.rs",
+      "apps/desktop/native-host/src/store/product_database/v37_seat.rs",
+      "apps/desktop/native-host/src/store/product_database/v37_session.rs",
+      "apps/desktop/native-host/src/store/worktree/mod.rs"
+    ],
+    "private_patch": "%LOCALAPPDATA%/gogoke-audit/pending-user-worktree-ingress-b4085f9c.patch",
+    "sha256": "711773c79e4e0722048edb3223f2708c28d505c4b809e33338ca3af8cf8e20ba",
+    "state": "PRESERVED_NOT_COMMITTED_NOT_CLOUD_TESTED",
+    "planned_behavior": "Separate Owner source configuration observes/pins actual Git and source facts; closed K-WORKTREE create takes logical IDs, reads exact original outcome before any fresh Git operation, and refuses UNKNOWN or mismatched source/pin."
+  },
+  "owner_action_needed": "Authorize these exact six existing composition paths for the minimal authorized H/F/L0 delivery, or have Claude revise the plan and complete MANIFEST reauthorization. This does not request new product permissions or main merge authority.",
+  "not_done": "No additional source implementation proceeds across this unresolved path boundary; M1 and OT4 readiness remain incomplete."
+}
