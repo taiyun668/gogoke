@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       source_commit:
-        description: Exact desktop build commit; also the branch smoke workflow revision
+        description: Exact frozen desktop build commit; smoke code uses its dispatch revision
         required: true
         type: string
       run_id:
@@ -314,7 +314,8 @@ jobs:
           if ($env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke' -or
               $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
               $env:GITHUB_REF -cne 'refs/heads/codex/gogoke-37-l0' -or
-              $env:GITHUB_SHA -cne $env:SOURCE_COMMIT_INPUT -or
+              $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$' -or
+              $env:SOURCE_COMMIT_INPUT -cnotmatch '^[0-9a-f]{40}$' -or
               (git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
             throw 'Installed smoke did not load its exact execution branch revision.'
           }
@@ -375,6 +376,7 @@ jobs:
               '-ExpectedNodeSha256', '${{ steps.preflight.outputs.node_sha256 }}',
               '-ExpectedVersion', '${{ steps.preflight.outputs.version }}',
               '-ExpectedSourceCommit', $env:SOURCE_COMMIT_INPUT,
+              '-ExpectedSmokeCommit', '${{ github.sha }}',
               '-ExpectedRunId', '${{ steps.preflight.outputs.source_run_id }}',
               '-ExpectedRunAttempt', '${{ steps.preflight.outputs.source_run_attempt }}',
               '-ExpectedArtifactId', '${{ steps.preflight.outputs.source_artifact_id }}',
@@ -398,6 +400,7 @@ jobs:
               '-ExpectedSourceArtifactId', '${{ steps.preflight.outputs.source_artifact_id }}',
               '-ExpectedVersion', '${{ steps.preflight.outputs.version }}',
               '-ExpectedSourceCommit', $env:SOURCE_COMMIT_INPUT,
+              '-ExpectedSmokeCommit', '${{ github.sha }}',
               '-ExpectedRunId', '${{ steps.preflight.outputs.source_run_id }}',
               '-ExpectedRunAttempt', '${{ steps.preflight.outputs.source_run_attempt }}',
               '-ExpectedSmokeRunId', '${{ github.run_id }}',

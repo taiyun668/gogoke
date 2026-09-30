@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.candidate-signing-input.v1",
-  "state": "EXACT_FROZEN_INPUT_READY_MAIN_ACTIVATION_PENDING",
+  "state": "SIGNED_EXACT_FROZEN_BYTES_SMOKE_INSTRUMENT_REPAIR",
   "repository": "taiyun668/gogoke",
   "sourceCommit": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
   "sourceBranch": "codex/gogoke-37-l0",
@@ -90,9 +90,11 @@
   "mainActivation": {
     "pr": 57,
     "head": "19be2793a41c18a0898198d7789d48a0e822fcbc",
-    "state": "OPEN_OWNER_MERGE_PENDING",
+    "state": "OWNER_MERGED_PRECISE_READBACK_PASS",
     "scopeReceipt": "artifacts/gogoke-37/intake/CANDIDATE_CHAIN_SCOPE_RECEIPT.json",
-    "reason": "Construction is limited to execution branch; receipt reserves main activation to Owner. Candidate signer requires trusted main and existing candidate-resource-signing environment."
+    "reason": "Construction is limited to execution branch; receipt reserves main activation to Owner. Candidate signer requires trusted main and existing candidate-resource-signing environment.",
+    "mergeCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+    "authorizedBlobsUnchanged": true
   },
   "afterOwnerMerge": [
     "Fetch main and precisely read PR57 merge, actual main workflow/verifier blobs and unchanged authorization manifest/receipt before dispatch.",
@@ -103,9 +105,43 @@
   "mainDispatch": "gh workflow run gogoke-candidate-sign.yml --repo taiyun668/gogoke --ref main -f source_commit=b989cd53f8d850fc27df50f9ed02fa7b0521bd82 -f run_id=36724062942 -f run_attempt=1 -f artifact_id=11103858479",
   "candidateKey": "Existing CI candidate key only; no key read, export, change or signing in this checkpoint.",
   "publication": false,
-  "signing": "NOT_RUN",
-  "cloudInstalledSmoke": "NOT_RUN",
-  "ordinaryWin11": "NOT_RUN",
+  "signing": {
+    "state": "PASS",
+    "runId": 36790723873,
+    "runAttempt": 1,
+    "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+    "artifactId": 11131322459,
+    "archiveDigest": "sha256:d322d388356170738d495be1656c38a1fb4bb23609a30b6ed971dd5d5bb14a27",
+    "localMemberReadback": {
+      "verified": 7,
+      "mismatches": 0
+    },
+    "localPurposeBoundP256Verification": "PASS",
+    "manifestSha256": "1717403264aa116cada3b469a54e641f9f6942d3be4e66609080eb4fb31a9d27",
+    "signatureSha256": "116f0f519ce5c0d950c7579282d0cf35ae1585d689ed0423d98a88a6221de8a7"
+  },
+  "cloudInstalledSmoke": {
+    "state": "FAIL_BEFORE_INSTALL_INSTRUMENT_IDENTITY_ASSERTION",
+    "runId": 36790842113,
+    "reason": "Smoke dispatch checkout f0c7b6ed was incorrectly required to equal frozen source b989cd53; checkpoint-only commits advanced the branch. Separate exact workflow checkout and frozen source identities; require authorized source ancestry and all original signed build and member checks. Product bytes are unchanged; no resign or rebuild."
+  },
+  "ordinaryWin11": {
+    "state": "FRESH_ORDINARY_PATH_AND_BASELINE_PASS_INSTALL_NOT_RUN",
+    "actualLocalAndRoamingPathsVerified": true,
+    "baselineTask": "Interactive/Limited",
+    "lastTaskResult": 0,
+    "packageStatus": 15700,
+    "session": 1,
+    "sacState": 1,
+    "gogokeProcessesBeforeBaseline": 0,
+    "formalFileCount": 12989,
+    "formalTreeSha256": "1eeed52ee69720002af6482c36871d6574c6f31995a2f6841dd9f3dc83e8d4c1",
+    "formalDataFileCount": 4,
+    "formalDataTreeSha256": "c4725cac68d0472fdb17ec8f0262970f7b9bbc74b4fbac49f342cf8822c5fc1d",
+    "privateBaselineSha256": "2db49816274c4dda520dbc84f07ab563baba3b86378c60b45a5c595be0f4e3e3",
+    "completedOwnedTaskRemoved": true,
+    "baselinePrivate": true
+  },
   "OT4": "NOT_REQUESTED",
   "M1Complete": false,
   "acceptance": false

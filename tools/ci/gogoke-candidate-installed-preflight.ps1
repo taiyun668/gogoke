@@ -205,7 +205,7 @@ function Assert-SignedManifest([string]$Directory, [string]$SourceCommit) {
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
     $env:GITHUB_SERVER_URL -cne 'https://github.com' -or $env:GITHUB_REPOSITORY -cne $repo -or
     $env:GITHUB_REF -cne "refs/heads/$branch" -or
-    $env:GITHUB_SHA -cne $ExpectedSourceCommit -or
+    $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$' -or
     $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') {
     throw 'Candidate preflight requires the exact controlled branch workflow checkout'
 }
@@ -223,7 +223,7 @@ if (-not [IO.Path]::IsPathFullyQualified($script:ghPath)) { throw 'gh executable
 $signRun = Read-Api "repos/$repo/actions/runs/$SigningRunId"
 Assert-Run $signRun $SigningRunId $SigningRunAttempt $signRun.head_sha 'main' $signingWorkflow 'gogoke candidate resource signing'
 if ($signRun.head_sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Trusted signing main SHA is malformed' }
-foreach ($revision in @('main', $signRun.head_sha, $ExpectedSourceCommit)) {
+foreach ($revision in @('main', $signRun.head_sha, $ExpectedSourceCommit, $env:GITHUB_SHA)) {
     $manifestMetadata = Read-Api "repos/$repo/contents/$manifestPath`?ref=$revision"
     $receiptMetadata = Read-Api "repos/$repo/contents/$receiptPath`?ref=$revision"
     if ($manifestMetadata.type -cne 'file' -or $manifestMetadata.sha -cne $manifestBlob -or
@@ -235,6 +235,14 @@ $comparison = Read-Api "repos/$repo/compare/$authorizationMain...$ExpectedSource
 if ($comparison.status -cnotin @('ahead', 'identical') -or
     $comparison.merge_base_commit.sha -cne $authorizationMain) {
     throw 'Source revision is not descended from the authorized main commit'
+}
+# Smoke code can advance independently of an already frozen product (for example,
+# checkpoint-only commits or a smoke-instrument fix). Both identities stay exact:
+# this code is the dispatch checkout, and the signed build is its authorized ancestor.
+$smokeComparison = Read-Api "repos/$repo/compare/$ExpectedSourceCommit...$($env:GITHUB_SHA)"
+if ($smokeComparison.status -cnotin @('ahead', 'identical') -or
+    $smokeComparison.merge_base_commit.sha -cne $ExpectedSourceCommit) {
+    throw 'Smoke workflow revision is not descended from the exact frozen source'
 }
 Assert-UniqueJob $SigningRunId $SigningRunAttempt 'Verify source run and sign candidate resource bytes'
 # The source run ID is in the name, but only the signed manifest can provide it.

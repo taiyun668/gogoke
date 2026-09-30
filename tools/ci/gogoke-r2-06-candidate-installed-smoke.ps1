@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedNodeSha256,
     [Parameter(Mandatory = $true)][ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')][string]$ExpectedVersion,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSourceCommit,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSmokeCommit,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedRunId,
     [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedRunAttempt,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedArtifactId,
@@ -36,6 +37,7 @@ $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
     sourceCommit = $ExpectedSourceCommit
+    smokeCommit = $ExpectedSmokeCommit
     sourceRunId = $ExpectedRunId
     sourceRunAttempt = $ExpectedRunAttempt
     sourceArtifactId = $ExpectedArtifactId
@@ -149,7 +151,7 @@ try {
         throw 'Candidate installed smoke requires GitHub-hosted Windows Actions'
     }
     if ($env:GITHUB_REF -cne 'refs/heads/codex/gogoke-37-l0' -or
-        $env:GITHUB_SHA -cne $ExpectedSourceCommit -or
+        $env:GITHUB_SHA -cne $ExpectedSmokeCommit -or
         $env:GITHUB_RUN_ID -cne [string]$ExpectedSmokeRunId -or
         $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSmokeRunAttempt) {
         throw 'Expected execution-branch smoke identity differs from the current GitHub Actions run'

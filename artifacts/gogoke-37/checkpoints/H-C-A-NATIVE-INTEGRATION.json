@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "M1_SOURCE_AND_FROZEN_EVIDENCE_READY_REQUIRES_OWNER_MAIN_ACTIVATION",
+  "state": "M1_SIGNED_CANDIDATE_SMOKE_INSTRUMENT_REPAIR_WIN11_BASELINE_READY",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "last_pushed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
@@ -583,12 +583,72 @@
   },
   "next_signing_input": "artifacts/gogoke-37/release-inputs/M1-CANDIDATE-SIGNING-INPUT.json",
   "owner_dependency": {
-    "action": "Owner merge PR57 to activate trusted main candidate signer",
-    "source": "CANDIDATE_CHAIN_SCOPE_RECEIPT.json main_activation and execution-branch governance",
-    "pr57_head": "19be2793a41c18a0898198d7789d48a0e822fcbc",
-    "pr57_checks": "ALL_SIX_PASS_EXACT_HEAD",
-    "precise_readback": "Main8a984b6, manifest2d3b34a, receipt8020812, inboxb4f7e866 unchanged; PR57 remains OPEN",
-    "controller_merge": false
+    "pr57": "OWNER_MERGED",
+    "merge": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+    "exactFiveCiBlobsMatchReviewedHead": true,
+    "manifestAndAuthorizationBlobsUnchanged": true,
+    "controllerMerge": false,
+    "OT4": "NOT_YET_REQUIRED_INSTANCE_PREPARATION_PENDING"
   },
-  "route_reflection": "Direct receipt exposed deferred-history fixture precondition; original native proof diagnostic retained without relaxing budgets. Desktop WinError32 was completion measurement missing inherited-lock release; correct original observation instead of changing product behavior. Batch actual error fields and fixtures before the next source run; preserve partial versus full gates separately."
+  "route_reflection": "Read original failed step first: smoke-code checkout and frozen product source are separate identities after checkpoint commits. Preserve both exact hashes, ancestry and original signer/build/member verification instead of rebuilding unchanged product. Local signature and ordinary baseline checks run while focused source review proceeds.",
+  "next_signing_and_win11": {
+    "signing": {
+      "state": "PASS",
+      "runId": 36790723873,
+      "runAttempt": 1,
+      "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+      "artifactId": 11131322459,
+      "archiveDigest": "sha256:d322d388356170738d495be1656c38a1fb4bb23609a30b6ed971dd5d5bb14a27",
+      "localMemberReadback": {
+        "verified": 7,
+        "mismatches": 0
+      },
+      "localPurposeBoundP256Verification": "PASS",
+      "manifestSha256": "1717403264aa116cada3b469a54e641f9f6942d3be4e66609080eb4fb31a9d27",
+      "signatureSha256": "116f0f519ce5c0d950c7579282d0cf35ae1585d689ed0423d98a88a6221de8a7"
+    },
+    "cloudInstalledSmoke": {
+      "state": "FAIL_BEFORE_INSTALL_INSTRUMENT_IDENTITY_ASSERTION",
+      "runId": 36790842113,
+      "reason": "Smoke dispatch checkout f0c7b6ed was incorrectly required to equal frozen source b989cd53; checkpoint-only commits advanced the branch. Separate exact workflow checkout and frozen source identities; require authorized source ancestry and all original signed build and member checks. Product bytes are unchanged; no resign or rebuild."
+    },
+    "ordinaryWin11": {
+      "state": "FRESH_ORDINARY_PATH_AND_BASELINE_PASS_INSTALL_NOT_RUN",
+      "actualLocalAndRoamingPathsVerified": true,
+      "baselineTask": "Interactive/Limited",
+      "lastTaskResult": 0,
+      "packageStatus": 15700,
+      "session": 1,
+      "sacState": 1,
+      "gogokeProcessesBeforeBaseline": 0,
+      "formalFileCount": 12989,
+      "formalTreeSha256": "1eeed52ee69720002af6482c36871d6574c6f31995a2f6841dd9f3dc83e8d4c1",
+      "formalDataFileCount": 4,
+      "formalDataTreeSha256": "c4725cac68d0472fdb17ec8f0262970f7b9bbc74b4fbac49f342cf8822c5fc1d",
+      "privateBaselineSha256": "2db49816274c4dda520dbc84f07ab563baba3b86378c60b45a5c595be0f4e3e3",
+      "completedOwnedTaskRemoved": true,
+      "baselinePrivate": true
+    },
+    "fixScope": [
+      ".github/workflows/gogoke-candidate-sign.yml",
+      "tools/ci/gogoke-candidate-installed-preflight.ps1",
+      "tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1",
+      "tools/ci/gogoke-r206a-installer-negative.ps1"
+    ],
+    "frozenProductChanged": false,
+    "acceptance": false,
+    "publication": false,
+    "focusedReview": {
+      "seat": "fresh Sol/high m1_smoke_identity_review then same-seat focused readback",
+      "initialFinding": "Two downstream smoke instruments retained the same incorrect frozen-source/workflow-SHA equality. Logic and exact callsites confirmed before repair.",
+      "result": "SOURCE_ONLY_NO_REMAINING_FINDING_AFTER_FOUR_CI_FILE_REPAIR",
+      "cloudOrWin11Acceptance": false
+    }
+  },
+  "fetch_measurement_correction": "Repository fetch config tracks the historical execution branch only. Fetching bare main did not update origin/main. Explicit refs/heads/main:refs/remotes/origin/main and inbox refspecs corrected remote-tracking readback before any dispatch.",
+  "open_next": [
+    "Complete focused read-only review and rerun the exact signed candidate cloud installed smoke.",
+    "Install same signed frozen candidate in ordinary Win11 with formal snapshots; configure actual isolated test instance and both caps to4.",
+    "Prepare single OT4 login touchpoint only after installed identity and instance preparation; M1 remains incomplete."
+  ]
 }
