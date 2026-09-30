@@ -133,6 +133,23 @@ impl LaunchEvidence {
 
     pub(crate) fn cwd(&self) -> &Path { &self.worktree.path }
 
+    pub(crate) fn settings(&self) -> Result<(String, String), String> {
+        use crate::store::atomic::{Json, JsonString, Parser};
+        let Json::Object(settings) = evidence(Parser::parse(self.seat.settings_json.as_deref()
+            .ok_or("native session launch: seat settings missing")?))? else {
+            return Err("native session launch: seat settings not object".into());
+        };
+        let field = |name: &str| -> Result<String, String> {
+            match settings.get(&JsonString::from_str(name)) {
+                Some(Json::String(value)) => value.to_well_formed_string()
+                    .filter(|value| !value.is_empty() && !value.contains('\0'))
+                    .ok_or_else(|| format!("native session launch: invalid {name}")),
+                _ => Err(format!("native session launch: missing {name}")),
+            }
+        };
+        Ok((field("model")?, field("effort")?))
+    }
+
     pub(crate) fn request(&self) -> Result<PrepareRequest, String> {
         let system_root = evidence(std::env::var("SystemRoot"))?;
         if !Path::new(&system_root).is_absolute() || system_root.contains('\0') {
@@ -161,6 +178,7 @@ impl LaunchEvidence {
         launch.app_container_profile = Some(self.profile_name.clone());
         launch.app_container_internet_client = self.tier == PermissionTier::NetworkedWrite;
         launch.path_compat = Some(self.module.clone());
+        launch.worktree_guard = Some(evidence(self.worktree.retained_pointer())?);
         Ok(PrepareRequest { launch, binding: NativeBinding {
             binary_digest_sha256: self.pin.digest.clone(), profile_id: self.claim.instance_id.clone(),
             domain_id: self.claim.domain_id.clone(), generation: self.claim.generation.clone(),

@@ -36,6 +36,7 @@ type Result<T> = std::result::Result<T, OrchestrationError>;
 
 mod v37_seat;
 mod v37_session;
+mod v37_runtime;
 mod v37_login;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
@@ -139,6 +140,7 @@ pub struct ProductDatabase<'root> {
     owner: OwnerIssuer,
     process_custodian: ProcessCustodian,
     owner_login: Option<v37_login::OwnerLoginSession>,
+    native_sessions: BTreeMap<(String, String), v37_runtime::NativeSession>,
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -158,7 +160,9 @@ impl<'root> ProductDatabase<'root> {
         // grant store. initialize_profile checks the exact retained database pin.
         let owner = authority::initialize_profile(&mut connection, root)?;
         let process_custodian = ProcessCustodian::new()?;
-        Ok(Self { root, connection, owner, process_custodian, owner_login: None })
+        super::session_transport::rpc_journal::initialize_schema(&mut connection)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
+        Ok(Self { root, connection, owner, process_custodian, owner_login: None, native_sessions: BTreeMap::new() })
     }
 
     pub fn serve_pipe(&mut self, pipe: &PrivatePipeConnection) -> Result<()> {
@@ -610,11 +614,12 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        let Self { root: _, connection, owner: _, process_custodian, owner_login } = self;
+        let Self { root: _, connection, owner: _, process_custodian, owner_login, native_sessions } = self;
         drop(owner_login);
         // Closing the Job first prevents a child from outliving the active
         // coordination database. Unresolved rows stay UNKNOWN on recovery.
         drop(process_custodian);
+        drop(native_sessions);
         connection.close_checked()
     }
 

@@ -1344,6 +1344,14 @@ pub(crate) struct ResolvedBinding {
     _pointer_guard: File,
 }
 
+impl ResolvedBinding {
+    /// Duplicate the already held file object into actual process custody;
+    /// never reopen a caller-selected `.git` pathname.
+    pub(crate) fn retained_pointer(&self) -> io::Result<std::sync::Arc<File>> {
+        self._pointer_guard.try_clone().map(std::sync::Arc::new)
+    }
+}
+
 pub(crate) struct CreateWorktree<'a> {
     pub(crate) request_id: &'a str,
     pub(crate) request_bytes: &'a [u8],

@@ -318,6 +318,9 @@ pub struct ProcessLaunch {
     pub(crate) app_container_internet_client: bool,
     /// Sealed fixed-byte compatibility custody; never populated from IPC.
     pub(crate) path_compat: Option<Arc<CompatModule>>,
+    /// The already verified F pointer file remains held through all custody,
+    /// including an unconfirmed failed suspended-child cleanup.
+    pub(crate) worktree_guard: Option<Arc<File>>,
 }
 
 impl ProcessLaunch {
@@ -333,6 +336,7 @@ impl ProcessLaunch {
             app_container_profile: None,
             app_container_internet_client: false,
             path_compat: None,
+            worktree_guard: None,
         }
     }
 }
@@ -762,6 +766,7 @@ struct LaunchFailureCustody {
     _initial_thread: OwnedHandle,
     _job: OwnedHandle,
     _path_compat: Option<Arc<CompatModule>>,
+    _worktree_guard: Option<Arc<File>>,
 }
 
 fn reject_suspended_child_with<T, W>(
@@ -792,6 +797,7 @@ where
         _initial_thread: initial_thread,
         _job: job,
         _path_compat: None,
+        _worktree_guard: None,
     });
     ProcessCustodyError::LaunchCleanup { cause: Box::new(cause), detail }
 }
@@ -825,6 +831,7 @@ struct PreparedProcess {
     protocol: Option<ProtocolPipes>,
     persistent_protocol_stdio: bool,
     path_compat: Option<Arc<CompatModule>>,
+    worktree_guard: Option<Arc<File>>,
 }
 
 impl PreparedProcess {
@@ -859,16 +866,18 @@ impl PreparedProcess {
             protocol,
             persistent_protocol_stdio: launch.persistent_protocol_stdio,
             path_compat: launch.path_compat.clone(),
+            worktree_guard: launch.worktree_guard.clone(),
         })
     }
 
     fn reject(self, cause: ProcessCustodyError,
         retained: &mut Vec<LaunchFailureCustody>) -> ProcessCustodyError {
-        let Self { process, initial_thread, job, path_compat, .. } = self;
+        let Self { process, initial_thread, job, path_compat, worktree_guard, .. } = self;
         let before = retained.len();
         let error = reject_suspended_child(cause, process, initial_thread, job, retained);
         if retained.len() > before {
             retained.last_mut().expect("retained exact failed child")._path_compat = path_compat;
+            retained.last_mut().expect("retained exact failed child")._worktree_guard = worktree_guard;
         }
         error
     }
@@ -898,6 +907,7 @@ impl PreparedProcess {
             protocol,
             persistent_protocol_stdio,
             path_compat,
+            worktree_guard,
         } = self;
         drop(initial_thread);
         Ok(ManagedProcess {
@@ -907,6 +917,7 @@ impl PreparedProcess {
             protocol,
             persistent_protocol_stdio,
             _path_compat: path_compat,
+            _worktree_guard: worktree_guard,
             persistent_writer: Mutex::new(false),
             persistent_reader: Mutex::new(PersistentReadState::default()),
             stop_attempted: AtomicBool::new(false),
@@ -971,7 +982,18 @@ impl ProcessCustodian {
         if request.binding.binary_digest_sha256 != actual_digest {
             return Err(ProcessCustodyError::BindingMismatch("binaryDigestSha256"));
         }
-        let prepared = PreparedProcess::prepare(&request.launch, &mut self.failed_launches)?;
+        let failures_before = self.failed_launches.len();
+        let prepared = match PreparedProcess::prepare(&request.launch, &mut self.failed_launches) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if self.failed_launches.len() > failures_before {
+                    let retained = self.failed_launches.last_mut().expect("retained failed child");
+                    retained._path_compat = request.launch.path_compat.clone();
+                    retained._worktree_guard = request.launch.worktree_guard.clone();
+                }
+                return Err(error);
+            }
+        };
         let launched_digest = file_sha256(&prepared.identity.image_path)?;
         if request.binding.binary_digest_sha256 != launched_digest {
             return Err(ProcessCustodyError::BindingMismatch(
@@ -1252,6 +1274,7 @@ pub struct ManagedProcess {
     protocol: Option<ProtocolPipes>,
     persistent_protocol_stdio: bool,
     _path_compat: Option<Arc<CompatModule>>,
+    _worktree_guard: Option<Arc<File>>,
     persistent_writer: Mutex<bool>,
     persistent_reader: Mutex<PersistentReadState>,
     stop_attempted: AtomicBool,

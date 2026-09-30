@@ -55,7 +55,7 @@ pub(super) fn before_identity(identity: &crate::process::ProcessIdentity) -> Opt
     // not inspect any file contents, credential bytes or query buffers.
     let mut nt_calls = String::new();
     let methods = [
-        ("NtOpenFile", r#".printf \"GOGOKE_NT_ENTRY NtOpenFile tid=%x access=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x30), poi(@r8+0x10);"#),
+        ("NtOpenFile", r#".printf \"GOGOKE_NT_ENTRY NtOpenFile tid=%x access=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x30), poi(@r8+0x10); .if (@rdx == 0x100000) { k 8; }"#),
         ("NtDeleteFile", r#".printf \"GOGOKE_NT_ENTRY NtDeleteFile tid=%x name=%msu\\n\", @$tid, poi(@rcx+0x10);"#),
         ("NtCreateFile", r#".printf \"GOGOKE_NT_ENTRY NtCreateFile tid=%x access=%x disposition=%x options=%x name=%msu\\n\", @$tid, @rdx, dwo(@rsp+0x40), dwo(@rsp+0x48), poi(@r8+0x10);"#),
         ("NtQueryAttributesFile", r#".printf \"GOGOKE_NT_ENTRY NtQueryAttributesFile tid=%x name=%msu\\n\", @$tid, poi(@rcx+0x10);"#),
@@ -73,7 +73,8 @@ bp ntdll!{method}+0x17 ".printf \"GOGOKE_NT_RETURN {method} tid=%x status=%x\\n\
 "#));
     }
     let commands = format!(r#"sxe -c ".if (@rip == ntdll!LdrpDoDebuggerBreak+0x35) {{ .echo GOGOKE_LOADER_BREAK_CONTINUE; gh }}" bpe
-{nt_calls}.echo GOGOKE_CDB_READY
+{nt_calls}bp KERNELBASE!DeleteFileW ".printf \"GOGOKE_DELETE_ENTRY tid=%x name=%mu\\n\", @$tid, @rcx; k 8; gc"
+.echo GOGOKE_CDB_READY
 g
 "#);
     // The debugger's initial -c command has a bounded line size. A command

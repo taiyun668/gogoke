@@ -171,6 +171,8 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_user_session(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.operation == "open" { return self.dispatch_native_open(request); }
+        if request.operation == "stop" { return self.dispatch_native_stop(request); }
         if !matches!(request.operation.as_str(), "admission-reserve" | "admission-commit" | "admission-release") {
             return Ok(encode_receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, Default::default()));

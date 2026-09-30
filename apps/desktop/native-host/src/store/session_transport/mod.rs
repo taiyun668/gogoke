@@ -5,6 +5,7 @@ mod journal;
 mod seat_io;
 pub(crate) mod launch;
 pub(crate) mod codex_rpc;
+pub(crate) mod rpc_journal;
 pub(crate) mod runtime;
 
 pub(crate) use wire::{decode_receipt, decode_request, encode_receipt, V37Receipt, V37Request,
