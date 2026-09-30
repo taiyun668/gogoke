@@ -3,7 +3,7 @@
   "state": "FIXING_SOURCE_FOR_ONE_CLOUD_NATIVE_INTEGRATION_RUN",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "233a47be76a5c5cc99b179221c580668a736561c",
+  "last_pushed_source": "039360deb2514e45dca73b923257034c31c606e9",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -129,5 +129,36 @@
     "desktop": "RUNNING_NOT_READ_BACK",
     "native_this_followup_source": "NOT_RUN"
   },
-  "next_compound_generation": "Existing M1 H.1/B1.1 requires product compact/renew and generation switch. Sol H package authorized internally under PR56: original compact completion source, confirmed internal stop, same original request continuation and new process promotion; original UNKNOWN never repeats input; Owner stop remains permitted in GENERATION_UNKNOWN, including candidate-specific stop proof; release requires all actual processes confirmed stopped. Frozen wire and Owner touchpoints unchanged."
+  "next_compound_generation": "Existing M1 H.1/B1.1 requires product compact/renew and generation switch. Sol H package authorized internally under PR56: original compact completion source, confirmed internal stop, same original request continuation and new process promotion; original UNKNOWN never repeats input; Owner stop remains permitted in GENERATION_UNKNOWN, including candidate-specific stop proof; release requires all actual processes confirmed stopped. Frozen wire and Owner touchpoints unchanged.",
+  "native_233a_complete": {
+    "source": "233a47be76a5c5cc99b179221c580668a736561c",
+    "run": 36706277216,
+    "artifact": 11092698061,
+    "release": "PASS",
+    "server": "PASS",
+    "axes_passed": 3,
+    "shim_passed": 2,
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 558,
+      "passed": 553,
+      "failed": 5,
+      "skipped": 0,
+      "elapsed_seconds": 650.1
+    },
+    "direct_failures": [
+      "Three F temporary-home fixtures report Admission(Denied) or an earlier denial; source review must distinguish stale fixtures from production scope.",
+      "RPC no-event fixture omitted the new immutable process episode table; production schema is not relaxed.",
+      "Actual loaded-thread feature read returns UNKNOWN; the test printed only its status and discarded the already returned error detail. Restore that direct error result before choosing a product fix."
+    ],
+    "machine_sha256": "0f4f9219f0f678ec982c5916587e1ef0760b7427f0cb960b75537c76c7d103ec",
+    "lib_log_sha256": "d06f93deef2f78ea04219792140a0f2556cd4ba2e3b89edbea508044f5654fed",
+    "focused_log_sha256": "726ed6dac11af44e45849c13077b07078de13a8edeca4ee11bb57502831ff1b5",
+    "claims": "Complete FAIL; no inference of Owner Win11, authenticated models, M1 acceptance or release."
+  }
 }

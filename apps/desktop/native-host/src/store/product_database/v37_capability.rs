@@ -65,7 +65,13 @@ impl<'root> ProductDatabase<'root> {
         }
         let flags=match project_flags(&features) {
             Ok(flags)=>flags,
-            Err(error)=>return Ok(encode_receipt(request,V37Status::Unknown,revision,revision,BTreeMap::from([(JsonString::from_str("error"),text(&format!("native capability: {error:?}")))]))),
+            Err(error)=> {
+                // Cloud test assertions must retain the error already returned
+                // by the real operation, rather than printing status alone.
+                #[cfg(test)]
+                eprintln!("native loaded thread feature result: {error:?}; original feature page values: {features:?}");
+                return Ok(encode_receipt(request,V37Status::Unknown,revision,revision,BTreeMap::from([(JsonString::from_str("error"),text(&format!("native capability: {error:?}")))])));
+            }
         };
         let result=BTreeMap::from([
             (JsonString::from_str("generation"),text(&generation)),
