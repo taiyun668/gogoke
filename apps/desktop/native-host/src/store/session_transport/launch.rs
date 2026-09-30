@@ -64,6 +64,31 @@ impl LaunchEvidence {
         if old.phase!=SessionPhase::Stopped || old.process_operation_id.is_none() {
             return Err("native resume: old generation not stopped".into());
         }
+        let old_process=old.process_operation_id.as_deref()
+            .ok_or("native resume: old process absent")?;
+        let custody=crate::store::atomic::Statement::prepare(db.as_ptr(),
+            "SELECT c.binary_digest_sha256 FROM main.gogoke_coordination_process_custody c
+              JOIN main.gogoke_v37_h_claim a ON a.process_operation_id=c.operation_id
+                AND a.domain_id=c.domain_id AND a.generation=c.generation
+              WHERE c.operation_id=?1 AND c.domain_id=?2 AND c.generation=?3
+                AND c.state='STOPPED' AND c.stop_proof_hash=a.stop_fact_id
+                AND a.stop_fact_id IS NOT NULL")
+            .map_err(|error|format!("native resume old custody: {error:?}"))?;
+        custody.bind_text(1,old_process).map_err(|error|format!("native resume old custody: {error:?}"))?;
+        custody.bind_text(2,domain_id).map_err(|error|format!("native resume old custody: {error:?}"))?;
+        custody.bind_text(3,&old.generation).map_err(|error|format!("native resume old custody: {error:?}"))?;
+        if !custody.step_row().map_err(|error|format!("native resume old custody: {error:?}"))? {
+            return Err("native resume: old custody proof absent".into());
+        }
+        let old_digest=custody.column_text(0).map_err(|error|
+            format!("native resume old digest: {error:?}"))?;
+        if custody.step_row().map_err(|error|format!("native resume duplicate custody: {error:?}"))? {
+            return Err("native resume: duplicate old custody".into());
+        }
+        let pin=evidence(runtime::current_instance_pin(db,&old.instance_id))?;
+        if pin.driver_id!="codex" || pin.version!="0.149.0" || pin.digest!=old_digest {
+            return Err("native resume: trusted pinned binary changed".into());
+        }
         let row=crate::store::atomic::Statement::prepare(db.as_ptr(),
             "SELECT generation,home_id,binding_id,instance_id FROM main.gogoke_v37_h_process_episode
               WHERE domain_id=?1 AND request_id=?2 AND session_id=?3

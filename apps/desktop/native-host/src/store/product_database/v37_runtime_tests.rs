@@ -196,6 +196,10 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     // native STOPPED proof. Recovery must not require live OS handles.
     product.connection.execute("UPDATE gogoke_v37_h_operation SET status='UNKNOWN',revision=3 WHERE request_id='stop-session'").unwrap();
     product.connection.execute("UPDATE gogoke_v37_h_claim SET state='COMMITTED',revision=3,stop_fact_id=NULL WHERE session_id='sessionA'").unwrap();
+    let old_episode=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE gogoke_v37_h_process_episode SET phase='ACTIVE',stop_fact_id=NULL
+          WHERE process_operation_id=?1 AND phase='STOPPED' AND stop_request_id='stop-session'").unwrap();
+    old_episode.bind_text(1,&process_operation).unwrap();old_episode.step_done().unwrap();drop(old_episode);
     product.close_checked().unwrap();
     let mut product = ProductDatabase::open(&root, &database).unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status, V37Status::Replayed);
@@ -306,12 +310,82 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let changed=operation("K-SESSION","append-without-turn","append-reconciled","sessionA",8,
         r#"{"generation":"4","body":"changed input must not be injected"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&changed).unwrap()).unwrap().status,V37Status::Conflict);
-    let third_stop=operation("K-SESSION","stop","stop-reconciled","sessionA",9,
-        r#"{"seatId":"seatA","generation":"4"}"#);
+    // Actual no-model renewal: the original request internally stops the old
+    // Job, retains admission, and resumes the same provider thread in a new
+    // process. No model turn or manual compaction is claimed here.
+    let renew=operation("K-SESSION","renew-session","renew-after-append","sessionA",9,
+        r#"{"generation":"4"}"#);
+    let renewed=h::decode_receipt(&product.dispatch_user_request(&renew).unwrap()).unwrap();
+    assert_eq!(renewed.status,V37Status::Applied);
+    assert_eq!(renewed.previous_revision,9);assert_eq!(renewed.revision,10);
+    let renewed_result=Json::Object(renewed.into_result()).canonical();
+    assert!(renewed_result.contains("\"oldGeneration\":\"4\""));
+    assert!(renewed_result.contains("\"newGeneration\":\"5\""));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&renew).unwrap()).unwrap().status,
+        V37Status::Replayed);
+    let old_append=operation("K-SESSION","append-without-turn","append-old-gen","sessionA",10,
+        r#"{"generation":"4","body":"must not reach old physical process"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&old_append).unwrap()).unwrap().status,
+        V37Status::Conflict);
+    let current_caps=operation("K-SESSION","capability-probe","cap-renewed","sessionA",10,
+        r#"{"generation":"5"}"#);
+    let caps=h::decode_receipt(&product.dispatch_user_request(&current_caps).unwrap()).unwrap();
+    assert_eq!(caps.status,V37Status::Applied);
+    let cap_result=Json::Object(caps.into_result()).canonical();
+    assert!(cap_result.contains("\"generation\":\"5\""));
+    // Lose the H internal-stop commit after the actual old Job proof. The
+    // original renew ID alone settles it; no second OS stop or start occurs.
+    product.connection.execute("CREATE TRIGGER fail_renew_old_h_stop BEFORE UPDATE ON gogoke_v37_h_claim WHEN NEW.state='STOPPED' BEGIN SELECT RAISE(ABORT,'injected compound H stop failure'); END").unwrap();
+    let renew_uncertain=operation("K-SESSION","renew-session","renew-after-fault","sessionA",10,
+        r#"{"generation":"5"}"#);
+    let unknown=h::decode_receipt(&product.dispatch_user_request(&renew_uncertain).unwrap()).unwrap();
+    assert_eq!(unknown.status,V37Status::Unknown);
+    assert_eq!(unknown.previous_revision,10);assert_eq!(unknown.revision,11);
+    let competing=operation("K-SESSION","renew-session","renew-competing","sessionA",11,
+        r#"{"generation":"5"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&competing).unwrap()).unwrap().status,
+        V37Status::Conflict);
+    let unresolved_reconnect=operation("K-SESSION","reconnect","reconnect-unknown","sessionA",11,
+        r#"{"generation":"5"}"#);
+    let read_only=h::decode_receipt(&product.dispatch_user_request(&unresolved_reconnect).unwrap()).unwrap();
+    assert_eq!(read_only.status,V37Status::Unknown);
+    assert_eq!(read_only.previous_revision,11);assert_eq!(read_only.revision,11);
+    product.connection.execute("DROP TRIGGER fail_renew_old_h_stop").unwrap();
+    let recovered=h::decode_receipt(&product.dispatch_user_request(&renew_uncertain).unwrap()).unwrap();
+    assert_eq!(recovered.status,V37Status::Replayed);
+    assert_eq!(recovered.previous_revision,11);assert_eq!(recovered.revision,12);
+    let recovered_result=Json::Object(recovered.into_result()).canonical();
+    assert!(recovered_result.contains("\"newGeneration\":\"6\""));
+    let before_reconnect=Statement::prepare(product.connection.as_ptr(),
+        "SELECT count(*) FROM gogoke_v37_h_process_episode WHERE domain_id='projectA' AND session_id='sessionA' AND process_operation_id IS NOT NULL").unwrap();
+    assert!(before_reconnect.step_row().unwrap());let process_count=before_reconnect.column_text(0).unwrap();
+    drop(before_reconnect);
+    let reconnect=operation("K-SESSION","reconnect","reconnect-renewed","sessionA",12,
+        r#"{"generation":"6"}"#);
+    let reconnected=h::decode_receipt(&product.dispatch_user_request(&reconnect).unwrap()).unwrap();
+    assert_eq!(reconnected.status,V37Status::Applied);
+    assert_eq!(reconnected.previous_revision,12);assert_eq!(reconnected.revision,13);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reconnect).unwrap()).unwrap().status,
+        V37Status::Replayed);
+    let after_reconnect=Statement::prepare(product.connection.as_ptr(),
+        "SELECT count(*) FROM gogoke_v37_h_process_episode WHERE domain_id='projectA' AND session_id='sessionA' AND process_operation_id IS NOT NULL").unwrap();
+    assert!(after_reconnect.step_row().unwrap());assert_eq!(after_reconnect.column_text(0).unwrap(),process_count);
+    drop(after_reconnect);
+    product.connection.execute("CREATE TRIGGER fail_owner_renew_stop BEFORE UPDATE ON gogoke_v37_h_claim WHEN NEW.state='STOPPED' BEGIN SELECT RAISE(ABORT,'injected owner-stop compound window'); END").unwrap();
+    let owner_interrupted_renew=operation("K-SESSION","renew-session","renew-owner-interrupted","sessionA",13,
+        r#"{"generation":"6"}"#);
+    let owner_pending=h::decode_receipt(&product.dispatch_user_request(&owner_interrupted_renew).unwrap()).unwrap();
+    assert_eq!(owner_pending.status,V37Status::Unknown);
+    assert_eq!(owner_pending.previous_revision,13);assert_eq!(owner_pending.revision,14);
+    product.connection.execute("DROP TRIGGER fail_owner_renew_stop").unwrap();
+    let third_stop=operation("K-SESSION","stop","stop-reconciled","sessionA",14,
+        r#"{"seatId":"seatA","generation":"6"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&third_stop).unwrap()).unwrap().status,
         V37Status::Applied);
-    let release = operation("K-SESSION", "admission-release", "release-session", "sessionA", 10,
-        r#"{"seatId":"seatA","generation":"4"}"#);
+    let stopped_change=h::decode_receipt(&product.dispatch_user_request(&owner_interrupted_renew).unwrap()).unwrap();
+    assert_eq!(stopped_change.status,V37Status::Unknown,"Owner stop fences the original compound writer");
+    let release = operation("K-SESSION", "admission-release", "release-session", "sessionA", 15,
+        r#"{"seatId":"seatA","generation":"6"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&release).unwrap()).unwrap().status, V37Status::Applied);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     product.close_checked().unwrap();

@@ -7,7 +7,7 @@
 
 use super::codex_rpc::{self, Command, Reply, RpcId};
 use crate::process::{OriginBoundFrame, PreparedCustody};
-use crate::store::atomic::{AtomicError, Statement};
+use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::ledger::{self, RawSourceKey};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
@@ -700,6 +700,22 @@ pub(crate) fn prepare(
         check_owner_in_current_transaction(db, owner)?;
         original_open(db, step)?;
         let operation = assert_native_binding(db, step, &["PREPARED", "ACTIVE"], false)?;
+        if let Some(change)=super::generation_change::active_for_session(db,
+            step.domain_id,step.session_id)? {
+            if change.owner_stop_request_id.is_some() {return Err(RpcJournalError::Denied);}
+            let compact_step=format!("compact-{}",
+                &crate::store::digest::sha256_hex(
+                    &unhex(&change.raw_hex)?)[..40]);
+            let original_compact=change.operation=="compact" && change.stage=="INTENT"
+                && operation==change.old_operation && step.step_id==compact_step
+                && matches!(step.command,Command::ThreadCompactStart {ref thread_id}
+                    if thread_id==&change.thread_id);
+            let candidate_handshake=change.stage=="OLD_STOPPED"
+                && step.open_request_id==change.request_id && operation!=change.old_operation
+                && matches!(step.command,Command::Initialize {..}|Command::Initialized
+                    |Command::ConfigRead {..}|Command::ThreadResume {..});
+            if !original_compact && !candidate_handshake {return Err(RpcJournalError::Denied);}
+        }
         if let Some(phase) = same_row(db, step, &operation, &encoded)? {
             return Ok(PreparedStep {
                 bytes: encoded,
@@ -1017,6 +1033,151 @@ pub(crate) fn reconcile_observed_no_event(
     })
 }
 
+/// The original compact command's ACK proves submission only. Its durable A
+/// response is checked with the exact command and RPC ID, never interpreted
+/// as a compaction-completed event or permission to change generation.
+pub(crate) fn observed_compact_ack(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,generation:&str,ticket:&str,
+    nonce:&str,step_id:&str,thread:&str)->Result<Option<RawSourceKey>> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes),s.source_epoch,s.source_cursor
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+             AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+             AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+             AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+             AND r.generation=s.generation
+          WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+            AND s.generation=?4 AND s.ticket=?5 AND s.custodian_nonce=?6
+            AND s.step_id=?7 AND s.phase='OBSERVED' AND s.requires_response=1
+            AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
+    for (index,value) in [domain,session,operation,generation,ticket,nonce,step_id].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Ok(None);}
+    let command=unhex(&q.column_text(0)?)?;
+    let response=unhex(&q.column_text(1)?)?;
+    let epoch=q.column_text(2)?;let cursor=q.column_text(3)?;
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}
+    let id=stored_compact_id(&command,thread)?;
+    let expected=Command::ThreadCompactStart {thread_id:thread.to_owned()};
+    match codex_rpc::decode(&response,Some((&id,&expected)))? {
+        Reply::Ack {..}=>Ok(Some(RawSourceKey {operation_id:operation.to_owned(),
+            source_epoch:epoch,source_cursor:cursor})),
+        Reply::RemoteError {raw_frame,..}=>Err(RpcJournalError::Codec(
+            codex_rpc::RpcError::RemoteResponse(raw_frame))),
+        _=>Err(RpcJournalError::Conflict),
+    }
+}
+
+fn stored_compact_id(command:&[u8],thread:&str)->Result<RpcId> {
+    let body=command.strip_suffix(b"\n").ok_or(RpcJournalError::Invalid("compact command LF"))?;
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(body).map_err(|_|RpcJournalError::Invalid("compact command UTF-8"))?)? else {
+        return Err(RpcJournalError::Invalid("compact command object"));
+    };
+    let Some(Json::Number(number))=fields.get(&JsonString::from_str("id")) else {
+        return Err(RpcJournalError::Invalid("compact command ID"));
+    };
+    let number=number.parse::<u64>().map_err(|_|RpcJournalError::Invalid("compact command ID"))?;
+    let id=RpcId::client(number)?;
+    let expected=Command::ThreadCompactStart {thread_id:thread.to_owned()};
+    if expected.encode(Some(&id))?!=command {return Err(RpcJournalError::Conflict);}
+    Ok(id)
+}
+
+/// Settle a command already physically WRITTEN from its one captured A reply.
+/// The original writer step remains the only send authority.
+pub(crate) fn reconcile_written_compact_from_a(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,domain:&str,session:&str,operation:&str,generation:&str,
+    ticket:&str,nonce:&str,step_id:&str,thread:&str)->Result<bool> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        let step=Statement::prepare(db.as_ptr(),
+            "SELECT s.command_hex FROM main.gogoke_v37_rpc_steps s
+               JOIN main.gogoke_v37_h_process_episode e
+                 ON e.process_operation_id=s.process_operation_id AND e.domain_id=s.domain_id
+                 AND e.session_id=s.session_id AND e.generation=s.generation
+               JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                 AND c.generation=e.generation AND c.ticket=s.ticket
+                 AND c.custodian_nonce=s.custodian_nonce
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+                AND s.generation=?4 AND s.ticket=?5 AND s.custodian_nonce=?6
+                AND s.step_id=?7 AND s.phase='WRITTEN' AND s.requires_response=1
+                AND e.phase='ACTIVE' AND c.state IN ('ACTIVE','UNKNOWN')")?;
+        for (index,value) in [domain,session,operation,generation,ticket,nonce,step_id].iter().enumerate() {
+            step.bind_text((index+1) as i32,value)?;
+        }
+        if !step.step_row()? {return Ok(false);}
+        let command=unhex(&step.column_text(0)?)?;
+        if step.step_row()? {return Err(RpcJournalError::Conflict);}
+        let id=stored_compact_id(&command,thread)?;
+        let expected=Command::ThreadCompactStart {thread_id:thread.to_owned()};
+        let source=Statement::prepare(db.as_ptr(),
+            "SELECT source_epoch,source_cursor,hex(raw_bytes)
+               FROM main.v37_ledger_raw_source
+              WHERE operation_id=?1 AND domain_id=?2 AND session_id=?3
+                AND generation=?4 AND process_ticket=?5 AND custodian_nonce=?6
+                AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;
+        for (index,value) in [operation,domain,session,generation,ticket,nonce].iter().enumerate() {
+            source.bind_text((index+1) as i32,value)?;
+        }
+        let mut found=None;
+        while source.step_row()? {
+            let bytes=unhex(&source.column_text(2)?)?;
+            if matches!(codex_rpc::decode(&bytes,Some((&id,&expected))),
+                Ok(Reply::Ack {..}|Reply::RemoteError {..})) {
+                if found.is_some() {return Err(RpcJournalError::Conflict);}
+                found=Some(RawSourceKey {operation_id:operation.to_owned(),
+                    source_epoch:source.column_text(0)?,source_cursor:source.column_text(1)?});
+            }
+        }
+        let Some(key)=found else {return Ok(false)};
+        persist_observation_and_no_event(db,domain,session,step_id,operation,&key)?;
+        Ok(true)
+    })
+}
+
+/// Completion is a later original A notification from the old physical
+/// episode, after the request's source watermark. The prior empty ACK never
+/// satisfies this proof. A duplicate matching item is ambiguous and denied.
+pub(crate) fn observed_compaction_completion(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,generation:&str,ticket:&str,
+    nonce:&str,thread:&str,watermark:i64)->Result<Option<(RawSourceKey,String)>> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT r.source_epoch,r.source_cursor,hex(r.raw_bytes)
+           FROM main.v37_ledger_raw_source r
+           JOIN main.gogoke_v37_h_process_episode e
+             ON e.process_operation_id=r.operation_id AND e.domain_id=r.domain_id
+             AND e.session_id=r.session_id AND e.generation=r.generation
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+             AND c.generation=e.generation AND c.ticket=r.process_ticket
+             AND c.custodian_nonce=r.custodian_nonce
+          WHERE r.operation_id=?1 AND r.domain_id=?2 AND r.session_id=?3
+            AND r.generation=?4 AND r.process_ticket=?5 AND r.custodian_nonce=?6
+            AND r.state='RESOLVED' AND CAST(r.source_cursor AS INTEGER)>?7
+            AND ((e.phase='ACTIVE' AND c.state IN ('ACTIVE','UNKNOWN'))
+              OR (e.phase='STOPPED' AND c.state='STOPPED'
+                  AND e.stop_fact_id=c.stop_proof_hash AND e.stop_fact_id IS NOT NULL))
+          ORDER BY CAST(r.source_cursor AS INTEGER)")?;
+    for (index,value) in [operation,domain,session,generation,ticket,nonce].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    q.bind_i64(7,watermark)?;
+    let mut found=None;
+    while q.step_row()? {
+        let bytes=unhex(&q.column_text(2)?)?;
+        if let Ok(Reply::CompactionItem {thread_id,item_id,..})=codex_rpc::decode(&bytes,None) {
+            if thread_id!=thread {continue;}
+            if found.is_some() {return Err(RpcJournalError::Conflict);}
+            found=Some((RawSourceKey {operation_id:operation.to_owned(),
+                source_epoch:q.column_text(0)?,source_cursor:q.column_text(1)?},item_id));
+        }
+    }
+    Ok(found)
+}
+
 /// H can check a notification's A source without altering an in-flight RPC.
 pub(crate) fn observe_event(
     db: &VerifiedDatabaseConnection<'_>,
@@ -1122,9 +1283,11 @@ mod tests {
         db.execute("CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY,event_id TEXT UNIQUE,stream_id TEXT,occurred_at TEXT,event_type TEXT,payload_json TEXT)").unwrap();
         ledger::initialize_schema(&mut db).unwrap();
         initialize_schema(&mut db).unwrap();
-        db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,state TEXT,stop_fact_id TEXT) STRICT").unwrap();
+        super::super::admission::initialize_admission_schema(&mut db).unwrap();
         db.execute("CREATE TABLE gogoke_coordination_process_custody(operation_id TEXT,ticket TEXT,custodian_nonce TEXT,domain_id TEXT,generation TEXT,state TEXT,stop_proof_hash TEXT) STRICT").unwrap();
-        db.execute("INSERT INTO gogoke_v37_h_claim VALUES('domain','session','1','operation','COMMITTED',NULL)").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('binding','instance','domain','SESSION','session','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('domain','session','instance','home','binding','1','COMMITTED',1,'operation')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,phase) VALUES('domain','open','session','1','7b7d0a',0,1,'operation','instance','home','binding','ACTIVE')").unwrap();
         db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('operation','ticket','nonce','domain','1','ACTIVE',NULL)").unwrap();
         db.execute("INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase) VALUES('domain','session','open','step','operation','ticket','nonce','1','2','image','digest','profile','1','7b7d0a',1,'WRITTEN')").unwrap();
         db.execute("INSERT INTO v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES('operation','ticket','nonce','domain','session','1','epoch','1',X'7B226964223A312C22726573756C74223A7B7D7D0A','PENDING')").unwrap();
@@ -1146,6 +1309,26 @@ mod tests {
         assert!(repaired.newly_resolved);
         assert_eq!(scalar(&db,"SELECT state || ':' || no_event_reason FROM v37_ledger_raw_source"),"NO_EVENT:CODEX_RPC_RESPONSE");
         assert!(!reconcile_observed_no_event(&mut db,&owner,"domain","session","step").unwrap().newly_resolved);
+        // Synthetic source-link control: ACK is NO_EVENT and cannot prove
+        // completion; only a later RESOLVED native item from the same old
+        // process, ticket, nonce, generation and thread can do so.
+        for (cursor,thread) in [("2","other-thread"),("3","thread-a")] {
+            let frame=format!("{{\"method\":\"item/completed\",\"params\":{{\"threadId\":\"{thread}\",\"item\":{{\"type\":\"contextCompaction\",\"id\":\"item-{cursor}\"}}}}}}\n");
+            let insert=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,
+                   domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state,
+                   resolved_event_id) VALUES('operation','ticket','nonce','domain','session','1',
+                   'epoch',?1,?2,'RESOLVED',?3)").unwrap();
+            insert.bind_text(1,cursor).unwrap();insert.bind_blob(2,frame.as_bytes()).unwrap();
+            insert.bind_text(3,&format!("event-{cursor}")).unwrap();insert.step_done().unwrap();
+        }
+        assert!(observed_compaction_completion(&db,"domain","session","operation","1",
+            "ticket","nonce","thread-a",3).unwrap().is_none(),"source watermark excludes earlier item");
+        let completed=observed_compaction_completion(&db,"domain","session","operation","1",
+            "ticket","nonce","thread-a",1).unwrap().unwrap();
+        assert_eq!(completed.0.source_cursor,"3");assert_eq!(completed.1,"item-3");
+        assert!(observed_compaction_completion(&db,"domain","session","operation","1",
+            "ticket","nonce","other-thread",3).unwrap().is_none());
         db.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();

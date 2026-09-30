@@ -60,7 +60,7 @@ pub(crate) fn mark_active(connection: &VerifiedDatabaseConnection<'_>, operation
     Ok(())
 }
 
-pub(super) fn mark_stopped(connection: &VerifiedDatabaseConnection<'_>, operation: &str,
+pub(crate) fn mark_stopped(connection: &VerifiedDatabaseConnection<'_>, operation: &str,
     proof: &str) -> Result<(), AtomicError> {
     let statement=Statement::prepare(connection.as_ptr(),
         "UPDATE main.gogoke_v37_h_process_episode SET phase='STOPPED',stop_fact_id=?2
@@ -82,6 +82,23 @@ pub(crate) fn begin_resume(connection: &VerifiedDatabaseConnection<'_>,
     domain: &str, session: &str, request_id: &str, raw_bytes: &[u8],
     old_generation: &str, new_generation: &str, expected_revision: i64,
     home_id: &str, binding_id: &str) -> Result<(), AtomicError> {
+    if let Some(change)=super::generation_change::active_for_session(connection,domain,session)? {
+        if change.request_id!=request_id || change.stage!="OLD_STOPPED"
+            || change.owner_stop_request_id.is_some() {
+            return Err(AtomicError::OperationConflict);
+        }
+    }
+    // A stopped-but-cancelled candidate has already occupied the next
+    // physical generation's home. Do not launch another process into it.
+    let cancelled=Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_generation_change x
+           JOIN main.gogoke_v37_h_process_episode e
+             ON e.domain_id=x.domain_id AND e.request_id=x.request_id
+          WHERE x.domain_id=?1 AND x.session_id=?2 AND x.old_generation=?3
+            AND x.stage='CANCELLED' AND e.process_operation_id IS NOT NULL LIMIT 1")?;
+    cancelled.bind_text(1,domain)?;cancelled.bind_text(2,session)?;
+    cancelled.bind_text(3,old_generation)?;
+    if cancelled.step_row()? {return Err(AtomicError::OperationConflict);}
     let unresolved=Statement::prepare(connection.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_h_process_episode
           WHERE domain_id=?1 AND session_id=?2 AND old_generation IS NOT NULL
@@ -165,7 +182,18 @@ pub(crate) fn mark_resume_unknown(connection: &VerifiedDatabaseConnection<'_>,
     let before=row.column_text(1)?.parse::<i64>().map_err(|_|AtomicError::OperationConflict)?;
     let current=row.column_text(2)?.parse::<i64>().map_err(|_|AtomicError::OperationConflict)?;
     if current!=before || row.step_row()? {return Err(AtomicError::OperationConflict);}
-    let next=current.checked_add(1).ok_or(AtomicError::OperationConflict)?;
+    drop(row);
+    let compound=super::generation_change::read(connection,domain,request_id)?;
+    let next=if let Some(c)=&compound {
+        if c.stage!="OLD_STOPPED" || c.old_generation!=old
+            || c.owner_stop_request_id.is_some() {return Err(AtomicError::OperationConflict);}
+        if let Some(already)=c.unknown_revision {
+            if current!=already {return Err(AtomicError::OperationConflict);}
+            current
+        } else {
+            current.checked_add(1).ok_or(AtomicError::OperationConflict)?
+        }
+    } else {current.checked_add(1).ok_or(AtomicError::OperationConflict)?};
     let claim=Statement::prepare(connection.as_ptr(),
         "UPDATE main.gogoke_v37_h_claim SET revision=?5
           WHERE domain_id=?1 AND session_id=?2 AND generation=?3
@@ -177,12 +205,21 @@ pub(crate) fn mark_resume_unknown(connection: &VerifiedDatabaseConnection<'_>,
           WHERE domain_id=?1 AND request_id=?2 AND phase='PREPARED'")?;
     episode.bind_text(1,domain)?;episode.bind_text(2,request_id)?;
     episode.bind_i64(3,next)?;episode.step_done()?;
+    if compound.is_some_and(|c|c.unknown_revision.is_none()) {
+        super::generation_change::note_candidate_unknown(connection,domain,request_id,next)?;
+    }
     Ok(next)
 }
 
 pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     domain: &str, session: &str, request_id: &str, operation_id: &str,
     expected_revision: i64) -> Result<i64, AtomicError> {
+    if let Some(change)=super::generation_change::active_for_session(connection,domain,session)? {
+        if change.request_id!=request_id || change.stage!="OLD_STOPPED"
+            || change.owner_stop_request_id.is_some() {
+            return Err(AtomicError::OperationConflict);
+        }
+    }
     let candidate=Statement::prepare(connection.as_ptr(),
         "SELECT e.generation,e.old_generation,e.home_id,e.binding_id,e.seat_id,
                 e.seat_incarnation,e.instance_id

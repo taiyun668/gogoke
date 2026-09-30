@@ -33,7 +33,7 @@ impl From<SameOpenError> for AdmissionError {
     }
 }
 
-const SCHEMA: [(&str, &str); 8] = [
+const SCHEMA: [(&str, &str); 9] = [
     ("gogoke_v37_h_owner_binding",
      "CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('SESSION','CALL')),owner_id TEXT NOT NULL,generation TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('ACTIVE','REVOKED')),UNIQUE(instance_id,domain_id,kind,owner_id,generation)) STRICT"),
     ("gogoke_v37_h_claim",
@@ -48,6 +48,7 @@ const SCHEMA: [(&str, &str); 8] = [
      "CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(domain_id,session_id),UNIQUE(domain_id,seat_incarnation,generation),FOREIGN KEY(domain_id,seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT"),
     ("gogoke_v37_h_process_episode", super::episodes::PROCESS_SCHEMA),
     ("gogoke_v37_h_generation", super::episodes::GENERATION_SCHEMA),
+    ("gogoke_v37_h_generation_change", super::generation_change::SCHEMA),
 ];
 
 fn valid(value: &str) -> bool {
@@ -132,18 +133,26 @@ pub(crate) fn initialize_admission_schema(
     let mut older: Vec<(String, String)> = SCHEMA[..5].iter()
         .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
     older.sort_by(|left, right| left.0.cmp(&right.0));
-    if !rows.is_empty() && rows != previous && rows != older { return Err(AdmissionError::Denied); }
+    let mut prior_eight: Vec<(String, String)> = SCHEMA[..8].iter()
+        .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
+    prior_eight.sort_by(|left, right| left.0.cmp(&right.0));
+    if !rows.is_empty() && rows != previous && rows != older && rows != prior_eight {
+        return Err(AdmissionError::Denied);
+    }
     in_transaction(connection, |connection| {
         reject_shadow_or_effects(connection)?;
         if observed_schema(connection)? != rows {
             return Err(AdmissionError::Denied);
         }
         let to_create = if rows.is_empty() { &SCHEMA[..] }
-            else if rows == older { &SCHEMA[5..] } else { &SCHEMA[6..] };
+            else if rows == older { &SCHEMA[5..] }
+            else if rows == previous { &SCHEMA[6..] } else { &SCHEMA[8..] };
         for (_, sql) in to_create {
             connection.execute(sql)?;
         }
-        if !rows.is_empty() { super::episodes::backfill(connection).map_err(AdmissionError::Store)?; }
+        if rows == older || rows == previous {
+            super::episodes::backfill(connection).map_err(AdmissionError::Store)?;
+        }
         if observed_schema(connection)? != expected {
             return Err(AdmissionError::Denied);
         }
@@ -605,6 +614,10 @@ pub(crate) fn release_admission(
         if state != "RESERVED" && state != "STOPPED" {
             return Ok(AdmissionResult::Conflict);
         }
+        if super::generation_change::active_for_session(connection,input.domain_id,input.session_id)
+            .map_err(AdmissionError::Store)?.is_some() {
+            return Ok(AdmissionResult::Conflict);
+        }
         let row = Statement::prepare(connection.as_ptr(),
             "UPDATE gogoke_v37_h_claim SET state='RELEASED',revision=revision+1 WHERE domain_id=?1 AND session_id=?2 AND state=?3 AND revision=?4")?;
         row.bind_text(1, input.domain_id)?;
@@ -744,6 +757,49 @@ pub(crate) fn record_session_stop_in_transaction(
     Ok(proof)
 }
 
+/// An original compact/renew request stops its old physical episode before
+/// creating the next one. The compound request owns the sole public revision
+/// change; this internal physical stop never impersonates a wire stop.
+pub(crate) fn record_generation_change_stop_in_transaction(
+    connection:&mut VerifiedDatabaseConnection<'_>,domain:&str,session:&str,
+    process:&str,change_id:&str,
+)->Result<String,AdmissionError> {
+    let change=super::generation_change::read(connection,domain,change_id)
+        .map_err(AdmissionError::Store)?.ok_or(AdmissionError::Conflict)?;
+    if change.session_id!=session || change.old_operation!=process
+        || change.owner_stop_request_id.is_some()
+        || !matches!(change.stage.as_str(),"INTENT"|"ITEM_OBSERVED") {
+        return Err(AdmissionError::Conflict);
+    }
+    let row=Statement::prepare(connection.as_ptr(),
+        "SELECT c.stop_proof_hash FROM main.gogoke_coordination_process_custody c
+           JOIN main.gogoke_v37_h_claim a ON a.process_operation_id=c.operation_id
+             AND a.domain_id=c.domain_id AND a.generation=c.generation
+          WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3
+            AND a.revision=?4 AND a.state='COMMITTED'
+            AND c.operation_id=?5 AND c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL")?;
+    row.bind_text(1,domain)?;row.bind_text(2,session)?;
+    row.bind_text(3,&change.old_generation)?;
+    row.bind_i64(4,change.unknown_revision.unwrap_or(change.previous_revision))?;
+    row.bind_text(5,process)?;
+    if !row.step_row()? {return Err(AdmissionError::Denied);}
+    let proof=row.column_text(0)?;
+    if row.step_row()? {return Err(AdmissionError::Conflict);}
+    drop(row);
+    let claim=Statement::prepare(connection.as_ptr(),
+        "UPDATE main.gogoke_v37_h_claim SET state='STOPPED',stop_fact_id=?4
+          WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+            AND state='COMMITTED' AND stop_fact_id IS NULL")?;
+    claim.bind_text(1,domain)?;claim.bind_text(2,session)?;
+    claim.bind_text(3,process)?;claim.bind_text(4,&proof)?;
+    claim.step_done()?;
+    if changes(connection)?!=1 {return Err(AdmissionError::Conflict);}
+    super::episodes::mark_stopped(connection,process,&proof).map_err(AdmissionError::Store)?;
+    super::generation_change::mark_old_stopped(connection,domain,change_id)
+        .map_err(AdmissionError::Store)?;
+    Ok(proof)
+}
+
 pub(crate) fn verify_home_stop_in_transaction(
     connection: &mut VerifiedDatabaseConnection<'_>,
     instance_id: &str,
@@ -864,6 +920,31 @@ mod tests {
     use crate::root::RootLock;
     use crate::store::same_open::{create_new, open_existing, route_b_test_guard};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn eighth_table_upgrade_only_adds_generation_change_and_rejects_shadow() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder=std::env::temp_dir().join(format!("gogoke-h-change-schema-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let root=RootLock::acquire(&folder).unwrap();
+        let path=folder.join("state.sqlite");
+        let mut db=create_new(&root,&path).unwrap();
+        for (_,sql) in &SCHEMA[..8] {db.execute(sql).unwrap();}
+        db.execute("INSERT INTO gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('binding','instance','domain','SESSION','session','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('domain','session','instance','home','binding','1','COMMITTED',3,'original-process')").unwrap();
+        let before=observed_schema(&db).unwrap();
+        initialize_admission_schema(&mut db).unwrap();
+        assert_eq!(observed_schema(&db).unwrap().len(),9);
+        assert_eq!(observed_schema(&db).unwrap().into_iter().filter(|(name,_)|
+            name!="gogoke_v37_h_generation_change").collect::<Vec<_>>(),before);
+        assert_eq!(count(&db,"SELECT COUNT(*) FROM gogoke_v37_h_claim WHERE process_operation_id=?1",
+            &["original-process"]).unwrap(),1);
+        initialize_admission_schema(&mut db).unwrap();
+        db.execute("CREATE TEMP TABLE gogoke_v37_h_generation_change_shadow(x TEXT)").unwrap();
+        assert!(matches!(initialize_admission_schema(&mut db),Err(AdmissionError::Denied)));
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(folder).unwrap();
+    }
 
     fn one_capacity(
         _: &mut VerifiedDatabaseConnection<'_>,

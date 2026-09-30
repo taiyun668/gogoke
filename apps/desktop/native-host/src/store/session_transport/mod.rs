@@ -2,6 +2,7 @@
 mod wire;
 mod admission;
 mod episodes;
+pub(crate) mod generation_change;
 mod journal;
 mod seat_io;
 pub(crate) mod launch;
@@ -28,7 +29,9 @@ pub(crate) use admission::{initialize_admission_schema, bind_owner_in_transactio
     release_admission, bind_process_operation_in_transaction,
     mark_start_unknown_in_transaction,
     record_session_stop_in_transaction,
+    record_generation_change_stop_in_transaction,
     revoke_owner_binding_in_transaction, AdmissionError, AdmissionRequest,
     AdmissionResult, OwnerBinding, TrustedLimits};
 pub(crate) use episodes::{record_initial, mark_active, begin_resume,
-    attach_resume_process, mark_resume_unknown, promote_resume};
+    attach_resume_process, mark_resume_unknown, promote_resume,
+    mark_stopped as mark_episode_stopped};

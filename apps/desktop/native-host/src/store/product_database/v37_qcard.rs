@@ -100,6 +100,7 @@ struct CurrentCardBinding {
 }
 fn native_binding_present(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding,captured_only:bool)
     -> std::result::Result<bool,InboxError> {
+    if !captured_only && crate::store::session_transport::generation_change::active_for_session(db,&binding.domain,&binding.session)?.is_some() {return Ok(false);}
     let q=Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_h_claim h
          JOIN main.gogoke_v37_h_process_episode p ON p.process_operation_id=h.process_operation_id

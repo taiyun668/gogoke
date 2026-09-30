@@ -39,7 +39,7 @@ impl<'root> ProductDatabase<'root> {
             .map_err(|error|OrchestrationError::V37StoreFailure(format!("native capability claim: {error:?}")))?
             .ok_or(OrchestrationError::AccessDenied)?;
         let revision=u64::try_from(claim.revision).map_err(|error|OrchestrationError::V37StoreFailure(format!("native capability revision: {error}")))?;
-        if claim.generation!=generation {return Ok(encode_receipt(request,V37Status::Conflict,revision,revision,Default::default()));}
+        if claim.generation!=generation || run.custody.binding.generation!=generation {return Ok(encode_receipt(request,V37Status::Conflict,revision,revision,Default::default()));}
         if revision!=request.expected_revision {return Ok(encode_receipt(request,V37Status::Stale,revision,revision,Default::default()));}
         run.evidence.verify_live(&mut self.connection,self.root,&self.owner,&operation,claim.revision).map_err(OrchestrationError::V37StoreFailure)?;
         let pin=runtime::current_instance_pin(&self.connection,&claim.instance_id).map_err(|error|OrchestrationError::V37StoreFailure(format!("native capability pin: {error:?}")))?;

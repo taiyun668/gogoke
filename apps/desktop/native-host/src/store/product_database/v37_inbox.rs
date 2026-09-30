@@ -170,6 +170,7 @@ fn live_target(db:&mut ProductDatabase<'_>,domain:&str,seat:&str,generation:&str
 
 fn target_present(db:&VerifiedDatabaseConnection<'_>,target:&Target)
     ->std::result::Result<bool,InboxError> {
+    if crate::store::session_transport::generation_change::active_for_session(db,&target.key.0,&target.key.1)?.is_some() {return Ok(false);}
     let q=Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_h_claim h
          JOIN main.gogoke_coordination_process_custody c ON c.operation_id=h.process_operation_id
@@ -440,6 +441,13 @@ impl<'root> ProductDatabase<'root> {
         if message.generation!=generation || (kind==NativeDeliveryKind::Steer
             && payload(request,"turnId")?!=message.turn_id) {
             return Ok(encode_receipt(request,V37Status::Conflict,message.revision,message.revision,Default::default()));
+        }
+        if let Some(original)=original_target(&self.connection,&request.domain_id,&request.target_id,None)? {
+            if crate::store::session_transport::generation_change::active_for_session(&self.connection,
+                &request.domain_id,&original.session)?.is_some() {
+                return Ok(encode_receipt(request,V37Status::Conflict,message.revision,message.revision,
+                    BTreeMap::from([(JsonString::from_str("reason"),text("GENERATION_CHANGE_IN_PROGRESS"))])));
+            }
         }
         let target=match live_target(self,&request.domain_id,&message.seat_id,&message.generation,
             &message.turn_id) {

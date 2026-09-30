@@ -1,9 +1,9 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "FIXING_SOURCE_FOR_ONE_CLOUD_NATIVE_INTEGRATION_RUN",
+  "state": "PAUSED_BY_OWNER_WIP_PRESERVED_NOT_ACCEPTED",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "b172425097f623820d66e276ea6297d0e16c0a80",
+  "last_pushed_source": "c2718a2763d0c3970473414624e890d11ae50670",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -240,5 +240,45 @@
     "run": 36706828819,
     "state": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
     "newer_source": "NOT_RUN_PENDING_FIXED_H_COMPOUND_SOURCE"
+  },
+  "pause": {
+    "owner_instruction": "先收一下",
+    "scope": "Stop construction and subordinate activity; preserve the named implementation and checkpoint without native build, publication, merge or acceptance.",
+    "base_source": "c2718a2763d0c3970473414624e890d11ae50670",
+    "files_sha256": {
+      "apps/desktop/native-host/src/store/session_transport/generation_change.rs": "2bf1a2ec49ed5ad1701073ef09f4597e2d5ddce4685158399304a6b86fb7d866",
+      "apps/desktop/native-host/src/store/session_transport/episodes.rs": "0e3fd87b89cad57f5ec8747edefec04bef6841607c153f96a26d4790d6525fc6",
+      "apps/desktop/native-host/src/store/session_transport/admission.rs": "825adbc7ba10510a12586425d6cc0a809828f9b4c13f730a1e947edb29ebe6b9",
+      "apps/desktop/native-host/src/store/session_transport/launch.rs": "f35c422305e7c675dc52b1e4bf00683d06dd3975c9979723028c2ad1d3f3e778",
+      "apps/desktop/native-host/src/store/session_transport/rpc_journal.rs": "799824661d7a25adacc8b5239cef59f82cc4f4c5e1bb38ebf554ba6bf822f41a",
+      "apps/desktop/native-host/src/store/session_transport/journal.rs": "63149db42cddfe175d229832f046868143aa700fb6571ffe5fd100356a2f8116",
+      "apps/desktop/native-host/src/store/session_transport/mod.rs": "7aeab5ec6ce0a0034fc95c7d4d81efac982e9ddd278e52139124233d0ac49995",
+      "apps/desktop/native-host/src/store/product_database/v37_runtime.rs": "a4722a7d277dd310b38ffb18e0b72ee1cc7e283e272348eff12b99e507552c8b",
+      "apps/desktop/native-host/src/store/product_database/v37_session.rs": "7e2460b4c48354f5a9304c765cb0c4a7958c43be09d1ed5dac999f46f89c304c",
+      "apps/desktop/native-host/src/store/product_database/v37_runtime_tests.rs": "8fe7e27ae385f8d0df868d3b88d13b38883dee1bbc35e66dd66f864a821f37ea",
+      "apps/desktop/native-host/src/store/product_database/v37_inbox.rs": "b332e4ded3da4f4638a8fb51b1a034e1a31bf5a8b34cee8ea92c0e9e1f213630",
+      "apps/desktop/native-host/src/store/product_database/v37_qcard.rs": "0bad3c26b9ee2f8807614774d51da16cce166f04e2da3bec6f1aa44a9b9739b8",
+      "apps/desktop/native-host/src/store/product_database/v37_qcard_user.rs": "868fe77ff0927d4e3a58bac57c7b45afd041c2b8dfa404d338319fb1136a6195",
+      "apps/desktop/native-host/src/store/product_database/v37_output.rs": "84380cc95317d7b526966791da002f8b7e6caa0538978730eb553a80c67f0b71",
+      "apps/desktop/native-host/src/store/product_database/v37_capability.rs": "93ad846ddd738fef648f134f3c6d19ccbb51b28b4e88b25c2d248a77f0796712"
+    },
+    "static": "15 source files parser-only and public-source hygiene PASS; git diff --check PASS. No local native compilation or execution.",
+    "h_package": "H compound compact/renew/reconnect lifecycle, original generation source and candidate stop/promotion fences; prestart old stopped custody digest compared with current pinned driver. Returned implementation remains uncompiled WIP.",
+    "controller_package": "C inbox and new question answer are fenced during pending generation change; retained capture remains permitted. Output and capability read require actual custody generation as well as mutable claim generation. Native behavior NOT_RUN.",
+    "existing_cloud": {
+      "hygiene_run": 36713893706,
+      "source": "c2718a2763d0c3970473414624e890d11ae50670",
+      "hygiene": "PASS",
+      "desktop_run": 36713893329,
+      "desktop": "CANCELLATION_REQUESTED_NOT_PASS",
+      "candidate_smoke": 36713884998,
+      "candidate_smoke_state": "SKIPPED_NOT_PASS"
+    },
+    "next": "Resume by verifying this source hash inventory; add meaningful integration controls for Controller generation fences, then fixed-source cloud native/desktop/hygiene evidence. Prepare candidate chain before OT4; PR57 main signer activation remains Owner-only.",
+    "route_reflection": "Repeated cloud round trips included stale fixtures and hidden direct failure fields. Use the already available original focused artifact to fix direct diagnostics and batch source/fixture corrections before the next fixed-source run; avoid speculative probes and repeated context rebuilding.",
+    "preserved_exclusions": "Previously auto-rejected Detours leftovers and retained old diagnostic worktree are unchanged and excluded from staging.",
+    "m1_complete": false,
+    "acceptance": false,
+    "ot4": "NOT_REQUESTED"
   }
 }

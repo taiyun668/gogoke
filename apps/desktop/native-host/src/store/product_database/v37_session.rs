@@ -188,7 +188,7 @@ impl<'root> ProductDatabase<'root> {
         // One K-SESSION request identity covers both operation and stdin
         // journals. Check it before any home/process/provider side effect.
         let prior = Statement::prepare(self.connection.as_ptr(),
-            "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2 UNION ALL SELECT request_hex FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND request_id=?2 UNION ALL SELECT lower(hex(request_bytes)) FROM main.v37_ledger_receipt WHERE family='K-SESSION' AND domain_id=?1 AND request_id=?2")?;
+            "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2 UNION ALL SELECT request_hex FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND request_id=?2 UNION ALL SELECT raw_hex FROM main.gogoke_v37_h_generation_change WHERE domain_id=?1 AND request_id=?2 UNION ALL SELECT lower(hex(request_bytes)) FROM main.v37_ledger_receipt WHERE family='K-SESSION' AND domain_id=?1 AND request_id=?2")?;
         prior.bind_text(1, &request.domain_id)?;
         prior.bind_text(2, &request.request_id)?;
         let original: String = request.raw_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -201,6 +201,10 @@ impl<'root> ProductDatabase<'root> {
         drop(prior);
         if request.operation == "open" { return self.dispatch_native_open(request); }
         if request.operation == "resume" { return self.dispatch_native_resume(request); }
+        if request.operation == "reconnect" { return self.dispatch_native_reconnect(request); }
+        if matches!(request.operation.as_str(),"compact"|"renew-session") {
+            return self.dispatch_native_generation_change(request);
+        }
         if request.operation == "stop" { return self.dispatch_native_stop(request); }
         if request.operation == "send" { return self.dispatch_native_send(request); }
         if request.operation == "append-without-turn" { return self.dispatch_native_send(request); }

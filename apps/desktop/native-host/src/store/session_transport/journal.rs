@@ -1291,8 +1291,10 @@ mod tests {
         // promoted to a successful injection, and cannot block native stop.
         let refused_raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"append-without-turn","requestId":"appendRefused","targetId":"sessionA","domainId":"projectA","expectedRevision":"2","payload":{"generation":"1","body":"refused fixture"}}"#;
         let refused=input(refused_raw);
-        prepare_codex_request(&mut db,&refused).unwrap();
-        mark_codex_write_unknown(&mut db,&refused).unwrap();
+        // This is a persisted historical UNKNOWN, not a newly authorized
+        // write after restart made process custody uncertain.
+        let historical=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,expected_revision) VALUES('projectA','appendRefused','append-without-turn','pct1_ticketA','processA','nonceA','sessionA','1',?1,'UNKNOWN','2')").unwrap();
+        historical.bind_text(1,&hex(refused_raw)).unwrap();historical.step_done().unwrap();drop(historical);
         let refusal=b"{\"id\":5,\"error\":{\"code\":-32603,\"message\":\"original injection refusal fixture\"}}\n";
         let refused_command=codex_rpc::Command::AppendWithoutTurn {thread_id:"threadA".into(),text:"refused fixture".into()};
         let refused_step=format!("append-{}",&crate::store::digest::sha256_hex(refused_raw)[..40]);

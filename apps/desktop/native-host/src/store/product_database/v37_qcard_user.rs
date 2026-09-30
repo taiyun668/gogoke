@@ -96,7 +96,10 @@ impl<'root> ProductDatabase<'root> {
                     .map_err(|error|OrchestrationError::V37StoreFailure(format!("native card current read: {error:?}")))?
                     .ok_or(OrchestrationError::AccessDenied)?;
                 match run.evidence.verify_live(&mut self.connection,self.root,&self.owner,&run.operation_id,claim.revision) {
-                    Ok(())=>ready=true,
+                    Ok(())=> {
+                        ready=crate::store::session_transport::generation_change::active_for_session(&self.connection,&key.0,&key.1)?.is_none();
+                        if !ready {availability_error=text("GENERATION_CHANGE_IN_PROGRESS");}
+                    }
                     Err(error)=>availability_error=text(&error),
                 }
             }
