@@ -198,7 +198,7 @@ jobs:
             @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
             @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
             @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
-            @{ id = 'native-worktree-core'; filter = 'store::worktree::tests::' },
+            @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
             @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
             @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
