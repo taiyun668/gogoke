@@ -443,6 +443,9 @@ mod tests {
         let home = path.join("home");
         fs::create_dir(&home).unwrap();
         let root = RootLock::acquire(&path).unwrap();
+        // Native callers derive admitted paths from this exact RootLock.
+        // Keep the fixture on that canonical spelling as well.
+        let home = root.canonical_root().canonical_path.join("home");
         let home_identity = crate::root::inspect_root(&home).unwrap().identity;
         let name = format!("Gogoke37.CompatTest.{stamp}");
         let profile = AppContainerProfile::ensure(&name, false).unwrap();
@@ -497,6 +500,10 @@ mod tests {
         fs::create_dir_all(&session).unwrap();
         fs::create_dir_all(&worktree).unwrap();
         let root = RootLock::acquire(&path).unwrap();
+        let path = root.canonical_root().canonical_path.clone();
+        let home = path.join("v37-instances").join("instanceA");
+        let session = path.join("v37-temporary-homes").join("instanceA").join("sessionA");
+        let worktree = path.join("v37-worktrees").join("single").join("opaqueA");
         let home_id = crate::root::inspect_root(&home).unwrap().identity;
         let session_id = crate::root::inspect_root(&session).unwrap().identity;
         let worktree_id = crate::root::inspect_root(&worktree).unwrap().identity;

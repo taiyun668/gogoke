@@ -36,10 +36,11 @@ fn testbed_remote_kind(remote: &str) -> Option<&'static str> {
 }
 const REPARSE_POINT: u32 = 0x400;
 const GIT_TIMEOUT: Duration = Duration::from_secs(25);
-const SCHEMA: [(&str, &str); 3] = [
+const SCHEMA: [(&str, &str); 4] = [
     ("gogoke_v37_worktree_sources", "CREATE TABLE gogoke_v37_worktree_sources(repository_id TEXT PRIMARY KEY,source_path TEXT NOT NULL UNIQUE,source_identity TEXT NOT NULL UNIQUE,common_path TEXT NOT NULL,common_identity TEXT NOT NULL,remote_kind TEXT NOT NULL CHECK(remote_kind IN ('HTTPS','SSH')),baseline_commit TEXT NOT NULL,git_digest TEXT NOT NULL,git_version TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision=1)) STRICT"),
     ("gogoke_v37_worktree_operations", "CREATE TABLE gogoke_v37_worktree_operations(request_id TEXT PRIMARY KEY,request_hash TEXT NOT NULL,repository_id TEXT NOT NULL,domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,worktree_id TEXT NOT NULL UNIQUE,path_id TEXT NOT NULL UNIQUE,seat_incarnation TEXT NOT NULL,seat_generation INTEGER NOT NULL,seat_revision INTEGER NOT NULL,instance_id TEXT NOT NULL,permission_tier TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('INTENT','UNKNOWN','REGISTERED')),cause TEXT NOT NULL DEFAULT '') STRICT"),
     ("gogoke_v37_worktrees", "CREATE TABLE gogoke_v37_worktrees(worktree_id TEXT PRIMARY KEY,path_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL REFERENCES gogoke_v37_worktree_sources(repository_id),domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,seat_generation INTEGER NOT NULL,seat_revision INTEGER NOT NULL,permission_tier TEXT NOT NULL,instance_id TEXT NOT NULL,source_revision INTEGER NOT NULL,worktree_path TEXT NOT NULL UNIQUE,worktree_identity TEXT NOT NULL UNIQUE,git_pointer_hash TEXT NOT NULL,git_pointer_len INTEGER NOT NULL,git_pointer_identity TEXT NOT NULL UNIQUE,common_identity TEXT NOT NULL,baseline_commit TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('REGISTERED','UNKNOWN')),revision INTEGER NOT NULL CHECK(revision=1)) STRICT"),
+    ("gogoke_v37_worktree_programs", "CREATE TABLE gogoke_v37_worktree_programs(repository_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktree_sources(repository_id),git_path TEXT NOT NULL) STRICT"),
 ];
 
 #[derive(Debug)]
@@ -244,15 +245,21 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     if observed == expected {
         return Ok(());
     }
-    if !observed.is_empty() {
+    let mut previous: Vec<_> = SCHEMA[..3].iter()
+        .map(|(name, sql)| (name.to_string(), sql.to_string())).collect();
+    previous.sort_by(|a, b| a.0.cmp(&b.0));
+    if !observed.is_empty() && observed != previous {
         return Err(WorktreeError::SchemaDrift);
     }
     transaction(db, |db| {
         no_shadow(db)?;
-        if !family(db)?.is_empty() {
+        if family(db)? != observed {
             return Err(WorktreeError::SchemaDrift);
         }
-        for (_, sql) in SCHEMA {
+        // Preserve the exact earlier tables and every record. A missing
+        // native program registration is denied at restore, never inferred.
+        let added = if observed.is_empty() { &SCHEMA[..] } else { &SCHEMA[3..] };
+        for (_, sql) in added {
             db.execute(sql)?;
         }
         if family(db)? != expected {
@@ -282,6 +289,14 @@ impl GitProgramPin {
         path: &Path,
         custodian: &mut ProcessCustodian,
     ) -> Result<Self> {
+        Self::observe_checked(db, owner, root, path, custodian, None)
+    }
+
+    fn observe_checked(
+        db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+        root: &RootLock, path: &Path, custodian: &mut ProcessCustodian,
+        expected: Option<(&str, &str)>,
+    ) -> Result<Self> {
         let identity = read_product_identity(db, owner)?;
         if identity.root_identity != root.canonical_root().identity.opaque()
             || !identity.policy_revision.bytes().all(|b| b.is_ascii_digit())
@@ -309,6 +324,11 @@ impl GitProgramPin {
             return Err(WorktreeError::Denied);
         }
         let digest = content_hash(&bytes);
+        // Restore must refuse changed bytes before any --version launch.
+        // The same held file continues to guard the image used below.
+        if expected.is_some_and(|(registered, _)| digest != registered) {
+            return Err(WorktreeError::Denied);
+        }
         let mut pin = Self {
             // Git derives its installation-relative resources from the image
             // path. Its mingw backend treats a verbatim prefix as //?/ rather
@@ -340,6 +360,9 @@ impl GitProgramPin {
             return Err(WorktreeError::Git("invalid pinned Git version".into()));
         }
         pin.version = version.to_owned();
+        if expected.is_some_and(|(_, registered)| pin.version != registered) {
+            return Err(WorktreeError::Denied);
+        }
         Ok(pin)
     }
     fn repin(&self) -> Result<()> {
@@ -366,8 +389,28 @@ fn git_launch_path(canonical: &Path) -> Result<PathBuf> {
             }
         Some(std::path::Component::Prefix(prefix))
             if matches!(prefix.kind(), std::path::Prefix::Disk(_)) => Ok(canonical.to_path_buf()),
-        _ => Err(WorktreeError::Invalid("Git requires a native local DOS image path")),
+        _ => Err(WorktreeError::Invalid("Git requires a native local DOS path")),
     }
+}
+
+/// Restore the Owner-registered program from native facts after restart.
+/// The request selects a repository ID only, never a path/digest/version.
+pub(crate) fn resolve_registered_git(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
+    repository_id: &str, custodian: &mut ProcessCustodian,
+) -> Result<GitProgramPin> {
+    if !atom(repository_id) { return Err(WorktreeError::Invalid("repository_id")); }
+    let (path, digest, version) = transaction(db, |db| {
+        check_owner_in_current_transaction(db, owner)?;
+        let row = Statement::prepare(db.as_ptr(),
+            "SELECT p.git_path,s.git_digest,s.git_version FROM main.gogoke_v37_worktree_sources AS s JOIN main.gogoke_v37_worktree_programs AS p ON p.repository_id=s.repository_id WHERE s.repository_id=?1 AND s.revision=1")?;
+        row.bind_text(1, repository_id)?;
+        if !row.step_row()? { return Err(WorktreeError::Denied); }
+        let facts = (PathBuf::from(row.column_text(0)?), row.column_text(1)?, row.column_text(2)?);
+        if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
+        Ok(facts)
+    })?;
+    GitProgramPin::observe_checked(db, owner, root, &path, custodian, Some((&digest, &version)))
 }
 
 fn git(
@@ -398,9 +441,8 @@ fn git(
         "core.quotePath=true".into(),
     ];
     launch.arguments.extend_from_slice(args);
-    launch.current_directory = cwd
-        .map(Path::to_path_buf)
-        .or_else(|| Some(root.canonical_root().canonical_path.clone()));
+    launch.current_directory = Some(git_launch_path(
+        cwd.unwrap_or(&root.canonical_root().canonical_path))?);
     // Keep bounded native stderr custody even for Git commands with no stdout.
     launch.protocol_stdio = true;
     launch.persistent_protocol_stdio = true;
@@ -634,7 +676,7 @@ fn git(
 }
 
 #[cfg(all(test, windows))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::same_open::{create_new, route_b_test_guard};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -648,6 +690,65 @@ mod tests {
             "gogoke-f-worktree-{label}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    /// Cloud-only setup through the same native Git custody, with an offline
+    /// synthetic source. Product-entry tests consume its path, not a fake pin.
+    pub(crate) fn make_source_fixture(
+        db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+        owner: &OwnerIssuer, custodian: &mut ProcessCustodian,
+    ) -> PathBuf {
+        let program = std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH")
+            .expect("cloud must bind actual installed Git backend");
+        let pin = GitProgramPin::observe(db, owner, root, Path::new(&program), custodian).unwrap();
+        let source = git_launch_path(&root.canonical_root().canonical_path.join("synthetic-source")).unwrap();
+        let mut run = |tag: &str, cwd: Option<&Path>, args: &[String]| {
+            git(db, root, custodian, &pin, tag, cwd, args, false).unwrap()
+        };
+        run("fixture_init", None, &["init".into(), "--quiet".into(), source.to_str().unwrap().into()]);
+        fs::write(source.join("README.md"), b"synthetic offline product worktree\n").unwrap();
+        for (tag, key, value) in [
+            ("fixture_name", "user.name", "Fixture"),
+            ("fixture_email", "user.email", "fixture@example.invalid"),
+            ("fixture_remote", "remote.origin.url", SOURCE_REMOTE),
+        ] {
+            run(tag, Some(&source), &["config".into(), "--local".into(), key.into(), value.into()]);
+        }
+        run("fixture_add", Some(&source), &["add".into(), "--".into(), "README.md".into()]);
+        run("fixture_commit", Some(&source), &["commit".into(), "--quiet".into(), "-m".into(), "fixture baseline".into()]);
+        source
+    }
+
+    #[test]
+    fn restore_refuses_changed_git_bytes_before_any_native_process_prepare() {
+        use crate::store::authority::{initialize_profile, initialize_process_custody_schema};
+        let _guard = route_b_test_guard();
+        let path = scratch("changed-git");
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut db = create_new(&root, &path.join("state.sqlite")).unwrap();
+        let owner = initialize_profile(&mut db, &root).unwrap();
+        initialize_process_custody_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        let program = path.join("registered-git.exe");
+        fs::write(&program, b"changed program bytes, must never execute").unwrap();
+        let insert = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_worktree_sources VALUES('legacyRepo','sourceA','sourceId','commonA','commonId','HTTPS','baseline',?1,'git version fixture',1)").unwrap();
+        insert.bind_text(1, &content_hash(b"original registered program bytes")).unwrap();
+        insert.step_done().unwrap();
+        drop(insert);
+        let register = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_worktree_programs VALUES('legacyRepo',?1)").unwrap();
+        register.bind_text(1, program.to_str().unwrap()).unwrap();
+        register.step_done().unwrap();
+        drop(register);
+        let mut custodian = ProcessCustodian::new().unwrap();
+        assert!(matches!(resolve_registered_git(&mut db, &root, &owner, "legacyRepo", &mut custodian), Err(WorktreeError::Denied)));
+        let count = Statement::prepare(db.as_ptr(), "SELECT count(*) FROM main.gogoke_coordination_process_custody").unwrap();
+        assert!(count.step_row().unwrap());
+        assert_eq!(count.column_text(0).unwrap(), "0", "no prepare/version subprocess on changed bytes");
+        drop(count);
+        db.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -838,6 +939,12 @@ mod tests {
         assert!(hex_commit(&source_row.column_text(2).unwrap()));
         assert_eq!(source_row.column_text(3).unwrap(), "HTTPS");
         drop(source_row);
+        let restored = resolve_registered_git(&mut db, &root, &owner,
+            "fixtureRepo", &mut custodian).expect("native program re-observation after registration");
+        assert_eq!(restored.digest, pin.digest);
+        assert_eq!(restored.version, pin.version);
+        drop(pin);
+        let pin = restored;
         let raw = br#"{"repositoryId":"fixtureRepo","seatId":"seatA","targetId":"visibleTreeA"}"#;
         let first = CreateWorktree {
             request_id: "worktree-create",
@@ -1208,6 +1315,10 @@ pub(crate) fn register_source(
         q.bind_text(8, &pin.digest)?;
         q.bind_text(9, &pin.version)?;
         q.step_done()?;
+        let program = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_worktree_programs(repository_id,git_path) VALUES(?1,?2)")?;
+        program.bind_text(1, input.repository_id)?;
+        program.bind_text(2, &pin.path.to_string_lossy())?;
+        program.step_done()?;
         Ok(())
     }).map_err(|error| { if uncertain(&error) {
         RootLock::poison_identity(&root.canonical_root().identity);
@@ -1480,7 +1591,9 @@ pub(crate) fn create_worktree(
                 "add".into(),
                 "--quiet".into(),
                 "--detach".into(),
-                target.to_string_lossy().into_owned(),
+                // The path remains native-generated and physically checked;
+                // Git's mingw path parser requires the local DOS spelling.
+                git_launch_path(&target)?.to_string_lossy().into_owned(),
                 baseline.clone(),
             ],
             false,

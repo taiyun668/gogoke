@@ -282,6 +282,20 @@ impl<'root> ProductDatabase<'root> {
                     domain_id: &domain, template_id: &template, settings_json: settings.as_bytes(),
                 })?;
             }
+            "worktree-source" if fields.len() == 5 => {
+                let repository = string_field(&fields, "repositoryId")?;
+                let source = string_field(&fields, "sourcePath")?;
+                let program = string_field(&fields, "gitPath")?;
+                let pin = super::super::worktree::GitProgramPin::observe(
+                    &mut self.connection, &self.owner, self.root,
+                    Path::new(&program), &mut self.process_custodian)
+                    .map_err(|error| OrchestrationError::V37StoreFailure(format!("native Git pin: {error:?}")))?;
+                super::super::worktree::register_source(&mut self.connection, self.root,
+                    &self.owner, &pin, &mut self.process_custodian,
+                    super::super::worktree::SourceRegistration {
+                        repository_id: &repository, source_path: Path::new(&source),
+                    }).map_err(|error| OrchestrationError::V37StoreFailure(format!("native worktree source: {error:?}")))?;
+            }
             _ => return Err(OrchestrationError::Invalid("configuration command or fields")),
         }
         Ok(Json::Object(BTreeMap::from([

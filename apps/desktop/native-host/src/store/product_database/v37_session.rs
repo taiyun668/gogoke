@@ -21,6 +21,60 @@ fn admission_status(error: &AdmissionError) -> V37Status {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// K-WORKTREE creation is User-only at the parent ingress. Source and Git
+    /// paths live solely in the separate Owner configuration plane; this
+    /// closed operation accepts logical repository/seat IDs only.
+    pub(super) fn dispatch_user_worktree(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        use crate::store::worktree::{self as f, WorktreeError};
+        authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if request.operation != "create" {
+            return Ok(encode_receipt(request, V37Status::Unsupported,
+                request.expected_revision, request.expected_revision, Default::default()));
+        }
+        if request.expected_revision != 0 || request.payload.len() != 2 {
+            return Ok(encode_receipt(request, V37Status::Denied, 0, 0, Default::default()));
+        }
+        let repository = user_payload_string(request, "repositoryId")?;
+        let seat_id = user_payload_string(request, "seatId")?;
+        let readback = f::readback_create(&self.connection, self.root,
+            &request.request_id, &request.raw_bytes);
+        let mut replayed = false;
+        let result = match readback {
+            Ok(Some(binding)) => { replayed = true; Ok(binding) }
+            Ok(None) => (|| {
+                let pin = f::resolve_registered_git(&mut self.connection, self.root,
+                    &self.owner, &repository, &mut self.process_custodian)?;
+                f::create_worktree(&mut self.connection, self.root, &self.owner, &pin,
+                    &mut self.process_custodian, f::CreateWorktree {
+                        request_id: &request.request_id, request_bytes: &request.raw_bytes,
+                        target_id: &request.target_id, repository_id: &repository,
+                        domain_id: &request.domain_id, seat_id: &seat_id,
+                    })
+            })(),
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(binding) => Ok(encode_receipt(request,
+                if replayed { V37Status::Replayed } else { V37Status::Applied }, 0, 1,
+                BTreeMap::from([
+                    (JsonString::from_str("worktreeId"), text(&binding.worktree_id)),
+                    (JsonString::from_str("repositoryId"), text(&repository)),
+                    (JsonString::from_str("seatId"), text(&seat_id)),
+                    (JsonString::from_str("classification"), text("SINGLE")),
+                    (JsonString::from_str("baselineCommit"), text(&binding.baseline_commit)),
+                ]))),
+            Err(error) => {
+                let status = match &error {
+                    WorktreeError::Denied | WorktreeError::Invalid(_) => V37Status::Denied,
+                    WorktreeError::Conflict => V37Status::Conflict,
+                    _ => V37Status::Unknown,
+                };
+                Ok(encode_receipt(request, status, 0, 0, BTreeMap::from([
+                    (JsonString::from_str("reason"), text(&format!("native worktree: {error:?}")))])))
+            }
+        }
+    }
+
     pub(super) fn read_user_instance_capacity(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let revision = self.user_instance_revision(&request.target_id)?;

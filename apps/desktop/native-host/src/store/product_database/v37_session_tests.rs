@@ -12,6 +12,93 @@ fn status(product: &mut ProductDatabase<'_>, r: &V37Request) -> V37Status {
     h::decode_receipt(&product.dispatch_user_request(r).unwrap()).unwrap().status
 }
 
+fn worktree_request(id: &str, target: &str, domain: &str, seat_id: &str) -> V37Request {
+    decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-WORKTREE","operation":"create","requestId":"{id}","targetId":"{target}","domainId":"{domain}","expectedRevision":"0","payload":{{"repositoryId":"fixtureRepo","seatId":"{seat_id}"}}}}"#).as_bytes()).unwrap()
+}
+
+#[test]
+fn product_worktree_source_reopens_and_original_requests_never_reissue_unknown() {
+    use crate::store::worktree;
+    use crate::store::atomic::{Json, JsonString};
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("gogoke-v37-product-worktree-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let database = path.join("state.sqlite");
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
+    product.connection.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:fixture','fixture','INSTALLED','LOGGED_OUT',1)").unwrap();
+    seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
+        domain_id: "projectA", template_id: "templateA", settings_json: br#"{"permissionTier":"ISOLATED_WRITE"}"#,
+    }).unwrap();
+    seat::create(&mut product.connection, NativeOrigin::user(&product.owner), CreateSeat {
+        domain_id: "projectA", seat_id: "seatA", template_id: "templateA", instance_id: Some("instanceA"),
+        kind: Kind::Long, request_id: "create-seat", request_bytes: b"product worktree seat",
+    }).unwrap();
+    let source = worktree::tests::make_source_fixture(&mut product.connection, &root,
+        &product.owner, &mut product.process_custodian);
+    let git = std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").unwrap();
+    let configuration = Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"), text("gogoke.37.owner-configuration.v1")),
+        (JsonString::from_str("command"), text("worktree-source")),
+        (JsonString::from_str("repositoryId"), text("fixtureRepo")),
+        (JsonString::from_str("sourcePath"), text(source.to_str().unwrap())),
+        (JsonString::from_str("gitPath"), text(git.to_str().unwrap())),
+    ])).canonical();
+    product.configure_user_v37(configuration.as_bytes()).unwrap();
+    product.close_checked().unwrap();
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
+    assert_eq!(status(&mut product, &worktree_request("wrong-domain", "badTree", "projectB", "seatA")), V37Status::Denied);
+    assert_eq!(status(&mut product, &worktree_request("wrong-seat", "badTree", "projectA", "missingSeat")), V37Status::Denied);
+    let original = worktree_request("create-tree", "treeA", "projectA", "seatA");
+    assert_eq!(status(&mut product, &original), V37Status::Applied);
+    assert_eq!(status(&mut product, &original), V37Status::Replayed);
+    assert_eq!(status(&mut product, &worktree_request("create-tree", "treeB", "projectA", "seatA")), V37Status::Conflict);
+    // Simulate an uncertain external completion in this test's actual store.
+    // No production request can select or clear this phase.
+    product.connection.execute("UPDATE main.gogoke_v37_worktree_operations SET phase='UNKNOWN' WHERE request_id='create-tree'").unwrap();
+    let count = |product: &ProductDatabase<'_>| {
+        let row = Statement::prepare(product.connection.as_ptr(), "SELECT count(*) FROM main.gogoke_coordination_process_custody").unwrap();
+        assert!(row.step_row().unwrap()); row.column_text(0).unwrap()
+    };
+    let before = count(&product);
+    assert_eq!(status(&mut product, &original), V37Status::Unknown);
+    assert_eq!(count(&product), before, "UNKNOWN/replay must not launch even git --version");
+    product.close_checked().unwrap();
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
+    assert_eq!(status(&mut product, &original), V37Status::Unknown);
+    assert_eq!(count(&product), before);
+    product.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn product_reopens_exact_previous_worktree_schema_preserving_unpinned_sources() {
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("gogoke-v37-old-worktree-schema-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let database = path.join("state.sqlite");
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
+    product.connection.execute("DROP TABLE main.gogoke_v37_worktree_programs").unwrap();
+    product.connection.execute("INSERT INTO main.gogoke_v37_worktree_sources VALUES('legacyRepo','sourceA','sourceId','commonA','commonId','HTTPS','baseline','old digest','old version',1)").unwrap();
+    product.close_checked().unwrap();
+    let mut product = ProductDatabase::open(&root, &database).expect("known earlier family remains readable");
+    let row = Statement::prepare(product.connection.as_ptr(), "SELECT git_digest,git_version FROM main.gogoke_v37_worktree_sources WHERE repository_id='legacyRepo'").unwrap();
+    assert!(row.step_row().unwrap());
+    assert_eq!(row.column_text(0).unwrap(), "old digest");
+    assert_eq!(row.column_text(1).unwrap(), "old version");
+    drop(row);
+    assert!(matches!(crate::store::worktree::resolve_registered_git(&mut product.connection,
+        &root, &product.owner, "legacyRepo", &mut product.process_custodian),
+        Err(crate::store::worktree::WorktreeError::Denied)));
+    product.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 #[test]
 fn product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial() {
     let _guard = route_b_test_guard();

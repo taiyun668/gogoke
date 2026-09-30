@@ -211,6 +211,7 @@ impl<'root> ProductDatabase<'root> {
     fn dispatch_user_request(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         if request.family == "K-SEAT" { return self.dispatch_user_seat(request); }
         if request.family == "K-SESSION" { return self.dispatch_user_session(request); }
+        if request.family == "K-WORKTREE" { return self.dispatch_user_worktree(request); }
         if request.family == "K-INSTANCE" {
             return match request.operation.as_str() {
                 "register" => self.register_user_instance(request),

@@ -2648,9 +2648,12 @@ mod tests {
                 "echo permitted> allowed.txt & echo forbidden> ..\\blocked\\forbidden.txt").into()];
         let managed = prepare_and_activate(&launch, |_| Ok(())).expect("real LPAC child");
         assert!(managed.wait(Duration::from_secs(10)).expect("LPAC exit"));
-        assert!(allowed.join("allowed.txt").is_file(), "LPAC must write its granted directory");
+        let direct_evidence = format!("exit={:?}; transient={}; renamed={}; stderr={}",
+            managed.exit_code().expect("LPAC exit code"), allowed.join("transient.txt").exists(),
+            allowed.join("renamed.txt").exists(), managed.stderr_tail());
+        assert!(allowed.join("allowed.txt").is_file(), "LPAC must write its granted directory: {direct_evidence}");
         assert!(!allowed.join("transient.txt").exists() && !allowed.join("renamed.txt").exists(),
-            "the actual LPAC child must rename and delete its own writable file");
+            "the actual LPAC child must rename and delete its own writable file: {direct_evidence}");
         assert!(!blocked.join("forbidden.txt").exists(), "LPAC must not write sibling directory");
         assert_eq!(std::fs::read(blocked.join("keep.txt")).unwrap(), b"blocked file");
         assert_eq!(std::fs::read(readonly.join("keep.txt")).unwrap(), b"read-only file");
