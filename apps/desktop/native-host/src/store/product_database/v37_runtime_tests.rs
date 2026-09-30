@@ -115,6 +115,14 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let custody = live.custody.clone();
     let process_operation=live.operation_id.clone();
     let thread=live.thread_id.clone().unwrap();
+    // Fixed 0.149 starts with deferred history. Native inject_response_items
+    // explicitly flushes its recorded items, so arrange real durable history
+    // through the existing production RPC before testing cross-process resume.
+    // This is no-model setup; it neither fabricates rollout files nor proves
+    // authenticated model behavior or a user-facing append receipt.
+    let history=product.native_append_rpc(&key,"materialize-original-history",&thread,
+        "cloud no-model durable history marker".into()).unwrap();
+    assert!(matches!(history,Some(Reply::Ack {..})),"actual original history injection ACK: {history:?}");
     // These are explicitly synthetic A/C ordering controls, not provider
     // questions, EOF observations, Owner login or model-delivery evidence.
     // The production composition below still uses the real opened session.

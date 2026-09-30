@@ -477,7 +477,7 @@ impl<'root> ProductDatabase<'root> {
         let c=failure(change::read(&self.connection,&request.domain_id,&request.request_id))?
             .ok_or(OrchestrationError::OperationConflict)?;
         if c.original_error.is_none() {
-            let bounded=reason.chars().take(1024).collect::<String>();
+            let bounded=reason.chars().skip(reason.chars().count().saturating_sub(1024)).collect::<String>();
             self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let noted=(||->Result<()> {
                 authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
@@ -735,9 +735,12 @@ impl<'root> ProductDatabase<'root> {
         } else {None};
         drop(candidate);
         if let Some((operation,new_generation,_))=&candidate_row {
-            if !operation.is_empty() && self.stop_candidate_for_owner(&key,operation,new_generation).is_err() {
-                return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
-                    request.expected_revision,Default::default()));
+            if !operation.is_empty() {
+                if let Err(error)=self.stop_candidate_for_owner(&key,operation,new_generation) {
+                    return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
+                        request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
+                            text(&format!("Owner stop original candidate error: {error:?}")))])));
+                }
             }
         }
         self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
@@ -960,7 +963,8 @@ impl<'root> ProductDatabase<'root> {
                 }
             }
             if !matches!(ack,Ok(Some(_))) {
-                return self.generation_error(request,&format!("original compact RPC: {send_error:?}; ACK source: {ack:?}"));
+                let reason=send_error.unwrap_or_else(||format!("original compact ACK source: {ack:?}"));
+                return self.generation_error(request,&reason);
             }
             self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let marked=(||->Result<()> {
