@@ -1,6 +1,6 @@
 //! C's durable rows on the verified product connection. Registration and the
 //! native issuer are owned by the product entry, outside this module's scope.
-use super::atomic::{AtomicError, Json, Parser, Statement};
+use super::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 const SCHEMA: [(&str, &str); 8] = [
