@@ -3,7 +3,7 @@
   "state": "FIXING_SOURCE_FOR_ONE_CLOUD_NATIVE_INTEGRATION_RUN",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "d163a8aa7c109cba7b36a12897cd943c795c138d",
+  "last_pushed_source": "b172425097f623820d66e276ea6297d0e16c0a80",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -203,5 +203,42 @@
     "private_cached_files": 21,
     "hash_mismatches": 0,
     "private_manifest_sha256": "f5194a3c44567b142545058d5ff531334bcf5b94376491b13046ecca84cca40d"
+  },
+  "native_b172_complete": {
+    "source": "b172425097f623820d66e276ea6297d0e16c0a80",
+    "run": 36711412443,
+    "artifact": 11095235900,
+    "focused_artifact": 11094765777,
+    "release": "PASS",
+    "server": "PASS",
+    "axes_passed": 3,
+    "shim_passed": 2,
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 561,
+      "passed": 556,
+      "failed": 5,
+      "skipped": 0
+    },
+    "actual_loaded_flags": "PASS: the real initial thread read now observes all three required feature values after leaf overrides. No model/native question acceptance inferred.",
+    "temporary_home_controls": "PASS on this source, including original three close/cleanup controls and explicit synthetic cross-generation ancestry controls; no formal home was touched.",
+    "remaining_failures": [
+      "Actual open test now passes initial features and actual same-ID stop rollback recovery but its later lost-H-commit fixture reset the claim without resetting the episode changed in that same transaction. H corrects the fixture to ACTIVE/NULL while preserving actual native STOPPED proof and original stop intent.",
+      "Two old codec tests still check or mutate the old nested use_memories field. Root updates only their actual dotted field and asserts that the negative control really changed bytes.",
+      "Original RPC fixture missing immutable episode and synthetic refusal fixture attempting a new write after custody became UNKNOWN remain pending H source fixes already in flight."
+    ],
+    "machine_sha256": "6e3389c6333b9e9f1f150a6b4c760862dba7d48ecca67788b060841cb1c4174d",
+    "focused_log_sha256": "270a39464db73492ba8959f5414ef3fa4e035c6f1a1ba65daa73b4189812a926"
+  },
+  "desktop_233a_complete": {
+    "source": "233a47be76a5c5cc99b179221c580668a736561c",
+    "run": 36706828819,
+    "state": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
+    "newer_source": "NOT_RUN_PENDING_FIXED_H_COMPOUND_SOURCE"
   }
 }

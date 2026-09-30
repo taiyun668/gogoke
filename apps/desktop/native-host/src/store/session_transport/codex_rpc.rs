@@ -1036,7 +1036,8 @@ mod tests {
             b"{\"id\":19,\"result\":{\"thread\":{\"id\":\"thread-b\",\"cwd\":\"D:/sealed-tree\"}}}\n"),
             Err(RpcError::Invalid("thread id mismatch"))));
         let altered = String::from_utf8(stored.clone()).unwrap()
-            .replace("\"use_memories\":false", "\"use_memories\":true");
+            .replace("\"memories.use_memories\":false", "\"memories.use_memories\":true");
+        assert_ne!(altered.as_bytes(),stored.as_slice(),"the negative control must change the actual retained command");
         assert!(matches!(decode_stored_thread_resume(altered.as_bytes(), response),
             Err(RpcError::Invalid("stored resume command mismatch"))));
         let mut noncanonical = stored.clone();
@@ -1119,7 +1120,7 @@ mod tests {
             String::from_utf8(start.encode(Some(&RpcId::client(2).unwrap())).unwrap()).unwrap();
         assert!(encoded.contains("\"ephemeral\":false"));
         assert!(encoded.contains("\"model\":\"gpt-6-sol\""));
-        assert!(encoded.contains("\"use_memories\":false"));
+        assert!(encoded.contains("\"memories.use_memories\":false"));
         let turn = Command::TurnStart {
             thread_id: "thread-a".into(),
             cwd: "D:/sealed-tree".into(),
