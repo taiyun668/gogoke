@@ -10,17 +10,17 @@ use crate::store::atomic::Parser;
 use std::time::{Duration, Instant};
 
 pub(super) struct NativeSession {
-    evidence: LaunchEvidence,
-    custody: PreparedCustody,
-    operation_id: String,
+    pub(super) evidence: LaunchEvidence,
+    pub(super) custody: PreparedCustody,
+    pub(super) operation_id: String,
     open_request_id: String,
     open_request_bytes: Vec<u8>,
     domain_id: String,
     session_id: String,
     model: String,
     effort: String,
-    thread_id: Option<String>,
-    raw_cursor: u64,
+    pub(super) thread_id: Option<String>,
+    pub(super) raw_capture: super::v37_output::NativeRawCapture,
     stop_proof: Option<NativeStopProof>,
     next_rpc_id: u64,
 }
@@ -144,7 +144,7 @@ impl<'root> ProductDatabase<'root> {
         self.native_sessions.insert(key.clone(), NativeSession { evidence, custody: custody.clone(),
             operation_id: operation_id.clone(), open_request_id: request.request_id.clone(),
             open_request_bytes: request.raw_bytes.clone(), domain_id: request.domain_id.clone(),
-            session_id: request.target_id.clone(), model, effort, thread_id: None, raw_cursor: 0, stop_proof: None,
+            session_id: request.target_id.clone(), model, effort, thread_id: None, raw_capture: Default::default(), stop_proof: None,
             next_rpc_id: 4 });
         if let Err(error) = authority::record_prepared_process(&mut self.connection, &operation_id, &custody) {
             let abort = self.process_custodian.abort_prepared(&custody);
@@ -184,11 +184,15 @@ impl<'root> ProductDatabase<'root> {
                 return Err(OrchestrationError::Invalid("native open thread response"));
             };
             self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id = Some(thread_id);
+            self.process_native_pending_output(&key)?;
             Ok(())
         })();
         if let Err(error) = started {
             // Keep the original intention UNKNOWN even if cleanup succeeds;
             // do not make a failed handshake an APPLIED open via a stop receipt.
+            if self.native_sessions.get(&key).is_some_and(|run|run.raw_capture.has_pending()) {
+                return Err(OrchestrationError::V37StoreFailure(format!("native open capture retained; original open remains UNKNOWN: {error:?}")));
+            }
             let unknown = authority::mark_process_unknown(&mut self.connection, &operation_id, &custody);
             return Err(OrchestrationError::V37StoreFailure(format!("native open handshake: {error:?}; UNKNOWN record: {unknown:?}")));
         }
@@ -349,6 +353,11 @@ impl<'root> ProductDatabase<'root> {
             self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.stop_proof = Some(proof.clone());
             proof
         };
+        // Stop the actual Job even when A's INSERT is still failing. Keep
+        // its proof, original frame and guards until that exact frame can be
+        // captured; neither durable STOPPED nor custody release precedes it.
+        self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+            .raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?;
         authority::mark_process_stopped(&mut self.connection, &operation, &proof)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let stopped = (|| -> Result<()> {
@@ -402,13 +411,12 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn dispatch_native_send(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
-        if request.payload.len() != 3 {
+        if request.payload.len() != 2 {
             return Ok(encode_receipt(request, V37Status::Denied, request.expected_revision,
                 request.expected_revision, Default::default()));
         }
-        let seat_id = user_payload_string(request, "seatId")?;
         let generation = user_payload_string(request, "generation")?;
-        let text = user_payload_string(request, "text")?;
+        let text = user_payload_string(request, "body")?;
         // Read an already observed outcome before requiring a new live child.
         let prior = Statement::prepare(self.connection.as_ptr(),
             "SELECT request_hex,ticket,generation FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND request_id=?2")?;
@@ -446,6 +454,7 @@ impl<'root> ProductDatabase<'root> {
         drop(prior);
         let key = (request.domain_id.clone(), request.target_id.clone());
         let run = self.native_sessions.get(&key).ok_or(OrchestrationError::Invalid("native send has no live custody"))?;
+        let seat_id = run.evidence.seat_id().to_owned();
         let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
             &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
         if current.generation != generation || u64::try_from(current.revision).ok() != Some(request.expected_revision) {
@@ -479,7 +488,8 @@ impl<'root> ProductDatabase<'root> {
                     Err(error) => format!("{error:?}"),
                     _ => "native turn response absent".into(),
                 };
-                let unknown = authority::mark_process_unknown(&mut self.connection, &run.operation_id, &custody);
+                let unknown = if run.raw_capture.has_pending() { Ok(()) }
+                    else { authority::mark_process_unknown(&mut self.connection, &run.operation_id, &custody) };
                 let journal = h::mark_codex_write_unknown(&mut self.connection, &input);
                 return Err(OrchestrationError::V37StoreFailure(format!(
                     "native send: {original}; custody UNKNOWN: {unknown:?}; original request UNKNOWN: {journal:?}")));
@@ -502,18 +512,25 @@ impl<'root> ProductDatabase<'root> {
         number: Option<u64>, command: &Command) -> Result<Option<RpcObservation>> {
         let id = number.map(RpcId::client).transpose().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native RPC ID: {error:?}")))?;
-        let run = self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
-        let step = rpc::Step { domain_id: &run.domain_id, session_id: &run.session_id,
-            open_request_id: &run.open_request_id, open_request_bytes: &run.open_request_bytes,
-            step_id, custody: &run.custody, rpc_id: id.as_ref(), command };
+        let run = self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.raw_capture.has_pending() {
+            return Err(OrchestrationError::Invalid("native RPC has retained uncaptured source"));
+        }
+        let custody=run.custody.clone();
+        let operation=run.operation_id.clone();
+        let open_id=run.open_request_id.clone();
+        let open_bytes=run.open_request_bytes.clone();
+        let step = rpc::Step { domain_id: &key.0, session_id: &key.1,
+            open_request_id: &open_id, open_request_bytes: &open_bytes,
+            step_id, custody: &custody, rpc_id: id.as_ref(), command };
         let intention = failure(rpc::prepare(&mut self.connection, &self.owner, &step))?;
         if intention.disposition != rpc::Disposition::NewWrite {
             return Err(OrchestrationError::Invalid("native RPC replay cannot write"));
         }
-        let process = self.process_custodian.active(&run.custody.ticket)
+        let process = self.process_custodian.active(&custody.ticket)
             .ok_or(OrchestrationError::Invalid("native RPC process absent"))?;
         if let Err(error) = process.write_persistent_frame(&intention.bytes) {
-            let original = self.process_custodian.protocol_error_with_stderr(&run.custody.ticket,
+            let original = self.process_custodian.protocol_error_with_stderr(&custody.ticket,
                 crate::process::ProcessCustodyError::ProtocolPipe(error));
             let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &original.to_string());
             return Err(OrchestrationError::V37StoreFailure(format!("native RPC write: {original}; UNKNOWN: {persisted:?}")));
@@ -524,14 +541,18 @@ impl<'root> ProductDatabase<'root> {
         loop {
             let remaining = Duration::from_secs(30).saturating_sub(start.elapsed());
             if remaining.is_zero() { return Err(OrchestrationError::Invalid("native RPC response deadline")); }
-            let frame = self.process_custodian.read_persistent_child_frame(&run.custody.ticket, remaining)?;
-            run.raw_cursor = run.raw_cursor.checked_add(1).ok_or(OrchestrationError::Invalid("native raw cursor overflow"))?;
-            let raw = ledger::capture_raw_source(&mut self.connection, &frame, &run.operation_id,
-                &run.custody.custodian_nonce, &run.raw_cursor.to_string())?;
+            let frame = self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining)?;
+            let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+            run.raw_capture.retain(frame)?;
+            let (frame,raw)=run.raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?
+                .ok_or(OrchestrationError::Invalid("native RPC capture absent"))?;
             let observed = failure(codex_rpc::decode(frame.bytes(), id.as_ref().map(|id| (id, command))))?;
             match observed {
                 Reply::Initialized { .. } | Reply::MemoryOff { .. } | Reply::Thread { .. }
                 | Reply::Turn { .. } | Reply::Ack { .. } => {
+                    if let Reply::Thread {cwd,..}=&observed {
+                        failure(run.evidence.verify_observed_cwd(cwd))?;
+                    }
                     let reply = failure(rpc::complete_response(&mut self.connection, &self.owner, &step, &frame, &raw.key))?;
                     return Ok(Some(RpcObservation { reply, frame }));
                 }
@@ -540,7 +561,11 @@ impl<'root> ProductDatabase<'root> {
                     let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &text);
                     return Err(OrchestrationError::V37StoreFailure(format!("native RPC remote error: {text}; journal: {persisted:?}")));
                 }
-                _ => { failure(rpc::observe_event(&mut self.connection, &frame, &raw.key, &step))?; }
+                _ => {
+                    failure(rpc::observe_event(&mut self.connection, &frame, &raw.key, &step))?;
+                    let thread_observed=run.thread_id.is_some();
+                    if thread_observed { self.process_native_pending_output(key)?; }
+                }
             }
         }
     }

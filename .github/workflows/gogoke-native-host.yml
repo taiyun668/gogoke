@@ -264,9 +264,9 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $log = Join-Path $evidenceRoot 'lib-tests.log'
-          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture 2>&1
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture 2>&1 |
+            Tee-Object -FilePath $log | ForEach-Object { Write-Host $_; $_ }
           $exitCode = $LASTEXITCODE
-          $output | Tee-Object -FilePath $log | Write-Host
           $text = $output -join "`n"
           $running = [regex]::Matches($text, '(?m)^running (\d+) tests?$')
           $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')

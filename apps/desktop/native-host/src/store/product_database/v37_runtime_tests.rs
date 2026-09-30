@@ -66,6 +66,19 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let receipt = product.dispatch_user_request(&open).expect("actual CLI open original native error");
     assert_eq!(h::decode_receipt(&receipt).unwrap().status, V37Status::Applied);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status, V37Status::Replayed);
+    let output=operation("K-SESSION","output-stream","read-native-output","sessionA",2,
+        r#"{"generation":"2","afterCursor":"0"}"#);
+    let actual_output=h::decode_receipt(&product.dispatch_user_request(&output).unwrap()).unwrap();
+    assert_eq!(actual_output.status,V37Status::Applied);
+    assert_eq!(actual_output.previous_revision,actual_output.revision,"output read never advances H");
+    // A SQLite highwater control checks read-receipt currentness. This is not
+    // another provider output or authentication observation.
+    product.connection.execute("INSERT INTO sqlite_sequence(name,seq) SELECT 'v37_ledger_index',1 WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='v37_ledger_index')").unwrap();
+    product.connection.execute("UPDATE sqlite_sequence SET seq=seq+1 WHERE name='v37_ledger_index'").unwrap();
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&output).unwrap()).unwrap().status,V37Status::Stale);
+    let collision=operation("K-SESSION","stop","read-native-output","sessionA",2,
+        r#"{"seatId":"seatA","generation":"2"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&collision).unwrap()).unwrap().status,V37Status::Conflict);
     let row = Statement::prepare(product.connection.as_ptr(), "SELECT count(*) FROM main.gogoke_v37_rpc_steps WHERE phase='OBSERVED'").unwrap();
     assert!(row.step_row().unwrap());
     assert_eq!(row.column_text(0).unwrap(), "3", "initialize, effective config and real thread response; initialized has no ACK");
@@ -73,13 +86,12 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let key = ("projectA".to_owned(), "sessionA".to_owned());
     let live = product.native_sessions.get(&key).unwrap();
     let custody = live.custody.clone();
-    let operation_id = live.operation_id.clone();
     let reused_open = operation("K-SESSION", "send", "open-session", "sessionA", 2,
-        r#"{"seatId":"seatA","generation":"2","text":"must never reach the provider"}"#);
+        r#"{"generation":"2","body":"must never reach the provider"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reused_open).unwrap()).unwrap().status,
         V37Status::Conflict);
     let reserved_send = operation("K-SESSION", "send", "reserved-send", "sessionA", 2,
-        r#"{"seatId":"seatA","generation":"2","text":"intention only"}"#);
+        r#"{"generation":"2","body":"intention only"}"#);
     let reserved_input = h::StdinRequest { domain_id: "projectA", session_id: "sessionA",
         ticket: custody.ticket.opaque(), generation: "2", request_bytes: &reserved_send.raw_bytes };
     h::prepare_codex_request(&mut product.connection, &reserved_input).unwrap();
@@ -88,13 +100,26 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reused_send).unwrap()).unwrap().status,
         V37Status::Conflict);
     assert!(product.native_sessions.contains_key(&key), "conflict does not stop the actual child");
-    authority::mark_process_unknown(&mut product.connection, &operation_id, &custody).unwrap();
+    let cwd=product.native_sessions.get(&key).unwrap().evidence.cwd().to_string_lossy().into_owned();
+    product.connection.execute("CREATE TRIGGER inject_pending_capture_failure BEFORE INSERT ON v37_ledger_raw_source BEGIN SELECT RAISE(ABORT,'injected retained provider capture failure'); END").unwrap();
+    assert!(product.native_rpc(&key,"capture-fault-config",Some(9),&Command::ConfigRead {cwd}).is_err());
+    assert!(product.native_sessions.get(&key).unwrap().raw_capture.has_pending(),
+        "the actual fourth CLI response remains in original native custody");
     let stop = operation("K-SESSION", "stop", "stop-session", "sessionA", 2, r#"{"seatId":"seatA","generation":"2"}"#);
+    assert!(product.dispatch_user_request(&stop).is_err(),"original capture failure still reported after actual stop");
+    let retained=product.native_sessions.get(&key).unwrap();
+    let proof=retained.stop_proof.as_ref().expect("stop reached the actual Job despite capture SQL failure");
+    assert!(proof.parent_exited && proof.active_job_processes==Some(0) && proof.writer_fence_verified);
+    assert!(proof.errors.is_empty(),"original native stop evidence: {proof:?}");
+    assert!(retained.raw_capture.has_pending(),"stop cannot drop the original uncaptured response");
+    assert!(product.process_custodian.active(&custody.ticket).is_some(),"proof and guards retained until durable confirmation");
+    product.connection.execute("DROP TRIGGER inject_pending_capture_failure").unwrap();
     // Inject a same-store write failure after the real native stop and its
     // custody proof. The original request must finish without a second stop.
     product.connection.execute("CREATE TRIGGER inject_h_stop_failure BEFORE UPDATE ON gogoke_v37_h_claim WHEN NEW.state='STOPPED' BEGIN SELECT RAISE(ABORT,'injected H stop receipt failure'); END").unwrap();
     assert!(product.dispatch_user_request(&stop).is_err());
     assert!(product.native_sessions.get(&key).unwrap().stop_proof.is_some());
+    assert!(!product.native_sessions.get(&key).unwrap().raw_capture.has_pending(),"same original response captured after SQL fault removed");
     product.connection.execute("DROP TRIGGER inject_h_stop_failure").unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Applied);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);

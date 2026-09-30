@@ -471,6 +471,7 @@ pub enum StopDisposition {
 pub struct StopProof {
     pub identity: ProcessIdentity,
     pub parent_exited: bool,
+    pub parent_grace_exited: bool,
     pub active_job_processes: Option<u32>,
     pub identity_status: &'static str,
     pub process_handle_present: bool,
@@ -492,6 +493,7 @@ pub struct NativeStopProof {
     pub binding: NativeBinding,
     pub identity: ProcessIdentity,
     pub parent_exited: bool,
+    pub parent_grace_exited: bool,
     pub active_job_processes: Option<u32>,
     pub identity_status: String,
     pub process_handle_present: bool,
@@ -517,6 +519,7 @@ impl NativeStopProof {
         append_field(&mut bytes, &self.identity.creation_time_100ns.to_string());
         append_field(&mut bytes, &self.identity.image_path.to_string_lossy());
         append_field(&mut bytes, &self.parent_exited.to_string());
+        append_field(&mut bytes, &self.parent_grace_exited.to_string());
         append_field(
             &mut bytes,
             &self
@@ -1259,6 +1262,17 @@ impl ProcessCustodian {
         Ok(OriginBoundFrame { custody: custody.clone(), bytes })
     }
 
+    /// Drain available output on the native event/read path. A quiet live
+    /// child is None; partial data remains with this exact persistent reader.
+    pub(crate) fn poll_persistent_child_frame(&self, ticket: &ProcessTicket)
+        -> Result<Option<OriginBoundFrame>, ProcessCustodyError> {
+        let (custody, process) = self.active.get(ticket).ok_or_else(||
+            ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?;
+        let bytes = process.poll_persistent_frame().map_err(|error|
+            self.protocol_error_with_stderr(ticket, ProcessCustodyError::ProtocolPipe(error)))?;
+        Ok(bytes.map(|bytes| OriginBoundFrame { custody: custody.clone(), bytes }))
+    }
+
     /// This is runtime evidence for the exact retained process. Do not persist
     /// it to a public artifact: provider errors can contain private account data.
     pub(crate) fn protocol_error_with_stderr(&self, ticket: &ProcessTicket,
@@ -1300,6 +1314,7 @@ impl ProcessCustodian {
             binding: prepared.binding.clone(),
             identity: prepared.identity.clone(),
             parent_exited: observed.parent_exited,
+            parent_grace_exited: observed.parent_grace_exited,
             active_job_processes: observed.active_job_processes,
             identity_status: observed.identity_status.to_owned(),
             process_handle_present: observed.process_handle_present,
@@ -1523,14 +1538,23 @@ impl ManagedProcess {
     /// partial frame is retained for the next call; EOF, overflow and kernel
     /// failures are terminal and retain their original error for recovery.
     pub(crate) fn read_persistent_frame(&self, deadline: Duration) -> io::Result<Vec<u8>> {
+        if deadline.is_zero() || deadline > Duration::from_secs(30) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "persistent read deadline out of bounds"));
+        }
+        self.persistent_frame(Some(deadline))?.ok_or_else(||
+            io::Error::new(io::ErrorKind::TimedOut, "persistent frame deadline"))
+    }
+
+    pub(crate) fn poll_persistent_frame(&self) -> io::Result<Option<Vec<u8>>> {
+        self.persistent_frame(None)
+    }
+
+    fn persistent_frame(&self, deadline: Option<Duration>) -> io::Result<Option<Vec<u8>>> {
         if !self.persistent_protocol_stdio {
             return Err(io::Error::new(io::ErrorKind::Unsupported, "persistent stdio was not admitted"));
         }
         let protocol = self.protocol.as_ref().ok_or_else(||
             io::Error::new(io::ErrorKind::Unsupported, "protocol stdio was not admitted"))?;
-        if deadline.is_zero() || deadline > Duration::from_secs(30) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "persistent read deadline out of bounds"));
-        }
         let mut state = self.persistent_reader.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => io::Error::new(io::ErrorKind::WouldBlock, "persistent reader busy"),
             TryLockError::Poisoned(_) => io::Error::new(io::ErrorKind::Other, "persistent reader state unknown"),
@@ -1554,10 +1578,10 @@ impl ManagedProcess {
                     return Err(state.fail(io::Error::new(io::ErrorKind::InvalidData,
                         "persistent frame exceeds Codex decoder bound")));
                 }
-                if complete { return Ok(std::mem::take(&mut state.partial)); }
+                if complete { return Ok(Some(std::mem::take(&mut state.partial))); }
             }
-            if started.elapsed() >= deadline {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "persistent frame deadline"));
+            if deadline.is_some_and(|deadline| started.elapsed() >= deadline) {
+                return Ok(None);
             }
             let mut available = 0u32;
             if unsafe { PeekNamedPipe(protocol.stdout_read.raw(), ptr::null_mut(), 0,
@@ -1574,6 +1598,7 @@ impl ManagedProcess {
                     Ok(false) => {},
                     Err(error) => return Err(state.fail(error)),
                 }
+                if deadline.is_none() { return Ok(None); }
                 thread::sleep(Duration::from_millis(5));
                 continue;
             }
@@ -1715,6 +1740,7 @@ impl ManagedProcess {
         let mut proof = StopProof {
             identity: self.identity.clone(),
             parent_exited: false,
+            parent_grace_exited: false,
             active_job_processes: None,
             identity_status: "exact",
             process_handle_present: true,
@@ -1767,6 +1793,7 @@ impl ManagedProcess {
             proof.errors.push(format!("GRACE_OBSERVE_FAILED: {error}"));
             false
         });
+        proof.parent_grace_exited = proof.parent_exited;
 
         let accounting_before = job_accounting(self.job.raw());
         let members_before = match &accounting_before {
@@ -2719,7 +2746,7 @@ mod tests {
         assert_eq!(proof.exit_code, Some(0));
         assert!(proof.parent_exited && proof.writer_fence_verified);
         assert_eq!(proof.active_job_processes, Some(0));
-        assert!(!proof.kill_attempted, "EOF stop proof: {proof:?}");
+        assert!(proof.parent_grace_exited, "Parent must exit after its real EOF before any Job cleanup: {proof:?}");
         assert!(proof.errors.is_empty(), "graceful close errors: {:?}", proof.errors);
     }
 
@@ -2784,6 +2811,8 @@ mod tests {
         assert_eq!(managed.write_protocol(b"legacy\n").unwrap_err().kind(), io::ErrorKind::Unsupported);
         assert_eq!(managed.read_protocol_frame(Duration::from_secs(1)).unwrap_err().kind(),
             io::ErrorKind::Unsupported);
+        assert!(custodian.poll_persistent_child_frame(&prepared.ticket).unwrap().is_none(),
+            "quiet live child is not an EOF, receipt, or unknown write");
         for id in [1, 2] {
             let request = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"thread/start\"}}\n");
             managed.write_persistent_frame(request.as_bytes()).expect("repeated request write");
@@ -2801,6 +2830,8 @@ mod tests {
                 Duration::from_secs(5)).unwrap();
             assert_eq!(response.custody(), &prepared);
             assert_eq!(String::from_utf8_lossy(response.bytes()).trim_end(), request.trim_end());
+            assert!(custodian.poll_persistent_child_frame(&prepared.ticket).unwrap().is_none(),
+                "poll and blocking read share one exact stream with no duplicated frame");
         }
         assert_eq!(managed.write_persistent_frame(b"two\nframes\n").unwrap_err().kind(),
             io::ErrorKind::InvalidInput);
@@ -2819,6 +2850,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(managed.read_persistent_frame(Duration::from_secs(1)).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof, "terminal stream cannot regain certainty");
+        assert_eq!(managed.poll_persistent_frame().unwrap_err().kind(),io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
@@ -2870,6 +2902,23 @@ mod tests {
     }
 
     #[test]
+    fn lpac_direct_file_lifecycle_child_helper() {
+        if std::env::var("GOGOKE_TEST_DIRECT_FILE_LIFECYCLE").as_deref() != Ok("1") { return; }
+        // Actual std::fs/Win32 calls, also used by the native product. No shell
+        // filesystem-type query can preempt either leaf ACL negative control.
+        std::fs::write("transient.txt",b"owned transient").expect("create own file");
+        std::fs::rename("transient.txt","renamed.txt").expect("rename own file");
+        std::fs::remove_file("renamed.txt").expect("delete own file");
+        for file in ["../blocked/keep.txt","../readonly/keep.txt"] {
+            let error=std::fs::remove_file(file).expect_err("leaf deletion must be denied");
+            assert_eq!(error.raw_os_error(),Some(5),"original leaf error for {file}: {error}");
+        }
+        std::fs::write("allowed.txt",b"permitted").expect("write allowed leaf");
+        let error=std::fs::write("../blocked/forbidden.txt",b"forbidden").expect_err("sibling write must be denied");
+        assert_eq!(error.raw_os_error(),Some(5),"original sibling error: {error}");
+    }
+
+    #[test]
     fn app_container_child_writes_only_granted_fresh_directory() {
         use std::os::windows::ffi::OsStrExt;
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -2892,8 +2941,8 @@ mod tests {
         let readonly_identity = crate::root::inspect_root(&readonly).unwrap().identity;
         profile.grant_bound_tree(&readonly, &readonly_identity, false).expect("read-only tree ACL");
         drop(profile);
-        let executable = allowed.join("cmd.exe");
-        write_executable_with_directory_acl(&system_cmd(), &executable);
+        let executable = allowed.join("lpac-file-child.exe");
+        write_executable_with_directory_acl(&std::env::current_exe().expect("exact cloud native test image"), &executable);
         let mut launch = ProcessLaunch::new(&executable);
         launch.current_directory = Some(allowed.clone());
         launch.protocol_stdio = true;
@@ -2902,31 +2951,22 @@ mod tests {
             ("SystemRoot".into(), std::env::var("SystemRoot").unwrap()),
             ("USERPROFILE".into(), allowed.to_string_lossy().into_owned()),
             ("LOCALAPPDATA".into(), allowed.to_string_lossy().into_owned()),
+            ("GOGOKE_TEST_DIRECT_FILE_LIFECYCLE".into(), "1".into()),
         ]);
-        launch.arguments = vec!["/D".into(), "/C".into(),
-            concat!("echo GOGOKE_STAGE_CREATE 1>&2 & echo transient> transient.txt & ",
-                "echo GOGOKE_STAGE_RENAME 1>&2 & ren transient.txt renamed.txt & ",
-                "echo GOGOKE_STAGE_DELETE_OWN 1>&2 & del renamed.txt & ",
-                "echo GOGOKE_STAGE_DELETE_BLOCKED 1>&2 & del ..\\blocked\\keep.txt & ",
-                "echo GOGOKE_STAGE_DELETE_READONLY 1>&2 & del ..\\readonly\\keep.txt & ",
-                "echo GOGOKE_STAGE_WRITE 1>&2 & echo permitted> allowed.txt & ",
-                "echo GOGOKE_STAGE_WRITE_BLOCKED 1>&2 & echo forbidden> ..\\blocked\\forbidden.txt").into()];
-        let mut trace = None;
-        let managed = prepare_and_activate(&launch, |identity| {
-            trace = directed_test_trace::before_identity(identity);
-            Ok(())
-        }).expect("real LPAC child");
+        launch.arguments = vec!["--exact".into(),
+            "process::windows::tests::lpac_direct_file_lifecycle_child_helper".into(),"--nocapture".into()];
+        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("real LPAC child");
         assert!(managed.wait(Duration::from_secs(10)).expect("LPAC exit"));
         let direct_evidence = format!("exit={:?}; transient={}; renamed={}; stderr={}",
             managed.exit_code().expect("LPAC exit code"), allowed.join("transient.txt").exists(),
             allowed.join("renamed.txt").exists(), managed.stderr_tail());
+        assert_eq!(managed.exit_code().unwrap(),Some(0),"actual native file operations: {direct_evidence}");
         assert!(allowed.join("allowed.txt").is_file(), "LPAC must write its granted directory: {direct_evidence}");
         assert!(!allowed.join("transient.txt").exists() && !allowed.join("renamed.txt").exists(),
             "the actual LPAC child must rename and delete its own writable file: {direct_evidence}");
         assert!(!blocked.join("forbidden.txt").exists(), "LPAC must not write sibling directory");
         assert_eq!(std::fs::read(blocked.join("keep.txt")).unwrap(), b"blocked file");
         assert_eq!(std::fs::read(readonly.join("keep.txt")).unwrap(), b"read-only file");
-        drop(trace);
         drop(managed);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
@@ -3579,6 +3619,7 @@ mod tests {
                 image_path: PathBuf::from(r"C:\fixture\fake.exe"),
             },
             parent_exited: true,
+            parent_grace_exited: true,
             active_job_processes: Some(0),
             identity_status: "exact".to_owned(),
             process_handle_present: true,

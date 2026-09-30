@@ -9,7 +9,7 @@ use super::codex_rpc::{self, Command, Reply, RpcId};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
-use crate::store::ledger::RawSourceKey;
+use crate::store::ledger::{self, RawSourceKey};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 const SCHEMA: &str = "CREATE TABLE gogoke_v37_rpc_steps(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,open_request_id TEXT NOT NULL,step_id TEXT NOT NULL,process_operation_id TEXT NOT NULL,ticket TEXT NOT NULL,custodian_nonce TEXT NOT NULL,pid TEXT NOT NULL,creation_time TEXT NOT NULL,image_path TEXT NOT NULL,binary_digest TEXT NOT NULL,profile_id TEXT NOT NULL,generation TEXT NOT NULL,command_hex TEXT NOT NULL,requires_response INTEGER NOT NULL CHECK(requires_response IN (0,1)),phase TEXT NOT NULL CHECK(phase IN ('INTENT','WRITTEN','OBSERVED','UNKNOWN')),source_epoch TEXT,source_cursor TEXT,original_error TEXT,CHECK((phase IN ('INTENT','WRITTEN') AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NULL) OR (phase='UNKNOWN' AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NOT NULL AND length(original_error)>0) OR (phase='OBSERVED' AND source_epoch IS NOT NULL AND source_cursor IS NOT NULL AND original_error IS NULL)),PRIMARY KEY(domain_id,session_id,step_id)) STRICT";
@@ -52,6 +52,7 @@ impl From<codex_rpc::RpcError> for RpcJournalError {
     }
 }
 type Result<T> = std::result::Result<T, RpcJournalError>;
+const RPC_RESPONSE_NO_EVENT: &str = "CODEX_RPC_RESPONSE";
 
 fn atom(value: &str) -> bool {
     !value.is_empty()
@@ -553,9 +554,33 @@ fn source_matches(
     Ok(())
 }
 
-/// A must capture the exact OriginBoundFrame first. This function only stores
-/// its source key after the matching Codex response has been decoded. A
-/// notification does not advance the waiting request.
+fn persist_observation_and_no_event(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    domain_id: &str,
+    session_id: &str,
+    step_id: &str,
+    operation: &str,
+    key: &RawSourceKey,
+) -> Result<()> {
+    let q=Statement::prepare(db.as_ptr(),
+        "UPDATE main.gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch=?1,source_cursor=?2 WHERE domain_id=?3 AND session_id=?4 AND step_id=?5 AND process_operation_id=?6 AND phase='WRITTEN' AND requires_response=1")?;
+    for (index, value) in [
+        key.source_epoch.as_str(),key.source_cursor.as_str(),domain_id,session_id,step_id,operation,
+    ].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    q.step_done()?;
+    if changes(db)? != 1 {return Err(RpcJournalError::Conflict);}
+    // This ledger API owns no transaction. If its exact-source terminalization
+    // fails, the caller's BEGIN IMMEDIATE rolls this OBSERVED update back too.
+    ledger::resolve_raw_source_no_event(db,&key.operation_id,&key.source_epoch,
+        &key.source_cursor,RPC_RESPONSE_NO_EVENT)?;
+    Ok(())
+}
+
+/// A must capture the exact OriginBoundFrame first. The response's RPC
+/// observation and A no-event terminalization commit as one native write.
+/// Notifications do not advance the waiting request.
 pub(crate) fn complete_response(
     db: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
@@ -589,28 +614,64 @@ pub(crate) fn complete_response(
         {
             return Err(RpcJournalError::Conflict);
         }
-        let q=Statement::prepare(db.as_ptr(),
-            "UPDATE main.gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch=?1,source_cursor=?2 WHERE domain_id=?3 AND session_id=?4 AND step_id=?5 AND process_operation_id=?6 AND phase='WRITTEN' AND requires_response=1")?;
-        for (index, value) in [
-            &key.source_epoch,
-            &key.source_cursor,
-            step.domain_id,
-            step.session_id,
-            step.step_id,
-            &operation,
-        ]
-        .iter()
-        .enumerate()
-        {
-            q.bind_text((index + 1) as i32, value)?;
-        }
-        q.step_done()?;
-        if changes(db)? != 1 {
-            return Err(RpcJournalError::Conflict);
-        }
-        Ok(())
+        persist_observation_and_no_event(db,step.domain_id,step.session_id,step.step_id,
+            &operation,key)
     })?;
     Ok(reply)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct ReconciledResponse {
+    pub(crate) key: RawSourceKey,
+    pub(crate) newly_resolved: bool,
+}
+
+/// Repair only the old split-commit window: a previously OBSERVED RPC step
+/// whose exact A source still says PENDING. No process is contacted and no RPC
+/// ID or command is resent. The native OwnerIssuer is checked on the same
+/// verified database; A checks its recovery binding for a PENDING source.
+pub(crate) fn reconcile_observed_no_event(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer,
+    domain_id: &str,
+    session_id: &str,
+    step_id: &str,
+) -> Result<ReconciledResponse> {
+    for (value,name) in [(domain_id,"domain"),(session_id,"session"),(step_id,"step")] {
+        if !atom(value) {return Err(RpcJournalError::Invalid(name));}
+    }
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        let q=Statement::prepare(db.as_ptr(),
+            "SELECT s.process_operation_id,s.source_epoch,s.source_cursor,r.state,
+                    COALESCE(r.no_event_reason,'')
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r
+                 ON r.operation_id=s.process_operation_id
+                AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+                AND r.generation=s.generation
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id=?3
+                AND s.phase='OBSERVED' AND s.requires_response=1")?;
+        q.bind_text(1,domain_id)?;
+        q.bind_text(2,session_id)?;
+        q.bind_text(3,step_id)?;
+        if !q.step_row()? {return Err(RpcJournalError::Denied);}
+        let key=RawSourceKey {operation_id:q.column_text(0)?,
+            source_epoch:q.column_text(1)?,source_cursor:q.column_text(2)?};
+        let state=q.column_text(3)?;
+        let reason=q.column_text(4)?;
+        if q.step_row()? {return Err(RpcJournalError::Conflict);}
+        let newly_resolved=match state.as_str() {
+            "PENDING" if reason.is_empty() => true,
+            "NO_EVENT" if reason==RPC_RESPONSE_NO_EVENT => false,
+            _ => return Err(RpcJournalError::Conflict),
+        };
+        ledger::resolve_raw_source_no_event(db,&key.operation_id,&key.source_epoch,
+            &key.source_cursor,RPC_RESPONSE_NO_EVENT)?;
+        Ok(ReconciledResponse {key,newly_resolved})
+    })
 }
 
 /// H can check a notification's A source without altering an in-flight RPC.
@@ -641,9 +702,59 @@ pub(crate) fn observe_event(
 mod tests {
     use super::*;
     use crate::root::RootLock;
+    use crate::store::authority;
     use crate::store::same_open::{create_new, route_b_test_guard};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scalar(db: &VerifiedDatabaseConnection<'_>, sql: &str) -> String {
+        let query=Statement::prepare(db.as_ptr(),sql).unwrap();
+        assert!(query.step_row().unwrap());
+        let value=query.column_text(0).unwrap();
+        assert!(!query.step_row().unwrap());
+        value
+    }
+
+    #[test]
+    fn no_event_sql_failure_rolls_back_observed_and_same_source_can_finish() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-rpc-atomic-{}-{stamp}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        let owner=authority::initialize_profile(&mut db,&root).unwrap();
+        db.execute("CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY,event_id TEXT UNIQUE,stream_id TEXT,occurred_at TEXT,event_type TEXT,payload_json TEXT)").unwrap();
+        ledger::initialize_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,state TEXT,stop_fact_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_coordination_process_custody(operation_id TEXT,ticket TEXT,custodian_nonce TEXT,domain_id TEXT,generation TEXT,state TEXT,stop_proof_hash TEXT) STRICT").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim VALUES('domain','session','1','operation','COMMITTED',NULL)").unwrap();
+        db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('operation','ticket','nonce','domain','1','ACTIVE',NULL)").unwrap();
+        db.execute("INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase) VALUES('domain','session','open','step','operation','ticket','nonce','1','2','image','digest','profile','1','7b7d0a',1,'WRITTEN')").unwrap();
+        db.execute("INSERT INTO v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES('operation','ticket','nonce','domain','session','1','epoch','1',X'7B226964223A312C22726573756C74223A7B7D7D0A','PENDING')").unwrap();
+        db.execute("CREATE TRIGGER injected_no_event_failure BEFORE UPDATE ON v37_ledger_raw_source WHEN NEW.state='NO_EVENT' BEGIN SELECT RAISE(FAIL,'injected A write failure'); END").unwrap();
+        let key=RawSourceKey {operation_id:"operation".into(),source_epoch:"epoch".into(),source_cursor:"1".into()};
+        assert!(transact(&mut db,|db| persist_observation_and_no_event(db,"domain","session","step","operation",&key)).is_err());
+        assert_eq!(scalar(&db,"SELECT phase FROM gogoke_v37_rpc_steps"),"WRITTEN");
+        assert_eq!(scalar(&db,"SELECT source_epoch IS NULL FROM gogoke_v37_rpc_steps"),"1");
+        assert_eq!(scalar(&db,"SELECT state FROM v37_ledger_raw_source"),"PENDING");
+        db.execute("DROP TRIGGER injected_no_event_failure").unwrap();
+        transact(&mut db,|db| persist_observation_and_no_event(db,"domain","session","step","operation",&key)).unwrap();
+        assert_eq!(scalar(&db,"SELECT phase FROM gogoke_v37_rpc_steps"),"OBSERVED");
+        assert_eq!(scalar(&db,"SELECT state || ':' || no_event_reason FROM v37_ledger_raw_source"),"NO_EVENT:CODEX_RPC_RESPONSE");
+        // Simulate only the historical split-commit residue, with the exact
+        // OBSERVED step and source key still durable. No frame is fabricated.
+        db.execute("UPDATE v37_ledger_raw_source SET state='PENDING',no_event_reason=NULL WHERE operation_id='operation'").unwrap();
+        let repaired=reconcile_observed_no_event(&mut db,&owner,"domain","session","step").unwrap();
+        assert_eq!(repaired.key,key);
+        assert!(repaired.newly_resolved);
+        assert_eq!(scalar(&db,"SELECT state || ':' || no_event_reason FROM v37_ledger_raw_source"),"NO_EVENT:CODEX_RPC_RESPONSE");
+        assert!(!reconcile_observed_no_event(&mut db,&owner,"domain","session","step").unwrap().newly_resolved);
+        db.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn schema_is_exact_and_refuses_temp_or_trigger() {

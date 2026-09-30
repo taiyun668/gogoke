@@ -1527,7 +1527,7 @@ pub(crate) fn recover(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::root::RootLock;
     use crate::store::authority;
@@ -1591,7 +1591,7 @@ mod tests {
         event_at(id, session, tier, "1")
     }
 
-    fn initialize_raw_h_fixture(
+    pub(crate) fn initialize_raw_h_fixture(
         connection: &mut VerifiedDatabaseConnection<'_>,
     ) {
         exec(
@@ -1624,7 +1624,7 @@ mod tests {
             .expect("process custody fixture schema");
     }
 
-    fn raw_process_fixture(
+    pub(crate) fn raw_process_fixture(
         connection: &mut VerifiedDatabaseConnection<'_>,
         registration: &SessionRegistration,
         operation_id: &str,

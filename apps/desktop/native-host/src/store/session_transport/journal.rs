@@ -906,24 +906,26 @@ fn native_thread_id(
     codex_rpc::decode_stored_thread_start(&command,&response).map_err(JournalError::Codec)
 }
 
-fn seat_matches_original_request(
+fn current_native_seat(
     connection: &VerifiedDatabaseConnection<'_>,
     input: &StdinRequest<'_>,
-    seat_id: &str,
-) -> Result<(), JournalError> {
+) -> Result<String, JournalError> {
     let query=Statement::prepare(connection.as_ptr(),
-        "SELECT 1 FROM main.gogoke_v37_h_seat_binding sb
+        "SELECT sb.seat_id FROM main.gogoke_v37_h_seat_binding sb
          JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id AND h.session_id=sb.session_id
            AND h.generation=sb.generation
          JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
            AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation
            AND e.instance_id=h.instance_id AND e.state='BUSY'
-         WHERE sb.domain_id=?1 AND sb.session_id=?2 AND sb.seat_id=?3 AND sb.generation=?4")?;
-    for (index,value) in [input.domain_id,input.session_id,seat_id,input.generation].iter().enumerate() {
+         WHERE sb.domain_id=?1 AND sb.session_id=?2 AND sb.generation=?3")?;
+    for (index,value) in [input.domain_id,input.session_id,input.generation].iter().enumerate() {
         query.bind_text((index+1) as i32,value)?;
     }
-    if !query.step_row()? || query.step_row()? { return Err(JournalError::Denied); }
-    Ok(())
+    if !query.step_row()? { return Err(JournalError::Denied); }
+    let seat_id=query.column_text(0)?;
+    require_id(&seat_id,"native seat")?;
+    if query.step_row()? { return Err(JournalError::Denied); }
+    Ok(seat_id)
 }
 
 fn codex_response_observed(
@@ -979,7 +981,7 @@ fn complete_codex_turn_in_transaction(
     expected_thread_id: &str,
 ) -> Result<JournalDecision, JournalError> {
     let request=parse_operation(input, false)?;
-    let seat_id=validate_codex_send(&request,command,expected_thread_id)?;
+    validate_codex_send(&request,command,expected_thread_id)?;
     let encoded_command=command.encode(Some(rpc_id))?;
     let reply=codex_rpc::decode(response,Some((rpc_id,command)))?;
     let turn_id=match reply {
@@ -989,15 +991,16 @@ fn complete_codex_turn_in_transaction(
     };
         let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
             input.generation,BindingUse::Complete)?;
-        seat_matches_original_request(connection,input,&seat_id)?;
+        current_native_seat(connection,input)?;
         if native_thread_id(connection,input,&binding)? != expected_thread_id {
             return Err(JournalError::Conflict);
         }
         codex_response_observed(connection,input,&binding,&encoded_command,response)?;
         let revision=request.expected_revision.checked_add(1)
             .ok_or(JournalError::Invalid("revision overflow"))?;
-        let result=std::collections::BTreeMap::from([(
-            JsonString::from_str("turnId"),Json::String(JsonString::from_str(&turn_id))) ]);
+        let result=std::collections::BTreeMap::from([
+            (JsonString::from_str("turnId"),Json::String(JsonString::from_str(&turn_id))),
+            (JsonString::from_str("createdTurn"),Json::Bool(true)) ]);
         let mut receipt_bytes=encode_receipt(&request,V37Status::Applied,
             request.expected_revision,revision,result);
         receipt_bytes.push(b'\n');
@@ -1087,19 +1090,18 @@ fn validate_codex_send(
     request: &super::V37Request,
     command: &codex_rpc::Command,
     expected_thread_id: &str,
-) -> Result<String, JournalError> {
-    if request.operation != "send" || request.payload.len()!=3 {
+) -> Result<(), JournalError> {
+    if request.operation != "send" || request.payload.len()!=2 {
         return Err(JournalError::Invalid("Codex send operation"));
     }
-    let seat_id=payload_string(&request,"seatId")?;
-    let text=payload_string(&request,"text")?;
+    let text=payload_string(&request,"body")?;
     let codex_rpc::Command::TurnStart { thread_id, text: command_text, .. } = command else {
         return Err(JournalError::Invalid("Codex turn command"));
     };
     if command_text != &text || thread_id != expected_thread_id || expected_thread_id.is_empty() {
         return Err(JournalError::Conflict);
     }
-    Ok(seat_id)
+    Ok(())
 }
 
 /// Read one journal row after restart without mutating the database or
@@ -1155,18 +1157,18 @@ mod tests {
 
     #[test]
     fn codex_send_uses_exact_original_payload_and_thread() {
-        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"seatId":"seatA","generation":"1","text":"hello"}}
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"generation":"1","body":"hello"}}
 "#;
         let request=parse_request(&input(raw)).unwrap();
         let command=codex_rpc::Command::TurnStart {thread_id:"threadA".into(),
             cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"hello".into()};
-        assert_eq!(validate_codex_send(&request,&command,"threadA").unwrap(),"seatA");
+        validate_codex_send(&request,&command,"threadA").unwrap();
         assert!(matches!(validate_codex_send(&request,&command,"threadB"),Err(JournalError::Conflict)));
         let changed=codex_rpc::Command::TurnStart {thread_id:"threadA".into(),
             cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"changed".into()};
         assert!(matches!(validate_codex_send(&request,&changed,"threadA"),Err(JournalError::Conflict)));
-        let extra=String::from_utf8(raw.to_vec()).unwrap().replace("\"text\":\"hello\"",
-            "\"text\":\"hello\",\"callerGrant\":\"fake\"");
+        let extra=String::from_utf8(raw.to_vec()).unwrap().replace("\"body\":\"hello\"",
+            "\"body\":\"hello\",\"callerGrant\":\"fake\"");
         let extra_request=parse_request(&input(extra.as_bytes())).unwrap();
         assert!(matches!(validate_codex_send(&extra_request,&command,"threadA"),
             Err(JournalError::Invalid("Codex send operation"))));
@@ -1205,7 +1207,7 @@ mod tests {
         super::super::rpc_journal::initialize_schema(&mut db).unwrap();
         db.execute("CREATE TABLE orchestration_events(event_id TEXT PRIMARY KEY,sequence INTEGER UNIQUE) STRICT").unwrap();
         crate::store::ledger::initialize_schema(&mut db).unwrap();
-        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"seatId":"seatA","generation":"1","text":"hello"}}"#;
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"generation":"1","body":"hello"}}"#;
         let stdin=input(raw);
         prepare_codex_request(&mut db,&stdin).unwrap();
         let step_id=format!("send-{}",&crate::store::digest::sha256_hex(raw)[..40]);

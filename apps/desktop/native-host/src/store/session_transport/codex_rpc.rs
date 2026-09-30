@@ -190,7 +190,7 @@ impl Command {
                 return Ok(obj([
                     ("cwd", s(cwd)),
                     ("model", s(model)),
-                    ("ephemeral", Json::Bool(true)),
+                    ("ephemeral", Json::Bool(false)),
                     ("config", memory_off()),
                 ]));
             }
@@ -436,13 +436,12 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
                 cwd: cwd.clone(),
             })
         }
-        Command::ThreadStart { cwd, .. } | Command::ThreadResume { cwd, .. } => {
+        Command::ThreadStart { .. } | Command::ThreadResume { .. } => {
             let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
             let found = string(field(thread, "id")?, "thread id")?;
             let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
-            if &actual_cwd != cwd {
-                return Err(RpcError::Invalid("thread cwd mismatch"));
-            }
+            // A path string is a provider observation, not physical identity.
+            // The native boundary verifies it against F's held directory.
             if let Command::ThreadResume { thread_id, .. } = command {
                 if &found != thread_id {
                     return Err(RpcError::Invalid("thread id mismatch"));
@@ -496,7 +495,7 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
 
 /// Reconstruct a thread ID only from the exact native RPC command and the A
 /// source frame persisted for its observed response. The command must be our
-/// canonical, ephemeral, memory-off thread/start encoding.
+/// canonical, persistent Work, memory-off thread/start encoding.
 pub(crate) fn decode_stored_thread_start(
     command_frame: &[u8],
     response_frame: &[u8],
@@ -846,7 +845,7 @@ mod tests {
         };
         let encoded =
             String::from_utf8(start.encode(Some(&RpcId::client(2).unwrap())).unwrap()).unwrap();
-        assert!(encoded.contains("\"ephemeral\":true"));
+        assert!(encoded.contains("\"ephemeral\":false"));
         assert!(encoded.contains("\"model\":\"gpt-6-sol\""));
         assert!(encoded.contains("\"use_memories\":false"));
         let turn = Command::TurnStart {
@@ -951,7 +950,7 @@ mod tests {
         let frame=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
         let stored=start.encode(Some(&id)).unwrap();
         assert_eq!(decode_stored_thread_start(&stored,frame).unwrap(),"thread-a");
-        let changed=String::from_utf8(stored.clone()).unwrap().replace("\"ephemeral\":true","\"ephemeral\":false");
+        let changed=String::from_utf8(stored.clone()).unwrap().replace("\"ephemeral\":false","\"ephemeral\":true");
         assert!(matches!(decode_stored_thread_start(changed.as_bytes(),frame),
             Err(RpcError::Invalid("stored thread command mismatch"))));
         assert!(matches!(decode_stored_thread_start(&stored,

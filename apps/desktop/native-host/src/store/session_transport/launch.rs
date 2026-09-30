@@ -150,6 +150,31 @@ impl LaunchEvidence {
     }
 
     pub(crate) fn cwd(&self) -> &Path { &self.worktree.path }
+    pub(crate) fn seat_id(&self) -> &str { &self.seat.seat_id }
+
+    pub(crate) fn verify_observed_cwd(&self, observed: &str) -> Result<(), String> {
+        let path=Path::new(observed);
+        if !path.is_absolute() || observed.contains('\0') {
+            return Err(format!("native thread cwd is not absolute: observed={observed:?}"));
+        }
+        // Only known DOS/verbatim spellings of the already-bound local path
+        // are inspected. Provider output cannot make this host open a new
+        // target (including a remote share) merely to compare identities.
+        let spelling=|value:&str| {
+            let value=value.replace('/',"\\");
+            value.strip_prefix("\\\\?\\").unwrap_or(&value).to_ascii_lowercase()
+        };
+        if spelling(observed)!=spelling(&self.worktree.path.to_string_lossy()) {
+            return Err(format!("native thread cwd outside bound path spellings: expected={:?}; observed={observed:?}",self.worktree.path));
+        }
+        let returned=crate::root::inspect_root(path).map_err(|error|
+            format!("native thread cwd observation: expected={:?}; observed={observed:?}; error={error:?}",self.worktree.path))?;
+        if returned.identity != self.worktree.identity {
+            return Err(format!("native thread physical cwd mismatch: expected={:?} identity={:?}; observed={observed:?} identity={:?}",
+                self.worktree.path,self.worktree.identity,returned.identity));
+        }
+        Ok(())
+    }
 
     pub(crate) fn settings(&self) -> Result<(String, String), String> {
         use crate::store::atomic::{Json, JsonString, Parser};

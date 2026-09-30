@@ -37,6 +37,7 @@ type Result<T> = std::result::Result<T, OrchestrationError>;
 mod v37_seat;
 mod v37_session;
 mod v37_runtime;
+mod v37_output;
 mod v37_login;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
