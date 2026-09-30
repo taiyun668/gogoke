@@ -11,7 +11,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 const NT_ROOT: &str = "GOGOKE_LPAC_PATH_NT_ROOT";
 const DOS_ROOT: &str = "GOGOKE_LPAC_PATH_DOS_ROOT";
@@ -24,6 +24,22 @@ const MAX_ROOTS: usize = 3;
 const REPARSE: u32 = 0x400;
 const DIRECTORY: u32 = 0x10;
 const OPEN_PHYSICAL: u32 = 0x0220_0000;
+const READ_ATTRIBUTES: u32 = 0x80;
+const DELETE_ACCESS: u32 = 0x0001_0000;
+const SHARE_READ_WRITE: u32 = 3;
+const SHARE_READ_WRITE_DELETE: u32 = 7;
+
+struct CachedDirectory {
+    path: PathBuf,
+    identity: RootIdentity,
+    file: Weak<File>,
+}
+
+static DIRECTORY_CUSTODY: OnceLock<Mutex<Vec<CachedDirectory>>> = OnceLock::new();
+
+fn directory_custody() -> &'static Mutex<Vec<CachedDirectory>> {
+    DIRECTORY_CUSTODY.get_or_init(|| Mutex::new(Vec::new()))
+}
 
 #[repr(C)]
 struct FileId {
@@ -92,16 +108,67 @@ fn identity(file: &File) -> io::Result<RootIdentity> {
     })
 }
 
-fn physical_directory(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .access_mode(0x80)
-        .share_mode(3)
+fn physical_directory(path: &Path) -> io::Result<Arc<File>> {
+    // Serialize check/open so two native H launches share one DELETE-owning
+    // handle for the same exact path and file ID. A plain attributes handle
+    // must share DELETE so it can inspect an already pinned directory.
+    let mut cache = directory_custody()
+        .lock()
+        .map_err(|_| invalid("compatibility directory custody poisoned"))?;
+    let observed = OpenOptions::new()
+        .access_mode(READ_ATTRIBUTES)
+        .share_mode(SHARE_READ_WRITE_DELETE)
         .custom_flags(OPEN_PHYSICAL)
         .open(path)?;
-    let attributes = file.metadata()?.file_attributes();
-    if attributes & (REPARSE | DIRECTORY) != DIRECTORY {
+    if observed.metadata()?.file_attributes() & (REPARSE | DIRECTORY) != DIRECTORY {
         return Err(invalid("compatibility directory is not physical"));
     }
+    let observed_id = identity(&observed)?;
+    let observed_dos = final_path(&observed, 0)?;
+    let observed_nt = final_path(&observed, 2)?;
+    cache.retain(|entry| entry.file.strong_count() != 0);
+    if cache
+        .iter()
+        .any(|entry| entry.path == path && entry.identity != observed_id)
+    {
+        return Err(invalid(
+            "compatibility path resolves to conflicting physical identity",
+        ));
+    }
+    if let Some(entry) = cache
+        .iter()
+        .find(|entry| entry.path == path && entry.identity == observed_id)
+    {
+        let held = entry
+            .file
+            .upgrade()
+            .ok_or_else(|| invalid("compatibility shared custody expired"))?;
+        if identity(&held)? != observed_id
+            || final_path(&held, 0)? != observed_dos
+            || final_path(&held, 2)? != observed_nt
+        {
+            return Err(invalid("compatibility shared directory identity changed"));
+        }
+        return Ok(held);
+    }
+    let file = OpenOptions::new()
+        .access_mode(READ_ATTRIBUTES | DELETE_ACCESS)
+        .share_mode(SHARE_READ_WRITE)
+        .custom_flags(OPEN_PHYSICAL)
+        .open(path)?;
+    if file.metadata()?.file_attributes() & (REPARSE | DIRECTORY) != DIRECTORY
+        || identity(&file)? != observed_id
+        || final_path(&file, 0)? != observed_dos
+        || final_path(&file, 2)? != observed_nt
+    {
+        return Err(invalid("compatibility directory changed during custody"));
+    }
+    let file = Arc::new(file);
+    cache.push(CachedDirectory {
+        path: path.to_path_buf(),
+        identity: observed_id,
+        file: Arc::downgrade(&file),
+    });
     Ok(file)
 }
 
@@ -152,7 +219,7 @@ fn within_root(path: &str, root: &str) -> bool {
 
 #[derive(Debug)]
 struct HeldRoot {
-    _directory: File,
+    _directory: Arc<File>,
     identity: RootIdentity,
     nt: String,
     dos: String,
@@ -166,7 +233,7 @@ pub(crate) struct CompatModule {
     ansi: CString,
     file: File,
     file_identity: RootIdentity,
-    _directories: Vec<File>,
+    _directories: Vec<Arc<File>>,
     homes: Vec<HeldRoot>,
     profile_name: String,
 }
@@ -200,13 +267,12 @@ impl CompatModule {
             return Err(invalid("compatibility root count"));
         }
         let canonical = root.canonical_root();
-        let root_handle = physical_directory(&canonical.canonical_path)?;
-        if identity(&root_handle)? != canonical.identity {
-            return Err(invalid("compatibility root identity changed"));
-        }
+        // RootLock already owns DELETE/no-share-delete on this exact root.
+        // Reopening it with DELETE would self-conflict; its held identity is
+        // the native root namespace pin for every descendant checked below.
         let base = canonical.canonical_path.join("v37-native-components");
         let version = base.join(gogoke_lpac_path_compat::MODULE_SHA256);
-        let mut directories = vec![root_handle];
+        let mut directories = Vec::new();
         let mut homes = Vec::with_capacity(roots.len());
         for (path, expected) in roots {
             if !path.is_absolute() || path.starts_with(&base) || version.starts_with(path) {
@@ -502,7 +568,10 @@ mod tests {
         let root = RootLock::acquire(&path).unwrap();
         let path = root.canonical_root().canonical_path.clone();
         let home = path.join("v37-instances").join("instanceA");
-        let session = path.join("v37-temporary-homes").join("instanceA").join("sessionA");
+        let session = path
+            .join("v37-temporary-homes")
+            .join("instanceA")
+            .join("sessionA");
         let worktree = path.join("v37-worktrees").join("single").join("opaqueA");
         let home_id = crate::root::inspect_root(&home).unwrap().identity;
         let session_id = crate::root::inspect_root(&session).unwrap().identity;
@@ -614,6 +683,51 @@ mod tests {
             fs::remove_dir(&redirected).unwrap();
         }
         drop(module);
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn shared_directory_pin_lasts_until_final_module_and_keeps_child_operations() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-compat-shared-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).unwrap();
+        let home = path.join("v37-instances").join("instanceA");
+        fs::create_dir_all(&home).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let expected = crate::root::inspect_root(&home).unwrap().identity;
+        let name = format!("Gogoke37.CompatShared.{stamp}");
+        let profile = AppContainerProfile::ensure(&name, false).unwrap();
+        let first = CompatModule::prepare(&root, &home, &expected, &profile, &name).unwrap();
+        let second = CompatModule::prepare(&root, &home, &expected, &profile, &name).unwrap();
+        assert!(Arc::ptr_eq(
+            &first.homes[0]._directory,
+            &second.homes[0]._directory
+        ));
+        let moved = home.with_extension("moved");
+        let ancestor = home.parent().unwrap().to_path_buf();
+        let ancestor_moved = ancestor.with_extension("moved");
+        assert!(fs::rename(&home, &moved).is_err());
+        assert!(fs::rename(&ancestor, &ancestor_moved).is_err());
+        let child = home.join("child-a.txt");
+        let child_moved = home.join("child-b.txt");
+        fs::write(&child, b"owned synthetic child").unwrap();
+        fs::rename(&child, &child_moved).unwrap();
+        fs::remove_file(&child_moved).unwrap();
+        drop(first);
+        assert!(fs::rename(&home, &moved).is_err());
+        assert!(fs::rename(&ancestor, &ancestor_moved).is_err());
+        drop(second);
+        fs::rename(&home, &moved).unwrap();
+        fs::rename(&moved, &home).unwrap();
+        fs::rename(&ancestor, &ancestor_moved).unwrap();
+        fs::rename(&ancestor_moved, &ancestor).unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
     }

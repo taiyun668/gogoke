@@ -194,6 +194,7 @@ jobs:
             @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
             @{ id = 'protocol-input-close'; filter = 'native_input_close_delivers_eof_and_preserves_graceful_stop_proof' },
+            @{ id = 'lpac-file-lifecycle'; filter = 'app_container_child_writes_only_granted_fresh_directory' },
             @{ id = 'bound-instance-acl'; filter = 'bound_nonempty_tree_grants_only_its_recorded_instance_identity' },
             @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
             @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
@@ -215,7 +216,7 @@ jobs:
             }
             $env:GOGOKE_CI_CDB = $debugger
             $env:GOGOKE_CI_CDB_LOGROOT = $evidenceRoot
-            $probes = @($probes | Where-Object { $_.id -in @('pinned-codex-account-read', 'pinned-codex-credential-files', 'persisted-permission-intent') })
+            $probes = @($probes | Where-Object { $_.id -eq 'lpac-file-lifecycle' })
             Write-Host "Directed trace only: debugger SHA256=$((Get-FileHash -LiteralPath $debugger -Algorithm SHA256).Hash); full library suite NOT_RUN."
           }
           $results = @()

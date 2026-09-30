@@ -14,6 +14,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use super::session::{AppContainerProfile, CompatModule, SecurityCapabilities};
 use crate::ipc::PeerProcessHandle;
+#[cfg(test)]
+#[path = "../store/product_database/v37_login_trace.rs"]
+mod directed_test_trace;
 
 type Handle = *mut c_void;
 
@@ -141,7 +144,7 @@ struct JobObjectExtendedLimitInformation {
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct JobObjectBasicAccountingInformation {
     total_user_time: i64,
     total_kernel_time: i64,
@@ -1635,7 +1638,11 @@ impl ManagedProcess {
             false
         });
 
-        let active_before = self.active_job_processes();
+        let accounting_before = job_accounting(self.job.raw());
+        #[cfg(test)]
+        eprintln!("GOGOKE_STOP_DECISION pid={} parent_grace_exited={} elapsed_ms={} job={accounting_before:?}",
+            self.identity.pid, proof.parent_exited, started.elapsed().as_millis());
+        let active_before = accounting_before.map(|value| value.active_processes);
         match active_before {
             Ok(0) => {}
             Ok(_) => {
@@ -2005,6 +2012,10 @@ fn process_image_path(process: Handle) -> io::Result<PathBuf> {
 }
 
 fn active_job_processes(job: Handle) -> io::Result<u32> {
+    job_accounting(job).map(|accounting| accounting.active_processes)
+}
+
+fn job_accounting(job: Handle) -> io::Result<JobObjectBasicAccountingInformation> {
     let mut accounting = JobObjectBasicAccountingInformation::default();
     if unsafe {
         QueryInformationJobObject(
@@ -2018,7 +2029,7 @@ fn active_job_processes(job: Handle) -> io::Result<u32> {
     {
         Err(io::Error::last_os_error())
     } else {
-        Ok(accounting.active_processes)
+        Ok(accounting)
     }
 }
 
@@ -2458,7 +2469,7 @@ mod tests {
         assert_eq!(proof.exit_code, Some(0));
         assert!(proof.parent_exited && proof.writer_fence_verified);
         assert_eq!(proof.active_job_processes, Some(0));
-        assert!(!proof.kill_attempted);
+        assert!(!proof.kill_attempted, "EOF stop proof: {proof:?}");
         assert!(proof.errors.is_empty(), "graceful close errors: {:?}", proof.errors);
     }
 
@@ -2643,10 +2654,18 @@ mod tests {
             ("LOCALAPPDATA".into(), allowed.to_string_lossy().into_owned()),
         ]);
         launch.arguments = vec!["/D".into(), "/C".into(),
-            concat!("echo transient> transient.txt & ren transient.txt renamed.txt & del renamed.txt & ",
-                "del ..\\blocked\\keep.txt & del ..\\readonly\\keep.txt & ",
-                "echo permitted> allowed.txt & echo forbidden> ..\\blocked\\forbidden.txt").into()];
-        let managed = prepare_and_activate(&launch, |_| Ok(())).expect("real LPAC child");
+            concat!("echo GOGOKE_STAGE_CREATE 1>&2 & echo transient> transient.txt & ",
+                "echo GOGOKE_STAGE_RENAME 1>&2 & ren transient.txt renamed.txt & ",
+                "echo GOGOKE_STAGE_DELETE_OWN 1>&2 & del renamed.txt & ",
+                "echo GOGOKE_STAGE_DELETE_BLOCKED 1>&2 & del ..\\blocked\\keep.txt & ",
+                "echo GOGOKE_STAGE_DELETE_READONLY 1>&2 & del ..\\readonly\\keep.txt & ",
+                "echo GOGOKE_STAGE_WRITE 1>&2 & echo permitted> allowed.txt & ",
+                "echo GOGOKE_STAGE_WRITE_BLOCKED 1>&2 & echo forbidden> ..\\blocked\\forbidden.txt").into()];
+        let mut trace = None;
+        let managed = prepare_and_activate(&launch, |identity| {
+            trace = directed_test_trace::before_identity(identity);
+            Ok(())
+        }).expect("real LPAC child");
         assert!(managed.wait(Duration::from_secs(10)).expect("LPAC exit"));
         let direct_evidence = format!("exit={:?}; transient={}; renamed={}; stderr={}",
             managed.exit_code().expect("LPAC exit code"), allowed.join("transient.txt").exists(),
@@ -2657,6 +2676,7 @@ mod tests {
         assert!(!blocked.join("forbidden.txt").exists(), "LPAC must not write sibling directory");
         assert_eq!(std::fs::read(blocked.join("keep.txt")).unwrap(), b"blocked file");
         assert_eq!(std::fs::read(readonly.join("keep.txt")).unwrap(), b"read-only file");
+        drop(trace);
         drop(managed);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
