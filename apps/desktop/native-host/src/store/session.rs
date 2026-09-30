@@ -702,8 +702,11 @@ pub(crate) fn prepare_recorded_process(
 ) -> Result<PreparedCustody, OrchestrationError> {
     let prepared = custodian.prepare(launch)?;
     if let Err(error) = authority::record_prepared_process(connection, operation_id, &prepared) {
-        let _ = custodian.abort_prepared(&prepared);
-        return Err(error);
+        return match custodian.abort_prepared(&prepared) {
+            Ok(true) => Err(error),
+            other => Err(OrchestrationError::V37StoreFailure(format!(
+                "prepared record failed: {error:?}; exact child abort: {other:?}"))),
+        };
     }
     Ok(prepared)
 }

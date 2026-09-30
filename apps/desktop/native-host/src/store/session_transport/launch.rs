@@ -90,7 +90,19 @@ impl LaunchEvidence {
     /// witness is not a grant; current Owner/E/F/H facts must still agree.
     pub(crate) fn verify(&self, db: &mut VerifiedDatabaseConnection<'_>,
         root: &RootLock, owner: &OwnerIssuer, expected_operation: Option<&str>) -> Result<(), String> {
-        if evidence(authority::read_product_identity(db, owner))? != self.identity
+        let identity = evidence(authority::read_product_identity(db, owner))?;
+        self.verify_snapshot(db, root, owner, expected_operation, identity)
+    }
+
+    pub(crate) fn verify_in_transaction(&self, db: &mut VerifiedDatabaseConnection<'_>,
+        root: &RootLock, owner: &OwnerIssuer, expected_operation: Option<&str>) -> Result<(), String> {
+        let identity = evidence(authority::read_product_identity_in_current_transaction(db, owner))?;
+        self.verify_snapshot(db, root, owner, expected_operation, identity)
+    }
+
+    fn verify_snapshot(&self, db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+        owner: &OwnerIssuer, expected_operation: Option<&str>, identity: ProductIdentitySnapshot) -> Result<(), String> {
+        if identity != self.identity
             || evidence(seat::get(db, &self.seat.domain_id, &self.seat.seat_id))?.as_ref() != Some(&self.seat)
             || evidence(runtime::current_instance_pin(db, &self.claim.instance_id))? != self.pin {
             return Err("native session launch: current identity/seat/pin changed".into());

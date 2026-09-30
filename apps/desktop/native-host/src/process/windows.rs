@@ -823,6 +823,24 @@ fn reject_suspended_child(
         })
 }
 
+fn reject_created_child(
+    launch: &ProcessLaunch,
+    cause: ProcessCustodyError,
+    process: OwnedHandle,
+    initial_thread: OwnedHandle,
+    job: OwnedHandle,
+    retained: &mut Vec<LaunchFailureCustody>,
+) -> ProcessCustodyError {
+    let before = retained.len();
+    let error = reject_suspended_child(cause, process, initial_thread, job, retained);
+    if retained.len() > before {
+        let failed = retained.last_mut().expect("retained exact failed child");
+        failed._path_compat = launch.path_compat.clone();
+        failed._worktree_guard = launch.worktree_guard.clone();
+    }
+    error
+}
+
 struct PreparedProcess {
     process: OwnedHandle,
     initial_thread: OwnedHandle,
@@ -842,22 +860,28 @@ impl PreparedProcess {
             Ok(created) => created,
             Err(SuspendedCreateError::Before(error)) => return Err(error),
             Err(SuspendedCreateError::After(failure)) => {
-                return Err(reject_suspended_child(failure.cause, failure.process,
+                return Err(reject_created_child(launch, failure.cause, failure.process,
                     failure.initial_thread, job, retained));
             }
         };
         if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
             let source = io::Error::last_os_error();
-            return Err(reject_suspended_child(ProcessCustodyError::AssignJob(source),
+            return Err(reject_created_child(launch, ProcessCustodyError::AssignJob(source),
                 process, initial_thread, job, retained));
         }
-        process
+        if let Err(source) = process
             .clear_inherit()
             .and_then(|_| initial_thread.clear_inherit())
             .and_then(|_| job.clear_inherit())
-            .map_err(ProcessCustodyError::HandlePolicy)?;
-        let identity =
-            capture_identity(process.raw(), pid).map_err(ProcessCustodyError::CaptureIdentity)?;
+        {
+            return Err(reject_created_child(launch, ProcessCustodyError::HandlePolicy(source),
+                process, initial_thread, job, retained));
+        }
+        let identity = match capture_identity(process.raw(), pid) {
+            Ok(identity) => identity,
+            Err(source) => return Err(reject_created_child(launch,
+                ProcessCustodyError::CaptureIdentity(source), process, initial_thread, job, retained)),
+        };
         Ok(Self {
             process,
             initial_thread,
@@ -895,10 +919,12 @@ impl PreparedProcess {
             .map_err(ProcessCustodyError::HandlePolicy)?)
     }
 
-    fn activate(self) -> Result<ManagedProcess, ProcessCustodyError> {
-        if unsafe { ResumeThread(self.initial_thread.raw()) } == RESUME_FAILED {
-            return Err(ProcessCustodyError::Resume(io::Error::last_os_error()));
-        }
+    fn resume_with(&self, resume: impl FnOnce(Handle) -> io::Result<()>)
+        -> Result<(), ProcessCustodyError> {
+        resume(self.initial_thread.raw()).map_err(ProcessCustodyError::Resume)
+    }
+
+    fn into_managed(self) -> ManagedProcess {
         let Self {
             process,
             initial_thread,
@@ -910,7 +936,7 @@ impl PreparedProcess {
             worktree_guard,
         } = self;
         drop(initial_thread);
-        Ok(ManagedProcess {
+        ManagedProcess {
             process,
             job,
             identity,
@@ -922,13 +948,13 @@ impl PreparedProcess {
             persistent_reader: Mutex::new(PersistentReadState::default()),
             stop_attempted: AtomicBool::new(false),
             protocol_write_attempted: AtomicBool::new(false),
-        })
+        }
     }
 }
 
 /// Creates the child suspended, assigns it to a kill-on-close Job, captures its
 /// exact identity, durably records custody, and only then resumes its first
-/// thread. Any error drops the Job while the child is still suspended.
+/// thread. A post-create error requests exact-child stop before releasing custody.
 #[cfg(test)]
 fn prepare_and_activate<F>(
     launch: &ProcessLaunch,
@@ -939,14 +965,27 @@ where
 {
     let mut retained = Vec::new();
     let prepared = PreparedProcess::prepare(launch, &mut retained)?;
-    if !prepared.handles_are_non_inheritable()? {
-        return Err(ProcessCustodyError::HandlePolicy(io::Error::new(
+    let non_inheritable = match prepared.handles_are_non_inheritable() {
+        Ok(value) => value,
+        Err(error) => return Err(prepared.reject(error, &mut retained)),
+    };
+    if !non_inheritable {
+        return Err(prepared.reject(ProcessCustodyError::HandlePolicy(io::Error::new(
             io::ErrorKind::Other,
             "process, thread, or job handle remained inheritable",
-        )));
+        )), &mut retained));
     }
-    persist_custody(&prepared.identity).map_err(ProcessCustodyError::DurableCustody)?;
-    prepared.activate()
+    if let Err(error) = persist_custody(&prepared.identity) {
+        return Err(prepared.reject(ProcessCustodyError::DurableCustody(error), &mut retained));
+    }
+    if let Err(error) = prepared.resume_with(|thread| {
+        if unsafe { ResumeThread(thread) } == RESUME_FAILED {
+            Err(io::Error::last_os_error())
+        } else { Ok(()) }
+    }) {
+        return Err(prepared.reject(error, &mut retained));
+    }
+    Ok(prepared.into_managed())
 }
 
 /// Owns prepared and active Jobs across the native-host prepare/activate IPC
@@ -994,17 +1033,24 @@ impl ProcessCustodian {
                 return Err(error);
             }
         };
-        let launched_digest = file_sha256(&prepared.identity.image_path)?;
+        let launched_digest = match file_sha256(&prepared.identity.image_path) {
+            Ok(digest) => digest,
+            Err(error) => return Err(prepared.reject(error, &mut self.failed_launches)),
+        };
         if request.binding.binary_digest_sha256 != launched_digest {
-            return Err(ProcessCustodyError::BindingMismatch(
+            return Err(prepared.reject(ProcessCustodyError::BindingMismatch(
                 "launchedBinaryDigestSha256",
-            ));
+            ), &mut self.failed_launches));
         }
-        if !prepared.handles_are_non_inheritable()? {
-            return Err(ProcessCustodyError::HandlePolicy(io::Error::new(
+        let non_inheritable = match prepared.handles_are_non_inheritable() {
+            Ok(value) => value,
+            Err(error) => return Err(prepared.reject(error, &mut self.failed_launches)),
+        };
+        if !non_inheritable {
+            return Err(prepared.reject(ProcessCustodyError::HandlePolicy(io::Error::new(
                 io::ErrorKind::Other,
                 "process, thread, or job handle remained inheritable",
-            )));
+            )), &mut self.failed_launches));
         }
         if let Some(module) = &prepared.path_compat {
             if actual_digest != format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_CLI_SHA256) {
@@ -1019,7 +1065,11 @@ impl ProcessCustodian {
             }
         }
         let ticket = loop {
-            let candidate = ProcessTicket(format!("pct1_{}", random_hex_32()?));
+            let random = match random_hex_32() {
+                Ok(random) => random,
+                Err(error) => return Err(prepared.reject(error, &mut self.failed_launches)),
+            };
+            let candidate = ProcessTicket(format!("pct1_{random}"));
             if !self.prepared.contains_key(&candidate)
                 && !self.active.contains_key(&candidate)
                 && !self.tombstones.contains(&candidate)
@@ -1043,6 +1093,18 @@ impl ProcessCustodian {
         &mut self,
         durable: &PreparedCustody,
     ) -> Result<PreparedCustody, ProcessCustodyError> {
+        self.activate_with_resume(durable, |thread| {
+            if unsafe { ResumeThread(thread) } == RESUME_FAILED {
+                Err(io::Error::last_os_error())
+            } else { Ok(()) }
+        })
+    }
+
+    fn activate_with_resume(
+        &mut self,
+        durable: &PreparedCustody,
+        resume: impl FnOnce(Handle) -> io::Result<()>,
+    ) -> Result<PreparedCustody, ProcessCustodyError> {
         self.verify_nonce(durable)?;
         if self.tombstones.contains(&durable.ticket) {
             return Err(ProcessCustodyError::DuplicateTicket(
@@ -1057,11 +1119,20 @@ impl ProcessCustodian {
                 durable.ticket.opaque().to_owned(),
             ));
         }
-        let (recorded, prepared) = self
-            .prepared
-            .remove(&durable.ticket)
-            .expect("prepared ticket existed immediately before removal");
-        let managed = prepared.activate()?;
+        if let Err(cause) = self.prepared.get(&durable.ticket)
+            .expect("prepared ticket existed immediately before resume").1.resume_with(resume) {
+            self.tombstones.insert(durable.ticket.clone());
+            return match self.abort_prepared(durable) {
+                Ok(_) => Err(cause),
+                Err(cleanup) => Err(ProcessCustodyError::LaunchCleanup {
+                    cause: Box::new(cause),
+                    detail: format!("exact prepared child remains retained after failed resume: {cleanup}"),
+                }),
+            };
+        }
+        let (recorded, prepared) = self.prepared.remove(&durable.ticket)
+            .expect("prepared ticket existed immediately after resume");
+        let managed = prepared.into_managed();
         self.active
             .insert(durable.ticket.clone(), (recorded.clone(), managed));
         Ok(recorded)
@@ -1071,6 +1142,19 @@ impl ProcessCustodian {
         &mut self,
         durable: &PreparedCustody,
     ) -> Result<bool, ProcessCustodyError> {
+        self.abort_prepared_with(durable,
+            |process| if unsafe { TerminateProcess(process, STOP_REFUSED_EXIT_CODE) } == 0 {
+                Err(io::Error::last_os_error())
+            } else { Ok(()) },
+            |process| match unsafe { WaitForSingleObject(process, 1_000) } {
+                WAIT_FAILED => Err(io::Error::last_os_error()),
+                result => Ok(result),
+            })
+    }
+
+    fn abort_prepared_with<T,W>(&mut self, durable: &PreparedCustody, terminate: T, wait: W)
+        -> Result<bool, ProcessCustodyError>
+    where T: FnOnce(Handle) -> io::Result<()>, W: FnOnce(Handle) -> io::Result<u32> {
         self.verify_nonce(durable)?;
         let Some((recorded, _)) = self.prepared.get(&durable.ticket) else {
             return if self.tombstones.contains(&durable.ticket) {
@@ -1088,9 +1172,21 @@ impl ProcessCustodian {
                 durable.ticket.opaque().to_owned(),
             ));
         }
-        let removed = self.prepared.remove(&durable.ticket).is_some();
         self.tombstones.insert(durable.ticket.clone());
-        Ok(removed)
+        let process = self.prepared.get(&durable.ticket)
+            .expect("verified prepared ticket still retained").1.process.raw();
+        let termination = terminate(process);
+        let observation = wait(process);
+        if matches!(observation.as_ref(), Ok(result) if *result == WAIT_OBJECT_0) {
+            self.prepared.remove(&durable.ticket).expect("confirmed prepared child");
+            return Ok(true);
+        }
+        Err(ProcessCustodyError::LaunchCleanup {
+            cause: Box::new(ProcessCustodyError::InvalidLaunch("prepared abort")),
+            detail: format!("exact process/job/guards retained under original ticket; terminate={}; wait={}",
+                termination.map_or_else(|error| error.to_string(), |_| "ok".to_owned()),
+                observation.map_or_else(|error| error.to_string(), |result| format!("0x{result:08x}"))),
+        })
     }
 
     pub fn active(&self, ticket: &ProcessTicket) -> Option<&ManagedProcess> {
@@ -2453,6 +2549,52 @@ mod tests {
         );
         assert!(matches!(error, ProcessCustodyError::InvalidLaunch(_)));
         assert!(retained.is_empty());
+    }
+
+    #[test]
+    fn failed_resume_aborts_exact_suspended_child_and_tombstones_ticket() {
+        let marker = unique_marker("failed-resume");
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+            "-Command".into(), format!("[IO.File]::WriteAllText('{}','ran')", ps_literal(&marker))];
+        let mut custodian = ProcessCustodian::new().expect("custodian");
+        let durable = custodian.prepare(&request(launch)).expect("suspended child");
+        let exact_thread = custodian.prepared.get(&durable.ticket).unwrap().1.initial_thread.raw();
+        let failure = custodian.activate_with_resume(&durable, |thread| {
+            assert_eq!(thread, exact_thread);
+            Err(io::Error::from_raw_os_error(5))
+        }).expect_err("injected resume failure");
+        assert!(matches!(failure, ProcessCustodyError::Resume(_) | ProcessCustodyError::LaunchCleanup { .. }));
+        assert!(custodian.is_tombstoned(&durable.ticket));
+        assert!(custodian.active(&durable.ticket).is_none());
+        assert!(matches!(custodian.activate(&durable),
+            Err(ProcessCustodyError::DuplicateTicket(_))));
+        assert!(!marker.exists(), "failed resume must not run child");
+    }
+
+    #[test]
+    fn unconfirmed_prepared_abort_keeps_exact_handles_until_retry_confirms_exit() {
+        let mut launch = ProcessLaunch::new(system_cmd());
+        launch.arguments = vec!["/D".into(), "/C".into(), "exit 0".into()];
+        let mut custodian = ProcessCustodian::new().expect("custodian");
+        let durable = custodian.prepare(&request(launch)).expect("suspended child");
+        let exact_process = custodian.prepared.get(&durable.ticket).unwrap().1.process.raw();
+        let failure = custodian.abort_prepared_with(&durable,
+            |process| {
+                assert_eq!(process, exact_process);
+                if unsafe { TerminateProcess(process, STOP_REFUSED_EXIT_CODE) } == 0 {
+                    Err(io::Error::last_os_error())
+                } else { Ok(()) }
+            },
+            |process| { assert_eq!(process, exact_process); Ok(WAIT_TIMEOUT) })
+            .expect_err("injected missing confirmation");
+        assert!(matches!(failure, ProcessCustodyError::LaunchCleanup { .. }));
+        assert_eq!(custodian.prepared.get(&durable.ticket).unwrap().1.process.raw(), exact_process);
+        assert!(custodian.is_tombstoned(&durable.ticket));
+        assert!(matches!(custodian.activate(&durable),
+            Err(ProcessCustodyError::DuplicateTicket(_))));
+        assert!(custodian.abort_prepared(&durable).expect("actual exact-child exit confirmation"));
+        assert!(!custodian.prepared.contains_key(&durable.ticket));
     }
 
     #[test]

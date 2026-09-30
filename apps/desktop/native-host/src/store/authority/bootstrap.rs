@@ -259,6 +259,14 @@ pub(crate) fn check_owner_in_current_transaction(
     connection: &VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
 ) -> Result<()> {
+    read_product_identity_in_current_transaction(connection, owner).map(|_| ())
+}
+
+/// Snapshot on an already open, verified transaction. This retains the exact
+/// Owner check without starting a nested transaction at a composition seam.
+pub(crate) fn read_product_identity_in_current_transaction(
+    connection: &VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+) -> Result<ProductIdentitySnapshot> {
     unsafe extern "C" {
         fn sqlite3_get_autocommit(database: *mut c_void) -> i32;
     }
@@ -278,7 +286,12 @@ pub(crate) fn check_owner_in_current_transaction(
         rows.push(row);
     }
     let current = parse_profile(rows, &connection.root_identity().opaque())?;
-    owner.check(&current)
+    owner.check(&current)?;
+    Ok(ProductIdentitySnapshot {
+        profile_id: current.profile_id, root_identity: current.root_identity,
+        principal_id: current.principal_id, seat_id: current.seat_id,
+        policy_revision: current.policy_revision, revocation_head: current.revocation_head,
+    })
 }
 
 pub(crate) fn read_product_identity(

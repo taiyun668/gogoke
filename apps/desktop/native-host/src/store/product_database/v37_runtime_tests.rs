@@ -70,13 +70,30 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert!(row.step_row().unwrap());
     assert_eq!(row.column_text(0).unwrap(), "3", "initialize, effective config and real thread response; initialized has no ACK");
     drop(row);
+    let key = ("projectA".to_owned(), "sessionA".to_owned());
+    let live = product.native_sessions.get(&key).unwrap();
+    let custody = live.custody.clone();
+    let operation_id = live.operation_id.clone();
+    authority::mark_process_unknown(&mut product.connection, &operation_id, &custody).unwrap();
     let stop = operation("K-SESSION", "stop", "stop-session", "sessionA", 2, r#"{"seatId":"seatA","generation":"2"}"#);
+    // Inject a same-store write failure after the real native stop and its
+    // custody proof. The original request must finish without a second stop.
+    product.connection.execute("CREATE TRIGGER inject_h_stop_failure BEFORE UPDATE ON gogoke_v37_h_claim WHEN NEW.state='STOPPED' BEGIN SELECT RAISE(ABORT,'injected H stop receipt failure'); END").unwrap();
+    assert!(product.dispatch_user_request(&stop).is_err());
+    assert!(product.native_sessions.get(&key).unwrap().stop_proof.is_some());
+    product.connection.execute("DROP TRIGGER inject_h_stop_failure").unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Applied);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     let fact = runtime::observe_stop_fact(&product.connection, "projectA", "sessionA").unwrap();
     assert!(fact.is_some(), "actual native Job and same-store durable stop fact");
+    // Model a lost H commit across restart, retaining the actually persisted
+    // native STOPPED proof. Recovery must not require live OS handles.
+    product.connection.execute("UPDATE gogoke_v37_h_operation SET status='UNKNOWN',revision=2 WHERE request_id='stop-session'").unwrap();
+    product.connection.execute("UPDATE gogoke_v37_h_claim SET state='COMMITTED',revision=2,stop_fact_id=NULL WHERE session_id='sessionA'").unwrap();
     product.close_checked().unwrap();
     let mut product = ProductDatabase::open(&root, &database).unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status, V37Status::Replayed);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     product.close_checked().unwrap();
     drop(root);
     std::fs::remove_dir_all(path).unwrap();

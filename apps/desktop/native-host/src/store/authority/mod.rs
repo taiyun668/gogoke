@@ -35,6 +35,7 @@ pub(crate) use process_custody::{
 pub(crate) use bootstrap::{
     admit_owner_controller_caller, check_owner_in_current_transaction,
     initialize_profile, read_product_identity,
+    read_product_identity_in_current_transaction,
     ProductIdentitySnapshot,
 };
 

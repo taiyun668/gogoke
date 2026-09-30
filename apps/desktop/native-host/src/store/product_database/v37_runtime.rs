@@ -1,7 +1,7 @@
 //! Actual native Codex sessions. The User channel selects logical identities;
 //! E/F/H supply all paths, pins, permissions and custody on the same store.
 use super::*;
-use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets};
+use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets, NativeStopProof};
 use crate::store::ledger::{self, SessionPurpose, SessionRegistration};
 use crate::store::seat::{self, NativeOrigin};
 use crate::store::session_transport::{self as h, runtime, launch::LaunchEvidence,
@@ -21,6 +21,7 @@ pub(super) struct NativeSession {
     effort: String,
     thread_id: Option<String>,
     raw_cursor: u64,
+    stop_proof: Option<NativeStopProof>,
 }
 
 fn failure<T, E: std::fmt::Debug>(result: std::result::Result<T, E>) -> Result<T> {
@@ -72,15 +73,18 @@ impl<'root> ProductDatabase<'root> {
                     };
                     let thread_id = match fields.get(&JsonString::from_str("result")) {
                         Some(Json::Object(result)) => match result.get(&JsonString::from_str("thread")) {
-                            Some(Json::Object(thread)) => thread.get(&JsonString::from_str("id")).cloned(),
+                            Some(Json::Object(thread)) => match thread.get(&JsonString::from_str("id")) {
+                                Some(Json::String(id)) => id.to_well_formed_string(),
+                                _ => None,
+                            },
                             _ => None,
                         },
                         _ => None,
                     }.ok_or(OrchestrationError::Invalid("native prior thread identity"))?;
-                    if !matches!(thread_id, Json::String(_)) {
+                    if thread_id.is_empty() || thread_id.contains('\0') {
                         return Err(OrchestrationError::Invalid("native prior thread identity shape"));
                     }
-                    result.insert(JsonString::from_str("threadId"), thread_id);
+                    result.insert(JsonString::from_str("threadId"), Json::String(JsonString::from_str(&thread_id)));
                 } else { status = V37Status::Unknown; }
             }
             return Ok(encode_receipt(request, status, request.expected_revision, revision, result));
@@ -114,7 +118,7 @@ impl<'root> ProductDatabase<'root> {
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let intention = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
-            failure(evidence.verify(&mut self.connection, self.root, &self.owner, None))?;
+            failure(evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, None))?;
             let insert = Statement::prepare(self.connection.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES(?1,?2,?3,'open',?4,'UNKNOWN',?5,?5)")?;
             for (index, value) in [request.domain_id.as_str(), request.request_id.as_str(),
@@ -134,7 +138,7 @@ impl<'root> ProductDatabase<'root> {
         self.native_sessions.insert(key.clone(), NativeSession { evidence, custody: custody.clone(),
             operation_id: operation_id.clone(), open_request_id: request.request_id.clone(),
             open_request_bytes: request.raw_bytes.clone(), domain_id: request.domain_id.clone(),
-            session_id: request.target_id.clone(), model, effort, thread_id: None, raw_cursor: 0 });
+            session_id: request.target_id.clone(), model, effort, thread_id: None, raw_cursor: 0, stop_proof: None });
         if let Err(error) = authority::record_prepared_process(&mut self.connection, &operation_id, &custody) {
             let abort = self.process_custodian.abort_prepared(&custody);
             return Err(OrchestrationError::V37StoreFailure(format!(
@@ -144,7 +148,7 @@ impl<'root> ProductDatabase<'root> {
         let bind = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
-            failure(run.evidence.verify(&mut self.connection, self.root, &self.owner, None))?;
+            failure(run.evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, None))?;
             failure(h::bind_process_operation_in_transaction(&mut self.connection,
                 &request.domain_id, &request.target_id, &operation_id))?;
             ledger::register_session(&mut self.connection, &SessionRegistration {
@@ -185,7 +189,7 @@ impl<'root> ProductDatabase<'root> {
         let applied = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
-            failure(run.evidence.verify(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
+            failure(run.evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             let update = Statement::prepare(self.connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_operation SET status='APPLIED' WHERE domain_id=?1 AND request_id=?2 AND operation='open' AND raw_hex=?3 AND status='UNKNOWN'")?;
             update.bind_text(1, &request.domain_id)?;
@@ -219,38 +223,166 @@ impl<'root> ProductDatabase<'root> {
         }
         let seat_id = user_payload_string(request, "seatId")?;
         let generation = user_payload_string(request, "generation")?;
+        let prior = Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex,operation,session_id,status,revision FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2")?;
+        prior.bind_text(1, &request.domain_id)?;
+        prior.bind_text(2, &request.request_id)?;
+        let previously_intended = if prior.step_row()? {
+            if prior.column_text(0)? != hex(&request.raw_bytes) || prior.column_text(1)? != "stop"
+                || prior.column_text(2)? != request.target_id {
+                return Ok(encode_receipt(request, V37Status::Conflict,
+                    request.expected_revision, request.expected_revision, Default::default()));
+            }
+            if prior.column_text(3)? == "APPLIED" {
+                let revision = prior.column_text(4)?.parse::<u64>().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("stop prior revision: {error}")))?;
+                drop(prior);
+                self.confirm_native_stop(&(request.domain_id.clone(), request.target_id.clone()))?;
+                let fact = Statement::prepare(self.connection.as_ptr(),
+                    "SELECT c.stop_proof_hash FROM main.gogoke_v37_h_claim a JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id WHERE a.domain_id=?1 AND a.session_id=?2 AND a.state='STOPPED' AND c.state='STOPPED' AND a.stop_fact_id=c.stop_proof_hash")?;
+                fact.bind_text(1, &request.domain_id)?;
+                fact.bind_text(2, &request.target_id)?;
+                if !fact.step_row()? { return Err(OrchestrationError::OperationConflict); }
+                let hash = fact.column_text(0)?;
+                return Ok(encode_receipt(request, V37Status::Replayed,
+                    request.expected_revision, revision, BTreeMap::from([
+                        (JsonString::from_str("stopFact"), Json::String(JsonString::from_str(&hash)))])));
+            }
+            true
+        } else { false };
+        drop(prior);
         let key = (request.domain_id.clone(), request.target_id.clone());
-        let run = self.native_sessions.get(&key).ok_or(OrchestrationError::Invalid("native stop has no live custody"))?;
-        let claim = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
-            &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
-        if claim.generation != generation || run.custody.binding.generation != generation
-            || claim.process_operation_id.as_deref() != Some(&run.operation_id)
-            || u64::try_from(claim.revision).ok() != Some(request.expected_revision) {
-            return Ok(encode_receipt(request, V37Status::Conflict,
+        let Some(run) = self.native_sessions.get(&key) else {
+            if previously_intended {
+                // A host restart may occur after the actual stop proof was
+                // committed and before the H receipt. Complete only from that
+                // exact durable fact; absence/UNKNOWN never permits OS replay.
+                let stopped = Statement::prepare(self.connection.as_ptr(),
+                    "SELECT c.operation_id,c.stop_proof_hash FROM main.gogoke_v37_h_claim a JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id AND c.generation=a.generation JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3 AND s.seat_id=?4 AND c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL")?;
+                for (index, value) in [request.domain_id.as_str(), request.target_id.as_str(),
+                    generation.as_str(), seat_id.as_str()].iter().enumerate() {
+                    stopped.bind_text((index + 1) as i32, value)?;
+                }
+                if stopped.step_row()? {
+                    let operation = stopped.column_text(0)?;
+                    let hash = stopped.column_text(1)?;
+                    if stopped.step_row()? { return Err(OrchestrationError::OperationConflict); }
+                    drop(stopped);
+                    failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+                    let recovered = (|| -> Result<()> {
+                        authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
+                        if runtime::observe_stop_fact(&self.connection, &request.domain_id, &request.target_id)?.is_none() {
+                            failure(h::record_session_stop_in_transaction(&mut self.connection,
+                                &request.domain_id, &request.target_id, &operation))?;
+                        }
+                        let update = Statement::prepare(self.connection.as_ptr(),
+                            "UPDATE main.gogoke_v37_h_operation SET status='APPLIED',revision=(SELECT revision FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2) WHERE domain_id=?1 AND session_id=?2 AND request_id=?3 AND operation='stop' AND raw_hex=?4 AND status='UNKNOWN'")?;
+                        update.bind_text(1, &request.domain_id)?;
+                        update.bind_text(2, &request.target_id)?;
+                        update.bind_text(3, &request.request_id)?;
+                        update.bind_text(4, &hex(&request.raw_bytes))?;
+                        update.step_done()?;
+                        Ok(())
+                    })();
+                    self.finish_native_transaction(recovered)?;
+                    return Ok(encode_receipt(request, V37Status::Replayed, request.expected_revision,
+                        request.expected_revision.checked_add(1).ok_or(OrchestrationError::Invalid("stop revision overflow"))?,
+                        BTreeMap::from([(JsonString::from_str("stopFact"), Json::String(JsonString::from_str(&hash)))])));
+                }
+            }
+            return Ok(encode_receipt(request, V37Status::Unknown,
                 request.expected_revision, request.expected_revision, Default::default()));
-        }
+        };
         let custody = run.custody.clone();
         let operation = run.operation_id.clone();
-        let close = self.process_custodian.close_child_input(&custody.ticket)
-            .map_err(|error| format!("native session stdin close: {error}"));
-        let proof = self.process_custodian.stop(&custody.ticket, StopBudgets::production(), move || close)?;
-        let durable = authority::mark_process_stopped(&mut self.connection, &operation, &proof)?;
+        if !previously_intended {
+            let claim = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
+                &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
+            if claim.generation != generation || custody.binding.generation != generation
+                || claim.process_operation_id.as_deref() != Some(&operation)
+                || u64::try_from(claim.revision).ok() != Some(request.expected_revision) {
+                return Ok(encode_receipt(request, V37Status::Conflict,
+                    request.expected_revision, request.expected_revision, Default::default()));
+            }
+            failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+            let intended = (|| -> Result<()> {
+                authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
+                let existing = Statement::prepare(self.connection.as_ptr(),
+                    "SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='stop'")?;
+                existing.bind_text(1, &request.domain_id)?;
+                existing.bind_text(2, &request.target_id)?;
+                if existing.step_row()? { return Err(OrchestrationError::OperationConflict); }
+                drop(existing);
+                let insert = Statement::prepare(self.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES(?1,?2,?3,'stop',?4,'UNKNOWN',?5,?5)")?;
+                for (index, value) in [request.domain_id.as_str(), request.request_id.as_str(),
+                    hex(&request.raw_bytes).as_str(), request.target_id.as_str()].iter().enumerate() {
+                    insert.bind_text((index + 1) as i32, value)?;
+                }
+                insert.bind_i64(5, claim.revision)?;
+                insert.step_done()?;
+                Ok(())
+            })();
+            self.finish_native_transaction(intended)?;
+        }
+        let proof = if let Some(proof) = self.native_sessions.get(&key).and_then(|run| run.stop_proof.as_ref()) {
+            proof.clone()
+        } else {
+            let close = self.process_custodian.close_child_input(&custody.ticket)
+                .map_err(|error| format!("native session stdin close: {error}"));
+            let proof = self.process_custodian.stop(&custody.ticket, StopBudgets::production(), move || close)?;
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.stop_proof = Some(proof.clone());
+            proof
+        };
+        authority::mark_process_stopped(&mut self.connection, &operation, &proof)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let stopped = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
-            failure(h::record_session_stop_in_transaction(&mut self.connection,
-                &request.domain_id, &request.target_id, &operation))?;
+            // If a previous commit succeeded but the receipt was lost, read
+            // the same stop fact instead of repeating an external stop.
+            if runtime::observe_stop_fact(&self.connection, &request.domain_id, &request.target_id)?.is_none() {
+                failure(h::record_session_stop_in_transaction(&mut self.connection,
+                    &request.domain_id, &request.target_id, &operation))?;
+            }
+            let update = Statement::prepare(self.connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_operation SET status='APPLIED',revision=?1 WHERE domain_id=?2 AND request_id=?3 AND raw_hex=?4 AND status='UNKNOWN'")?;
+            update.bind_i64(1, i64::try_from(request.expected_revision.checked_add(1)
+                .ok_or(OrchestrationError::Invalid("stop revision overflow"))?)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!("stop revision: {error}")))?)?;
+            update.bind_text(2, &request.domain_id)?;
+            update.bind_text(3, &request.request_id)?;
+            update.bind_text(4, &hex(&request.raw_bytes))?;
+            update.step_done()?;
             Ok(())
         })();
         self.finish_native_transaction(stopped)?;
-        self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
-            ticket: custody.ticket.clone(), custodian_nonce: custody.custodian_nonce.clone(),
-            identity: custody.identity.clone(), proof_hash: proof.proof_hash(), durable_revision: durable,
-        })?;
-        self.native_sessions.remove(&key);
+        self.confirm_native_stop(&key)?;
         Ok(encode_receipt(request, V37Status::Applied, request.expected_revision,
             request.expected_revision.checked_add(1).ok_or(OrchestrationError::Invalid("stop revision overflow"))?,
             BTreeMap::from([(JsonString::from_str("stopFact"), Json::String(JsonString::from_str(&proof.proof_hash())))])))
+    }
+
+    fn confirm_native_stop(&mut self, key: &(String, String)) -> Result<()> {
+        let Some(run) = self.native_sessions.get(key) else { return Ok(()); };
+        let proof = run.stop_proof.as_ref().ok_or(OrchestrationError::Invalid("native durable stop proof absent"))?;
+        let row = Statement::prepare(self.connection.as_ptr(),
+            "SELECT rowid FROM main.gogoke_coordination_process_custody WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3 AND state='STOPPED' AND stop_proof_hash=?4")?;
+        row.bind_text(1, &run.operation_id)?;
+        row.bind_text(2, run.custody.ticket.opaque())?;
+        row.bind_text(3, &run.custody.custodian_nonce)?;
+        row.bind_text(4, &proof.proof_hash())?;
+        if !row.step_row()? { return Err(OrchestrationError::OperationConflict); }
+        let revision = row.column_text(0)?.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native stop durable revision: {error}")))?;
+        drop(row);
+        if self.process_custodian.active(&run.custody.ticket).is_some() {
+            self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+                ticket: run.custody.ticket.clone(), custodian_nonce: run.custody.custodian_nonce.clone(),
+                identity: run.custody.identity.clone(), proof_hash: proof.proof_hash(), durable_revision: revision,
+            })?;
+        }
+        self.native_sessions.remove(key);
+        Ok(())
     }
 
     /// Actual process-owned JSONL, with durable native step intent before
