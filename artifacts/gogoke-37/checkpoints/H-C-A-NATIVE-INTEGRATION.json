@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "ACTIVE_WAITING_EXACT_FROZEN_AND_REPRO_INSTALLER_ASSETS",
+  "state": "M1_SOURCE_AND_FROZEN_EVIDENCE_READY_REQUIRES_OWNER_MAIN_ACTIVATION",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "last_pushed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
@@ -73,10 +73,9 @@
     "native_new_source": "NOT_RUN"
   },
   "remaining": [
-    "Obtain same-source all-green native gate with original stop-proof diagnostic retained; latest full 562/562 passed but focused gate failed once.",
-    "Complete current-source desktop frozen/repro byte comparison and exact assets inventory.",
-    "PR57 trusted-main candidate signer activation remains Owner-only and OPEN. Prepare candidate chain before actual OT4 request.",
-    "Authenticated model behavior, actual native question/compact, ordinary Win11 and M1 evidence remain NOT_RUN."
+    "Owner main activation PR57, then exact trusted-main signing and same-byte cloud installed smoke.",
+    "Ordinary Win11 signed candidate installation and formal snapshots; actual F instance registration and cap configuration to4, then the single OT4 login request.",
+    "Authenticated model/native question/compact and remaining real M1 evidence; M1 not complete, no acceptance or publication."
   ],
   "custody": "Private original logs and downloaded artifacts retained; prior rejected Detours cleanup objects and old diagnostic worktree preserved without retry or bypass. In-flight named source files have explicit H/C/Controller ownership. No public checkpoint includes local identity, paths, secrets or account snapshots.",
   "formal_product_data": "NOT_ACCESSED_OR_CHANGED_IN_THIS_CLOUD_ONLY_SEGMENT",
@@ -540,5 +539,56 @@
     "native_component_evidence": "a65b2702..b989cd53 diff is zero in apps/desktop/native-host and native workflow. Native 20/20 focused and 562/562 full evidence remains bound to original a65 source; only desktop fixture and checkpoint changed.",
     "superseded_runs": "Prior desktop runs replaced/cancelled; not claimed all-green. Duplicate same-source automatic run cancelled; manual dispatch is retained for candidate signing.",
     "local_cli_metadata": "0.149.0 package metadata only. Actual executable identity/digest/version and isolated F registration remain NOT_RUN."
-  }
+  },
+  "desktop_b989_complete": {
+    "source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+    "run": 36724062942,
+    "attempt": 1,
+    "event": "workflow_dispatch",
+    "state": "PASS_ALL_FIVE_JOBS",
+    "hygiene_run": 36724070827,
+    "hygiene": "PASS",
+    "frozen_artifact": 11103858479,
+    "repro_artifact": 11103503636,
+    "comparison_artifact": 11105035657,
+    "members_verified_each": 8,
+    "hash_mismatches": 0,
+    "raw_comparisons": {
+      "gogoke-portable.exe": {
+        "length": 26921984,
+        "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+      },
+      "gogoke-installed-shell.nsis.exe": {
+        "length": 26921984,
+        "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+      },
+      "gogoke-native-host.exe": {
+        "length": 7139840,
+        "sha256": "5436aa34bd50d0286fbecb9c4c261fa0ce41a4fcc8bf58fef195bf182ec924a0"
+      },
+      "node.exe": {
+        "length": 91406496,
+        "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+      },
+      "gogoke-resources.windows.zip": {
+        "length": 49980652,
+        "sha256": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0"
+      },
+      "resource-index.json": {
+        "length": 2898334,
+        "sha256": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466"
+      }
+    },
+    "scope": "CLOUD_NOT_WINDOWS_11_OR_M1_ACCEPTANCE"
+  },
+  "next_signing_input": "artifacts/gogoke-37/release-inputs/M1-CANDIDATE-SIGNING-INPUT.json",
+  "owner_dependency": {
+    "action": "Owner merge PR57 to activate trusted main candidate signer",
+    "source": "CANDIDATE_CHAIN_SCOPE_RECEIPT.json main_activation and execution-branch governance",
+    "pr57_head": "19be2793a41c18a0898198d7789d48a0e822fcbc",
+    "pr57_checks": "ALL_SIX_PASS_EXACT_HEAD",
+    "precise_readback": "Main8a984b6, manifest2d3b34a, receipt8020812, inboxb4f7e866 unchanged; PR57 remains OPEN",
+    "controller_merge": false
+  },
+  "route_reflection": "Direct receipt exposed deferred-history fixture precondition; original native proof diagnostic retained without relaxing budgets. Desktop WinError32 was completion measurement missing inherited-lock release; correct original observation instead of changing product behavior. Batch actual error fields and fixtures before the next source run; preserve partial versus full gates separately."
 }

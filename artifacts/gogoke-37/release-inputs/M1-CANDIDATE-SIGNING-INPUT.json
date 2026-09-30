@@ -1,0 +1,112 @@
+{
+  "schema": "gogoke.37.candidate-signing-input.v1",
+  "state": "EXACT_FROZEN_INPUT_READY_MAIN_ACTIVATION_PENDING",
+  "repository": "taiyun668/gogoke",
+  "sourceCommit": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "sourceBranch": "codex/gogoke-37-l0",
+  "desktopRunId": 36724062942,
+  "runAttempt": 1,
+  "event": "workflow_dispatch",
+  "runConclusion": "success",
+  "frozenArtifactId": 11103858479,
+  "frozenArtifactName": "gogoke-windows-frozen-b989cd53f8d850fc27df50f9ed02fa7b0521bd82-36724062942",
+  "archiveDigest": "sha256:d6d222c6e829b2b7e44dbcbb0dd183f2ad6ed2ebda671e6d562be99d4ada146e",
+  "archiveDigestBasis": "GITHUB_ARTIFACT_API_DECLARED; trusted main verifier must recheck downloaded archive before signing",
+  "members": {
+    "gogoke-0.1.13-windows-x64-unsigned-setup.exe": {
+      "length": 56509644,
+      "sha256": "50202c8ccd31719362725f2e22cbdd443151801f4e94782a21265b15ad78cb80"
+    },
+    "gogoke-installed-shell.nsis.exe": {
+      "length": 26921984,
+      "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+    },
+    "gogoke-native-host.exe": {
+      "length": 7139840,
+      "sha256": "5436aa34bd50d0286fbecb9c4c261fa0ce41a4fcc8bf58fef195bf182ec924a0"
+    },
+    "gogoke-package-hashes.json": {
+      "length": 1754322,
+      "sha256": "eb4a3cdae14bcd1b21e77eaf715e62bfa21caf697ffde9fda989a18305352110"
+    },
+    "gogoke-portable.exe": {
+      "length": 26921984,
+      "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+    },
+    "gogoke-resources.windows.zip": {
+      "length": 49980652,
+      "sha256": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0"
+    },
+    "node.exe": {
+      "length": 91406496,
+      "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+    },
+    "resource-index.json": {
+      "length": 2898334,
+      "sha256": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466"
+    }
+  },
+  "frozenBuildJsonSha256": "47ff4d729edb1d34f04ccb27d20630ade810cd861d780fa561d4ae042499fc57",
+  "memberReadback": {
+    "verified": 8,
+    "mismatches": 0,
+    "reproMembersVerified": 8,
+    "reproMismatches": 0
+  },
+  "reproducibilityArtifactId": 11105035657,
+  "reproducibilityJsonSha256": "0f88eb3557e5996bb38bd78da8693124edcdb5aa2a187c405f041a1e0cd3fdc8",
+  "comparedRawByteIdentical": {
+    "gogoke-portable.exe": {
+      "length": 26921984,
+      "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+    },
+    "gogoke-installed-shell.nsis.exe": {
+      "length": 26921984,
+      "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+    },
+    "gogoke-native-host.exe": {
+      "length": 7139840,
+      "sha256": "5436aa34bd50d0286fbecb9c4c261fa0ce41a4fcc8bf58fef195bf182ec924a0"
+    },
+    "node.exe": {
+      "length": 91406496,
+      "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+    },
+    "gogoke-resources.windows.zip": {
+      "length": 49980652,
+      "sha256": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0"
+    },
+    "resource-index.json": {
+      "length": 2898334,
+      "sha256": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466"
+    }
+  },
+  "installerWrapperNotCompared": "Exact frozen installer hash is retained; no claim that the separate NSIS wrapper is reproduced byte-for-byte. Six declared raw executable/resource components are identical.",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receiptBlob": "8020812e3abf35887829f50c78ec9f513272bf70"
+  },
+  "mainActivation": {
+    "pr": 57,
+    "head": "19be2793a41c18a0898198d7789d48a0e822fcbc",
+    "state": "OPEN_OWNER_MERGE_PENDING",
+    "scopeReceipt": "artifacts/gogoke-37/intake/CANDIDATE_CHAIN_SCOPE_RECEIPT.json",
+    "reason": "Construction is limited to execution branch; receipt reserves main activation to Owner. Candidate signer requires trusted main and existing candidate-resource-signing environment."
+  },
+  "afterOwnerMerge": [
+    "Fetch main and precisely read PR57 merge, actual main workflow/verifier blobs and unchanged authorization manifest/receipt before dispatch.",
+    "Dispatch trusted main signing with the exact source/run/attempt/artifact fields below. Do not rebuild or alter frozen inputs.",
+    "Read signing result and each signed member hash; consume that exact signing run/attempt/artifact in branch installed smoke.",
+    "Install the same signed candidate in ordinary Win11 view with formal before/after snapshots, configure actual test project and instance caps as Owner-selected 4, verify isolated test instance and permissions, then prepare the single actual OT4 login request."
+  ],
+  "mainDispatch": "gh workflow run gogoke-candidate-sign.yml --repo taiyun668/gogoke --ref main -f source_commit=b989cd53f8d850fc27df50f9ed02fa7b0521bd82 -f run_id=36724062942 -f run_attempt=1 -f artifact_id=11103858479",
+  "candidateKey": "Existing CI candidate key only; no key read, export, change or signing in this checkpoint.",
+  "publication": false,
+  "signing": "NOT_RUN",
+  "cloudInstalledSmoke": "NOT_RUN",
+  "ordinaryWin11": "NOT_RUN",
+  "OT4": "NOT_REQUESTED",
+  "M1Complete": false,
+  "acceptance": false
+}
