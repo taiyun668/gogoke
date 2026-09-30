@@ -1,9 +1,9 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "ACTIVE_DIRECT_NATIVE_RESUME_DIAGNOSTIC_AND_SOURCE_REPAIR",
+  "state": "ACTIVE_RETAIN_ORIGINAL_STOP_PROOF_AND_VERIFY_CLOUD_GATE",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "410dc333a06639180951a91de6823459a6e23f2d",
+  "last_pushed_source": "f69f9dcf8eb60e6d714ae982ef92602adf1ce01f",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -73,10 +73,10 @@
     "native_new_source": "NOT_RUN"
   },
   "remaining": [
-    "Finish the same-source H/C/A integration and historical generation proof joins, then fixed commit, one cloud native package and affected desktop/hygiene checks.",
-    "Complete native capability, append/compact command lifecycle and actual resume/input/product-path tests.",
-    "Prepare the signed installed candidate and ordinary-view test prerequisites before the one actual OT4 login request. PR #57 main signer activation remains Owner-only and is not merged by Controller.",
-    "Actual authenticated model behavior, native question card, ordinary-view Win11 and M1 evidence remain NOT_RUN."
+    "Obtain same-source all-green native gate with original stop-proof diagnostic retained; latest full 562/562 passed but focused gate failed once.",
+    "Complete current-source desktop frozen/repro byte comparison and exact assets inventory.",
+    "PR57 trusted-main candidate signer activation remains Owner-only and OPEN. Prepare candidate chain before actual OT4 request.",
+    "Authenticated model behavior, actual native question/compact, ordinary Win11 and M1 evidence remain NOT_RUN."
   ],
   "custody": "Private original logs and downloaded artifacts retained; prior rejected Detours cleanup objects and old diagnostic worktree preserved without retry or bypass. In-flight named source files have explicit H/C/Controller ownership. No public checkpoint includes local identity, paths, secrets or account snapshots.",
   "formal_product_data": "NOT_ACCESSED_OR_CHANGED_IN_THIS_CLOUD_ONLY_SEGMENT",
@@ -339,5 +339,103 @@
     "instrument_correction": "Reviewer identified empty deliver payload as invalid before generation fence. Corrected to exact required generation field before cloud run; invalid measurement not counted as product bug.",
     "native": "NOT_RUN_ON_THIS_FOLLOWUP_SOURCE",
     "diagnostic": "18 named status assertions retain original receipt instead of losing its reason."
-  }
+  },
+  "native_f265_complete": {
+    "source": "f265a28e3ae690a70cee57b4dfa1003211da97b5",
+    "run": 36717949109,
+    "artifact": 11097193622,
+    "focused_artifact": 11096778671,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562,
+      "passed": 561,
+      "failed": 1,
+      "skipped": 0,
+      "elapsed_seconds": 319.17
+    },
+    "hygiene_run": 36717951564,
+    "hygiene": "PASS",
+    "direct_error": "Native thread/resume -32600: no rollout found for thread id. Original provider frame retained in A/RPC and returned UNKNOWN receipt.",
+    "cause": "No-model fixture stopped an empty new thread before actual provider history was materialized. Fixed vendor recorder creates history lazily; invalid test precondition is not proof durable-thread product resume is broken.",
+    "correction": "Arrange durable history using existing bound native append RPC; fixed vendor inject_response_items flushes its recorded items. Obtain original ACK before actual stop. No provider files are fabricated or copied; no model behavior claimed.",
+    "c_controls": "Synthetic C and physical-generation read controls reached later resume without failure, not authenticated vendor observations.",
+    "sha256": {
+      "machine-result.json": "4af1fec7a6ad465948b2af03374728265ee9b9c4aa653cd9ef14658909b1efbb",
+      "lib-tests.log": "2b93fe8311e009dce799b2a9a2129d44c7e4393053a9a6725185de8c6d1cc77d",
+      "focused-native-codex-session-open.log": "a5d97e8df86b49bea2a7370f3f5f036540fa07d7258c8a5f729d290cad4c3ee4"
+    }
+  },
+  "history_materialization_source": {
+    "fixed_commit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "basis": "Original codex_thread inject_response_items calls flush_rollout after injection; recorder deferred_creation flush with nonempty pending_items writes original history. CODEX_HOME is same registered instance across generation resume.",
+    "private_files_sha256": {
+      "codex-thread.rs": "9fe7ba5821938131db14dcba5e6249dd9303fae19fc01eaee4298f93a8ca5946",
+      "session-inject.rs": "f9b6501880979e81048cc05e1964d8dec3e4bc94b38e0ace6759c09aa5ecabfe",
+      "rollout-recorder.rs": "cefead4fe8df0346988a6ecf84f2fc83546ea0263eeb7a1600e126f13c5bf80a",
+      "session.rs": "0ee2fc88548ec33ec1c4e4e632081827c0c7d41e830c22fc8ace463dad326620"
+    },
+    "new_source": "f69f9dcf8eb60e6d714ae982ef92602adf1ce01f",
+    "native_run": 36719528205,
+    "native": "RUNNING_NOT_PASS"
+  },
+  "checkpoint_writer_instrument": "First followup checkpoint update used implicit Windows text encoding and failed before write. Source commit remained preserved; rewritten with explicit UTF-8. No product change attributed to this measurement failure.",
+  "native_f69_complete": {
+    "source": "f69f9dcf8eb60e6d714ae982ef92602adf1ce01f",
+    "run": 36719528205,
+    "artifact": 11099191435,
+    "focused_artifact": 11097314414,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562,
+      "passed": 562,
+      "failed": 0,
+      "skipped": 0,
+      "elapsed_seconds": 359.05
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "lpac_shim": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "hygiene_run": 36719531453,
+    "hygiene": "PASS",
+    "desktop_run": 36719690564,
+    "desktop": "RUNNING_NOT_FINAL_READBACK",
+    "actual_native_session": "PASS: original same-thread resume; actual no-model renew with exact revisions; internal stop SQL UNKNOWN and original ID recovery; competing ID denial; reconnect no added process; Owner stop cancellation; original append historical replay. No authenticated model/native question/compact/Win11 claim.",
+    "focused_failure": "prepared_process_identity_is_durable_before_activation: stop proof incomplete. Original proof object was omitted by the test assertion. The same original test passed in full library; no root cause or fix of the stop behavior is claimed. Test now prints the existing complete NativeStopProof if durable confirmation rejects it. Stop budgets and proof gate remain unchanged.",
+    "overall": "FAIL_COMPLETE_FOCUSED_FAILURE_NOT_RELABELED",
+    "sha256": {
+      "machine-result.json": "d3a6fbbf12b543eb46860e25bed88ea5208c4eb156897e0436cde67e95e2121b",
+      "lib-tests.log": "1da2812fb7ec7d20ae97922f127052b8ff61ddc5680ee6564e914f7e5474b19a",
+      "focused-native-codex-session-open.log": "fdd29d9ad2abfc43aa10c147f5f82c0bbdf648cd7a2b26cb796c5bea7f2daa1d",
+      "focused-process-coordination.log": "beefc5bcf00e7a6c2b4a77643d0193d9e8ec6b739d71f6d936b1ea1dcaec3467"
+    }
+  },
+  "h_source_review_followup": "Reused NON_FRESH source review confirms injected history premise against fixed official sources; confirms C controls as synthetic database fences, not proof of production reachability for manual active-turn plus compound combination. No native mutation or acceptance claim."
 }

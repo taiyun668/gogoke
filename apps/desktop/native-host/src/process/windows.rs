@@ -3347,7 +3347,7 @@ mod tests {
         let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()))
             .expect("native stop proof");
         let revision = mark_process_stopped(&mut connection, "r2-02-test", &proof)
-            .expect("durable stop proof");
+            .unwrap_or_else(|error| panic!("durable stop proof: {error:?}; original native proof: {proof:?}"));
         custodian.confirm_stop_durable(&DurableStopConfirmation {
             ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
             identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
