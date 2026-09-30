@@ -699,7 +699,7 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
-        let home = root.canonical_root().path.join("v37-instances").join("instanceA");
+        let home = root.canonical_root().canonical_path.join("v37-instances").join("instanceA");
         fs::create_dir_all(&home).unwrap();
         let expected = crate::root::inspect_root(&home).unwrap().identity;
         let name = format!("Gogoke37.CompatShared.{stamp}");
