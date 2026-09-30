@@ -901,8 +901,10 @@ impl<'root> ProductDatabase<'root> {
                 request.expected_revision,Default::default()));
         }
         if u64::try_from(current.revision).ok() != Some(request.expected_revision) {
-            return Ok(encode_receipt(request, V37Status::Stale, request.expected_revision,
-                request.expected_revision, Default::default()));
+            let revision=u64::try_from(current.revision).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native input current revision: {error}")))?;
+            return Ok(encode_receipt(request, V37Status::Stale, revision,
+                revision, Default::default()));
         }
         failure(run.evidence.verify_live(&mut self.connection, self.root, &self.owner,
             &run.operation_id, current.revision))?;

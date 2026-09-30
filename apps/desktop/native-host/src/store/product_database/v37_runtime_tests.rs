@@ -286,8 +286,15 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let appended=h::decode_receipt(&product.dispatch_user_request(&append).unwrap()).unwrap();
     assert_eq!(appended.status,V37Status::Replayed);
     assert_eq!(appended.revision,9);
+    let stale_append=operation("K-SESSION","append-without-turn","append-stale","sessionA",8,
+        r#"{"generation":"4","body":"stale request must not be injected"}"#);
+    let stale=h::decode_receipt(&product.dispatch_user_request(&stale_append).unwrap()).unwrap();
+    assert_eq!(stale.status,V37Status::Stale);assert_eq!(stale.previous_revision,9);assert_eq!(stale.revision,9);
     let original_append_result=Json::Object(appended.into_result()).canonical();
     assert!(original_append_result.contains("\"createdTurn\":false"));
+    // This local state assertion verifies the host's state machine only.
+    // Native absence of a created turn is not proved by a generated receipt
+    // or a cached field; authenticated model/history checks remain NOT_RUN.
     assert!(product.native_sessions.get(&key).unwrap().turn_id.is_none());
     let first_step_count={let row=Statement::prepare(product.connection.as_ptr(),"SELECT count(*) FROM gogoke_v37_rpc_steps WHERE step_id LIKE 'append-%'").unwrap();
         assert!(row.step_row().unwrap());row.column_text(0).unwrap()};

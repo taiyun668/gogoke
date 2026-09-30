@@ -1025,9 +1025,13 @@ fn complete_codex_turn_in_transaction(
         codex_response_observed(connection,input,&binding,&encoded_command,response)?;
         let revision=request.expected_revision.checked_add(1)
             .ok_or(JournalError::Invalid("revision overflow"))?;
+        let receipt_identity=format!("{}\n{}\n{}\n{}",
+            crate::store::digest::sha256_hex(input.request_bytes),
+            crate::store::digest::sha256_hex(&encoded_command),
+            binding.process_operation_id,binding.custodian_nonce);
         let mut result=std::collections::BTreeMap::from([
             (JsonString::from_str("generation"),Json::String(JsonString::from_str(input.generation))),
-            (JsonString::from_str("receiptId"),Json::String(JsonString::from_str(&format!("rpc-{}",&crate::store::digest::sha256_hex(&encoded_command)[..40])))),
+            (JsonString::from_str("receiptId"),Json::String(JsonString::from_str(&format!("rpc-{}",&crate::store::digest::sha256_hex(receipt_identity.as_bytes())[..40])))),
             (JsonString::from_str("createdTurn"),Json::Bool(turn_id.is_some())) ]);
         if let Some(turn_id)=turn_id {result.insert(JsonString::from_str("turnId"),Json::String(JsonString::from_str(&turn_id)));}
         else {result.insert(JsonString::from_str("deliveryBasis"),Json::String(JsonString::from_str("NATIVE_INJECT_ITEMS_ACK")));}
@@ -1111,7 +1115,15 @@ pub(crate) fn reconcile_observed_codex_sends(
         let record=read_row(connection,domain_id,&id)?.ok_or(JournalError::Unknown)?;
         let input=StdinRequest {domain_id,session_id,ticket:&record.ticket,
             generation,request_bytes:&record.request_bytes};
-        recover_codex_turn_request(connection,&input)?;
+        match recover_codex_turn_request(connection,&input) {
+            Ok(_)=>{},
+            // The original OBSERVED provider error remains in A/RPC and the
+            // input remains UNKNOWN. It denies another input, not Owner's
+            // ability to stop the actual process. Store/correlation failures
+            // still propagate unchanged.
+            Err(JournalError::RemoteError(_))=>{},
+            Err(error)=>return Err(error),
+        }
     }
     Ok(())
 }
@@ -1275,6 +1287,22 @@ mod tests {
         assert_eq!(decision.record.state,JournalState::Receipted);
         assert_eq!(decision.record.request_bytes,raw);
         assert_eq!(decision.record.receipt_revision,Some(2));
+        // Synthetic original provider refusal: an OBSERVED error cannot be
+        // promoted to a successful injection, and cannot block native stop.
+        let refused_raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"append-without-turn","requestId":"appendRefused","targetId":"sessionA","domainId":"projectA","expectedRevision":"2","payload":{"generation":"1","body":"refused fixture"}}"#;
+        let refused=input(refused_raw);
+        prepare_codex_request(&mut db,&refused).unwrap();
+        mark_codex_write_unknown(&mut db,&refused).unwrap();
+        let refusal=b"{\"id\":5,\"error\":{\"code\":-32603,\"message\":\"original injection refusal fixture\"}}\n";
+        let refused_command=codex_rpc::Command::AppendWithoutTurn {thread_id:"threadA".into(),text:"refused fixture".into()};
+        let refused_step=format!("append-{}",&crate::store::digest::sha256_hex(refused_raw)[..40]);
+        let raw_insert=Statement::prepare(db.as_ptr(),"INSERT INTO v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state,no_event_reason) VALUES('processA','pct1_ticketA','nonceA','projectA','sessionA','1','epochA','3',?1,'NO_EVENT','CODEX_RPC_RESPONSE')").unwrap();
+        raw_insert.bind_blob(1,refusal).unwrap();raw_insert.step_done().unwrap();drop(raw_insert);
+        let rpc_insert=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA',?1,'processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?2,1,'OBSERVED','epochA','3')").unwrap();
+        rpc_insert.bind_text(1,&refused_step).unwrap();rpc_insert.bind_text(2,&hex(&refused_command.encode(Some(&codex_rpc::RpcId::Number(5))).unwrap())).unwrap();rpc_insert.step_done().unwrap();drop(rpc_insert);
+        assert!(matches!(recover_codex_turn_request(&mut db,&refused),Err(JournalError::RemoteError(bytes)) if bytes.as_slice()==refusal.as_slice()));
+        reconcile_observed_codex_sends(&mut db,"projectA","sessionA","1").expect("original provider refusal must not block actual stop intent");
+        assert_eq!(read_row(&db,"projectA","appendRefused").unwrap().unwrap().state,JournalState::Unknown);
         db.execute("UPDATE gogoke_v37_h_claim SET state='STOPPED',revision=3,stop_fact_id='proofA' WHERE session_id='sessionA'").unwrap();
         db.execute("UPDATE gogoke_v37_h_process_episode SET phase='STOPPED',stop_fact_id='proofA' WHERE process_operation_id='processA'").unwrap();
         db.execute("UPDATE gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='proofA' WHERE operation_id='processA'").unwrap();

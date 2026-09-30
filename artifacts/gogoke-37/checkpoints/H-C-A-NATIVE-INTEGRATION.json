@@ -3,7 +3,7 @@
   "state": "FIXING_SOURCE_FOR_ONE_CLOUD_NATIVE_INTEGRATION_RUN",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "03bcfbbe210ea19934e62bfee67f1cb57b2cd3e3",
+  "last_pushed_source": "233a47be76a5c5cc99b179221c580668a736561c",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -115,5 +115,19 @@
     "machine_sha256": "5dcce6e0074655a008a5f035e97df62c3dc04ea26fec8f3a189a4e0adf494680",
     "lib_log_sha256": "767783a4d7c9a65da17905e09d03d76779d7e92681dd6bd96e4aa02e7cd9ee69"
   },
-  "next_native_input_batch": "K-SESSION append-without-turn uses the existing exact original H stdin journal and actual thread/inject_items; only original ACK completes createdTurn=false. Preflight codec before intent, same-ID recovery without resend after injected final receipt failure, raw collision, stopped/released historical replay; actual cloud execution pending. Historical original STOPPED steer abort uses exact episode seat snapshot and custody stop proof plus A terminal and absence of any original H step; no write permission added."
+  "next_native_input_batch": "K-SESSION append-without-turn uses the existing exact original H stdin journal and actual thread/inject_items; only original ACK completes createdTurn=false. Preflight codec before intent, same-ID recovery without resend after injected final receipt failure, raw collision, stopped/released historical replay; actual cloud execution pending. Historical original STOPPED steer abort uses exact episode seat snapshot and custody stop proof plus A terminal and absence of any original H step; no write permission added.",
+  "next_source_repairs": {
+    "append_review": "Reused Sol NON_FRESH source review, not acceptance. Confirmed original observed provider errors blocked native stop; fixed only that stop path while retaining A/RPC source and UNKNOWN. STALE native input receipt now reports observed claim revision. Receipt identifier binds original user bytes, command, process operation and nonce.",
+    "a_projection": "Original turn/started now drives current-turn state after A commit; original contextCompaction item/completed normalizes with exact thread, turn, item and timestamp fields. ACK alone never completes compaction.",
+    "instrument_limit": "createdTurn=false is a generated receipt and cached turn state is not independent evidence that the actual vendor created no turn. Native model/history proof remains NOT_RUN.",
+    "current_native_run": 36706277216,
+    "current_native_source": "233a47be76a5c5cc99b179221c580668a736561c",
+    "current_native_state": "SERVER_PASS_RELEASE_PASS_REQUIRED_AXES_PASS_FOCUSED_FAILED_LIBRARY_RUNNING_DIRECT_FAILURE_READBACK_PENDING",
+    "hygiene_run": 36706399282,
+    "hygiene": "PASS",
+    "desktop_run": 36706828819,
+    "desktop": "RUNNING_NOT_READ_BACK",
+    "native_this_followup_source": "NOT_RUN"
+  },
+  "next_compound_generation": "Existing M1 H.1/B1.1 requires product compact/renew and generation switch. Sol H package authorized internally under PR56: original compact completion source, confirmed internal stop, same original request continuation and new process promotion; original UNKNOWN never repeats input; Owner stop remains permitted in GENERATION_UNKNOWN, including candidate-specific stop proof; release requires all actual processes confirmed stopped. Frozen wire and Owner touchpoints unchanged."
 }

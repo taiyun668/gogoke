@@ -42,7 +42,9 @@ pub(crate) struct NormalizedUpdate {
 #[derive(Debug)]
 pub(crate) enum Output {
     Update(NormalizedUpdate),
+    TurnStarted { update: NormalizedUpdate, turn_id: String },
     TurnTerminal { update: NormalizedUpdate, turn_id: String, status: TurnStatus },
+    CompactionCompleted {update:NormalizedUpdate,turn_id:String,item_id:String},
     Question(QuestionCard),
     /// Leave A's exact source row pending for explicit native recovery/routing.
     Unhandled { method: String },
@@ -131,6 +133,11 @@ fn tool_item(method: &str, params: &BTreeMap<JsonString, Json>, thread_id: &str,
     let item=object(field(params,"item")?,"item")?;
     let item_id=string(item,"id")?;
     let item_type=string(item,"type")?;
+    if item_type=="contextCompaction" {
+        let output=update(method,"session_info_update",thread_id,Some(&turn_id),Some(&item_id),[]);
+        let Output::Update(update)=with_meta_field(output,"codexItemType",text(&item_type))? else {return Err(OutputError::Invalid("compaction update"));};
+        return Ok(if started {Output::Update(update)} else {Output::CompactionCompleted {update,turn_id,item_id}});
+    }
     let (kind,title)=match item_type.as_str() {
         "commandExecution" => {string(item,"command")?; ("execute","Command execution")},
         "fileChange" => {
@@ -219,7 +226,7 @@ fn turn_event(method: &str, params: &BTreeMap<JsonString, Json>, thread_id: &str
         if status==TurnStatus::InProgress {return Err(OutputError::Invalid("terminal status"));}
         Ok(Output::TurnTerminal {update,turn_id,status})
     } else if status==TurnStatus::InProgress {
-        Ok(Output::Update(update))
+        Ok(Output::TurnStarted {update,turn_id})
     } else {Err(OutputError::Invalid("started status"))}
 }
 
@@ -337,11 +344,26 @@ mod tests {
     }
     #[test]
     fn turn_terminal_and_question_keep_separate_control_meanings() {
+        let started=b"{\"method\":\"turn/started\",\"params\":{\"threadId\":\"t\",\"turn\":{\"id\":\"v\",\"status\":\"inProgress\"}}}\n";
+        assert!(matches!(normalize(started,"t").unwrap(),Output::TurnStarted{turn_id,..} if turn_id=="v"));
         let terminal=b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"t\",\"turn\":{\"id\":\"v\",\"status\":\"completed\"}}}\n";
         assert!(matches!(normalize(terminal,"t").unwrap(),Output::TurnTerminal{turn_id,status:TurnStatus::Completed,..} if turn_id=="v"));
         let question=b"{\"id\":\"ask\",\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"t\",\"turnId\":\"v\",\"itemId\":\"i\",\"questions\":[{\"id\":\"q\",\"header\":\"Choose\",\"question\":\"Proceed?\"}]}}\n";
         assert!(matches!(normalize(question,"t").unwrap(),Output::Question(card) if card.thread_id=="t"));
         assert!(matches!(normalize(question,"other"),Err(OutputError::WrongThread)));
+    }
+    #[test]
+    fn compaction_completion_requires_its_native_item_and_thread() {
+        let completed=b"{\"method\":\"item/completed\",\"params\":{\"threadId\":\"t\",\"turnId\":\"v\",\"completedAtMs\":12,\"item\":{\"type\":\"contextCompaction\",\"id\":\"compact-item\"}}}\n";
+        let Output::CompactionCompleted {update,turn_id,item_id}=normalize(completed,"t").unwrap() else {panic!("original completion required");};
+        assert_eq!(turn_id,"v");assert_eq!(item_id,"compact-item");
+        assert!(update.update_json.contains("\"codexItemType\":\"contextCompaction\""));
+        assert!(matches!(normalize(completed,"other"),Err(OutputError::WrongThread)));
+        let started=String::from_utf8(completed.to_vec()).unwrap().replace("item/completed","item/started").replace("completedAtMs","startedAtMs");
+        assert!(matches!(normalize(started.as_bytes(),"t").unwrap(),Output::Update(_)),"submission/start is not completion");
+        let invalid=String::from_utf8(completed.to_vec()).unwrap().replace("\"completedAtMs\":12","\"completedAtMs\":-1");
+        assert!(normalize(invalid.as_bytes(),"t").is_err());
+        assert!(normalize(b"{\"id\":7,\"result\":{}}\n","t").is_err(),"a command ACK cannot normalize into a completed compaction");
     }
     #[test]
     fn usage_preserves_codex_counts_without_inventing_context_occupancy() {

@@ -353,9 +353,10 @@ impl<'root> ProductDatabase<'root> {
             }
             let output=codex_output::normalize(&raw.raw_bytes,&thread_id).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native output: {error:?}")))?;
-            let (update,terminal_turn)=match output {
-                Output::Update(update) => (update,None),
-                Output::TurnTerminal {update,turn_id,..} => (update,Some(turn_id)),
+            let (update,terminal_turn,started_turn)=match output {
+                Output::Update(update) | Output::CompactionCompleted {update,..} => (update,None,None),
+                Output::TurnStarted {update,turn_id} => (update,None,Some(turn_id)),
+                Output::TurnTerminal {update,turn_id,..} => (update,Some(turn_id),None),
                 Output::Question(card) => {
                     if self.native_sessions.get(key).and_then(|run|run.turn_id.as_deref())!=Some(card.turn_id.as_str()) {
                         // Questions may arrive before the matching turn/start
@@ -429,6 +430,9 @@ impl<'root> ProductDatabase<'root> {
             if let Some(turn_id)=terminal_turn {
                 let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
                 if run.turn_id.as_deref()==Some(turn_id.as_str()) {run.turn_id=None;}
+            }
+            if let Some(turn_id)=started_turn {
+                self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.turn_id=Some(turn_id);
             }
         }
         Ok(())
