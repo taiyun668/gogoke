@@ -1,9 +1,9 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "ACTIVE_RETAIN_ORIGINAL_STOP_PROOF_AND_VERIFY_CLOUD_GATE",
+  "state": "ACTIVE_DESKTOP_FIXTURE_COMPLETION_CORRECTION_NATIVE_GREEN",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "last_pushed_source": "f69f9dcf8eb60e6d714ae982ef92602adf1ce01f",
+  "last_pushed_source": "a65b27026f79de33b8773b5cbfcffab3725f3464",
   "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
   "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
   "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
@@ -437,5 +437,82 @@
       "focused-process-coordination.log": "beefc5bcf00e7a6c2b4a77643d0193d9e8ec6b739d71f6d936b1ea1dcaec3467"
     }
   },
-  "h_source_review_followup": "Reused NON_FRESH source review confirms injected history premise against fixed official sources; confirms C controls as synthetic database fences, not proof of production reachability for manual active-turn plus compound combination. No native mutation or acceptance claim."
+  "h_source_review_followup": "Reused NON_FRESH source review confirms injected history premise against fixed official sources; confirms C controls as synthetic database fences, not proof of production reachability for manual active-turn plus compound combination. No native mutation or acceptance claim.",
+  "installed_m1_entry_source": {
+    "source": "a65b27026f79de33b8773b5cbfcffab3725f3464",
+    "read_only_explorer": "Source lookup only; no installed invocation, native test or acceptance.",
+    "actual_entry": "Tauri gogoke_design37_user_operation({frame:string}) forwards exact bytes through verified retained native User pipe. ProductDatabase dispatch_user_frame verifies User origin before owner-configuration and owner-login parsing.",
+    "registration": "Codex settings Design37InstanceSection calls gogoke_design37_register_codex_instance; registration starts retained native host and install-state yields expected revision.",
+    "project_cap": {
+      "schema": "gogoke.37.owner-configuration.v1",
+      "command": "project-parallel-cap",
+      "domainId": "ACTUAL_TEST_PROJECT_DOMAIN",
+      "value": 4
+    },
+    "instance_cap": {
+      "schema": "gogoke.37.owner-configuration.v1",
+      "command": "instance-concurrency-cap",
+      "instanceId": "ACTUAL_REGISTERED_TEST_INSTANCE",
+      "value": 4
+    },
+    "owner_cap_basis": "Owner OT3 specifies both caps as 4; positive values persist on native Owner plane; no invented native default. Exact logical identities are resolved from installed test registration, not hardcoded as production identities.",
+    "login": "Codex settings begins owner-login.v1 with action begin, registered instance ID, original request ID and actual positive expectedRevision; native isolated CLI emits login instructions. Owner credentials are not read by host.",
+    "ui_limit": "Dedicated cap controls absent; cap User API is source-reachable. Installed setting invocation and actual login readiness remain NOT_RUN.",
+    "candidate_pr57": "OPEN_MAIN_ACTIVATION_PENDING_NO_MERGE_BY_CONTROLLER"
+  },
+  "native_a65_complete": {
+    "source": "a65b27026f79de33b8773b5cbfcffab3725f3464",
+    "run": 36721496556,
+    "artifact": 11102091830,
+    "focused_artifact": 11101515854,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562.0,
+      "passed": 562.0,
+      "failed": 0.0,
+      "skipped": 0.0
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0
+    },
+    "lpac_shim": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "hygiene_run": 36721500245,
+    "hygiene": "PASS",
+    "stop_observation": "Prior focused incomplete native stop proof did not recur; exact same proof requirement and stop budgets retained. No cause or stop-behavior repair claimed. New diagnostic remains available if it recurs.",
+    "scope": "CLOUD_WINDOWS_SERVER_NO_AUTHENTICATED_MODEL_OR_WIN11_ACCEPTANCE",
+    "sha256": {
+      "machine-result.json": "213efe66134a65e8f717500c1498804970702675a568b16af1a714c0c4780d6b",
+      "lib-tests.log": "a435ce898c8536a0d3e9d11bb113b076f157197c0c1b0e510afc3db3db5e8012",
+      "focused-native-codex-session-open.log": "e42e1af57ad73abb6a32dce886b77447e55f2729330074d02fb1ab20ac76df7d",
+      "focused-process-coordination.log": "645552aa24334a36eadd648175efd2c777ceebfebfab5b67454ec1a49c2d395b"
+    }
+  },
+  "desktop_a65_fixture_failure": {
+    "run": 36721500235,
+    "state": "FAIL_COMPLETE_NOT_PRODUCT_BROWSER_ASSERTION_FAILURE",
+    "browser_tests": {
+      "files": 146,
+      "passed": 1044,
+      "failed": 0
+    },
+    "failed_cloud_fixture": "Embedded uninstall finalizer fixture: WinError32 on lifecycle lock reuse, then tempfile cleanup share violation.",
+    "direct_cause": "Fixture treats terminal receipt as all handles released. Real script writes DELETED/FAILED before finally disposes resources; inherited lifecycle lock remains owned until finalizer releases it. The next fixture iteration or cleanup runs too early.",
+    "correction": "Use original existing terminal-receipt completion loop and unchanged deadline to additionally observe actual exclusive lifecycle lock release. One no-write OPEN_EXISTING query returns pending only for WinError32; other instrument errors fail explicitly. No new sleep, retry budget, product finalizer code, assertions or security settings changed.",
+    "new_fixture": "AST parse and public hygiene PASS; only cloud execution remains.",
+    "original_log_sha256": "1d7b89db7ca6692539d1aea2094dd95f2009cd9581e960cebf58e9bd19a1e2c7"
+  }
 }
