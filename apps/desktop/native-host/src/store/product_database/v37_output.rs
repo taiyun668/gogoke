@@ -188,9 +188,11 @@ impl<'root> ProductDatabase<'root> {
             &key.0,&seat_id,&key.1).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native output claim: {error:?}")))?
             .ok_or(OrchestrationError::AccessDenied)?;
-        if claim.generation!=generation {return Err(OrchestrationError::OperationConflict);}
         let revision=u64::try_from(claim.revision).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native output revision: {error}")))?;
+        if claim.generation!=generation {
+            return Ok(encode_receipt(request,V37Status::Conflict,revision,revision,Default::default()));
+        }
         if revision!=request.expected_revision {
             return Ok(encode_receipt(request,V37Status::Stale,revision,revision,Default::default()));
         }

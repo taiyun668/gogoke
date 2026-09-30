@@ -64,7 +64,7 @@ fn source_descriptor(source:&RawSourceRecord)->String {
         (JsonString::from_str("frameSha256"),Json::String(JsonString::from_str(&sha256_hex(&source.raw_bytes)))),
     ])).canonical()
 }
-fn read_source_descriptor(db:&VerifiedDatabaseConnection<'_>,domain:&str,card_id:&str)
+pub(super) fn read_source_descriptor(db:&VerifiedDatabaseConnection<'_>,domain:&str,card_id:&str)
     ->Result<(RawSourceKey,String)> {
     let q=Statement::prepare(db.as_ptr(),
         "SELECT request_hex FROM main.gogoke_v37_qcard_native_operations
@@ -102,6 +102,9 @@ fn native_binding_present(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCar
     -> std::result::Result<bool,InboxError> {
     let q=Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_h_claim h
+         JOIN main.gogoke_v37_h_process_episode p ON p.process_operation_id=h.process_operation_id
+           AND p.domain_id=h.domain_id AND p.session_id=h.session_id AND p.generation=h.generation
+           AND p.phase IN ('ACTIVE','UNKNOWN')
          JOIN main.gogoke_coordination_process_custody c ON c.operation_id=h.process_operation_id
            AND c.domain_id=h.domain_id AND c.generation=h.generation
          JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id
@@ -185,22 +188,22 @@ fn recovered_card_present(db:&VerifiedDatabaseConnection<'_>,key:&(String,String
     if card_identity(&key.0,&key.1,&source_key).0!=card_id {return Ok(false);}
     let h=Statement::prepare(db.as_ptr(),
         "SELECT h.process_operation_id,c.ticket,c.custodian_nonce
-         FROM main.gogoke_v37_h_claim h
+         FROM main.gogoke_v37_h_process_episode h
          JOIN main.gogoke_coordination_process_custody c
            ON c.operation_id=h.process_operation_id AND c.domain_id=h.domain_id
            AND c.generation=h.generation
          JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id
            AND b.instance_id=h.instance_id AND b.domain_id=h.domain_id
            AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation
-         JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id
-           AND sb.session_id=h.session_id AND sb.generation=h.generation
-         JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
-           AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation
+         JOIN main.gogoke_v37_seats e ON e.domain_id=h.domain_id AND e.seat_id=h.seat_id
+           AND e.incarnation=h.seat_incarnation
            AND e.instance_id=h.instance_id AND e.state IN ('BUSY','IDLE')
-         WHERE h.domain_id=?1 AND h.session_id=?2 AND sb.seat_id=?3
+         WHERE h.domain_id=?1 AND h.session_id=?2 AND h.seat_id=?3
            AND h.generation=?4 AND h.process_operation_id=?5
-           AND ((h.state='COMMITTED' AND b.state='ACTIVE')
-                OR (h.state IN ('UNKNOWN','STOPPED','RELEASED')
+           AND ((h.phase IN ('PREPARED','ACTIVE','UNKNOWN') AND b.state='ACTIVE'
+                  AND (c.state IN ('ACTIVE','UNKNOWN')
+                    OR (c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL)))
+                OR (h.phase='STOPPED' AND c.state='STOPPED' AND h.stop_fact_id=c.stop_proof_hash
                     AND b.state IN ('ACTIVE','REVOKED')))")?;
     for (index,value) in [key.0.as_str(),key.1.as_str(),seat.as_str(),generation.as_str(),
         source_key.operation_id.as_str()].iter().enumerate() {

@@ -1,6 +1,7 @@
 //! Native-only Design 37 request framing. The existing Node service pipe stays unwired.
 mod wire;
 mod admission;
+mod episodes;
 mod journal;
 mod seat_io;
 pub(crate) mod launch;
@@ -29,3 +30,5 @@ pub(crate) use admission::{initialize_admission_schema, bind_owner_in_transactio
     record_session_stop_in_transaction,
     revoke_owner_binding_in_transaction, AdmissionError, AdmissionRequest,
     AdmissionResult, OwnerBinding, TrustedLimits};
+pub(crate) use episodes::{record_initial, mark_active, begin_resume,
+    attach_resume_process, mark_resume_unknown, promote_resume};

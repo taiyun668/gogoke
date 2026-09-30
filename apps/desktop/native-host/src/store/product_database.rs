@@ -40,6 +40,9 @@ mod v37_runtime;
 mod v37_output;
 mod v37_qcard;
 mod v37_qcard_user;
+mod v37_ledger_user;
+mod v37_inbox;
+mod v37_capability;
 mod v37_login;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
@@ -219,6 +222,8 @@ impl<'root> ProductDatabase<'root> {
         if request.family == "K-SEAT" { return self.dispatch_user_seat(request); }
         if request.family == "K-SESSION" { return self.dispatch_user_session(request); }
         if request.family == "K-QCARD" { return self.dispatch_user_qcard(request); }
+        if request.family == "K-LEDGER" { return self.dispatch_user_ledger(request); }
+        if request.family == "K-INBOX" { return self.dispatch_native_inbox(request); }
         if request.family == "K-WORKTREE" { return self.dispatch_user_worktree(request); }
         if request.family == "K-INSTANCE" {
             return match request.operation.as_str() {

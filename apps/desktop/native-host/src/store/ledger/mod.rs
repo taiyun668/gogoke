@@ -352,9 +352,9 @@ fn h_source_binding(
     let statement = Statement::prepare(
         connection.as_ptr(),
         "SELECT a.domain_id, a.session_id, a.generation,
-                c.ticket, c.custodian_nonce, a.state, c.state,
+                c.ticket, c.custodian_nonce, a.phase, c.state,
                 COALESCE(a.stop_fact_id, ''), COALESCE(c.stop_proof_hash, '')
-         FROM main.gogoke_v37_h_claim AS a
+         FROM main.gogoke_v37_h_process_episode AS a
          JOIN main.gogoke_coordination_process_custody AS c
            ON c.operation_id = a.process_operation_id
           AND c.domain_id = a.domain_id
@@ -376,23 +376,30 @@ fn h_source_binding(
     let custody_state = statement.column_text(6)?;
     let claim_stop_fact = statement.column_text(7)?;
     let custody_stop_proof = statement.column_text(8)?;
-    let released_recovery = expected.is_some()
-        && claim_state == "RELEASED"
-        && custody_state == "STOPPED"
-        && !claim_stop_fact.is_empty()
-        && claim_stop_fact == custody_stop_proof;
+    let stopped_recovery = expected.is_some()
+        && claim_state == "STOPPED" && custody_state == "STOPPED"
+        && !claim_stop_fact.is_empty() && claim_stop_fact == custody_stop_proof;
+    // The custodian may have committed its exact stop proof while H's stop
+    // receipt transaction rolled back. Previously captured bytes still need
+    // their original A resolution before that same stop request can finish.
+    let stopped_before_h_receipt = expected.is_some()
+        && matches!(claim_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN")
+        && custody_state == "STOPPED" && !custody_stop_proof.is_empty()
+        && claim_stop_fact.is_empty();
     let state_ok = if recovery {
         matches!(
             (claim_state.as_str(), custody_state.as_str()),
-            ("COMMITTED", "ACTIVE" | "UNKNOWN")
+            ("PREPARED" | "ACTIVE", "ACTIVE" | "UNKNOWN")
                 | ("UNKNOWN", "UNKNOWN" | "STOPPED")
-                | ("STOPPED", "STOPPED")
-        ) || released_recovery
+        ) || stopped_recovery || stopped_before_h_receipt
     } else {
         // A held native stdout object still proves its original source when
         // an uncertain input/commit fenced current custody. This permits
         // saving facts, never another input or a launch after restart.
-        claim_state == "COMMITTED" && matches!(custody_state.as_str(),"ACTIVE"|"UNKNOWN")
+        (matches!(claim_state.as_str(),"PREPARED"|"ACTIVE")
+            && matches!(custody_state.as_str(),"ACTIVE"|"UNKNOWN"))
+            || (claim_state=="UNKNOWN" && custody_state=="UNKNOWN"
+                && frame.is_some())
     };
     if !state_ok || statement.step_row()? {
         return Err(AtomicError::OperationConflict);
@@ -1643,6 +1650,10 @@ pub(crate) mod tests {
                 process_operation_id TEXT UNIQUE,
                 stop_fact_id TEXT,
                 PRIMARY KEY(domain_id, session_id)
+            ) STRICT;
+            CREATE TABLE gogoke_v37_h_process_episode(
+                domain_id TEXT NOT NULL,session_id TEXT NOT NULL,generation TEXT NOT NULL,
+                process_operation_id TEXT UNIQUE,phase TEXT NOT NULL,stop_fact_id TEXT
             ) STRICT",
         )
         .expect("H raw source fixture schema");
@@ -1708,7 +1719,12 @@ pub(crate) mod tests {
                   generation, state, revision, process_operation_id)
                  VALUES ('{}', '{}', 'instance-raw', 'home-raw',
                          'binding-raw-{operation_id}', '1', 'COMMITTED', 1,
-                         '{operation_id}')",
+                          '{operation_id}');
+                  INSERT INTO gogoke_v37_h_process_episode
+                  (domain_id,session_id,generation,process_operation_id,phase)
+                  VALUES ('{}','{}','1','{operation_id}','ACTIVE')",
+                registration.domain_id,
+                registration.session_id,
                 registration.domain_id,
                 registration.session_id,
                 registration.domain_id,
@@ -2191,12 +2207,15 @@ pub(crate) mod tests {
              WHERE operation_id = 'operation-recovery';
              UPDATE gogoke_v37_h_claim
              SET state = 'RELEASED', stop_fact_id = 'proof-recovery'
-             WHERE process_operation_id = 'operation-recovery'",
+              WHERE process_operation_id = 'operation-recovery';
+              UPDATE gogoke_v37_h_process_episode
+              SET phase = 'STOPPED', stop_fact_id = 'proof-recovery'
+              WHERE process_operation_id = 'operation-recovery'",
         )
         .expect("simulate durable stop followed by H release");
         exec(
             &mut connection,
-            "UPDATE gogoke_v37_h_claim
+            "UPDATE gogoke_v37_h_process_episode
              SET stop_fact_id = 'different-proof'
              WHERE process_operation_id = 'operation-recovery'",
         )
@@ -2212,7 +2231,7 @@ pub(crate) mod tests {
         ));
         exec(
             &mut connection,
-            "UPDATE gogoke_v37_h_claim
+            "UPDATE gogoke_v37_h_process_episode
              SET stop_fact_id = 'proof-recovery'
              WHERE process_operation_id = 'operation-recovery'",
         )

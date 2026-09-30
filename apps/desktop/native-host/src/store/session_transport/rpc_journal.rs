@@ -73,6 +73,13 @@ fn hex(value: &[u8]) -> String {
     }
     result
 }
+fn unhex(value: &str) -> Result<Vec<u8>> {
+    if value.len()%2!=0 {return Err(RpcJournalError::Invalid("raw source hex"));}
+    value.as_bytes().chunks_exact(2).map(|pair| {
+        let text=std::str::from_utf8(pair).map_err(|_|RpcJournalError::Invalid("raw source hex"))?;
+        u8::from_str_radix(text,16).map_err(|_|RpcJournalError::Invalid("raw source hex"))
+    }).collect()
+}
 fn requires_response(command: &Command) -> bool {
     !matches!(
         command,
@@ -226,12 +233,309 @@ fn has_unresolved(
     db: &VerifiedDatabaseConnection<'_>,
     domain: &str,
     session: &str,
+    operation: &str,
 ) -> Result<bool> {
     let q=Statement::prepare(db.as_ptr(),
-        "SELECT 1 FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND (phase IN ('INTENT','UNKNOWN') OR (phase='WRITTEN' AND requires_response=1)) LIMIT 1")?;
+        "SELECT 1 FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2
+           AND process_operation_id=?3
+           AND (phase IN ('INTENT','UNKNOWN') OR (phase='WRITTEN' AND requires_response=1)) LIMIT 1")?;
     q.bind_text(1, domain)?;
     q.bind_text(2, session)?;
+    q.bind_text(3, operation)?;
     Ok(q.step_row()?)
+}
+
+fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
+    required_state: &[&str]) -> Result<Option<String>> {
+    if !has_process_episode_schema(db)? {return Ok(None);}
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT e.process_operation_id,c.state,e.phase
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+             AND c.generation=e.generation
+           JOIN main.gogoke_v37_h_claim a
+             ON a.domain_id=e.domain_id AND a.session_id=e.session_id
+             AND a.generation=e.old_generation AND a.state='STOPPED'
+           JOIN main.gogoke_coordination_process_custody oldc
+             ON oldc.operation_id=a.process_operation_id AND oldc.domain_id=a.domain_id
+             AND oldc.generation=a.generation AND oldc.state='STOPPED'
+             AND oldc.stop_proof_hash=a.stop_fact_id AND a.stop_fact_id IS NOT NULL
+           JOIN main.gogoke_v37_h_seat_binding sb
+             ON sb.domain_id=a.domain_id AND sb.session_id=a.session_id
+             AND sb.generation=a.generation AND sb.seat_id=e.seat_id
+             AND sb.seat_incarnation=e.seat_incarnation
+           JOIN main.gogoke_v37_seats s
+             ON s.domain_id=sb.domain_id AND s.seat_id=sb.seat_id
+             AND s.incarnation=sb.seat_incarnation
+             AND CAST(s.generation AS TEXT)=sb.generation AND s.state='BUSY'
+             AND s.instance_id=a.instance_id
+           JOIN main.gogoke_v37_h_owner_binding b
+             ON b.binding_id=e.binding_id AND b.instance_id=e.instance_id
+             AND b.domain_id=e.domain_id AND b.owner_id=e.session_id
+             AND b.generation=e.generation AND b.kind='SESSION' AND b.state='ACTIVE'
+           JOIN main.gogoke_v37_instance_homes h
+             ON h.home_id=e.home_id AND h.instance_id=e.instance_id
+             AND h.domain_id=e.domain_id AND h.owner_id=e.session_id
+             AND h.generation=e.generation AND h.kind='SESSION' AND h.state='ACTIVE'
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+             AND i.driver_id='codex' AND i.version='0.149.0'
+             AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN'
+             AND i.program_digest=c.binary_digest_sha256
+             AND i.program_digest=oldc.binary_digest_sha256
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+            AND e.generation=?4 AND e.old_generation IS NOT NULL
+            AND e.process_operation_id IS NOT NULL
+            AND c.ticket=?5 AND c.custodian_nonce=?6 AND c.pid=?7
+            AND c.creation_time_100ns=?8 AND c.image_path=?9
+            AND c.binary_digest_sha256=?10 AND c.profile_id=?11
+            AND e.instance_id=a.instance_id")?;
+    let c=step.custody;
+    let pid=c.identity.pid.to_string();
+    let time=c.identity.creation_time_100ns.to_string();
+    let image=c.identity.image_path.to_string_lossy().into_owned();
+    for (index,value) in [step.domain_id,step.session_id,step.open_request_id,
+        c.binding.generation.as_str(),c.ticket.opaque(),c.custodian_nonce.as_str(),
+        pid.as_str(),time.as_str(),image.as_str(),c.binding.binary_digest_sha256.as_str(),
+        c.binding.profile_id.as_str()].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? { return Ok(None); }
+    let operation=q.column_text(0)?;
+    let state=q.column_text(1)?;
+    let phase=q.column_text(2)?;
+    let observation_of_unknown=phase=="UNKNOWN" && required_state.contains(&"UNKNOWN");
+    if q.step_row()? || !required_state.contains(&state.as_str())
+        || !(matches!(phase.as_str(),"PREPARED"|"ACTIVE") || observation_of_unknown) {
+        return Err(RpcJournalError::Denied);
+    }
+    if !matches!(step.command,Command::Initialize { .. }|Command::Initialized
+        |Command::ConfigRead { .. }|Command::ThreadResume { .. }) {
+        return Err(RpcJournalError::Denied);
+    }
+    Ok(Some(operation))
+}
+
+fn has_process_episode_schema(db: &VerifiedDatabaseConnection<'_>) -> Result<bool> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.sqlite_schema WHERE type='table'
+          AND name='gogoke_v37_h_process_episode'")?;
+    Ok(q.step_row()?)
+}
+
+/// A native-only proof that a prepared C steer has no H writer step and that
+/// A captured the exact terminal notification from this same live process.
+/// The caller must hold BEGIN IMMEDIATE through its C state transition.
+#[derive(Debug)]
+pub(crate) struct ConfirmedTurnEnd {
+    pub(crate) source_epoch: String,
+    pub(crate) source_cursor: String,
+}
+
+pub(crate) fn confirm_turn_ended_without_step_in_transaction(
+    db: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str,
+    generation: &str, process_operation_id: &str, ticket: &str,
+    custodian_nonce: &str, step_id: &str, thread_id: &str, turn_id: &str,
+) -> Result<Option<ConfirmedTurnEnd>> {
+    for (value,name) in [(domain,"domain"),(session,"session"),
+        (generation,"generation"),(process_operation_id,"process operation"),
+        (ticket,"ticket"),(custodian_nonce,"nonce"),(step_id,"step"),
+        (thread_id,"thread"),(turn_id,"turn")] {
+        if !atom(value) {return Err(RpcJournalError::Invalid(name));}
+    }
+    let step=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND step_id=?3 LIMIT 1")?;
+    step.bind_text(1,domain)?;step.bind_text(2,session)?;step.bind_text(3,step_id)?;
+    if step.step_row()? {return Ok(None);}
+    let source=Statement::prepare(db.as_ptr(),
+        "SELECT r.source_epoch,r.source_cursor,hex(r.raw_bytes)
+           FROM main.v37_ledger_raw_source r
+           JOIN main.gogoke_v37_h_claim a
+             ON a.process_operation_id=r.operation_id AND a.domain_id=r.domain_id
+             AND a.session_id=r.session_id AND a.generation=r.generation
+             AND a.state='COMMITTED'
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=r.operation_id AND c.domain_id=r.domain_id
+             AND c.generation=r.generation AND c.ticket=r.process_ticket
+             AND c.custodian_nonce=r.custodian_nonce AND c.state='ACTIVE'
+          WHERE r.domain_id=?1 AND r.session_id=?2 AND r.generation=?3
+            AND r.operation_id=?4 AND r.process_ticket=?5
+            AND r.custodian_nonce=?6 AND r.state='RESOLVED'
+          ORDER BY CAST(r.source_cursor AS INTEGER) DESC")?;
+    for (index,value) in [domain,session,generation,process_operation_id,
+        ticket,custodian_nonce].iter().enumerate() {
+        source.bind_text((index+1) as i32,value)?;
+    }
+    while source.step_row()? {
+        let epoch=source.column_text(0)?;
+        let cursor=source.column_text(1)?;
+        let bytes=unhex(&source.column_text(2)?)?;
+        if let Ok(Reply::TurnNotification {thread_id:found_thread,turn_id:found_turn,
+            status,..})=codex_rpc::decode(&bytes,None) {
+            if found_thread==thread_id && found_turn==turn_id
+                && status!=codex_rpc::TurnStatus::InProgress {
+                return Ok(Some(ConfirmedTurnEnd {source_epoch:epoch,source_cursor:cursor}));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Reconstruct this generation's provider thread only from its original H
+/// command and the exact A response of the same physical process. It works
+/// after the current claim advances to another generation.
+pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
+    domain: &str, session: &str, process_operation_id: &str,
+    generation: &str, open_request_id: &str, ticket: &str,
+    custodian_nonce: &str) -> Result<String> {
+    for (value,name) in [(domain,"domain"),(session,"session"),
+        (process_operation_id,"process operation"),(generation,"generation"),
+        (open_request_id,"open request"),(ticket,"ticket"),
+        (custodian_nonce,"nonce")] {
+        if !atom(value) {return Err(RpcJournalError::Invalid(name));}
+    }
+    let step_id=if let Some(older)=generation_episode_old(db,domain,session,
+        process_operation_id,generation,open_request_id)? {
+        if older {format!("{process_operation_id}-thread-resume")}
+        else {"thread-start".to_owned()}
+    } else {return Err(RpcJournalError::Denied)};
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes)
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+             AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+             AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+             AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+             AND r.generation=s.generation
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=s.process_operation_id AND c.domain_id=s.domain_id
+             AND c.generation=s.generation AND c.ticket=s.ticket
+             AND c.custodian_nonce=s.custodian_nonce
+          WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+            AND s.generation=?4 AND s.open_request_id=?5 AND s.ticket=?6
+            AND s.custodian_nonce=?7 AND s.step_id=?8 AND s.phase='OBSERVED'
+            AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
+    for (index,value) in [domain,session,process_operation_id,generation,
+        open_request_id,ticket,custodian_nonce,step_id.as_str()].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Err(RpcJournalError::Denied);}
+    let command=unhex(&q.column_text(0)?)?;
+    let response=unhex(&q.column_text(1)?)?;
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}
+    let thread=if step_id=="thread-start" {
+        codex_rpc::decode_stored_thread_start(&command,&response)?
+    } else {
+        codex_rpc::decode_stored_thread_resume(&command,&response)?
+    };
+    Ok(thread)
+}
+
+fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+    session: &str, operation: &str, generation: &str,
+    request_id: &str) -> Result<Option<bool>> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT CASE WHEN e.old_generation IS NULL THEN '0' ELSE '1' END
+           FROM main.gogoke_v37_h_generation g
+           JOIN main.gogoke_v37_h_process_episode e
+             ON e.domain_id=g.domain_id AND e.request_id=g.request_id
+             AND e.session_id=g.session_id AND e.generation=g.generation
+             AND e.process_operation_id=g.process_operation_id
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+             AND c.generation=e.generation
+          WHERE g.domain_id=?1 AND g.session_id=?2 AND g.process_operation_id=?3
+            AND g.generation=?4 AND g.request_id=?5
+            AND ((e.phase='STOPPED' AND c.state='STOPPED'
+                   AND e.stop_fact_id=c.stop_proof_hash AND e.stop_fact_id IS NOT NULL)
+              OR (e.phase='ACTIVE' AND c.state IN ('ACTIVE','UNKNOWN')))")?;
+    for (index,value) in [domain,session,operation,generation,request_id].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Ok(None);}
+    let old=q.column_text(0)?=="1";
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}
+    Ok(Some(old))
+}
+
+/// Complete only a command already WRITTEN whose original process bytes A
+/// captured before H lost the response commit. It never writes native stdin.
+pub(crate) fn reconcile_written_resume_from_a(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    domain: &str, session: &str, request_id: &str,
+    raw_request: &[u8], operation: &str, generation: &str,
+) -> Result<Option<String>> {
+    for (value,name) in [(domain,"domain"),(session,"session"),
+        (request_id,"request"),(operation,"operation"),(generation,"generation")] {
+        if !atom(value) {return Err(RpcJournalError::Invalid(name));}
+    }
+    let step_id=format!("{operation}-thread-resume");
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        let step=Statement::prepare(db.as_ptr(),
+            "SELECT s.command_hex,s.ticket,s.custodian_nonce
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.gogoke_v37_h_process_episode e
+                 ON e.domain_id=s.domain_id AND e.session_id=s.session_id
+                 AND e.generation=s.generation AND e.process_operation_id=s.process_operation_id
+                 AND e.request_id=s.open_request_id
+               JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
+                 AND a.session_id=e.session_id AND a.generation=e.old_generation
+                 AND a.state='STOPPED' AND a.stop_fact_id IS NOT NULL
+               JOIN main.gogoke_coordination_process_custody oldc
+                 ON oldc.operation_id=a.process_operation_id AND oldc.domain_id=a.domain_id
+                 AND oldc.generation=a.generation AND oldc.state='STOPPED'
+                 AND oldc.stop_proof_hash=a.stop_fact_id
+               JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=s.process_operation_id AND c.domain_id=s.domain_id
+                 AND c.generation=s.generation AND c.ticket=s.ticket
+                 AND c.custodian_nonce=s.custodian_nonce
+                 AND c.state IN ('ACTIVE','UNKNOWN')
+                 AND c.binary_digest_sha256=oldc.binary_digest_sha256
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.open_request_id=?3
+                AND s.process_operation_id=?4 AND s.generation=?5 AND s.step_id=?6
+                AND s.phase='WRITTEN' AND s.requires_response=1
+                AND e.raw_hex=?7 AND e.phase IN ('PREPARED','UNKNOWN')")?;
+        let original=hex(raw_request);
+        for (index,value) in [domain,session,request_id,operation,generation,
+            step_id.as_str(),original.as_str()].iter().enumerate() {
+            step.bind_text((index+1) as i32,value)?;
+        }
+        if !step.step_row()? {return Ok(None);}
+        let command=unhex(&step.column_text(0)?)?;
+        let ticket=step.column_text(1)?;
+        let nonce=step.column_text(2)?;
+        if step.step_row()? {return Err(RpcJournalError::Conflict);}
+        drop(step);
+        let source=Statement::prepare(db.as_ptr(),
+            "SELECT source_epoch,source_cursor,hex(raw_bytes)
+               FROM main.v37_ledger_raw_source
+              WHERE operation_id=?1 AND domain_id=?2 AND session_id=?3
+                AND generation=?4 AND process_ticket=?5 AND custodian_nonce=?6
+                AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;
+        for (index,value) in [operation,domain,session,generation,ticket.as_str(),
+            nonce.as_str()].iter().enumerate() {
+            source.bind_text((index+1) as i32,value)?;
+        }
+        let mut matched:Option<(String,String,Option<String>)>=None;
+        while source.step_row()? {
+            let bytes=unhex(&source.column_text(2)?)?;
+            let thread=match codex_rpc::decode_stored_thread_resume(&command,&bytes) {
+                Ok(thread)=>Some(thread),
+                Err(codex_rpc::RpcError::RemoteResponse(_))=>None,
+                Err(_)=>continue,
+            };
+            if matched.is_some() {return Err(RpcJournalError::Conflict);}
+            matched=Some((source.column_text(0)?,source.column_text(1)?,thread));
+        }
+        drop(source);
+        let Some((epoch,cursor,thread))=matched else {return Ok(None)};
+        let key=RawSourceKey {operation_id:operation.to_owned(),source_epoch:epoch,
+            source_cursor:cursor};
+        persist_observation_and_no_event(db,domain,session,&step_id,operation,&key)?;
+        Ok(thread)
+    })
 }
 
 fn assert_native_binding(
@@ -240,6 +544,9 @@ fn assert_native_binding(
     required_state: &[&str],
     allow_unknown_claim: bool,
 ) -> Result<String> {
+    if let Some(operation)=candidate_binding(db,step,required_state)? {
+        return Ok(operation);
+    }
     let c = step.custody;
     if c.binding.domain_id != step.domain_id
         || !atom(&c.binding.generation)
@@ -320,6 +627,22 @@ fn original_open(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>) -> Result
     if !raw(step.open_request_bytes) {
         return Err(RpcJournalError::Invalid("open request bytes"));
     }
+    if has_process_episode_schema(db)? {
+    let candidate=Statement::prepare(db.as_ptr(),
+        "SELECT raw_hex FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id=?1 AND session_id=?2 AND request_id=?3
+            AND old_generation IS NOT NULL AND generation=?4")?;
+    for (index,value) in [step.domain_id,step.session_id,step.open_request_id,
+        step.custody.binding.generation.as_str()].iter().enumerate() {
+        candidate.bind_text((index+1) as i32,value)?;
+    }
+    if candidate.step_row()? {
+        if candidate.column_text(0)?!=hex(step.open_request_bytes) || candidate.step_row()? {
+            return Err(RpcJournalError::Denied);
+        }
+        return Ok(());
+    }
+    }
     let q=Statement::prepare(db.as_ptr(),
         "SELECT raw_hex,session_id,status FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2 AND operation='open'")?;
     q.bind_text(1, step.domain_id)?;
@@ -364,7 +687,7 @@ pub(crate) fn prepare(
                 disposition: Disposition::Existing(phase),
             });
         }
-        if has_unresolved(db, step.domain_id, step.session_id)? {
+        if has_unresolved(db, step.domain_id, step.session_id, &operation)? {
             return Err(RpcJournalError::Unknown);
         }
         let q=Statement::prepare(db.as_ptr(),
@@ -597,6 +920,7 @@ pub(crate) fn complete_response(
             | Reply::Thread { .. }
             | Reply::Turn { .. }
             | Reply::Ack { .. }
+            | Reply::FeaturePage { .. }
             | Reply::RemoteError { .. }
     ) {
         return Err(RpcJournalError::Invalid("not a response"));
@@ -605,7 +929,7 @@ pub(crate) fn complete_response(
     transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         original_open(db, step)?;
-        let operation = assert_native_binding(db, step, &["ACTIVE"], false)?;
+        let operation = assert_native_binding(db, step, &["ACTIVE","UNKNOWN"], false)?;
         source_matches(db, frame, key, &operation, step)?;
         if !matches!(
             same_row(db, step, &operation, &encoded)?,

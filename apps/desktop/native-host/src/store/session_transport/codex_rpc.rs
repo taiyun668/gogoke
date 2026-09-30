@@ -38,6 +38,7 @@ pub(crate) enum RpcError {
     FrameTooLarge,
     PartialFrame,
     WrongId,
+    RemoteResponse(Vec<u8>),
     Json(AtomicError),
     Utf8(std::str::Utf8Error),
 }
@@ -64,6 +65,10 @@ pub(crate) enum Command {
     ConfigRead {
         cwd: String,
     },
+    FeatureList {
+        thread_id: String,
+        cursor: Option<String>,
+    },
     ThreadStart {
         cwd: String,
         model: String,
@@ -89,6 +94,15 @@ pub(crate) enum Command {
         thread_id: String,
         turn_id: String,
     },
+    /// Appends one user-role message to model-visible history without a turn.
+    AppendWithoutTurn {
+        thread_id: String,
+        text: String,
+    },
+    /// The empty RPC response means submitted; completion is a later item event.
+    ThreadCompactStart {
+        thread_id: String,
+    },
     QuestionAnswer {
         request_id: RpcId,
         answers: BTreeMap<String, Vec<String>>,
@@ -101,11 +115,14 @@ impl Command {
             Self::Initialize { .. } => Some("initialize"),
             Self::Initialized => Some("initialized"),
             Self::ConfigRead { .. } => Some("config/read"),
+            Self::FeatureList { .. } => Some("experimentalFeature/list"),
             Self::ThreadStart { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
             Self::TurnStart { .. } => Some("turn/start"),
             Self::TurnSteer { .. } => Some("turn/steer"),
             Self::TurnInterrupt { .. } => Some("turn/interrupt"),
+            Self::AppendWithoutTurn { .. } => Some("thread/inject_items"),
+            Self::ThreadCompactStart { .. } => Some("thread/compact/start"),
             Self::QuestionAnswer { .. } => None,
         }
     }
@@ -184,6 +201,15 @@ impl Command {
                 required(cwd, "cwd")?;
                 return Ok(obj([("cwd", s(cwd)), ("includeLayers", Json::Bool(true))]));
             }
+            Self::FeatureList {thread_id,cursor} => {
+                required(thread_id,"feature thread id")?;
+                if let Some(cursor)=cursor {required(cursor,"feature cursor")?;}
+                return Ok(obj([
+                    ("threadId",s(thread_id)),
+                    ("cursor",cursor.as_deref().map_or(Json::Null,s)),
+                    ("limit",Json::Number("32".into())),
+                ]));
+            }
             Self::ThreadStart { cwd, model } => {
                 required(cwd, "cwd")?;
                 required(model, "model")?;
@@ -252,6 +278,25 @@ impl Command {
                 required(turn_id, "turn id")?;
                 return Ok(obj([("threadId", s(thread_id)), ("turnId", s(turn_id))]));
             }
+            Self::AppendWithoutTurn { thread_id, text } => {
+                required(thread_id, "thread id")?;
+                required(text, "text")?;
+                return Ok(obj([
+                    ("threadId", s(thread_id)),
+                    ("items", Json::Array(vec![obj([
+                        ("type", s("message")),
+                        ("role", s("user")),
+                        ("content", Json::Array(vec![obj([
+                            ("type", s("input_text")),
+                            ("text", s(text)),
+                        ])])),
+                    ])])),
+                ]));
+            }
+            Self::ThreadCompactStart { thread_id } => {
+                required(thread_id, "thread id")?;
+                return Ok(obj([("threadId", s(thread_id))]));
+            }
             Self::QuestionAnswer { .. } => return Err(RpcError::Invalid("question answer params")),
         }
     }
@@ -282,6 +327,7 @@ pub(crate) struct QuestionCard {
     pub(crate) turn_id: String,
     pub(crate) item_id: String,
     pub(crate) auto_resolution_ms: Option<u64>,
+    pub(crate) is_blocking: Option<bool>,
     pub(crate) questions: Vec<Question>,
 }
 impl QuestionCard {
@@ -359,6 +405,11 @@ pub(crate) enum Reply {
         raw_frame: Vec<u8>,
     },
     Question(QuestionCard),
+    FeaturePage {
+        id: RpcId,
+        features: Vec<(String,bool)>,
+        next_cursor: Option<String>,
+    },
 }
 
 pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Result<Reply, RpcError> {
@@ -487,6 +538,29 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
             }
             Ok(Reply::Ack { id })
         }
+        Command::AppendWithoutTurn { .. } | Command::ThreadCompactStart { .. } => {
+            if !object(result, "empty command result")?.is_empty() {
+                return Err(RpcError::Invalid("empty command result"));
+            }
+            Ok(Reply::Ack { id })
+        }
+        Command::FeatureList {..} => {
+            let result=object(result,"feature result")?;
+            let Json::Array(data)=field(result,"data")? else {return Err(RpcError::Invalid("feature data"));};
+            let mut features=Vec::new();let mut seen=BTreeSet::new();
+            for feature in data {
+                let feature=object(feature,"feature")?;
+                let name=string(field(feature,"name")?,"feature name")?;
+                if !seen.insert(name.clone()) {return Err(RpcError::Invalid("duplicate feature name"));}
+                let Json::Bool(enabled)=field(feature,"enabled")? else {return Err(RpcError::Invalid("feature enabled"));};
+                features.push((name,*enabled));
+            }
+            let next_cursor=match field(result,"nextCursor")? {
+                Json::Null=>None,
+                value=>Some(string(value,"feature next cursor")?),
+            };
+            Ok(Reply::FeaturePage {id,features,next_cursor})
+        }
         Command::Initialized | Command::QuestionAnswer { .. } => {
             Err(RpcError::Invalid("unexpected response"))
         }
@@ -519,6 +593,35 @@ pub(crate) fn decode_stored_thread_start(
     match decode(response_frame, Some((&id, &command)))? {
         Reply::Thread { thread_id, .. } => Ok(thread_id),
         _ => Err(RpcError::Invalid("stored thread response")),
+    }
+}
+
+/// Resume proof is the original canonical command bytes plus its matching
+/// native response. Recreating a command from later strings is not proof.
+pub(crate) fn decode_stored_thread_resume(
+    command_frame: &[u8],
+    response_frame: &[u8],
+) -> Result<String, RpcError> {
+    let Json::Object(fields) = Parser::parse(std::str::from_utf8(frame_body(command_frame)?)?)? else {
+        return Err(RpcError::Invalid("stored resume command"));
+    };
+    if fields.len() != 3 || string(field(&fields, "method")?, "method")? != "thread/resume" {
+        return Err(RpcError::Invalid("stored resume method"));
+    }
+    let id = parse_id(field(&fields, "id")?)?;
+    let params = object(field(&fields, "params")?, "resume params")?;
+    let command = Command::ThreadResume {
+        thread_id: string(field(params, "threadId")?, "thread id")?,
+        cwd: string(field(params, "cwd")?, "thread cwd")?,
+        model: string(field(params, "model")?, "thread model")?,
+    };
+    if command.encode(Some(&id))? != command_frame {
+        return Err(RpcError::Invalid("stored resume command mismatch"));
+    }
+    match decode(response_frame, Some((&id, &command)))? {
+        Reply::Thread { thread_id, .. } => Ok(thread_id),
+        Reply::RemoteError { raw_frame, .. } => Err(RpcError::RemoteResponse(raw_frame)),
+        _ => Err(RpcError::Invalid("stored resume response")),
     }
 }
 
@@ -558,6 +661,11 @@ fn parse_question(id: RpcId, params: Option<&Json>) -> Result<QuestionCard, RpcE
     let thread_id = string(field(params, "threadId")?, "thread id")?;
     let turn_id = string(field(params, "turnId")?, "turn id")?;
     let item_id = string(field(params, "itemId")?, "item id")?;
+    let is_blocking=match params.get(&k("isBlocking")) {
+        None|Some(Json::Null)=>None,
+        Some(Json::Bool(value))=>Some(*value),
+        _=>return Err(RpcError::Invalid("isBlocking")),
+    };
     let auto_resolution_ms = match params.get(&k("autoResolutionMs")) {
         None | Some(Json::Null) => None,
         Some(Json::Number(value)) => {
@@ -620,6 +728,7 @@ fn parse_question(id: RpcId, params: Option<&Json>) -> Result<QuestionCard, RpcE
         turn_id,
         item_id,
         auto_resolution_ms,
+        is_blocking,
         questions,
     })
 }
@@ -817,6 +926,102 @@ fn optional_bool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loaded_thread_feature_pages_keep_the_original_rpc_and_opaque_cursor() {
+        let id=RpcId::client(51).unwrap();
+        let command=Command::FeatureList {thread_id:"threadA".into(),cursor:Some("opaque.page:two".into())};
+        assert_eq!(command.encode(Some(&id)).unwrap(),b"{\"id\":51,\"method\":\"experimentalFeature/list\",\"params\":{\"cursor\":\"opaque.page:two\",\"limit\":32,\"threadId\":\"threadA\"}}\n");
+        let response=b"{\"id\":51,\"result\":{\"data\":[{\"name\":\"multi_agent_v2\",\"enabled\":false}],\"nextCursor\":\"opaque.page:three\"}}\n";
+        match decode(response,Some((&id,&command))).unwrap() {
+            Reply::FeaturePage {id:RpcId::Number(51),features,next_cursor}=>{
+                assert_eq!(features,vec![("multi_agent_v2".into(),false)]);
+                assert_eq!(next_cursor.as_deref(),Some("opaque.page:three"));
+            },
+            other=>panic!("unexpected feature response: {other:?}"),
+        }
+        let wrong=RpcId::client(52).unwrap();
+        assert!(matches!(decode(response,Some((&wrong,&command))),Err(RpcError::WrongId)));
+        assert!(matches!(decode(b"{\"id\":51,\"result\":{\"data\":[{\"name\":\"multi_agent_v2\",\"enabled\":0}],\"nextCursor\":null}}\n",Some((&id,&command))),Err(RpcError::Invalid("feature enabled"))));
+        assert!(matches!(decode(b"{\"id\":51,\"result\":{\"data\":[{\"name\":\"a\",\"enabled\":false},{\"name\":\"a\",\"enabled\":true}],\"nextCursor\":null}}\n",Some((&id,&command))),Err(RpcError::Invalid("duplicate feature name"))));
+    }
+
+    #[test]
+    fn native_question_blocking_is_reported_not_inferred_from_mode() {
+        let frame="{\"id\":19,\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"threadA\",\"turnId\":\"turnA\",\"itemId\":\"itemA\",\"isBlocking\":false,\"questions\":[{\"id\":\"q\",\"header\":\"Choose\",\"question\":\"Which?\",\"isOther\":true,\"isSecret\":false,\"options\":null}]}}\n";
+        for (actual,expected) in [(frame.to_owned(),Some(false)),(frame.replace("\"isBlocking\":false","\"isBlocking\":true"),Some(true)),(frame.replace("\"isBlocking\":false,",""),None)] {
+            let Reply::Question(card)=decode(actual.as_bytes(),None).unwrap() else {panic!("original question");};
+            assert_eq!(card.is_blocking,expected);
+        }
+        assert!(matches!(decode(frame.replace("\"isBlocking\":false","\"isBlocking\":0").as_bytes(),None),Err(RpcError::Invalid("isBlocking"))));
+    }
+
+    #[test]
+    fn stored_resume_requires_original_canonical_command_and_matching_native_response() {
+        let id = RpcId::client(19).unwrap();
+        let command = Command::ThreadResume {
+            thread_id: "thread-a".into(),
+            cwd: "D:/sealed-tree".into(),
+            model: "m".into(),
+        };
+        let stored = command.encode(Some(&id)).unwrap();
+        let response = b"{\"id\":19,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        assert_eq!(decode_stored_thread_resume(&stored, response).unwrap(), "thread-a");
+        assert!(matches!(decode_stored_thread_resume(&stored,
+            b"{\"id\":20,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n"),
+            Err(RpcError::WrongId)));
+        assert!(matches!(decode_stored_thread_resume(&stored,
+            b"{\"id\":19,\"result\":{\"thread\":{\"id\":\"thread-b\",\"cwd\":\"D:/sealed-tree\"}}}\n"),
+            Err(RpcError::Invalid("thread id mismatch"))));
+        let altered = String::from_utf8(stored.clone()).unwrap()
+            .replace("\"use_memories\":false", "\"use_memories\":true");
+        assert!(matches!(decode_stored_thread_resume(altered.as_bytes(), response),
+            Err(RpcError::Invalid("stored resume command mismatch"))));
+        let mut noncanonical = stored.clone();
+        noncanonical.insert(1, b' ');
+        assert!(matches!(decode_stored_thread_resume(&noncanonical, response),
+            Err(RpcError::Invalid("stored resume command mismatch"))));
+        let error = b"{\"id\":19,\"error\":{\"code\":-32600,\"message\":\"original provider detail\"}}\n";
+        assert!(matches!(decode_stored_thread_resume(&stored, error),
+            Err(RpcError::RemoteResponse(raw)) if raw == error.to_vec()));
+    }
+
+    #[test]
+    fn compact_and_append_use_fixed_native_shape_and_only_empty_submission_response() {
+        let id = RpcId::client(41).unwrap();
+        let append = Command::AppendWithoutTurn {
+            thread_id: "thread-a".into(),
+            text: "later context".into(),
+        };
+        let original = append.encode(Some(&id)).unwrap();
+        assert_eq!(original, b"{\"id\":41,\"method\":\"thread/inject_items\",\"params\":{\"items\":[{\"content\":[{\"text\":\"later context\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"}],\"threadId\":\"thread-a\"}}\n".to_vec());
+        assert!(matches!(decode(b"{\"id\":41,\"result\":{}}\n", Some((&id, &append))),
+            Ok(Reply::Ack { id: RpcId::Number(41) })));
+        assert!(matches!(decode(b"{\"id\":42,\"result\":{}}\n", Some((&id, &append))),
+            Err(RpcError::WrongId)));
+        assert!(matches!(decode(b"{\"id\":41,\"result\":{\"threadId\":\"thread-b\"}}\n", Some((&id, &append))),
+            Err(RpcError::Invalid("empty command result"))));
+        assert!(matches!(Command::AppendWithoutTurn { thread_id: "".into(), text: "x".into() }.encode(Some(&id)),
+            Err(RpcError::Invalid("thread id"))));
+        assert!(matches!(Command::AppendWithoutTurn { thread_id: "thread-a".into(), text: "".into() }.encode(Some(&id)),
+            Err(RpcError::Invalid("text"))));
+        let remote_error = b"{\"id\":41,\"error\":{\"code\":-32600,\"message\":\"original provider detail\"}}\n";
+        match decode(remote_error, Some((&id, &append))).unwrap() {
+            Reply::RemoteError { raw_frame, .. } => assert_eq!(raw_frame, remote_error.to_vec()),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(append.encode(Some(&id)).unwrap(), original);
+
+        let compact = Command::ThreadCompactStart { thread_id: "thread-a".into() };
+        assert_eq!(compact.encode(Some(&id)).unwrap(),
+            b"{\"id\":41,\"method\":\"thread/compact/start\",\"params\":{\"threadId\":\"thread-a\"}}\n".to_vec());
+        assert!(matches!(decode(b"{\"id\":41,\"result\":{}}\n", Some((&id, &compact))),
+            Ok(Reply::Ack { id: RpcId::Number(41) })));
+        assert!(matches!(decode(b"{\"id\":41,\"result\":{\"completed\":true}}\n", Some((&id, &compact))),
+            Err(RpcError::Invalid("empty command result"))));
+        assert!(matches!(Command::ThreadCompactStart { thread_id: "".into() }.encode(Some(&id)),
+            Err(RpcError::Invalid("thread id"))));
+    }
 
     #[test]
     fn fixed_initialize_and_native_thread_turn_fields() {

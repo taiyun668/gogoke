@@ -26,9 +26,14 @@ impl<'root> ProductDatabase<'root> {
             }
         }
         drop(originals);
+        let exists=Statement::prepare(self.connection.as_ptr(),"SELECT 1 FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND card_id=?2")?;
+        exists.bind_text(1,&request.domain_id)?;exists.bind_text(2,&request.target_id)?;
+        if !exists.step_row()? {return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,request.expected_revision,Default::default()));}drop(exists);
+        let (source,_)=super::v37_qcard::read_source_descriptor(&self.connection,&request.domain_id,&request.target_id)?;
         let claim=Statement::prepare(self.connection.as_ptr(),
-            "SELECT h.session_id FROM main.gogoke_v37_qcard_native q JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=q.domain_id AND sb.seat_id=q.seat_id AND sb.generation=q.generation JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id AND h.session_id=sb.session_id AND h.generation=sb.generation WHERE q.domain_id=?1 AND q.card_id=?2")?;
+            "SELECT h.session_id FROM main.gogoke_v37_qcard_native q JOIN main.gogoke_v37_h_process_episode h ON h.domain_id=q.domain_id AND h.seat_id=q.seat_id AND h.generation=q.generation WHERE q.domain_id=?1 AND q.card_id=?2 AND h.process_operation_id=?3")?;
         claim.bind_text(1,&request.domain_id)?;claim.bind_text(2,&request.target_id)?;
+        claim.bind_text(3,&source.operation_id)?;
         if !claim.step_row()? {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,request.expected_revision,Default::default()));
         }
@@ -83,7 +88,9 @@ impl<'root> ProductDatabase<'root> {
         let mut ready=false;
         let mut availability_error=Json::Null;
         if let Some(run)=self.native_sessions.get(key) {
-            if card.state=="OPEN" && run.allows_input() && run.turn_id.as_deref()==Some(card.turn_id.as_str()) {
+            if card.state=="OPEN" && run.allows_input() && run.custody.binding.generation==card.generation
+                && run.thread_id.as_deref()==Some(card.vendor_thread_id.as_str())
+                && run.turn_id.as_deref()==Some(card.turn_id.as_str()) {
                 let claim=crate::store::session_transport::runtime::observe_claim(&self.connection,
                     &crate::store::seat::NativeOrigin::user(&self.owner),&key.0,&card.seat_id,&key.1)
                     .map_err(|error|OrchestrationError::V37StoreFailure(format!("native card current read: {error:?}")))?

@@ -44,8 +44,386 @@ fn failure<T, E: std::fmt::Debug>(result: std::result::Result<T, E>) -> Result<T
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+fn text(value:&str)->Json {Json::String(JsonString::from_str(value))}
+fn unhex(bytes: &str) -> Result<Vec<u8>> {
+    if bytes.len()%2!=0 {return Err(OrchestrationError::Invalid("native stored hex"));}
+    bytes.as_bytes().chunks_exact(2).map(|pair| {
+        let value=std::str::from_utf8(pair).map_err(|_|OrchestrationError::Invalid("native stored hex"))?;
+        u8::from_str_radix(value,16).map_err(|_|OrchestrationError::Invalid("native stored hex"))
+    }).collect()
+}
 
 impl<'root> ProductDatabase<'root> {
+    fn original_native_continuation(&self, domain: &str, session: &str)
+        -> Result<(String,String,String)> {
+        let initial=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.process_operation_id,e.raw_hex,e.generation
+               FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
+                 AND g.session_id=e.session_id AND g.generation=e.generation
+                 AND g.process_operation_id=e.process_operation_id
+              WHERE e.domain_id=?1 AND e.session_id=?2
+                AND e.old_generation IS NULL AND e.process_operation_id IS NOT NULL")?;
+        initial.bind_text(1,domain)?;initial.bind_text(2,session)?;
+        if !initial.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let operation=initial.column_text(0)?;
+        let raw=unhex(&initial.column_text(1)?)?;
+        let generation=initial.column_text(2)?;
+        if initial.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let original=h::decode_request(&raw).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native original open: {error:?}")))?;
+        if original.family!="K-SESSION" || original.operation!="open"
+            || original.domain_id!=domain || original.target_id!=session {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let repository=user_payload_string(&original,"repositoryId")?;
+        let worktree=user_payload_string(&original,"worktreeId")?;
+        let observed=Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes)
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+                 AND r.generation=s.generation
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3
+                AND s.process_operation_id=?4 AND s.step_id='thread-start'
+                AND s.phase='OBSERVED'")?;
+        for (index,value) in [domain,session,generation.as_str(),operation.as_str()].iter().enumerate() {
+            observed.bind_text((index+1) as i32,value)?;
+        }
+        if !observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let command=unhex(&observed.column_text(0)?)?;
+        let response=unhex(&observed.column_text(1)?)?;
+        if observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let thread=failure(codex_rpc::decode_stored_thread_start(&command,&response))?;
+        Ok((repository,worktree,thread))
+    }
+
+    fn observed_resume_thread(&self,domain:&str,session:&str,operation:&str,
+        generation:&str,request_id:&str)->Result<Option<String>> {
+        let step_id=format!("{operation}-thread-resume");
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes)
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+                 AND r.generation=s.generation
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+                AND s.generation=?4 AND s.open_request_id=?5 AND s.step_id=?6
+                AND s.phase='OBSERVED' AND r.state='NO_EVENT'
+                AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
+        for (index,value) in [domain,session,operation,generation,request_id,
+            step_id.as_str()].iter().enumerate() {
+            q.bind_text((index+1) as i32,value)?;
+        }
+        if !q.step_row()? {return Ok(None);}
+        let command=unhex(&q.column_text(0)?)?;
+        let response=unhex(&q.column_text(1)?)?;
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        match codex_rpc::decode_stored_thread_resume(&command,&response) {
+            Ok(thread)=>Ok(Some(thread)),
+            Err(codex_rpc::RpcError::RemoteResponse(_))=>Ok(None),
+            Err(error)=>Err(OrchestrationError::V37StoreFailure(format!(
+                "native resume stored response: {error:?}"))),
+        }
+    }
+
+    pub(super) fn dispatch_native_resume(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        authority::read_product_identity(&mut self.connection,&self.owner)?;
+        if request.payload.len()!=1 {
+            return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        let old_generation=user_payload_string(request,"generation")?;
+        let prior=Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex,session_id,old_generation,generation,phase,
+                    previous_revision,COALESCE(result_revision,previous_revision),
+                    COALESCE(process_operation_id,'')
+               FROM main.gogoke_v37_h_process_episode
+              WHERE domain_id=?1 AND request_id=?2 AND old_generation IS NOT NULL")?;
+        prior.bind_text(1,&request.domain_id)?;prior.bind_text(2,&request.request_id)?;
+        if prior.step_row()? {
+            let same=prior.column_text(0)?==hex(&request.raw_bytes)
+                && prior.column_text(1)?==request.target_id
+                && prior.column_text(2)?==old_generation;
+            let new_generation=prior.column_text(3)?;
+            let phase=prior.column_text(4)?;
+            let previous=prior.column_text(5)?.parse::<u64>().map_err(|_|
+                OrchestrationError::Invalid("native resume prior revision"))?;
+            let revision=prior.column_text(6)?.parse::<u64>().map_err(|_|
+                OrchestrationError::Invalid("native resume result revision"))?;
+            let operation=prior.column_text(7)?;
+            if prior.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            drop(prior);
+            if !same {return Ok(encode_receipt(request,V37Status::Conflict,
+                request.expected_revision,request.expected_revision,Default::default()));}
+            if phase=="ACTIVE" || phase=="STOPPED" {
+                let receipt_id=self.resume_source_receipt(&request.domain_id,&request.target_id,
+                    &operation,&new_generation,&request.request_id)?;
+                return Ok(encode_receipt(request,V37Status::Replayed,previous,revision,
+                    BTreeMap::from([
+                        (JsonString::from_str("state"),text("RUNNING")),
+                        (JsonString::from_str("oldGeneration"),text(&old_generation)),
+                        (JsonString::from_str("newGeneration"),text(&new_generation)),
+                        (JsonString::from_str("receiptId"),text(&receipt_id))])));
+            }
+            if !operation.is_empty() && matches!(phase.as_str(),"PREPARED"|"UNKNOWN") {
+                let key=(request.domain_id.clone(),request.target_id.clone());
+                if let Some(run)=self.native_sessions.get(&key) {
+                    if run.operation_id==operation
+                        && self.process_custodian.active(&run.custody.ticket).is_some() {
+                        // A captured response may have survived an H commit
+                        // fault with its original RPC step still WRITTEN.
+                        // Resolve that exact source; never resend the command.
+                        failure(rpc::reconcile_written_resume_from_a(&mut self.connection,
+                            &self.owner,&request.domain_id,&request.target_id,
+                            &request.request_id,&request.raw_bytes,&operation,&new_generation))?;
+                        let expected=self.original_native_continuation(&request.domain_id,
+                            &request.target_id)?.2;
+                        if self.observed_resume_thread(&request.domain_id,&request.target_id,
+                            &operation,&new_generation,&request.request_id)?
+                            .as_deref()==Some(expected.as_str()) {
+                            let current=failure(runtime::observe_claim(&self.connection,
+                                &NativeOrigin::user(&self.owner),&request.domain_id,
+                                run.evidence.seat_id(),&request.target_id))?
+                                .ok_or(OrchestrationError::AccessDenied)?;
+                            failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+                            let promoted=(|| -> Result<i64> {
+                                authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+                                failure(h::promote_resume(&self.connection,&request.domain_id,
+                                    &request.target_id,&request.request_id,&operation,current.revision))
+                            })();
+                            let next=match promoted {
+                                Ok(next)=>{self.finish_native_transaction(Ok(()))?;next},
+                                Err(error)=>{self.finish_native_transaction(Err(error))?;unreachable!()}
+                            };
+                            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                                .thread_id=Some(expected);
+                            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                                .evidence.adopt_resume(&self.connection,&self.owner,&operation)
+                                .map_err(OrchestrationError::V37StoreFailure)?;
+                            self.process_native_pending_output(&key)?;
+                            let receipt_id=self.resume_source_receipt(&request.domain_id,
+                                &request.target_id,&operation,&new_generation,&request.request_id)?;
+                            return Ok(encode_receipt(request,V37Status::Replayed,revision,
+                                u64::try_from(next).map_err(|_|OrchestrationError::OperationConflict)?,
+                                BTreeMap::from([
+                                    (JsonString::from_str("state"),text("RUNNING")),
+                                    (JsonString::from_str("oldGeneration"),text(&old_generation)),
+                                    (JsonString::from_str("newGeneration"),text(&new_generation)),
+                                    (JsonString::from_str("receiptId"),text(&receipt_id))])));
+                        }
+                    }
+                }
+            }
+            return Ok(encode_receipt(request,V37Status::Unknown,previous,revision,
+                BTreeMap::from([
+                    (JsonString::from_str("state"),text("RESUME_UNKNOWN")),
+                    (JsonString::from_str("oldGeneration"),text(&old_generation))])));
+        }
+        drop(prior);
+        let pending=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_process_episode
+              WHERE domain_id=?1 AND session_id=?2 AND old_generation IS NOT NULL
+                AND phase IN ('INTENT','PREPARED','UNKNOWN') LIMIT 1")?;
+        pending.bind_text(1,&request.domain_id)?;pending.bind_text(2,&request.target_id)?;
+        if pending.step_row()? {
+            return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        drop(pending);
+        if self.native_sessions.contains_key(&(request.domain_id.clone(),request.target_id.clone())) {
+            return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        let binding=Statement::prepare(self.connection.as_ptr(),
+            "SELECT seat_id FROM main.gogoke_v37_h_seat_binding
+              WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
+        binding.bind_text(1,&request.domain_id)?;
+        binding.bind_text(2,&request.target_id)?;
+        binding.bind_text(3,&old_generation)?;
+        if !binding.step_row()? {
+            return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        let seat_id=binding.column_text(0)?;
+        if binding.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(binding);
+        let Some(old)=failure(runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &request.domain_id,&seat_id,&request.target_id))? else {
+            return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                request.expected_revision,Default::default()));
+        };
+        if old.generation!=old_generation || old.phase!=runtime::SessionPhase::Stopped {
+            return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        if u64::try_from(old.revision).ok()!=Some(request.expected_revision) {
+            return Ok(encode_receipt(request,V37Status::Stale,request.expected_revision,
+                u64::try_from(old.revision).map_err(|_|OrchestrationError::OperationConflict)?,
+                Default::default()));
+        }
+        if runtime::observe_stop_fact(&self.connection,&request.domain_id,&request.target_id)?
+            .is_none() {
+            return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        let old_number=old_generation.parse::<i64>().map_err(|_|
+            OrchestrationError::Invalid("native resume old generation"))?;
+        let new_generation=old_number.checked_add(1).ok_or(
+            OrchestrationError::Invalid("native resume generation overflow"))?.to_string();
+        let (repository_id,worktree_id,thread_id)=self.original_native_continuation(
+            &request.domain_id,&request.target_id)?;
+        let (instance_id,home_id)=self.prepare_resume_session_home(request,&seat_id,&new_generation)?;
+        if instance_id!=old.instance_id {return Err(OrchestrationError::OperationConflict);}
+        let owner_binding=Statement::prepare(self.connection.as_ptr(),
+            "SELECT binding_id FROM main.gogoke_v37_h_owner_binding
+              WHERE instance_id=?1 AND domain_id=?2 AND kind='SESSION'
+                AND owner_id=?3 AND generation=?4 AND state='ACTIVE'")?;
+        for (index,value) in [instance_id.as_str(),request.domain_id.as_str(),
+            request.target_id.as_str(),new_generation.as_str()].iter().enumerate() {
+            owner_binding.bind_text((index+1) as i32,value)?;
+        }
+        if !owner_binding.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let binding_id=owner_binding.column_text(0)?;
+        if owner_binding.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(owner_binding);
+        failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+        let intended=(|| -> Result<()> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            failure(h::begin_resume(&self.connection,&request.domain_id,&request.target_id,
+                &request.request_id,&request.raw_bytes,&old_generation,&new_generation,
+                old.revision,&home_id,&binding_id))?;
+            Ok(())
+        })();
+        self.finish_native_transaction(intended)?;
+        let evidence=failure(LaunchEvidence::observe_resume(&mut self.connection,self.root,
+            &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
+            &worktree_id,&request.request_id))?;
+        let (model,effort)=failure(evidence.settings())?;
+        let launch=failure(evidence.request())?;
+        let custody=self.process_custodian.prepare(&launch)?;
+        let key=(request.domain_id.clone(),request.target_id.clone());
+        let digest=crate::store::digest::sha256_hex(&request.raw_bytes);
+        let operation_id=format!("h-resume-{}",&digest[..40]);
+        self.native_sessions.insert(key.clone(),NativeSession {
+            evidence,custody:custody.clone(),operation_id:operation_id.clone(),
+            open_request_id:request.request_id.clone(),open_request_bytes:request.raw_bytes.clone(),
+            domain_id:request.domain_id.clone(),session_id:request.target_id.clone(),
+            model,effort,thread_id:None,turn_id:None,raw_capture:Default::default(),
+            stop_proof:None,next_rpc_id:4,
+        });
+        authority::record_prepared_process(&mut self.connection,&operation_id,&custody)?;
+        failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+        let attached=(|| -> Result<()> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+            failure(run.evidence.verify_in_transaction(&mut self.connection,self.root,
+                &self.owner,None))?;
+            failure(h::attach_resume_process(&self.connection,&request.domain_id,
+                &request.request_id,&operation_id))?;
+            Ok(())
+        })();
+        self.finish_native_transaction(attached)?;
+        let started=(|| -> Result<()> {
+            let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+            failure(run.evidence.verify(&mut self.connection,self.root,&self.owner,
+                Some(&operation_id)))?;
+            self.process_custodian.activate(&custody)?;
+            authority::mark_process_active(&mut self.connection,&operation_id,&custody)?;
+            self.native_rpc(&key,&format!("{operation_id}-initialize"),Some(1),
+                &Command::Initialize {client_version:"0.1.0".into()})?;
+            self.native_rpc(&key,&format!("{operation_id}-initialized"),None,
+                &Command::Initialized)?;
+            let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+            let cwd=run.evidence.cwd().to_string_lossy().into_owned();
+            let model=run.model.clone();
+            self.native_rpc(&key,&format!("{operation_id}-config-read"),Some(2),
+                &Command::ConfigRead {cwd:cwd.clone()})?;
+            let response=self.native_rpc(&key,&format!("{operation_id}-thread-resume"),
+                Some(3),&Command::ThreadResume {thread_id:thread_id.clone(),cwd,model})?;
+            let Some(Reply::Thread {thread_id:observed,..})=response else {
+                return Err(OrchestrationError::Invalid("native resume thread response"));
+            };
+            if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id=
+                Some(thread_id.clone());
+            Ok(())
+        })();
+        if let Err(error)=started {
+            if self.native_sessions.get(&key).is_some_and(|run|run.raw_capture.has_pending()) {
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "native resume source retained under original request: {error:?}")));
+            }
+            let custody_unknown=authority::mark_process_unknown(&mut self.connection,
+                &operation_id,&custody);
+            failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+            let unknown=(|| -> Result<i64> {
+                authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+                failure(h::mark_resume_unknown(&self.connection,&request.domain_id,
+                    &request.target_id,&request.request_id,&operation_id))
+            })();
+            let next=match unknown {
+                Ok(next)=>{self.finish_native_transaction(Ok(()))?;next},
+                Err(error)=>{self.finish_native_transaction(Err(error))?;unreachable!()}
+            };
+            return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
+                u64::try_from(next).map_err(|_|OrchestrationError::OperationConflict)?,
+                BTreeMap::from([
+                    (JsonString::from_str("state"),text("RESUME_UNKNOWN")),
+                    (JsonString::from_str("oldGeneration"),text(&old_generation)),
+                    (JsonString::from_str("reason"),text(&format!(
+                        "native resume original error: {error:?}; custody: {custody_unknown:?}")))])));
+        }
+        failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+        let promoted=(|| -> Result<i64> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+            failure(run.evidence.verify_in_transaction(&mut self.connection,self.root,
+                &self.owner,Some(&operation_id)))?;
+            failure(h::promote_resume(&self.connection,&request.domain_id,&request.target_id,
+                &request.request_id,&operation_id,old.revision))
+        })();
+        let next=match promoted {
+            Ok(next)=>{self.finish_native_transaction(Ok(()))?;next},
+            Err(error)=>{self.finish_native_transaction(Err(error))?;unreachable!()}
+        };
+        self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+            .evidence.adopt_resume(&self.connection,&self.owner,&operation_id)
+            .map_err(OrchestrationError::V37StoreFailure)?;
+        self.process_native_pending_output(&key)?;
+        let receipt_id=self.resume_source_receipt(&request.domain_id,&request.target_id,
+            &operation_id,&new_generation,&request.request_id)?;
+        Ok(encode_receipt(request,V37Status::Applied,request.expected_revision,
+            u64::try_from(next).map_err(|_|OrchestrationError::OperationConflict)?,
+            BTreeMap::from([
+                (JsonString::from_str("state"),text("RUNNING")),
+                (JsonString::from_str("oldGeneration"),text(&old_generation)),
+                (JsonString::from_str("newGeneration"),text(&new_generation)),
+                (JsonString::from_str("receiptId"),text(&receipt_id))])))
+    }
+
+    fn resume_source_receipt(&self,domain:&str,session:&str,operation:&str,
+        generation:&str,request_id:&str)->Result<String> {
+        let step_id=format!("{operation}-thread-resume");
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+              WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+                AND generation=?4 AND open_request_id=?5 AND step_id=?6
+                AND phase='OBSERVED'")?;
+        for (index,value) in [domain,session,operation,generation,request_id,
+            step_id.as_str()].iter().enumerate() {
+            q.bind_text((index+1) as i32,value)?;
+        }
+        if !q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let receipt=format!("{}:{}:{}",operation,q.column_text(0)?,q.column_text(1)?);
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        Ok(receipt)
+    }
+
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
@@ -165,6 +543,8 @@ impl<'root> ProductDatabase<'root> {
             failure(run.evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, None))?;
             failure(h::bind_process_operation_in_transaction(&mut self.connection,
                 &request.domain_id, &request.target_id, &operation_id))?;
+            failure(h::record_initial(&self.connection,&request.domain_id,
+                &request.target_id,&request.request_id,&operation_id))?;
             ledger::register_session(&mut self.connection, &SessionRegistration {
                 domain_id: request.domain_id.clone(), seat_id: seat_id.clone(), session_id: request.target_id.clone(),
                 purpose: SessionPurpose::Work, side_id: None,
@@ -208,17 +588,29 @@ impl<'root> ProductDatabase<'root> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
+            let next=current.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
+            let advance=Statement::prepare(self.connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_claim SET revision=?1 WHERE domain_id=?2 AND session_id=?3 AND state='COMMITTED' AND revision=?4 AND process_operation_id=?5")?;
+            advance.bind_i64(1,next)?;advance.bind_text(2,&request.domain_id)?;
+            advance.bind_text(3,&request.target_id)?;advance.bind_i64(4,current.revision)?;
+            advance.bind_text(5,&operation_id)?;advance.step_done()?;
+            let changed=Statement::prepare(self.connection.as_ptr(),"SELECT changes()")?;
+            if !changed.step_row()? || changed.column_text(0)?!="1" {return Err(OrchestrationError::OperationConflict);}
+            drop(changed);drop(advance);
             let update = Statement::prepare(self.connection.as_ptr(),
-                "UPDATE main.gogoke_v37_h_operation SET status='APPLIED' WHERE domain_id=?1 AND request_id=?2 AND operation='open' AND raw_hex=?3 AND status='UNKNOWN'")?;
+                "UPDATE main.gogoke_v37_h_operation SET status='APPLIED',revision=?4 WHERE domain_id=?1 AND request_id=?2 AND operation='open' AND raw_hex=?3 AND status='UNKNOWN'")?;
             update.bind_text(1, &request.domain_id)?;
             update.bind_text(2, &request.request_id)?;
             update.bind_text(3, &hex(&request.raw_bytes))?;
+            update.bind_i64(4,next)?;
             update.step_done()?;
+            failure(h::mark_active(&self.connection,&operation_id))?;
             Ok(())
         })();
         self.finish_native_transaction(applied)?;
         let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
-        Ok(encode_receipt(request, V37Status::Applied, request.expected_revision, request.expected_revision,
+        Ok(encode_receipt(request, V37Status::Applied, request.expected_revision,
+            request.expected_revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open receipt revision overflow"))?,
             BTreeMap::from([(JsonString::from_str("threadId"), Json::String(JsonString::from_str(
                 run.thread_id.as_deref().ok_or(OrchestrationError::Invalid("native thread absent"))?)))])))
     }
@@ -255,13 +647,30 @@ impl<'root> ProductDatabase<'root> {
                 let revision = prior.column_text(4)?.parse::<u64>().map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("stop prior revision: {error}")))?;
                 drop(prior);
-                self.confirm_native_stop(&(request.domain_id.clone(), request.target_id.clone()))?;
                 let fact = Statement::prepare(self.connection.as_ptr(),
-                    "SELECT c.stop_proof_hash FROM main.gogoke_v37_h_claim a JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id WHERE a.domain_id=?1 AND a.session_id=?2 AND a.state IN ('STOPPED','RELEASED') AND c.state='STOPPED' AND a.stop_fact_id=c.stop_proof_hash")?;
+                    "SELECT e.process_operation_id,c.stop_proof_hash
+                       FROM main.gogoke_v37_h_process_episode e
+                       JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
+                         AND g.session_id=e.session_id AND g.generation=e.generation
+                         AND g.process_operation_id=e.process_operation_id
+                       JOIN main.gogoke_coordination_process_custody c
+                         ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                         AND c.generation=e.generation
+                      WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
+                        AND e.phase='STOPPED' AND c.state='STOPPED'
+                        AND e.stop_fact_id=c.stop_proof_hash")?;
                 fact.bind_text(1, &request.domain_id)?;
                 fact.bind_text(2, &request.target_id)?;
+                fact.bind_text(3, &generation)?;
                 if !fact.step_row()? { return Err(OrchestrationError::OperationConflict); }
-                let hash = fact.column_text(0)?;
+                let stopped_operation=fact.column_text(0)?;
+                let hash = fact.column_text(1)?;
+                if fact.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                drop(fact);
+                let key=(request.domain_id.clone(),request.target_id.clone());
+                if self.native_sessions.get(&key).is_some_and(|run|run.operation_id==stopped_operation) {
+                    self.confirm_native_stop(&key)?;
+                }
                 return Ok(encode_receipt(request, V37Status::Replayed,
                     request.expected_revision, revision, BTreeMap::from([
                         (JsonString::from_str("stopFact"), Json::String(JsonString::from_str(&hash)))])));
@@ -334,10 +743,16 @@ impl<'root> ProductDatabase<'root> {
             let intended = (|| -> Result<()> {
                 authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
                 let existing = Statement::prepare(self.connection.as_ptr(),
-                    "SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='stop'")?;
+                    "SELECT 1 FROM main.gogoke_v37_h_process_episode
+                      WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+                        AND generation=?4 AND stop_request_id IS NULL")?;
                 existing.bind_text(1, &request.domain_id)?;
                 existing.bind_text(2, &request.target_id)?;
-                if existing.step_row()? { return Err(OrchestrationError::OperationConflict); }
+                existing.bind_text(3,&operation)?;
+                existing.bind_text(4,&generation)?;
+                if !existing.step_row()? || existing.step_row()? {
+                    return Err(OrchestrationError::OperationConflict);
+                }
                 drop(existing);
                 let insert = Statement::prepare(self.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES(?1,?2,?3,'stop',?4,'UNKNOWN',?5,?5)")?;
@@ -347,6 +762,15 @@ impl<'root> ProductDatabase<'root> {
                 }
                 insert.bind_i64(5, claim.revision)?;
                 insert.step_done()?;
+                let fence=Statement::prepare(self.connection.as_ptr(),
+                    "UPDATE main.gogoke_v37_h_process_episode SET stop_request_id=?1
+                      WHERE domain_id=?2 AND session_id=?3 AND process_operation_id=?4
+                        AND generation=?5 AND stop_request_id IS NULL")?;
+                for (index,value) in [request.request_id.as_str(),request.domain_id.as_str(),
+                    request.target_id.as_str(),operation.as_str(),generation.as_str()].iter().enumerate() {
+                    fence.bind_text((index+1) as i32,value)?;
+                }
+                fence.step_done()?;
                 Ok(())
             })();
             self.finish_native_transaction(intended)?;
@@ -472,7 +896,11 @@ impl<'root> ProductDatabase<'root> {
         let seat_id = run.evidence.seat_id().to_owned();
         let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
             &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
-        if current.generation != generation || u64::try_from(current.revision).ok() != Some(request.expected_revision) {
+        if current.generation != generation {
+            return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        if u64::try_from(current.revision).ok() != Some(request.expected_revision) {
             return Ok(encode_receipt(request, V37Status::Stale, request.expected_revision,
                 request.expected_revision, Default::default()));
         }
@@ -514,6 +942,69 @@ impl<'root> ProductDatabase<'root> {
         let completed = failure(h::complete_codex_turn_request(&mut self.connection, &input,
             &observation.frame, &id, &command, &thread_id))?;
         completed.record.receipt_bytes.ok_or(OrchestrationError::Invalid("native turn receipt absent"))
+    }
+
+    /// C calls this only after its same-store first-send permission commits.
+    /// Derive the RPC ID and current physical/grant binding here; callers
+    /// cannot redirect a message to a different thread or a later turn.
+    pub(super) fn native_steer_rpc(&mut self,key:&(String,String),step_id:&str,
+        expected_thread:&str,expected_turn:&str,text:String)->Result<Option<Reply>> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input() || run.thread_id.as_deref()!=Some(expected_thread)
+            || run.turn_id.as_deref()!=Some(expected_turn)
+            || self.process_custodian.active(&run.custody.ticket).is_none() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let seat_id=run.evidence.seat_id();
+        let claim=failure(runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,seat_id,&key.1))?.ok_or(OrchestrationError::AccessDenied)?;
+        failure(run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision))?;
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        let number=run.next_rpc_id;
+        run.next_rpc_id=number.checked_add(1).ok_or(OrchestrationError::Invalid("native steer RPC ordinal overflow"))?;
+        self.native_rpc(key,step_id,Some(number),&Command::TurnSteer {
+            thread_id:expected_thread.to_owned(),expected_turn_id:expected_turn.to_owned(),text})
+    }
+
+    /// Inbox delivery uses the same bound native writer without starting a
+    /// model turn. Its C owner settles only from the original observed ACK.
+    pub(super) fn native_append_rpc(&mut self,key:&(String,String),step_id:&str,
+        expected_thread:&str,text:String)->Result<Option<Reply>> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input() || run.thread_id.as_deref()!=Some(expected_thread)
+            || self.process_custodian.active(&run.custody.ticket).is_none() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let claim=failure(runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,run.evidence.seat_id(),&key.1))?.ok_or(OrchestrationError::AccessDenied)?;
+        failure(run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision))?;
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        let number=run.next_rpc_id;
+        run.next_rpc_id=number.checked_add(1).ok_or(OrchestrationError::Invalid("native append RPC ordinal overflow"))?;
+        self.native_rpc(key,step_id,Some(number),&Command::AppendWithoutTurn {thread_id:expected_thread.to_owned(),text})
+    }
+
+    /// Read only the loaded native thread's effective feature flags. The
+    /// caller supplies no process, thread, cwd or grant authority.
+    pub(super) fn native_feature_rpc(&mut self,key:&(String,String),step_id:&str,
+        cursor:Option<String>)->Result<Option<Reply>> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input() || self.process_custodian.active(&run.custody.ticket).is_none() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let thread_id=run.thread_id.clone().ok_or(OrchestrationError::AccessDenied)?;
+        let claim=failure(runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,run.evidence.seat_id(),&key.1))?.ok_or(OrchestrationError::AccessDenied)?;
+        failure(run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision))?;
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        let number=run.next_rpc_id;
+        run.next_rpc_id=number.checked_add(1).ok_or(
+            OrchestrationError::Invalid("native feature RPC ordinal overflow"))?;
+        let unique_step=format!("{step_id}-rpc{number}");
+        self.native_rpc(key,&unique_step,Some(number),&Command::FeatureList {thread_id,cursor})
     }
 
     /// Actual process-owned JSONL, with durable native step intent before
@@ -567,7 +1058,7 @@ impl<'root> ProductDatabase<'root> {
             let observed = failure(codex_rpc::decode(frame.bytes(), id.as_ref().map(|id| (id, command))))?;
             match observed {
                 Reply::Initialized { .. } | Reply::MemoryOff { .. } | Reply::Thread { .. }
-                | Reply::Turn { .. } | Reply::Ack { .. } => {
+                | Reply::Turn { .. } | Reply::Ack { .. } | Reply::FeaturePage { .. } => {
                     if let Reply::Thread {cwd,..}=&observed {
                         failure(run.evidence.verify_observed_cwd(cwd))?;
                     }
@@ -580,8 +1071,13 @@ impl<'root> ProductDatabase<'root> {
                 }
                 Reply::RemoteError { raw_frame, .. } => {
                     let text = String::from_utf8_lossy(&raw_frame[raw_frame.len().saturating_sub(4096)..]);
-                    let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &text);
-                    return Err(OrchestrationError::V37StoreFailure(format!("native RPC remote error: {text}; journal: {persisted:?}")));
+                    // A provider error is an observed response. Preserve its
+                    // original A source and the exact step correlation before
+                    // reporting it; no UNKNOWN resend is authorized.
+                    let persisted=rpc::complete_response(&mut self.connection,&self.owner,
+                        &step,&frame,&raw.key);
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "native RPC remote error: {text}; observed journal: {persisted:?}")));
                 }
                 _ => {
                     failure(rpc::observe_event(&mut self.connection, &frame, &raw.key, &step))?;

@@ -31,6 +31,8 @@ pub(crate) struct LaunchEvidence {
     program_identity: RootIdentity,
     module: Arc<CompatModule>,
     tier: PermissionTier,
+    resume_old: Option<ClaimObservation>,
+    resume_request_id: Option<String>,
 }
 
 impl LaunchEvidence {
@@ -43,12 +45,56 @@ impl LaunchEvidence {
         let seat = evidence(seat::get(db, domain_id, seat_id))?
             .ok_or("native session launch: missing seat")?;
         if seat.state != State::Busy { return Err("native session launch: seat is not busy".into()); }
-        let tier = evidence(seat::permission_tier(&seat))?;
         let claim = evidence(runtime::observe_claim(db, &NativeOrigin::user(owner),
             domain_id, seat_id, session_id))?.ok_or("native session launch: missing claim")?;
         if claim.phase != SessionPhase::Committed || claim.process_operation_id.is_some() {
             return Err("native session launch: claim is not an unused committed reservation".into());
         }
+        Self::build(db,root,owner,identity,seat,claim,repository_id,worktree_id,None,None)
+    }
+
+    pub(crate) fn observe_resume(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+        owner: &OwnerIssuer, domain_id: &str, seat_id: &str, session_id: &str,
+        repository_id: &str, worktree_id: &str, request_id: &str) -> Result<Self,String> {
+        let identity=evidence(authority::read_product_identity(db,owner))?;
+        let seat=evidence(seat::get(db,domain_id,seat_id))?.ok_or("native resume: seat absent")?;
+        if seat.state!=State::Busy {return Err("native resume: seat not busy".into());}
+        let old=evidence(runtime::observe_claim(db,&NativeOrigin::user(owner),
+            domain_id,seat_id,session_id))?.ok_or("native resume: claim absent")?;
+        if old.phase!=SessionPhase::Stopped || old.process_operation_id.is_none() {
+            return Err("native resume: old generation not stopped".into());
+        }
+        let row=crate::store::atomic::Statement::prepare(db.as_ptr(),
+            "SELECT generation,home_id,binding_id,instance_id FROM main.gogoke_v37_h_process_episode
+              WHERE domain_id=?1 AND request_id=?2 AND session_id=?3
+                AND old_generation=?4 AND phase='INTENT' AND process_operation_id IS NULL")
+            .map_err(|error|format!("native resume candidate: {error:?}"))?;
+        for (index,value) in [domain_id,request_id,session_id,old.generation.as_str()].iter().enumerate() {
+            row.bind_text((index+1) as i32,value).map_err(|error|format!("native resume candidate: {error:?}"))?;
+        }
+        if !row.step_row().map_err(|error|format!("native resume candidate: {error:?}"))? {
+            return Err("native resume candidate absent".into());
+        }
+        let generation=row.column_text(0).map_err(|error|format!("native resume generation: {error:?}"))?;
+        let home_id=row.column_text(1).map_err(|error|format!("native resume home: {error:?}"))?;
+        let binding_id=row.column_text(2).map_err(|error|format!("native resume binding: {error:?}"))?;
+        let instance_id=row.column_text(3).map_err(|error|format!("native resume instance: {error:?}"))?;
+        if row.step_row().map_err(|error|format!("native resume duplicate: {error:?}"))?
+            || instance_id!=old.instance_id {return Err("native resume candidate conflict".into());}
+        let candidate=ClaimObservation {generation,home_id,binding_id,instance_id,
+            phase:SessionPhase::Committed,process_operation_id:None,..old.clone()};
+        Self::build(db,root,owner,identity,seat,candidate,repository_id,worktree_id,
+            Some(old),Some(request_id.to_owned()))
+    }
+
+    fn build(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
+        identity: ProductIdentitySnapshot, seat: Seat, claim: ClaimObservation,
+        repository_id: &str, worktree_id: &str, resume_old: Option<ClaimObservation>,
+        resume_request_id: Option<String>) -> Result<Self,String> {
+        let domain_id=&claim.domain_id;
+        let session_id=&claim.session_id;
+        let seat_id=&seat.seat_id;
+        let tier=evidence(seat::permission_tier(&seat))?;
         let pin = evidence(runtime::current_instance_pin(db, &claim.instance_id))?;
         if pin.driver_id != "codex" || pin.version != "0.149.0" {
             return Err("native session launch: unsupported pinned driver/version".into());
@@ -81,7 +127,8 @@ impl LaunchEvidence {
             (worktree.path.clone(), worktree.identity.clone()),
         ], &profile, &profile_name))?;
         let observed = Self { identity, seat, claim, pin, homes, repository_id: repository_id.into(),
-            worktree, profile, profile_name, program, program_identity, module, tier };
+            worktree, profile, profile_name, program, program_identity, module, tier,
+            resume_old,resume_request_id };
         observed.verify(db, root, owner, None)?;
         Ok(observed)
     }
@@ -106,6 +153,22 @@ impl LaunchEvidence {
         self.verify_snapshot(db, root, owner, Some(operation), revision, identity)
     }
 
+    pub(crate) fn adopt_resume(&mut self, db: &VerifiedDatabaseConnection<'_>,
+        owner: &OwnerIssuer, operation: &str) -> Result<(),String> {
+        if self.resume_old.is_none() {return Err("native resume evidence already adopted".into());}
+        self.seat=evidence(seat::get(db,&self.seat.domain_id,&self.seat.seat_id))?
+            .ok_or("native resume seat disappeared")?;
+        self.claim=evidence(runtime::observe_claim(db,&NativeOrigin::user(owner),
+            &self.claim.domain_id,&self.seat.seat_id,&self.claim.session_id))?
+            .ok_or("native resume claim disappeared")?;
+        if self.claim.process_operation_id.as_deref()!=Some(operation) {
+            return Err("native resume operation not current".into());
+        }
+        self.resume_old=None;
+        self.resume_request_id=None;
+        Ok(())
+    }
+
     fn verify_snapshot(&self, db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
         owner: &OwnerIssuer, expected_operation: Option<&str>, revision: i64, identity: ProductIdentitySnapshot) -> Result<(), String> {
         if identity != self.identity
@@ -113,15 +176,45 @@ impl LaunchEvidence {
             || evidence(runtime::current_instance_pin(db, &self.claim.instance_id))? != self.pin {
             return Err("native session launch: current identity/seat/pin changed".into());
         }
-        let claim = evidence(runtime::observe_claim(db, &NativeOrigin::user(owner),
+        let current = evidence(runtime::observe_claim(db, &NativeOrigin::user(owner),
             &self.claim.domain_id, &self.seat.seat_id, &self.claim.session_id))?
             .ok_or("native session launch: claim no longer current")?;
+        let claim = if let Some(old)=&self.resume_old {
+            if &current!=old || old.phase!=SessionPhase::Stopped
+                || old.revision!=revision || old.process_operation_id.is_none() {
+                return Err("native resume: stopped admission changed".into());
+            }
+            let request_id=self.resume_request_id.as_deref()
+                .ok_or("native resume request identity absent")?;
+            let candidate=crate::store::atomic::Statement::prepare(db.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_process_episode
+                  WHERE domain_id=?1 AND session_id=?2 AND request_id=?3
+                    AND old_generation=?4 AND generation=?5 AND instance_id=?6
+                    AND home_id=?7 AND binding_id=?8
+                    AND COALESCE(process_operation_id,'')=?9
+                    AND phase IN ('INTENT','PREPARED','ACTIVE')")
+                .map_err(|error|format!("native resume candidate verify: {error:?}"))?;
+            let operation=expected_operation.unwrap_or("");
+            for (index,value) in [self.claim.domain_id.as_str(),self.claim.session_id.as_str(),
+                request_id,old.generation.as_str(),self.claim.generation.as_str(),
+                self.claim.instance_id.as_str(),self.claim.home_id.as_str(),
+                self.claim.binding_id.as_str(),operation].iter().enumerate() {
+                candidate.bind_text((index+1) as i32,value)
+                    .map_err(|error|format!("native resume candidate bind: {error:?}"))?;
+            }
+            if !candidate.step_row().map_err(|error|format!("native resume candidate check: {error:?}"))?
+                || candidate.step_row().map_err(|error|format!("native resume duplicate candidate: {error:?}"))? {
+                return Err("native resume candidate changed".into());
+            }
+            self.claim.clone()
+        } else {current};
         // prepare persistence may attach a native custody operation; all
         // reservation facts and revisions remain fixed until activation.
         if claim.instance_id != self.claim.instance_id || claim.home_id != self.claim.home_id
             || claim.binding_id != self.claim.binding_id || claim.generation != self.claim.generation
             || claim.revision != revision || claim.phase != SessionPhase::Committed
-            || claim.process_operation_id.as_deref() != expected_operation {
+            || (self.resume_old.is_none()
+                && claim.process_operation_id.as_deref() != expected_operation) {
             return Err("native session launch: current reservation changed".into());
         }
         let homes = evidence(instance::resolve_codex_session_launch_homes(db, root, &self.profile,
@@ -209,6 +302,10 @@ impl LaunchEvidence {
         launch.arguments = vec!["-c".into(), "features.memories=false".into(),
             "-c".into(), "memories.generate_memories=false".into(),
             "-c".into(), "memories.use_memories=false".into(),
+            "-c".into(), "agents.enabled=false".into(),
+            "-c".into(), "features.multi_agent_v2=false".into(),
+            "-c".into(), "features.default_mode_request_user_input=true".into(),
+            "-c".into(), "tools.experimental_request_user_input.enabled=true".into(),
             "-c".into(), format!("sqlite_home={}", crate::store::atomic::Json::String(
                 crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
             "-c".into(), format!("log_dir={}", crate::store::atomic::Json::String(

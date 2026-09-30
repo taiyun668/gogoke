@@ -235,6 +235,15 @@ fn read_message(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
         requeued_as: if requeued.is_empty() { None } else { Some(requeued) } }))
 }
 
+pub(crate) fn current_revision(connection:&mut VerifiedDatabaseConnection<'_>,domain_id:&str,
+    message_id:&str,authorized:impl FnOnce(&VerifiedDatabaseConnection<'_>)->Result<bool,InboxError>)
+    ->Result<u64,InboxError> {
+    transact(connection,|connection| {
+        if !authorized(connection)? {return Err(InboxError::Denied);}
+        Ok(read_message(connection,domain_id,message_id)?.map_or(0,|message|message.revision))
+    })
+}
+
 fn read_operation(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
     request_id: &str) -> Result<Option<StoredOperation>, InboxError> {
     let statement = Statement::prepare(connection.as_ptr(), "SELECT request_hex,message_id,phase,previous_revision,revision,result_state,reason,native_receipt_id FROM main.gogoke_v37_inbox_operations WHERE domain_id=? AND request_id=?")?;
@@ -481,7 +490,12 @@ pub(crate) struct NativeAbortProof {
 
 pub(crate) fn abort_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
     envelope: &InboxEnvelope<'_>, proof: Option<&NativeAbortProof>, reason: &str) -> Result<StoredOperation, InboxError> {
-    transact(connection, |connection| {
+    transact(connection, |connection| abort_delivery_in_transaction(connection,envelope,proof,reason))
+}
+
+fn abort_delivery_in_transaction(connection: &VerifiedDatabaseConnection<'_>,
+    envelope: &InboxEnvelope<'_>, proof: Option<&NativeAbortProof>, reason: &str)
+    -> Result<StoredOperation, InboxError> {
         let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
         if prior.phase != "PREPARED" { return Ok(prior); }
         if proof.is_some_and(|fact| fact.domain_id != envelope.domain_id ||
@@ -491,8 +505,52 @@ pub(crate) fn abort_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
         let next = if confirmed { prior.revision } else { prior.revision.checked_add(1).ok_or(InboxError::Invalid("revision overflow"))? };
         let state = if confirmed { "PENDING" } else { "UNKNOWN" };
         let phase = if !confirmed { "UNKNOWN" } else if reason == "DENIED" { "DENIED" } else { "CONFLICT" };
-        update_delivery(connection,envelope,phase,state,"PREPARED",prior.revision,next,reason,"")?;
+        let receipt=proof.map_or("",|proof|proof.receipt_id.as_str());
+        update_delivery(connection,envelope,phase,state,"PREPARED",prior.revision,next,reason,receipt)?;
         read_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)
+}
+
+/// Only H's same-transaction no-step and A terminal-turn fact can release a
+/// prepared steer back to PENDING. A miss leaves the original C state intact.
+pub(crate) fn abort_native_steer_if_ended(connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &crate::store::authority::OwnerIssuer,envelope:&InboxEnvelope<'_>,
+    session_id:&str,step_id:&str,generation:&str,process_operation_id:&str,
+    ticket:&str,nonce:&str,thread_id:&str,turn_id:&str) -> Result<Option<StoredOperation>,InboxError> {
+    envelope.validate()?;
+    transact(connection,|connection| {
+        crate::store::authority::check_owner_in_current_transaction(connection,owner)
+            .map_err(InboxError::Authority)?;
+        let prior=replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,
+            envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
+        if !matches!(prior.phase.as_str(),"PREPARED"|"UNKNOWN") {return Ok(Some(prior));}
+        let message=read_message(connection,envelope.domain_id,envelope.message_id)?.ok_or(InboxError::Conflict)?;
+        if message.state!=prior.phase || message.revision!=prior.revision
+            || message.generation!=generation || message.turn_id!=turn_id {
+            return Err(InboxError::Conflict);
+        }
+        let fact=crate::store::session_transport::rpc_journal::
+            confirm_turn_ended_without_step_in_transaction(connection,envelope.domain_id,
+                session_id,generation,process_operation_id,ticket,nonce,step_id,thread_id,turn_id)
+            .map_err(|error|InboxError::InvalidEvidence(format!("H confirmed abort: {error:?}")))?;
+        let Some(fact)=fact else {return Ok(None);};
+        let proof={
+            let basis=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",envelope.domain_id,session_id,
+                step_id,process_operation_id,nonce,fact.source_epoch,fact.source_cursor);
+            NativeAbortProof {domain_id:envelope.domain_id.into(),message_id:envelope.message_id.into(),
+                request_id:envelope.request_id.into(),receipt_id:format!("h-inbox-abort-{}",
+                    crate::store::digest::sha256_hex(basis.as_bytes()))}
+        };
+        if prior.phase=="PREPARED" {
+            return abort_delivery_in_transaction(connection,envelope,Some(&proof),"TURN_ENDED")
+                .map(Some);
+        }
+        // C fenced the physical call as UNKNOWN before H observed the ended
+        // turn. No H step exists, so restore the queue at its current revision
+        // without decreasing a published CAS value or dispatching again.
+        update_delivery(connection,envelope,"CONFLICT","PENDING","UNKNOWN",prior.revision,
+            prior.revision,"TURN_ENDED",&proof.receipt_id)?;
+        read_operation(connection,envelope.domain_id,envelope.request_id)?
+            .ok_or(InboxError::Unknown).map(Some)
     })
 }
 
@@ -512,6 +570,31 @@ pub(crate) fn mark_commit_unknown(connection: &mut VerifiedDatabaseConnection<'_
     })
 }
 
+/// Preserve the original H/pipe/timeout failure on the same C UNKNOWN intent.
+/// A later proof may still resolve it, but an uncertain error is never FAILED.
+pub(crate) fn record_delivery_unknown_error(connection:&mut VerifiedDatabaseConnection<'_>,
+    owner:&crate::store::authority::OwnerIssuer,envelope:&InboxEnvelope<'_>,error:&str)
+    ->Result<StoredOperation,InboxError> {
+    envelope.validate()?;
+    if error.is_empty() {return Err(InboxError::Invalid("original delivery error"));}
+    transact(connection,|connection| {
+        crate::store::authority::check_owner_in_current_transaction(connection,owner)
+            .map_err(InboxError::Authority)?;
+        let prior=replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,
+            envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
+        if prior.phase!="UNKNOWN" || !prior.reason.is_empty() {return Ok(prior);}
+        let message=read_message(connection,envelope.domain_id,envelope.message_id)?.ok_or(InboxError::Conflict)?;
+        if message.state!="UNKNOWN" || message.revision!=prior.revision {return Err(InboxError::Conflict);}
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_inbox_operations SET reason=?1 WHERE domain_id=?2
+             AND request_id=?3 AND phase='UNKNOWN' AND reason=''")?;
+        update.bind_text(1,error)?;update.bind_text(2,envelope.domain_id)?;
+        update.bind_text(3,envelope.request_id)?;update.step_done()?;
+        require_one_change(connection)?;
+        read_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)
+    })
+}
+
 /// This type cannot be assembled from a string receipt. A future H adapter
 /// must expose a checked constructor from its durable completion/failure fact.
 pub(crate) struct NativeDeliveryProof {
@@ -527,7 +610,11 @@ enum NativeDeliveryOutcome { Completed { native_receipt_id: String }, Failed { r
 /// H exposes its durable, exact-request completion or confirmed failure.
 pub(crate) fn settle_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
     envelope: &InboxEnvelope<'_>, proof: &NativeDeliveryProof) -> Result<StoredOperation, InboxError> {
-    transact(connection, |connection| {
+    transact(connection, |connection| settle_delivery_in_transaction(connection,envelope,proof))
+}
+
+fn settle_delivery_in_transaction(connection: &VerifiedDatabaseConnection<'_>,
+    envelope: &InboxEnvelope<'_>, proof: &NativeDeliveryProof) -> Result<StoredOperation, InboxError> {
         let prior = replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
         if prior.phase != "UNKNOWN" { return Ok(prior); }
         if proof.domain_id != envelope.domain_id || proof.message_id != envelope.message_id ||
@@ -547,6 +634,180 @@ pub(crate) fn settle_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
         // second message revision or turn one delivery into two logical writes.
         update_delivery(connection,envelope,phase,state,"UNKNOWN",prior.revision,prior.revision,reason,receipt)?;
         read_operation(connection,envelope.domain_id,envelope.request_id)?.ok_or(InboxError::Unknown)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeDeliveryKind { Deliver, Steer }
+
+fn confirmed_native_failure(frame: &[u8], kind: NativeDeliveryKind, thread_id:&str, turn_id: &str)
+    -> Result<Option<String>, InboxError> {
+    use crate::store::atomic::JsonString;
+    let body=frame.strip_suffix(b"\n").ok_or(InboxError::Denied)?;
+    let Json::Object(top)=Parser::parse(std::str::from_utf8(body).map_err(|error|
+        InboxError::InvalidEvidence(format!("provider error UTF-8: {error}")))?)? else {
+        return Err(InboxError::Denied);
+    };
+    let Some(Json::Object(error))=top.get(&JsonString::from_str("error")) else {
+        return Err(InboxError::Denied);
+    };
+    let Some(Json::Number(code))=error.get(&JsonString::from_str("code")) else {
+        return Err(InboxError::Denied);
+    };
+    let Some(Json::String(message))=error.get(&JsonString::from_str("message")) else {
+        return Err(InboxError::Denied);
+    };
+    let message=message.to_well_formed_string().ok_or(InboxError::Denied)?;
+    // Codex 0.149 app-server turn_steer_inner maps these fixed
+    // SteerSubmission::NotSubmitted reasons to invalid_request (-32600).
+    // Its failed-to-steer internal error may follow a partial submission and
+    // must remain UNKNOWN. The inject-items writer also has uncertain errors.
+    let mismatch_prefix=format!("expected active turn id `{turn_id}` but found `");
+    let mismatch=message.strip_prefix(&mismatch_prefix).is_some_and(|actual|
+        actual.ends_with('`') && actual.len()>1);
+    let no_thread=message==format!("thread not found: {thread_id}");
+    let not_submitted=code=="-32600" && (no_thread ||
+        (kind==NativeDeliveryKind::Steer &&
+            (message=="no active turn to steer" || mismatch ||
+                message=="cannot steer a review turn" || message=="cannot steer a compact turn")));
+    Ok(not_submitted.then_some(message))
+}
+
+fn unhex_native(value: &str) -> Result<Vec<u8>, InboxError> {
+    if value.is_empty() || value.len() % 2 != 0 { return Err(InboxError::Denied); }
+    value.as_bytes().chunks_exact(2).map(|pair| {
+        let high = (pair[0] as char).to_digit(16).ok_or(InboxError::Denied)?;
+        let low = (pair[1] as char).to_digit(16).ok_or(InboxError::Denied)?;
+        Ok(((high << 4) | low) as u8)
+    }).collect()
+}
+
+/// The only completion factory for native inbox delivery. C reopens H's exact
+/// OBSERVED RPC and A's original response, including the process identity,
+/// then decodes that response against C's stored full body and turn binding.
+/// This does not infer delivery from a pipe write or caller-supplied receipt.
+pub(crate) fn settle_native_delivery_observed(connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &crate::store::authority::OwnerIssuer, envelope: &InboxEnvelope<'_>,
+    session_id: &str, step_id: &str, kind: NativeDeliveryKind) -> Result<StoredOperation, InboxError> {
+    use crate::store::atomic::JsonString;
+    use crate::store::session_transport::{codex_rpc::{self, Command, Reply, RpcId}, decode_request};
+    envelope.validate()?;
+    if !valid_id(session_id) || !valid_id(step_id) { return Err(InboxError::Invalid("native inbox step")); }
+    transact(connection, |connection| {
+        crate::store::authority::check_owner_in_current_transaction(connection,owner)
+            .map_err(InboxError::Authority)?;
+        let prior=replay(connection,envelope.domain_id,envelope.request_id,envelope.message_id,
+            envelope.request_bytes)?.ok_or(InboxError::Conflict)?;
+        if prior.phase!="UNKNOWN" {
+            return if matches!(prior.phase.as_str(),"APPLIED"|"FAILED") {Ok(prior)}
+                else {Err(InboxError::Conflict)};
+        }
+        let request=decode_request(envelope.request_bytes)
+            .map_err(|error|InboxError::InvalidEvidence(format!("original inbox wire: {error:?}")))?;
+        let expected_kind=match kind {NativeDeliveryKind::Deliver=>"deliver",NativeDeliveryKind::Steer=>"steer"};
+        if request.family!="K-INBOX" || request.operation!=expected_kind
+            || request.domain_id!=envelope.domain_id || request.target_id!=envelope.message_id
+            || request.request_id!=envelope.request_id || request.expected_revision!=envelope.expected_revision {
+            return Err(InboxError::Denied);
+        }
+        let message=read_message(connection,envelope.domain_id,envelope.message_id)?.ok_or(InboxError::Conflict)?;
+        if message.state!="UNKNOWN" || message.revision!=prior.revision {return Err(InboxError::Conflict);}
+        let payload_text=|field:&str| -> Result<String,InboxError> {
+            match request.payload.get(&JsonString::from_str(field)) {
+                Some(Json::String(value))=>value.to_well_formed_string().ok_or(InboxError::Denied),
+                _=>Err(InboxError::Denied),
+            }
+        };
+        if payload_text("generation")?!=message.generation
+            || (kind==NativeDeliveryKind::Steer && payload_text("turnId")?!=message.turn_id) {
+            return Err(InboxError::Denied);
+        }
+        let source=Statement::prepare(connection.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes),s.process_operation_id,s.ticket,
+                    s.custodian_nonce,s.open_request_id
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.gogoke_v37_h_process_episode ep ON ep.domain_id=s.domain_id
+                 AND ep.session_id=s.session_id AND ep.generation=s.generation
+                 AND ep.process_operation_id=s.process_operation_id
+               LEFT JOIN main.gogoke_v37_h_claim h ON h.domain_id=ep.domain_id
+                 AND h.session_id=ep.session_id AND h.generation=ep.generation
+                 AND h.process_operation_id=ep.process_operation_id
+               JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=s.process_operation_id AND c.domain_id=s.domain_id
+                 AND c.generation=s.generation AND c.ticket=s.ticket
+                 AND c.custodian_nonce=s.custodian_nonce AND c.pid=s.pid
+                 AND c.creation_time_100ns=s.creation_time AND c.image_path=s.image_path
+                 AND c.binary_digest_sha256=s.binary_digest AND c.profile_id=s.profile_id
+               JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=ep.binding_id
+                 AND b.domain_id=ep.domain_id AND b.instance_id=ep.instance_id
+                 AND b.kind='SESSION' AND b.owner_id=ep.session_id AND b.generation=ep.generation
+               LEFT JOIN main.gogoke_v37_seats e ON e.domain_id=ep.domain_id
+                 AND e.seat_id=ep.seat_id AND e.incarnation=ep.seat_incarnation
+                 AND CAST(e.generation AS TEXT)=ep.generation AND e.instance_id=ep.instance_id
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+                 AND r.generation=s.generation
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id=?3
+                AND s.generation=?4 AND ep.seat_id=?5 AND s.phase='OBSERVED'
+                AND s.requires_response=1 AND r.state='NO_EVENT'
+                AND r.no_event_reason='CODEX_RPC_RESPONSE'
+                AND ((ep.phase='ACTIVE' AND h.state='COMMITTED'
+                    AND c.state IN ('ACTIVE','UNKNOWN') AND b.state='ACTIVE' AND e.state='BUSY')
+                  OR (ep.phase='UNKNOWN' AND h.state='UNKNOWN' AND c.state='UNKNOWN')
+                  OR (ep.phase='STOPPED' AND c.state='STOPPED'
+                    AND ep.stop_fact_id=c.stop_proof_hash AND length(c.stop_proof_hash)>0))")?;
+        for (index,value) in [envelope.domain_id,session_id,step_id,
+            message.generation.as_str(),message.seat_id.as_str()].iter().enumerate() {
+            source.bind_text((index+1) as i32,value)?;
+        }
+        if !source.step_row()? {return Err(InboxError::Denied);}
+        let command_bytes=unhex_native(&source.column_text(0)?)?;
+        let response_bytes=unhex_native(&source.column_text(1)?)?;
+        let operation=source.column_text(2)?;let ticket=source.column_text(3)?;
+        let nonce=source.column_text(4)?;let open_id=source.column_text(5)?;
+        if source.step_row()? {return Err(InboxError::Conflict);}drop(source);
+        let frame_text=std::str::from_utf8(command_bytes.strip_suffix(b"\n").ok_or(InboxError::Denied)?)
+            .map_err(|error|InboxError::InvalidEvidence(format!("H command UTF-8: {error}")))?;
+        let Json::Object(frame)=Parser::parse(frame_text)? else {return Err(InboxError::Denied);};
+        let id=match frame.get(&JsonString::from_str("id")) {
+            Some(Json::Number(value))=>value.parse::<u64>().map_err(|_|InboxError::Denied)?,
+            _=>return Err(InboxError::Denied),
+        };
+        let rpc_id=RpcId::client(id).map_err(InboxError::Codec)?;
+        let thread=crate::store::session_transport::rpc_journal::observed_thread_id(connection,
+            envelope.domain_id,session_id,&operation,&message.generation,&open_id,&ticket,&nonce)
+            .map_err(|error|InboxError::InvalidEvidence(format!("H observed thread: {error:?}")))?;
+        let command=match kind {
+            NativeDeliveryKind::Deliver=>Command::AppendWithoutTurn {thread_id:thread,text:message.body.clone()},
+            NativeDeliveryKind::Steer=>Command::TurnSteer {thread_id:thread,
+                expected_turn_id:message.turn_id.clone(),text:message.body.clone()},
+        };
+        if command.encode(Some(&rpc_id)).map_err(InboxError::Codec)?!=command_bytes {
+            return Err(InboxError::Denied);
+        }
+        let response=codex_rpc::decode(&response_bytes,Some((&rpc_id,&command)))
+            .map_err(InboxError::Codec)?;
+        let receipt_basis=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",envelope.domain_id,session_id,
+            step_id,operation,nonce,raw_hex(&command_bytes),prior.request_hex);
+        if let Reply::RemoteError {raw_frame,..}=&response {
+            let Some(reason)=confirmed_native_failure(raw_frame,kind,match &command {
+                Command::AppendWithoutTurn {thread_id,..}|Command::TurnSteer {thread_id,..}=>thread_id,
+                _=>return Err(InboxError::Denied),
+            },&message.turn_id)? else {
+                return Err(InboxError::Denied);
+            };
+            let proof=NativeDeliveryProof {domain_id:envelope.domain_id.into(),
+                message_id:envelope.message_id.into(),request_id:envelope.request_id.into(),
+                outcome:NativeDeliveryOutcome::Failed {reason}};
+            return settle_delivery_in_transaction(connection,envelope,&proof);
+        }
+        if !matches!(response,Reply::Ack {..}) {return Err(InboxError::Denied);}
+        let proof=NativeDeliveryProof {domain_id:envelope.domain_id.into(),
+            message_id:envelope.message_id.into(),request_id:envelope.request_id.into(),
+            outcome:NativeDeliveryOutcome::Completed {native_receipt_id:format!("h-inbox-{}",
+                crate::store::digest::sha256_hex(receipt_basis.as_bytes()))}};
+        settle_delivery_in_transaction(connection,envelope,&proof)
     })
 }
 
@@ -1183,7 +1444,34 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
         let mut command_bytes=card.answer.as_bytes().to_vec();command_bytes.push(b'\n');
         let command_hex=raw_hex(&command_bytes);
         let step=Statement::prepare(connection.as_ptr(),
-            "SELECT s.process_operation_id,s.custodian_nonce,s.open_request_id,s.ticket FROM main.gogoke_v37_rpc_steps s JOIN main.gogoke_v37_h_claim h ON h.domain_id=s.domain_id AND h.session_id=s.session_id AND h.generation=s.generation AND h.process_operation_id=s.process_operation_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=s.process_operation_id AND c.ticket=s.ticket AND c.custodian_nonce=s.custodian_nonce AND c.generation=s.generation AND c.domain_id=s.domain_id AND c.pid=s.pid AND c.creation_time_100ns=s.creation_time AND c.image_path=s.image_path AND c.binary_digest_sha256=s.binary_digest AND c.profile_id=s.profile_id JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id AND sb.session_id=h.session_id AND sb.generation=h.generation WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id=?3 AND s.phase='WRITTEN' AND s.requires_response=0 AND s.command_hex=?4 AND s.generation=?5 AND sb.seat_id=?6 AND ((h.state='COMMITTED' AND c.state IN ('ACTIVE','UNKNOWN')) OR (h.state='UNKNOWN' AND c.state='UNKNOWN') OR (h.state IN ('STOPPED','RELEASED') AND c.state='STOPPED' AND h.stop_fact_id=c.stop_proof_hash AND length(c.stop_proof_hash)>0))")?;
+            "SELECT s.process_operation_id,s.custodian_nonce,s.open_request_id,s.ticket
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.gogoke_v37_h_process_episode ep ON ep.domain_id=s.domain_id
+                 AND ep.session_id=s.session_id AND ep.generation=s.generation
+                 AND ep.process_operation_id=s.process_operation_id
+               LEFT JOIN main.gogoke_v37_h_claim h ON h.domain_id=ep.domain_id
+                 AND h.session_id=ep.session_id AND h.generation=ep.generation
+                 AND h.process_operation_id=ep.process_operation_id
+               JOIN main.gogoke_coordination_process_custody c ON c.operation_id=s.process_operation_id
+                 AND c.ticket=s.ticket AND c.custodian_nonce=s.custodian_nonce
+                 AND c.generation=s.generation AND c.domain_id=s.domain_id
+                 AND c.pid=s.pid AND c.creation_time_100ns=s.creation_time
+                 AND c.image_path=s.image_path AND c.binary_digest_sha256=s.binary_digest
+                 AND c.profile_id=s.profile_id
+               JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=ep.binding_id
+                 AND b.domain_id=ep.domain_id AND b.instance_id=ep.instance_id
+                 AND b.kind='SESSION' AND b.owner_id=ep.session_id AND b.generation=ep.generation
+               LEFT JOIN main.gogoke_v37_seats e ON e.domain_id=ep.domain_id
+                 AND e.seat_id=ep.seat_id AND e.incarnation=ep.seat_incarnation
+                 AND CAST(e.generation AS TEXT)=ep.generation AND e.instance_id=ep.instance_id
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id=?3
+                AND s.phase='WRITTEN' AND s.requires_response=0 AND s.command_hex=?4
+                AND s.generation=?5 AND ep.seat_id=?6
+                AND ((ep.phase='ACTIVE' AND h.state='COMMITTED'
+                    AND c.state IN ('ACTIVE','UNKNOWN') AND b.state='ACTIVE' AND e.state='BUSY')
+                  OR (ep.phase='UNKNOWN' AND h.state='UNKNOWN' AND c.state='UNKNOWN')
+                  OR (ep.phase='STOPPED' AND c.state='STOPPED'
+                    AND ep.stop_fact_id=c.stop_proof_hash AND length(c.stop_proof_hash)>0))")?;
         for (index,value) in [envelope.domain_id,session_id,step_id,command_hex.as_str(),card.generation.as_str(),card.seat_id.as_str()].iter().enumerate() {
             step.bind_text((index+1) as i32,value)?;
         }
@@ -1243,12 +1531,10 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
         }
         let expected=question.answer(answer_values).map_err(InboxError::Codec)?.encode(None).map_err(InboxError::Codec)?;
         if expected!=command_bytes {return Err(InboxError::Denied);}
-        let thread=Statement::prepare(connection.as_ptr(),
-            "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation WHERE s.domain_id=?1 AND s.session_id=?2 AND s.open_request_id=?3 AND s.process_operation_id=?4 AND s.custodian_nonce=?5 AND s.step_id='thread-start' AND s.phase='OBSERVED'")?;
-        for (index,value) in [envelope.domain_id,session_id,open_id.as_str(),operation.as_str(),nonce.as_str()].iter().enumerate() {thread.bind_text((index+1) as i32,value)?;}
-        if !thread.step_row()? {return Err(InboxError::Denied);}
-        let observed=codex_rpc::decode_stored_thread_start(&decode_hex(&thread.column_text(0)?)?,&decode_hex(&thread.column_text(1)?)?).map_err(InboxError::Codec)?;
-        if observed!=card.vendor_thread_id || thread.step_row()? {return Err(InboxError::Denied);}drop(thread);
+        let observed=crate::store::session_transport::rpc_journal::observed_thread_id(connection,
+            envelope.domain_id,session_id,&operation,&card.generation,&open_id,&ticket,&nonce)
+            .map_err(|error|InboxError::InvalidEvidence(format!("H observed thread: {error:?}")))?;
+        if observed!=card.vendor_thread_id {return Err(InboxError::Denied);}
         let receipt_basis=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",envelope.domain_id,session_id,step_id,operation,nonce,command_hex,prior.request_hex);
         let proof=NativeCardAnswerProof {domain_id:envelope.domain_id.into(),card_id:envelope.card_id.into(),
             request_id:envelope.request_id.into(),vendor_request_id:card.vendor_request_id,seat_id:card.seat_id,
@@ -1274,6 +1560,26 @@ mod tests {
     use crate::root::RootLock;
     use crate::store::same_open::{create_new, route_b_test_guard};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn fixed_steer_not_submitted_error_is_narrower_than_an_unknown_remote_error() {
+        // Synthetic protocol controls, not a real Codex process/model run.
+        let failed=b"{\"id\":4,\"error\":{\"code\":-32600,\"message\":\"no active turn to steer\"}}\n";
+        assert_eq!(confirmed_native_failure(failed,NativeDeliveryKind::Steer,"threadA","turnA").unwrap(),
+            Some("no active turn to steer".into()));
+        assert_eq!(confirmed_native_failure(failed,NativeDeliveryKind::Deliver,"threadA","turnA").unwrap(),None);
+        let ambiguous=b"{\"id\":4,\"error\":{\"code\":-32603,\"message\":\"failed to steer turn: transport uncertain\"}}\n";
+        assert_eq!(confirmed_native_failure(ambiguous,NativeDeliveryKind::Steer,"threadA","turnA").unwrap(),None);
+        let wrong_code=b"{\"id\":4,\"error\":{\"code\":-32603,\"message\":\"no active turn to steer\"}}\n";
+        assert_eq!(confirmed_native_failure(wrong_code,NativeDeliveryKind::Steer,"threadA","turnA").unwrap(),None);
+        let mismatch=b"{\"id\":4,\"error\":{\"code\":-32600,\"message\":\"expected active turn id `turnA` but found `turnB`\"}}\n";
+        assert_eq!(confirmed_native_failure(mismatch,NativeDeliveryKind::Steer,"threadA","turnA").unwrap(),
+            Some("expected active turn id `turnA` but found `turnB`".into()));
+        assert_eq!(confirmed_native_failure(mismatch,NativeDeliveryKind::Steer,"threadA","turnC").unwrap(),None);
+        let missing=b"{\"id\":4,\"error\":{\"code\":-32600,\"message\":\"thread not found: threadA\"}}\n";
+        assert_eq!(confirmed_native_failure(missing,NativeDeliveryKind::Deliver,"threadA","turnA").unwrap(),
+            Some("thread not found: threadA".into()));
+    }
 
     fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>)) {
         let _guard = route_b_test_guard();
@@ -1524,9 +1830,17 @@ mod tests {
         // failure controls. This is not an actual CLI/writer/model test.
         db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,state TEXT,stop_fact_id TEXT) STRICT").unwrap();
         db.execute("CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT,session_id TEXT,generation TEXT,seat_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_process_episode(domain_id TEXT,request_id TEXT,session_id TEXT,generation TEXT,old_generation TEXT,raw_hex TEXT,previous_revision INTEGER,result_revision INTEGER,process_operation_id TEXT,binding_id TEXT,instance_id TEXT,home_id TEXT,seat_id TEXT,seat_incarnation TEXT,phase TEXT,stop_fact_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_generation(domain_id TEXT,session_id TEXT,generation TEXT,request_id TEXT,process_operation_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT,domain_id TEXT,instance_id TEXT,kind TEXT,owner_id TEXT,generation TEXT,state TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_seats(domain_id TEXT,seat_id TEXT,incarnation TEXT,generation TEXT,instance_id TEXT,state TEXT) STRICT").unwrap();
         authority::initialize_process_custody_schema(&mut db).unwrap();
         db.execute("INSERT INTO gogoke_v37_h_claim VALUES('projectA','sessionA','1','operationA','COMMITTED',NULL)").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','1','seatA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES('projectA','openA','sessionA','1',NULL,'',1,2,'operationA','bindingA','instanceA','homeA','seatA','incarnationA','ACTIVE',NULL)").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_generation VALUES('projectA','sessionA','1','openA','operationA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_owner_binding VALUES('bindingA','projectA','instanceA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_seats VALUES('projectA','seatA','incarnationA','1','instanceA','BUSY')").unwrap();
         db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('operationA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','projectA','1','ACTIVE',NULL)").unwrap();
         let question_frame=b"{\"id\":44,\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"threadA\",\"turnId\":\"turnA\",\"itemId\":\"itemA\",\"questions\":[{\"id\":\"q\",\"header\":\"Choose\",\"question\":\"Which?\",\"isOther\":true,\"isSecret\":false,\"options\":null}]}}\n";
         let thread_frame=b"{\"id\":3,\"result\":{\"thread\":{\"id\":\"threadA\",\"cwd\":\"sealed-tree\"}}}\n";
@@ -1534,6 +1848,7 @@ mod tests {
             let raw=Statement::prepare(db.as_ptr(),"INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES('operationA','ticketA','nonceA','projectA','sessionA','1','nonceA',?1,?2,'PENDING')").unwrap();
             raw.bind_text(1,cursor).unwrap();raw.bind_blob(2,bytes).unwrap();raw.step_done().unwrap();
         }
+        db.execute("UPDATE main.v37_ledger_raw_source SET state='NO_EVENT',no_event_reason='CODEX_RPC_RESPONSE' WHERE operation_id='operationA' AND source_cursor='1'").unwrap();
         let descriptor=Json::Object(std::collections::BTreeMap::from([
             (JsonString::from_str("operationId"),Json::String("operationA".into())),
             (JsonString::from_str("sourceEpoch"),Json::String("nonceA".into())),

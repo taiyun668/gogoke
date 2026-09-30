@@ -99,13 +99,25 @@ impl<'root> ProductDatabase<'root> {
     /// as atomic with the subsequent admission or OS process creation.
     fn prepare_user_session_home(&mut self, request: &V37Request, seat_id: &str,
         generation: &str) -> Result<(String, String)> {
+        self.prepare_session_home(request, seat_id, generation, false)
+    }
+
+    /// A stopped session keeps its admission. A resume candidate prepares a
+    /// separate F home for the next process generation while E remains BUSY.
+    pub(super) fn prepare_resume_session_home(&mut self, request: &V37Request,
+        seat_id: &str, generation: &str) -> Result<(String, String)> {
+        self.prepare_session_home(request, seat_id, generation, true)
+    }
+
+    fn prepare_session_home(&mut self, request: &V37Request, seat_id: &str,
+        generation: &str, resume: bool) -> Result<(String, String)> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let seat = seat::get(&self.connection, &request.domain_id, seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
         if seat.instance_id.is_empty() || !matches!(seat.state, State::Idle | State::Busy) {
             return Err(OrchestrationError::AccessDenied);
         }
-        let expected = if seat.state == State::Idle {
+        let expected = if seat.state == State::Idle || resume {
             seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?
         } else { seat.generation };
         if expected.to_string() != generation { return Err(OrchestrationError::OperationConflict); }
@@ -129,9 +141,10 @@ impl<'root> ProductDatabase<'root> {
                 .ok_or(OrchestrationError::AccessDenied)?;
             if now != seat { return Err(OrchestrationError::OperationConflict); }
             let found = Statement::prepare(self.connection.as_ptr(),
-                "SELECT binding_id,instance_id,generation,state FROM main.gogoke_v37_h_owner_binding WHERE domain_id=?1 AND kind='SESSION' AND owner_id=?2")?;
+                "SELECT binding_id,instance_id,generation,state FROM main.gogoke_v37_h_owner_binding WHERE domain_id=?1 AND kind='SESSION' AND owner_id=?2 AND generation=?3")?;
             found.bind_text(1, &request.domain_id)?;
             found.bind_text(2, &request.target_id)?;
+            found.bind_text(3, generation)?;
             if found.step_row()? {
                 if found.column_text(0)? != binding_id || found.column_text(1)? != seat.instance_id
                     || found.column_text(2)? != generation || found.column_text(3)? != "ACTIVE"
@@ -187,9 +200,11 @@ impl<'root> ProductDatabase<'root> {
         }
         drop(prior);
         if request.operation == "open" { return self.dispatch_native_open(request); }
+        if request.operation == "resume" { return self.dispatch_native_resume(request); }
         if request.operation == "stop" { return self.dispatch_native_stop(request); }
         if request.operation == "send" { return self.dispatch_native_send(request); }
         if request.operation == "output-stream" { return self.dispatch_native_output(request); }
+        if request.operation == "capability-probe" { return self.dispatch_native_capability(request); }
         if !matches!(request.operation.as_str(), "admission-reserve" | "admission-commit" | "admission-release") {
             return Ok(encode_receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, Default::default()));

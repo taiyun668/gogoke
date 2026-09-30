@@ -1,0 +1,101 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "FIXING_SOURCE_FOR_ONE_CLOUD_NATIVE_INTEGRATION_RUN",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "last_pushed_source": "fa30b3afcb8ae29139b696ecc2a3c6ad9ac583bd",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+  "owner_basis": "PR #56 covers L0-G and M1-M3. Owner continued the authorized run. A checkpoint records custody and continues construction; it does not request another stage authorization.",
+  "fixed_source_cloud": {
+    "source": "fa30b3afcb8ae29139b696ecc2a3c6ad9ac583bd",
+    "native_run": 36695555319,
+    "native_artifact": 11087414022,
+    "release_build": "PASS",
+    "required_axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 547,
+      "passed": 546,
+      "failed": 1,
+      "skipped": 0,
+      "elapsed_seconds": 380.7,
+      "state": "FAIL_COMPLETE_FINAL_SUMMARY"
+    },
+    "lpac_path_shim": {
+      "executed": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "server": "PASS",
+    "hygiene_run": 36695562600,
+    "hygiene": "PASS",
+    "desktop_run": 36695562615,
+    "desktop_readback": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
+    "evidence_scope": "CLOUD_WINDOWS_SERVER_NOT_OWNER_WIN11_OR_M1_ACCEPTANCE",
+    "original_private_evidence_sha256": {
+      "machine-result.json": "887f671f7d4c719cb597208ee1f9bbd177dc3ee2d1f6479cc90d3f063ac9699e",
+      "focused-native-codex-session-open.log": "6392bd96811b33a746bbaeeb256c49520d5c9528e5e9a56b77ceb5d8ed60d95c",
+      "lib-tests.log": "22e9f76e6747c27058c9052601058ea70f0aac815c27a3b545434571424dbde4"
+    }
+  },
+  "direct_failures_and_repairs": [
+    "604b8b1e failed cloud compilation because JsonString was not imported by the new exact C proof factory. fa30b3af repairs only this import; release compilation and server tests then passed.",
+    "fa30b3af's sole library and focused failure is the actual original stop readback after the injected H commit failure. Native custody STOPPED had committed while H claim COMMITTED remained after rollback; A recovery denied that original proof window. The same original stop must finish without another OS stop. H WIP now recognizes this narrowly from the original episode and exact persisted custody stop proof; native verification remains pending.",
+    "The old invalid Job query and stop hash instrument failures both passed on fa30b3af. The full library now reaches its final summary inside the unchanged 30-minute job budget. No single old hanging-test or runner-load cause is claimed.",
+    "Frozen write/revision semantics exposed open success without a corresponding H revision increment. Root WIP now advances the claim and original open receipt together and tests that the earlier revision is stale; this change has not run in cloud yet."
+  ],
+  "parallel_composition": {
+    "controller": "ProductDatabase family integration, User A query/subscription adapter, C historical card readback, checkpoint and source/candidate gate decisions",
+    "h_sol_high": "Durable original process attempts and successful generations; actual thread/resume; current-generation rollover after the trusted response; original A/H history and stop recovery; native steer/append helpers preserved",
+    "c_sol_high": "Native K-INBOX CAS and exact first-send permission, actual H/native steer and append, typed original vendor response proof; UNKNOWN never acquires another writer",
+    "b1_codec": "Completed source-only protocol package for fixed 0.149 thread/inject_items and thread/compact/start. Empty responses prove submission only; compaction completion requires its original later native event.",
+    "subordinate_recursion": false,
+    "concurrent_subordinate_limit": 3
+  },
+  "user_a_source_review": {
+    "first": "Fresh Astra source-only review confirmed three logic-checked defects: full-page continuation cursor jumped to global high-water, business denials escaped as ERR rather than contract receipts, and a maximum APPLIED frame could not fit its REPLAYED form.",
+    "root_repairs": "Separate page continuation from source high-water, return typed DENIED/STALE/CONFLICT for known valid-envelope state differences, preserve internal/commit errors, check both actual first and replay frame lengths before durable commit and all outgoing branches at the transport boundary.",
+    "controls": "SQL authority and marker fixtures explicitly synthetic; real ProductDatabase dispatch, original request collision, current scoped read replay, original subscription receipt after database reopen, more than 32 visible markers, business state receipts, and actual serialized maximum-frame replay.",
+    "fresh_sol_mutation": "SOURCE_FIXES_LOGIC_CLOSED_NOT_ACCEPTANCE; test coverage gap corrected to compare every original marker",
+    "native_new_source": "NOT_RUN"
+  },
+  "remaining": [
+    "Finish the same-source H/C/A integration and historical generation proof joins, then fixed commit, one cloud native package and affected desktop/hygiene checks.",
+    "Complete native capability, append/compact command lifecycle and actual resume/input/product-path tests.",
+    "Prepare the signed installed candidate and ordinary-view test prerequisites before the one actual OT4 login request. PR #57 main signer activation remains Owner-only and is not merged by Controller.",
+    "Actual authenticated model behavior, native question card, ordinary-view Win11 and M1 evidence remain NOT_RUN."
+  ],
+  "custody": "Private original logs and downloaded artifacts retained; prior rejected Detours cleanup objects and old diagnostic worktree preserved without retry or bypass. In-flight named source files have explicit H/C/Controller ownership. No public checkpoint includes local identity, paths, secrets or account snapshots.",
+  "formal_product_data": "NOT_ACCESSED_OR_CHANGED_IN_THIS_CLOUD_ONLY_SEGMENT",
+  "candidate_published": false,
+  "ot4": "NOT_REQUESTED",
+  "m1_complete": false,
+  "acceptance": false,
+  "native_capability_read": {
+    "basis": "Actual loaded thread experimentalFeature/list through the process-owned H RPC and A original raw response; required memories=false, multi_agent_v2=false, default_mode_request_user_input=true",
+    "fixed_official_ref": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "private_source_files": 18,
+    "private_source_manifest_sha256": "02de82142d606569727b8327c6865dfea1c4008148466ebfd1ba91f2a04ef5a1",
+    "model_behaviour": "NOT_RUN",
+    "native_this_source": "NOT_RUN"
+  },
+  "c_focused_repairs": {
+    "batch": "Seven source defects repaired with direct original-source proof and ProductDatabase synthetic-source controls; native compile/behaviour remains NOT_RUN",
+    "fresh_sol_review": "NOT_RUN_BUILT_IN_THREAD_LIMIT_REJECTED_NO_SIDE_CHANNEL_CREATED",
+    "retained_seam": "The frozen enqueue turnId is required. No fabricated turn for a session which has never had a real turn; valid past-turn idle append is supported."
+  },
+  "h_fixed_candidate": "Per-process stop request fence; original stop proof commit window; real thread/resume; same-ID UNKNOWN H WRITTEN plus A PENDING reconciliation without a second input; historical first-generation proof and loaded-thread flags controls. Native evidence pending."
+}

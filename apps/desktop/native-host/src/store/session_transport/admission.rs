@@ -33,7 +33,7 @@ impl From<SameOpenError> for AdmissionError {
     }
 }
 
-const SCHEMA: [(&str, &str); 6] = [
+const SCHEMA: [(&str, &str); 8] = [
     ("gogoke_v37_h_owner_binding",
      "CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('SESSION','CALL')),owner_id TEXT NOT NULL,generation TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('ACTIVE','REVOKED')),UNIQUE(instance_id,domain_id,kind,owner_id,generation)) STRICT"),
     ("gogoke_v37_h_claim",
@@ -46,6 +46,8 @@ const SCHEMA: [(&str, &str); 6] = [
      "CREATE TABLE gogoke_v37_h_stdin_journal(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,operation TEXT NOT NULL,ticket TEXT NOT NULL,process_operation_id TEXT NOT NULL,custodian_nonce TEXT NOT NULL,session_id TEXT NOT NULL,generation TEXT NOT NULL,request_hex TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARED','UNKNOWN','RECEIPTED')),receipt_hex TEXT,receipt_status TEXT CHECK(receipt_status IS NULL OR receipt_status IN ('APPLIED','REPLAYED','DENIED','STALE','CONFLICT','UNSUPPORTED','UNKNOWN','FAILED')),expected_revision TEXT NOT NULL,receipt_previous_revision TEXT,receipt_revision TEXT,PRIMARY KEY(domain_id,request_id),CHECK((phase='PREPARED' AND receipt_hex IS NULL AND receipt_status IS NULL AND receipt_previous_revision IS NULL AND receipt_revision IS NULL) OR (phase='UNKNOWN' AND ((receipt_hex IS NULL AND receipt_status IS NULL AND receipt_previous_revision IS NULL AND receipt_revision IS NULL) OR (receipt_hex IS NOT NULL AND receipt_status='UNKNOWN' AND receipt_previous_revision IS NOT NULL AND receipt_revision IS NOT NULL))) OR (phase='RECEIPTED' AND receipt_hex IS NOT NULL AND receipt_status IS NOT NULL AND receipt_status<>'UNKNOWN' AND receipt_previous_revision IS NOT NULL AND receipt_revision IS NOT NULL))) STRICT"),
     ("gogoke_v37_h_seat_binding",
      "CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(domain_id,session_id),UNIQUE(domain_id,seat_incarnation,generation),FOREIGN KEY(domain_id,seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT"),
+    ("gogoke_v37_h_process_episode", super::episodes::PROCESS_SCHEMA),
+    ("gogoke_v37_h_generation", super::episodes::GENERATION_SCHEMA),
 ];
 
 fn valid(value: &str) -> bool {
@@ -124,19 +126,24 @@ pub(crate) fn initialize_admission_schema(
         .collect();
     expected.sort_by(|left, right| left.0.cmp(&right.0));
     if rows == expected { return Ok(()); }
-    let mut previous: Vec<(String, String)> = SCHEMA[..5].iter()
+    let mut previous: Vec<(String, String)> = SCHEMA[..6].iter()
         .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
     previous.sort_by(|left, right| left.0.cmp(&right.0));
-    if !rows.is_empty() && rows != previous { return Err(AdmissionError::Denied); }
+    let mut older: Vec<(String, String)> = SCHEMA[..5].iter()
+        .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
+    older.sort_by(|left, right| left.0.cmp(&right.0));
+    if !rows.is_empty() && rows != previous && rows != older { return Err(AdmissionError::Denied); }
     in_transaction(connection, |connection| {
         reject_shadow_or_effects(connection)?;
         if observed_schema(connection)? != rows {
             return Err(AdmissionError::Denied);
         }
-        let to_create = if rows.is_empty() { &SCHEMA[..] } else { &SCHEMA[5..] };
+        let to_create = if rows.is_empty() { &SCHEMA[..] }
+            else if rows == older { &SCHEMA[5..] } else { &SCHEMA[6..] };
         for (_, sql) in to_create {
             connection.execute(sql)?;
         }
+        if !rows.is_empty() { super::episodes::backfill(connection).map_err(AdmissionError::Store)?; }
         if observed_schema(connection)? != expected {
             return Err(AdmissionError::Denied);
         }
@@ -727,6 +734,8 @@ pub(crate) fn record_session_stop_in_transaction(
     if changes(connection)? != 1 {
         return Err(AdmissionError::Conflict);
     }
+    super::episodes::mark_stopped(connection,process_operation_id,&proof)
+        .map_err(AdmissionError::Store)?;
     let resolve = Statement::prepare(connection.as_ptr(),
         "UPDATE gogoke_v37_h_operation SET status='APPLIED',revision=(SELECT revision FROM gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2) WHERE domain_id=?1 AND session_id=?2 AND operation='open' AND status='UNKNOWN'")?;
     resolve.bind_text(1, domain_id)?;
@@ -759,7 +768,16 @@ pub(crate) fn verify_home_stop_in_transaction(
         return Err(AdmissionError::Invalid("kind"));
     }
     let row = Statement::prepare(connection.as_ptr(),
-        "SELECT a.stop_fact_id FROM gogoke_v37_h_claim AS a JOIN gogoke_coordination_process_custody AS c ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id AND c.generation=a.generation WHERE a.instance_id=?1 AND a.domain_id=?2 AND a.session_id=?3 AND a.generation=?4 AND a.state IN ('STOPPED','RELEASED') AND c.state='STOPPED' AND c.stop_proof_hash=a.stop_fact_id AND a.stop_fact_id IS NOT NULL")?;
+        "SELECT a.stop_fact_id FROM gogoke_v37_h_process_episode AS a
+           JOIN gogoke_v37_h_generation AS g ON g.domain_id=a.domain_id
+             AND g.session_id=a.session_id AND g.generation=a.generation
+             AND g.process_operation_id=a.process_operation_id
+           JOIN gogoke_coordination_process_custody AS c
+             ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id
+             AND c.generation=a.generation
+          WHERE a.instance_id=?1 AND a.domain_id=?2 AND a.session_id=?3
+            AND a.generation=?4 AND a.phase='STOPPED' AND c.state='STOPPED'
+            AND c.stop_proof_hash=a.stop_fact_id AND a.stop_fact_id IS NOT NULL")?;
     for (index, value) in [instance_id, domain_id, owner_id, generation]
         .iter()
         .enumerate()
@@ -965,6 +983,8 @@ mod tests {
             mark_start_unknown_in_transaction(connection, &opened, "processA")
         })
         .unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,phase) VALUES('projectA','openA','sessionA','1',NULL,'6f70656e206279746573',2,3,'processA','instanceA','homeA','bindingA','UNKNOWN')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_generation VALUES('projectA','sessionA','1','openA','processA')").unwrap();
         db.close_checked().unwrap();
         let mut db = open_existing(&root, &path).unwrap();
         initialize_admission_schema(&mut db).unwrap();

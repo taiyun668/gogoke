@@ -24,6 +24,7 @@ pub(crate) enum JournalError {
     CommitUnknown(SameOpenError),
     RollbackUnknown { primary: Box<JournalError>, rollback: SameOpenError },
     Codec(codex_rpc::RpcError),
+    Rpc(super::rpc_journal::RpcJournalError),
     RemoteError,
 }
 
@@ -41,6 +42,9 @@ impl From<SameOpenError> for JournalError {
 
 impl From<codex_rpc::RpcError> for JournalError {
     fn from(error: codex_rpc::RpcError) -> Self { Self::Codec(error) }
+}
+impl From<super::rpc_journal::RpcJournalError> for JournalError {
+    fn from(error: super::rpc_journal::RpcJournalError) -> Self { Self::Rpc(error) }
 }
 
 pub(crate) struct StdinRequest<'a> {
@@ -299,6 +303,33 @@ fn h_binding(
     generation: &str,
     use_case: BindingUse,
 ) -> Result<HBinding, JournalError> {
+    if matches!(use_case,BindingUse::Read) {
+        let history=Statement::prepare(connection.as_ptr(),
+            "SELECT e.process_operation_id,c.ticket,c.custodian_nonce
+               FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_v37_h_generation g
+                 ON g.domain_id=e.domain_id AND g.session_id=e.session_id
+                 AND g.generation=e.generation
+                 AND g.process_operation_id=e.process_operation_id
+               JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                 AND c.generation=e.generation
+              WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
+                AND c.ticket=?4
+                AND ((e.phase='STOPPED' AND c.state='STOPPED'
+                      AND e.stop_fact_id=c.stop_proof_hash AND e.stop_fact_id IS NOT NULL)
+                   OR (e.phase='ACTIVE' AND c.state IN ('ACTIVE','UNKNOWN'))
+                   OR (e.phase='UNKNOWN' AND c.state IN ('UNKNOWN','STOPPED')))")?;
+        for (index,value) in [domain_id,session_id,generation,ticket].iter().enumerate() {
+            history.bind_text((index+1) as i32,value)?;
+        }
+        if !history.step_row()? {return Err(JournalError::Denied);}
+        let binding=HBinding {process_operation_id:history.column_text(0)?,
+            ticket:history.column_text(1)?,custodian_nonce:history.column_text(2)?,
+            domain_id:domain_id.to_owned(),generation:generation.to_owned()};
+        if history.step_row()? {return Err(JournalError::Conflict);}
+        return Ok(binding);
+    }
     let statement = Statement::prepare(
         connection.as_ptr(),
         "SELECT c.operation_id,c.ticket,c.custodian_nonce,a.domain_id,a.generation,
@@ -885,25 +916,20 @@ fn native_thread_id(
     input: &StdinRequest<'_>,
     binding: &HBinding,
 ) -> Result<String, JournalError> {
-    let query = Statement::prepare(connection.as_ptr(),
-        "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
-         JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
-           AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
-           AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
-           AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
-         WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id='thread-start'
-           AND s.process_operation_id=?3 AND s.ticket=?4 AND s.custodian_nonce=?5
-           AND s.generation=?6 AND s.phase='OBSERVED'")?;
-    for (index,value) in [input.domain_id,input.session_id,
-        binding.process_operation_id.as_str(),binding.ticket.as_str(),
-        binding.custodian_nonce.as_str(),input.generation].iter().enumerate() {
-        query.bind_text((index+1) as i32,value)?;
+    let origin=Statement::prepare(connection.as_ptr(),
+        "SELECT request_id FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+            AND process_operation_id=?4")?;
+    for (index,value) in [input.domain_id,input.session_id,input.generation,
+        binding.process_operation_id.as_str()].iter().enumerate() {
+        origin.bind_text((index+1) as i32,value)?;
     }
-    if !query.step_row()? { return Err(JournalError::Denied); }
-    let command = unhex(&query.column_text(0)?)?;
-    let response = unhex(&query.column_text(1)?)?;
-    if query.step_row()? { return Err(JournalError::Conflict); }
-    codex_rpc::decode_stored_thread_start(&command,&response).map_err(JournalError::Codec)
+    if !origin.step_row()? {return Err(JournalError::Denied);}
+    let request_id=origin.column_text(0)?;
+    if origin.step_row()? {return Err(JournalError::Conflict);}
+    super::rpc_journal::observed_thread_id(connection,input.domain_id,
+        input.session_id,&binding.process_operation_id,input.generation,&request_id,
+        &binding.ticket,&binding.custodian_nonce).map_err(JournalError::from)
 }
 
 fn current_native_seat(
@@ -1229,6 +1255,7 @@ mod tests {
             rpc.bind_text(1,step).unwrap(); rpc.bind_text(2,&hex(&command.encode(Some(id)).unwrap())).unwrap();
             rpc.bind_text(3,&cursor).unwrap(); rpc.step_done().unwrap();
         }
+        db.execute("UPDATE main.v37_ledger_raw_source SET state='NO_EVENT',no_event_reason='CODEX_RPC_RESPONSE' WHERE operation_id='processA' AND source_cursor='1'").unwrap();
         db.execute("CREATE TRIGGER fail_original_receipt BEFORE UPDATE ON gogoke_v37_h_stdin_journal WHEN NEW.phase='RECEIPTED' BEGIN SELECT RAISE(ABORT,'receipt write fault'); END").unwrap();
         assert!(recover_codex_turn_request(&mut db,&stdin).is_err());
         let revision=Statement::prepare(db.as_ptr(),"SELECT revision FROM gogoke_v37_h_claim WHERE session_id='sessionA'").unwrap();
@@ -1244,6 +1271,7 @@ mod tests {
         assert_eq!(decision.record.request_bytes,raw);
         assert_eq!(decision.record.receipt_revision,Some(2));
         db.execute("UPDATE gogoke_v37_h_claim SET state='STOPPED',revision=3,stop_fact_id='proofA' WHERE session_id='sessionA'").unwrap();
+        db.execute("UPDATE gogoke_v37_h_process_episode SET phase='STOPPED',stop_fact_id='proofA' WHERE process_operation_id='processA'").unwrap();
         db.execute("UPDATE gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='proofA' WHERE operation_id='processA'").unwrap();
         let history=read_stdin_journal(&db,&StdinJournalKey {domain_id:"projectA",request_id:"sendA",
             session_id:"sessionA",ticket:"pct1_ticketA",generation:"1"}).unwrap().unwrap();
@@ -1262,6 +1290,8 @@ mod tests {
         super::super::admission::initialize_admission_schema(connection).unwrap();
         connection.execute("INSERT INTO gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','projectA','SESSION','sessionA','1','ACTIVE')").unwrap();
         connection.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA','sessionA','instanceA','homeA','bindingA','1','COMMITTED',1,'processA')").unwrap();
+        connection.execute("INSERT INTO gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('projectA','openA','sessionA','1',NULL,'6f70656e',0,1,'processA','instanceA','homeA','bindingA','seatA','seatIncarnationA','ACTIVE')").unwrap();
+        connection.execute("INSERT INTO gogoke_v37_h_generation VALUES('projectA','sessionA','1','openA','processA')").unwrap();
     }
 
     fn insert_fake_custody(connection: &mut VerifiedDatabaseConnection<'_>) {

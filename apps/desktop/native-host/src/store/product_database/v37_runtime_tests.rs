@@ -65,8 +65,13 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
         r#"{"seatId":"seatA","generation":"2","repositoryId":"fixtureRepo","worktreeId":"treeA"}"#);
     let receipt = product.dispatch_user_request(&open).expect("actual CLI open original native error");
     assert_eq!(h::decode_receipt(&receipt).unwrap().status, V37Status::Applied);
+    assert_eq!(h::decode_receipt(&receipt).unwrap().previous_revision,2);
+    assert_eq!(h::decode_receipt(&receipt).unwrap().revision,3,"open write and receipt advance the owning H revision together");
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status, V37Status::Replayed);
-    let output=operation("K-SESSION","output-stream","read-native-output","sessionA",2,
+    let stale_output=operation("K-SESSION","output-stream","old-open-revision","sessionA",2,
+        r#"{"generation":"2","afterCursor":"0"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stale_output).unwrap()).unwrap().status,V37Status::Stale);
+    let output=operation("K-SESSION","output-stream","read-native-output","sessionA",3,
         r#"{"generation":"2","afterCursor":"0"}"#);
     let actual_output=h::decode_receipt(&product.dispatch_user_request(&output).unwrap()).unwrap();
     assert_eq!(actual_output.status,V37Status::Applied);
@@ -76,13 +81,24 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     product.connection.execute("INSERT INTO sqlite_sequence(name,seq) SELECT 'v37_ledger_index',1 WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='v37_ledger_index')").unwrap();
     product.connection.execute("UPDATE sqlite_sequence SET seq=seq+1 WHERE name='v37_ledger_index'").unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&output).unwrap()).unwrap().status,V37Status::Stale);
-    let collision=operation("K-SESSION","stop","read-native-output","sessionA",2,
+    let collision=operation("K-SESSION","stop","read-native-output","sessionA",3,
         r#"{"seatId":"seatA","generation":"2"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&collision).unwrap()).unwrap().status,V37Status::Conflict);
     let row = Statement::prepare(product.connection.as_ptr(), "SELECT count(*) FROM main.gogoke_v37_rpc_steps WHERE phase='OBSERVED'").unwrap();
     assert!(row.step_row().unwrap());
     assert_eq!(row.column_text(0).unwrap(), "3", "initialize, effective config and real thread response; initialized has no ACK");
     drop(row);
+    let native_flags=operation("K-SESSION","capability-probe","loaded-features-open","sessionA",3,
+        r#"{"generation":"2"}"#);
+    let observed_flags=h::decode_receipt(&product.dispatch_user_request(&native_flags).unwrap()).unwrap();
+    assert_eq!(observed_flags.status,V37Status::Applied);
+    let observed_flags=observed_flags.into_result();
+    let Some(Json::Object(features))=observed_flags.get(&JsonString::from_str("loadedThreadFeatures")) else {
+        panic!("loaded thread feature response absent");
+    };
+    assert_eq!(features.get(&JsonString::from_str("memories")),Some(&Json::Bool(false)));
+    assert_eq!(features.get(&JsonString::from_str("multi_agent_v2")),Some(&Json::Bool(false)));
+    assert_eq!(features.get(&JsonString::from_str("default_mode_request_user_input")),Some(&Json::Bool(true)));
     let key = ("projectA".to_owned(), "sessionA".to_owned());
     let live = product.native_sessions.get(&key).unwrap();
     let custody = live.custody.clone();
@@ -133,12 +149,12 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
         r#"{"generation":"2","body":"must never reach the provider"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reused_open).unwrap()).unwrap().status,
         V37Status::Conflict);
-    let reserved_send = operation("K-SESSION", "send", "reserved-send", "sessionA", 2,
+    let reserved_send = operation("K-SESSION", "send", "reserved-send", "sessionA", 3,
         r#"{"generation":"2","body":"intention only"}"#);
     let reserved_input = h::StdinRequest { domain_id: "projectA", session_id: "sessionA",
         ticket: custody.ticket.opaque(), generation: "2", request_bytes: &reserved_send.raw_bytes };
     h::prepare_codex_request(&mut product.connection, &reserved_input).unwrap();
-    let reused_send = operation("K-SESSION", "stop", "reserved-send", "sessionA", 2,
+    let reused_send = operation("K-SESSION", "stop", "reserved-send", "sessionA", 3,
         r#"{"seatId":"seatA","generation":"2"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&reused_send).unwrap()).unwrap().status,
         V37Status::Conflict);
@@ -148,7 +164,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert!(product.native_rpc(&key,"capture-fault-config",Some(9),&Command::ConfigRead {cwd}).is_err());
     assert!(product.native_sessions.get(&key).unwrap().raw_capture.has_pending(),
         "the actual fourth CLI response remains in original native custody");
-    let stop = operation("K-SESSION", "stop", "stop-session", "sessionA", 2, r#"{"seatId":"seatA","generation":"2"}"#);
+    let stop = operation("K-SESSION", "stop", "stop-session", "sessionA", 3, r#"{"seatId":"seatA","generation":"2"}"#);
     assert!(product.dispatch_user_request(&stop).is_err(),"original capture failure still reported after actual stop");
     let retained=product.native_sessions.get(&key).unwrap();
     let proof=retained.stop_proof.as_ref().expect("stop reached the actual Job despite capture SQL failure");
@@ -178,14 +194,96 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert!(fact.is_some(), "actual native Job and same-store durable stop fact");
     // Model a lost H commit across restart, retaining the actually persisted
     // native STOPPED proof. Recovery must not require live OS handles.
-    product.connection.execute("UPDATE gogoke_v37_h_operation SET status='UNKNOWN',revision=2 WHERE request_id='stop-session'").unwrap();
-    product.connection.execute("UPDATE gogoke_v37_h_claim SET state='COMMITTED',revision=2,stop_fact_id=NULL WHERE session_id='sessionA'").unwrap();
+    product.connection.execute("UPDATE gogoke_v37_h_operation SET status='UNKNOWN',revision=3 WHERE request_id='stop-session'").unwrap();
+    product.connection.execute("UPDATE gogoke_v37_h_claim SET state='COMMITTED',revision=3,stop_fact_id=NULL WHERE session_id='sessionA'").unwrap();
     product.close_checked().unwrap();
     let mut product = ProductDatabase::open(&root, &database).unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status, V37Status::Replayed);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
-    let release = operation("K-SESSION", "admission-release", "release-session", "sessionA", 3,
-        r#"{"seatId":"seatA","generation":"2"}"#);
+    // No model turn is sent: the real pinned app-server must reopen the same
+    // durable thread in a new physical process from the held H admission.
+    let resume=operation("K-SESSION","resume","resume-session","sessionA",4,
+        r#"{"generation":"2"}"#);
+    let continued=h::decode_receipt(&product.dispatch_user_request(&resume).expect("real native thread/resume")).unwrap();
+    assert_eq!(continued.status,V37Status::Applied);
+    assert_eq!(continued.previous_revision,4);
+    assert_eq!(continued.revision,5);
+    let continued_result=continued.into_result();
+    assert_eq!(continued_result.get(&JsonString::from_str("oldGeneration")),
+        Some(&Json::String(JsonString::from_str("2"))));
+    assert_eq!(continued_result.get(&JsonString::from_str("newGeneration")),
+        Some(&Json::String(JsonString::from_str("3"))));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap().status,
+        V37Status::Replayed,"original request replay cannot start a second process");
+    let admission=Statement::prepare(product.connection.as_ptr(),
+        "SELECT count(*) FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA' AND state='COMMITTED' AND generation='3'").unwrap();
+    assert!(admission.step_row().unwrap());
+    assert_eq!(admission.column_text(0).unwrap(),"1","resume keeps the same admission capacity claim");
+    drop(admission);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status,
+        V37Status::Replayed,"old stop proof stays reachable after claim advances");
+    assert_eq!(h::rpc_journal::observed_thread_id(&product.connection,"projectA","sessionA",
+        &process_operation,"2","open-session",custody.ticket.opaque(),
+        &custody.custodian_nonce).unwrap(),thread,
+        "old H RPC and A source still identify the original thread after resume");
+    let old_send=operation("K-SESSION","send","old-generation-send","sessionA",5,
+        r#"{"generation":"2","body":"must not reach either process"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&old_send).unwrap()).unwrap().status,
+        V37Status::Conflict);
+    let old_output=operation("K-SESSION","output-stream","old-generation-after-resume","sessionA",5,
+        r#"{"generation":"2","afterCursor":"0"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&old_output).unwrap()).unwrap().status,
+        V37Status::Conflict,"old generation cannot read the new native process");
+    let new_output=operation("K-SESSION","output-stream","new-generation-after-resume","sessionA",5,
+        r#"{"generation":"3","afterCursor":"0"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&new_output).unwrap()).unwrap().status,
+        V37Status::Applied);
+    let resumed_flags=operation("K-SESSION","capability-probe","loaded-features-resumed","sessionA",5,
+        r#"{"generation":"3"}"#);
+    let observed_flags=h::decode_receipt(&product.dispatch_user_request(&resumed_flags).unwrap()).unwrap();
+    assert_eq!(observed_flags.status,V37Status::Applied);
+    let observed_flags=observed_flags.into_result();
+    let Some(Json::Object(features))=observed_flags.get(&JsonString::from_str("loadedThreadFeatures")) else {
+        panic!("resumed loaded thread feature response absent");
+    };
+    assert_eq!(features.get(&JsonString::from_str("memories")),Some(&Json::Bool(false)));
+    assert_eq!(features.get(&JsonString::from_str("multi_agent_v2")),Some(&Json::Bool(false)));
+    assert_eq!(features.get(&JsonString::from_str("default_mode_request_user_input")),Some(&Json::Bool(true)));
+    let second_stop=operation("K-SESSION","stop","stop-resumed","sessionA",5,
+        r#"{"seatId":"seatA","generation":"3"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&second_stop).unwrap()).unwrap().status,
+        V37Status::Applied);
+    // Lose only H's OBSERVED commit after A captured the actual second
+    // thread/resume response. The original source remains PENDING and its
+    // native RPC step WRITTEN; same-ID recovery must not write stdin again.
+    product.connection.execute("CREATE TRIGGER inject_resume_rpc_commit_failure BEFORE UPDATE ON gogoke_v37_rpc_steps WHEN NEW.phase='OBSERVED' AND NEW.step_id LIKE 'h-resume-%-thread-resume' BEGIN SELECT RAISE(ABORT,'injected resume RPC observation failure'); END").unwrap();
+    let resumed_again=operation("K-SESSION","resume","resume-after-stop","sessionA",6,
+        r#"{"generation":"3"}"#);
+    let uncertain=h::decode_receipt(&product.dispatch_user_request(&resumed_again).unwrap()).unwrap();
+    assert_eq!(uncertain.status,V37Status::Unknown);
+    assert_eq!(uncertain.revision,7);
+    let still_stopped=Statement::prepare(product.connection.as_ptr(),
+        "SELECT generation,state,revision FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
+    assert!(still_stopped.step_row().unwrap());
+    assert_eq!(still_stopped.column_text(0).unwrap(),"3");
+    assert_eq!(still_stopped.column_text(1).unwrap(),"STOPPED");
+    assert_eq!(still_stopped.column_text(2).unwrap(),"7");
+    drop(still_stopped);
+    let competing=operation("K-SESSION","resume","competing-resume","sessionA",7,
+        r#"{"generation":"3"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&competing).unwrap()).unwrap().status,
+        V37Status::Conflict,"candidate fences every new ID before OS start");
+    product.connection.execute("DROP TRIGGER inject_resume_rpc_commit_failure").unwrap();
+    let reconciled=h::decode_receipt(&product.dispatch_user_request(&resumed_again).unwrap()).unwrap();
+    assert_eq!(reconciled.status,V37Status::Replayed);
+    assert_eq!(reconciled.previous_revision,7);
+    assert_eq!(reconciled.revision,8);
+    let third_stop=operation("K-SESSION","stop","stop-reconciled","sessionA",8,
+        r#"{"seatId":"seatA","generation":"4"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&third_stop).unwrap()).unwrap().status,
+        V37Status::Applied);
+    let release = operation("K-SESSION", "admission-release", "release-session", "sessionA", 9,
+        r#"{"seatId":"seatA","generation":"4"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&release).unwrap()).unwrap().status, V37Status::Applied);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     product.close_checked().unwrap();
