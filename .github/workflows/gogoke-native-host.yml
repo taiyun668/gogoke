@@ -300,6 +300,23 @@ jobs:
           }
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
+      - name: Test production LPAC path shim behavior in cloud
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml -p gogoke-lpac-path-compat --lib -- --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath (Join-Path $evidenceRoot 'lpac-path-shim.log') | Write-Host
+          $text = $output -join "`n"
+          $summary = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+          $valid = $summary.Success -and [int]$summary.Groups[2].Value -eq 2 -and [int]$summary.Groups[3].Value -eq 0 -and [int]$summary.Groups[4].Value -eq 0 -and [int]$summary.Groups[6].Value -eq 0
+          $state = if ($exitCode -eq 0 -and $valid) { 'PASS' } else { 'FAIL' }
+          [ordered]@{ axis = 'lpac_path_same_source_shim'; state = $state; exit_code = $exitCode; passed = if ($summary.Success) { [int]$summary.Groups[2].Value } else { 0 }; failed = if ($summary.Success) { [int]$summary.Groups[3].Value } else { 0 }; skipped = if ($summary.Success) { [int]$summary.Groups[4].Value } else { 0 } } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lpac-path-shim-result.json') -Encoding utf8NoBOM
+          if ($state -ne 'PASS') { throw "Production LPAC shim tests failed or did not execute: $exitCode" }
       - name: Upload native-host machine evidence
         if: always()
         uses: actions/upload-artifact@v4

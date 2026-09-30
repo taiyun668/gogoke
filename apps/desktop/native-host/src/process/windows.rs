@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
-use super::session::{AppContainerProfile, SecurityCapabilities};
+use super::session::{AppContainerProfile, CompatModule, SecurityCapabilities};
 use crate::ipc::PeerProcessHandle;
 
 type Handle = *mut c_void;
@@ -313,6 +313,8 @@ pub struct ProcessLaunch {
     pub(crate) app_container_profile: Option<String>,
     /// Outbound network is a separate explicit AppContainer capability.
     pub(crate) app_container_internet_client: bool,
+    /// Sealed fixed-byte compatibility custody; never populated from IPC.
+    pub(crate) path_compat: Option<Arc<CompatModule>>,
 }
 
 impl ProcessLaunch {
@@ -327,6 +329,7 @@ impl ProcessLaunch {
             environment: None,
             app_container_profile: None,
             app_container_internet_client: false,
+            path_compat: None,
         }
     }
 }
@@ -755,6 +758,7 @@ struct LaunchFailureCustody {
     _process: OwnedHandle,
     _initial_thread: OwnedHandle,
     _job: OwnedHandle,
+    _path_compat: Option<Arc<CompatModule>>,
 }
 
 fn reject_suspended_child_with<T, W>(
@@ -784,6 +788,7 @@ where
         _process: process,
         _initial_thread: initial_thread,
         _job: job,
+        _path_compat: None,
     });
     ProcessCustodyError::LaunchCleanup { cause: Box::new(cause), detail }
 }
@@ -816,6 +821,7 @@ struct PreparedProcess {
     identity: ProcessIdentity,
     protocol: Option<ProtocolPipes>,
     persistent_protocol_stdio: bool,
+    path_compat: Option<Arc<CompatModule>>,
 }
 
 impl PreparedProcess {
@@ -849,7 +855,19 @@ impl PreparedProcess {
             identity,
             protocol,
             persistent_protocol_stdio: launch.persistent_protocol_stdio,
+            path_compat: launch.path_compat.clone(),
         })
+    }
+
+    fn reject(self, cause: ProcessCustodyError,
+        retained: &mut Vec<LaunchFailureCustody>) -> ProcessCustodyError {
+        let Self { process, initial_thread, job, path_compat, .. } = self;
+        let before = retained.len();
+        let error = reject_suspended_child(cause, process, initial_thread, job, retained);
+        if retained.len() > before {
+            retained.last_mut().expect("retained exact failed child")._path_compat = path_compat;
+        }
+        error
     }
 
     fn handles_are_non_inheritable(&self) -> Result<bool, ProcessCustodyError> {
@@ -876,6 +894,7 @@ impl PreparedProcess {
             identity,
             protocol,
             persistent_protocol_stdio,
+            path_compat,
         } = self;
         drop(initial_thread);
         Ok(ManagedProcess {
@@ -884,6 +903,7 @@ impl PreparedProcess {
             identity,
             protocol,
             persistent_protocol_stdio,
+            _path_compat: path_compat,
             persistent_writer: Mutex::new(false),
             persistent_reader: Mutex::new(PersistentReadState::default()),
             stop_attempted: AtomicBool::new(false),
@@ -960,6 +980,18 @@ impl ProcessCustodian {
                 io::ErrorKind::Other,
                 "process, thread, or job handle remained inheritable",
             )));
+        }
+        if let Some(module) = &prepared.path_compat {
+            if actual_digest != format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_CLI_SHA256) {
+                return Err(prepared.reject(ProcessCustodyError::BindingMismatch(
+                    "compatibilitySupportedCliSha256"), &mut self.failed_launches));
+            }
+            // This edits imports on the same verified suspended image. It
+            // never runs code: activation remains after durable PREPARED.
+            if let Err(source) = unsafe { module.update_suspended(prepared.process.raw()) } {
+                return Err(prepared.reject(ProcessCustodyError::Isolation(format!(
+                    "fixed CLI path compatibility preparation: {source}")), &mut self.failed_launches));
+            }
         }
         let ticket = loop {
             let candidate = ProcessTicket(format!("pct1_{}", random_hex_32()?));
@@ -1216,6 +1248,7 @@ pub struct ManagedProcess {
     identity: ProcessIdentity,
     protocol: Option<ProtocolPipes>,
     persistent_protocol_stdio: bool,
+    _path_compat: Option<Arc<CompatModule>>,
     persistent_writer: Mutex<bool>,
     persistent_reader: Mutex<PersistentReadState>,
     stop_attempted: AtomicBool,
@@ -1670,6 +1703,11 @@ pub fn may_target_pid(recorded: &ProcessIdentity, observed: Option<&ProcessIdent
 }
 
 fn validate_launch(launch: &ProcessLaunch) -> Result<(), ProcessCustodyError> {
+    if let Some(module) = &launch.path_compat {
+        module.validate_launch(launch.app_container_profile.as_deref(),
+            launch.environment.as_deref()).map_err(|source|
+                ProcessCustodyError::Isolation(format!("fixed CLI compatibility scope: {source}")))?;
+    }
     if launch.persistent_protocol_stdio && !launch.protocol_stdio {
         return Err(ProcessCustodyError::InvalidLaunch(
             "persistent stdio requires protocol pipes"));

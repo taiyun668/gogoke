@@ -1,0 +1,3 @@
+LIBRARY gogoke_lpac_path_compat
+EXPORTS
+    DetourFinishHelperProcess @1

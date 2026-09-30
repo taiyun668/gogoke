@@ -19,6 +19,9 @@ path = "src/root/lock_probe.rs"
 [dependencies]
 ryu-js = "=1.0.3"
 
+[target.'cfg(windows)'.dependencies]
+gogoke-lpac-path-compat = { path = "src/process/session/compat" }
+
 [build-dependencies]
 cc = "=1.4.2"
 

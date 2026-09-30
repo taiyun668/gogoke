@@ -14,6 +14,12 @@ findings = SCANNER.findings
 
 
 class PublicSourceScannerTests(unittest.TestCase):
+    def test_pointer_format_newline_is_explained_without_vendor_path_exemption(self):
+        result = findings(r'DETOUR_TRACE((" from %p:\n", pointer));', "src/component.cpp")
+        self.assertEqual(result, [(1, "machine-path", "EXPLAINED", "source-pointer-format-newline")])
+        result = findings("path: " + "p:" + chr(92) + "notes", "src/component.cpp")
+        self.assertEqual(result, [(1, "machine-path", "LEAK", "absolute-path")])
+
     def test_current_user_path_is_a_leak_even_inside_a_test_file(self):
         owner_path = "C:" + chr(92) + "Users" + chr(92) + Path.home().name + chr(92) + "Documents"
         results = findings("path: " + owner_path, "apps/desktop/src/leak.test.ts")

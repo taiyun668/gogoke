@@ -5,7 +5,7 @@
 //! The caller must establish User origin before invoking this private action.
 
 use super::*;
-use crate::process::AppContainerProfile;
+use crate::process::{AppContainerProfile, CompatModule};
 use crate::process::{DurableStopConfirmation, NativeBinding, OriginBoundFrame,
     PrepareRequest, PreparedCustody, ProcessCustodyError, ProcessLaunch, StopBudgets};
 use crate::root::{inspect_root, RootIdentity};
@@ -764,13 +764,17 @@ impl<'root> ProductDatabase<'root> {
             .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                 "login isolation profile: {error}")))?;
         let (runtime, runtime_identity) = runtime_home(&home.path)?;
-        let scope = (|| -> Result<Vec<(String, String)>> {
-            let environment = clean_environment(&home.path, &runtime)?;
+        let scope = (|| -> Result<_> {
+            let mut environment = clean_environment(&home.path, &runtime)?;
             grant_owner_login_scope(&profile, &home, &runtime, &runtime_identity, &program)?;
-            Ok(environment)
+            let module = CompatModule::prepare(self.root, &home.path, &home.identity,
+                &profile, &profile_name).map_err(|source|
+                    OrchestrationError::V37StoreFailure(format!("login path compatibility: {source}")))?;
+            module.extend_environment(&mut environment);
+            Ok((environment, module))
         })();
-        let environment = match scope {
-            Ok(environment) => environment,
+        let (environment, module) = match scope {
+            Ok(prepared) => prepared,
             Err(error) => {
                 let cleanup = remove_owned_runtime(&runtime, &runtime_identity);
                 return Err(OrchestrationError::V37StoreFailure(format!(
@@ -793,6 +797,7 @@ impl<'root> ProductDatabase<'root> {
         login.persistent_protocol_stdio = true;
         login.app_container_profile = Some(profile_name.clone());
         login.app_container_internet_client = true;
+        login.path_compat = Some(module.clone());
         let mut account_read = ProcessLaunch::new(program);
         account_read.arguments = vec![
             "-c".into(), "features.memories=false".into(),
@@ -806,6 +811,7 @@ impl<'root> ProductDatabase<'root> {
         account_read.persistent_protocol_stdio = true;
         account_read.app_container_profile = Some(profile_name);
         account_read.app_container_internet_client = true;
+        account_read.path_compat = Some(module);
         Ok(PreparedOwnerLogin {
             login: PrepareRequest { launch: login, binding: binding.clone() },
             account_read: PrepareRequest { launch: account_read, binding },
@@ -1264,6 +1270,7 @@ mod tests {
         assert_eq!(scoped.login.launch.current_directory.as_deref(), Some(runtime.as_path()));
         assert_eq!(scoped.account_read.launch.current_directory.as_deref(), Some(runtime.as_path()));
         remove_owned_runtime(&scoped.runtime_home, &scoped.runtime_identity).unwrap();
+        drop(scoped); // release the prepared module/home locks before fixture teardown
         let query = request("login-state", "queryBeforeObservation", 1, "{}");
         let before = product.dispatch_user_request(&query).unwrap();
         assert!(String::from_utf8(before).unwrap().contains("\"state\":\"UNKNOWN\""));
