@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "PR58_REQUIRES_AUTHOR_REVISION_BEFORE_OWNER_MERGE",
+  "state": "PR58_FOCUSED_REVISION_PASS_READY_FOR_OWNER_MERGE",
   "priorCheckpointCommit": "95aeb569c9f00c69ba167ca30c912b003f22c6e8",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
@@ -49,6 +49,34 @@
     },
     "authorHandoff": "Audit PR comment explicitly returns both necessary revisions together to PR author Claude; no Controller plan edit or merge."
   },
+  "revisionReview": {
+    "seat": "pr58_focused_plan_audit",
+    "sameIndependentSeat": true,
+    "priorHead": "3ef1a20aa469d3646e29f27b0dd17fe47767b614",
+    "head": "8112f05f80e31709c635db033d99e208aeb5262f",
+    "base": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+    "prManifestBlob": "9d540cbac609b5ba21cb12e1640b375bcc980736",
+    "result": "PASS_READY_FOR_OWNER_PLAN_PR_MERGE",
+    "comment": "https://github.com/taiyun668/gogoke/pull/58#issuecomment-5929805905",
+    "commentReadback": "CONFIRMED_FINAL_PASS",
+    "M1StateBoundary": "G.0 and K-UI explicitly cover not installed, not logged in, logged in and error including original login failure. New-version/general exhaustion remain F.2/V13 M2; complete G.1 remains M3.",
+    "loginResultBranches": "F.1/K-INSTANCE host preserves original failure result and automatically detects successful login; G.0 shows both. V00a fake/real cases and V04 actual CLI failure/success assert automatic result and same original login/result after closing or restarting UI.",
+    "logicCorrection": "An initial extra blocker read the M2 and M3 seam in isolation. Whole-plan F.2/V13 M2 facts and G.1/V00c/V15 M3 UI can simultaneously satisfy that wording without a new M2 G phase or K-UI gate. Auditor withdrew the unsupported blocker and corrected the same public comment; no additional author revision required.",
+    "validation": {
+      "exactPRBytes": true,
+      "validatorExitCode": 0,
+      "errors": [],
+      "selfTestMutationsMissed": [],
+      "structuralChecksPassed": true,
+      "manifestThreeMemberHashes": "INDEPENDENTLY_MATCH",
+      "bothDiffChecks": "PASS",
+      "sharedMappingsPermissionsCLIAndAuthorizationSequence": "UNCHANGED_BY_REVISION",
+      "PRHygieneRun": 36851095479,
+      "PRHygieneConclusion": "PASS"
+    },
+    "productAcceptanceOrNewAuthorization": false,
+    "planPRMergedAtReadback": false
+  },
   "unrelatedHReadback": {
     "seat": "cli_identity_services_fix",
     "source": "aae122c392393dc48fead2fa2f336d6af8af8267",
@@ -72,12 +100,11 @@
     "formalObjectsChangedByReview": false
   },
   "next": [
-    "Claude revises the two focused findings; same independent audit seat reviews exact new head and records comment.",
-    "Only after passing report ready for Owner merge of PR58; Controller does not merge.",
+    "Both author revisions passed same-seat focused review on 8112f05f; ready for Owner merge of PR58. Controller does not merge.",
     "After Owner merge re-run T00 on actual main, create separate authorization PR binding its actual MANIFEST blob; Owner merges and Controller reads exact authorization before F.1/G.0 edits.",
     "Implement full M1 login closure with original fixed CLI and existing isolation; then call Owner once for OT4 from the instance page and continue actual M1 tests."
   ],
-  "routeReflection": "One fresh focused audit collected both plan gaps and verified all independent file, contract and authorization axes. H's existing exact-source evidence was read back in parallel instead of creating unrelated work; old cloudSource labels were treated as historical, not used to reject the current passing source. The remaining work follows the necessary author revision and Owner merge decisions, not the checkpoint itself.",
+  "routeReflection": "Initial audit collected both actionable gaps together. Same-seat revision review verified exact new bytes and checked potential new findings against the complete phase arrangement; a stronger unsupported local interpretation was withdrawn without another author round trip. H has no independent evidence-backed code gap before OT4. Remaining action is the authorized Owner merge, followed by actual-main T00 and new authorization readback, not another checkpoint gate.",
   "productCodeChanged": false,
   "planChangedByController": false,
   "M1Complete": false,
