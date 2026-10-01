@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "OWNER_OT4_RETRY_REQUIRED_ACTUAL_REPAIRED_INSTALL_READY",
+  "state": "ACTUAL_OWNER_OT4_RETRY_REQUEST_SEND_FAILED_DIRECT_LOG_SOURCE_INVESTIGATION",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -47,9 +47,9 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "All four protected ordinary-view snapshot domains equal before replacement, after installation and while repaired product runs.",
   "next": [
-    "Owner: Settings / Codex, instance codexTestM1, Register instance syncs existing current revision2, then Start login. This is planned OT4; Controller does not request credentials or initiate sensitive authentication automation.",
-    "If actual login fails, read now-preserved exit code and stderr; diagnose this actual installed process cause. Original lost failure remains unknown.",
-    "After Owner login, continue actual authenticated model/native question/append/compact and remaining M1 tests under the same native home and original host worktree. No self-acceptance or public Design37 release."
+    "Finish fixed CLI lower-client tracing source lookup and find actual connection cause through the same installed identity and Owner-private evidence. Do not add external network probes or change security settings.",
+    "Fix demonstrated product issue within existing boundary, run affected exact-source cloud checks and same-byte actual installed Win11 evidence.",
+    "OT4 login is not passed; after successful login continue authenticated M1 checks. New Owner request only for genuine required touchpoint or boundary decision."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -150,7 +150,7 @@
       "setId": "ba4990f7abae41c1b2af6503671a215a66257ab375406b0af7cd8a0170693a3b",
       "version": "0.1.13"
     },
-    "actualLoginRetry": "NOT_RUN",
+    "actualLoginRetry": "OWNER_EXECUTED_REQUEST_SEND_FAILED_EXIT_1",
     "installerExitCode": 0,
     "actualInstalledHashes": "ALL_FOUR_MATCH_EXACT_FROZEN_INPUT",
     "nativeDataIdentity": "PRESERVED_DEV_INO_HOME_BINDING_VERSION_AND_REVISION",
@@ -170,7 +170,43 @@
     "heldTaskNameFile": "held-task-name.txt",
     "heldTask": "Interactive/Limited; actual installed product retained for OT4; existing four-hour task limit. No Controller authentication call or sensitive page automation.",
     "productEndpointFile": "installed-product-endpoint.json",
-    "completedOwnedTasksRemoved": 7
+    "completedOwnedTasksRemoved": 7,
+    "latestReopen": "latest-reopen.json; ordinary same installation reopened on Owner request; before/after four formal domains unchanged; actual running process retained",
+    "privateFailureEvidence": "owner-device-login-network-failure.png, owner-device-login-default-log.txt, ordinary-network-config-readback.json; no authentication material publicly committed"
   },
-  "prior_installed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82"
+  "prior_installed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "actual_owner_retry": {
+    "sourceCommit": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+    "actualUIInstanceRevision": "2",
+    "diagnosticRepair": "PASS_ORIGINAL_CHILD_EXIT_AND_STDERR_REACHED_REAL_OWNER_UI",
+    "childExitCode": 1,
+    "failurePhase": "DEVICE_CODE_USERCODE_REQUEST_SEND",
+    "endpoint": "https://auth.openai.com/api/accounts/deviceauth/usercode",
+    "specificDNS_TCP_TLS_ProxyOrIsolationCause": "UNKNOWN",
+    "ownedRuntimeCleanup": "OK",
+    "screenshotSha256": "ee8f191b085f150ad559389e7077d5763249acc0cdf81a4c5e7c94fdef19971e",
+    "credentialsOrCodeObtained": "NOT_OBSERVED",
+    "publicRawOwnerOutput": false
+  },
+  "direct_network_evidence": {
+    "ordinaryUserProxy": {
+      "enabled": false,
+      "serverPresent": false,
+      "autoConfigPresent": false,
+      "HTTP_HTTPS_ALL_NO_PROXY": "UNSET"
+    },
+    "customCertOverrideVariables": "SSL_CERT_FILE_SSL_CERT_DIR_CODEX_CA_CERTIFICATE_UNSET",
+    "readOnlyWindowsEvents": "NO_MATCHING_RECENT_WFP_OR_SECURITY_BLOCKED_CONNECTION_EVENTS; no audit/security setting changed",
+    "existingExactCliLoginLog": {
+      "relative": "log/codex-login.log",
+      "length": 168,
+      "sha256": "4369ce460b0b62b337de5da78963f22b656fbd0d9b07e77aa3f2c595188259c3",
+      "contentClass": "ONLY_DEVICE_LOGIN_START_INFO_LINES_NO_DEEPER_ERROR"
+    },
+    "actualLaunchSource": "clean_environment is explicit; internetClient and registryRead capabilities are present; compatibility module changes path spelling only",
+    "logicCheck": "Unconfigured proxy/certificate env cannot explain a missing configured value. CLI top-level request-send Display cannot identify DNS/TCP/TLS cause. Disabled Codex request logging does not prove lower-layer tracing is unavailable; inspect exact client stack before changing environment or permissions.",
+    "sourceReview": "Same Sol read-only reviewer: no evidenced causal omission; current cause UNKNOWN; existing cloud tests have no actual device-auth HTTPS positive coverage",
+    "officialCLI": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "controllerAuthenticationOrSystemSettingsChanges": false
+  }
 }
