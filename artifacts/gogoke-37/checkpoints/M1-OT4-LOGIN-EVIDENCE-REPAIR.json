@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "ACTUAL_OWNER_OT4_RETRY_REQUEST_SEND_FAILED_DIRECT_LOG_SOURCE_INVESTIGATION",
+  "state": "EXISTING_PRIVATE_CONNECTOR_LOG_FILTER_SOURCE_READY_CLOUD_PENDING",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -47,9 +47,9 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "All four protected ordinary-view snapshot domains equal before replacement, after installation and while repaired product runs.",
   "next": [
-    "Finish fixed CLI lower-client tracing source lookup and find actual connection cause through the same installed identity and Owner-private evidence. Do not add external network probes or change security settings.",
-    "Fix demonstrated product issue within existing boundary, run affected exact-source cloud checks and same-byte actual installed Win11 evidence.",
-    "OT4 login is not passed; after successful login continue authenticated M1 checks. New Owner request only for genuine required touchpoint or boundary decision."
+    "Commit and run exact-source native-host, desktop/frozen/repro and hygiene cloud checks.",
+    "Use trusted-main signer and same signed-byte cloud smoke; ordinary same-root candidate replacement preserves all data identities and formal snapshots.",
+    "Owner performs the planned real UI login; read exact existing private connector log and preserved stderr. No guarantee the new filter covers this failure. Continue demonstrated-cause repair within current scope."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -208,5 +208,29 @@
     "sourceReview": "Same Sol read-only reviewer: no evidenced causal omission; current cause UNKNOWN; existing cloud tests have no actual device-auth HTTPS positive coverage",
     "officialCLI": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
     "controllerAuthenticationOrSystemSettingsChanges": false
+  },
+  "pending_connect_diagnostics": {
+    "change": "clean_environment pins the existing CLI file-layer filter to its previous three info targets plus hyper_util::client::legacy::connect::http=trace; shared by login and account/read.",
+    "file": "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+    "networkCauseFixed": false,
+    "newNetworkProbeOrComponent": false,
+    "capabilitiesProxyCertificatesRequestsAndTimeoutsChanged": false,
+    "headersBodyTokenAndDeviceCodeLogging": "NOT_ENABLED; source-reviewed exact TCP connector target has none of these output statements",
+    "logLocation": "CLI configured login log; default registered F home/log/codex-login.log; actual existing default file observed privately",
+    "coverageLimit": "Only destination/progress and some TCP errors. DNS, TLS and early socket setup errors may bypass these trace statements. Absence of a record is not success or a specific cause.",
+    "logicCheck": "Official device CLI prints only top-level Reqwest Display. The existing file subscriber filters out connector events by default. Enable only an already-present direct connector target to distinguish actual TCP progress/failure; no inferred cause or security change.",
+    "freshSolReview": {
+      "seat": "m1_connect_log_privacy_review",
+      "state": "SOURCE_ONLY_NO_BLOCKING_FINDING_AFTER_COMMENT_PRECISION_CORRECTIONS",
+      "corrections": "TCP-only wording and configured/default log-directory wording; acknowledge account/read shares filter",
+      "nativeOrInstalledAcceptance": false
+    },
+    "nativeTests": "NOT_RUN_ON_LOCAL; existing actual pinned CLI and environment/capability/library regression axes to run in cloud",
+    "officialSources": [
+      "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/cli/src/login.rs",
+      "https://docs.rs/hyper-util/0.1.20/src/hyper_util/client/legacy/connect/http.rs.html",
+      "https://github.com/hyperium/hyper-tls/blob/v0.6.0/src/client.rs"
+    ],
+    "routeReflection": "Use the fixed CLI already writing the request and existing private file layer. Source lookup narrowed the target before modification and avoided blanket trace or a new transport probe. HTTPS root cause remains unknown."
   }
 }

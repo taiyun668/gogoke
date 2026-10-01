@@ -23,6 +23,14 @@ const REPARSE_POINT: u32 = 0x400;
 const ACCOUNT_READ_EVIDENCE: &str = "CREDENTIAL_PRESENT_NO_VALIDITY_CHECK";
 const RPC_DEADLINE: Duration = Duration::from_secs(15);
 const MAX_RPC_FRAMES: usize = 16;
+// The pinned CLI's login file layer otherwise records only flow startup.
+// This existing connector target logs TCP destinations/progress/errors, not
+// HTTP headers, bodies or device codes. The CLI uses its configured login log,
+// which defaults to the private F home.
+const OWNER_LOGIN_CONNECT_LOG: &str = concat!(
+    "codex_cli=info,codex_core=info,codex_login=info,",
+    "hyper_util::client::legacy::connect::http=trace",
+);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NativeAccountState {
@@ -305,6 +313,8 @@ fn clean_environment(instance_home: &Path, runtime: &Path) -> Result<Vec<(String
         ("TEMP".into(), runtime.clone()),
         ("TMP".into(), runtime),
         ("CODEX_HOME".into(), instance),
+        // Pin the finite filter instead of inheriting a caller's broad trace.
+        ("RUST_LOG".into(), OWNER_LOGIN_CONNECT_LOG.into()),
     ])
 }
 
