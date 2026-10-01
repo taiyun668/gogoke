@@ -3712,27 +3712,18 @@ mod tests {
         let marker = unique_marker("descendant");
         let entry_marker = unique_marker("descendant-entry");
         let error_marker = unique_marker("descendant-error");
-        let child_command = "Start-Sleep -Seconds 30";
-        let script = format!(
-            "$ErrorActionPreference='Stop'; try {{ [IO.File]::WriteAllText('{}','parent-started'); $i=[Diagnostics.ProcessStartInfo]::new();",
-            ps_literal(&entry_marker)
-        )
-            + "$i.FileName=$PSHOME+'\\powershell.exe';"
-            + "$i.Arguments='-NoProfile -NonInteractive -Command \""
-            + child_command
-            + "\"';$i.UseShellExecute=$false;"
-            + "$p=[Diagnostics.Process]::Start($i);"
-            + &format!(
-                "[IO.File]::WriteAllText('{}',[string]$p.Id); }} catch {{ [IO.File]::WriteAllText('{}',[string]$_); exit 17 }}",
-                ps_literal(&marker),
-                ps_literal(&error_marker)
-            );
-        let mut launch = ProcessLaunch::new(powershell());
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud-bound Node runtime path"));
+        assert!(node.is_file(), "cloud-bound Node runtime must exist");
+        assert_eq!(file_sha256(&node).expect("Node runtime digest"),
+            env!("GOGOKE_CONTROLLED_NODE_SHA256"), "test uses the exact build-bound Node image");
+        let script = r#"const fs=require('fs');const cp=require('child_process');try{fs.writeFileSync(process.argv[1],'parent-started');const child=cp.spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:'ignore',windowsHide:true});child.unref();fs.writeFileSync(process.argv[2],String(child.pid));}catch(error){fs.writeFileSync(process.argv[3],String(error));process.exit(17)}"#;
+        let mut launch = ProcessLaunch::new(node);
         launch.arguments = vec![
-            "-NoProfile".to_owned(),
-            "-NonInteractive".to_owned(),
-            "-Command".to_owned(),
-            script,
+            "-e".to_owned(), script.to_owned(),
+            entry_marker.to_string_lossy().into_owned(),
+            marker.to_string_lossy().into_owned(),
+            error_marker.to_string_lossy().into_owned(),
         ];
         let captured = Arc::new(Mutex::new(None));
         let captured_for_callback = Arc::clone(&captured);
@@ -3756,6 +3747,10 @@ mod tests {
             fs::read_to_string(&error_marker).ok()
         );
         assert!(marker.exists(), "controlled parent exited without publishing child pid: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}", started.elapsed().as_millis(), process_exit_code(process.process.raw()).ok().flatten(), process.active_job_processes().ok(), entry_marker.exists(), fs::read_to_string(&error_marker).ok());
+        assert_eq!(fs::read_to_string(&entry_marker).expect("parent entry marker"), "parent-started");
+        let child_pid: u32 = fs::read_to_string(&marker).expect("child pid marker")
+            .parse().expect("actual spawned child pid");
+        assert!(child_pid > 0);
         assert!(
             process.active_job_processes().expect("job accounting") >= 1,
             "descendant must remain in the owned job after parent exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}",

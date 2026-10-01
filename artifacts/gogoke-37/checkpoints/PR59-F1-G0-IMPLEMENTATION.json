@@ -49,6 +49,31 @@
     "desktop_result": "ALL_FIVE_JOBS_PASS"
   },
   "cloud_native_tests": "NEW_SOURCE_PENDING",
+  "f014_native_results": {
+    "run": 36881078068,
+    "library": "572_PASSED_0_FAILED_0_IGNORED",
+    "compiled_fail_and_exact_restore_pass": ["R1", "R2", "R4", "R5", "R6", "R7"],
+    "lpac_shim": "PASS",
+    "whole_run": "FAIL_NOT_PASS",
+    "focused_failure": "Job descendant PowerShell fixture had not entered its script at the 15-second parent-exit assertion; the same test passed later in the full library",
+    "fixture_correction": "Use the cloud build-bound Node image for actual parent/child processes; retain Job identity, noninheritance, descendant and stop-proof assertions without increasing the wait",
+    "affected_recheck": "Dedicated focused fixture run; its full library and mutation suites are explicitly NOT_RUN, combined with exact unchanged production-source evidence"
+  },
+  "frozen_candidate": {
+    "source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "desktop_run": 36874585432,
+    "desktop_all_five_jobs": "PASS",
+    "frozen_artifact": 11170776265,
+    "signing_main": "30f5d9eb83e59c38a7c75eb60393c558f7876618",
+    "signing_run": 36881306144,
+    "signed_artifact": 11171622438,
+    "local_purpose_signature_and_seven_frozen_members": "PASS",
+    "first_cloud_smoke": {"run": 36881857203, "result": "FAIL_PUBLIC_GITHUB_ANONYMOUS_QUOTA_403_REMAINING_0"},
+    "same_byte_fresh_runner_smoke": {"run": 36884344861, "result": "PASS"},
+    "credential_exclusion_boundary": "UNCHANGED",
+    "frozen_bytes_rebuilt_or_resigned": false,
+    "local_installation": "NOT_RUN"
+  },
   "native_ci_budget_correction": {
     "source": "2d49a718147bab563b39834d2c294c0f912b23db",
     "run": 36874331696,

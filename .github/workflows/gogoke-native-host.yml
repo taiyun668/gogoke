@@ -7,6 +7,10 @@ on:
         description: Record actual pinned CLI Win32 return values with the existing cloud SDK debugger
         type: boolean
         default: false
+      job_descendant_fixture_only:
+        description: Verify the changed real Job descendant fixture only; full library and mutation gates are NOT_RUN
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -176,7 +180,7 @@ jobs:
             run_attempt = '${{ github.run_attempt }}'
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
-            evidence_scope = 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP'
+            evidence_scope = if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
             release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
@@ -212,6 +216,10 @@ jobs:
             @{ id = 'record-before-activate'; filter = 'failed_production_prepared_record_does_not_activate_child' },
             @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
+          if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -eq 'job-descendant' })
+            Write-Host 'Focused changed Job fixture only; full library and mutation suites NOT_RUN.'
+          }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
             if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) {
@@ -265,7 +273,7 @@ jobs:
           path: ${{ runner.temp }}/gogoke-native-host-evidence/focused-*
           if-no-files-found: error
       - name: Run all native-host library unit tests
-        if: ${{ !cancelled() && !inputs.trace_canonicalize }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -326,7 +334,7 @@ jobs:
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
       - name: Verify F.1 production fixes with compiled failing mutations
-        if: ${{ !cancelled() && !inputs.trace_canonicalize }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -434,6 +442,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
+    if: ${{ !inputs.job_descendant_fixture_only }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
