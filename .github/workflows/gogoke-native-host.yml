@@ -323,6 +323,55 @@ jobs:
           }
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
+      - name: Verify F.1 production fixes with compiled failing mutations
+        if: ${{ !cancelled() && !inputs.trace_canonicalize }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/store/product_database/v37_login.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $baselineHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $cases = @(
+            @{ axis='R1'; filter='owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames' },
+            @{ axis='R2'; filter='owner_login_preflight_errors_settle_original_request_without_process_custody' }
+          )
+          foreach ($case in $cases) {
+            try {
+              if ($case.axis -ceq 'R1') {
+                $start = $source.IndexOf('            let install_state = match source.as_ref() {')
+                $end = $source.IndexOf('            let login_state = match source.as_ref() {', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R1 production fix locator missing' }
+                $stale = '            let stale = Statement::prepare(self.connection.as_ptr(), "SELECT install_state FROM main.gogoke_v37_instances WHERE instance_id=?1")?;' + "`n" +
+                  '            stale.bind_text(1, &instance_id)?;' + "`n" +
+                  '            if !stale.step_row()? { return Err(OrchestrationError::AccessDenied); }' + "`n" +
+                  '            let install_state = stale.column_text(0)?;' + "`n"
+                $mutated = $source.Substring(0,$start) + $stale + $source.Substring($end)
+              } else {
+                $helper = $source.IndexOf('    fn settle_owner_login_preflight_error(')
+                $start = $source.IndexOf('        self.owner_login = Some(OwnerLoginSession::Final {', $helper)
+                $end = $source.IndexOf('        });', $start) + '        });'.Length
+                if ($helper -lt 0 -or $start -lt $helper -or $end -le $start) { throw 'R2 production fix locator missing' }
+                $mutated = $source.Remove($start,$end-$start)
+              }
+              [IO.File]::WriteAllText($path,$mutated,[Text.UTF8Encoding]::new($false))
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+              $exitCode = $LASTEXITCODE
+              $output | Out-Host
+              if ($exitCode -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) mutation must compile and fail its unchanged behavioral test"
+              }
+            } finally {
+              [IO.File]::WriteAllBytes($path,$original)
+              if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $baselineHash) { throw 'Native production source restoration hash mismatch' }
+            }
+            $restored = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+            $restored | Out-Host
+            if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+              throw "$($case.axis) unchanged test must pass after exact production restoration"
+            }
+          }
       - name: Test production LPAC path shim behavior in cloud
         if: ${{ !cancelled() }}
         shell: pwsh

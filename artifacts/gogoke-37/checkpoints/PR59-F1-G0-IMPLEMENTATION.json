@@ -44,7 +44,7 @@
     "hygiene_run": 36857438848,
     "desktop_run": 36857438799
   },
-  "cloud_native_tests": "NOT_RUN_FOR_THIS_COMMIT",
+  "cloud_native_tests": "NEW_SOURCE_PENDING",
   "win11_candidate_tests": "NOT_RUN_FOR_THIS_COMMIT",
   "OT4": "NOT_REQUESTED_UNTIL_INSTALLED_LOGIN_CLOSURE_READY",
   "M1_complete": false,
@@ -53,7 +53,7 @@
     "apps/desktop/native-host/src/process/session/compat/detours-extract/",
     "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
   ],
-  "next_action": "Push exact source and run cloud native/desktop/hygiene; independent review; trusted-main candidate signing after Owner merges PR60",
+  "next_action": "Exact new-source cloud native full tests and R1/R2 mutations, desktop six host tests and R3 mutation plus independent frozen/repro build; trusted main candidate signer after Owner merges PR60.",
   "source_audit": {
     "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
     "findings": [
@@ -62,10 +62,18 @@
       "R3 successful result is authoritative over cancel intent"
     ],
     "implementation": "FIXES_SUBMITTED_FOR_FOCUSED_REVIEW_AND_CLOUD_TESTS",
-    "acceptance": false
+    "acceptance": false,
+    "focused_static": "INDEPENDENT_SOL_PASS",
+    "additional_correction": "Clear transient error only after the original request reports actual settled LOGGED_IN."
   },
   "measurement_corrections": [
     "Repository-relative edits first invoked from desktop subdirectory; no edit occurred; reran at repository root.",
     "PowerShell/Python default decoding rejected non-ASCII GitHub commit text; explicit UTF-8 read resolved it before remote mutation."
-  ]
+  ],
+  "cloud_mutation_axes": {
+    "R1": "Restore original stale registry install-state read, unchanged behavioral test must compile and fail, restore exact bytes and pass",
+    "R2": "Remove only original-request preflight Final assignment, unchanged behavioral test must compile and fail, restore exact bytes and pass",
+    "R3": "Restore cancel-intent override of settled success, unchanged behavioral test must compile and fail, restore exact bytes and all six host tests pass"
+  },
+  "superseded_cloud_source": "5503e1435ed7cf5e2403b66dd636ed8e6dbd062c"
 }

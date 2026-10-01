@@ -139,6 +139,7 @@ fn apply_reply(sessions: &Sessions, id: &str, request: &str, action: &str, reply
     record.view.state = if action == "cancel" && reply.settled && reply.state == "LOGGED_OUT" {
         "CANCELLED".into()
     } else { reply.state };
+    if record.settled && record.view.state == "LOGGED_IN" { record.view.error = None; }
     if record.view.state == "UNKNOWN" {
         record.view.state = "ERROR".into();
         if record.view.error.is_none() {
@@ -371,11 +372,13 @@ mod tests {
         let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
         sessions.lock().unwrap().get_mut("instanceA").unwrap().cancel_requested=true;
         for action in ["status","cancel"] {
+            save_error(&sessions,"instanceA",&original.request_id,"earlier transport failure".into()).unwrap();
             assert!(!apply_reply(&sessions,"instanceA",&original.request_id,action,LoginReply {
                 schema:"gogoke.37.owner-login.v1".into(),instance_id:"instanceA".into(),
                 request_id:original.request_id.clone(),state:"LOGGED_IN".into(),output:String::new(),settled:true
             }).unwrap());
             assert_eq!(sessions.lock().unwrap()["instanceA"].view.state,"LOGGED_IN");
+            assert!(sessions.lock().unwrap()["instanceA"].view.error.is_none());
         }
     }
     #[test]

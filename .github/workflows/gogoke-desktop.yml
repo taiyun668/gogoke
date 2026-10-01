@@ -400,6 +400,34 @@ jobs:
           }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
+      - name: Verify login cancel result with a compiled failing mutation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'src-tauri/src/public_runtime/design37_instances.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $baselineHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $correct = 'action == "cancel" && reply.settled && reply.state == "LOGGED_OUT"'
+          if ([regex]::Matches($source,[regex]::Escape($correct)).Count -ne 1) { throw 'R3 production fix locator must match once' }
+          try {
+            [IO.File]::WriteAllText($path,$source.Replace($correct,'record.cancel_requested && reply.settled'),[Text.UTF8Encoding]::new($false))
+            $output = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancellation_intent_cannot_overwrite_a_successful_original_result --lib -- --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Out-Host
+            if ($exitCode -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'R3 mutation must compile and fail the unchanged successful-result assertion'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($path,$original)
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $baselineHash) { throw 'Host production source restoration hash mismatch' }
+          }
+          $restored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml public_runtime::design37_instances::tests --lib -- --nocapture 2>&1
+          $restored | Out-Host
+          if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 6 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'All six unchanged host login tests must pass after exact production restoration'
+          }
       - name: Upload one-shot task deletion receipt
         uses: actions/upload-artifact@v4
         with:
