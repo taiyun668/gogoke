@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "OWNER_AUTHORIZED_CLI_INSTANCE_IDENTITY_SERVICES_SOURCE_READY_CLOUD_PENDING",
+  "state": "CLI_IDENTITY_SERVICES_CLOUD_LIVE_ACL_NOTFOUND_DIRECT_CONTEXT_PENDING",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -661,6 +661,45 @@
       ],
       "cloudNativeAcceptance": false
     },
-    "localNativeBuildOrTest": false
+    "localNativeBuildOrTest": false,
+    "cloudSource": "243e88b598782f254673eb8d6e24208843ca5871",
+    "cloud": {
+      "native": {
+        "runId": 36829915982,
+        "attempt": 1,
+        "state": "FAIL",
+        "libraryPassed": 563,
+        "failed": 1,
+        "ignored": 0,
+        "newActualIsolationCase": "PASS",
+        "failedCase": "actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call",
+        "failureStage": "first capability-probe live ACL verification before resume",
+        "originalError": "Acl Os code2 NotFound",
+        "sameRunFocusedCase": "PASS 262.08sec",
+        "artifactId": 11147451147
+      },
+      "hygiene": {
+        "runId": 36829916220,
+        "state": "PASS"
+      },
+      "desktop": {
+        "runId": 36829916028,
+        "state": "RUNNING_AT_DIAGNOSTIC_CUT"
+      }
+    },
+    "aclDiagnostic": {
+      "change": "Only path and operation context with retained original io::Error; no permission, traversal, retry, wait or skip changes",
+      "cause": "Concrete missing object UNKNOWN; running CLI dynamic leaf removal is a hypothesis, not established root cause",
+      "logicCheck": "Same exact source focused case passed but full library failed live path ACL read. Generic NotFound cannot establish the object; preserve it at source before altering semantics."
+    },
+    "retirement": {
+      "source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+      "state": "PASS_RETIRED_DATA_PRESERVED_EMPTY_DIRECTORY_AUDIT_PENDING",
+      "sameRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "formalFourDomains": "UNCHANGED",
+      "nativeDataIdentity": "PRESERVED",
+      "finalizer": "DELETED",
+      "oldProductCurrentlyRunning": false
+    }
   }
 }

@@ -176,6 +176,7 @@ pub(crate) enum IsolationError {
     DirectoryNotFresh,
     DirectoryNotPhysical,
     Acl(io::Error),
+    AclObject { object: PathBuf, operation: &'static str, error: io::Error },
     AclWitnessMismatch,
     AclWitnessDetail { object: PathBuf, sid: String, expected: String,
         observed: Vec<(u32, u32, u32)> },
@@ -194,6 +195,8 @@ impl fmt::Display for IsolationError {
             Self::DirectoryNotFresh => write!(f, "AppContainer directory must be empty before ACL grant"),
             Self::DirectoryNotPhysical => write!(f, "AppContainer directory must be a physical directory"),
             Self::Acl(error) => write!(f, "AppContainer ACL: {error}"),
+            Self::AclObject { object, operation, error } =>
+                write!(f, "AppContainer ACL {operation} for {object:?}: {error}"),
             Self::AclWitnessMismatch => write!(f, "AppContainer ACL witness does not match exact SID, rights, inheritance or object identity"),
             Self::AclWitnessDetail { object, sid, expected, observed } => {
                 write!(f, "AppContainer ACL witness for {:?}, package SID {sid}: expected {expected}; observed", object)?;
@@ -206,6 +209,15 @@ impl fmt::Display for IsolationError {
             Self::InvalidRegistryCapability => write!(f, "registryRead did not derive exactly one capability SID"),
             Self::InvalidIdentityServicesCapability => write!(f, "lpacIdentityServices did not derive one distinct capability SID"),
         }
+    }
+}
+
+fn acl_object(error: IsolationError, object: &Path, operation: &'static str) -> IsolationError {
+    match error {
+        IsolationError::Acl(error) => IsolationError::AclObject {
+            object: object.to_path_buf(), operation, error },
+        already @ IsolationError::AclObject { .. } => already,
+        other => other,
     }
 }
 
@@ -424,7 +436,8 @@ impl AppContainerProfile {
         require_bound_path(path, expected, true)?;
         let root = open_physical_object(path, true, READ_CONTROL)?;
         let rights = directory_rights(writable);
-        let root_aces = package_aces(root.0, self.sid)?;
+        let root_aces = package_aces(root.0, self.sid)
+            .map_err(|error| acl_object(error, path, "read root ACEs"))?;
         if root_aces.as_slice() != &[(GRANT_ACCESS, rights, OBJECT_AND_CONTAINER_INHERIT)] {
             return Err(IsolationError::AclWitnessDetail { object: PathBuf::from("."),
                 sid: self.package_sid_string()?,
@@ -433,10 +446,12 @@ impl AppContainerProfile {
         }
         for (child, identity, directory) in collect_tree(path)? {
             let object = open_physical_object(&child, directory, READ_CONTROL)?;
-            if file_identity(object.0)? != identity {
+            if file_identity(object.0)
+                .map_err(|error| acl_object(error, &child, "read child identity"))? != identity {
                 return Err(IsolationError::AclWitnessMismatch);
             }
-            let entries = package_aces(object.0, self.sid)?;
+            let entries = package_aces(object.0, self.sid)
+                .map_err(|error| acl_object(error, &child, "read child ACEs"))?;
             if entries.len() != 1 || entries[0].0 != GRANT_ACCESS || entries[0].1 != rights ||
                 entries[0].2 & INHERITED_ACE == 0 ||
                 entries[0].2 & INHERIT_ONLY_ACE != 0 {
@@ -574,7 +589,8 @@ fn open_directory(path: &Path, access: u32) -> Result<Token, IsolationError> {
     let handle = unsafe { CreateFileW(wide.as_ptr(), access, FILE_SHARE_ALL,
         ptr::null(), OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
-    if handle as isize == -1 { return Err(IsolationError::Acl(io::Error::last_os_error())); }
+    if handle as isize == -1 { return Err(IsolationError::AclObject {
+        object: path.to_path_buf(), operation: "open object", error: io::Error::last_os_error() }); }
     Ok(Token(handle))
 }
 
@@ -597,13 +613,15 @@ fn file_identity(handle: Handle) -> Result<RootIdentity, IsolationError> {
 
 fn open_physical_object(path: &Path, directory: bool, access: u32)
     -> Result<Token, IsolationError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(IsolationError::Acl)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| IsolationError::AclObject {
+        object: path.to_path_buf(), operation: "read object metadata", error })?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 ||
         metadata.is_dir() != directory || (!directory && !metadata.is_file()) {
         return Err(IsolationError::DirectoryNotPhysical);
     }
     let object = open_directory(path, access)?;
-    let info = file_information(object.0)?;
+    let info = file_information(object.0)
+        .map_err(|error| acl_object(error, path, "read physical object attributes"))?;
     if !(if directory { info.physical_directory() } else { info.physical_file() }) {
         return Err(IsolationError::DirectoryNotPhysical);
     }
@@ -613,14 +631,20 @@ fn open_physical_object(path: &Path, directory: bool, access: u32)
 fn require_bound_path(path: &Path, expected: &RootIdentity, directory: bool)
     -> Result<(), IsolationError> {
     let object = open_physical_object(path, directory, READ_CONTROL)?;
-    if &file_identity(object.0)? != expected { return Err(IsolationError::AclWitnessMismatch); }
+    if &file_identity(object.0)
+        .map_err(|error| acl_object(error, path, "read bound object identity"))? != expected {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
     Ok(())
 }
 
 fn open_bound_object(path: &Path, expected: &RootIdentity, directory: bool)
     -> Result<Token, IsolationError> {
     let object = open_physical_object(path, directory, READ_CONTROL | WRITE_DAC)?;
-    if &file_identity(object.0)? != expected { return Err(IsolationError::AclWitnessMismatch); }
+    if &file_identity(object.0)
+        .map_err(|error| acl_object(error, path, "read writable bound object identity"))? != expected {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
     require_bound_path(path, expected, directory)?;
     Ok(object)
 }
@@ -629,12 +653,16 @@ fn collect_tree(root: &Path) -> Result<Vec<(PathBuf, RootIdentity, bool)>, Isola
     let mut pending = vec![root.to_path_buf()];
     let mut objects = Vec::new();
     while let Some(parent) = pending.pop() {
-        for child in std::fs::read_dir(&parent).map_err(IsolationError::Acl)? {
-            let path = child.map_err(IsolationError::Acl)?.path();
-            let metadata = std::fs::symlink_metadata(&path).map_err(IsolationError::Acl)?;
+        for child in std::fs::read_dir(&parent).map_err(|error| IsolationError::AclObject {
+            object: parent.clone(), operation: "enumerate tree directory", error })? {
+            let path = child.map_err(|error| IsolationError::AclObject {
+                object: parent.clone(), operation: "read tree directory entry", error })?.path();
+            let metadata = std::fs::symlink_metadata(&path).map_err(|error| IsolationError::AclObject {
+                object: path.clone(), operation: "read tree child metadata", error })?;
             let directory = metadata.is_dir();
             let object = open_physical_object(&path, directory, READ_CONTROL)?;
-            let identity = file_identity(object.0)?;
+            let identity = file_identity(object.0)
+                .map_err(|error| acl_object(error, &path, "read tree child identity"))?;
             require_bound_path(&path, &identity, directory)?;
             if directory { pending.push(path.clone()); }
             objects.push((path, identity, directory));
