@@ -3844,8 +3844,13 @@ mod tests {
 
     #[test]
     fn natural_exit_124_and_close_error_still_reject_stop_proof() {
-        let mut natural = ProcessLaunch::new(system_cmd());
-        natural.arguments = vec!["/D".into(), "/C".into(), "exit 124".into()];
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud-bound Node runtime path"));
+        assert!(node.is_file(), "cloud-bound Node runtime must exist");
+        assert_eq!(file_sha256(&node).expect("Node runtime digest"),
+            env!("GOGOKE_CONTROLLED_NODE_SHA256"), "test uses the exact build-bound Node image");
+        let mut natural = ProcessLaunch::new(node.clone());
+        natural.arguments = vec!["-e".into(), "process.exit(124)".into()];
         let natural = prepare_and_activate(&natural, |_| Ok(())).expect("real natural-124 process");
         assert!(natural.wait(Duration::from_secs(15)).expect("natural process exit"));
         let proof = natural.stop(StopBudgets::production(), || Ok(()));
@@ -3857,8 +3862,8 @@ mod tests {
         assert!(proof.errors.iter().any(|error|
             error == "STOP_EXIT_124_REQUIRES_RECONCILIATION"));
 
-        let mut close_failure = ProcessLaunch::new(system_cmd());
-        close_failure.arguments = vec!["/D".into(), "/C".into(), "exit 0".into()];
+        let mut close_failure = ProcessLaunch::new(node);
+        close_failure.arguments = vec!["-e".into(), "process.exit(0)".into()];
         let close_failure = prepare_and_activate(&close_failure, |_| Ok(())).expect("real close-error process");
         assert!(close_failure.wait(Duration::from_secs(15)).expect("close-error process exit"));
         let proof = close_failure.stop(StopBudgets::production(), ||

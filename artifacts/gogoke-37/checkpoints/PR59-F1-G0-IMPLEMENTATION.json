@@ -264,6 +264,47 @@
     "legacy_runtime": "EXISTING_HOST_OWNED_TEMP_DIRECTORY_BLOCKS_FRESH_LOGIN; NO_CLEANUP_OR_LEDGER_EDIT",
     "M1": false,
     "actual_old_source": "2d49a718147bab563b39834d2c294c0f912b23db",
-    "static_review": "INDEPENDENT_SOL_STOP_PROOF_LOGIC_PASS"
+    "static_review": "INDEPENDENT_SOL_STOP_PROOF_LOGIC_PASS",
+    "source": "8ba7adf33f6eb35486ee89533ea2acc406991d8a",
+    "native_run": 36896625823,
+    "desktop_run": 36896630987,
+    "hygiene_run": 36896631130,
+    "hygiene": "PASS",
+    "local_typecheck": "PASS",
+    "ui_tests": "8_PASS",
+    "fresh_astra": "NO_NEW_STATIC_BLOCKER_CLOUD_DYNAMIC_PENDING_NOT_ACCEPTANCE",
+    "legacy_object": {
+      "deletion": "NOT_RUN",
+      "STOPPED_fabricated": false,
+      "relative_to_instance_home": "gogoke-login-runtime",
+      "independent_object_audit": "PASS_EXACT_FILEIDS_AND_TEN_PLAIN_ANCESTORS",
+      "scope": "ONE_EMPTY_DIRECTORY_NONRECURSIVE_ONLY_AFTER_OLD_PRODUCT_AND_RELATED_PROCESSES_EXIT",
+      "ordinary_view": "PASS",
+      "entries": 0,
+      "owner_permission": "REQUESTED_PENDING",
+      "instance": "codexTestM1",
+      "ledgerModified": false,
+      "credentialsRead": false,
+      "ordinary_inventory_sha256": "e5f60ba30540b3479807b2f2367f79de25b21e5902aa72856f47f72c3be0f159"
+    },
+    "completed_cloud": {
+      "browser": "1052_PASS_147_FILES_TYPECHECK_AND_BUILD_PASS",
+      "server": "642_PASS_0_FAIL_0_SKIP"
+    },
+    "fixture_failure": {
+      "artifact": 11180535936,
+      "new_full_library_claim": "NOT_RUN",
+      "direct_evidence": "PARENT_GRACE_EXITED_JOB_ACTIVE_1_FORCE_TERMINATION_OCCURRED_ASSERT_NO_KILL_FALSE",
+      "old_native_whole_run": "FAIL_NOT_PASS",
+      "repair": "CFG_TEST_ONLY_HASH_BOUND_NODE_WITH_UNCHANGED_ASSERTIONS_AND_BUDGETS",
+      "remaining_member_identity": "QUERY_WIN32_5_UNRESOLVED_NOT_CONFIRMED_CONHOST",
+      "R8_forced_stop": "PASS",
+      "R9_fixed_cli_stderr": "PASS",
+      "new_subset_mode": "stop_124_fixture_only",
+      "focused_passed": 21,
+      "focused_failed": 1,
+      "case": "natural_exit_124_and_close_error_still_reject_stop_proof",
+      "focused_skipped": 0
+    }
   }
 }
