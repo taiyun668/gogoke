@@ -1087,12 +1087,12 @@
     "consumers": [
      "G"
     ],
-    "real_stage": "M3",
+    "real_stage": "M1",
     "families": [
      "read-models",
      "actions"
     ],
-    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states."
+    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states. Instance read models and login actions settle at M1 with G.0; the rest at M3."
    }
   ]
  },
@@ -1385,6 +1385,7 @@
      "milestone": "M1",
      "deliverables": [
       "instance registry and home lifecycle with vendor memory off, login state",
+      "login session held by the host: start, progress, result and cancel survive closing the page and restarting the UI; the vendor device code or URL is kept by the host for display, never credentials",
       "instance concurrency cap as a validated, persisted user-layer field in the native store, read by H's admission; no default is invented, a missing value refuses admission"
      ]
     },
@@ -1413,6 +1414,15 @@
     "L0"
    ],
    "phases": [
+    {
+     "id": "G.0",
+     "milestone": "M1",
+     "deliverables": [
+      "minimal instance page through the opened Settings slot: instance list and the A4 states of the Codex test instance, read from K-UI",
+      "login started from the instance page: the host opens the browser, the device code has a copy action, progress refreshes by itself and resumes after the page is closed and reopened",
+      "no login entry in the legacy Codex settings page"
+     ]
+    },
     {
      "id": "G.1",
      "milestone": "M3",
@@ -1460,7 +1470,8 @@
     "B1",
     "C",
     "E.1",
-    "F.1"
+    "F.1",
+    "G.0"
    ],
    "milestone": "M1",
    "contracts": [
@@ -1469,7 +1480,8 @@
     "K-INBOX",
     "K-QCARD",
     "K-SEAT",
-    "K-INSTANCE"
+    "K-INSTANCE",
+    "K-UI"
    ],
    "observe": "Every K-* suite passes on its fake. The listed contracts pass the same cases on the real implementation delivered by M1, limited to the families that the M1 phases deliver; records written before the v37 schema are still decoded; each shared-file extension point used so far is exercised through the product entry. The K-SEAT and K-INSTANCE suites carry cap cases that run on the fakes and on the real M1 implementation: admission is refused when either persisted cap is missing; with both set, H's single admission boundary refuses a reservation beyond either cap and admits again after a release; both values survive a host restart; an invalid value is rejected at write.",
    "evidence": "REAL"
@@ -1601,10 +1613,11 @@
    "lines": [
     "F.1",
     "H",
-    "B1"
+    "B1",
+    "G.0"
    ],
    "milestone": "M1",
-   "observe": "Codex instance home is separate from the Owner's everyday home (launch configuration and file-access record); the host never opens credential files; the effective launch configuration has vendor memory off; the Codex memory store inside the instance home is not created or written across two sessions.",
+   "observe": "Codex instance home is separate from the Owner's everyday home (launch configuration and file-access record); the host never opens credential files; the effective launch configuration has vendor memory off; the Codex memory store inside the instance home is not created or written across two sessions. The Owner logs in from the instance page with one start action: the browser opens, the device code can be copied, progress refreshes without action; closing the page and restarting the UI mid-login resumes the same login session from the host; no step asks the Owner to copy request IDs or edit settings by hand.",
    "evidence": "REAL"
   },
   {
