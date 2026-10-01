@@ -84,6 +84,7 @@ pub(super) struct PreparedOwnerLogin {
 /// into a new CLI process.
 pub(super) enum OwnerLoginSession {
     Active(ActiveOwnerLogin),
+    PendingFirstStop(PendingFirstStop),
     PendingAccount(PendingAccountRead),
     Final {
         instance_id: String,
@@ -92,6 +93,16 @@ pub(super) enum OwnerLoginSession {
         state: String,
         output: String,
     },
+}
+
+struct PendingFirstStop {
+    active: ActiveOwnerLogin,
+    proof: NativeStopProof,
+    durable_revision: Option<u64>,
+    cancelled: bool,
+    login_failure: Option<String>,
+    primary_error: String,
+    latest_error: Option<String>,
 }
 
 struct PendingAccountCustody {
@@ -361,10 +372,24 @@ fn owner_login_reply_with_settled(command: &OwnerLoginCommand, state: &str,
     ])).canonical().into_bytes()
 }
 
+fn pending_first_stop_output(pending: &PendingFirstStop) -> String {
+    let mut output = pending.active.output.clone();
+    for cause in [pending.login_failure.as_deref(), Some(pending.primary_error.as_str()),
+        pending.latest_error.as_deref()] {
+        if let Some(cause) = cause {
+            if !output.is_empty() { output.push('\n'); }
+            output.push_str(cause);
+        }
+    }
+    output
+}
+
 fn same_owner_login(session: &OwnerLoginSession, command: &OwnerLoginCommand) -> bool {
     let (instance, request, revision) = match session {
         OwnerLoginSession::Active(active) => (&active.instance_id, &active.request_id,
             active.expected_revision),
+        OwnerLoginSession::PendingFirstStop(pending) => (&pending.active.instance_id,
+            &pending.active.request_id, pending.active.expected_revision),
         OwnerLoginSession::PendingAccount(pending) => (&pending.instance_id, &pending.request_id,
             pending.expected_revision),
         OwnerLoginSession::Final { instance_id, request_id, expected_revision, .. } =>
@@ -461,6 +486,15 @@ fn remove_owned_runtime(path: &Path, expected: &RootIdentity) -> Result<()> {
     }
     remove_contents(path, 0)?;
     fs::remove_dir(path).map_err(OrchestrationError::Io)
+}
+
+fn retain_primary_cleanup_error(primary: OrchestrationError, cleanup: Result<()>,
+    context: &str) -> OrchestrationError {
+    match cleanup {
+        Ok(()) => primary,
+        Err(error) => OrchestrationError::V37StoreFailure(format!(
+            "{context}: {primary:?}; runtime cleanup: {error:?}")),
+    }
 }
 
 fn clean_environment(instance_home: &Path, runtime: &Path) -> Result<Vec<(String, String)>> {
@@ -612,6 +646,7 @@ impl<'root> ProductDatabase<'root> {
         let command = owner_login_command(frame)?;
         if command.action == OwnerLoginAction::Refresh {
             if matches!(self.owner_login, Some(OwnerLoginSession::Active(_) |
+                OwnerLoginSession::PendingFirstStop(_) |
                 OwnerLoginSession::PendingAccount(_))) {
                 return Err(OrchestrationError::OperationConflict);
             }
@@ -621,6 +656,7 @@ impl<'root> ProductDatabase<'root> {
         if let Some(session) = &self.owner_login {
             if !same_owner_login(session, &command) {
                 if matches!(session, OwnerLoginSession::Active(_) |
+                    OwnerLoginSession::PendingFirstStop(_) |
                     OwnerLoginSession::PendingAccount(_)) {
                     return Err(OrchestrationError::OperationConflict);
                 }
@@ -673,6 +709,8 @@ impl<'root> ProductDatabase<'root> {
             return Ok(match session {
                 OwnerLoginSession::Active(active) => owner_login_reply(command,
                     if active.halted { "UNKNOWN" } else { "PENDING" }, &active.output),
+                OwnerLoginSession::PendingFirstStop(pending) => owner_login_reply(command,
+                    "UNKNOWN", &pending_first_stop_output(pending)),
                 OwnerLoginSession::PendingAccount(pending) =>
                     owner_login_reply(command, "UNKNOWN", &pending.output),
                 OwnerLoginSession::Final { state, output, .. } =>
@@ -764,6 +802,8 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(reply);
             }
             OwnerLoginSession::Active(active) => active,
+            OwnerLoginSession::PendingFirstStop(pending) =>
+                return self.progress_pending_first_stop(command, pending),
             OwnerLoginSession::PendingAccount(pending) =>
                 return self.progress_pending_account(command, pending),
         };
@@ -868,6 +908,8 @@ impl<'root> ProductDatabase<'root> {
             }
             OwnerLoginSession::Active(active) =>
                 self.finish_owner_device_login(command, active, true),
+            OwnerLoginSession::PendingFirstStop(pending) =>
+                self.progress_pending_first_stop(command, pending),
             OwnerLoginSession::PendingAccount(pending) =>
                 self.progress_pending_account(command, pending),
         }
@@ -941,6 +983,51 @@ impl<'root> ProductDatabase<'root> {
         Ok(reply)
     }
 
+    fn progress_pending_first_stop(&mut self, command: &OwnerLoginCommand,
+        mut pending: PendingFirstStop) -> Result<Vec<u8>> {
+        if pending.durable_revision.is_none() {
+            match authority::mark_process_stopped(&mut self.connection,
+                &pending.active.operation_id, &pending.proof) {
+                Ok(revision) => pending.durable_revision = Some(revision),
+                Err(error) => {
+                    pending.latest_error = Some(format!("{error:?}"));
+                    let reply = owner_login_reply(command, "UNKNOWN", &pending_first_stop_output(&pending));
+                    self.owner_login = Some(OwnerLoginSession::PendingFirstStop(pending));
+                    return Ok(reply);
+                }
+            }
+        }
+        let revision = pending.durable_revision.expect("retained first-child stop revision");
+        if let Err(error) = self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket: pending.active.prepared.ticket.clone(),
+            custodian_nonce: pending.active.prepared.custodian_nonce.clone(),
+            identity: pending.active.prepared.identity.clone(),
+            proof_hash: pending.proof.proof_hash(), durable_revision: revision,
+        }) {
+            pending.latest_error = Some(format!("{error:?}"));
+            let reply = owner_login_reply(command, "UNKNOWN", &pending_first_stop_output(&pending));
+            self.owner_login = Some(OwnerLoginSession::PendingFirstStop(pending));
+            return Ok(reply);
+        }
+        let mut active = pending.active;
+        if !active.output.is_empty() { active.output.push('\n'); }
+        active.output.push_str(&pending.primary_error);
+        if let Some(latest) = pending.latest_error {
+            active.output.push('\n');
+            active.output.push_str(&latest);
+        }
+        let finished = self.finish_confirmed_owner_login(command, active,
+            pending.cancelled, pending.login_failure);
+        match finished {
+            Ok(reply) => Ok(reply),
+            Err(error) => match &self.owner_login {
+                Some(OwnerLoginSession::Final { state, output, .. }) =>
+                    Ok(owner_login_final_reply(command, state, output)),
+                _ => Err(error),
+            },
+        }
+    }
+
     fn finish_owner_device_login(&mut self, command: &OwnerLoginCommand,
         mut active: ActiveOwnerLogin, cancelled: bool) -> Result<Vec<u8>> {
         let stop = self.process_custodian.stop(&active.prepared.ticket,
@@ -971,10 +1058,13 @@ impl<'root> ProductDatabase<'root> {
             Err(error) => {
                 let unknown = authority::mark_process_unknown(&mut self.connection,
                     &active.operation_id, &active.prepared);
-                active.halted = true;
-                self.owner_login = Some(OwnerLoginSession::Active(active));
-                return Err(OrchestrationError::V37StoreFailure(format!(
-                    "owner login stop record: {error:?}; proof: {proof:?}; unknown record: {unknown:?}")));
+                let cause = OrchestrationError::V37StoreFailure(format!(
+                    "owner login stop record: {error:?}; proof: {proof:?}; unknown record: {unknown:?}; login failure: {login_failure:?}"));
+                self.owner_login = Some(OwnerLoginSession::PendingFirstStop(PendingFirstStop {
+                    active, proof, durable_revision: None, cancelled, login_failure,
+                    primary_error: format!("{cause:?}"), latest_error: None,
+                }));
+                return Err(cause);
             }
         };
         if let Err(error) = self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
@@ -984,10 +1074,18 @@ impl<'root> ProductDatabase<'root> {
             proof_hash: proof.proof_hash(),
             durable_revision: revision,
         }) {
-            active.halted = true;
-            self.owner_login = Some(OwnerLoginSession::Active(active));
-            return Err(error.into());
+            let cause: OrchestrationError = error.into();
+            self.owner_login = Some(OwnerLoginSession::PendingFirstStop(PendingFirstStop {
+                active, proof, durable_revision: Some(revision), cancelled, login_failure,
+                primary_error: format!("{cause:?}"), latest_error: None,
+            }));
+            return Err(cause);
         }
+        self.finish_confirmed_owner_login(command, active, cancelled, login_failure)
+    }
+
+    fn finish_confirmed_owner_login(&mut self, command: &OwnerLoginCommand,
+        mut active: ActiveOwnerLogin, cancelled: bool, login_failure: Option<String>) -> Result<Vec<u8>> {
         let cleanup = remove_owned_runtime(&active.runtime_home, &active.runtime_identity);
         let state_result = if cleanup.is_ok() && login_failure.is_none() {
             self.owner_login_account_state(command)
@@ -1004,6 +1102,10 @@ impl<'root> ProductDatabase<'root> {
         if let Err(error) = &state_result {
             if !active.output.is_empty() { active.output.push('\n'); }
             active.output.push_str(&format!("automatic account/read failed: {error:?}"));
+        }
+        if let Err(error) = &cleanup {
+            if !active.output.is_empty() { active.output.push('\n'); }
+            active.output.push_str(&format!("owner login runtime cleanup: {error:?}"));
         }
         if let Some(failure) = &login_failure {
             if !active.output.is_empty() { active.output.push('\n'); }
@@ -1231,7 +1333,7 @@ impl<'root> ProductDatabase<'root> {
     /// contents from the wire. No model request is made.
     pub(super) fn dispatch_owner_login_observation(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         if matches!(self.owner_login, Some(OwnerLoginSession::Active(_) |
-            OwnerLoginSession::PendingAccount(_))) {
+            OwnerLoginSession::PendingFirstStop(_) | OwnerLoginSession::PendingAccount(_))) {
             return Err(OrchestrationError::OperationConflict);
         }
         match self.dispatch_owner_login_observation_inner(request) {
@@ -1302,9 +1404,10 @@ impl<'root> ProductDatabase<'root> {
                     "login prepare record: {error:?}; abort: {abort:?}")),
                     pending: Some(pending(None, None, true)) });
             }
-            remove_owned_runtime(&prepared_login.runtime_home,
-                &prepared_login.runtime_identity)?;
-            return Err(error.into());
+            let cleanup = remove_owned_runtime(&prepared_login.runtime_home,
+                &prepared_login.runtime_identity);
+            return Err(retain_primary_cleanup_error(error, cleanup,
+                "login prepare record").into());
         }
         #[cfg(all(test, windows))]
         let _trace = directed_trace::before_activation(&prepared);
@@ -1375,14 +1478,30 @@ impl<'root> ProductDatabase<'root> {
             proof_hash: proof.proof_hash(),
             durable_revision: revision,
         }) {
+            let cause = match execution.as_ref().err() {
+                Some(primary) => OrchestrationError::V37StoreFailure(format!(
+                    "account/read execution: {primary:?}; stop confirmation: {error:?}")),
+                None => error.into(),
+            };
             let mut custody = pending(Some(proof), Some(revision), false);
             custody.frame = execution.ok();
-            return Err(AccountObservationFailure { error: error.into(), pending: Some(custody) });
+            return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
         }
-        remove_owned_runtime(&prepared_login.runtime_home,
-            &prepared_login.runtime_identity)?;
-        let frame = execution?;
-        self.record_trusted_account_read(request, &prepared, &frame).map_err(Into::into)
+        self.finish_confirmed_account_observation(request, &prepared,
+            &prepared_login.runtime_home, &prepared_login.runtime_identity, execution)
+            .map_err(Into::into)
+    }
+
+    fn finish_confirmed_account_observation(&mut self, request: &V37Request,
+        prepared: &PreparedCustody, runtime: &Path, identity: &RootIdentity,
+        execution: Result<OriginBoundFrame>) -> Result<Vec<u8>> {
+        let cleanup = remove_owned_runtime(runtime, identity);
+        let frame = match execution {
+            Ok(frame) => { cleanup?; frame }
+            Err(error) => return Err(retain_primary_cleanup_error(error, cleanup,
+                "account/read execution")),
+        };
+        self.record_trusted_account_read(request, prepared, &frame)
     }
 
     fn observe_account_via_active_cli(&self, prepared: &PreparedCustody, cwd: &Path)
@@ -1731,7 +1850,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_codex_owner_login_failure_preserves_exit_and_stderr_without_account_read() {
+    fn pinned_codex_owner_login_stop_failure_reconciles_same_proof_and_stderr() {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!(
@@ -1766,29 +1885,123 @@ mod tests {
         let active = String::from_utf8(product.begin_owner_device_login(&command).unwrap()).unwrap();
         assert!(active.contains("\"state\":\"PENDING\""));
         assert!(active.contains("\"settled\":false"), "active login must retain its request");
-        if let Some(OwnerLoginSession::Active(active)) = &mut product.owner_login {
-            active.halted = true;
-        }
-        let halted = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
-        assert!(halted.contains("\"state\":\"UNKNOWN\""));
-        assert!(halted.contains("\"settled\":false"), "halted active custody is not final");
-        if let Some(OwnerLoginSession::Active(active)) = &mut product.owner_login {
-            active.halted = false;
-        }
+        product.connection.execute("CREATE TRIGGER fail_first_stop BEFORE UPDATE OF state ON gogoke_coordination_process_custody WHEN NEW.state='STOPPED' AND NEW.operation_id LIKE 'owner-login-%' BEGIN SELECT RAISE(ABORT,'controlled first CLI stop record failure'); END").unwrap();
         let error = product.status_owner_device_login(&command).unwrap_err();
         let diagnostic = format!("{error:?}");
+        assert!(diagnostic.contains("controlled first CLI stop record failure"));
         assert!(diagnostic.contains("code=Some(2)"), "actual exit code was not preserved");
         assert!(diagnostic.contains("STDERR_TAIL:"));
         assert!(diagnostic.contains("unexpected argument"), "actual CLI stderr was not preserved");
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1",
             "a failed login must not start a second CLI for account/read");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
-        assert!(!runtime_home.exists(), "owned login runtime must still be cleaned");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "0");
+        let held = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(held.contains("\"state\":\"UNKNOWN\""));
+        assert!(held.contains("\"settled\":false"));
+        assert!(held.contains("controlled first CLI stop record failure"));
+        assert!(held.contains("unexpected argument"));
+        let new_begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"newWhileFirstStopHeld","expectedRevision":1}"#;
+        assert!(matches!(product.dispatch_owner_login_frame(new_begin),
+            Err(OrchestrationError::OperationConflict)));
+        product.connection.execute("DROP TRIGGER fail_first_stop").unwrap();
         let replay = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(replay.contains("\"state\":\"UNKNOWN\""));
-        assert!(replay.contains("\"settled\":true"), "final CLI failure must be distinguishable from halted active custody");
+        assert!(replay.contains("\"settled\":true"));
+        assert!(replay.contains("controlled first CLI stop record failure"));
         assert!(replay.contains("unexpected argument"));
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        assert!(!runtime_home.exists(), "owned login runtime must be cleaned after confirmation");
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1");
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn owner_account_cleanup_identity_denial_retains_original_failure() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-account-cleanup-{}-{nonce}", std::process::id()));
+        let runtime = path.join("runtime");
+        let unrelated = path.join("unrelated");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir(&unrelated).unwrap();
+        let runtime_identity = inspect_root(&runtime).unwrap().identity;
+        let unrelated_identity = inspect_root(&unrelated).unwrap().identity;
+        assert_ne!(runtime_identity, unrelated_identity);
+        let cleanup = remove_owned_runtime(&runtime, &unrelated_identity);
+        assert!(matches!(&cleanup, Err(OrchestrationError::AccessDenied)));
+        assert!(runtime.is_dir(), "mismatched identity must not remove the runtime");
+        let combined = retain_primary_cleanup_error(
+            OrchestrationError::V37StoreFailure("original account/read RPC failure".into()),
+            cleanup, "account/read execution");
+        let diagnostic = format!("{combined:?}");
+        assert!(diagnostic.contains("original account/read RPC failure"));
+        assert!(diagnostic.contains("AccessDenied"));
+        remove_owned_runtime(&runtime, &runtime_identity).unwrap();
+        fs::remove_dir(&unrelated).unwrap();
+        fs::remove_dir(&path).unwrap();
+    }
+
+    #[test]
+    fn owner_account_execution_and_cleanup_failures_preserve_both_original_causes() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-account-cleanup-cli-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+            V37Status::Applied);
+        let mut launch = product.prepare_owner_codex_login("instanceA").unwrap();
+        // The unchanged pinned CLI itself rejects this argument before it can
+        // return an account/read frame; this is a real child protocol failure.
+        launch.account_read.launch.arguments = vec![
+            "app-server".into(), "--gogoke-invalid-account-control".into()];
+        let prepared = product.process_custodian.prepare(&launch.account_read).unwrap();
+        let operation_id = "login-observe-cleanup-control";
+        authority::record_prepared_process(&mut product.connection, operation_id, &prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection, operation_id, &prepared).unwrap();
+        assert!(product.process_custodian.active(&prepared.ticket).unwrap()
+            .wait(Duration::from_secs(15)).unwrap(), "pinned account/read parser control did not exit");
+        let execution = product.observe_account_via_active_cli(&prepared, &launch.runtime_home);
+        let native_error = match execution.as_ref() {
+            Err(error) => format!("{error:?}"),
+            Ok(_) => panic!("actual pinned CLI parser control should fail"),
+        };
+        assert!(native_error.contains("unexpected argument"), "real CLI stderr must be retained");
+        let proof = product.process_custodian.stop(&prepared.ticket,
+            StopBudgets::production(), || Ok(())).unwrap();
+        let revision = authority::mark_process_stopped(&mut product.connection,
+            operation_id, &proof).unwrap();
+        product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+            identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
+            durable_revision: revision,
+        }).unwrap();
+        let sentinel = launch.runtime_home.join("held-cleanup-control.bin");
+        fs::write(&sentinel, b"owned test cleanup control").unwrap();
+        // FILE_SHARE_READ deliberately excludes FILE_SHARE_DELETE. This real
+        // Windows handle prevents remove_owned_runtime from deleting sentinel.
+        let held = fs::OpenOptions::new().read(true).share_mode(0x1).open(&sentinel).unwrap();
+        let observation = request("login-state", "cleanupControl", 1, "{}");
+        let error = product.finish_confirmed_account_observation(&observation,
+            &prepared, &launch.runtime_home, &launch.runtime_identity, execution).unwrap_err();
+        let diagnostic = format!("{error:?}");
+        assert!(diagnostic.contains("unexpected argument"), "CLI's original execution error was lost");
+        assert!(diagnostic.contains("runtime cleanup"), "actual Windows delete failure was lost");
+        assert!(sentinel.is_file());
+        assert_eq!(scalar(&product,
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        drop(held);
+        remove_owned_runtime(&launch.runtime_home, &launch.runtime_identity).unwrap();
+        drop(launch);
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();

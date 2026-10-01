@@ -337,7 +337,9 @@ jobs:
             @{ axis='R1'; filter='owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames' },
             @{ axis='R2'; filter='owner_login_preflight_errors_settle_original_request_without_process_custody' },
             @{ axis='R4'; filter='owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed' },
-            @{ axis='R5'; filter='owner_first_cli_factory_failures_keep_original_results_and_custody' }
+            @{ axis='R5'; filter='owner_first_cli_factory_failures_keep_original_results_and_custody' },
+            @{ axis='R6'; filter='pinned_codex_owner_login_stop_failure_reconciles_same_proof_and_stderr' },
+            @{ axis='R7'; filter='owner_account_execution_and_cleanup_failures_preserve_both_original_causes' }
           )
           foreach ($case in $cases) {
             try {
@@ -361,12 +363,30 @@ jobs:
                 $end = $source.IndexOf('        let state = state_result.as_ref().cloned()', $start)
                 if ($start -lt 0 -or $end -le $start) { throw 'R4 production fix locator missing' }
                 $mutated = $source.Remove($start,$end-$start)
-              } else {
+              } elseif ($case.axis -ceq 'R5') {
                 $start = $source.IndexOf('    fn preserve_owner_login_failure(')
                 $end = $source.IndexOf('    fn begin_owner_device_login(', $start)
                 if ($start -lt 0 -or $end -le $start) { throw 'R5 production fix locator missing' }
                 $oldBehavior = '    fn preserve_owner_login_failure(&mut self, command: &OwnerLoginCommand, failure: AccountObservationFailure) -> OrchestrationError { failure.error }' + "`n"
                 $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
+              } elseif ($case.axis -ceq 'R6') {
+                $start = $source.IndexOf('    fn progress_pending_first_stop(')
+                $end = $source.IndexOf('    fn finish_owner_device_login(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R6 production fix locator missing' }
+                $oldBehavior = '    fn progress_pending_first_stop(&mut self, command: &OwnerLoginCommand, pending: PendingFirstStop) -> Result<Vec<u8>> {' + "`n" +
+                  '        let reply = owner_login_reply(command, "UNKNOWN", &pending_first_stop_output(&pending));' + "`n" +
+                  '        self.owner_login = Some(OwnerLoginSession::PendingFirstStop(pending)); Ok(reply)' + "`n" + '    }' + "`n"
+                $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
+              } else {
+                $start = $source.IndexOf('    fn finish_confirmed_account_observation(')
+                $end = $source.IndexOf('    fn observe_account_via_active_cli(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R7 production fix locator missing' }
+                $method = $source.Substring($start,$end-$start)
+                $fixedStart = $method.IndexOf('        let frame = match execution {')
+                $fixedEnd = $method.IndexOf('        self.record_trusted_account_read(', $fixedStart)
+                if ($fixedStart -lt 0 -or $fixedEnd -le $fixedStart) { throw 'R7 primary/cleanup fix locator missing' }
+                $method = $method.Substring(0,$fixedStart) + '        cleanup?; let frame = execution?;' + "`n" + $method.Substring($fixedEnd)
+                $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
               }
               [IO.File]::WriteAllText($path,$mutated,[Text.UTF8Encoding]::new($false))
               $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1

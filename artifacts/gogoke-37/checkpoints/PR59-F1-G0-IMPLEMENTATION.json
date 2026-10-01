@@ -73,7 +73,9 @@
     "R4_phase_correction": "Non-LaunchCleanup preparation refusal and Resume with proven factory abort settle; LaunchCleanup remains unconfirmed, and retained suspended activation failure uses same-ticket abort. Tombstone alone is not proof.",
     "R4_phase_tests": "Actual fixed-CLI factory digest refusal and suspended-child failed resume; test-only resume callback exercises the same production activation implementation, absent from release.",
     "R4_result_retention": "Account/read errors with no remaining custody are appended to the original native Final output; extended real first-CLI control case verifies same-original status preserves the raw preflight failure.",
-    "R5": "First login CLI shares the same confirmed-release vs retained-custody classification at prepare, PREPARED record, activation and ACTIVE record failures. Same-original status retains cause and actually reconciles original ticket/proof."
+    "R5": "First login CLI shares the same confirmed-release vs retained-custody classification at prepare, PREPARED record, activation and ACTIVE record failures. Same-original status retains cause and actually reconciles original ticket/proof.",
+    "R6": "PendingFirstStop retains the exact first-child proof, durable revision, original exit/stderr and cancellation/result causes; original status/cancel continues only mark/confirm before normal completion. Actual fixed-CLI parser failure plus first STOPPED SQL trigger tests held and recovered custody. No blanket unhalting or repeated stop. Independent focused static PASS; cloud pending.",
+    "R7": "Confirmed account/read completion preserves primary CLI execution and cleanup failures together, including PREPARED/confirmation causes. Actual fixed app-server parser failure, actual stop/mark/confirm and Windows no-share-delete handle exercise the production completion method. Independent focused static PASS; cloud pending."
   },
   "measurement_corrections": [
     "Repository-relative edits first invoked from desktop subdirectory; no edit occurred; reran at repository root.",
@@ -88,9 +90,18 @@
     "R2": "Remove only original-request preflight Final assignment, unchanged behavioral test must compile and fail, restore exact bytes and pass",
     "R3": "Restore cancel-intent override of settled success, unchanged behavioral test must compile and fail, restore exact bytes and all six host tests pass",
     "R4": "Remove only the finish guard protecting pending second-child custody; real unchanged second-CLI test must compile and fail, restore exact bytes and pass.",
-    "R5": "Rollback only original-request failure preservation to one-shot Err; unchanged four-case actual factory/SQL-trigger test must compile and fail, exact restoration must pass."
+    "R5": "Rollback only original-request failure preservation to one-shot Err; unchanged four-case actual factory/SQL-trigger test must compile and fail, exact restoration must pass.",
+    "R6": "Replace production same-proof progress with the old perpetual-held behavior; unchanged actual first-CLI STOPPED-fault test must compile and fail, exact restoration must pass.",
+    "R7": "Restore production completion cleanup-before-execution error propagation; unchanged actual fixed-CLI/Windows-delete double-failure test must compile and fail, exact restoration must pass."
   },
-  "superseded_cloud_source": "7ba45c1e19ae9fc368c2b22a113db942506ad292",
+  "superseded_cloud_source": "2b8a5ceb9648a3edeb8a464809dff5a9b5d8baf0",
+  "ordinary_preparation": {
+    "true_local_and_roaming_paths": "PASS",
+    "limited_interactive_snapshot": "PASS",
+    "fixed_cli_hash": "PASS",
+    "protected_formal_comparison": "NO_CHANGES",
+    "new_source_installation": "NOT_RUN"
+  },
   "superseded_cloud_validation": {
     "source": "42f1927ede410e2a55f69d7b27d4ebdd12aedb74",
     "native_run": 36859601994,
