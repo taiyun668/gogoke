@@ -1868,7 +1868,10 @@ impl ManagedProcess {
         }
         proof.parent_exited = wait_handle(self.process.raw(), 0).unwrap_or(false);
         proof.exit_code = process_exit_code(self.process.raw()).ok().flatten();
-        if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) {
+        // 124 is the exact exit code supplied to a successful TerminateJobObject.
+        // The held Job's zero-process observation and writer fence above prove
+        // release; an unprompted 124 still needs reconciliation.
+        if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) && !proof.kill_succeeded {
             proof
                 .errors
                 .push("STOP_EXIT_124_REQUIRES_RECONCILIATION".to_owned());
@@ -3407,15 +3410,22 @@ mod tests {
         let mut custodian = ProcessCustodian::new().expect("custodian");
         let mut launch = ProcessLaunch::new(powershell());
         launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
-            "-Command".into(), "Start-Sleep -Seconds 1".into()];
+            "-Command".into(), "Start-Sleep -Seconds 30".into()];
         let prepared = custodian.prepare(&request(launch)).expect("suspended process");
         record_prepared_process(&mut connection, "r2-02-test", &prepared).expect("durable PREPARED");
         assert!(record_prepared_process(&mut connection, "r2-02-test", &prepared).is_err());
         custodian.activate(&prepared).expect("activate exact prepared identity");
         mark_process_active(&mut connection, "r2-02-test", &prepared).expect("durable ACTIVE");
         assert!(mark_process_active(&mut connection, "r2-02-test", &prepared).is_err());
-        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()))
+        let proof = custodian.stop(&prepared.ticket, StopBudgets {
+            grace_ms: 20, terminate_ms: 1_000, observe_ms: 1_000, host_deadline_ms: 3_000,
+        }, || Ok(()))
             .expect("native stop proof");
+        assert_eq!(proof.exit_code, Some(STOP_TIMEOUT_EXIT_CODE));
+        assert!(proof.kill_attempted && proof.kill_succeeded);
+        assert!(proof.parent_exited && proof.writer_fence_verified);
+        assert_eq!(proof.active_job_processes, Some(0));
+        assert!(proof.errors.is_empty(), "confirmed forced Job stop must be durable: {proof:?}");
         let revision = mark_process_stopped(&mut connection, "r2-02-test", &proof)
             .unwrap_or_else(|error| panic!("durable stop proof: {error:?}; original native proof: {proof:?}"));
         custodian.confirm_stop_durable(&DurableStopConfirmation {
@@ -3423,6 +3433,8 @@ mod tests {
             identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
             durable_revision: revision,
         }).expect("release only after durable stop");
+        assert!(custodian.active(&prepared.ticket).is_none(),
+            "the exact forced-stop ticket releases only after durable confirmation");
         assert!(mark_process_unknown(&mut connection, "r2-02-test", &prepared).is_err());
         assert!(mark_process_active(&mut connection, "r2-02-test", &prepared).is_err());
         let mut unresolved_launch = ProcessLaunch::new(powershell());
@@ -3812,14 +3824,14 @@ mod tests {
             },
             || Ok(()),
         );
-        assert_eq!(proof.disposition, StopDisposition::ResidualCustody);
+        assert_eq!(proof.disposition, StopDisposition::Stopped);
+        assert!(proof.kill_attempted && proof.kill_succeeded);
+        assert!(proof.parent_exited);
+        assert_eq!(proof.active_job_processes, Some(0));
         assert!(proof.writer_fence_verified);
         assert!(!proof.durable_receipt_saved);
         assert_eq!(proof.exit_code, Some(STOP_TIMEOUT_EXIT_CODE));
-        assert!(proof
-            .errors
-            .iter()
-            .any(|error| error == "STOP_EXIT_124_REQUIRES_RECONCILIATION"));
+        assert!(proof.errors.is_empty(), "successful forced Job stop: {proof:?}");
         let repeated = process.stop(StopBudgets::production(), || {
             panic!("second stop must not issue another close")
         });
@@ -3828,6 +3840,36 @@ mod tests {
             .errors
             .iter()
             .any(|error| error == "SECOND_STOP_REQUIRES_DURABLE_RECONCILIATION"));
+    }
+
+    #[test]
+    fn natural_exit_124_and_close_error_still_reject_stop_proof() {
+        let mut natural = ProcessLaunch::new(system_cmd());
+        natural.arguments = vec!["/D".into(), "/C".into(), "exit 124".into()];
+        let natural = prepare_and_activate(&natural, |_| Ok(())).expect("real natural-124 process");
+        assert!(natural.wait(Duration::from_secs(15)).expect("natural process exit"));
+        let proof = natural.stop(StopBudgets::production(), || Ok(()));
+        assert_eq!(proof.exit_code, Some(STOP_TIMEOUT_EXIT_CODE));
+        assert!(!proof.kill_attempted && !proof.kill_succeeded);
+        assert!(proof.parent_exited && proof.writer_fence_verified);
+        assert_eq!(proof.active_job_processes, Some(0));
+        assert_eq!(proof.disposition, StopDisposition::ResidualCustody);
+        assert!(proof.errors.iter().any(|error|
+            error == "STOP_EXIT_124_REQUIRES_RECONCILIATION"));
+
+        let mut close_failure = ProcessLaunch::new(system_cmd());
+        close_failure.arguments = vec!["/D".into(), "/C".into(), "exit 0".into()];
+        let close_failure = prepare_and_activate(&close_failure, |_| Ok(())).expect("real close-error process");
+        assert!(close_failure.wait(Duration::from_secs(15)).expect("close-error process exit"));
+        let proof = close_failure.stop(StopBudgets::production(), ||
+            Err("controlled close binding failure".into()));
+        assert_eq!(proof.exit_code, Some(0));
+        assert!(!proof.kill_attempted);
+        assert!(proof.parent_exited && proof.writer_fence_verified);
+        assert_eq!(proof.active_job_processes, Some(0));
+        assert_eq!(proof.disposition, StopDisposition::ResidualCustody);
+        assert!(proof.errors.iter().any(|error|
+            error == "CLOSE_BINDING_FAILED: controlled close binding failure"));
     }
 
     #[test]

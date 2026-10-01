@@ -1045,9 +1045,15 @@ impl<'root> ProductDatabase<'root> {
         };
         // Capture the exact child's retained stderr before durable confirmation
         // releases its pipes. Exit failure is not an account-state observation.
+        let stderr = self.process_custodian.active(&active.prepared.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?.stderr_tail();
+        // Cancellation still owns the original CLI diagnostic. It must not
+        // discard a vendor error that arrived before the Owner cancelled.
+        if cancelled {
+            if !active.output.is_empty() { active.output.push('\n'); }
+            active.output.push_str(&format!("owner login cancelled: STDERR_TAIL: {stderr}"));
+        }
         let login_failure = if !cancelled && proof.exit_code != Some(0) {
-            let stderr = self.process_custodian.active(&active.prepared.ticket)
-                .ok_or(OrchestrationError::AccessDenied)?.stderr_tail();
             Some(format!("owner login process exited: code={:?}; STDERR_TAIL: {stderr}",
                 proof.exit_code))
         } else { None };
@@ -1059,7 +1065,7 @@ impl<'root> ProductDatabase<'root> {
                 let unknown = authority::mark_process_unknown(&mut self.connection,
                     &active.operation_id, &active.prepared);
                 let cause = OrchestrationError::V37StoreFailure(format!(
-                    "owner login stop record: {error:?}; proof: {proof:?}; unknown record: {unknown:?}; login failure: {login_failure:?}"));
+                    "owner login stop record: {error:?}; CLI exit code={:?}; STDERR_TAIL: {stderr}; proof: {proof:?}; unknown record: {unknown:?}; login failure: {login_failure:?}", proof.exit_code));
                 self.owner_login = Some(OwnerLoginSession::PendingFirstStop(PendingFirstStop {
                     active, proof, durable_revision: None, cancelled, login_failure,
                     primary_error: format!("{cause:?}"), latest_error: None,
@@ -1912,6 +1918,56 @@ mod tests {
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
         assert!(!runtime_home.exists(), "owned login runtime must be cleaned after confirmation");
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1");
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn cancelled_pinned_cli_preserves_stderr_before_confirmed_release() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-cancel-stderr-{}-{nonce}",
+            std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+            V37Status::Applied);
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+            product.prepare_owner_codex_login("instanceA").unwrap();
+        login.launch.arguments = vec!["login".into(), "--gogoke-invalid-login-control".into()];
+        let prepared = product.process_custodian.prepare(&login).unwrap();
+        drop(login);
+        drop(account_read);
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"cancel","instanceId":"instanceA","requestId":"ownerCancelStderrA","expectedRevision":1}"#).unwrap();
+        let operation_id = owner_login_operation_id(&command);
+        authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+        assert!(product.process_custodian.active(&prepared.ticket).unwrap()
+            .wait(Duration::from_secs(15)).unwrap());
+        product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
+            instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
+            expected_revision: command.expected_revision, operation_id, prepared,
+            runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), halted: false,
+        }));
+        let reply = match product.cancel_owner_device_login(&command) {
+            Ok(reply) => reply,
+            Err(error) => {
+                assert!(matches!(product.owner_login, Some(OwnerLoginSession::Final { .. })),
+                    "cancellation retained unexpected custody: {error:?}");
+                product.status_owner_device_login(&command).unwrap()
+            }
+        };
+        let reply = String::from_utf8(reply).unwrap();
+        assert!(reply.contains("\"settled\":true"), "original cancellation did not settle: {reply}");
+        assert!(reply.contains("owner login cancelled: STDERR_TAIL:"));
+        assert!(reply.contains("unexpected argument"), "actual fixed CLI stderr was discarded: {reply}");
+        assert!(!runtime_home.exists());
+        assert_eq!(scalar(&product,
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state!='STOPPED'"), "0");
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();

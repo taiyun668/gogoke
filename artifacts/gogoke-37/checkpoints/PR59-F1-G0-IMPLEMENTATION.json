@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "ACTUAL_FROZEN_WIN11_UI_READY_OT4_OWNER_LOGIN_REQUIRED",
+  "state": "OT4_ACTUAL_CANCEL_STOP_PROOF_BUG_FIXED_NEW_BYTES_CLOUD_PENDING",
   "authorization": {
     "pr": 59,
     "merged_by": "taiyun668",
@@ -21,7 +21,7 @@
     "modification": false
   },
   "isolation": "Existing LPAC and previously Owner-authorized lpacIdentityServices; no capability expansion",
-  "candidate_version": "0.1.14",
+  "candidate_version": "0.1.15",
   "local_checks": {
     "typescript": "PASS",
     "instance_ui_tests": {
@@ -143,14 +143,14 @@
     "initial_instance": "PASS_ACTUAL_CODEX_TEST_INSTANCE_DRIVER_VERSION_0.149.0_REVISION_2_NOT_LOGGED_IN",
     "acceptance": false
   },
-  "OT4": "READY_FOR_ONCE_OWNER_INSTANCE_LOGIN_AND_BROWSER_AUTHORIZATION",
+  "OT4": "ACTUAL_BROWSER_AUTHORIZATION_FAILED_CANCEL_UNSETTLED_REPAIR_IN_PROGRESS",
   "M1_complete": false,
   "product_acceptance": false,
   "preserved_untracked": [
     "apps/desktop/native-host/src/process/session/compat/detours-extract/",
     "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
   ],
-  "next_action": "Owner clicks one-click login from installed Instances page and authorizes through product-opened browser; Controller observes same host-owned request closure/recovery and proceeds with actual M1. No manual request ID, settings edits, acceptance or release.",
+  "next_action": "Cloud build/full native and compiled R8/R9 failure mutations, independent review, prepare new same-byte candidate; investigate exact legacy temporary-runtime object and recovery scope without forging old proof or editing history. Then actual cancel/relogin and browser error evidence.",
   "source_audit": {
     "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
     "findings": [
@@ -247,9 +247,23 @@
     "post_install_formal_four": "NO_CHANGES"
   },
   "owner_touchpoint": {
-    "state": "READY_NOT_STARTED",
+    "state": "BROWSER_ERROR_OBSERVED_ORIGINAL_ERROR_UNAVAILABLE",
     "type": "OT4_ACCOUNT_LOGIN",
     "reason": "Only Owner can authenticate and authorize the Codex account",
     "subsequent_controller_action": "Automatic product result readback and remaining M1 actual tests"
+  },
+  "current_correction": {
+    "host": "Clear transient error only on actual settled CANCELLED; allow fresh original request after confirmed settlement",
+    "old_request": "UNSETTLED_PENDING_FIRST_STOP_INVALID_CACHED_PROOF",
+    "ui": "Bound instance-card flex width and wrap original error text",
+    "old_record_retroactively_settled": false,
+    "R8": "Only confirmed successful TerminateJobObject exempts its supplied exit124 from sentinel veto; all exact identity/Job0/fence/other error/durable receipt checks remain",
+    "R9": "Preserve original fixed CLI stderr even after Owner cancellation",
+    "cloud": "NOT_RUN",
+    "oauth_cause": "UNKNOWN_BROWSER_ERROR_ORIGINAL_UNAVAILABLE_NOT_IN_CAPTURED_CLI_OUTPUT",
+    "legacy_runtime": "EXISTING_HOST_OWNED_TEMP_DIRECTORY_BLOCKS_FRESH_LOGIN; NO_CLEANUP_OR_LEDGER_EDIT",
+    "M1": false,
+    "actual_old_source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "static_review": "INDEPENDENT_SOL_STOP_PROOF_LOGIC_PASS"
   }
 }

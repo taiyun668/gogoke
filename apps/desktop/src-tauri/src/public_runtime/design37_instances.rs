@@ -139,7 +139,9 @@ fn apply_reply(sessions: &Sessions, id: &str, request: &str, action: &str, reply
     record.view.state = if action == "cancel" && reply.settled && reply.state == "LOGGED_OUT" {
         "CANCELLED".into()
     } else { reply.state };
-    if record.settled && record.view.state == "LOGGED_IN" { record.view.error = None; }
+    if record.settled && matches!(record.view.state.as_str(), "LOGGED_IN" | "CANCELLED") {
+        record.view.error = None;
+    }
     if record.view.state == "UNKNOWN" {
         record.view.state = "ERROR".into();
         if record.view.error.is_none() {
@@ -386,12 +388,16 @@ mod tests {
         runtime().block_on(async {
             let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
             sessions.lock().unwrap().get_mut("instanceA").unwrap().cancel_requested=true;
+            save_error(&sessions,"instanceA",&original.request_id,"prior stop observation failed".into()).unwrap();
             let environment=fake(vec![Ok(("PENDING","",false)),Ok(("LOGGED_OUT","",true))]);
             drive(Arc::clone(&environment),Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
             let actions=environment.actions.lock().unwrap();
             assert_eq!(actions[1]["action"],"cancel");assert_eq!(actions[1]["requestId"],original.request_id);
             drop(actions);
             assert_eq!(page(environment.as_ref(),&sessions).await.unwrap().instances[0].login.as_ref().unwrap().state,"CANCELLED");
+            assert!(sessions.lock().unwrap()["instanceA"].view.error.is_none());
+            assert!(reserve_login(&sessions,"instanceA",2).unwrap().is_some(),
+                "confirmed cancellation must permit a new host-owned request");
         });
     }
     #[test]

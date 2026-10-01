@@ -128,7 +128,7 @@ export function Design37InstanceSection() {
           const summary = loginSummary(instance);
           return (
             <div className="settings-toggle-row" key={instance.instanceId}>
-              <div>
+              <div style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>
                 <div className="settings-toggle-title">
                   {instance.instanceId === DESIGN37_TEST_INSTANCE_ID
                     ? "Codex 测试实例"

@@ -22,9 +22,9 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     name: Native host Windows real process axes
-    # Full real-process/library gates plus six changed-source mutation/restore
-    # pairs: the measured last pair exceeded the former 45-minute job budget.
-    timeout-minutes: 55
+    # Full real-process/library gates and eight compiled mutation/restore pairs.
+    # Two added pairs extend the previously measured six-pair job budget.
+    timeout-minutes: 65
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
@@ -209,6 +209,8 @@ jobs:
             @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
             @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
+            @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
+            @{ id = 'cancel-stderr'; filter = 'cancelled_pinned_cli_preserves_stderr_before_confirmed_release' },
             @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
             @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
             @{ id = 'job-assign-cleanup'; filter = 'failed_launch_cleanup_retains_exact_handles_on_timeout_or_failed_wait' },
@@ -349,7 +351,8 @@ jobs:
             @{ axis='R4'; filter='owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed' },
             @{ axis='R5'; filter='owner_first_cli_factory_failures_keep_original_results_and_custody' },
             @{ axis='R6'; filter='pinned_codex_owner_login_stop_failure_reconciles_same_proof_and_stderr' },
-            @{ axis='R7'; filter='owner_account_execution_and_cleanup_failures_preserve_both_original_causes' }
+            @{ axis='R7'; filter='owner_account_execution_and_cleanup_failures_preserve_both_original_causes' },
+            @{ axis='R9'; filter='cancelled_pinned_cli_preserves_stderr_before_confirmed_release' }
           )
           foreach ($case in $cases) {
             try {
@@ -387,6 +390,11 @@ jobs:
                   '        let reply = owner_login_reply(command, "UNKNOWN", &pending_first_stop_output(&pending));' + "`n" +
                   '        self.owner_login = Some(OwnerLoginSession::PendingFirstStop(pending)); Ok(reply)' + "`n" + '    }' + "`n"
                 $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
+              } elseif ($case.axis -ceq 'R9') {
+                $start = $source.IndexOf('        if cancelled {', $source.IndexOf('    fn finish_owner_device_login('))
+                $end = $source.IndexOf('        let login_failure =', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R9 cancellation stderr locator missing' }
+                $mutated = $source.Remove($start,$end-$start)
               } else {
                 $start = $source.IndexOf('    fn finish_confirmed_account_observation(')
                 $end = $source.IndexOf('    fn observe_account_via_active_cli(', $start)
@@ -414,6 +422,35 @@ jobs:
             if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
               throw "$($case.axis) unchanged test must pass after exact production restoration"
             }
+          }
+      - name: Verify confirmed forced Job stop with a compiled failing mutation
+        if: ${{ !cancelled() && !inputs.job_descendant_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/process/windows.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $path).Hash
+          $fixed = 'if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) && !proof.kill_succeeded {'
+          if ([regex]::Matches($source,[regex]::Escape($fixed)).Count -ne 1) { throw 'R8 stop proof fix must match once' }
+          try {
+            [IO.File]::WriteAllText($path,$source.Replace($fixed,'if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) {'),[Text.UTF8Encoding]::new($false))
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml prepared_process_identity_is_durable_before_activation --lib -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Out-Host
+            if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'R8 must compile and fail its unchanged actual forced-stop durable-confirmation test'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($path,$original)
+            if ((Get-FileHash -LiteralPath $path).Hash -cne $hash) { throw 'R8 exact source restoration failed' }
+          }
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml prepared_process_identity_is_durable_before_activation --lib -- --nocapture 2>&1
+          $output | Out-Host
+          if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'R8 unchanged test must pass after exact restoration'
           }
       - name: Test production LPAC path shim behavior in cloud
         if: ${{ !cancelled() }}
