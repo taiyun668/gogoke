@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "IMPLEMENTATION_CLOUD_VALIDATION_PENDING",
+  "state": "CLOUD_GATES_RESOLVED_ORDINARY_CANDIDATE_REPLACEMENT_IN_PROGRESS",
   "authorization": {
     "pr": 59,
     "merged_by": "taiyun668",
@@ -48,16 +48,39 @@
     "state": "EXACT_READBACK_PASS",
     "desktop_result": "ALL_FIVE_JOBS_PASS"
   },
-  "cloud_native_tests": "NEW_SOURCE_PENDING",
+  "cloud_native_tests": "FULL_LIBRARY_572_PASS_SIX_PRODUCTION_MUTATIONS_PASS_AND_AFFECTED_JOB_FIXTURE_RECHECK_PASS",
   "f014_native_results": {
     "run": 36881078068,
     "library": "572_PASSED_0_FAILED_0_IGNORED",
-    "compiled_fail_and_exact_restore_pass": ["R1", "R2", "R4", "R5", "R6", "R7"],
+    "compiled_fail_and_exact_restore_pass": [
+      "R1",
+      "R2",
+      "R4",
+      "R5",
+      "R6",
+      "R7"
+    ],
     "lpac_shim": "PASS",
     "whole_run": "FAIL_NOT_PASS",
     "focused_failure": "Job descendant PowerShell fixture had not entered its script at the 15-second parent-exit assertion; the same test passed later in the full library",
     "fixture_correction": "Use the cloud build-bound Node image for actual parent/child processes; retain Job identity, noninheritance, descendant and stop-proof assertions without increasing the wait",
-    "affected_recheck": "Dedicated focused fixture run; its full library and mutation suites are explicitly NOT_RUN, combined with exact unchanged production-source evidence"
+    "affected_recheck": {
+      "lpac_shim": "PASS",
+      "scope": "FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE",
+      "required_axes": "PASS_3_EXECUTED_0_FAILED_0_SKIPPED",
+      "mutations": "NOT_RUN",
+      "source": "63b172b0777963fddb582fd1a52c996cd6b7b083",
+      "run": 36888372514,
+      "server": "NOT_RUN",
+      "full_library": "NOT_RUN",
+      "release_build": "PASS",
+      "focused": {
+        "skipped": 0,
+        "passed": 1,
+        "failed": 0,
+        "executed": 1
+      }
+    }
   },
   "frozen_candidate": {
     "source": "2d49a718147bab563b39834d2c294c0f912b23db",
@@ -68,17 +91,30 @@
     "signing_run": 36881306144,
     "signed_artifact": 11171622438,
     "local_purpose_signature_and_seven_frozen_members": "PASS",
-    "first_cloud_smoke": {"run": 36881857203, "result": "FAIL_PUBLIC_GITHUB_ANONYMOUS_QUOTA_403_REMAINING_0"},
-    "same_byte_fresh_runner_smoke": {"run": 36884344861, "result": "PASS"},
+    "first_cloud_smoke": {
+      "run": 36881857203,
+      "result": "FAIL_PUBLIC_GITHUB_ANONYMOUS_QUOTA_403_REMAINING_0"
+    },
+    "same_byte_fresh_runner_smoke": {
+      "run": 36884344861,
+      "result": "PASS",
+      "machine_readback": "PASS_SERVICE_POSITIVE_MODULE_NEGATIVE_REGISTRATION_LOCK_FAILURES_FINALIZER_AND_INSTALLER_NEGATIVE_AXES"
+    },
     "credential_exclusion_boundary": "UNCHANGED",
     "frozen_bytes_rebuilt_or_resigned": false,
-    "local_installation": "NOT_RUN"
+    "local_installation": "DIRECT_IN_PLACE_ATTEMPT_REJECTED_EXISTING_TARGET_ORDINARY_REPLACEMENT_IN_PROGRESS"
   },
   "native_ci_budget_correction": {
     "source": "2d49a718147bab563b39834d2c294c0f912b23db",
     "run": 36874331696,
     "library_step": "PASS",
-    "compiled_fail_and_exact_restore_pass": ["R1", "R2", "R4", "R5", "R6"],
+    "compiled_fail_and_exact_restore_pass": [
+      "R1",
+      "R2",
+      "R4",
+      "R5",
+      "R6"
+    ],
     "R7": "CANCELLED_DURING_COMPILATION_BY_45_MINUTE_JOB_BUDGET",
     "whole_run": "CANCELLED_NOT_PASS",
     "instrument_fix": "55-minute cloud job budget for full gates and six measured mutation/restore pairs; rerun required",
@@ -103,7 +139,7 @@
     "apps/desktop/native-host/src/process/session/compat/detours-extract/",
     "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
   ],
-  "next_action": "New source cloud full/native mutations and desktop/repro; independent first/second CLI lifecycle review; same-byte trusted-main candidate signing and ordinary Win11 preparation, then once OT4.",
+  "next_action": "Complete actual candidate retirement, fresh per-item empty-directory audit/readback, install exact signed frozen bytes, verify ordinary product identity and G.0 UI; once ready request OT4, then actual M1. No acceptance or release.",
   "source_audit": {
     "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
     "findings": [
@@ -129,7 +165,9 @@
     "Cloud SQLite CloseLedgerMissing generation diagnosed through same_open.rs: outstanding fixture Statement prevented sqlite3_close, so both affected fixtures now drop the Statement before checked close.",
     "A completed worker received queued send_message followups without a new turn; Controller reclaimed the small remaining edits instead of treating running state as progress.",
     "Installed service runtime path was assumed for a metadata helper; no script ran on the missing path. Used an Authenticode-valid measurement Node and actual frozen product hashes.",
-    "Original UI request metadata uses values[0,2,3], not named properties. First metadata run is invalid; corrected same-original status reads returned UNKNOWN on the old installed source. No login begin, device output, credential read or new-source acceptance."
+    "Original UI request metadata uses values[0,2,3], not named properties. First metadata run is invalid; corrected same-original status reads returned UNKNOWN on the old installed source. No login begin, device output, credential read or new-source acceptance.",
+    "Ordinary installation script attempted direct installation into nonempty old candidate root; actual frozen embedded-shell preflight returned GOGOKE_INSTALL_EXISTING_TARGET_REQUIRES_UPDATE. Correct the measurement to actual installed candidate uninstall, independent empty-directory audit, and frozen new install, preserving original instance data/home physical identities.",
+    "Signed candidate archive intentionally excludes standalone embedded shell; first direct preflight diagnostic referenced an absent member and did not run. Corrected to exact frozen shell bytes hash-bound to embedded installer while retaining signed sibling set. No CLI change."
   ],
   "cloud_mutation_axes": {
     "R1": "Restore original stale registry install-state read, unchanged behavioral test must compile and fail, restore exact bytes and pass",
@@ -146,7 +184,8 @@
     "limited_interactive_snapshot": "PASS",
     "fixed_cli_hash": "PASS",
     "protected_formal_comparison": "NO_CHANGES",
-    "new_source_installation": "NOT_RUN"
+    "new_source_installation": "NOT_COMPLETED",
+    "failed_install_formal_comparison": "NO_CHANGES_FOUR_PROTECTED_OBJECTS"
   },
   "superseded_cloud_validation": {
     "source": "42f1927ede410e2a55f69d7b27d4ebdd12aedb74",
@@ -165,6 +204,29 @@
     "native_run": 36864420389,
     "cause": "Validated empty operation payload was copied with Json Clone, unsupported by its actual type; preserve exact empty payload with BTreeMap::new without changing Json."
   },
-  "native_job_timeout_minutes": 45,
-  "timeout_reason": "Full native tests plus four independent compiled mutations and restored test recompilations; finite duration retained."
+  "native_job_timeout_minutes": 55,
+  "timeout_reason": "Measured full native library plus six compiled mutation and exact restoration pairs",
+  "ordinary_install_transition": {
+    "retirement_instrument_review": "INDEPENDENT_SOL_NO_BLOCKER",
+    "formal_four": "NO_CHANGES",
+    "new_install": "IN_PROGRESS_EXACT_SIGNED_FROZEN_BYTES",
+    "first_installer_exit": 2,
+    "direct_preflight_error": "GOGOKE_INSTALL_EXISTING_TARGET_REQUIRES_UPDATE",
+    "old_source": "aae122c392393dc48fead2fa2f336d6af8af8267",
+    "authentication": "NOT_STARTED",
+    "retirement": "PASS_ACTUAL_CANDIDATE_DELETED_NATIVE_ROOT_AND_HOME_IDENTITIES_PRESERVED",
+    "candidate_sac_block": "NOT_OBSERVED",
+    "empty_directory_cleanup": "PASS_1091_NONRECURSIVE_REMOVALS_1091_ABSENT_READBACKS_ROOT_RETAINED_EMPTY",
+    "new_source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "retirement_formal_four": "NO_CHANGES",
+    "empty_directory_inventory": {
+      "sha256": "8713384dc4031eea9820cc5d0b9c0de4a043ff4f1a5da09351349c05bbae423e",
+      "audit": "INDEPENDENT_SOL_ALL_1091_DESCENDANTS_APPROVED_ZERO_FILES_REPARSE_OR_UNLISTED_CHILDREN",
+      "reparse": 0,
+      "remove_only_subdirectories": 1091,
+      "retain_install_root": true,
+      "files": 0,
+      "directories": 1092
+    }
+  }
 }
