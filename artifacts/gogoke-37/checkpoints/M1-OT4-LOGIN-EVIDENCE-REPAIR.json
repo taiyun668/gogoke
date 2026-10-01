@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "EXACT_CONNECT_LOG_SOURCE_CLOUD_SIGNED_ACTUAL_INSTALL_PASS_OWNER_OT4_RETRY_REQUIRED",
+  "state": "OWNER_SCOPE_DECISION_REQUIRED_FIXED_CLI_SUPPRESSES_REQUEST_ERROR_SOURCE_CHAIN",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -47,9 +47,9 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "All four protected ordinary-view domains equal before retirement, after replacement and while source1b product runs.",
   "next": [
-    "Owner retries the actual installed independent-instance UI login; Controller has not invoked any auth route or opened an auth page.",
-    "On failure read preserved stderr and exact existing private TCP connector log. Current HTTPS cause remains UNKNOWN; this filter does not guarantee DNS/TLS coverage.",
-    "After actual login succeeds continue authenticated model/native question/append/compact and remaining M1 integration readbacks."
+    "Owner decides whether to authorize the narrow fixed-CLI original-error output modification and exact new program identity binding.",
+    "After authorization, preserve the same real instance/permission/request flow, cloud-only native build and exact-byte tests; stop on a new-component SAC block or formal-data risk.",
+    "M1 authenticated integration remains NOT_RUN; no acceptance/publication/merge."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -366,7 +366,51 @@
       "heldTask": "Interactive/Limited; same actual installed product retained for Owner OT4; four-hour bound",
       "completedOwnedTasksRemoved": 3,
       "taskCleanupReceiptSha256": "b9185144b86a20e7dd6bbc99882a3a3e9a5c0b9df1b3944e813497b2c0b78863"
+    },
+    "ownerActualRetry": {
+      "sourceCommit": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+      "childExit": 1,
+      "requestState": "UNKNOWN",
+      "failurePhase": "DEVICE_CODE_USERCODE_REQUEST_SEND",
+      "runtimeCleanup": "OK",
+      "privateScreenshotSha256": "200a8b6336520b670dc3f3407a01701c266636fafff6917f5ecdd8663f2d1424",
+      "privateExistingLogSha256": "e9913b6142d128a5cba20c23ea84bebfec8f9b681ce6009ac1dc3934980beae4",
+      "actualDirectConnectorEvents": "HTTPS auth host resolved; TCP connecting then connected to server port443; Owner request still failed afterward.",
+      "conclusion": "DNS resolution and TCP establishment succeeded for this observed request. No TLS/HTTP/root-cause proof.",
+      "specificFailureCause": "UNKNOWN",
+      "existingSchannelAndCodeIntegrityEvents": "NO_MATCHING_EVENTS_IN_REQUEST_TIME_RANGE; absence is not success",
+      "existingCAPI2LogRead": "ACCESS_DENIED_NO_ELEVATION_OR_LOG_SETTING_CHANGE",
+      "credentialsRead": false,
+      "authenticationSucceeded": false,
+      "controllerAuthInvoked": false,
+      "formalFourDomainsAfterRetry": "UNCHANGED",
+      "actualRuntimeIdentityAfterRetry": "LIVE_SHELL_NATIVE_PATHS_PARENT_HASHES_PASS",
+      "privatePostRetryReceiptSha256": "04f74ea445da6a48fecb6a9f258cf2f6d0dff20e7a8f041e72f818df230b25b1",
+      "privatePostRetryFormalSnapshotSha256": "3fceb02397c8763b278803ce4c986347d8aa634ce36576f45d6e7f68114f0061",
+      "completedOwnedPostRetryTaskRemoved": true,
+      "sourceLookup": {
+        "seat": "same Luna/high read-only m1_installed_entry_lookup",
+        "fixedCLICommit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+        "errorChain": "hyper-tls/tokio-native-tls/native-tls Windows/hyper-util/reqwest preserve the underlying error as source; request_device_code wraps it in io::Error::other.",
+        "confirmedOutputLoss": "cli/src/login.rs:357-359 uses Display for the final device login error; existing background-connect logging also uses Display. TCP connector events do not expose later TLS/source-chain failures.",
+        "officialNativeRPC": "account/login/start chatgptDeviceCode calls the same request_device_code, but account_processor.rs:517-523 also formats Display, so it cannot recover this error chain. It has different app-server config/custody context and was not used as a substitute.",
+        "causeStillUnknown": true,
+        "furtherNetworkProbeOrAuthRun": false,
+        "sources": [
+          "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/cli/src/login.rs#L357-L359",
+          "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/login/src/device_code_auth.rs",
+          "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/app-server/src/account_processor.rs"
+        ]
+      }
     }
   },
-  "connector_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634"
+  "connector_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+  "owner_scope_decision": {
+    "reason": "Plan section8 treats manual CLI installation/upgrade or conflict with a decided boundary as Owner touchpoint. Existing pinned official CLI has no confirmed source-chain output entry; modifying/replacing its binary and rebinding identity is not Controller unilateral work.",
+    "proposedNarrowChange": "Retain fixed 0.149.0 source and device-code request/instance/permission/custody flow; only change its device-login failure output to retain the underlying error chain in Owner-private stderr, cloud build, then rebind exact new program identity and test the actual installation.",
+    "notAuthorizedOrExecuted": true,
+    "securityCapabilityChangesProposed": false,
+    "noBlindRetryOrMoreTraceBuild": true,
+    "routeReflection": "The existing connector target proved actual TCP success, then source lookup proved the remaining error is suppressed by the fixed CLI output. Another same-byte Owner retry or broader filter cannot retrieve an already omitted chain; pause at the specific pinned-component scope decision rather than repeat that path."
+  }
 }
