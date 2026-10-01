@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::process::{AppContainerProfile, CompatModule};
-use crate::process::{DurableStopConfirmation, NativeBinding, OriginBoundFrame,
+use crate::process::{DurableStopConfirmation, NativeBinding, NativeStopProof, OriginBoundFrame,
     PrepareRequest, PreparedCustody, ProcessCustodyError, ProcessLaunch, StopBudgets};
 use crate::root::{inspect_root, RootIdentity};
 #[cfg(all(test, windows))]
@@ -84,6 +84,7 @@ pub(super) struct PreparedOwnerLogin {
 /// into a new CLI process.
 pub(super) enum OwnerLoginSession {
     Active(ActiveOwnerLogin),
+    PendingAccount(PendingAccountRead),
     Final {
         instance_id: String,
         request_id: String,
@@ -91,6 +92,40 @@ pub(super) enum OwnerLoginSession {
         state: String,
         output: String,
     },
+}
+
+struct PendingAccountCustody {
+    operation_id: Option<String>,
+    prepared: Option<PreparedCustody>,
+    runtime_home: Option<PathBuf>,
+    runtime_identity: Option<RootIdentity>,
+    proof: Option<NativeStopProof>,
+    durable_revision: Option<u64>,
+    abort_prepared: bool,
+    frame: Option<OriginBoundFrame>,
+    request: Option<V37Request>,
+}
+
+struct PendingAccountRead {
+    instance_id: String,
+    request_id: String,
+    expected_revision: u64,
+    output: String,
+    latest_error: Option<String>,
+    custody: PendingAccountCustody,
+}
+
+struct AccountObservationFailure {
+    error: OrchestrationError,
+    pending: Option<PendingAccountCustody>,
+}
+
+impl From<OrchestrationError> for AccountObservationFailure {
+    fn from(error: OrchestrationError) -> Self { Self { error, pending: None } }
+}
+
+impl From<ProcessCustodyError> for AccountObservationFailure {
+    fn from(error: ProcessCustodyError) -> Self { Self { error: error.into(), pending: None } }
 }
 
 pub(super) struct ActiveOwnerLogin {
@@ -307,6 +342,8 @@ fn same_owner_login(session: &OwnerLoginSession, command: &OwnerLoginCommand) ->
     let (instance, request, revision) = match session {
         OwnerLoginSession::Active(active) => (&active.instance_id, &active.request_id,
             active.expected_revision),
+        OwnerLoginSession::PendingAccount(pending) => (&pending.instance_id, &pending.request_id,
+            pending.expected_revision),
         OwnerLoginSession::Final { instance_id, request_id, expected_revision, .. } =>
             (instance_id, request_id, *expected_revision),
     };
@@ -551,7 +588,8 @@ impl<'root> ProductDatabase<'root> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let command = owner_login_command(frame)?;
         if command.action == OwnerLoginAction::Refresh {
-            if matches!(self.owner_login, Some(OwnerLoginSession::Active(_))) {
+            if matches!(self.owner_login, Some(OwnerLoginSession::Active(_) |
+                OwnerLoginSession::PendingAccount(_))) {
                 return Err(OrchestrationError::OperationConflict);
             }
             let state = self.owner_login_account_state(&command)?;
@@ -559,7 +597,8 @@ impl<'root> ProductDatabase<'root> {
         }
         if let Some(session) = &self.owner_login {
             if !same_owner_login(session, &command) {
-                if matches!(session, OwnerLoginSession::Active(_)) {
+                if matches!(session, OwnerLoginSession::Active(_) |
+                    OwnerLoginSession::PendingAccount(_)) {
                     return Err(OrchestrationError::OperationConflict);
                 }
                 if command.action != OwnerLoginAction::Begin {
@@ -599,6 +638,8 @@ impl<'root> ProductDatabase<'root> {
             return Ok(match session {
                 OwnerLoginSession::Active(active) => owner_login_reply(command,
                     if active.halted { "UNKNOWN" } else { "PENDING" }, &active.output),
+                OwnerLoginSession::PendingAccount(pending) =>
+                    owner_login_reply(command, "UNKNOWN", &pending.output),
                 OwnerLoginSession::Final { state, output, .. } =>
                     owner_login_final_reply(command, state, output),
             });
@@ -674,6 +715,8 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(reply);
             }
             OwnerLoginSession::Active(active) => active,
+            OwnerLoginSession::PendingAccount(pending) =>
+                return self.progress_pending_account(command, pending),
         };
         if active.halted {
             let reply = owner_login_reply(command, "UNKNOWN", &active.output);
@@ -776,7 +819,77 @@ impl<'root> ProductDatabase<'root> {
             }
             OwnerLoginSession::Active(active) =>
                 self.finish_owner_device_login(command, active, true),
+            OwnerLoginSession::PendingAccount(pending) =>
+                self.progress_pending_account(command, pending),
         }
+    }
+
+    fn release_pending_account_custody(&mut self, custody: &mut PendingAccountCustody) -> Result<bool> {
+        let Some(prepared) = custody.prepared.as_ref() else { return Ok(false); };
+        if custody.abort_prepared {
+            self.process_custodian.abort_prepared(prepared)?;
+            return Ok(true);
+        }
+        let Some(operation_id) = custody.operation_id.as_deref() else { return Ok(false); };
+        if custody.proof.is_none() {
+            custody.proof = Some(self.process_custodian.stop(&prepared.ticket,
+                StopBudgets::production(), || Ok(()))?);
+        }
+        let Some(proof) = custody.proof.as_ref() else { return Ok(false); };
+        if custody.durable_revision.is_none() {
+            custody.durable_revision = Some(authority::mark_process_stopped(
+                &mut self.connection, operation_id, proof)?);
+        }
+        let Some(revision) = custody.durable_revision else { return Ok(false); };
+        self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+            identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
+            durable_revision: revision,
+        })?;
+        Ok(true)
+    }
+
+    fn progress_pending_account(&mut self, command: &OwnerLoginCommand,
+        mut pending: PendingAccountRead) -> Result<Vec<u8>> {
+        let released = match self.release_pending_account_custody(&mut pending.custody) {
+            Ok(released) => released,
+            Err(error) => { pending.latest_error = Some(format!("{error:?}")); false }
+        };
+        if !released {
+            let output = match &pending.latest_error {
+                Some(error) => format!("{}\naccount/read reconciliation: {error}", pending.output),
+                None => pending.output.clone(),
+            };
+            let reply = owner_login_reply(command, "UNKNOWN", &output);
+            self.owner_login = Some(OwnerLoginSession::PendingAccount(pending));
+            return Ok(reply);
+        }
+        if let (Some(runtime), Some(identity)) = (&pending.custody.runtime_home,
+            &pending.custody.runtime_identity) {
+            if let Err(error) = remove_owned_runtime(runtime, identity) {
+                pending.output.push_str(&format!("\naccount/read runtime cleanup: {error:?}"));
+            }
+        }
+        let state = match (&pending.custody.request, &pending.custody.prepared,
+            &pending.custody.frame) {
+            (Some(request), Some(prepared), Some(frame)) => {
+                match self.record_trusted_account_read(request, prepared, frame)
+                    .and_then(|receipt| owner_login_state_from_receipt(&receipt)) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        pending.output.push_str(&format!("\naccount/read observation: {error:?}"));
+                        "UNKNOWN".to_owned()
+                    }
+                }
+            }
+            _ => "UNKNOWN".to_owned(),
+        };
+        let reply = owner_login_final_reply(command, &state, &pending.output);
+        self.owner_login = Some(OwnerLoginSession::Final {
+            instance_id: pending.instance_id, request_id: pending.request_id,
+            expected_revision: pending.expected_revision, state, output: pending.output,
+        });
+        Ok(reply)
     }
 
     fn finish_owner_device_login(&mut self, command: &OwnerLoginCommand,
@@ -832,6 +945,12 @@ impl<'root> ProductDatabase<'root> {
         } else {
             Ok("UNKNOWN".to_owned())
         };
+        if let Some(OwnerLoginSession::PendingAccount(pending)) = &mut self.owner_login {
+            if !active.output.is_empty() {
+                pending.output = format!("{}\n{}", active.output, pending.output);
+            }
+            return Err(state_result.err().expect("pending account custody carries an error"));
+        }
         let state = state_result.as_ref().cloned().unwrap_or_else(|_| "UNKNOWN".to_owned());
         if let Some(failure) = &login_failure {
             if !active.output.is_empty() { active.output.push('\n'); }
@@ -871,22 +990,23 @@ impl<'root> ProductDatabase<'root> {
             expected_revision: command.expected_revision,
             payload: BTreeMap::new(),
         };
-        let receipt = self.dispatch_owner_login_observation(&observation)?;
-        let text = std::str::from_utf8(&receipt).map_err(|error|
-            OrchestrationError::V37StoreFailure(format!("owner login receipt UTF8: {error}")))?;
-        let value = Parser::parse(text).map_err(OrchestrationError::Atomic)?;
-        let mut value = object(value).ok_or(OrchestrationError::Invalid("owner login receipt object"))?;
-        let result = value.remove(&JsonString::from_str("result"))
-            .ok_or(OrchestrationError::Invalid("owner login receipt result"))?;
-        let mut result = object(result).ok_or(OrchestrationError::Invalid("owner login result object"))?;
-        Ok(match result.remove(&JsonString::from_str("state")) {
-            Some(Json::String(state)) => match state.to_well_formed_string().as_deref() {
-                Some("LOGGED_IN") => "LOGGED_IN".into(),
-                Some("LOGGED_OUT") => "LOGGED_OUT".into(),
-                _ => "UNKNOWN".into(),
-            },
-            _ => "UNKNOWN".into(),
-        })
+        let receipt = match self.dispatch_owner_login_observation_inner(&observation) {
+            Ok(receipt) => receipt,
+            Err(failure) => {
+                if let Some(custody) = failure.pending {
+                    self.owner_login = Some(OwnerLoginSession::PendingAccount(PendingAccountRead {
+                        instance_id: command.instance_id.clone(),
+                        request_id: command.request_id.clone(),
+                        expected_revision: command.expected_revision,
+                        output: format!("{:?}", failure.error),
+                        latest_error: None,
+                        custody,
+                    }));
+                }
+                return Err(failure.error);
+            }
+        };
+        owner_login_state_from_receipt(&receipt)
     }
 
     /// Called only after private UserOriginProof/Owner admission by the parent.
@@ -1057,6 +1177,30 @@ impl<'root> ProductDatabase<'root> {
     /// UserOriginProof; it never accepts a process path, argv, or account
     /// contents from the wire. No model request is made.
     pub(super) fn dispatch_owner_login_observation(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if matches!(self.owner_login, Some(OwnerLoginSession::Active(_) |
+            OwnerLoginSession::PendingAccount(_))) {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        match self.dispatch_owner_login_observation_inner(request) {
+            Ok(receipt) => Ok(receipt),
+            Err(failure) => {
+                if let Some(custody) = failure.pending {
+                    self.owner_login = Some(OwnerLoginSession::PendingAccount(PendingAccountRead {
+                        instance_id: request.target_id.clone(),
+                        request_id: request.request_id.clone(),
+                        expected_revision: request.expected_revision,
+                        output: format!("{:?}", failure.error),
+                        latest_error: None,
+                        custody,
+                    }));
+                }
+                Err(failure.error)
+            }
+        }
+    }
+
+    fn dispatch_owner_login_observation_inner(&mut self, request: &V37Request)
+        -> std::result::Result<Vec<u8>, AccountObservationFailure> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let current = self.user_instance_revision(&request.target_id)?;
         if request.family != "K-INSTANCE" || request.operation != "login-state"
@@ -1072,6 +1216,7 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request, V37Status::Stale, current, current,
                 Default::default()));
         }
+        // This resolves the pin/home and scopes only; no process is prepared.
         let prepared_login = self.prepare_owner_codex_login(&request.target_id)?;
         let operation_hash = crate::store::digest::sha256_hex(&request.raw_bytes);
         let operation_id = format!("login-observe-{}", &operation_hash[..40]);
@@ -1080,8 +1225,27 @@ impl<'root> ProductDatabase<'root> {
             Err(error) => {
                 let cleaned = remove_owned_runtime(&prepared_login.runtime_home,
                     &prepared_login.runtime_identity);
-                return Err(OrchestrationError::V37StoreFailure(format!(
-                    "login observation process prepare: {error:?}; cleanup: {cleaned:?}")));
+                return Err(AccountObservationFailure { error: OrchestrationError::V37StoreFailure(format!(
+                    "login observation process prepare: {error:?}; cleanup: {cleaned:?}")),
+                    pending: Some(PendingAccountCustody {
+                        operation_id: None, prepared: None, runtime_home: None, runtime_identity: None,
+                        proof: None, durable_revision: None, abort_prepared: false, frame: None, request: None,
+                    }),
+                });
+            }
+        };
+        let pending = |proof: Option<NativeStopProof>, durable_revision: Option<u64>, abort_prepared| {
+            PendingAccountCustody {
+                operation_id: Some(operation_id.clone()), prepared: Some(prepared.clone()),
+                runtime_home: Some(prepared_login.runtime_home.clone()),
+                runtime_identity: Some(prepared_login.runtime_identity.clone()),
+                proof, durable_revision, abort_prepared, frame: None,
+                request: Some(V37Request {
+                    raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
+                    operation: request.operation.clone(), request_id: request.request_id.clone(),
+                    target_id: request.target_id.clone(), domain_id: request.domain_id.clone(),
+                    expected_revision: request.expected_revision, payload: request.payload.clone(),
+                }),
             }
         };
         if let Err(error) = authority::record_prepared_process(
@@ -1090,23 +1254,25 @@ impl<'root> ProductDatabase<'root> {
             // The child is still suspended. Abort it if the durable PREPARED
             // row could not be established; preserve both original errors.
             if let Err(abort) = self.process_custodian.abort_prepared(&prepared) {
-                return Err(OrchestrationError::V37StoreFailure(format!(
-                    "login prepare record: {error:?}; abort: {abort:?}")));
+                return Err(AccountObservationFailure { error: OrchestrationError::V37StoreFailure(format!(
+                    "login prepare record: {error:?}; abort: {abort:?}")),
+                    pending: Some(pending(None, None, true)) });
             }
             remove_owned_runtime(&prepared_login.runtime_home,
                 &prepared_login.runtime_identity)?;
-            return Err(error);
+            return Err(error.into());
         }
         #[cfg(all(test, windows))]
         let _trace = directed_trace::before_activation(&prepared);
         if let Err(error) = self.process_custodian.activate(&prepared) {
             let unknown = authority::mark_process_unknown(&mut self.connection,
                 &operation_id, &prepared);
-            return match unknown {
-                Ok(()) => Err(error.into()),
-                Err(record_error) => Err(OrchestrationError::V37StoreFailure(format!(
-                    "login activate: {error:?}; unknown record: {record_error:?}"))),
+            let error = match unknown {
+                Ok(()) => error.into(),
+                Err(record_error) => OrchestrationError::V37StoreFailure(format!(
+                    "login activate: {error:?}; unknown record: {record_error:?}")),
             };
+            return Err(AccountObservationFailure { error, pending: Some(pending(None, None, false)) });
         }
         if let Err(error) = authority::mark_process_active(
             &mut self.connection, &operation_id, &prepared,
@@ -1115,8 +1281,9 @@ impl<'root> ProductDatabase<'root> {
                 StopBudgets::production(), || Ok(()));
             let unknown = authority::mark_process_unknown(&mut self.connection,
                 &operation_id, &prepared);
-            return Err(OrchestrationError::V37StoreFailure(format!(
-                "login active record: {error:?}; stop: {stop:?}; unknown record: {unknown:?}")));
+            return Err(AccountObservationFailure { error: OrchestrationError::V37StoreFailure(format!(
+                "login active record: {error:?}; stop: {stop:?}; unknown record: {unknown:?}")),
+                pending: Some(pending(stop.ok(), None, false)) });
         }
         let execution = self.observe_account_via_active_cli(&prepared, &prepared_login.runtime_home);
         let close = self.process_custodian.close_child_input(&prepared.ticket)
@@ -1128,9 +1295,12 @@ impl<'root> ProductDatabase<'root> {
             Err(error) => {
                 let unknown = authority::mark_process_unknown(&mut self.connection,
                     &operation_id, &prepared);
-                return Err(OrchestrationError::V37StoreFailure(format!(
+                let cause = OrchestrationError::V37StoreFailure(format!(
                     "login stop: {error:?}; protocol: {:?}; unknown record: {unknown:?}",
-                    execution.as_ref().err())));
+                    execution.as_ref().err()));
+                let mut custody = pending(None, None, false);
+                custody.frame = execution.ok();
+                return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
             }
         };
         let revision = match authority::mark_process_stopped(
@@ -1140,22 +1310,29 @@ impl<'root> ProductDatabase<'root> {
             Err(error) => {
                 let unknown = authority::mark_process_unknown(&mut self.connection,
                     &operation_id, &prepared);
-                return Err(OrchestrationError::V37StoreFailure(format!(
+                let cause = OrchestrationError::V37StoreFailure(format!(
                     "login stop record: {error:?}; proof: {proof:?}; protocol: {:?}; unknown record: {unknown:?}",
-                    execution.as_ref().err())));
+                    execution.as_ref().err()));
+                let mut custody = pending(Some(proof), None, false);
+                custody.frame = execution.ok();
+                return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
             }
         };
-        self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+        if let Err(error) = self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
             ticket: prepared.ticket.clone(),
             custodian_nonce: prepared.custodian_nonce.clone(),
             identity: prepared.identity.clone(),
             proof_hash: proof.proof_hash(),
             durable_revision: revision,
-        })?;
+        }) {
+            let mut custody = pending(Some(proof), Some(revision), false);
+            custody.frame = execution.ok();
+            return Err(AccountObservationFailure { error: error.into(), pending: Some(custody) });
+        }
         remove_owned_runtime(&prepared_login.runtime_home,
             &prepared_login.runtime_identity)?;
         let frame = execution?;
-        self.record_trusted_account_read(request, &prepared, &frame)
+        self.record_trusted_account_read(request, &prepared, &frame).map_err(Into::into)
     }
 
     fn observe_account_via_active_cli(&self, prepared: &PreparedCustody, cwd: &Path)
@@ -1267,6 +1444,24 @@ fn rpc_frame_identity(frame: &[u8], expected_id: &str) -> RpcIdentity {
 
 fn object(value: Json) -> Option<BTreeMap<JsonString, Json>> {
     match value { Json::Object(fields) => Some(fields), _ => None }
+}
+
+fn owner_login_state_from_receipt(receipt: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(receipt).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("owner login receipt UTF8: {error}")))?;
+    let value = Parser::parse(text).map_err(OrchestrationError::Atomic)?;
+    let mut value = object(value).ok_or(OrchestrationError::Invalid("owner login receipt object"))?;
+    let result = value.remove(&JsonString::from_str("result"))
+        .ok_or(OrchestrationError::Invalid("owner login receipt result"))?;
+    let mut result = object(result).ok_or(OrchestrationError::Invalid("owner login result object"))?;
+    Ok(match result.remove(&JsonString::from_str("state")) {
+        Some(Json::String(state)) => match state.to_well_formed_string().as_deref() {
+            Some("LOGGED_IN") => "LOGGED_IN".into(),
+            Some("LOGGED_OUT") => "LOGGED_OUT".into(),
+            _ => "UNKNOWN".into(),
+        },
+        _ => "UNKNOWN".into(),
+    })
 }
 
 /// Parse only account existence. All account identifiers and raw JSON are
@@ -1468,6 +1663,7 @@ mod tests {
         let update = Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
         update.step_done().unwrap();
+        drop(update);
         for request_id in ["preflightPinA", "preflightPinB"] {
             let begin = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"{request_id}\",\"expectedRevision\":1}}");
             let status = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"status\",\"instanceId\":\"instanceA\",\"requestId\":\"{request_id}\",\"expectedRevision\":1}}");
@@ -1543,6 +1739,74 @@ mod tests {
         assert!(replay.contains("\"settled\":true"), "final CLI failure must be distinguishable from halted active custody");
         assert!(replay.contains("unexpected argument"));
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1");
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-account-stop-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+            V37Status::Applied);
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+            product.prepare_owner_codex_login("instanceA").unwrap();
+        // This first child uses the real pinned CLI and exits successfully
+        // without authenticating. The automatic second child remains the
+        // unchanged production app-server account/read command.
+        login.launch.arguments = vec!["--version".into()];
+        let prepared = product.process_custodian.prepare(&login).unwrap();
+        drop(login);
+        drop(account_read);
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"ownerAccountStop","expectedRevision":1}"#).unwrap();
+        let operation_id = owner_login_operation_id(&command);
+        authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+        assert!(product.process_custodian.active(&prepared.ticket).unwrap()
+            .wait(Duration::from_secs(15)).unwrap(), "pinned CLI version control did not exit");
+        product.connection.execute("CREATE TRIGGER fail_account_stop BEFORE UPDATE OF state ON gogoke_coordination_process_custody WHEN NEW.state='STOPPED' AND NEW.operation_id LIKE 'login-observe-%' BEGIN SELECT RAISE(ABORT,'controlled account stop record failure'); END").unwrap();
+        let active = ActiveOwnerLogin {
+            instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
+            expected_revision: command.expected_revision, operation_id,
+            prepared, runtime_home, runtime_identity, output: String::new(), halted: false,
+        };
+        let error = product.finish_owner_device_login(&command, active, false).unwrap_err();
+        assert!(format!("{error:?}").contains("controlled account stop record failure"));
+        let pending = product.status_owner_device_login(&command).unwrap();
+        let pending = String::from_utf8(pending).unwrap();
+        assert!(pending.contains("\"state\":\"UNKNOWN\""));
+        assert!(pending.contains("\"settled\":false"));
+        assert!(pending.contains("controlled account stop record failure"));
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "2",
+            "the second real CLI must retain its own custody row");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1",
+            "only the first CLI is durably stopped while the trigger blocks account/read");
+        let new_begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"newWhileHeld","expectedRevision":1}"#;
+        assert!(matches!(product.dispatch_owner_login_frame(new_begin),
+            Err(OrchestrationError::OperationConflict)));
+        product.connection.execute("DROP TRIGGER fail_account_stop").unwrap();
+        let settled = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(settled.contains("\"settled\":true"));
+        assert!(settled.contains("\"state\":\"LOGGED_OUT\""),
+            "the retained real account/read frame must produce the native state");
+        assert!(settled.contains("controlled account stop record failure"),
+            "the original transient failure remains Owner-private");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
+        let update = Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
+        update.step_done().unwrap();
+        drop(update);
+        let next_begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"newAfterRelease","expectedRevision":2}"#;
+        assert!(matches!(product.dispatch_owner_login_frame(next_begin),
+            Err(OrchestrationError::AccessDenied)), "a new request reaches its own preflight after release");
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();

@@ -335,7 +335,8 @@ jobs:
           $baselineHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
           $cases = @(
             @{ axis='R1'; filter='owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames' },
-            @{ axis='R2'; filter='owner_login_preflight_errors_settle_original_request_without_process_custody' }
+            @{ axis='R2'; filter='owner_login_preflight_errors_settle_original_request_without_process_custody' },
+            @{ axis='R4'; filter='owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed' }
           )
           foreach ($case in $cases) {
             try {
@@ -348,11 +349,16 @@ jobs:
                   '            if !stale.step_row()? { return Err(OrchestrationError::AccessDenied); }' + "`n" +
                   '            let install_state = stale.column_text(0)?;' + "`n"
                 $mutated = $source.Substring(0,$start) + $stale + $source.Substring($end)
-              } else {
+              } elseif ($case.axis -ceq 'R2') {
                 $helper = $source.IndexOf('    fn settle_owner_login_preflight_error(')
                 $start = $source.IndexOf('        self.owner_login = Some(OwnerLoginSession::Final {', $helper)
                 $end = $source.IndexOf('        });', $start) + '        });'.Length
                 if ($helper -lt 0 -or $start -lt $helper -or $end -le $start) { throw 'R2 production fix locator missing' }
+                $mutated = $source.Remove($start,$end-$start)
+              } else {
+                $start = $source.IndexOf('        if let Some(OwnerLoginSession::PendingAccount(pending)) = &mut self.owner_login {')
+                $end = $source.IndexOf('        let state = state_result.as_ref().cloned()', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R4 production fix locator missing' }
                 $mutated = $source.Remove($start,$end-$start)
               }
               [IO.File]::WriteAllText($path,$mutated,[Text.UTF8Encoding]::new($false))

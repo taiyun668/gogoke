@@ -42,7 +42,11 @@
     "review": "INDEPENDENT_FOCUSED_PASS",
     "head": "bbd3d100f21cef8c73fd2faa78d0ea5ffd873fe1",
     "hygiene_run": 36857438848,
-    "desktop_run": 36857438799
+    "desktop_run": 36857438799,
+    "owner_merge": "30f5d9eb83e59c38a7c75eb60393c558f7876618",
+    "merged_by": "taiyun668",
+    "state": "EXACT_READBACK_PASS",
+    "desktop_result": "ALL_FIVE_JOBS_PASS"
   },
   "cloud_native_tests": "NEW_SOURCE_PENDING",
   "win11_candidate_tests": "NOT_RUN_FOR_THIS_COMMIT",
@@ -53,7 +57,7 @@
     "apps/desktop/native-host/src/process/session/compat/detours-extract/",
     "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
   ],
-  "next_action": "Exact new-source cloud native full tests and R1/R2 mutations, desktop six host tests and R3 mutation plus independent frozen/repro build; trusted main candidate signer after Owner merges PR60.",
+  "next_action": "Merge Owner PR60 CI activation, run exact new-source cloud native full/R1/R2/R4 mutations and desktop host/R3 mutations/repro build, independent R4 review; sign candidate and install identical bytes in ordinary Win11 before OT4.",
   "source_audit": {
     "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
     "findings": [
@@ -64,16 +68,34 @@
     "implementation": "FIXES_SUBMITTED_FOR_FOCUSED_REVIEW_AND_CLOUD_TESTS",
     "acceptance": false,
     "focused_static": "INDEPENDENT_SOL_PASS",
-    "additional_correction": "Clear transient error only after the original request reports actual settled LOGGED_IN."
+    "additional_correction": "Clear transient error only after the original request reports actual settled LOGGED_IN.",
+    "R4": "Retain actual second account/read custody and its own stop proof until durable confirmation; original status/cancel reconciles that same process and retained native frame, without another launch."
   },
   "measurement_corrections": [
     "Repository-relative edits first invoked from desktop subdirectory; no edit occurred; reran at repository root.",
-    "PowerShell/Python default decoding rejected non-ASCII GitHub commit text; explicit UTF-8 read resolved it before remote mutation."
+    "PowerShell/Python default decoding rejected non-ASCII GitHub commit text; explicit UTF-8 read resolved it before remote mutation.",
+    "Cloud SQLite CloseLedgerMissing generation diagnosed through same_open.rs: outstanding fixture Statement prevented sqlite3_close, so both affected fixtures now drop the Statement before checked close.",
+    "A completed worker received queued send_message followups without a new turn; Controller reclaimed the small remaining edits instead of treating running state as progress.",
+    "Installed service runtime path was assumed for a metadata helper; no script ran on the missing path. Used an Authenticode-valid measurement Node and actual frozen product hashes.",
+    "Original UI request metadata uses values[0,2,3], not named properties. First metadata run is invalid; corrected same-original status reads returned UNKNOWN on the old installed source. No login begin, device output, credential read or new-source acceptance."
   ],
   "cloud_mutation_axes": {
     "R1": "Restore original stale registry install-state read, unchanged behavioral test must compile and fail, restore exact bytes and pass",
     "R2": "Remove only original-request preflight Final assignment, unchanged behavioral test must compile and fail, restore exact bytes and pass",
-    "R3": "Restore cancel-intent override of settled success, unchanged behavioral test must compile and fail, restore exact bytes and all six host tests pass"
+    "R3": "Restore cancel-intent override of settled success, unchanged behavioral test must compile and fail, restore exact bytes and all six host tests pass",
+    "R4": "Remove only the finish guard protecting pending second-child custody; real unchanged second-CLI test must compile and fail, restore exact bytes and pass."
   },
-  "superseded_cloud_source": "5503e1435ed7cf5e2403b66dd636ed8e6dbd062c"
+  "superseded_cloud_source": "5503e1435ed7cf5e2403b66dd636ed8e6dbd062c",
+  "superseded_cloud_validation": {
+    "source": "42f1927ede410e2a55f69d7b27d4ebdd12aedb74",
+    "native_run": 36859601994,
+    "lib_passed": 566,
+    "lib_failed": 1,
+    "lib_ignored": 0,
+    "failure": "R2 fixture retained an unfinalized SQL update statement at close_checked; finalize fixture, preserve product close evidence gate",
+    "R1_mutation": "COMPILED_BEHAVIORAL_FAIL_AND_RESTORED_PASS",
+    "R2_mutation": "COMPILED_BEHAVIORAL_FAIL_BUT_RESTORE_BLOCKED_BY_SAME_FIXTURE",
+    "desktop_run": 36859606692,
+    "use_for_install": false
+  }
 }
