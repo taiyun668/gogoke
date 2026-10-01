@@ -603,7 +603,8 @@ impl<'root> ProductDatabase<'root> {
                     owner_login_final_reply(command, state, output),
             });
         }
-        let current = self.user_instance_revision(&command.instance_id)?;
+        let current = self.user_instance_revision(&command.instance_id)
+            .map_err(|error| self.settle_owner_login_preflight_error(command, error))?;
         if current != command.expected_revision {
             return Err(self.settle_owner_login_preflight_error(command,
                 OrchestrationError::OperationConflict));
@@ -1440,6 +1441,27 @@ mod tests {
         assert!(stale_reply.contains("\"settled\":true"));
         assert!(stale_reply.contains(&format!("{stale_error:?}")));
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+
+        // The production table is STRICT INTEGER, so malformed revision text
+        // cannot be written. Temporarily hide it to exercise an actual SQL
+        // failure at user_instance_revision before any process preparation.
+        product.connection.execute(
+            "ALTER TABLE main.gogoke_v37_instances RENAME TO gogoke_v37_instances_unavailable").unwrap();
+        let sql_begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"preflightSql","expectedRevision":1}"#;
+        let sql_status = br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"preflightSql","expectedRevision":1}"#;
+        let sql_error = product.dispatch_owner_login_frame(sql_begin).unwrap_err();
+        assert!(format!("{sql_error:?}").contains("gogoke_v37_instances"));
+        let sql_reply = String::from_utf8(product.dispatch_owner_login_frame(sql_status).unwrap()).unwrap();
+        assert!(sql_reply.contains("\"state\":\"UNKNOWN\""));
+        assert!(sql_reply.contains("\"settled\":true"));
+        let mut sql_fields = object(Parser::parse(&sql_reply).unwrap()).unwrap();
+        let Some(Json::String(sql_output)) = sql_fields.remove(&JsonString::from_str("output")) else {
+            panic!("settled status must preserve the original SQL failure");
+        };
+        assert_eq!(sql_output.to_well_formed_string().unwrap(), format!("{sql_error:?}"));
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+        product.connection.execute(
+            "ALTER TABLE main.gogoke_v37_instances_unavailable RENAME TO gogoke_v37_instances").unwrap();
 
         // A fresh request after Final reaches preparation. A mismatched test
         // pin fails before process preparation, without changing the real CLI.
