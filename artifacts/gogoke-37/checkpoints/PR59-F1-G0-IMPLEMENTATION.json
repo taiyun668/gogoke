@@ -25,7 +25,7 @@
   "local_checks": {
     "typescript": "PASS",
     "instance_ui_tests": {
-      "passed": 7,
+      "passed": 8,
       "failed": 0
     },
     "localization_tests": {
@@ -38,7 +38,11 @@
     "pr": 60,
     "purpose": "Rebind trusted-main candidate chain to PR59 authorization literals",
     "files": 3,
-    "owner_merge_required": true
+    "owner_merge_required": true,
+    "review": "INDEPENDENT_FOCUSED_PASS",
+    "head": "bbd3d100f21cef8c73fd2faa78d0ea5ffd873fe1",
+    "hygiene_run": 36857438848,
+    "desktop_run": 36857438799
   },
   "cloud_native_tests": "NOT_RUN_FOR_THIS_COMMIT",
   "win11_candidate_tests": "NOT_RUN_FOR_THIS_COMMIT",
@@ -49,5 +53,19 @@
     "apps/desktop/native-host/src/process/session/compat/detours-extract/",
     "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
   ],
-  "next_action": "Push exact source and run cloud native/desktop/hygiene; independent review; trusted-main candidate signing after Owner merges PR60"
+  "next_action": "Push exact source and run cloud native/desktop/hygiene; independent review; trusted-main candidate signing after Owner merges PR60",
+  "source_audit": {
+    "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
+    "findings": [
+      "R1 current install fact, not stale registry field",
+      "R2 original request preflight failure settlement and continued custody observation",
+      "R3 successful result is authoritative over cancel intent"
+    ],
+    "implementation": "FIXES_SUBMITTED_FOR_FOCUSED_REVIEW_AND_CLOUD_TESTS",
+    "acceptance": false
+  },
+  "measurement_corrections": [
+    "Repository-relative edits first invoked from desktop subdirectory; no edit occurred; reran at repository root.",
+    "PowerShell/Python default decoding rejected non-ASCII GitHub commit text; explicit UTF-8 read resolved it before remote mutation."
+  ]
 }

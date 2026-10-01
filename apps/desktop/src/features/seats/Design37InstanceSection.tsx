@@ -124,6 +124,7 @@ export function Design37InstanceSection() {
         {instances.map((instance) => {
           const busy = busyInstance === instance.instanceId;
           const pending = instance.login?.state === "PENDING";
+          const unsettled = instance.login !== undefined && !instance.login.settled;
           const summary = loginSummary(instance);
           return (
             <div className="settings-toggle-row" key={instance.instanceId}>
@@ -144,6 +145,11 @@ export function Design37InstanceSection() {
                   <div className={instance.login?.state === "ERROR" ? "settings-help settings-help-error" : "settings-help"}
                     role={instance.login?.state === "ERROR" ? "alert" : "status"}>
                     {summary}
+                  </div>
+                ) : null}
+                {instance.login?.error && instance.login.state !== "ERROR" ? (
+                  <div className="settings-help settings-help-error" role="alert">
+                    {instance.login.error}
                   </div>
                 ) : null}
                 {instance.login?.authorizationUrl ? (
@@ -168,11 +174,11 @@ export function Design37InstanceSection() {
                 ) : null}
                 <div className="settings-field-actions">
                   <button type="button" className="primary settings-button-compact"
-                    disabled={busyInstance !== null || pending || instance.state === "LOGGED_IN" || instance.state === "NOT_INSTALLED"}
+                    disabled={busyInstance !== null || unsettled || instance.state === "LOGGED_IN" || instance.state === "NOT_INSTALLED"}
                     onClick={() => void runAction(instance.instanceId, "gogoke_design37_instance_login")}>
                     {busy ? "正在启动…" : pending ? "登录进行中" : "一键登录"}
                   </button>
-                  {pending ? (
+                  {unsettled ? (
                     <button type="button" className="ghost settings-button-compact" disabled={busyInstance !== null}
                       onClick={() => void runAction(instance.instanceId, "gogoke_design37_instance_cancel")}>
                       {busy ? "正在取消…" : "取消登录"}

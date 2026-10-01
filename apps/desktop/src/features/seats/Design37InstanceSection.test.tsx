@@ -32,6 +32,7 @@ function login(state: string, extra: Record<string, unknown> = {}) {
     output: "",
     browserState: "OPENED",
     startedAt: 100,
+    settled: state !== "PENDING",
     ...extra,
   };
 }
@@ -144,6 +145,21 @@ describe("Design37InstanceSection", () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("COPY-ME"));
     expect(await screen.findByText("已复制 codexTestM1 的设备码。")).toBeTruthy();
+  });
+
+  it("can cancel an unsettled failed original request without allowing another login", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "gogoke_design37_instance_cancel") {
+        return snapshot(instance("NOT_LOGGED_IN", login("CANCELLED")));
+      }
+      return snapshot(instance("ERROR", login("ERROR", { settled: false, error: "original transport failure" })));
+    });
+    render(<Design37InstanceSection />);
+    expect((await screen.findByRole("button", { name: "一键登录" })).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "取消登录" }));
+    await screen.findByText("此实例的登录请求已取消。");
+    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_cancel", { instanceId: "codexTestM1" });
+    expect(invokeMock).not.toHaveBeenCalledWith("gogoke_design37_instance_login", expect.anything());
   });
 
   it("reports an unexpected host schema as an error", async () => {

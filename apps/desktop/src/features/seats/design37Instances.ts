@@ -24,6 +24,7 @@ export type Design37LoginSnapshot = {
   error?: string;
   browserState: "NOT_REQUESTED" | "OPENED" | "FAILED";
   startedAt: number;
+  settled: boolean;
 };
 
 export type Design37Instance = {
@@ -70,6 +71,7 @@ function readLogin(value: unknown, instanceId: string): Design37LoginSnapshot {
       !Number.isSafeInteger(value.expectedRevision) ||
       !isOneOf(value.state, LOGIN_STATES) ||
       typeof value.output !== "string" ||
+      typeof value.settled !== "boolean" ||
       !isOneOf(value.browserState, BROWSER_STATES) ||
       typeof value.startedAt !== "number" || !Number.isFinite(value.startedAt) ||
       (value.authorizationUrl !== undefined && typeof value.authorizationUrl !== "string") ||
@@ -84,6 +86,7 @@ function readLogin(value: unknown, instanceId: string): Design37LoginSnapshot {
     output: value.output,
     browserState: value.browserState,
     startedAt: value.startedAt,
+    settled: value.settled,
     ...(value.authorizationUrl === undefined ? {} : { authorizationUrl: value.authorizationUrl }),
     ...(value.deviceCode === undefined ? {} : { deviceCode: value.deviceCode }),
     ...(value.error === undefined ? {} : { error: value.error }),

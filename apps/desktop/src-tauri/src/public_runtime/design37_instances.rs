@@ -40,6 +40,7 @@ pub(crate) struct LoginView {
     error: Option<String>,
     browser_state: String,
     started_at: u64,
+    settled: bool,
 }
 #[derive(Clone)]
 struct LoginRecord { view: LoginView, cancel_requested: bool, settled: bool }
@@ -125,7 +126,7 @@ fn device_code(text: &str) -> Option<String> {
         } else { None }
     })
 }
-fn apply_reply(sessions: &Sessions, id: &str, request: &str, reply: LoginReply) -> Result<bool, String> {
+fn apply_reply(sessions: &Sessions, id: &str, request: &str, action: &str, reply: LoginReply) -> Result<bool, String> {
     let mut map = lock_sessions(sessions)?;
     let record = same_record(&mut map, id, request)?;
     record.view.output = display_text(&reply.output);
@@ -134,8 +135,11 @@ fn apply_reply(sessions: &Sessions, id: &str, request: &str, reply: LoginReply) 
         record.view.authorization_url = Some(AUTHORIZATION_URL.into());
     }
     record.settled = reply.settled;
-    record.view.state = if record.cancel_requested && reply.settled { "CANCELLED".into() } else { reply.state };
-    if reply.settled && record.view.state == "UNKNOWN" {
+    record.view.settled = reply.settled;
+    record.view.state = if action == "cancel" && reply.settled && reply.state == "LOGGED_OUT" {
+        "CANCELLED".into()
+    } else { reply.state };
+    if record.view.state == "UNKNOWN" {
         record.view.state = "ERROR".into();
         if record.view.error.is_none() {
             record.view.error = Some(if let Some(pos) = record.view.output.find("owner login process exited:") {
@@ -143,13 +147,13 @@ fn apply_reply(sessions: &Sessions, id: &str, request: &str, reply: LoginReply) 
             } else { "CLI 已结束，但登录状态无法确认。".into() });
         }
     }
-    Ok(record.view.state == "PENDING")
+    Ok(!record.settled)
 }
 fn save_error(sessions: &Sessions, id: &str, request: &str, error: String) -> Result<(), String> {
     let mut map = lock_sessions(sessions)?;
     let record = same_record(&mut map, id, request)?;
     record.view.state = "ERROR".into();
-    record.view.error = Some(error);
+    if record.view.error.is_none() { record.view.error = Some(error); }
     Ok(())
 }
 
@@ -166,7 +170,8 @@ fn reserve_login(sessions: &Sessions, id: &str, revision: u64) -> Result<Option<
         expected_revision:revision, state:"PENDING".into(), output:String::new(),
         authorization_url:None, device_code:None, error:None, browser_state:"NOT_REQUESTED".into(),
         started_at:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| format!("GOGOKE_INSTANCE_CLOCK_FAILED:{error}"))?.as_millis() as u64 };
+            .map_err(|error| format!("GOGOKE_INSTANCE_CLOCK_FAILED:{error}"))?.as_millis() as u64,
+        settled:false };
     map.insert(id.to_owned(), LoginRecord { view:view.clone(), cancel_requested:false, settled:false });
     Ok(Some(view))
 }
@@ -183,18 +188,14 @@ async fn drive<E: LoginEnvironment>(environment: Arc<E>, sessions: Sessions, id:
             Ok(reply) => reply,
             Err(error) => {
                 save_error(&sessions, &id, &original.request_id, error)?;
-                // Read the exact original request's retained result. No begin,
-                // input, account or process start is replayed after uncertainty.
-                if let Ok(raw) = environment.request(login_frame(&id, &original, "status")).await {
-                    if let Ok(reply) = decode_login(&raw, &id, &original.request_id) {
-                        apply_reply(&sessions, &id, &original.request_id, reply)?;
-                        same_record(&mut *lock_sessions(&sessions)?, &id, &original.request_id)?.view.state = "ERROR".into();
-                    }
-                }
-                return Ok(());
+                // Keep observing custody of this original request. Never replay
+                // begin or replace its identity after a transport/operation error.
+                action = "status";
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                continue;
             }
         };
-        let pending = apply_reply(&sessions, &id, &original.request_id, reply)?;
+        let pending = apply_reply(&sessions, &id, &original.request_id, action, reply)?;
         let should_open = {
             let mut map = lock_sessions(&sessions)?;
             let record = same_record(&mut map, &id, &original.request_id)?;
@@ -352,14 +353,30 @@ mod tests {
         });
     }
     #[test]
-    fn uncertain_original_failure_prevents_another_login_identity() {
+    fn uncertain_original_failure_keeps_observing_the_same_request_until_settled() {
         runtime().block_on(async {
             let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
-            let environment=fake(vec![Err("pipe closed".into()),Err("original status unavailable".into())]);
-            drive(environment,Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
+            save_error(&sessions,"instanceA",&original.request_id,"pipe closed".into()).unwrap();
             assert!(reserve_login(&sessions,"instanceA",2).err().unwrap().contains("UNCONFIRMED"));
+            let environment=fake(vec![Err("pipe closed".into()),Err("original status unavailable".into()),Ok(("UNKNOWN","original cause",true))]);
+            drive(Arc::clone(&environment),Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
             assert_eq!(sessions.lock().unwrap()["instanceA"].view.request_id,original.request_id);
+            assert_eq!(sessions.lock().unwrap()["instanceA"].view.error.as_deref(),Some("pipe closed"));
+            assert_eq!(environment.actions.lock().unwrap().len(),3);
+            assert!(reserve_login(&sessions,"instanceA",2).unwrap().is_some());
         });
+    }
+    #[test]
+    fn cancellation_intent_cannot_overwrite_a_successful_original_result() {
+        let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+        sessions.lock().unwrap().get_mut("instanceA").unwrap().cancel_requested=true;
+        for action in ["status","cancel"] {
+            assert!(!apply_reply(&sessions,"instanceA",&original.request_id,action,LoginReply {
+                schema:"gogoke.37.owner-login.v1".into(),instance_id:"instanceA".into(),
+                request_id:original.request_id.clone(),state:"LOGGED_IN".into(),output:String::new(),settled:true
+            }).unwrap());
+            assert_eq!(sessions.lock().unwrap()["instanceA"].view.state,"LOGGED_IN");
+        }
     }
     #[test]
     fn cancel_uses_the_original_request_and_survives_a_new_page_read() {
@@ -386,7 +403,7 @@ pub(crate) async fn gogoke_design37_instance_cancel(app: tauri::AppHandle, insta
     {
         let mut map = lock_sessions(sessions())?;
         let record = map.get_mut(&instance_id).ok_or("GOGOKE_INSTANCE_LOGIN_NOT_STARTED")?;
-        if record.view.state == "PENDING" { record.cancel_requested = true; }
+        if !record.settled { record.cancel_requested = true; }
     }
     gogoke_design37_instances(app).await
 }

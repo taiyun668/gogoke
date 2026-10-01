@@ -198,34 +198,55 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("owner instance list fields"));
         }
         let query = Statement::prepare(self.connection.as_ptr(),
-            "SELECT instance_id,driver_id,version,install_state,login_state,revision \
-             FROM main.gogoke_v37_instances ORDER BY instance_id")?;
-        let mut instances = Vec::new();
+            "SELECT instance_id FROM main.gogoke_v37_instances ORDER BY instance_id")?;
+        let mut ids = Vec::new();
         while query.step_row()? {
-            if instances.len() >= MAX_INSTANCE_LIST_ENTRIES {
+            if ids.len() >= MAX_INSTANCE_LIST_ENTRIES {
                 return Err(OrchestrationError::Invalid("owner instance list size"));
             }
             let instance_id = query.column_text(0)?;
-            let driver_id = query.column_text(1)?;
-            let version = query.column_text(2)?;
-            let install_state = query.column_text(3)?;
-            let login_state = query.column_text(4)?;
-            let revision = query.column_text(5)?;
             if instance_id.is_empty() || instance_id.len() > 64
-                || !instance_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-                || driver_id.is_empty() || driver_id.len() > 128 || driver_id.chars().any(char::is_control)
-                || version.is_empty() || version.len() > 128 || version.chars().any(char::is_control)
-                || !matches!(install_state.as_str(), "INSTALLED" | "MISSING" | "UNKNOWN")
-                || !matches!(login_state.as_str(), "LOGGED_IN" | "LOGGED_OUT" | "UNKNOWN")
-                || revision.parse::<u64>().ok().filter(|value| *value > 0)
-                    .map(|value| value.to_string()) != Some(revision.clone()) {
+                || !instance_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) {
                 return Err(OrchestrationError::Invalid("owner instance list row"));
             }
+            ids.push(instance_id);
+        }
+        drop(query);
+        let mut instances = Vec::with_capacity(ids.len());
+        for instance_id in ids {
+            let row = self.read_registered_instance(&instance_id)?
+                .ok_or(OrchestrationError::Invalid("owner instance list row"))?;
+            if row.driver_id.is_empty() || row.driver_id.len() > 128
+                || row.driver_id.chars().any(char::is_control)
+                || row.version.is_empty() || row.version.len() > 128
+                || row.version.chars().any(char::is_control) {
+                return Err(OrchestrationError::Invalid("owner instance list row"));
+            }
+            let source = self.registration_source(&instance_id, &row.driver_id)?;
+            let install_state = match source.as_ref() {
+                Some(source) => match self.current_install_fact(&row, source, &instance_id)? {
+                    InstallFact::Installed => "INSTALLED",
+                    InstallFact::Missing => "MISSING",
+                    InstallFact::Unknown => "UNKNOWN",
+                },
+                None => "UNKNOWN",
+            };
+            let login_state = match source.as_ref() {
+                Some(source) if self.registered_home_is_current(source, &instance_id)? => {
+                    let state = row.login_state.as_str();
+                    if state == "UNKNOWN" || (matches!(state, "LOGGED_IN" | "LOGGED_OUT")
+                        && self.current_login_observation(&instance_id, row.revision, state)?) {
+                        state
+                    } else { "UNKNOWN" }
+                }
+                _ => "UNKNOWN",
+            };
+            let revision = row.revision.to_string();
             let string = |value: &str| Json::String(JsonString::from_str(value));
             instances.push(Json::Object(BTreeMap::from([
                 (JsonString::from_str("instanceId"), string(&instance_id)),
-                (JsonString::from_str("driverId"), string(&driver_id)),
-                (JsonString::from_str("version"), string(&version)),
+                (JsonString::from_str("driverId"), string(&row.driver_id)),
+                (JsonString::from_str("version"), string(&row.version)),
                 (JsonString::from_str("installState"), string(&install_state)),
                 (JsonString::from_str("loginState"), string(&login_state)),
                 (JsonString::from_str("revision"), string(&revision)),
@@ -558,6 +579,21 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
+    fn settle_owner_login_preflight_error(&mut self, command: &OwnerLoginCommand,
+        error: OrchestrationError) -> OrchestrationError {
+        // No process has been prepared and no custody row exists on these
+        // paths. Keep the original failure for the caller and same-request
+        // status, while allowing a later explicit begin with a new request.
+        self.owner_login = Some(OwnerLoginSession::Final {
+            instance_id: command.instance_id.clone(),
+            request_id: command.request_id.clone(),
+            expected_revision: command.expected_revision,
+            state: "UNKNOWN".into(),
+            output: format!("{error:?}"),
+        });
+        error
+    }
+
     fn begin_owner_device_login(&mut self, command: &OwnerLoginCommand) -> Result<Vec<u8>> {
         if let Some(session) = &self.owner_login {
             return Ok(match session {
@@ -569,9 +605,11 @@ impl<'root> ProductDatabase<'root> {
         }
         let current = self.user_instance_revision(&command.instance_id)?;
         if current != command.expected_revision {
-            return Err(OrchestrationError::OperationConflict);
+            return Err(self.settle_owner_login_preflight_error(command,
+                OrchestrationError::OperationConflict));
         }
-        let launch = self.prepare_owner_codex_login(&command.instance_id)?;
+        let launch = self.prepare_owner_codex_login(&command.instance_id)
+            .map_err(|error| self.settle_owner_login_preflight_error(command, error))?;
         let operation_id = owner_login_operation_id(command);
         let prepared = match self.process_custodian.prepare(&launch.login) {
             Ok(prepared) => prepared,
@@ -1348,17 +1386,6 @@ mod tests {
             assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
                 V37Status::Applied);
         }
-        for (id, revision, observation, request_id) in [
-            ("instanceA", 1, InstanceObservation::Installed, "installA"),
-            ("instanceA", 2, InstanceObservation::LoggedOut, "logoutA"),
-            ("instanceB", 1, InstanceObservation::Installed, "installB"),
-            ("instanceB", 2, InstanceObservation::LoggedIn, "loginB"),
-            ("instanceC", 1, InstanceObservation::Missing, "missingC"),
-        ] {
-            instance::record_observation(&mut product.connection, &root,
-                &ObservationRequest { request_id, request_bytes: request_id.as_bytes(),
-                    instance_id: id, expected_revision: revision, observation }).unwrap();
-        }
         const LIST: &[u8] = br#"{"schema":"gogoke.37.instance-list.v1"}"#;
         assert!(is_owner_instance_list_frame(LIST));
         let other = br#"{"schema":"gogoke.37.operations.v1","family":"K-SEAT","operation":"tune","requestId":"a","targetId":"b","domainId":"g","expectedRevision":"1","payload":{"setting":"instruction","value":"gogoke.37.instance-list.v1 gogoke.37.owner-login.v1"}}"#;
@@ -1366,8 +1393,19 @@ mod tests {
         assert!(decode_request(other).is_ok(), "ordinary K-SEAT envelope is valid");
         assert!(!is_owner_instance_list_frame(other));
         assert!(!is_owner_login_frame(other));
-        let response = product.dispatch_owner_instance_list_frame(LIST).unwrap();
-        assert_eq!(response, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"LOGGED_OUT","revision":"3","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"LOGGED_IN","revision":"3","version":"0.149.0"},{"driverId":"codex","installState":"MISSING","instanceId":"instanceC","loginState":"UNKNOWN","revision":"2","version":"0.149.0"}],"schema":"gogoke.37.instance-list.v1"}"#);
+        let registered = product.dispatch_owner_instance_list_frame(LIST).unwrap();
+        assert_eq!(registered, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"UNKNOWN","revision":"1","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"UNKNOWN","revision":"1","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceC","loginState":"UNKNOWN","revision":"1","version":"0.149.0"}],"schema":"gogoke.37.instance-list.v1"}"#,
+            "registration's stored UNKNOWN install state must resolve from the actual pinned program");
+        for (id, observation, request_id) in [
+            ("instanceA", InstanceObservation::LoggedOut, "logoutA"),
+            ("instanceB", InstanceObservation::LoggedIn, "loginB"),
+        ] {
+            instance::record_observation(&mut product.connection, &root,
+                &ObservationRequest { request_id, request_bytes: request_id.as_bytes(),
+                    instance_id: id, expected_revision: 1, observation }).unwrap();
+        }
+        let observed = product.dispatch_owner_instance_list_frame(LIST).unwrap();
+        assert_eq!(observed, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"LOGGED_OUT","revision":"2","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"LOGGED_IN","revision":"2","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceC","loginState":"UNKNOWN","revision":"1","version":"0.149.0"}],"schema":"gogoke.37.instance-list.v1"}"#);
         for invalid in [
             &br#"{"schema":"gogoke.37.instance-list.v1","extra":true}"#[..],
             &br#"{"schema":"gogoke.37.instance-list.v2"}"#[..],
@@ -1375,6 +1413,49 @@ mod tests {
         ] {
             assert!(product.dispatch_owner_instance_list_frame(invalid).is_err(),
                 "only the exact private list frame is accepted");
+        }
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn owner_login_preflight_errors_settle_original_request_without_process_custody() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-login-preflight-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+            V37Status::Applied);
+        let stale_begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"preflightStale","expectedRevision":2}"#;
+        let stale_status = br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"preflightStale","expectedRevision":2}"#;
+        let stale_error = product.dispatch_owner_login_frame(stale_begin).unwrap_err();
+        assert!(matches!(&stale_error, OrchestrationError::OperationConflict));
+        let stale_reply = String::from_utf8(product.dispatch_owner_login_frame(stale_status).unwrap()).unwrap();
+        assert!(stale_reply.contains("\"state\":\"UNKNOWN\""));
+        assert!(stale_reply.contains("\"settled\":true"));
+        assert!(stale_reply.contains(&format!("{stale_error:?}")));
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+
+        // A fresh request after Final reaches preparation. A mismatched test
+        // pin fails before process preparation, without changing the real CLI.
+        let update = Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
+        update.step_done().unwrap();
+        for request_id in ["preflightPinA", "preflightPinB"] {
+            let begin = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"{request_id}\",\"expectedRevision\":1}}");
+            let status = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"status\",\"instanceId\":\"instanceA\",\"requestId\":\"{request_id}\",\"expectedRevision\":1}}");
+            let error = product.dispatch_owner_login_frame(begin.as_bytes()).unwrap_err();
+            assert!(matches!(&error, OrchestrationError::AccessDenied));
+            let reply = String::from_utf8(product.dispatch_owner_login_frame(status.as_bytes()).unwrap()).unwrap();
+            assert!(reply.contains("\"state\":\"UNKNOWN\""));
+            assert!(reply.contains("\"settled\":true"));
+            assert!(reply.contains(&format!("{error:?}")));
+            assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
         }
         product.close_checked().unwrap();
         drop(root);
