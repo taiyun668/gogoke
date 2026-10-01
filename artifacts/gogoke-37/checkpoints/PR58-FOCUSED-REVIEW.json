@@ -1,0 +1,86 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "PR58_REQUIRES_AUTHOR_REVISION_BEFORE_OWNER_MERGE",
+  "priorCheckpointCommit": "95aeb569c9f00c69ba167ca30c912b003f22c6e8",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "currentMain": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+  "observedInbox": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "existingAuthorization": {
+    "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receiptBlob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "newLoginChangesAuthorizedByCurrentReceipt": false
+  },
+  "ownerDecision": "Reference instance-management findings accepted. F.1 host-owned login and new G.0 minimum instance page belong at M1; revised plan and a fresh MANIFEST-bound authorization must be merged and exactly read back before any login product edits. Unrelated H work may continue.",
+  "independentFocusedAudit": {
+    "seat": "pr58_focused_plan_audit",
+    "context": "FRESH_NO_INHERITED_CHAT",
+    "modelRoute": "gpt-6-sol/high",
+    "head": "3ef1a20aa469d3646e29f27b0dd17fe47767b614",
+    "base": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+    "result": "REQUIRES_CLAUDE_REVISION",
+    "comment": "https://github.com/taiyun668/gogoke/pull/58#issuecomment-5929646681",
+    "commentReadback": "CONFIRMED",
+    "controllerFindingLogicCheck": "Both findings checked against Owner's explicit four-state M1 scope, the original A4/M2 stages, and the required observable login result branches; no new authorization or Owner touchpoint invented.",
+    "findings": [
+      {
+        "id": "M1_A4_SCOPE",
+        "premise": "Owner specifies M1 not-installed, not-logged-in, logged-in and error states; existing full A4 also includes new-version and later runtime exhaustion cases.",
+        "inference": "Unqualified A4 states in G.0 and M1 K-UI could extend delivery across the retained F.2/V13 M2 boundary or leave the subset unverifiable.",
+        "requestedRevision": "Explicitly bound M1 to the four specified visible states, including original login failures; keep new-version and generic CLI exhaustion work at its existing M2 stage."
+      },
+      {
+        "id": "LOGIN_RESULT_OBSERVABILITY",
+        "premise": "Owner requires original failure causes and automatic post-completion detection. New V04 observes navigation, copy, refresh and same-login recovery but does not explicitly assert those two result branches.",
+        "inference": "A flow could satisfy the listed observations while retaining the very manual final-result handling Owner rejected.",
+        "requestedRevision": "F.1/G.0 and K-INSTANCE/K-UI preserve and expose original failure causes and success detection; V00a real contract cases and V04 actual flow assert both branches and same original session/result after closing or restarting UI. Do not add a host-restart requirement."
+      }
+    ],
+    "otherAxes": "Three-file-only diff; 52 shared mappings unchanged; F/G ownership and opened Settings seams fit; nine source blobs readable; old Codex login entry removed in planned delivery; full G.1 stays M3; fixed CLI and lpacIdentityServices boundaries retained.",
+    "structuralValidation": {
+      "command": "verify_plan.py --self-test --manifest --sources-ref origin/main on exact PR plan/verifier bytes",
+      "exitCode": 0,
+      "errors": [],
+      "selfTestMutationsMissed": [],
+      "structuralChecksPassed": true,
+      "manifestHashes": "THREE_DECLARED_MEMBERS_MATCH_INDEPENDENT_RECALCULATION",
+      "diffCheckExitCode": 0,
+      "meaning": "Structural evidence only; not product or M1 acceptance."
+    },
+    "authorHandoff": "Audit PR comment explicitly returns both necessary revisions together to PR author Claude; no Controller plan edit or merge."
+  },
+  "unrelatedHReadback": {
+    "seat": "cli_identity_services_fix",
+    "source": "aae122c392393dc48fead2fa2f336d6af8af8267",
+    "cloudNativeRun": 36835887293,
+    "actualRunHeadAndConclusion": "SAME_AAE_SOURCE_SUCCESS",
+    "libraryPassed": 565,
+    "focusedPassed": 20,
+    "existingCases": "Real pinned CLI no-model open/output/stop/resume/reconnect/append original ACK and renew; actual cap missing/over-limit/release/restart cases; LPAC file isolation and Active-root cases.",
+    "independentNewImplementationGap": "NONE_IDENTIFIED_WITH_DIRECT_EVIDENCE",
+    "remainingActualWin11": "Authenticated send/steer, output and ledger, append without a new turn, native question, actual compact completion/generation and stop/restart recovery remain NOT_RUN and depend on usable OT4 authentication.",
+    "tierLogicCorrection": "Current ISOLATED_WRITE observation is not evidence that an authenticated network call can run with no internet capability. Before real calls select and read back an eligible already-authorized existing tier, preserving the same host-created testbed worktree write scope; do not add network capability to a no-network tier or reuse cloud evidence for another tier.",
+    "cloudNotSubstituteForWin11": true,
+    "newProbeOrRedundantCloudRunCreated": false
+  },
+  "custody": {
+    "completedOriginalRequestMetadataTask": "Independently audited exact ended task registration rechecked Ready/action/principal/result, removed and read back absent; original private request metadata retained.",
+    "cleanupReceiptSha256": "c6d79beb017578fc212e4a1134eb6a84be1632fac5749e1d57ff5e27a9c63654",
+    "auditScratch": "Automatic policy rejected cleanup of PR58 auditor's private temporary public-file extraction; retained without bypass. No secrets or product files.",
+    "detoursUntracked": "Two pre-existing auto-denied items preserved; no blind discard or commit.",
+    "loginRequestsOrCredentialsTouchedByReview": false,
+    "formalObjectsChangedByReview": false
+  },
+  "next": [
+    "Claude revises the two focused findings; same independent audit seat reviews exact new head and records comment.",
+    "Only after passing report ready for Owner merge of PR58; Controller does not merge.",
+    "After Owner merge re-run T00 on actual main, create separate authorization PR binding its actual MANIFEST blob; Owner merges and Controller reads exact authorization before F.1/G.0 edits.",
+    "Implement full M1 login closure with original fixed CLI and existing isolation; then call Owner once for OT4 from the instance page and continue actual M1 tests."
+  ],
+  "routeReflection": "One fresh focused audit collected both plan gaps and verified all independent file, contract and authorization axes. H's existing exact-source evidence was read back in parallel instead of creating unrelated work; old cloudSource labels were treated as historical, not used to reject the current passing source. The remaining work follows the necessary author revision and Owner merge decisions, not the checkpoint itself.",
+  "productCodeChanged": false,
+  "planChangedByController": false,
+  "M1Complete": false,
+  "acceptance": false,
+  "controllerMerge": false
+}
