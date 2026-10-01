@@ -128,7 +128,7 @@ impl LaunchEvidence {
             root.canonical_root().identity.opaque(), domain_id, session_id,
             seat.incarnation, claim.generation).as_bytes());
         let profile_name = format!("Gogoke37.Session.{}", &suffix[..40]);
-        let profile = evidence(AppContainerProfile::ensure(&profile_name,
+        let profile = evidence(AppContainerProfile::ensure_for_cli(&profile_name,
             tier == PermissionTier::NetworkedWrite))?;
         let homes = evidence(instance::resolve_codex_session_launch_homes(db, root, &profile,
             &claim.instance_id, &claim.home_id, domain_id, session_id, &claim.generation))?;
@@ -342,6 +342,7 @@ impl LaunchEvidence {
         launch.environment = Some(environment);
         launch.app_container_profile = Some(self.profile_name.clone());
         launch.app_container_internet_client = self.tier == PermissionTier::NetworkedWrite;
+        launch.app_container_cli_identity_services = true;
         launch.path_compat = Some(self.module.clone());
         launch.worktree_guard = Some(evidence(self.worktree.retained_pointer())?);
         Ok(PrepareRequest { launch, binding: NativeBinding {

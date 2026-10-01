@@ -788,7 +788,7 @@ impl<'root> ProductDatabase<'root> {
             .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or(OrchestrationError::AccessDenied)?;
         let profile_name = owner_login_profile_name(instance_id, &home.identity);
-        let profile = AppContainerProfile::ensure(&profile_name, true)
+        let profile = AppContainerProfile::ensure_for_cli(&profile_name, true)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                 "login isolation profile: {error}")))?;
         let (runtime, runtime_identity) = runtime_home(&home.path)?;
@@ -825,6 +825,7 @@ impl<'root> ProductDatabase<'root> {
         login.persistent_protocol_stdio = true;
         login.app_container_profile = Some(profile_name.clone());
         login.app_container_internet_client = true;
+        login.app_container_cli_identity_services = true;
         login.path_compat = Some(module.clone());
         let mut account_read = ProcessLaunch::new(program);
         account_read.arguments = vec![
@@ -839,6 +840,7 @@ impl<'root> ProductDatabase<'root> {
         account_read.persistent_protocol_stdio = true;
         account_read.app_container_profile = Some(profile_name);
         account_read.app_container_internet_client = true;
+        account_read.app_container_cli_identity_services = true;
         account_read.path_compat = Some(module);
         Ok(PreparedOwnerLogin {
             login: PrepareRequest { launch: login, binding: binding.clone() },
@@ -1366,6 +1368,8 @@ mod tests {
             Some(login_profile), "device auth and account/read must share one isolated identity");
         assert!(scoped.login.launch.app_container_internet_client);
         assert!(scoped.account_read.launch.app_container_internet_client);
+        assert!(scoped.login.launch.app_container_cli_identity_services);
+        assert!(scoped.account_read.launch.app_container_cli_identity_services);
         assert_eq!(scoped.login.launch.application,
             scoped.account_read.launch.application);
         assert_eq!(scoped.login.launch.environment,

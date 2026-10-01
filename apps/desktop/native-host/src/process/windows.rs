@@ -327,6 +327,8 @@ pub struct ProcessLaunch {
     pub(crate) app_container_profile: Option<String>,
     /// Outbound network is a separate explicit AppContainer capability.
     pub(crate) app_container_internet_client: bool,
+    /// Host-owned fixed Codex CLI mode; never populated by service or wire input.
+    pub(crate) app_container_cli_identity_services: bool,
     /// Sealed fixed-byte compatibility custody; never populated from IPC.
     pub(crate) path_compat: Option<Arc<CompatModule>>,
     /// The already verified F pointer file remains held through all custody,
@@ -346,6 +348,7 @@ impl ProcessLaunch {
             environment: None,
             app_container_profile: None,
             app_container_internet_client: false,
+            app_container_cli_identity_services: false,
             path_compat: None,
             worktree_guard: None,
         }
@@ -1903,6 +1906,10 @@ fn validate_launch(launch: &ProcessLaunch) -> Result<(), ProcessCustodyError> {
         return Err(ProcessCustodyError::InvalidLaunch(
             "outbound network capability requires an AppContainer identity"));
     }
+    if launch.app_container_cli_identity_services && launch.app_container_profile.is_none() {
+        return Err(ProcessCustodyError::InvalidLaunch(
+            "CLI identity services require an AppContainer identity"));
+    }
     if launch.app_container_profile.is_some() && launch.environment.is_none() {
         return Err(ProcessCustodyError::InvalidLaunch(
             "isolated child requires a complete explicit environment"));
@@ -2019,7 +2026,11 @@ fn create_suspended(
     }
     let mut jobs = [job];
     let profile = launch.app_container_profile.as_ref().map(|name|
-        AppContainerProfile::ensure(name, launch.app_container_internet_client))
+        if launch.app_container_cli_identity_services {
+            AppContainerProfile::ensure_for_cli(name, launch.app_container_internet_client)
+        } else {
+            AppContainerProfile::ensure(name, launch.app_container_internet_client)
+        })
         .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
     let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
     let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
@@ -2090,7 +2101,11 @@ fn create_suspended_protocol(
     let mut inherited = [pipes.stdin_read.raw(), pipes.stdout_write.raw(), stderr_handle];
     let mut jobs = [job];
     let profile = launch.app_container_profile.as_ref().map(|name|
-        AppContainerProfile::ensure(name, launch.app_container_internet_client))
+        if launch.app_container_cli_identity_services {
+            AppContainerProfile::ensure_for_cli(name, launch.app_container_internet_client)
+        } else {
+            AppContainerProfile::ensure(name, launch.app_container_internet_client)
+        })
         .transpose().map_err(|error| ProcessCustodyError::Isolation(error.to_string()))?;
     let mut capabilities = profile.as_ref().map(AppContainerProfile::security_capabilities);
     let mut package_policy = ALL_APPLICATION_PACKAGES_OPT_OUT;
@@ -2893,6 +2908,9 @@ mod tests {
         launch.app_container_internet_client = true;
         assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
         launch.app_container_internet_client = false;
+        launch.app_container_cli_identity_services = true;
+        assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
+        launch.app_container_cli_identity_services = false;
         launch.app_container_profile = Some("invalid/name".into());
         assert!(matches!(validate_launch(&launch), Err(ProcessCustodyError::InvalidLaunch(_))));
         launch.environment = Some(vec![("SystemRoot".into(),
@@ -2913,13 +2931,35 @@ mod tests {
             let error=std::fs::remove_file(file).expect_err("leaf deletion must be denied");
             assert_eq!(error.raw_os_error(),Some(5),"original leaf error for {file}: {error}");
         }
+        assert_eq!(std::fs::read("../readonly/keep.txt").expect("read granted read-only leaf"),
+            b"read-only file", "the same LPAC child must retain read-only access");
+        let error=std::fs::write("../readonly/new.txt",b"forbidden")
+            .expect_err("read-only worktree write must be denied");
+        assert_eq!(error.raw_os_error(),Some(5),"original read-only error: {error}");
+        for file in ["../blocked/keep.txt", "../other-instance/keep.txt"] {
+            let error = std::fs::read(file).expect_err("unrelated Owner or other SID leaf read must be denied");
+            assert_eq!(error.raw_os_error(),Some(5),"original read error for {file}: {error}");
+        }
         std::fs::write("allowed.txt",b"permitted").expect("write allowed leaf");
+        std::fs::write("../worktree/own.txt",b"permitted worktree").expect("write granted worktree");
         let error=std::fs::write("../blocked/forbidden.txt",b"forbidden").expect_err("sibling write must be denied");
         assert_eq!(error.raw_os_error(),Some(5),"original sibling error: {error}");
+        let error=std::fs::write("../other-instance/forbidden.txt",b"forbidden")
+            .expect_err("other SID instance write must be denied");
+        assert_eq!(error.raw_os_error(),Some(5),"original other SID error: {error}");
     }
 
     #[test]
     fn app_container_child_writes_only_granted_fresh_directory() {
+        app_container_file_scope_fixture(false);
+    }
+
+    #[test]
+    fn cli_identity_services_child_preserves_file_and_instance_scope() {
+        app_container_file_scope_fixture(true);
+    }
+
+    fn app_container_file_scope_fixture(cli_identity_services: bool) {
         use std::os::windows::ffi::OsStrExt;
         use std::time::{SystemTime, UNIX_EPOCH};
         #[link(name = "userenv")]
@@ -2929,17 +2969,30 @@ mod tests {
         let allowed = base.join("allowed");
         let blocked = base.join("blocked");
         let readonly = base.join("readonly");
+        let worktree = base.join("worktree");
+        let other_instance = base.join("other-instance");
         std::fs::create_dir(&base).unwrap();
         std::fs::create_dir(&allowed).unwrap();
         std::fs::create_dir(&blocked).unwrap();
         std::fs::create_dir(&readonly).unwrap();
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::create_dir(&other_instance).unwrap();
         std::fs::write(blocked.join("keep.txt"), b"blocked file").unwrap();
         std::fs::write(readonly.join("keep.txt"), b"read-only file").unwrap();
+        std::fs::write(other_instance.join("keep.txt"), b"other instance file").unwrap();
         let name = format!("Gogoke37.test{}.{nonce}", std::process::id());
         let profile = AppContainerProfile::ensure(&name, false).expect("test package profile");
         profile.grant_fresh_session_directory(&allowed).expect("package directory ACL");
         let readonly_identity = crate::root::inspect_root(&readonly).unwrap().identity;
         profile.grant_bound_tree(&readonly, &readonly_identity, false).expect("read-only tree ACL");
+        let worktree_identity = crate::root::inspect_root(&worktree).unwrap().identity;
+        profile.grant_bound_tree(&worktree, &worktree_identity, true).expect("worktree ACL");
+        let other_name = format!("Gogoke37.other{}.{nonce}", std::process::id());
+        let other_profile = AppContainerProfile::ensure(&other_name, false).expect("other instance profile");
+        let other_identity = crate::root::inspect_root(&other_instance).unwrap().identity;
+        other_profile.grant_bound_tree(&other_instance, &other_identity, true).expect("other SID ACL");
+        assert_ne!(profile.sid_identity().unwrap(), other_profile.sid_identity().unwrap());
+        drop(other_profile);
         drop(profile);
         let executable = allowed.join("lpac-file-child.exe");
         write_executable_with_directory_acl(&std::env::current_exe().expect("exact cloud native test image"), &executable);
@@ -2947,6 +3000,7 @@ mod tests {
         launch.current_directory = Some(allowed.clone());
         launch.protocol_stdio = true;
         launch.app_container_profile = Some(name.clone());
+        launch.app_container_cli_identity_services = cli_identity_services;
         launch.environment = Some(vec![
             ("SystemRoot".into(), std::env::var("SystemRoot").unwrap()),
             ("USERPROFILE".into(), allowed.to_string_lossy().into_owned()),
@@ -2965,11 +3019,17 @@ mod tests {
         assert!(!allowed.join("transient.txt").exists() && !allowed.join("renamed.txt").exists(),
             "the actual LPAC child must rename and delete its own writable file: {direct_evidence}");
         assert!(!blocked.join("forbidden.txt").exists(), "LPAC must not write sibling directory");
+        assert_eq!(std::fs::read(worktree.join("own.txt")).unwrap(), b"permitted worktree");
+        assert!(!other_instance.join("forbidden.txt").exists(), "LPAC must not write other SID instance");
         assert_eq!(std::fs::read(blocked.join("keep.txt")).unwrap(), b"blocked file");
         assert_eq!(std::fs::read(readonly.join("keep.txt")).unwrap(), b"read-only file");
+        assert!(!readonly.join("new.txt").exists(), "LPAC must not write read-only tree");
+        assert_eq!(std::fs::read(other_instance.join("keep.txt")).unwrap(), b"other instance file");
         drop(managed);
         let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
         assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
+        let other_wide: Vec<u16> = OsStr::new(&other_name).encode_wide().chain(Some(0)).collect();
+        assert!(unsafe { DeleteAppContainerProfile(other_wide.as_ptr()) } >= 0);
         std::fs::remove_file(allowed.join("allowed.txt")).unwrap();
         std::fs::remove_file(executable).unwrap();
         std::fs::remove_dir(allowed).unwrap();
@@ -2977,6 +3037,10 @@ mod tests {
         std::fs::remove_dir(blocked).unwrap();
         std::fs::remove_file(readonly.join("keep.txt")).unwrap();
         std::fs::remove_dir(readonly).unwrap();
+        std::fs::remove_file(worktree.join("own.txt")).unwrap();
+        std::fs::remove_dir(worktree).unwrap();
+        std::fs::remove_file(other_instance.join("keep.txt")).unwrap();
+        std::fs::remove_dir(other_instance).unwrap();
         std::fs::remove_dir(base).unwrap();
     }
 

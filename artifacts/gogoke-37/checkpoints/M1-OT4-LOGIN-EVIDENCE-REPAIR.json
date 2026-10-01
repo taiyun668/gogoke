@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "DIRECT_SSPI_FAILURE_MINIMUM_IDENTITY_CAP_CONFIRMED_PRODUCTION_SERVICE_SCOPE_DECISION_REQUIRED",
+  "state": "OWNER_AUTHORIZED_CLI_INSTANCE_IDENTITY_SERVICES_SOURCE_READY_CLOUD_PENDING",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -47,9 +47,9 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "All four protected ordinary-view domains equal before retirement, after replacement and while source1b product runs.",
   "next": [
-    "Owner decides the specific purpose-bound Windows identity-service permission addition; no fixed CLI modification requested.",
-    "After approval, implement only scoped native creation/token checks and run exact cloud/signed-byte/actual-install verification.",
-    "Call Owner for real login only after repaired actual installation is ready; M1 remains incomplete."
+    "Complete fresh source audit and exact-source cloud build/isolation/hygiene checks.",
+    "Trusted-main sign and same-byte cloud smoke; ordinary same-root candidate replacement with fresh identity/formal snapshots.",
+    "Prepare actual native fixed CLI registration/home and permission readback, then call Owner once for OT4. Existing network tiers remain explicit; service capability is not network authority."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -521,7 +521,7 @@
     }
   },
   "production_service_scope_decision": {
-    "state": "NOT_IMPLEMENTED_OWNER_DECISION_REQUESTED",
+    "state": "SUPERSEDED_OWNER_AUTHORIZED_ALL_CLI_INSTANCE_SESSIONS_NOT_ONLY_LOGIN",
     "knownFailure": "Registered LPAC internetClient+registryRead cannot initialize Schannel security package; actual system curl returns SEC_E_SECPKG_NOT_FOUND. Same identity with only lpacIdentityServices added completes TLS.",
     "knownLimit": "System curl is an authorized layer diagnostic; repaired fixed-CLI product login still must be executed on the actual installation.",
     "proposedScope": "Only native Owner-login and its account/read purpose; add exactly lpacIdentityServices to the existing profile token during preparation and actual CreateProcess creation, and require exact three-capability token readback. Generic H seats/sessions do not receive this purpose.",
@@ -545,6 +545,122 @@
       "https://learn.microsoft.com/en-us/windows/win32/secauthn/acquirecredentialshandle--schannel",
       "https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer",
       "https://chromium.googlesource.com/chromium/src/+/7b1ddbd7eb53dc059518b6aff53c6d6c44232503/sandbox/policy/win/sandbox_win.cc"
-    ]
+    ],
+    "latestOwnerDecision": "Add only lpacIdentityServices for CLI instance sessions including HTTPS model calls; describe permission scope; rerun file/directory isolation; call Owner once for OT4 after readiness."
+  },
+  "fixed_cli_nonlogin_https": {
+    "schema": "gogoke.37.fixed-cli-nonlogin-https.v1",
+    "CLIsha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "results": [
+      {
+        "capabilityNames": [
+          "internetClient",
+          "registryRead",
+          "lpacIdentityServices"
+        ],
+        "actualToken": {
+          "TokenIsAppContainer": 1,
+          "TokenIsLessPrivilegedAppContainer": {
+            "status": "unsupported",
+            "win32Error": 87,
+            "ntStatus": "0xc0000003",
+            "value": null
+          },
+          "AppContainerSidMatchesDerived": true,
+          "CapabilityCount": 3,
+          "CapabilityNamesMatched": [
+            "internetClient",
+            "registryRead",
+            "lpacIdentityServices"
+          ],
+          "EveryCapabilitySidAndEnabledStateMatches": true,
+          "AllApplicationPackagesOptOutPolicyAtCreate": 1
+        },
+        "networkCheckStatus": "ok",
+        "actualHTTPStatus": 405,
+        "networkDetail": "https://chatgpt.com/backend-api/<redacted> reachable (HTTP 405)",
+        "durationMs": 835,
+        "wholeDoctorExit": 1,
+        "wholeDoctorPassClaim": false,
+        "privateReceiptSha256": "7c7e9baeea9b5214b8f2a4eb279665d419a7ce9dc9088507e270b5faa5694f83",
+        "sameActualCLI": true,
+        "sameProfileSID": true,
+        "helperHash": "3300548e59de9d1c55650f74f929a9be63942dc2f21acd85a55bfc3b5b5460e7",
+        "stopped": true,
+        "instrumentDifference": "No production Codex-pinned LPAC path compatibility DLL"
+      },
+      {
+        "capabilityNames": [
+          "internetClient",
+          "registryRead"
+        ],
+        "actualToken": {
+          "TokenIsAppContainer": 1,
+          "TokenIsLessPrivilegedAppContainer": {
+            "status": "unsupported",
+            "win32Error": 87,
+            "ntStatus": "0xc0000003",
+            "value": null
+          },
+          "AppContainerSidMatchesDerived": true,
+          "CapabilityCount": 2,
+          "CapabilityNamesMatched": [
+            "internetClient",
+            "registryRead"
+          ],
+          "EveryCapabilitySidAndEnabledStateMatches": true,
+          "AllApplicationPackagesOptOutPolicyAtCreate": 1
+        },
+        "networkCheckStatus": "fail",
+        "actualHTTPStatus": null,
+        "networkDetail": "https://chatgpt.com/backend-api/<redacted> TLS handshake or certificate validation failed (required)",
+        "durationMs": 197,
+        "wholeDoctorExit": 1,
+        "wholeDoctorPassClaim": false,
+        "privateReceiptSha256": "257901e1cc7c413b61aa6fcd65ed9ed26f76f28ff1735be9b2140ab783617c71",
+        "sameActualCLI": true,
+        "sameProfileSID": true,
+        "helperHash": "3300548e59de9d1c55650f74f929a9be63942dc2f21acd85a55bfc3b5b5460e7",
+        "stopped": true,
+        "instrumentDifference": "No production Codex-pinned LPAC path compatibility DLL"
+      }
+    ],
+    "productAcceptance": false,
+    "privateSafeReadbackSha256": "a44a4a73abeb232c4d875d4597f5d3214a27dde09514e70eecefe5b4c47318b7"
+  },
+  "cli_identity_services_implementation": {
+    "files": [
+      "apps/desktop/native-host/src/process/session/isolation.rs",
+      "apps/desktop/native-host/src/process/windows.rs",
+      "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+      "apps/desktop/native-host/src/store/session_transport/launch.rs",
+      "docs/implementation/gogoke-37-cli-permissions.md"
+    ],
+    "state": "SOURCE_READY_CLOUD_PENDING",
+    "onlyAddedCapability": "lpacIdentityServices",
+    "scope": "Ownerlogin/accountread and fixedCLI H session builds, requests and both actual suspended process creation paths; host-only flag, generic launch default unchanged",
+    "networkPermissionTiers": "EXISTING_NETWORKED_WRITE_ONLY_INTERNETCLIENT; no tier upgrades",
+    "nativeActualFileScopeRegression": "cli_identity_services_child_preserves_file_and_instance_scope; actual child authorized home/worktree write and readonly positive read, readonly delete/newwrite denied, Owner-sibling and otherSID read/write denied",
+    "sourceAudit": {
+      "seat": "fresh risk_auditor Astra/xhigh cli_identity_first_audit",
+      "state": "SOURCE_ONLY_NO_BLOCKING_FINDING",
+      "axes": [
+        "namedSID_RAII_actualToken",
+        "hostOnlyScope",
+        "allCLILaunchPropagation",
+        "networkTiers",
+        "fileBoundariesAndCustody",
+        "actualFixture",
+        "documentation",
+        "CLIAndSystemUnchanged",
+        "scopeAndCompile"
+      ],
+      "closedFindings": [
+        "Document independent host launch vs inherited CLI descendants precisely.",
+        "Actual readonly child positive read added before source cut; final audit report stale caveat corrected by direct source."
+      ],
+      "cloudNativeAcceptance": false
+    },
+    "localNativeBuildOrTest": false
   }
 }

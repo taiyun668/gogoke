@@ -180,6 +180,7 @@ pub(crate) enum IsolationError {
     AclWitnessDetail { object: PathBuf, sid: String, expected: String,
         observed: Vec<(u32, u32, u32)> },
     InvalidRegistryCapability,
+    InvalidIdentityServicesCapability,
 }
 
 impl fmt::Display for IsolationError {
@@ -203,6 +204,7 @@ impl fmt::Display for IsolationError {
                 Ok(())
             }
             Self::InvalidRegistryCapability => write!(f, "registryRead did not derive exactly one capability SID"),
+            Self::InvalidIdentityServicesCapability => write!(f, "lpacIdentityServices did not derive one distinct capability SID"),
         }
     }
 }
@@ -213,7 +215,8 @@ pub(crate) struct AppContainerProfile {
     internet_capability: Option<SidAndAttributes>,
     registry_sids: Option<DerivedCapabilitySids>,
     registry_capability: Option<SidAndAttributes>,
-    combined_capabilities: Option<[SidAndAttributes; 2]>,
+    identity_services_sids: Option<DerivedCapabilitySids>,
+    combined_capabilities: Vec<SidAndAttributes>,
 }
 
 /// An open handle to one empty physical directory. The handle, rather than its
@@ -242,7 +245,8 @@ impl AppContainerProfile {
         if hr < 0 { return Err(IsolationError::ProfileHResult(hr)); }
         if sid.is_null() { return Err(IsolationError::MissingSid); }
         Ok(Self { sid, internet_sid: None, internet_capability: None,
-            registry_sids: None, registry_capability: None, combined_capabilities: None })
+            registry_sids: None, registry_capability: None, identity_services_sids: None,
+            combined_capabilities: Vec::new() })
     }
 
     pub(crate) fn ensure(name: &str, internet_client: bool) -> Result<Self, IsolationError> {
@@ -261,26 +265,26 @@ impl AppContainerProfile {
         let mut profile = Self { sid, internet_sid: None, internet_capability: None,
             registry_sids: None,
             registry_capability: None,
-            combined_capabilities: None };
+            identity_services_sids: None,
+            combined_capabilities: Vec::new() };
         if internet_client { profile.enable_internet_client()?; }
         profile.enable_registry_read()?;
         Ok(profile)
     }
 
+    /// The fixed Codex CLI alone needs Windows identity services for SSPI.
+    /// This named capability is separate from internetClient and all file ACEs.
+    pub(crate) fn ensure_for_cli(name: &str, internet_client: bool) -> Result<Self, IsolationError> {
+        let mut profile = Self::ensure(name, internet_client)?;
+        profile.enable_identity_services()?;
+        Ok(profile)
+    }
+
     pub(crate) fn security_capabilities(&self) -> SecurityCapabilities {
-        if let Some(registry) = &self.registry_capability {
-            let (pointer, count) = if let Some(pair) = &self.combined_capabilities {
-                (pair.as_ptr().cast_mut().cast(), 2)
-            } else {
-                ((registry as *const SidAndAttributes).cast_mut().cast(), 1)
-            };
-            return SecurityCapabilities { app_container_sid: self.sid,
-                capabilities: pointer, capability_count: count, reserved: 0 };
-        }
         SecurityCapabilities { app_container_sid: self.sid,
-            capabilities: self.internet_capability.as_ref().map_or(ptr::null_mut(), |capability|
-                (capability as *const SidAndAttributes).cast_mut().cast()),
-            capability_count: u32::from(self.internet_capability.is_some()), reserved: 0 }
+            capabilities: if self.combined_capabilities.is_empty() { ptr::null_mut() }
+                else { self.combined_capabilities.as_ptr().cast_mut().cast() },
+            capability_count: self.combined_capabilities.len() as u32, reserved: 0 }
     }
 
     pub(crate) fn package_sid_string(&self) -> Result<String, IsolationError> {
@@ -316,6 +320,7 @@ impl AppContainerProfile {
         if sid.is_null() { return Err(IsolationError::MissingSid); }
         self.internet_capability = Some(SidAndAttributes { sid, attributes: SE_GROUP_ENABLED });
         self.internet_sid = Some(LocalAllocation(sid));
+        self.combined_capabilities.push(SidAndAttributes { sid, attributes: SE_GROUP_ENABLED });
         Ok(())
     }
 
@@ -333,11 +338,26 @@ impl AppContainerProfile {
             return Err(IsolationError::InvalidRegistryCapability);
         }
         let capability = SidAndAttributes { sid, attributes: SE_GROUP_ENABLED };
-        self.combined_capabilities = self.internet_capability.as_ref().map(|internet|
-            [SidAndAttributes { sid: internet.sid, attributes: internet.attributes },
-                SidAndAttributes { sid: capability.sid, attributes: capability.attributes }]);
+        self.combined_capabilities.push(SidAndAttributes { sid, attributes: SE_GROUP_ENABLED });
         self.registry_capability = Some(capability);
         self.registry_sids = Some(derived);
+        Ok(())
+    }
+
+    fn enable_identity_services(&mut self) -> Result<(), IsolationError> {
+        let name: Vec<u16> = std::ffi::OsStr::new("lpacIdentityServices")
+            .encode_wide().chain(Some(0)).collect();
+        let derived = DerivedCapabilitySids::from_name(&name)?;
+        if derived.capability_count != 1 || derived.capability_sids.is_null() {
+            return Err(IsolationError::InvalidIdentityServicesCapability);
+        }
+        let sid = unsafe { *derived.capability_sids };
+        if sid.is_null() || self.combined_capabilities.iter().any(|capability|
+            unsafe { EqualSid(capability.sid, sid) } != 0) {
+            return Err(IsolationError::InvalidIdentityServicesCapability);
+        }
+        self.combined_capabilities.push(SidAndAttributes { sid, attributes: SE_GROUP_ENABLED });
+        self.identity_services_sids = Some(derived);
         Ok(())
     }
 
@@ -518,8 +538,7 @@ impl AppContainerProfile {
         }
         if returned < group_offset as u32 { return Err(IsolationError::WrongToken); }
         let count = unsafe { *(groups.as_ptr() as *const u32) } as usize;
-        let expected_count = usize::from(self.internet_capability.is_some())
-            + usize::from(self.registry_capability.is_some());
+        let expected_count = self.combined_capabilities.len();
         if count > 32 || count != expected_count ||
             (returned as usize) < group_offset + count * size_of::<SidAndAttributes>() {
             return Err(IsolationError::WrongToken);
@@ -527,15 +546,7 @@ impl AppContainerProfile {
         let actual = unsafe { std::slice::from_raw_parts(
             (groups.as_ptr() as *const u8).add(group_offset) as *const SidAndAttributes,
             count) };
-        let expected: &[SidAndAttributes] = if let Some(pair) = &self.combined_capabilities {
-            pair
-        } else if let Some(registry) = &self.registry_capability {
-            std::slice::from_ref(registry)
-        } else if let Some(internet) = &self.internet_capability {
-            std::slice::from_ref(internet)
-        } else {
-            &[]
-        };
+        let expected = &self.combined_capabilities;
         // Windows may add mandatory/default metadata bits to token groups;
         // compare the access-effective enabled/deny-only state exactly.
         if expected.iter().any(|wanted| actual.iter().filter(|found|
@@ -809,7 +820,8 @@ mod tests {
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide.as_ptr(), &mut sid) };
         assert!(hr >= 0 && !sid.is_null(), "derive test package SID HRESULT={hr:#x}");
         let profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None,
-            registry_sids: None, registry_capability: None, combined_capabilities: None };
+            registry_sids: None, registry_capability: None, identity_services_sids: None,
+            combined_capabilities: Vec::new() };
         let path = std::env::temp_dir().join(format!("gogoke-v37-acl-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         profile.grant_fresh_session_directory(&path).unwrap();
@@ -949,7 +961,8 @@ mod tests {
         let mut sid = ptr::null_mut();
         assert!(unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) } >= 0);
         let mut profile = AppContainerProfile { sid, internet_sid: None, internet_capability: None,
-            registry_sids: None, registry_capability: None, combined_capabilities: None };
+            registry_sids: None, registry_capability: None, identity_services_sids: None,
+            combined_capabilities: Vec::new() };
         assert_eq!(profile.security_capabilities().capability_count, 0);
         profile.enable_internet_client().unwrap();
         let capabilities = profile.security_capabilities();
@@ -968,5 +981,17 @@ mod tests {
         let production = AppContainerProfile::ensure("Gogoke37.ProductionCapability", false).unwrap();
         assert_eq!(production.security_capabilities().capability_count, 1);
         assert!(production.registry_capability.is_some());
+        let cli = AppContainerProfile::ensure_for_cli("Gogoke37.CliCapability", false).unwrap();
+        let cli_capabilities = cli.security_capabilities();
+        assert_eq!(cli_capabilities.capability_count, 2);
+        let cli_actual = unsafe { std::slice::from_raw_parts(
+            cli_capabilities.capabilities as *const SidAndAttributes, 2) };
+        assert_eq!(cli_actual[0].sid, cli.registry_capability.as_ref().unwrap().sid);
+        assert_eq!(cli_actual[1].sid, unsafe { *cli.identity_services_sids.as_ref().unwrap().capability_sids });
+        assert!(cli_actual.iter().all(|capability| capability.attributes == SE_GROUP_ENABLED));
+        let cli_networked = AppContainerProfile::ensure_for_cli("Gogoke37.CliNetworkCapability", true).unwrap();
+        assert_eq!(cli_networked.security_capabilities().capability_count, 3);
+        assert_eq!(cli_networked.combined_capabilities[0].sid,
+            cli_networked.internet_sid.as_ref().unwrap().0);
     }
 }
