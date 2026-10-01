@@ -1,10 +1,10 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "PR58_FOCUSED_REVISION_PASS_READY_FOR_OWNER_MERGE",
+  "state": "PR58_OWNER_MERGED_T00_PASS_PR59_PENDING_OWNER_AUTHORIZATION_MERGE",
   "priorCheckpointCommit": "95aeb569c9f00c69ba167ca30c912b003f22c6e8",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
-  "currentMain": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+  "currentMain": "19953964f2a95907563032ca51d509628b4da215",
   "observedInbox": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
   "existingAuthorization": {
     "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
@@ -77,6 +77,37 @@
     "productAcceptanceOrNewAuthorization": false,
     "planPRMergedAtReadback": false
   },
+  "postMergeAuthorizationProposal": {
+    "planPR": 58,
+    "actualPlanMerge": "19953964f2a95907563032ca51d509628b4da215",
+    "planHead": "8112f05f80e31709c635db033d99e208aeb5262f",
+    "mergedByReadback": "taiyun668",
+    "actualMainManifestBlob": "9d540cbac609b5ba21cb12e1640b375bcc980736",
+    "oldMainReceiptBlob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "oldAuthorizationState": "STALE_MANIFEST_BINDING_NOT_USED_TO_START_LOGIN_EDITS",
+    "T00": {
+      "base": "19953964f2a95907563032ca51d509628b4da215",
+      "mappingSnapshot": "5b638c73200c0fb691a74c5717e3bdbbba45357d",
+      "sharedFileCount": 52,
+      "sharedBlobDifferences": 0,
+      "sourceBlobCount": 9,
+      "sourceBlobDifferences": 0,
+      "assetMapCount": 7,
+      "wholeAssetProductSourceDomains": "apps/ and third_party/ exact tracked trees have zero differences",
+      "validatorExactMergedBytes": "PASS errors[] self_test_mutations_missed[] structural_checks_passed true; instrument UTF-8 and real Git source context corrected without changing verifier bytes",
+      "evidencePath": "artifacts/gogoke-37/t00/T00-AUTHORIZATION-BASE-19953964.json",
+      "evidenceBlob": "84b54e6d4322fa4678f278a27d24af663f486ffa",
+      "runtimeOrProductAcceptance": false
+    },
+    "authorizationPR": "https://github.com/taiyun668/gogoke/pull/59",
+    "branch": "codex/gogoke-37-auth-pr58",
+    "head": "44f426185129be83c825aad10615c7adb212920a",
+    "proposedReceiptBlob": "671cb15b811048c883e6f2f2671ba8a15fc4b55c",
+    "remoteReadback": "Actual tree has only T00 evidence and authorization receipt, exact single parent is merged main; receipt only changes three semantic plan binding fields. Product, plan, line/milestone scope and validity rules unchanged.",
+    "artifactAttachedToTask": true,
+    "OwnerAuthorizationMergeReadback": "PENDING",
+    "F1G0LoginProductChanges": "NOT_STARTED"
+  },
   "unrelatedHReadback": {
     "seat": "cli_identity_services_fix",
     "source": "aae122c392393dc48fead2fa2f336d6af8af8267",
@@ -100,11 +131,11 @@
     "formalObjectsChangedByReview": false
   },
   "next": [
-    "Both author revisions passed same-seat focused review on 8112f05f; ready for Owner merge of PR58. Controller does not merge.",
-    "After Owner merge re-run T00 on actual main, create separate authorization PR binding its actual MANIFEST blob; Owner merges and Controller reads exact authorization before F.1/G.0 edits.",
+    "Owner has merged PR58; T00 passed and standalone authorization PR59 is ready for the Owner authorization merge after its required checks.",
+    "After Owner merges PR59, precisely read actual merge, merged_by, current main receipt bytes and MANIFEST binding; then merge authoritative main planning/authorization state into the preserved construction branch and implement F.1/G.0.",
     "Implement full M1 login closure with original fixed CLI and existing isolation; then call Owner once for OT4 from the instance page and continue actual M1 tests."
   ],
-  "routeReflection": "Initial audit collected both actionable gaps together. Same-seat revision review verified exact new bytes and checked potential new findings against the complete phase arrangement; a stronger unsupported local interpretation was withdrawn without another author round trip. H has no independent evidence-backed code gap before OT4. Remaining action is the authorized Owner merge, followed by actual-main T00 and new authorization readback, not another checkpoint gate.",
+  "routeReflection": "After exact Owner plan-merge readback, one tree comparison covered 52 shared blobs, nine basis blobs and all seven asset mappings. Exact merged verifier bytes passed after correcting only private extraction encoding and Git context. Created the isolated two-file authorization proposal directly from the actual main tree, avoiding another checkout or product rebuild. Remaining action is Owner authorization merge, not this checkpoint; no login edit precedes exact new authorization readback.",
   "productCodeChanged": false,
   "planChangedByController": false,
   "M1Complete": false,
