@@ -729,5 +729,5 @@
   },
   "current_login_repair": "artifacts/gogoke-37/checkpoints/M1-OT4-LOGIN-EVIDENCE-REPAIR.json",
   "current_runtime_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
-  "current_owner_touchpoint": "OWNER_SCOPE_DECISION_FIXED_CLI_REQUEST_ERROR_SOURCE_CHAIN_OUTPUT; actual TCP connect PASS, HTTP send failed, specific cause UNKNOWN; formal domains unchanged; M1 incomplete"
+  "current_owner_touchpoint": "OWNER_WINDOWS_IDENTITY_SERVICE_SCOPE_DECISION; same-identity curl single lpacIdentityServices restores TLS, fixed CLI unchanged, ordinary control reaches device guidance; M1 not complete"
 }

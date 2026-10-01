@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.m1-ot4-readiness.v1",
-  "state": "OWNER_SCOPE_DECISION_REQUIRED_FIXED_CLI_ERROR_CHAIN",
+  "state": "OWNER_PURPOSE_BOUND_WINDOWS_IDENTITY_SERVICE_SCOPE_DECISION",
   "repository": "taiyun668/gogoke",
   "sourceCommit": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
   "workflowCommit": "c147e898c97c79323b460fd1828fe13199acdf81",

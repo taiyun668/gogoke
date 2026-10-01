@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "OWNER_SCOPE_DECISION_REQUIRED_FIXED_CLI_SUPPRESSES_REQUEST_ERROR_SOURCE_CHAIN",
+  "state": "DIRECT_SSPI_FAILURE_MINIMUM_IDENTITY_CAP_CONFIRMED_PRODUCTION_SERVICE_SCOPE_DECISION_REQUIRED",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -47,9 +47,9 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "All four protected ordinary-view domains equal before retirement, after replacement and while source1b product runs.",
   "next": [
-    "Owner decides whether to authorize the narrow fixed-CLI original-error output modification and exact new program identity binding.",
-    "After authorization, preserve the same real instance/permission/request flow, cloud-only native build and exact-byte tests; stop on a new-component SAC block or formal-data risk.",
-    "M1 authenticated integration remains NOT_RUN; no acceptance/publication/merge."
+    "Owner decides the specific purpose-bound Windows identity-service permission addition; no fixed CLI modification requested.",
+    "After approval, implement only scoped native creation/token checks and run exact cloud/signed-byte/actual-install verification.",
+    "Call Owner for real login only after repaired actual installation is ready; M1 remains incomplete."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -411,6 +411,140 @@
     "notAuthorizedOrExecuted": true,
     "securityCapabilityChangesProposed": false,
     "noBlindRetryOrMoreTraceBuild": true,
-    "routeReflection": "The existing connector target proved actual TCP success, then source lookup proved the remaining error is suppressed by the fixed CLI output. Another same-byte Owner retry or broader filter cannot retrieve an already omitted chain; pause at the specific pinned-component scope decision rather than repeat that path."
+    "routeReflection": "The existing connector target proved actual TCP success, then source lookup proved the remaining error is suppressed by the fixed CLI output. Another same-byte Owner retry or broader filter cannot retrieve an already omitted chain; pause at the specific pinned-component scope decision rather than repeat that path.",
+    "status": "SUPERSEDED_BY_OWNER_REJECTION_FIXED_CLI_MUST_REMAIN_IDENTICAL",
+    "executed": false
+  },
+  "owner_direct_transport_decision": {
+    "fixedCLIChangeAuthorized": false,
+    "fixedCLIUnchanged": true,
+    "authorized": "Same isolated identity/environment system curl or PowerShell to exact device-auth URL; same fixed CLI and same real home ordinary control; diagnose local TUN and repair our isolation/environment.",
+    "controllerBrowserOrLoginCompletion": false
+  },
+  "direct_transport_evidence": {
+    "schema": "gogoke.37.owner-directed-transport-evidence.v1",
+    "helperSha256": "8a0d2d7cadcd8885ee6519ce52ab0d2da4e4dad85a32d090883881aff5a1677a",
+    "systemCurl": "%SystemRoot%/System32/curl.exe",
+    "curlBackend": "SCHANNEL",
+    "curlVersion": "8.21.0",
+    "ordinary": {
+      "exitCode": 0,
+      "TLS": "SUCCESS_HTTP_400_EMPTY_POST",
+      "credentialRequestBody": "NONE"
+    },
+    "isolated": {
+      "exitCode": 35,
+      "failureStage": "SCHANNEL_ACQUIRE_CREDENTIALS_HANDLE",
+      "originalCode": "SEC_E_SECPKG_NOT_FOUND_0x80090305",
+      "sameRegisteredProfileSID": true,
+      "same12EnvironmentEntries": true,
+      "actualToken": {
+        "TokenIsAppContainer": 1,
+        "TokenIsLessPrivilegedAppContainer": {
+          "status": "unsupported",
+          "win32Error": 87,
+          "ntStatus": "0xc0000003",
+          "value": null
+        },
+        "AppContainerSidMatchesDerived": true,
+        "CapabilityCount": 2,
+        "InternetClientAndRegistryReadMatch": true,
+        "AllApplicationPackagesOptOutPolicyAtCreate": 1
+      },
+      "sameJobConfiguration": "KILL_ON_CLOSE_WITH_REAL_MEMBERSHIP_READBACK_NEW_INSTRUMENT_JOB_OBJECT",
+      "compatDLL": "NOT_INJECTED_SYSTEM_CURL; not a product replacement"
+    },
+    "fixedCLIControl": {
+      "sha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+      "sameRealInstanceHome": true,
+      "sameExplicitEnvironment": true,
+      "isolation": "NONE_OWNER_AUTHORIZED_CONTROL",
+      "actualDeviceGuidanceObserved": true,
+      "instrumentStopExit": 125,
+      "timedOut": false,
+      "stopped": true,
+      "authenticated": false,
+      "sensitiveStdout": "PRIVATE_ONLY_NO_PUBLIC_CONTENT_OR_HASH"
+    },
+    "TUN": {
+      "singboxTun": "RUNNING",
+      "IPv4RouteToBothObservedTargets": "SINGBOX_TUN",
+      "IPv6DefaultRoute": "PHYSICAL_ADAPTER",
+      "actualResolvedTargets": "PUBLIC_IPV4_IPV6_NOT_COMMON_FAKE_IP_RANGES",
+      "packetCapture": "NOT_RUN; route observation is not a packet-forwarding proof",
+      "specificFailure": "LOCAL_SSPI_INIT_BEFORE_TLS_NOT_A_DEMONSTRATED_TUN_FORWARDING_FAILURE"
+    },
+    "formalFourDomains": "UNCHANGED_BOTH_CONTROLS",
+    "privateReceiptSha256": "61e4f078be80418342b05c23d03c3c49c9fe1017e1f3bc13ba67c4bfefdc640e",
+    "privateCLIControlReceiptSha256": "9d634944f43a274a1dd600c39b75d91c38799b9b11db7a6bccc6c23de387860f",
+    "routingInventorySha256": "55c7e4c083b4950a4d6b735e102e59ca9848e6434aac5234becde537eaf3a77f",
+    "measurementCorrections": [
+      "PowerShell module lookup selected a bundled Security.types.ps1xml and failed Authenticode cmdlet load. Pin only system module path for signature check; Valid gate kept. No curl ran on that failed attempt.",
+      "Supplemental token class46 GetTokenInformation returned87, NtQueryInformationToken returnedSTATUS_INVALID_INFO_CLASS. Preserve unsupported status; native-required29/31/30 still actual strict checks. No isolated request ran before instrument correction.",
+      "Early instrument used only JOB_LIST config; added actual sameJob assignment and membership check and unconditional handle release before successful isolated run.",
+      "CLI guidance now observes only official stdout markers; error stderr device-code wording cannot count as guidance."
+    ],
+    "identityOnlyDifferential": {
+      "state": "SYSTEM_CURL_TLS_SUCCESS_HTTP_400",
+      "sameSystemProgramSha256": "73d24149ff289afc49ec41f08918ef9faa727d39ad993e929757dc2ddafab805",
+      "sameRegisteredProfileSID": true,
+      "samePhysicalHome": true,
+      "same12EnvironmentEntries": true,
+      "onlyAddedCapability": "lpacIdentityServices",
+      "actualToken": {
+        "TokenIsAppContainer": 1,
+        "TokenIsLessPrivilegedAppContainer": {
+          "status": "unsupported",
+          "win32Error": 87,
+          "ntStatus": "0xc0000003",
+          "value": null
+        },
+        "AppContainerSidMatchesDerived": true,
+        "CapabilityCount": 3,
+        "CapabilityNamesMatched": [
+          "internetClient",
+          "registryRead",
+          "lpacIdentityServices"
+        ],
+        "EveryCapabilitySidAndEnabledStateMatches": true,
+        "AllApplicationPackagesOptOutPolicyAtCreate": 1
+      },
+      "processExit": 0,
+      "timedOut": false,
+      "stopped": true,
+      "jobMembershipReadback": true,
+      "helperSha256": "e11d5b128693b151b242cbd3c36fa3a6042cac76e6f9bf18f0e16e9693e45bac",
+      "receiptSha256": "12bd2abe505b67b4a7df0195b65f3d23a296aeb0fb472ac9f83c91ab0fb0e515",
+      "formalFourDomains": "UNCHANGED_BEFORE_AFTER",
+      "TLSProbeIsNotProductLoginAcceptance": true,
+      "otherCandidateCapabilityRuns": "NOT_NEEDED; first single candidate already restored observed TLS path"
+    }
+  },
+  "production_service_scope_decision": {
+    "state": "NOT_IMPLEMENTED_OWNER_DECISION_REQUESTED",
+    "knownFailure": "Registered LPAC internetClient+registryRead cannot initialize Schannel security package; actual system curl returns SEC_E_SECPKG_NOT_FOUND. Same identity with only lpacIdentityServices added completes TLS.",
+    "knownLimit": "System curl is an authorized layer diagnostic; repaired fixed-CLI product login still must be executed on the actual installation.",
+    "proposedScope": "Only native Owner-login and its account/read purpose; add exactly lpacIdentityServices to the existing profile token during preparation and actual CreateProcess creation, and require exact three-capability token readback. Generic H seats/sessions do not receive this purpose.",
+    "unchanged": "Fixed CLI bytes, registered profile SID, F home identity, LPAC policy, Job constraints, path module, explicit environment, permission-tier/operation bindings, TUN/proxy/certificate settings and system ACL.",
+    "affectedFiles": [
+      "apps/desktop/native-host/src/process/mod.rs",
+      "apps/desktop/native-host/src/process/windows.rs",
+      "apps/desktop/native-host/src/process/session/isolation.rs",
+      "apps/desktop/native-host/src/store/product_database/v37_login.rs"
+    ],
+    "scopeReason": "Owner authorized bounded diagnosis and repair, so a changed SID count alone is not a stop. Production adds an actual Windows identity-service access principal; full effective service permission scope and protection of ordinary Owner credentials are not yet proved by these TLS results. Existing plan section8/security boundary reserves unresolved service-access changes to Owner.",
+    "threatModel": "Protected boundary is the deliberately restricted child versus Windows identity services and ordinary Owner credentials; access requires control of that restricted child. This is distinct from same-user installation-directory legacy concerns. No attack reproduction.",
+    "controllerDiagnosticAuthorizationJudgment": "Trusted signed system curl with fixed anonymous request and private captures is within the Owner-directed control, which already permits the same fixed CLI under ordinary User privileges. This does not authorize granting service access to general untrusted product seats.",
+    "specialist": "fresh Astra/high read-only owner_schannel_boundary; supports local SSPI fault and plausible finite TLS correction but does not treat unknown service scope as proven unchanged.",
+    "followupChecks": [
+      "Exact-source cloud native/desktop/hygiene and trusted signing/same-byte smoke.",
+      "Actual same-root ordinary Win11 install and formal snapshot protection.",
+      "Exact fixed CLI Owner login retry and remaining authenticated M1; no substitution or self-acceptance."
+    ],
+    "sources": [
+      "https://learn.microsoft.com/en-us/windows/win32/secauthn/acquirecredentialshandle--schannel",
+      "https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer",
+      "https://chromium.googlesource.com/chromium/src/+/7b1ddbd7eb53dc059518b6aff53c6d6c44232503/sandbox/policy/win/sandbox_win.cc"
+    ]
   }
 }
