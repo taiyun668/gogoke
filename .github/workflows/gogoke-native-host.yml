@@ -18,7 +18,9 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     name: Native host Windows real process axes
-    timeout-minutes: 45
+    # Full real-process/library gates plus six changed-source mutation/restore
+    # pairs: the measured last pair exceeded the former 45-minute job budget.
+    timeout-minutes: 55
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1

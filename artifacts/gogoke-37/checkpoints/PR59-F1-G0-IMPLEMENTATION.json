@@ -49,6 +49,27 @@
     "desktop_result": "ALL_FIVE_JOBS_PASS"
   },
   "cloud_native_tests": "NEW_SOURCE_PENDING",
+  "native_ci_budget_correction": {
+    "source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "run": 36874331696,
+    "library_step": "PASS",
+    "compiled_fail_and_exact_restore_pass": ["R1", "R2", "R4", "R5", "R6"],
+    "R7": "CANCELLED_DURING_COMPILATION_BY_45_MINUTE_JOB_BUDGET",
+    "whole_run": "CANCELLED_NOT_PASS",
+    "instrument_fix": "55-minute cloud job budget for full gates and six measured mutation/restore pairs; rerun required",
+    "product_change": false
+  },
+  "late_cloud_failure": {
+    "source": "7ba45c1e19ae9fc368c2b22a113db942506ad292",
+    "run": 36867179669,
+    "lib_passed": 568,
+    "lib_failed": 1,
+    "lib_ignored": 0,
+    "test": "owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed",
+    "observed": "Original second-child release reported settled true, but the expected LOGGED_OUT state assertion failed",
+    "cause": "NOT_YET_OBSERVED; old assertion omitted actual reply",
+    "response": "Add direct failure reply to the fixed-CLI empty-home test and rerun; no guessed product correction or substituted account state"
+  },
   "win11_candidate_tests": "NOT_RUN_FOR_THIS_COMMIT",
   "OT4": "NOT_REQUESTED_UNTIL_INSTALLED_LOGIN_CLOSURE_READY",
   "M1_complete": false,
