@@ -1,10 +1,10 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "CLOUD_VERIFIED_ORDINARY_REPLACEMENT_IN_PROGRESS",
+  "state": "OWNER_OT4_RETRY_REQUIRED_ACTUAL_REPAIRED_INSTALL_READY",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
-  "installed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "installed_source": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
   "authorization": {
     "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
     "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
@@ -45,18 +45,17 @@
     }
   },
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
-  "formal_data": "No construction write to formal roots; before new install rerun ordinary formal protection snapshots.",
+  "formal_data": "All four protected ordinary-view snapshot domains equal before replacement, after installation and while repaired product runs.",
   "next": [
-    "Complete actual ordinary same-root replacement and verify installed bytes and all four formal snapshot domains.",
-    "Start the actual installed candidate, read bootstrap and existing native instance/capacity/worktree without initiating authentication.",
-    "Owner performs OT4 in real UI; read preserved direct error if device-login fails. Do not infer the original failure cause.",
-    "After successful Owner login continue authenticated M1 checks; no self-acceptance or public release."
+    "Owner: Settings / Codex, instance codexTestM1, Register instance syncs existing current revision2, then Start login. This is planned OT4; Controller does not request credentials or initiate sensitive authentication automation.",
+    "If actual login fails, read now-preserved exit code and stderr; diagnose this actual installed process cause. Original lost failure remains unknown.",
+    "After Owner login, continue actual authenticated model/native question/append/compact and remaining M1 tests under the same native home and original host worktree. No self-acceptance or public Design37 release."
   ],
   "M1Complete": false,
   "acceptance": false,
   "public_release": false,
   "controller_merge": false,
-  "route_reflection": "The missing output originated inside login completion, so fix that evidence path before outer diagnosis. Source review identifies a definite gap, not the original network/OS cause. Use an actual pinned CLI no-network parser failure control to avoid requiring Owner or producing device codes in cloud logs.",
+  "route_reflection": "Fix missing original stderr at the native source, then prove it with the actual pinned CLI in cloud and install those exact bytes in the same ordinary root. Local false timeout, receipt-parent mismatch, retained empty directories, duplicate snapshot names and stale preparation revision were instrument errors; corrected from actual product receipts without product scope changes or another cloud build.",
   "repair_source": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
   "observed_inbox_head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
   "cloud": {
@@ -120,7 +119,7 @@
     "resourceIndexSha256": "ba4990f7abae41c1b2af6503671a215a66257ab375406b0af7cd8a0170693a3b"
   },
   "ordinary_replacement": {
-    "state": "INSTALL_IN_PROGRESS",
+    "state": "PASS_ACTUAL_ORDINARY_SAME_ROOT_INSTALL_AND_PRODUCT_READBACK",
     "sameActualInstalledRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
     "candidateDataRoot": "%APPDATA%/app.gogoke.desktop.candidate/product-authority",
     "oldUninstallReceipt": "DELETED",
@@ -129,7 +128,8 @@
     "measurementCorrections": [
       "Original 30-second parent bound falsely reported timeout; actual product finalizer later wrote DELETED. Read receipt from the real installation parent, not cloud RunnerTemp. No uninstall replay.",
       "Normal finalizer retains empty directories. Cloud harness removes those directories; local replacement initially omitted this retirement cleanup. Installer exit2 on nonempty directory; no product byte change.",
-      "Snapshot script correctly refuses existing output. Give corrected continuation unique output names; preserve failed instrument records."
+      "Snapshot script correctly refuses existing output. Give corrected continuation unique output names; preserve failed instrument records.",
+      "Instance registration request replay retains original revision1. The prior Owner login advanced the actual instance to2; corrected preparation uses the native STALE revision2 receipt without recreating data or changing product."
     ],
     "emptyDirectoryCleanup": {
       "independentSeat": "m1_retired_empty_directory_audit",
@@ -140,15 +140,37 @@
       "directoriesRemoved": 1092,
       "individualAbsentReadbacks": 1092,
       "state": "PASS",
-      "rule": "Every exact path remained within retired candidate installation root; dev/ino/plain-directory/empty-leaf rechecked before nonrecursive removal. Native data roots excluded."
+      "rule": "Every exact path remained within retired candidate installation root; dev/ino/plain-directory/empty-leaf rechecked before nonrecursive removal. Native data roots excluded.",
+      "receiptSha256": "123da521bbe397800fd91e232c9afa538a1db57066615f203433b650ec03ec35",
+      "individualReadbacksSha256": "f9031acc5aeae4c90e0913e18cd11ef8d3b36f4e9640e25b6d15e104d100763f"
     },
-    "formalFilesDataHKCUShortcuts": "UNCHANGED_THROUGH_UNINSTALL_AND_CLEANUP",
-    "actualRepairedProductBootstrap": "NOT_RUN",
-    "actualLoginRetry": "NOT_RUN"
+    "formalFilesDataHKCUShortcuts": "UNCHANGED_BEFORE_AFTER_INSTALL_AND_WHILE_REPAIRED_PRODUCT_RUNNING",
+    "actualRepairedProductBootstrap": {
+      "generationId": "d372affd736d409ba85f5d67b8ccdd38f099f22284d4e2cda7519634ab09a787",
+      "setId": "ba4990f7abae41c1b2af6503671a215a66257ab375406b0af7cd8a0170693a3b",
+      "version": "0.1.13"
+    },
+    "actualLoginRetry": "NOT_RUN",
+    "installerExitCode": 0,
+    "actualInstalledHashes": "ALL_FOUR_MATCH_EXACT_FROZEN_INPUT",
+    "nativeDataIdentity": "PRESERVED_DEV_INO_HOME_BINDING_VERSION_AND_REVISION",
+    "actualNativeInstanceInstalled": true,
+    "actualInstanceRevision": "2",
+    "actualInstanceCapacity": "4",
+    "originalHostWorktreeReplay": "SAME_ORIGINAL_REQUEST_RESULT_NO_NEW_WORKTREE",
+    "runningShellAndNativeHost": "LIVE_PROCESS_PATHS_AND_EXECUTABLE_HASHES_MATCH_SAME_ACTUAL_INSTALLATION",
+    "replacementReceiptSha256": "0561eccb16990c91c9cd8c7a0cb782a89b7a1b92069346be6f321ab19275b504",
+    "runtimeReadbackReceiptSha256": "0332a457b2571701b95f80912ebbaafef1636e47b6d09eb4f77bbad3aa6b526f",
+    "activeFormalSnapshotSha256": "85cfc70107131102f5cbdfa0e70834f4149d23071000b987f992da09c7f9a901"
   },
   "private_evidence": {
     "directory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-login-repair-8e1d6d0e",
     "custody": "Actual installation and native data identities retained; original snapshots/failed instruments/audit/per-item readbacks retained. No credentials read.",
-    "publicRawStderrOrAuthenticationMaterial": false
-  }
+    "publicRawStderrOrAuthenticationMaterial": false,
+    "heldTaskNameFile": "held-task-name.txt",
+    "heldTask": "Interactive/Limited; actual installed product retained for OT4; existing four-hour task limit. No Controller authentication call or sensitive page automation.",
+    "productEndpointFile": "installed-product-endpoint.json",
+    "completedOwnedTasksRemoved": 7
+  },
+  "prior_installed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82"
 }

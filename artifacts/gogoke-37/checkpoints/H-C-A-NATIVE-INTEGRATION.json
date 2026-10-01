@@ -727,5 +727,7 @@
     "leaks": 0,
     "nativeProductByteChange": false
   },
-  "current_login_repair": "artifacts/gogoke-37/checkpoints/M1-OT4-LOGIN-EVIDENCE-REPAIR.json"
+  "current_login_repair": "artifacts/gogoke-37/checkpoints/M1-OT4-LOGIN-EVIDENCE-REPAIR.json",
+  "current_runtime_source": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+  "current_owner_touchpoint": "OT4_RETRY_ON_REPAIRED_ACTUAL_ORDINARY_INSTALL; prior M1-OT4-READINESS remains historical b989 source, superseded by current_login_repair"
 }
