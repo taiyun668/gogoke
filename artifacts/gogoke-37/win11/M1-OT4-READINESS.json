@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.m1-ot4-readiness.v1",
-  "state": "OWNER_LOGIN_REQUIRED_OT4_M1_NOT_COMPLETE",
+  "state": "ACTUAL_NEW_INSTALL_AND_CLOUD_PASS_OWNER_OT4_RETRY_REQUIRED",
   "repository": "taiyun668/gogoke",
   "sourceCommit": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
   "workflowCommit": "c147e898c97c79323b460fd1828fe13199acdf81",
@@ -152,5 +152,9 @@
   "M1Complete": false,
   "acceptance": false,
   "publication": false,
-  "controllerMerge": false
+  "controllerMerge": false,
+  "historical_initial_preparation_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "current_runtime_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+  "current_readiness_checkpoint": "artifacts/gogoke-37/checkpoints/M1-OT4-LOGIN-EVIDENCE-REPAIR.json",
+  "historical_initial_preparation_note": "Existing sourceCommit/signing/cloud/ordinaryWin11/custody fields preserve initial b989 preparation. Current exact runtime and evidence are in current_readiness_checkpoint."
 }

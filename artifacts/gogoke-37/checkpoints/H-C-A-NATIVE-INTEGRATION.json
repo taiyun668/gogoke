@@ -728,6 +728,6 @@
     "nativeProductByteChange": false
   },
   "current_login_repair": "artifacts/gogoke-37/checkpoints/M1-OT4-LOGIN-EVIDENCE-REPAIR.json",
-  "current_runtime_source": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
-  "current_owner_touchpoint": "OT4_OWNER_RETRY_EXECUTED_BUT_REQUEST_SEND_FAILED; Controller is investigating actual client cause, M1 not complete"
+  "current_runtime_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+  "current_owner_touchpoint": "OT4_RETRY_REQUIRED; source1b exact cloud/signing/smoke and ordinary actual install/readback PASS; HTTPS cause UNKNOWN; M1 not complete"
 }

@@ -1,10 +1,10 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "EXISTING_PRIVATE_CONNECTOR_LOG_FILTER_SOURCE_READY_CLOUD_PENDING",
+  "state": "EXACT_CONNECT_LOG_SOURCE_CLOUD_SIGNED_ACTUAL_INSTALL_PASS_OWNER_OT4_RETRY_REQUIRED",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
-  "installed_source": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+  "installed_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
   "authorization": {
     "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
     "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
@@ -45,11 +45,11 @@
     }
   },
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
-  "formal_data": "All four protected ordinary-view snapshot domains equal before replacement, after installation and while repaired product runs.",
+  "formal_data": "All four protected ordinary-view domains equal before retirement, after replacement and while source1b product runs.",
   "next": [
-    "Commit and run exact-source native-host, desktop/frozen/repro and hygiene cloud checks.",
-    "Use trusted-main signer and same signed-byte cloud smoke; ordinary same-root candidate replacement preserves all data identities and formal snapshots.",
-    "Owner performs the planned real UI login; read exact existing private connector log and preserved stderr. No guarantee the new filter covers this failure. Continue demonstrated-cause repair within current scope."
+    "Owner retries the actual installed independent-instance UI login; Controller has not invoked any auth route or opened an auth page.",
+    "On failure read preserved stderr and exact existing private TCP connector log. Current HTTPS cause remains UNKNOWN; this filter does not guarantee DNS/TLS coverage.",
+    "After actual login succeeds continue authenticated model/native question/append/compact and remaining M1 integration readbacks."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -225,12 +225,148 @@
       "corrections": "TCP-only wording and configured/default log-directory wording; acknowledge account/read shares filter",
       "nativeOrInstalledAcceptance": false
     },
-    "nativeTests": "NOT_RUN_ON_LOCAL; existing actual pinned CLI and environment/capability/library regression axes to run in cloud",
+    "nativeTests": "CLOUD_PASS_563_LIBRARY_20_FOCUSED_3_REAL_PROCESS_CASES_0_FAIL_0_SKIP",
     "officialSources": [
       "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/cli/src/login.rs",
       "https://docs.rs/hyper-util/0.1.20/src/hyper_util/client/legacy/connect/http.rs.html",
       "https://github.com/hyperium/hyper-tls/blob/v0.6.0/src/client.rs"
     ],
-    "routeReflection": "Use the fixed CLI already writing the request and existing private file layer. Source lookup narrowed the target before modification and avoided blanket trace or a new transport probe. HTTPS root cause remains unknown."
-  }
+    "routeReflection": "Use the fixed CLI already writing the request and existing private file layer. Source lookup narrowed the target before modification and avoided blanket trace or a new transport probe. HTTPS root cause remains unknown.",
+    "cloud": {
+      "native": {
+        "runId": 36808338894,
+        "attempt": 1,
+        "state": "PASS",
+        "finalArtifactId": 11139202025,
+        "focusedArtifactId": 11139370358,
+        "serverArtifactId": 11138129680,
+        "machineResultSha256": "fd620bf4055c74421bd4ccfcb7d365af1f8e7e9ac76ee277d142fe9648c9c30c"
+      },
+      "desktop": {
+        "runId": 36808339064,
+        "attempt": 1,
+        "state": "PASS_ALL_FIVE_JOBS",
+        "frozenArtifactId": 11139658219,
+        "reproArtifactId": 11139214556,
+        "comparisonArtifactId": 11139836638,
+        "sixMembers": "BYTE_IDENTICAL",
+        "NSISWrapperReproducibleClaim": false
+      },
+      "hygiene": {
+        "runId": 36808338967,
+        "state": "PASS"
+      },
+      "signing": {
+        "runId": 36812033410,
+        "attempt": 1,
+        "state": "PASS",
+        "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+        "signedArtifactId": 11139709496,
+        "artifactDeclaredDigest": "sha256:6e947b5535ae5cfd85d3f3cda2e3cb8e2edb1e5f7985d4fccaa5cb149839f0c3",
+        "localVerification": "PURPOSE_BOUND_P256_AND_7_FROZEN_MEMBERS_PASS"
+      },
+      "installedSmoke": {
+        "runId": 36812306177,
+        "attempt": 1,
+        "sourceCommit": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+        "state": "PASS",
+        "platform": "WINDOWS_SERVER_NOT_OWNER_WIN11",
+        "smokeArtifactId": 11141230233,
+        "negativeArtifactId": 11141075717,
+        "smokeJsonSha256": "130a2efce9e5f97e35bcac47d2c57b1697677233314db99f70bfac073529beec",
+        "negativeJsonSha256": "82f0830d01f6c849ea8f626cb38c6f264e1fa75749b057cf29abfe7aac824c1f",
+        "negativeAxesPassed": 5,
+        "failed": 0,
+        "actualInstalledProductPositiveAndNegative": "PASS",
+        "actualReadiness": "PASS",
+        "actualUninstall": "PASS"
+      }
+    },
+    "bytes": {
+      "members": {
+        "gogoke-0.1.13-windows-x64-unsigned-setup.exe": {
+          "length": 56535389,
+          "sha256": "b5be75d92ef610e9d9357d5d5cb1e91c58cf1b5e1be567bd478931d2fba17bed"
+        },
+        "gogoke-installed-shell.nsis.exe": {
+          "length": 26921984,
+          "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+        },
+        "gogoke-native-host.exe": {
+          "length": 7143424,
+          "sha256": "4f9c88c21d1a6507a029b94921545c8e994cd21f0c11dde3751ad02f3259b1ba"
+        },
+        "gogoke-package-hashes.json": {
+          "length": 1754322,
+          "sha256": "9f9ede6f709d830ddb1a228ac45c32a9683171ca62502d5630d295d62fef85c5"
+        },
+        "gogoke-portable.exe": {
+          "length": 26921984,
+          "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+        },
+        "gogoke-resources.windows.zip": {
+          "length": 49980652,
+          "sha256": "8acd05baac243c2a0f375ca4c5674405005e7a7f2aca85e6a892690d70c99889"
+        },
+        "node.exe": {
+          "length": 91406496,
+          "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+        },
+        "resource-index.json": {
+          "length": 2898334,
+          "sha256": "8b9b93ed8151f3b205ee3224951bb39a2f9835ef767b70866d1bd338708596a9"
+        }
+      },
+      "manifestSha256": "d5ad399618cd52dee1a52d7fe50a9b8e6b41c819109e621919848dfb592ae159",
+      "signatureSha256": "45b7c47376e48101163b3c5034a52b239a022e21bfa510e74022bf8aee0f6522"
+    },
+    "ordinaryReplacement": {
+      "state": "PASS_ACTUAL_ORDINARY_SAME_ROOT_INSTALL_AND_LIVE_PRODUCT_READBACK",
+      "sameActualRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "privateDirectory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-connect-1b14a7e0",
+      "oldUninstallExit": 0,
+      "oldReceipt": "DELETED",
+      "preRetirementCustody": "14_STOPPED_0_ACTIVE",
+      "retirementDataIdentity": "FRESH_PRE_POST_ROOT_DEV_INO_INSTANCE_HOME_BINDING_VERSION_AND_REVISION_IDENTICAL",
+      "retirementFormalFourDomains": "UNCHANGED",
+      "retirementReceiptSha256": "1e719d2471f242c6f7872ecfb4d68f2aaa7d1160af5be8f4b4f1154d9db9cb90",
+      "emptyDirectories": {
+        "independentSeat": "m1_retired_empty_directory_audit",
+        "auditSha256": "454ae0a8eaa8bf3230c6a0f3171ecedf7f723c5cf592a5e6082749cf34b589f0",
+        "directories": 1092,
+        "files": 0,
+        "reparsePoints": 0,
+        "deleted": 1092,
+        "individualAbsentReadbacks": 1092,
+        "cleanupReceiptSha256": "30cb19cb1833341f65ed810f53949caf2bc1b4b58a09502abae64c885ed8ce25",
+        "rule": "Fresh exact inventory; every path identity/plain-directory/empty-leaf checked before nonrecursive rmdir; data/formal domains excluded."
+      },
+      "measurementCorrections": [
+        "CloseMainWindow did not terminate the candidate. Independent CIM readback established the exact two candidate processes and no active CLI; controlled candidate teardown only. No product shutdown defect inferred.",
+        "Initial teardown script mistakenly assigned reserved PowerShell $host. Assignment failed and its native-path check was ineffective; do not claim that guard passed. Independent prior process/parent evidence identified the candidate; subsequent scripts use task-specific variables and Stop error mode."
+      ],
+      "installerExitCode": 0,
+      "installedHashes": "ALL_FOUR_MATCH_EXACT_FROZEN_INPUT",
+      "nativeDataIdentity": "PRESERVED_FRESH_DEV_INO_HOME_BINDING_VERSION_AND_REVISION",
+      "actualInstanceRevision": "2",
+      "actualInstanceCapacity": "4",
+      "originalHostWorktreeReplay": "SAME_ORIGINAL_REQUEST_AND_RESULT_NO_NEW_WORKTREE",
+      "actualBootstrap": {
+        "generationId": "8acd05baac243c2a0f375ca4c5674405005e7a7f2aca85e6a892690d70c99889",
+        "setId": "8b9b93ed8151f3b205ee3224951bb39a2f9835ef767b70866d1bd338708596a9",
+        "version": "0.1.13"
+      },
+      "runningProcessIdentity": "LIVE_SHELL_NATIVE_PATHS_PARENTS_AND_HASHES_PASS",
+      "formalFourDomains": "UNCHANGED_BEFORE_AFTER_INSTALL_AND_WHILE_NEW_PRODUCT_RUNNING",
+      "installationReceiptSha256": "16e9acd5defae0a556815355996f8e685cfdc1963aff2d3f36b2afb45f0fa298",
+      "runtimeReadbackReceiptSha256": "d1edf59320c446d872e8569fec8db9ddf8eeb8c35a9366d1b6f4e9ff62416b7d",
+      "activeReadbackReceiptSha256": "d464a7a23565da4ee60abe93917f3a6f2493bdfbf844f19c2ffa5a274542de44",
+      "activeFormalSnapshotSha256": "b39a1fbddf1b14b7d130dade1ebf956ad6f3970ff4934465ade1d3eff18a0dbd",
+      "controllerAuthenticationStarted": false,
+      "heldTask": "Interactive/Limited; same actual installed product retained for Owner OT4; four-hour bound",
+      "completedOwnedTasksRemoved": 3,
+      "taskCleanupReceiptSha256": "b9185144b86a20e7dd6bbc99882a3a3e9a5c0b9df1b3944e813497b2c0b78863"
+    }
+  },
+  "connector_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634"
 }
