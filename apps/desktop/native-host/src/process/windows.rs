@@ -1117,6 +1117,12 @@ impl ProcessCustodian {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn activate_with_failed_resume_for_test(&mut self, durable: &PreparedCustody)
+        -> Result<PreparedCustody, ProcessCustodyError> {
+        self.activate_with_resume(durable, |_| Err(io::Error::new(io::ErrorKind::Other, "controlled resume failure")))
+    }
+
     fn activate_with_resume(
         &mut self,
         durable: &PreparedCustody,

@@ -128,6 +128,29 @@ impl From<ProcessCustodyError> for AccountObservationFailure {
     fn from(error: ProcessCustodyError) -> Self { Self { error: error.into(), pending: None } }
 }
 
+fn account_prepare_failure(launch: &PreparedOwnerLogin, error: ProcessCustodyError) -> AccountObservationFailure {
+    // The factory preserves failed-launch handles only for LaunchCleanup.
+    // Every other preparation error occurred before launch or after a proven abort.
+    let unconfirmed = matches!(&error, ProcessCustodyError::LaunchCleanup { .. });
+    let cleanup = if unconfirmed { None } else {
+        Some(remove_owned_runtime(&launch.runtime_home, &launch.runtime_identity))
+    };
+    AccountObservationFailure {
+        error: OrchestrationError::V37StoreFailure(format!("login observation process prepare: {error:?}; cleanup: {cleanup:?}")),
+        pending: unconfirmed.then(|| PendingAccountCustody {
+            operation_id: None, prepared: None,
+            runtime_home: Some(launch.runtime_home.clone()), runtime_identity: Some(launch.runtime_identity.clone()),
+            proof: None, durable_revision: None, abort_prepared: false, frame: None, request: None,
+        }),
+    }
+}
+
+fn activation_was_aborted(error: &ProcessCustodyError, tombstoned: bool) -> bool {
+    // Tombstones also exist for an unconfirmed abort. Resume without
+    // LaunchCleanup is returned only after the factory confirms the abort.
+    tombstoned && matches!(error, ProcessCustodyError::Resume(_))
+}
+
 pub(super) struct ActiveOwnerLogin {
     instance_id: String,
     request_id: String,
@@ -1222,17 +1245,7 @@ impl<'root> ProductDatabase<'root> {
         let operation_id = format!("login-observe-{}", &operation_hash[..40]);
         let prepared = match self.process_custodian.prepare(&prepared_login.account_read) {
             Ok(prepared) => prepared,
-            Err(error) => {
-                let cleaned = remove_owned_runtime(&prepared_login.runtime_home,
-                    &prepared_login.runtime_identity);
-                return Err(AccountObservationFailure { error: OrchestrationError::V37StoreFailure(format!(
-                    "login observation process prepare: {error:?}; cleanup: {cleaned:?}")),
-                    pending: Some(PendingAccountCustody {
-                        operation_id: None, prepared: None, runtime_home: None, runtime_identity: None,
-                        proof: None, durable_revision: None, abort_prepared: false, frame: None, request: None,
-                    }),
-                });
-            }
+            Err(error) => return Err(account_prepare_failure(&prepared_login, error)),
         };
         let pending = |proof: Option<NativeStopProof>, durable_revision: Option<u64>, abort_prepared| {
             PendingAccountCustody {
@@ -1244,7 +1257,8 @@ impl<'root> ProductDatabase<'root> {
                     raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
                     operation: request.operation.clone(), request_id: request.request_id.clone(),
                     target_id: request.target_id.clone(), domain_id: request.domain_id.clone(),
-                    expected_revision: request.expected_revision, payload: request.payload.clone(),
+                    // This private operation rejects every nonempty payload above.
+                    expected_revision: request.expected_revision, payload: BTreeMap::new(),
                 }),
             }
         };
@@ -1265,6 +1279,7 @@ impl<'root> ProductDatabase<'root> {
         #[cfg(all(test, windows))]
         let _trace = directed_trace::before_activation(&prepared);
         if let Err(error) = self.process_custodian.activate(&prepared) {
+            let released = activation_was_aborted(&error, self.process_custodian.is_tombstoned(&prepared.ticket));
             let unknown = authority::mark_process_unknown(&mut self.connection,
                 &operation_id, &prepared);
             let error = match unknown {
@@ -1272,7 +1287,12 @@ impl<'root> ProductDatabase<'root> {
                 Err(record_error) => OrchestrationError::V37StoreFailure(format!(
                     "login activate: {error:?}; unknown record: {record_error:?}")),
             };
-            return Err(AccountObservationFailure { error, pending: Some(pending(None, None, false)) });
+            if released {
+                let cleanup = remove_owned_runtime(&prepared_login.runtime_home, &prepared_login.runtime_identity);
+                return Err(AccountObservationFailure { error: OrchestrationError::V37StoreFailure(
+                    format!("login activation aborted: {error:?}; cleanup: {cleanup:?}")), pending: None });
+            }
+            return Err(AccountObservationFailure { error, pending: Some(pending(None, None, true)) });
         }
         if let Err(error) = authority::mark_process_active(
             &mut self.connection, &operation_id, &prepared,
@@ -1739,6 +1759,46 @@ mod tests {
         assert!(replay.contains("\"settled\":true"), "final CLI failure must be distinguishable from halted active custody");
         assert!(replay.contains("unexpected argument"));
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1");
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn owner_account_preparation_distinguishes_confirmed_abort_from_unconfirmed_custody() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-v37-account-prepare-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status, V37Status::Applied);
+        let mut launch = product.prepare_owner_codex_login("instanceA").unwrap();
+        // A wrong expected digest exercises the actual factory's pre-launch
+        // refusal; the official CLI bytes are unchanged.
+        launch.account_read.binding.binary_digest_sha256 = format!("sha256:{}", "0".repeat(64));
+        let error = product.process_custodian.prepare(&launch.account_read).unwrap_err();
+        assert!(matches!(&error, ProcessCustodyError::BindingMismatch("binaryDigestSha256")));
+        let failure = account_prepare_failure(&launch, error);
+        assert!(failure.pending.is_none(), "a confirmed pre-launch refusal must not occupy login custody");
+        assert!(format!("{:?}", failure.error).contains("binaryDigestSha256"));
+        drop(launch);
+        let launch = product.prepare_owner_codex_login("instanceA").unwrap();
+        let prepared = product.process_custodian.prepare(&launch.account_read).unwrap();
+        let error = product.process_custodian.activate_with_failed_resume_for_test(&prepared).unwrap_err();
+        assert!(activation_was_aborted(&error, product.process_custodian.is_tombstoned(&prepared.ticket)),
+            "the real suspended child's confirmed failed-resume abort is releasable");
+        assert!(product.process_custodian.active(&prepared.ticket).is_none());
+        assert!(matches!(product.process_custodian.abort_prepared(&prepared), Err(ProcessCustodyError::DuplicateTicket(_))),
+            "the factory has actually removed the prepared child");
+        remove_owned_runtime(&launch.runtime_home, &launch.runtime_identity).unwrap();
+        drop(launch);
+        let uncertain = ProcessCustodyError::LaunchCleanup {
+            cause: Box::new(ProcessCustodyError::Resume(std::io::Error::new(std::io::ErrorKind::Other, "controlled error"))),
+            detail: "unconfirmed cleanup".into(),
+        };
+        assert!(!activation_was_aborted(&uncertain, true), "a tombstone alone is not an abort proof");
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
