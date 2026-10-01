@@ -657,6 +657,14 @@ impl<'root> ProductDatabase<'root> {
                     "owner login stop: {error:?}; unknown record: {unknown:?}")));
             }
         };
+        // Capture the exact child's retained stderr before durable confirmation
+        // releases its pipes. Exit failure is not an account-state observation.
+        let login_failure = if !cancelled && proof.exit_code != Some(0) {
+            let stderr = self.process_custodian.active(&active.prepared.ticket)
+                .ok_or(OrchestrationError::AccessDenied)?.stderr_tail();
+            Some(format!("owner login process exited: code={:?}; STDERR_TAIL: {stderr}",
+                proof.exit_code))
+        } else { None };
         let revision = match authority::mark_process_stopped(
             &mut self.connection, &active.operation_id, &proof,
         ) {
@@ -682,12 +690,16 @@ impl<'root> ProductDatabase<'root> {
             return Err(error.into());
         }
         let cleanup = remove_owned_runtime(&active.runtime_home, &active.runtime_identity);
-        let state_result = if cleanup.is_ok() {
+        let state_result = if cleanup.is_ok() && login_failure.is_none() {
             self.owner_login_account_state(command)
         } else {
             Ok("UNKNOWN".to_owned())
         };
         let state = state_result.as_ref().cloned().unwrap_or_else(|_| "UNKNOWN".to_owned());
+        if let Some(failure) = &login_failure {
+            if !active.output.is_empty() { active.output.push('\n'); }
+            active.output.push_str(failure);
+        }
         let reply = owner_login_reply(command, &state, &active.output);
         self.owner_login = Some(OwnerLoginSession::Final {
             instance_id: active.instance_id,
@@ -696,6 +708,12 @@ impl<'root> ProductDatabase<'root> {
             state,
             output: active.output,
         });
+        if let Some(failure) = login_failure {
+            // Owner-private only: neither this diagnostic nor device codes are
+            // copied into the public ledger or the service response channel.
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "{failure}; runtime cleanup: {cleanup:?}")));
+        }
         if let Err(error) = cleanup { return Err(error); }
         if let Err(error) = state_result { return Err(error); }
         if cancelled { return Ok(reply); }
@@ -1211,6 +1229,57 @@ mod tests {
         let value = statement.column_text(0).unwrap();
         assert!(!statement.step_row().unwrap());
         value
+    }
+
+    #[test]
+    fn pinned_codex_owner_login_failure_preserves_exit_and_stderr_without_account_read() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-login-error-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+            V37Status::Applied);
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+            product.prepare_owner_codex_login("instanceA").unwrap();
+        // The actual pinned CLI's parser emits stderr and exits 2 before any
+        // device-auth request. No credentials, provider request or fake binary.
+        login.launch.arguments = vec!["login".into(), "--gogoke-invalid-login-control".into()];
+        let prepared = product.process_custodian.prepare(&login).unwrap();
+        drop(login);
+        drop(account_read);
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"ownerFailA","expectedRevision":1}"#).unwrap();
+        let operation_id = owner_login_operation_id(&command);
+        authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+        assert!(product.process_custodian.active(&prepared.ticket).unwrap()
+            .wait(Duration::from_secs(15)).unwrap(), "pinned CLI parser control did not exit");
+        product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
+            instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
+            expected_revision: command.expected_revision, operation_id,
+            prepared, runtime_home: runtime_home.clone(), runtime_identity,
+            output: String::new(), halted: false,
+        }));
+        let error = product.status_owner_device_login(&command).unwrap_err();
+        let diagnostic = format!("{error:?}");
+        assert!(diagnostic.contains("code=Some(2)"), "actual exit code was not preserved");
+        assert!(diagnostic.contains("STDERR_TAIL:"));
+        assert!(diagnostic.contains("unexpected argument"), "actual CLI stderr was not preserved");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1",
+            "a failed login must not start a second CLI for account/read");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        assert!(!runtime_home.exists(), "owned login runtime must still be cleaned");
+        let replay = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(replay.contains("\"state\":\"UNKNOWN\""));
+        assert!(replay.contains("unexpected argument"));
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1");
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -1,0 +1,60 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "OWNER_OT4_ATTEMPT_PRODUCT_DIAGNOSTIC_GAP_REPAIR_CLOUD_PENDING",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
+  "installed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receiptBlob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "PR57Main": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30"
+  },
+  "actual_owner_observation": "Owner clicked installed candidate login UI; screenshot shows registered instance revision1, Login request LOGGED_OUT, no sign-in guidance. No inferred successful authentication.",
+  "source_confirmed_defect": {
+    "file": "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+    "cause": "The completed login process EOF/timeout branch ignored its stderr-bearing protocol error and stop proof exit code. Durable confirmation released child stderr; normal account/read then returned LOGGED_OUT with stdout-only output.",
+    "specific_real_cli_failure": "UNKNOWN_ORIGINAL_STDERR_AND_EXIT_CODE_NOT_RETAINED",
+    "fixed_official_cli_source": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "official_source_observation": "Device-code request must succeed before stdout instructions; CLI failures print stderr and exit1. Compatible with screenshot but not proof of this failure cause.",
+    "logic_check": "Separately querying account state cannot explain why the device-code process failed. Preserve its original stderr and exit code before custody release; no inferred provider/network/OS cause."
+  },
+  "repair": {
+    "state": "SOURCE_IMPLEMENTED_NOT_COMPILED_LOCALLY",
+    "change": "Capture exact child stderr before durable confirmation releases pipes. Noncancel failed/missing exit code yields Owner-private error and retained UNKNOWN original-request output, without a secondary account/read process. Success and cancel retain existing stop, cleanup and account read.",
+    "regression_control": "Actual pinned Codex CLI parser in existing isolated runtime receives an invalid synthetic flag; stderr and exit2, no device-auth or credential request. Production status/finish must preserve error, durable stop and runtime cleanup; same request readback starts no process. Cloud only.",
+    "security_boundary_changed": false,
+    "authorization_or_wire_schema_changed": false,
+    "timeouts_or_retries_added": false,
+    "private_output_to_public_ledger_or_service": false
+  },
+  "review": {
+    "official_source_lookup": "same Luna/high read-only explorer, no login/auth file/browser operation",
+    "fresh_focused_sol": {
+      "seat": "m1_login_error_review",
+      "result": "SOURCE_ONLY_NO_BLOCKING_FINDING",
+      "directInvariantChecks": [
+        "stderr captured before durable release",
+        "nonzero/missing exit fails without account/read",
+        "Owner-private error path only",
+        "cancel and success static paths unchanged",
+        "actual pinned CLI parser regression control"
+      ],
+      "nativeOrInstalledAcceptance": false
+    }
+  },
+  "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
+  "formal_data": "No construction write to formal roots; before new install rerun ordinary formal protection snapshots.",
+  "next": [
+    "Focused review then fixed-source native Windows/desktop/repro/hygiene cloud checks.",
+    "Trusted-main candidate signing of exact successful frozen bytes; same signed bytes cloud smoke.",
+    "Use same real ordinary candidate installation/data identities for replacement; no migration copy.",
+    "Reproduce actual login failure with new diagnostic on installed candidate. Read original error; fix demonstrated cause within current scope. Stop if SAC new component blocks, scope conflict or formal data change risk."
+  ],
+  "M1Complete": false,
+  "acceptance": false,
+  "public_release": false,
+  "controller_merge": false,
+  "route_reflection": "The missing output originated inside login completion, so fix that evidence path before outer diagnosis. Source review identifies a definite gap, not the original network/OS cause. Use an actual pinned CLI no-network parser failure control to avoid requiring Owner or producing device codes in cloud logs."
+}
