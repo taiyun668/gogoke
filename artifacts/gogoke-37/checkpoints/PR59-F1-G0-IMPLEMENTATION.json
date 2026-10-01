@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "CLOUD_GATES_RESOLVED_ORDINARY_CANDIDATE_REPLACEMENT_IN_PROGRESS",
+  "state": "ACTUAL_FROZEN_WIN11_UI_READY_OT4_OWNER_LOGIN_REQUIRED",
   "authorization": {
     "pr": 59,
     "merged_by": "taiyun668",
@@ -102,7 +102,7 @@
     },
     "credential_exclusion_boundary": "UNCHANGED",
     "frozen_bytes_rebuilt_or_resigned": false,
-    "local_installation": "DIRECT_IN_PLACE_ATTEMPT_REJECTED_EXISTING_TARGET_ORDINARY_REPLACEMENT_IN_PROGRESS"
+    "local_installation": "PASS_ACTUAL_ORDINARY_INSTALL_EXIT_0_FROZEN_HASHES_REGISTRY_AND_NATIVE_ROOT_HOME_IDENTITIES_PRESERVED"
   },
   "native_ci_budget_correction": {
     "source": "2d49a718147bab563b39834d2c294c0f912b23db",
@@ -131,15 +131,26 @@
     "cause": "NOT_YET_OBSERVED; old assertion omitted actual reply",
     "response": "Add direct failure reply to the fixed-CLI empty-home test and rerun; no guessed product correction or substituted account state"
   },
-  "win11_candidate_tests": "NOT_RUN_FOR_THIS_COMMIT",
-  "OT4": "NOT_REQUESTED_UNTIL_INSTALLED_LOGIN_CLOSURE_READY",
+  "win11_candidate_tests": {
+    "pending_login_close_reopen": "NOT_RUN_REQUIRES_OT4",
+    "interface_reload_during_login": "NOT_RUN_REQUIRES_OT4",
+    "model_and_remaining_M1": "NOT_RUN_REQUIRES_OT4",
+    "installed_version": "0.1.14",
+    "source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "legacy_codex_login_entry": "ABSENT_CONFIG_PAGE_OBSERVED",
+    "settings_close_reopen": "PASS_SAME_HOST_SAME_INSTANCE",
+    "g0_page": "PASS_VISIBLE_INSTANCE_LIST_AND_ENABLED_ONE_CLICK_LOGIN",
+    "initial_instance": "PASS_ACTUAL_CODEX_TEST_INSTANCE_DRIVER_VERSION_0.149.0_REVISION_2_NOT_LOGGED_IN",
+    "acceptance": false
+  },
+  "OT4": "READY_FOR_ONCE_OWNER_INSTANCE_LOGIN_AND_BROWSER_AUTHORIZATION",
   "M1_complete": false,
   "product_acceptance": false,
   "preserved_untracked": [
     "apps/desktop/native-host/src/process/session/compat/detours-extract/",
     "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
   ],
-  "next_action": "Complete actual candidate retirement, fresh per-item empty-directory audit/readback, install exact signed frozen bytes, verify ordinary product identity and G.0 UI; once ready request OT4, then actual M1. No acceptance or release.",
+  "next_action": "Owner clicks one-click login from installed Instances page and authorizes through product-opened browser; Controller observes same host-owned request closure/recovery and proceeds with actual M1. No manual request ID, settings edits, acceptance or release.",
   "source_audit": {
     "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
     "findings": [
@@ -167,7 +178,9 @@
     "Installed service runtime path was assumed for a metadata helper; no script ran on the missing path. Used an Authenticode-valid measurement Node and actual frozen product hashes.",
     "Original UI request metadata uses values[0,2,3], not named properties. First metadata run is invalid; corrected same-original status reads returned UNKNOWN on the old installed source. No login begin, device output, credential read or new-source acceptance.",
     "Ordinary installation script attempted direct installation into nonempty old candidate root; actual frozen embedded-shell preflight returned GOGOKE_INSTALL_EXISTING_TARGET_REQUIRES_UPDATE. Correct the measurement to actual installed candidate uninstall, independent empty-directory audit, and frozen new install, preserving original instance data/home physical identities.",
-    "Signed candidate archive intentionally excludes standalone embedded shell; first direct preflight diagnostic referenced an absent member and did not run. Corrected to exact frozen shell bytes hash-bound to embedded installer while retaining signed sibling set. No CLI change."
+    "Signed candidate archive intentionally excludes standalone embedded shell; first direct preflight diagnostic referenced an absent member and did not run. Corrected to exact frozen shell bytes hash-bound to embedded installer while retaining signed sibling set. No CLI change.",
+    "First native-window snapshot captured an occluding window; activated the exact returned product window and re-observed correct product before any setting input. No authentication action was taken.",
+    "An additional endpoint registry read inherited the packaged view and found no candidate key; reran the existing endpoint custody read in ordinary Interactive/Limited view, PASS. Formal four remained unchanged."
   ],
   "cloud_mutation_axes": {
     "R1": "Restore original stale registry install-state read, unchanged behavioral test must compile and fail, restore exact bytes and pass",
@@ -184,8 +197,11 @@
     "limited_interactive_snapshot": "PASS",
     "fixed_cli_hash": "PASS",
     "protected_formal_comparison": "NO_CHANGES",
-    "new_source_installation": "NOT_COMPLETED",
-    "failed_install_formal_comparison": "NO_CHANGES_FOUR_PROTECTED_OBJECTS"
+    "new_source_installation": "PASS",
+    "failed_install_formal_comparison": "NO_CHANGES_FOUR_PROTECTED_OBJECTS",
+    "installed_product_readiness": "PASS_VERSION_0.1.14_SAME_FROZEN_GENERATION_AND_SET_ID",
+    "ordinary_endpoint_recheck": "PASS_ACTUAL_REGISTERED_PROCESS",
+    "pre_ot4_formal_four": "NO_CHANGES"
   },
   "superseded_cloud_validation": {
     "source": "42f1927ede410e2a55f69d7b27d4ebdd12aedb74",
@@ -209,7 +225,7 @@
   "ordinary_install_transition": {
     "retirement_instrument_review": "INDEPENDENT_SOL_NO_BLOCKER",
     "formal_four": "NO_CHANGES",
-    "new_install": "IN_PROGRESS_EXACT_SIGNED_FROZEN_BYTES",
+    "new_install": "PASS_EXIT_0_EXACT_SIGNED_FROZEN_BYTES",
     "first_installer_exit": 2,
     "direct_preflight_error": "GOGOKE_INSTALL_EXISTING_TARGET_REQUIRES_UPDATE",
     "old_source": "aae122c392393dc48fead2fa2f336d6af8af8267",
@@ -227,6 +243,13 @@
       "retain_install_root": true,
       "files": 0,
       "directories": 1092
-    }
+    },
+    "post_install_formal_four": "NO_CHANGES"
+  },
+  "owner_touchpoint": {
+    "state": "READY_NOT_STARTED",
+    "type": "OT4_ACCOUNT_LOGIN",
+    "reason": "Only Owner can authenticate and authorize the Codex account",
+    "subsequent_controller_action": "Automatic product result readback and remaining M1 actual tests"
   }
 }
