@@ -71,7 +71,8 @@
     "additional_correction": "Clear transient error only after the original request reports actual settled LOGGED_IN.",
     "R4": "Retain actual second account/read custody and its own stop proof until durable confirmation; original status/cancel reconciles that same process and retained native frame, without another launch.",
     "R4_phase_correction": "Non-LaunchCleanup preparation refusal and Resume with proven factory abort settle; LaunchCleanup remains unconfirmed, and retained suspended activation failure uses same-ticket abort. Tombstone alone is not proof.",
-    "R4_phase_tests": "Actual fixed-CLI factory digest refusal and suspended-child failed resume; test-only resume callback exercises the same production activation implementation, absent from release."
+    "R4_phase_tests": "Actual fixed-CLI factory digest refusal and suspended-child failed resume; test-only resume callback exercises the same production activation implementation, absent from release.",
+    "R4_result_retention": "Account/read errors with no remaining custody are appended to the original native Final output; extended real first-CLI control case verifies same-original status preserves the raw preflight failure."
   },
   "measurement_corrections": [
     "Repository-relative edits first invoked from desktop subdirectory; no edit occurred; reran at repository root.",
@@ -87,7 +88,7 @@
     "R3": "Restore cancel-intent override of settled success, unchanged behavioral test must compile and fail, restore exact bytes and all six host tests pass",
     "R4": "Remove only the finish guard protecting pending second-child custody; real unchanged second-CLI test must compile and fail, restore exact bytes and pass."
   },
-  "superseded_cloud_source": "5503e1435ed7cf5e2403b66dd636ed8e6dbd062c",
+  "superseded_cloud_source": "041bb1706a03dba748246fa04a599073bc71983d",
   "superseded_cloud_validation": {
     "source": "42f1927ede410e2a55f69d7b27d4ebdd12aedb74",
     "native_run": 36859601994,

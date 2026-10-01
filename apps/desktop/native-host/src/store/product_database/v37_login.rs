@@ -975,6 +975,10 @@ impl<'root> ProductDatabase<'root> {
             return Err(state_result.err().expect("pending account custody carries an error"));
         }
         let state = state_result.as_ref().cloned().unwrap_or_else(|_| "UNKNOWN".to_owned());
+        if let Err(error) = &state_result {
+            if !active.output.is_empty() { active.output.push('\n'); }
+            active.output.push_str(&format!("automatic account/read failed: {error:?}"));
+        }
         if let Some(failure) = &login_failure {
             if !active.output.is_empty() { active.output.push('\n'); }
             active.output.push_str(failure);
@@ -1867,6 +1871,29 @@ mod tests {
         let next_begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"newAfterRelease","expectedRevision":2}"#;
         assert!(matches!(product.dispatch_owner_login_frame(next_begin),
             Err(OrchestrationError::AccessDenied)), "a new request reaches its own preflight after release");
+        // A later login child can stop successfully while account/read fails
+        // before preparation. Its retained Final must keep that raw cause.
+        product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.149.0' WHERE instance_id='instanceA'").unwrap();
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+            product.prepare_owner_codex_login("instanceA").unwrap();
+        login.launch.arguments = vec!["--version".into()];
+        let prepared = product.process_custodian.prepare(&login).unwrap();
+        drop(login); drop(account_read);
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"ownerAccountPreflight","expectedRevision":2}"#).unwrap();
+        let operation_id = owner_login_operation_id(&command);
+        authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+        assert!(product.process_custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(15)).unwrap());
+        product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
+        let active = ActiveOwnerLogin { instance_id:command.instance_id.clone(),request_id:command.request_id.clone(),
+            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),halted:false };
+        let error = product.finish_owner_device_login(&command, active, false).unwrap_err();
+        assert!(matches!(&error, OrchestrationError::AccessDenied));
+        let final_readback = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(final_readback.contains("\"settled\":true"));
+        assert!(final_readback.contains("automatic account/read failed: AccessDenied"),
+            "the same original native result retains the failure after the first Err is gone");
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
