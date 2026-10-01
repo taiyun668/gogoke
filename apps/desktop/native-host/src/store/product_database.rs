@@ -207,6 +207,9 @@ impl<'root> ProductDatabase<'root> {
     /// native store; all other closed-envelope operations stay unsupported.
     pub fn dispatch_user_frame(&mut self, origin: &UserOriginProof, frame: &[u8]) -> Result<Vec<u8>> {
         origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
+        if v37_login::is_owner_instance_list_frame(frame) {
+            return self.dispatch_owner_instance_list_frame(frame);
+        }
         if v37_login::is_owner_login_frame(frame) {
             return self.dispatch_owner_login_frame(frame);
         }

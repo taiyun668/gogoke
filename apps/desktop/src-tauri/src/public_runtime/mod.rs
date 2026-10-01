@@ -270,3 +270,4 @@ mod tests {
 
 pub(crate) mod product_entry;
 pub(crate) mod design37_host;
+pub(crate) mod design37_instances;

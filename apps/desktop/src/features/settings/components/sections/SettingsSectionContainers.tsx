@@ -58,10 +58,10 @@ export function SettingsSectionContainers({
     return <SettingsAgentsSection {...orchestration.agentsSectionProps} />;
   }
   if (activeSection === "codex") {
-    return <>
-      <SettingsCodexSection {...orchestration.codexSectionProps} />
-      <Design37InstanceSection />
-    </>;
+    return <SettingsCodexSection {...orchestration.codexSectionProps} />;
+  }
+  if (activeSection === "instances") {
+    return <Design37InstanceSection />;
   }
   if (activeSection === "features") {
     return <SettingsFeaturesSection {...orchestration.featuresSectionProps} />;

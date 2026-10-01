@@ -1305,6 +1305,42 @@ pub(crate) struct Design37RegisterCodexRequest {
     instance_id: String,
 }
 
+impl Design37RegisterCodexRequest {
+    pub(super) fn for_instance(instance_id: String) -> Self {
+        // Existing registration replay stays bound to the original instance.
+        Self { request_id: instance_id.clone(), instance_id }
+    }
+}
+
+/// Read-only instance-page startup. No instance home or login is created here.
+pub(super) async fn ensure_design37_user_host(app: &tauri::AppHandle) -> Result<(), String> {
+    let _product_guard = PRODUCT_RUNTIME_GATE.lock().await;
+    let service_guard = PRODUCT_SERVICE_GATE.lock().await;
+    let paths = resolve_runtime_paths(app)?;
+    if retained_design37_host(&paths)?.is_some() { return Ok(()); }
+    let app_for_spawn = app.clone();
+    let (spawned, service_guard) = tokio::task::spawn_blocking(move || {
+        (spawn_design37_host(&app_for_spawn), service_guard)
+    }).await.map_err(|error| format!("GOGOKE_DESIGN37_HOST_OWNER_FAILED:{error}"))?;
+    let (spawned, pinned_paths) = spawned?;
+    if !same_product_resource_generation(&paths, &pinned_paths) {
+        return Err("GOGOKE_DESIGN37_RESOURCE_GENERATION_CHANGED".into());
+    }
+    let host = Arc::new(spawned);
+    let attachment = ExistingHostAttachment {
+        service_pipe: host.service_pipe().to_owned(), service_capability: host.capability().to_owned(),
+    };
+    {
+        let mut owner = DESIGN37_PRODUCT_OWNER.lock()
+            .map_err(|error| format!("GOGOKE_DESIGN37_OWNER_LOCK_FAILED:{error}"))?;
+        if owner.is_some() { return Err("GOGOKE_DESIGN37_OWNER_ALREADY_STARTED".into()); }
+        *owner = Some(Design37ProductOwner { host:Arc::clone(&host), paths:pinned_paths.clone() });
+    }
+    let output = run_product_service_with_guard(pinned_paths, b"{\"operation\":\"readiness\"}",
+        SERVICE_TIMEOUT, None, None, service_guard, Some((host, attachment))).await?;
+    validate_product_readiness(&output)
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Design37RegisterCodexReceipt {
@@ -1317,6 +1353,14 @@ pub(crate) struct Design37RegisterCodexReceipt {
     previous_revision: String,
     revision: String,
     result: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Design37RegisterCodexReceipt {
+    pub(super) fn require_applied(&self) -> Result<(), String> {
+        if ["APPLIED", "REPLAYED"].contains(&self.status.as_str()) { return Ok(()); }
+        Err(format!("GOGOKE_INSTANCE_REGISTRATION_{}:{}", self.status,
+            serde_json::Value::Object(self.result.clone())))
+    }
 }
 
 fn canonical_v37_id(value: &str) -> bool {

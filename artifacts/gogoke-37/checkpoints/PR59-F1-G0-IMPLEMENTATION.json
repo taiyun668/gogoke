@@ -1,0 +1,53 @@
+{
+  "schema": "gogoke.37.controller-checkpoint.v1",
+  "state": "IMPLEMENTATION_CLOUD_VALIDATION_PENDING",
+  "authorization": {
+    "pr": 59,
+    "merged_by": "taiyun668",
+    "merge": "b75250c3b9987b9b09a0fa068f986e2c482a1044",
+    "manifest_blob": "9d540cbac609b5ba21cb12e1640b375bcc980736",
+    "receipt_blob": "671cb15b811048c883e6f2f2671ba8a15fc4b55c",
+    "exact_readback": "PASS"
+  },
+  "implementation": [
+    "Host-owned original login request, automatic progress/result/cancel across interface remounts",
+    "Owner-only native instance listing from actual database",
+    "G.0 instance Settings slot with four states, code copy and raw failure display",
+    "Trusted host authorization opener; old Codex settings login entry removed"
+  ],
+  "fixed_cli": {
+    "version": "0.149.0",
+    "sha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "modification": false
+  },
+  "isolation": "Existing LPAC and previously Owner-authorized lpacIdentityServices; no capability expansion",
+  "candidate_version": "0.1.14",
+  "local_checks": {
+    "typescript": "PASS",
+    "instance_ui_tests": {
+      "passed": 7,
+      "failed": 0
+    },
+    "localization_tests": {
+      "passed": 9,
+      "failed": 0
+    },
+    "localization_identity": "PASS"
+  },
+  "ci_dependency": {
+    "pr": 60,
+    "purpose": "Rebind trusted-main candidate chain to PR59 authorization literals",
+    "files": 3,
+    "owner_merge_required": true
+  },
+  "cloud_native_tests": "NOT_RUN_FOR_THIS_COMMIT",
+  "win11_candidate_tests": "NOT_RUN_FOR_THIS_COMMIT",
+  "OT4": "NOT_REQUESTED_UNTIL_INSTALLED_LOGIN_CLOSURE_READY",
+  "M1_complete": false,
+  "product_acceptance": false,
+  "preserved_untracked": [
+    "apps/desktop/native-host/src/process/session/compat/detours-extract/",
+    "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
+  ],
+  "next_action": "Push exact source and run cloud native/desktop/hygiene; independent review; trusted-main candidate signing after Owner merges PR60"
+}

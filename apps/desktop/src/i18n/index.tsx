@@ -34,6 +34,7 @@ const enTranslations = {
   "settings.nav.git": "Git",
   "settings.nav.server": "Server",
   "settings.nav.agents": "Agents",
+  "settings.nav.instances": "Instances",
   "settings.nav.codex": "Codex",
   "settings.nav.features": "Features",
 
@@ -111,6 +112,7 @@ const zhCNTranslations: Record<keyof typeof enTranslations, string> = {
   "settings.nav.git": "Git",
   "settings.nav.server": "服务器",
   "settings.nav.agents": "智能体",
+  "settings.nav.instances": "实例",
   "settings.nav.codex": "Codex",
   "settings.nav.features": "功能",
 

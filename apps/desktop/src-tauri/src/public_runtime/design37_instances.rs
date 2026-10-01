@@ -1,0 +1,392 @@
+//! Owner instance page. The host owns request identities and drives login even
+//! when no WebView is mounted. Only the vendor CLI touches its credentials.
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, OnceLock};
+use tauri_plugin_opener::OpenerExt;
+
+const AUTHORIZATION_URL: &str = "https://auth.openai.com/codex/device";
+type ReplyFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+
+trait LoginEnvironment: Send + Sync + 'static {
+    fn request(&self, frame: String) -> ReplyFuture<'_>;
+    fn open_authorization(&self) -> Result<(), String>;
+}
+struct InstalledEnvironment(tauri::AppHandle);
+impl LoginEnvironment for InstalledEnvironment {
+    fn request(&self, frame: String) -> ReplyFuture<'_> {
+        Box::pin(super::product_entry::gogoke_design37_user_operation(self.0.clone(), frame))
+    }
+    fn open_authorization(&self) -> Result<(), String> {
+        self.0.opener().open_url(AUTHORIZATION_URL, None::<&str>)
+            .map_err(|error| format!("GOGOKE_INSTANCE_AUTHORIZATION_OPEN_FAILED:{error}"))
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoginView {
+    request_id: String,
+    expected_revision: u64,
+    state: String,
+    output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authorization_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    browser_state: String,
+    started_at: u64,
+}
+#[derive(Clone)]
+struct LoginRecord { view: LoginView, cancel_requested: bool, settled: bool }
+type Sessions = Arc<Mutex<BTreeMap<String, LoginRecord>>>;
+fn sessions() -> &'static Sessions {
+    static SESSIONS: OnceLock<Sessions> = OnceLock::new();
+    SESSIONS.get_or_init(|| Arc::new(Mutex::new(BTreeMap::new())))
+}
+fn lock_sessions(sessions: &Sessions) -> Result<std::sync::MutexGuard<'_, BTreeMap<String, LoginRecord>>, String> {
+    sessions.lock().map_err(|error| format!("GOGOKE_INSTANCE_SESSIONS_LOCK_FAILED:{error}"))
+}
+fn same_record<'a>(map: &'a mut BTreeMap<String, LoginRecord>, id: &str, request: &str) -> Result<&'a mut LoginRecord, String> {
+    let record = map.get_mut(id).ok_or("GOGOKE_INSTANCE_LOGIN_RECORD_MISSING")?;
+    if record.view.request_id != request { return Err("GOGOKE_INSTANCE_LOGIN_IDENTITY_CHANGED".into()); }
+    Ok(record)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeInstance {
+    instance_id: String, driver_id: String, version: String, revision: String,
+    install_state: String, login_state: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeInstances { schema: String, instances: Vec<NativeInstance> }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstanceView {
+    instance_id: String, driver_id: String, version: String, revision: String, state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login: Option<LoginView>,
+}
+#[derive(Serialize)]
+pub(crate) struct InstancePage { schema: &'static str, instances: Vec<InstanceView> }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginReply { schema: String, instance_id: String, request_id: String, state: String, output: String, settled: bool }
+
+fn valid_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    (1..=64).contains(&bytes.len()) && bytes[0].is_ascii_alphabetic()
+        && bytes[1..].iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
+}
+fn login_frame(id: &str, view: &LoginView, action: &str) -> String {
+    serde_json::json!({"schema":"gogoke.37.owner-login.v1", "action":action,
+        "instanceId":id,"requestId":view.request_id,"expectedRevision":view.expected_revision}).to_string()
+}
+fn decode_login(raw: &str, id: &str, request: &str) -> Result<LoginReply, String> {
+    let reply: LoginReply = serde_json::from_str(raw)
+        .map_err(|error| format!("GOGOKE_INSTANCE_LOGIN_REPLY_DECODE_FAILED:{error}"))?;
+    if reply.schema != "gogoke.37.owner-login.v1" || reply.instance_id != id || reply.request_id != request
+        || !["PENDING","LOGGED_IN","LOGGED_OUT","UNKNOWN"].contains(&reply.state.as_str()) {
+        return Err("GOGOKE_INSTANCE_LOGIN_REPLY_IDENTITY_MISMATCH".into());
+    }
+    Ok(reply)
+}
+
+/// Rendering removes terminal controls only. The original CLI failure remains
+/// in the Owner-private error field; no progress or device code enters logs.
+fn display_text(raw: &str) -> String {
+    let mut output = String::new();
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.next() {
+                Some('[') => { for c in chars.by_ref() { if ('@'..='~').contains(&c) { break; } } }
+                Some(']') => { let mut escaped = false; for c in chars.by_ref() {
+                    if c == '\u{7}' || (escaped && c == '\\') { break; } escaped = c == '\u{1b}';
+                } }
+                _ => {}
+            }
+        } else if !ch.is_control() || ch == '\n' || ch == '\t' { output.push(ch); }
+    }
+    output
+}
+fn device_code(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|word| {
+        let (a,b) = word.split_once('-')?;
+        if (3..=8).contains(&a.len()) && (3..=8).contains(&b.len())
+            && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+            Some(word.to_owned())
+        } else { None }
+    })
+}
+fn apply_reply(sessions: &Sessions, id: &str, request: &str, reply: LoginReply) -> Result<bool, String> {
+    let mut map = lock_sessions(sessions)?;
+    let record = same_record(&mut map, id, request)?;
+    record.view.output = display_text(&reply.output);
+    record.view.device_code = device_code(&record.view.output);
+    if record.view.output.split_whitespace().any(|part| part == AUTHORIZATION_URL) {
+        record.view.authorization_url = Some(AUTHORIZATION_URL.into());
+    }
+    record.settled = reply.settled;
+    record.view.state = if record.cancel_requested && reply.settled { "CANCELLED".into() } else { reply.state };
+    if reply.settled && record.view.state == "UNKNOWN" {
+        record.view.state = "ERROR".into();
+        if record.view.error.is_none() {
+            record.view.error = Some(if let Some(pos) = record.view.output.find("owner login process exited:") {
+                record.view.output[pos..].to_owned()
+            } else { "CLI 已结束，但登录状态无法确认。".into() });
+        }
+    }
+    Ok(record.view.state == "PENDING")
+}
+fn save_error(sessions: &Sessions, id: &str, request: &str, error: String) -> Result<(), String> {
+    let mut map = lock_sessions(sessions)?;
+    let record = same_record(&mut map, id, request)?;
+    record.view.state = "ERROR".into();
+    record.view.error = Some(error);
+    Ok(())
+}
+
+fn reserve_login(sessions: &Sessions, id: &str, revision: u64) -> Result<Option<LoginView>, String> {
+    let mut map = lock_sessions(sessions)?;
+    if let Some(record) = map.get(id) {
+        if record.view.state == "PENDING" { return Ok(None); }
+        if !record.settled { return Err("GOGOKE_INSTANCE_ORIGINAL_LOGIN_UNCONFIRMED".into()); }
+    }
+    if map.values().any(|r| r.view.state == "PENDING" || !r.settled) {
+        return Err("GOGOKE_INSTANCE_OTHER_LOGIN_ACTIVE".into());
+    }
+    let view = LoginView { request_id:format!("owner_{}", uuid::Uuid::new_v4().simple()),
+        expected_revision:revision, state:"PENDING".into(), output:String::new(),
+        authorization_url:None, device_code:None, error:None, browser_state:"NOT_REQUESTED".into(),
+        started_at:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("GOGOKE_INSTANCE_CLOCK_FAILED:{error}"))?.as_millis() as u64 };
+    map.insert(id.to_owned(), LoginRecord { view:view.clone(), cancel_requested:false, settled:false });
+    Ok(Some(view))
+}
+
+async fn drive<E: LoginEnvironment>(environment: Arc<E>, sessions: Sessions, id: String, original: LoginView) -> Result<(), String> {
+    let mut action = "begin";
+    loop {
+        if action != "begin" && same_record(&mut *lock_sessions(&sessions)?, &id, &original.request_id)?.cancel_requested {
+            action = "cancel";
+        }
+        let result = environment.request(login_frame(&id, &original, action)).await
+            .and_then(|raw| decode_login(&raw, &id, &original.request_id));
+        let reply = match result {
+            Ok(reply) => reply,
+            Err(error) => {
+                save_error(&sessions, &id, &original.request_id, error)?;
+                // Read the exact original request's retained result. No begin,
+                // input, account or process start is replayed after uncertainty.
+                if let Ok(raw) = environment.request(login_frame(&id, &original, "status")).await {
+                    if let Ok(reply) = decode_login(&raw, &id, &original.request_id) {
+                        apply_reply(&sessions, &id, &original.request_id, reply)?;
+                        same_record(&mut *lock_sessions(&sessions)?, &id, &original.request_id)?.view.state = "ERROR".into();
+                    }
+                }
+                return Ok(());
+            }
+        };
+        let pending = apply_reply(&sessions, &id, &original.request_id, reply)?;
+        let should_open = {
+            let mut map = lock_sessions(&sessions)?;
+            let record = same_record(&mut map, &id, &original.request_id)?;
+            if pending && record.view.authorization_url.is_some() && record.view.browser_state == "NOT_REQUESTED" && !record.cancel_requested {
+                record.view.browser_state = "OPENED".into(); true
+            } else { false }
+        };
+        if should_open {
+            if let Err(error) = environment.open_authorization() {
+                let mut map = lock_sessions(&sessions)?;
+                let record = same_record(&mut map, &id, &original.request_id)?;
+                record.view.browser_state = "FAILED".into(); record.view.error = Some(error);
+            }
+        }
+        if !pending { return Ok(()); }
+        action = "status";
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+async fn page<E: LoginEnvironment>(environment: &E, sessions: &Sessions) -> Result<InstancePage, String> {
+    let raw = environment.request(r#"{"schema":"gogoke.37.instance-list.v1"}"#.into()).await?;
+    let native: NativeInstances = serde_json::from_str(&raw)
+        .map_err(|error| format!("GOGOKE_INSTANCE_LIST_DECODE_FAILED:{error}"))?;
+    if native.schema != "gogoke.37.instance-list.v1" || native.instances.len() > 1024 { return Err("GOGOKE_INSTANCE_LIST_SCHEMA_INVALID".into()); }
+    let map = lock_sessions(sessions)?;
+    let mut instances = Vec::with_capacity(native.instances.len());
+    for item in native.instances {
+        if !valid_id(&item.instance_id) || item.revision.parse::<u64>().ok().filter(|r| *r > 0).map(|r| r.to_string()).as_deref() != Some(item.revision.as_str()) {
+            return Err("GOGOKE_INSTANCE_LIST_IDENTITY_INVALID".into());
+        }
+        let login = map.get(&item.instance_id).map(|r| r.view.clone());
+        let state = match (item.install_state.as_str(), item.login_state.as_str(), login.as_ref().map(|l| l.state.as_str())) {
+            ("MISSING",_,_) => "NOT_INSTALLED",
+            (_,_,Some("ERROR" | "UNKNOWN")) => "ERROR",
+            ("INSTALLED",_,Some("PENDING" | "CANCELLED")) => "NOT_LOGGED_IN",
+            ("INSTALLED","LOGGED_IN",_) => "LOGGED_IN",
+            ("INSTALLED","LOGGED_OUT",_) => "NOT_LOGGED_IN",
+            _ => "ERROR",
+        };
+        instances.push(InstanceView { instance_id:item.instance_id, driver_id:item.driver_id,
+            version:item.version, revision:item.revision, state:state.into(), login });
+    }
+    Ok(InstancePage { schema:"gogoke.37.instance-page.v1", instances })
+}
+
+#[tauri::command]
+pub(crate) async fn gogoke_design37_instances(app: tauri::AppHandle) -> Result<InstancePage, String> {
+    super::product_entry::ensure_design37_user_host(&app).await?;
+    page(&InstalledEnvironment(app), sessions()).await
+}
+#[tauri::command]
+pub(crate) async fn gogoke_design37_instance_register(app: tauri::AppHandle, instance_id: String) -> Result<InstancePage, String> {
+    if !valid_id(&instance_id) { return Err("GOGOKE_INSTANCE_ID_INVALID".into()); }
+    super::product_entry::gogoke_design37_register_codex_instance(app.clone(),
+        super::product_entry::Design37RegisterCodexRequest::for_instance(instance_id)).await?.require_applied()?;
+    gogoke_design37_instances(app).await
+}
+#[tauri::command]
+pub(crate) async fn gogoke_design37_instance_login(app: tauri::AppHandle, instance_id: String) -> Result<InstancePage, String> {
+    if !valid_id(&instance_id) { return Err("GOGOKE_INSTANCE_ID_INVALID".into()); }
+    let current = gogoke_design37_instances(app.clone()).await?;
+    let item = current.instances.iter().find(|i| i.instance_id == instance_id).ok_or("GOGOKE_INSTANCE_NOT_REGISTERED")?;
+    let revision = item.revision.parse().map_err(|error| format!("GOGOKE_INSTANCE_REVISION_INVALID:{error}"))?;
+    let Some(view) = reserve_login(sessions(), &instance_id, revision)? else { return Ok(current) };
+    let environment = Arc::new(InstalledEnvironment(app.clone()));
+    let records = Arc::clone(sessions());
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = drive(environment, Arc::clone(&records), instance_id.clone(), view.clone()).await {
+            if let Err(store_error) = save_error(&records, &instance_id, &view.request_id, error) {
+                eprintln!("GOGOKE_INSTANCE_LOGIN_RESULT_STORE_FAILED:{store_error}");
+            }
+        }
+    });
+    gogoke_design37_instances(app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct FakeEnvironment {
+        replies: Mutex<VecDeque<Result<(&'static str, &'static str, bool), String>>>,
+        actions: Mutex<Vec<serde_json::Value>>,
+        opened: AtomicUsize,
+        logged_in: AtomicBool,
+    }
+    impl LoginEnvironment for FakeEnvironment {
+        fn request(&self, frame: String) -> ReplyFuture<'_> {
+            Box::pin(async move {
+                let request: serde_json::Value = serde_json::from_str(&frame).unwrap();
+                if request["schema"] == "gogoke.37.instance-list.v1" {
+                    return Ok(serde_json::json!({"schema":"gogoke.37.instance-list.v1","instances":[{
+                        "instanceId":"instanceA","driverId":"codex","version":"0.149.0","revision":"2",
+                        "installState":"INSTALLED","loginState":if self.logged_in.load(Ordering::SeqCst) {"LOGGED_IN"} else {"LOGGED_OUT"}
+                    }]}).to_string());
+                }
+                self.actions.lock().unwrap().push(request.clone());
+                let (state, output, settled) = self.replies.lock().unwrap().pop_front().expect("unexpected new request")?;
+                if state == "LOGGED_IN" { self.logged_in.store(true, Ordering::SeqCst); }
+                Ok(serde_json::json!({"schema":"gogoke.37.owner-login.v1","instanceId":"instanceA",
+                    "requestId":request["requestId"],"state":state,"output":output,"settled":settled}).to_string())
+            })
+        }
+        fn open_authorization(&self) -> Result<(), String> {
+            self.opened.fetch_add(1, Ordering::SeqCst); Ok(())
+        }
+    }
+    fn fake(replies: Vec<Result<(&'static str, &'static str, bool), String>>) -> Arc<FakeEnvironment> {
+        Arc::new(FakeEnvironment { replies:Mutex::new(replies.into()), actions:Mutex::new(Vec::new()),
+            opened:AtomicUsize::new(0), logged_in:AtomicBool::new(false) })
+    }
+    fn runtime() -> tokio::runtime::Runtime { tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap() }
+    fn broker() -> Sessions { Arc::new(Mutex::new(BTreeMap::new())) }
+
+    #[test]
+    fn host_drives_login_without_ui_then_same_session_result_survives_new_reads() {
+        runtime().block_on(async {
+            let sessions = broker();
+            let original = reserve_login(&sessions, "instanceA", 2).unwrap().unwrap();
+            assert!(reserve_login(&sessions, "instanceA", 2).unwrap().is_none());
+            let environment = fake(vec![Ok(("PENDING", "\u{1b}[94mhttps://auth.openai.com/codex/device\u{1b}[0m\nABCD-EFGHI\n", false)),
+                Ok(("LOGGED_IN", "Successfully logged in", true))]);
+            // Production driver receives no frontend object or poll operation.
+            drive(Arc::clone(&environment), Arc::clone(&sessions), "instanceA".into(), original.clone()).await.unwrap();
+            for _ in 0..2 {
+                let reopened = page(environment.as_ref(), &sessions).await.unwrap();
+                assert_eq!(reopened.instances[0].state, "LOGGED_IN");
+                assert_eq!(reopened.instances[0].login.as_ref().unwrap().request_id, original.request_id);
+            }
+            assert_eq!(environment.opened.load(Ordering::SeqCst), 1);
+            let actions = environment.actions.lock().unwrap();
+            assert_eq!(actions.len(), 2);
+            assert_eq!(actions[0]["action"], "begin"); assert_eq!(actions[1]["action"], "status");
+            assert_eq!(actions[0]["requestId"], actions[1]["requestId"]);
+        });
+    }
+    #[test]
+    fn original_failure_is_kept_and_settled_readback_does_not_restart_login() {
+        runtime().block_on(async {
+            let sessions = broker(); let original = reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+            let reason = "original CLI exit2; STDERR_TAIL: unrecognized argument";
+            let environment = fake(vec![Err(reason.into()), Ok(("UNKNOWN",reason,true))]);
+            drive(Arc::clone(&environment),Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
+            for _ in 0..2 {
+                let view = page(environment.as_ref(),&sessions).await.unwrap();
+                assert_eq!(view.instances[0].state,"ERROR");
+                assert_eq!(view.instances[0].login.as_ref().unwrap().error.as_deref(),Some(reason));
+                assert_eq!(view.instances[0].login.as_ref().unwrap().request_id,original.request_id);
+            }
+            assert_eq!(environment.actions.lock().unwrap().len(),2);
+            assert!(reserve_login(&sessions,"instanceA",2).unwrap().is_some());
+        });
+    }
+    #[test]
+    fn uncertain_original_failure_prevents_another_login_identity() {
+        runtime().block_on(async {
+            let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+            let environment=fake(vec![Err("pipe closed".into()),Err("original status unavailable".into())]);
+            drive(environment,Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
+            assert!(reserve_login(&sessions,"instanceA",2).err().unwrap().contains("UNCONFIRMED"));
+            assert_eq!(sessions.lock().unwrap()["instanceA"].view.request_id,original.request_id);
+        });
+    }
+    #[test]
+    fn cancel_uses_the_original_request_and_survives_a_new_page_read() {
+        runtime().block_on(async {
+            let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+            sessions.lock().unwrap().get_mut("instanceA").unwrap().cancel_requested=true;
+            let environment=fake(vec![Ok(("PENDING","",false)),Ok(("LOGGED_OUT","",true))]);
+            drive(Arc::clone(&environment),Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
+            let actions=environment.actions.lock().unwrap();
+            assert_eq!(actions[1]["action"],"cancel");assert_eq!(actions[1]["requestId"],original.request_id);
+            drop(actions);
+            assert_eq!(page(environment.as_ref(),&sessions).await.unwrap().instances[0].login.as_ref().unwrap().state,"CANCELLED");
+        });
+    }
+    #[test]
+    fn only_exact_cli_authorization_is_eligible_and_terminal_controls_are_removed() {
+        assert_eq!(display_text("\u{1b}[94mABCD-EFGHI\u{1b}[0m\r\n"),"ABCD-EFGHI\n");
+        assert_eq!(device_code("device-code\nABCD-EFGHI").as_deref(),Some("ABCD-EFGHI"));
+        assert!(decode_login(r#"{"schema":"gogoke.37.owner-login.v1","instanceId":"other","requestId":"r","state":"PENDING","output":"","settled":false}"#,"instanceA","r").is_err());
+    }
+}
+#[tauri::command]
+pub(crate) async fn gogoke_design37_instance_cancel(app: tauri::AppHandle, instance_id: String) -> Result<InstancePage, String> {
+    {
+        let mut map = lock_sessions(sessions())?;
+        let record = map.get_mut(&instance_id).ok_or("GOGOKE_INSTANCE_LOGIN_NOT_STARTED")?;
+        if record.view.state == "PENDING" { record.cancel_requested = true; }
+    }
+    gogoke_design37_instances(app).await
+}

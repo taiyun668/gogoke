@@ -75,6 +75,7 @@ export const SETTINGS_MOBILE_BREAKPOINT_PX = 720;
 export const DEFAULT_REMOTE_HOST = "127.0.0.1:4732";
 
 export const SETTINGS_SECTION_LABELS: Record<CodexSection, string> = {
+  instances: "Instances",
   projects: "Projects",
   environments: "Environments",
   display: "Display & Sound",
@@ -91,6 +92,7 @@ export const SETTINGS_SECTION_LABELS: Record<CodexSection, string> = {
 };
 
 export const SETTINGS_SECTION_LABEL_KEYS: Record<CodexSection, TranslationKey> = {
+  instances: "settings.nav.instances",
   projects: "settings.nav.projects",
   environments: "settings.nav.environments",
   display: "settings.nav.display",

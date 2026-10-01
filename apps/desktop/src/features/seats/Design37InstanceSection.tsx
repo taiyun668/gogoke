@@ -1,275 +1,206 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SettingsSection } from "@/features/design-system/components/settings/SettingsPrimitives";
+import {
+  design37InstanceStateLabel,
+  design37LoginStateLabel,
+  DESIGN37_TEST_INSTANCE_ID,
+  readDesign37InstancesSnapshot,
+  type Design37Instance,
+  type Design37InstancesSnapshot,
+} from "./design37Instances";
 
-type InstanceReceipt = {
-  schema: string;
-  family: string;
-  operation: string;
-  requestId: string;
-  targetId: string;
-  status: string;
-  revision: string;
-  result: { state?: string; reason?: string };
-};
-
-type LoginReply = {
-  schema: string;
-  instanceId: string;
-  requestId: string;
-  state: "PENDING" | "LOGGED_IN" | "LOGGED_OUT" | "UNKNOWN";
-  output: string;
-};
-
-const INSTANCE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-
-function nextRequestId(): string {
-  return `owner_${crypto.randomUUID().replace(/-/g, "")}`;
+function errorText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
-function receiptRevision(value: string): number {
-  if (!/^[1-9]\d*$/.test(value)) {
-    throw new Error("Instance status returned an invalid revision.");
+function loginSummary(instance: Design37Instance): string | null {
+  const login = instance.login;
+  if (!login) return null;
+  if (login.state === "PENDING") {
+    return login.browserState === "FAILED"
+      ? "登录流程正在进行，但宿主打开浏览器失败。"
+      : "宿主正在推进登录流程；此页面关闭后可重新打开查看进度。";
   }
-  const revision = Number(value);
-  if (!Number.isSafeInteger(revision)) {
-    throw new Error("Instance status revision is outside the supported range.");
-  }
-  return revision;
+  if (login.state === "CANCELLED") return "此实例的登录请求已取消。";
+  if (login.state === "ERROR") return login.error || login.output || "登录失败，宿主未提供错误详情。";
+  if (login.state === "LOGGED_IN") return "宿主已检测到登录成功。";
+  if (login.state === "LOGGED_OUT") return "宿主检测到实例当前未登录。";
+  return login.error || login.output || "宿主尚未确认登录状态。";
 }
 
-function readReceipt(raw: string, operation: "install-state" | "login-state", instanceId: string, requestId: string): InstanceReceipt {
-  const receipt: InstanceReceipt = JSON.parse(raw);
-  if (receipt.schema !== "gogoke.37.operations.v1" || receipt.family !== "K-INSTANCE" ||
-      receipt.operation !== operation || receipt.targetId !== instanceId ||
-      receipt.requestId !== requestId ||
-      typeof receipt.status !== "string" ||
-      !receipt.result || typeof receipt.result !== "object") {
-    throw new Error("Instance status reply did not match this instance.");
-  }
-  return receipt;
-}
-
-function readLoginReply(raw: string, instanceId: string, requestId: string): LoginReply {
-  const reply: LoginReply = JSON.parse(raw);
-  if (reply.schema !== "gogoke.37.owner-login.v1" || reply.instanceId !== instanceId ||
-      reply.requestId !== requestId || !["PENDING", "LOGGED_IN", "LOGGED_OUT", "UNKNOWN"].includes(reply.state) ||
-      typeof reply.output !== "string") {
-    throw new Error("Owner login reply did not match this request.");
-  }
-  return reply;
-}
-
-/** Explicit Owner actions for one independent Codex test instance. */
+/** Minimal G.0 instance list. The host owns the login session and advances it independently of this view. */
 export function Design37InstanceSection() {
-  const [instanceId, setInstanceId] = useState("codexTestM1");
-  const [revision, setRevision] = useState<number | null>(null);
-  const [loginRequestId, setLoginRequestId] = useState<string | null>(null);
-  const [loginRevision, setLoginRevision] = useState<number | null>(null);
-  const [loginState, setLoginState] = useState<string | null>(null);
-  const [cliState, setCliState] = useState<string | null>(null);
-  const [deviceOutput, setDeviceOutput] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<Design37InstancesSnapshot | null>(null);
+  const [busyInstance, setBusyInstance] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const validId = INSTANCE_ID.test(instanceId);
+  const requestGeneration = useRef(0);
+  const pollingRef = useRef(false);
+  const busyRef = useRef(false);
 
-  // Observe this same login Job while the Owner reads its instructions. This
-  // only reads status; it never starts a second login or resends a device code.
+  const readSnapshot = useCallback(async (generation: number) => {
+    const result = await invoke<unknown>("gogoke_design37_instances");
+    const parsed = readDesign37InstancesSnapshot(result);
+    if (generation === requestGeneration.current) {
+      setSnapshot(parsed);
+      setError(null);
+    }
+  }, []);
+
   useEffect(() => {
-    if (busy || error || loginState !== "PENDING" || !loginRequestId || loginRevision === null) return;
-    const timer = window.setTimeout(() => {
-      setBusy("status");
-      void invoke<string>("gogoke_design37_user_operation", {
-        frame: JSON.stringify({ schema: "gogoke.37.owner-login.v1", action: "status",
-          instanceId, requestId: loginRequestId, expectedRevision: loginRevision }),
-      }).then((raw) => {
-        const reply = readLoginReply(raw, instanceId, loginRequestId);
-        setLoginState(reply.state);
-        setDeviceOutput(reply.output);
-      }).catch((cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : String(cause));
-        setLoginState("UNKNOWN");
-      }).finally(() => setBusy(null));
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [busy, error, instanceId, loginRequestId, loginRevision, loginState]);
+    let active = true;
+    const load = async () => {
+      if (!active || pollingRef.current || busyRef.current) return;
+      pollingRef.current = true;
+      const generation = requestGeneration.current;
+      try {
+        await readSnapshot(generation);
+      } catch (cause) {
+        if (active && generation === requestGeneration.current) setError(errorText(cause));
+      } finally {
+        pollingRef.current = false;
+        if (active) setLoading(false);
+      }
+    };
 
-  async function register() {
-    if (!validId || busy) return;
-    setBusy("register");
+    void load();
+    const timer = window.setInterval(() => void load(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [readSnapshot]);
+
+  async function runAction(instanceId: string, command: string) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    requestGeneration.current += 1;
+    const generation = requestGeneration.current;
+    setBusyInstance(instanceId);
     setError(null);
     setMessage(null);
     try {
-      // The fixed request ID lets this registration replay after the settings view remounts.
-      const receipt = await invoke<InstanceReceipt>("gogoke_design37_register_codex_instance", {
-        request: { instanceId, requestId: instanceId },
-      });
-      if (receipt.schema !== "gogoke.37.operations.v1" || receipt.family !== "K-INSTANCE" ||
-          receipt.operation !== "register" || receipt.targetId !== instanceId ||
-          receipt.requestId !== instanceId || !["APPLIED", "REPLAYED"].includes(receipt.status)) {
-        throw new Error(`Registration did not complete: ${receipt.status ?? "invalid reply"}`);
-      }
-      const registeredRevision = receiptRevision(receipt.revision);
-      // Replay returns the original registration revision, not the row's current
-      // revision. A read returns the current revision even when it is STALE.
-      const requestId = nextRequestId();
-      const raw = await invoke<string>("gogoke_design37_user_operation", {
-        frame: JSON.stringify({
-          schema: "gogoke.37.operations.v1", family: "K-INSTANCE",
-          operation: "install-state", requestId, domainId: "global",
-          targetId: instanceId, expectedRevision: String(registeredRevision), payload: {},
-        }),
-      });
-      const current = readReceipt(raw, "install-state", instanceId, requestId);
-      if (current.status !== "APPLIED" && current.status !== "STALE") {
-        throw new Error(`Instance revision unavailable: ${current.status}`);
-      }
-      setRevision(receiptRevision(current.revision));
-      setCliState(null);
-      setMessage(receipt.status === "REPLAYED" ? "Existing instance registration confirmed." : "Independent instance registered.");
+      const result = await invoke<unknown>(command, { instanceId });
+      const parsed = readDesign37InstancesSnapshot(result);
+      if (generation === requestGeneration.current) setSnapshot(parsed);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (generation === requestGeneration.current) setError(errorText(cause));
     } finally {
-      setBusy(null);
+      busyRef.current = false;
+      if (generation === requestGeneration.current) setBusyInstance(null);
     }
   }
 
-  async function ownerLogin(action: "begin" | "cancel") {
-    if (revision === null || busy) return;
-    const requestId = action === "begin" ? nextRequestId() : loginRequestId;
-    const expectedRevision = action === "begin" ? revision : loginRevision;
-    if (!requestId || expectedRevision === null) return;
-    setBusy(action);
-    setError(null);
+  async function copyDeviceCode(instance: Design37Instance) {
+    const code = instance.login?.deviceCode;
+    if (!code) return;
     setMessage(null);
-    if (action === "begin") {
-      setLoginRequestId(requestId);
-      setLoginRevision(expectedRevision);
-      setDeviceOutput("");
-    }
+    setError(null);
     try {
-      const raw = await invoke<string>("gogoke_design37_user_operation", {
-        frame: JSON.stringify({
-          schema: "gogoke.37.owner-login.v1", action, instanceId,
-          requestId, expectedRevision,
-        }),
-      });
-      const reply = readLoginReply(raw, instanceId, requestId);
-      setLoginState(reply.state);
-      setDeviceOutput(reply.output);
-      if (action === "cancel") setMessage("Login request cancelled.");
+      await navigator.clipboard.writeText(code);
+      setMessage(`已复制 ${instance.instanceId} 的设备码。`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(null);
+      setError(`复制设备码失败：${errorText(cause)}`);
     }
   }
 
-  async function refreshStatus() {
-    if (revision === null || busy) return;
-    setBusy("refresh");
-    setError(null);
-    setMessage(null);
-    try {
-      if (loginRequestId && loginRevision !== null) {
-        const rawLogin = await invoke<string>("gogoke_design37_user_operation", {
-          frame: JSON.stringify({
-            schema: "gogoke.37.owner-login.v1", action: "status", instanceId,
-            requestId: loginRequestId, expectedRevision: loginRevision,
-          }),
-        });
-        const reply = readLoginReply(rawLogin, instanceId, loginRequestId);
-        setLoginState(reply.state);
-        setDeviceOutput(reply.output);
-        if (reply.state === "PENDING") return;
-      } else {
-        const requestId = nextRequestId();
-        const raw = await invoke<string>("gogoke_design37_user_operation", {
-          frame: JSON.stringify({ schema: "gogoke.37.owner-login.v1", action: "refresh",
-            instanceId, requestId, expectedRevision: revision }),
-        });
-        setCliState(readLoginReply(raw, instanceId, requestId).state);
-      }
-      const requestId = nextRequestId();
-      const raw = await invoke<string>("gogoke_design37_user_operation", {
-        frame: JSON.stringify({
-          schema: "gogoke.37.operations.v1", family: "K-INSTANCE",
-          operation: "login-state", requestId, domainId: "global",
-          targetId: instanceId, expectedRevision: String(revision), payload: {},
-        }),
-      });
-      const receipt = readReceipt(raw, "login-state", instanceId, requestId);
-      if (["APPLIED", "REPLAYED", "STALE"].includes(receipt.status)) {
-        setRevision(receiptRevision(receipt.revision));
-      }
-      setCliState(["APPLIED", "REPLAYED"].includes(receipt.status) ? receipt.result.state ?? "UNKNOWN" : "UNKNOWN");
-      if (receipt.status === "STALE") setMessage("Instance revision changed. Refresh status again.");
-      else if (!["APPLIED", "REPLAYED", "UNKNOWN"].includes(receipt.status)) {
-        setError(`Instance status unavailable: ${receipt.status}`);
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(null);
-    }
-  }
+  const instances = snapshot?.instances ?? [];
+  const testInstance = instances.find((instance) => instance.instanceId === DESIGN37_TEST_INSTANCE_ID);
 
   return (
-    <SettingsSection title="Independent Codex test instance" subtitle="Register this instance, then start its own CLI sign-in when you are ready. This does not change daily Codex settings or accounts.">
+    <SettingsSection
+      title="实例"
+      subtitle="实例登录由宿主持续管理。可关闭此页面，之后重新打开即可读取同一实例的进度和结果。"
+    >
       <div className="settings-field">
-        <label className="settings-field-label" htmlFor="design37-instance-id">Instance ID</label>
-        <input id="design37-instance-id" className="settings-input" value={instanceId}
-          onChange={(event) => {
-            setInstanceId(event.target.value);
-            setRevision(null);
-            setLoginRequestId(null);
-            setLoginRevision(null);
-            setLoginState(null);
-            setCliState(null);
-            setDeviceOutput("");
-            setError(null);
-            setMessage(null);
-          }} disabled={busy !== null || loginState === "PENDING"} aria-invalid={!validId} aria-describedby="design37-instance-help" />
-        <div id="design37-instance-help" className={validId ? "settings-help" : "settings-help settings-help-error"}>
-          {validId ? "Letters, digits, _ and -; start with a letter." : "Enter an ID starting with a letter, up to 64 characters."}
-        </div>
-        <div className="settings-field-actions">
-          <button type="button" className="primary settings-button-compact" onClick={() => void register()} disabled={!validId || busy !== null || loginState === "PENDING"}>
-            {busy === "register" ? "Registering…" : "Register instance"}
-          </button>
-          <button type="button" className="ghost settings-button-compact" onClick={() => void ownerLogin("begin")}
-            disabled={revision === null || busy !== null || loginState === "PENDING"}>
-            {busy === "begin" ? "Starting…" : "Start login"}
-          </button>
-          <button type="button" className="ghost settings-button-compact" onClick={() => void refreshStatus()}
-            disabled={revision === null || busy !== null}>
-            {busy === "refresh" ? "Refreshing…" : "Refresh status"}
-          </button>
-          <button type="button" className="ghost settings-button-compact" onClick={() => void ownerLogin("cancel")}
-            disabled={revision === null || !loginRequestId || loginRevision === null || loginState !== "PENDING" || busy !== null}>
-            {busy === "cancel" ? "Cancelling…" : "Cancel login"}
-          </button>
-        </div>
-        {revision !== null ? <div className="settings-help">Instance revision: {revision}</div> : null}
-        {loginState ? <div className="settings-help" role="status">Login request: {loginState}</div> : null}
-        {cliState ? <div className="settings-help" role="status">CLI login observation: {cliState}. This does not verify account validity.</div> : null}
-        {message ? <div className="settings-help" role="status">{message}</div> : null}
-        {error ? <div className="settings-help settings-help-error" role="alert">{error}</div> : null}
-        {deviceOutput ? (
-          <div className="settings-field">
-            <div className="settings-field-label">CLI sign-in instructions</div>
-            <div className="settings-help" aria-live="polite">{deviceOutput.split(/\r?\n/).map((line, index) => (
-              <div key={index}>{line || "\u00a0"}</div>
-            ))}</div>
-            <button type="button" className="ghost settings-button-compact" onClick={() => {
-              void navigator.clipboard.writeText(deviceOutput).catch((cause: unknown) => {
-                setError(cause instanceof Error ? cause.message : String(cause));
-              });
-            }}>Copy instructions</button>
-          </div>
+        <div className="settings-field-label settings-field-label--section">实例列表</div>
+        {loading && !snapshot ? <div className="settings-help" role="status">正在读取实例…</div> : null}
+        {snapshot && instances.length === 0 ? (
+          <div className="settings-help">当前没有实例。</div>
+        ) : null}
+
+        {instances.map((instance) => {
+          const busy = busyInstance === instance.instanceId;
+          const pending = instance.login?.state === "PENDING";
+          const summary = loginSummary(instance);
+          return (
+            <div className="settings-toggle-row" key={instance.instanceId}>
+              <div>
+                <div className="settings-toggle-title">
+                  {instance.instanceId === DESIGN37_TEST_INSTANCE_ID
+                    ? "Codex 测试实例"
+                    : instance.instanceId}
+                </div>
+                <div className="settings-toggle-subtitle">
+                  {instance.driverId} · {instance.version} · 修订 {instance.revision}
+                </div>
+                <div className="settings-help" role="status">
+                  状态：{design37InstanceStateLabel(instance.state)}
+                  {instance.login ? ` · 登录：${design37LoginStateLabel(instance.login.state)}` : ""}
+                </div>
+                {summary ? (
+                  <div className={instance.login?.state === "ERROR" ? "settings-help settings-help-error" : "settings-help"}
+                    role={instance.login?.state === "ERROR" ? "alert" : "status"}>
+                    {summary}
+                  </div>
+                ) : null}
+                {instance.login?.authorizationUrl ? (
+                  <div className="settings-help">
+                    宿主授权地址：<code>{instance.login.authorizationUrl}</code>
+                  </div>
+                ) : null}
+                {instance.login?.output ? (
+                  <pre className="settings-help" aria-label={`${instance.instanceId} 登录输出`}
+                    style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", font: "inherit" }}>
+                    {instance.login.output}
+                  </pre>
+                ) : null}
+                {instance.login?.deviceCode ? (
+                  <div className="settings-field-actions">
+                    <span className="settings-help">设备码：<code>{instance.login.deviceCode}</code></span>
+                    <button type="button" className="ghost settings-button-compact"
+                      onClick={() => void copyDeviceCode(instance)}>
+                      复制设备码
+                    </button>
+                  </div>
+                ) : null}
+                <div className="settings-field-actions">
+                  <button type="button" className="primary settings-button-compact"
+                    disabled={busyInstance !== null || pending || instance.state === "LOGGED_IN" || instance.state === "NOT_INSTALLED"}
+                    onClick={() => void runAction(instance.instanceId, "gogoke_design37_instance_login")}>
+                    {busy ? "正在启动…" : pending ? "登录进行中" : "一键登录"}
+                  </button>
+                  {pending ? (
+                    <button type="button" className="ghost settings-button-compact" disabled={busyInstance !== null}
+                      onClick={() => void runAction(instance.instanceId, "gogoke_design37_instance_cancel")}>
+                      {busy ? "正在取消…" : "取消登录"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {snapshot ? (
+          !testInstance ? (
+            <div className="settings-field">
+              <div className="settings-help">新建入口默认使用 {DESIGN37_TEST_INSTANCE_ID}。</div>
+              <button type="button" className="primary settings-button-compact"
+                disabled={busyInstance !== null || loading}
+                onClick={() => void runAction(DESIGN37_TEST_INSTANCE_ID, "gogoke_design37_instance_register")}>
+                {busyInstance === DESIGN37_TEST_INSTANCE_ID ? "正在创建…" : "创建 Codex 测试实例"}
+              </button>
+            </div>
+          ) : testInstance.state === "NOT_INSTALLED" ? (
+            <div className="settings-help">Codex 测试实例已登记，当前尚未安装。</div>
+          ) : null
         ) : null}
       </div>
+      {message ? <div className="settings-help" role="status">{message}</div> : null}
+      {error ? <div className="settings-help settings-help-error" role="alert">{error}</div> : null}
     </SettingsSection>
   );
 }

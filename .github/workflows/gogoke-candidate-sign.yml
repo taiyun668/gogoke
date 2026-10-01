@@ -110,8 +110,8 @@ jobs:
             throw 'Candidate signing identity is malformed.'
           }
           # Read only metadata for the source commit. Never checkout or execute it in this job.
-          $authorizationMain = '8a984b6ac402d217a8897adaa4a7dcc56fbf68e3'
-          $manifestBlob = '2d3b34a7903e7b0223d043786863706c2297c78c'
+          $authorizationMain = 'b75250c3b9987b9b09a0fa068f986e2c482a1044'
+          $manifestBlob = '9d540cbac609b5ba21cb12e1640b375bcc980736'
           $manifestPath = 'docs/design/gogoke-37-plan-v1/MANIFEST.json'
           $receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
           if ((git rev-parse "HEAD:$manifestPath").Trim() -cne $manifestBlob) {
@@ -121,10 +121,10 @@ jobs:
           if ($receipt.schema -cne 'gogoke.37.public-authorization.v1' -or
               $receipt.repository -cne 'taiyun668/gogoke' -or
               $receipt.plan.public_plan_manifest_blob -cne $manifestBlob -or
-              $receipt.plan.public_plan_merge_commit -cne '420df17e147e9ffde5b1a187cb5d6ddcb701ec67') {
+              $receipt.plan.public_plan_merge_commit -cne '19953964f2a95907563032ca51d509628b4da215') {
             throw 'Trusted main public authorization receipt does not bind the approved plan.'
           }
-          $receiptBlob = '8020812e3abf35887829f50c78ec9f513272bf70'
+          $receiptBlob = '671cb15b811048c883e6f2f2671ba8a15fc4b55c'
           if ((git rev-parse "HEAD:$receiptPath").Trim() -cne $receiptBlob) {
             throw 'Trusted main public authorization receipt blob changed.'
           }

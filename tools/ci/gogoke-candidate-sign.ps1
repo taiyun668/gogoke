@@ -20,8 +20,8 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 if ((git -C $repoRoot rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
     throw 'Candidate signer is not the exact trusted main checkout.'
 }
-$authorizationMain = '8a984b6ac402d217a8897adaa4a7dcc56fbf68e3'
-$manifestBlob = '2d3b34a7903e7b0223d043786863706c2297c78c'
+$authorizationMain = 'b75250c3b9987b9b09a0fa068f986e2c482a1044'
+$manifestBlob = '9d540cbac609b5ba21cb12e1640b375bcc980736'
 $manifestPath = 'docs/design/gogoke-37-plan-v1/MANIFEST.json'
 $receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
 if ((git -C $repoRoot rev-parse "HEAD:$manifestPath").Trim() -cne $manifestBlob) {
@@ -33,7 +33,7 @@ if ($receipt.schema -cne 'gogoke.37.public-authorization.v1' -or
     $receipt.plan.public_plan_manifest_blob -cne $manifestBlob) {
     throw 'Trusted signer main authorization receipt does not bind the approved plan.'
 }
-$receiptBlob = '8020812e3abf35887829f50c78ec9f513272bf70'
+$receiptBlob = '671cb15b811048c883e6f2f2671ba8a15fc4b55c'
 if ((git -C $repoRoot rev-parse "HEAD:$receiptPath").Trim() -cne $receiptBlob) {
     throw 'Trusted signer main public authorization receipt blob changed.'
 }

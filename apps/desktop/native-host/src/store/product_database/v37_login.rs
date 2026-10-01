@@ -23,6 +23,10 @@ const REPARSE_POINT: u32 = 0x400;
 const ACCOUNT_READ_EVIDENCE: &str = "CREDENTIAL_PRESENT_NO_VALIDITY_CHECK";
 const RPC_DEADLINE: Duration = Duration::from_secs(15);
 const MAX_RPC_FRAMES: usize = 16;
+const INSTANCE_LIST_SCHEMA: &str = "gogoke.37.instance-list.v1";
+const MAX_INSTANCE_LIST_FRAME: usize = 256;
+const MAX_INSTANCE_LIST_ENTRIES: usize = 1024;
+const MAX_INSTANCE_LIST_BYTES: usize = 256 * 1024;
 // The pinned CLI's login file layer otherwise records only flow startup.
 // This existing connector target logs TCP destinations/progress/errors, not
 // HTTP headers, bodies or device codes. The CLI uses its configured login log,
@@ -157,11 +161,85 @@ fn owner_login_command(frame: &[u8]) -> Result<OwnerLoginCommand> {
     Ok(OwnerLoginCommand { action, instance_id, request_id, expected_revision })
 }
 
+fn has_top_level_schema(frame: &[u8], limit: usize, schema: &str) -> bool {
+    if frame.len() > limit { return false; }
+    let Ok(text) = std::str::from_utf8(frame) else { return false; };
+    let Ok(Json::Object(fields)) = Parser::parse(text) else { return false; };
+    matches!(fields.get(&JsonString::from_str("schema")),
+        Some(Json::String(value)) if value.to_well_formed_string().as_deref() == Some(schema))
+}
+
 /// A bounded routing hint only. `owner_login_command` still validates every
 /// field after the trusted User pipe has established its process origin.
 pub(super) fn is_owner_login_frame(frame: &[u8]) -> bool {
-    frame.len() <= 4096 && frame.windows(b"gogoke.37.owner-login.v1".len())
-        .any(|window| window == b"gogoke.37.owner-login.v1")
+    has_top_level_schema(frame, 4096, "gogoke.37.owner-login.v1")
+}
+
+/// Routing hint only; the private User ingress validates the complete frame.
+pub(super) fn is_owner_instance_list_frame(frame: &[u8]) -> bool {
+    has_top_level_schema(frame, MAX_INSTANCE_LIST_FRAME, INSTANCE_LIST_SCHEMA)
+}
+
+impl<'root> ProductDatabase<'root> {
+    /// Read the durable F.1 instance registry after the parent verifies User
+    /// origin. The list exposes no account data, credential path or home path.
+    pub(super) fn dispatch_owner_instance_list_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
+        authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if frame.len() > MAX_INSTANCE_LIST_FRAME {
+            return Err(OrchestrationError::Invalid("owner instance list frame size"));
+        }
+        let text = std::str::from_utf8(frame)
+            .map_err(|_| OrchestrationError::Invalid("owner instance list utf8"))?;
+        let value = Parser::parse(text).map_err(OrchestrationError::Atomic)?;
+        let mut fields = object(value)
+            .ok_or(OrchestrationError::Invalid("owner instance list object"))?;
+        if fields.len() != 1 || !matches!(fields.remove(&JsonString::from_str("schema")),
+            Some(Json::String(schema)) if schema.to_well_formed_string().as_deref() == Some(INSTANCE_LIST_SCHEMA)) {
+            return Err(OrchestrationError::Invalid("owner instance list fields"));
+        }
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT instance_id,driver_id,version,install_state,login_state,revision \
+             FROM main.gogoke_v37_instances ORDER BY instance_id")?;
+        let mut instances = Vec::new();
+        while query.step_row()? {
+            if instances.len() >= MAX_INSTANCE_LIST_ENTRIES {
+                return Err(OrchestrationError::Invalid("owner instance list size"));
+            }
+            let instance_id = query.column_text(0)?;
+            let driver_id = query.column_text(1)?;
+            let version = query.column_text(2)?;
+            let install_state = query.column_text(3)?;
+            let login_state = query.column_text(4)?;
+            let revision = query.column_text(5)?;
+            if instance_id.is_empty() || instance_id.len() > 64
+                || !instance_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                || driver_id.is_empty() || driver_id.len() > 128 || driver_id.chars().any(char::is_control)
+                || version.is_empty() || version.len() > 128 || version.chars().any(char::is_control)
+                || !matches!(install_state.as_str(), "INSTALLED" | "MISSING" | "UNKNOWN")
+                || !matches!(login_state.as_str(), "LOGGED_IN" | "LOGGED_OUT" | "UNKNOWN")
+                || revision.parse::<u64>().ok().filter(|value| *value > 0)
+                    .map(|value| value.to_string()) != Some(revision.clone()) {
+                return Err(OrchestrationError::Invalid("owner instance list row"));
+            }
+            let string = |value: &str| Json::String(JsonString::from_str(value));
+            instances.push(Json::Object(BTreeMap::from([
+                (JsonString::from_str("instanceId"), string(&instance_id)),
+                (JsonString::from_str("driverId"), string(&driver_id)),
+                (JsonString::from_str("version"), string(&version)),
+                (JsonString::from_str("installState"), string(&install_state)),
+                (JsonString::from_str("loginState"), string(&login_state)),
+                (JsonString::from_str("revision"), string(&revision)),
+            ])));
+        }
+        let response = Json::Object(BTreeMap::from([
+            (JsonString::from_str("schema"), Json::String(JsonString::from_str(INSTANCE_LIST_SCHEMA))),
+            (JsonString::from_str("instances"), Json::Array(instances)),
+        ])).canonical().into_bytes();
+        if response.len() > MAX_INSTANCE_LIST_BYTES {
+            return Err(OrchestrationError::Invalid("owner instance list response size"));
+        }
+        Ok(response)
+    }
 }
 
 fn protocol_timed_out(error: &ProcessCustodyError) -> bool {
@@ -183,11 +261,21 @@ fn protocol_eof(error: &ProcessCustodyError) -> bool {
 }
 
 fn owner_login_reply(command: &OwnerLoginCommand, state: &str, output: &str) -> Vec<u8> {
+    owner_login_reply_with_settled(command, state, output, false)
+}
+
+fn owner_login_final_reply(command: &OwnerLoginCommand, state: &str, output: &str) -> Vec<u8> {
+    owner_login_reply_with_settled(command, state, output, true)
+}
+
+fn owner_login_reply_with_settled(command: &OwnerLoginCommand, state: &str,
+    output: &str, settled: bool) -> Vec<u8> {
     Json::Object(BTreeMap::from([
         (JsonString::from_str("schema"), Json::String(JsonString::from_str("gogoke.37.owner-login.v1"))),
         (JsonString::from_str("instanceId"), Json::String(JsonString::from_str(&command.instance_id))),
         (JsonString::from_str("requestId"), Json::String(JsonString::from_str(&command.request_id))),
         (JsonString::from_str("state"), Json::String(JsonString::from_str(state))),
+        (JsonString::from_str("settled"), Json::Bool(settled)),
         // Only this Owner-private response carries device-auth stdout. The
         // value is never stored in the instance or coordination journal.
         (JsonString::from_str("output"), Json::String(JsonString::from_str(output))),
@@ -476,7 +564,7 @@ impl<'root> ProductDatabase<'root> {
                 OwnerLoginSession::Active(active) => owner_login_reply(command,
                     if active.halted { "UNKNOWN" } else { "PENDING" }, &active.output),
                 OwnerLoginSession::Final { state, output, .. } =>
-                    owner_login_reply(command, state, output),
+                    owner_login_final_reply(command, state, output),
             });
         }
         let current = self.user_instance_revision(&command.instance_id)?;
@@ -540,7 +628,7 @@ impl<'root> ProductDatabase<'root> {
             .ok_or(OrchestrationError::OperationConflict)?;
         let mut active = match session {
             OwnerLoginSession::Final { instance_id, request_id, expected_revision, state, output } => {
-                let reply = owner_login_reply(command, &state, &output);
+                let reply = owner_login_final_reply(command, &state, &output);
                 self.owner_login = Some(OwnerLoginSession::Final {
                     instance_id, request_id, expected_revision, state, output,
                 });
@@ -636,7 +724,7 @@ impl<'root> ProductDatabase<'root> {
             .ok_or(OrchestrationError::OperationConflict)?;
         match session {
             OwnerLoginSession::Final { instance_id, request_id, expected_revision, state, output } => {
-                let reply = owner_login_reply(command, &state, &output);
+                let reply = owner_login_final_reply(command, &state, &output);
                 self.owner_login = Some(OwnerLoginSession::Final {
                     instance_id, request_id, expected_revision, state, output,
                 });
@@ -710,7 +798,7 @@ impl<'root> ProductDatabase<'root> {
             if !active.output.is_empty() { active.output.push('\n'); }
             active.output.push_str(failure);
         }
-        let reply = owner_login_reply(command, &state, &active.output);
+        let reply = owner_login_final_reply(command, &state, &active.output);
         self.owner_login = Some(OwnerLoginSession::Final {
             instance_id: active.instance_id,
             request_id: active.request_id,
@@ -1244,6 +1332,56 @@ mod tests {
     }
 
     #[test]
+    fn owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-instance-list-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        for id in ["instanceA", "instanceB", "instanceC"] {
+            let raw = format!(
+                "{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"register\",\"requestId\":\"register{id}\",\"targetId\":\"{id}\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{\"driverId\":\"codex\"}}}}"
+            );
+            let register = decode_request(raw.as_bytes()).unwrap();
+            assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+                V37Status::Applied);
+        }
+        for (id, revision, observation, request_id) in [
+            ("instanceA", 1, InstanceObservation::Installed, "installA"),
+            ("instanceA", 2, InstanceObservation::LoggedOut, "logoutA"),
+            ("instanceB", 1, InstanceObservation::Installed, "installB"),
+            ("instanceB", 2, InstanceObservation::LoggedIn, "loginB"),
+            ("instanceC", 1, InstanceObservation::Missing, "missingC"),
+        ] {
+            instance::record_observation(&mut product.connection, &root,
+                &ObservationRequest { request_id, request_bytes: request_id.as_bytes(),
+                    instance_id: id, expected_revision: revision, observation }).unwrap();
+        }
+        const LIST: &[u8] = br#"{"schema":"gogoke.37.instance-list.v1"}"#;
+        assert!(is_owner_instance_list_frame(LIST));
+        let other = br#"{"schema":"gogoke.37.operations.v1","family":"K-SEAT","operation":"tune","requestId":"a","targetId":"b","domainId":"g","expectedRevision":"1","payload":{"setting":"instruction","value":"gogoke.37.instance-list.v1 gogoke.37.owner-login.v1"}}"#;
+        assert!(other.len() <= MAX_INSTANCE_LIST_FRAME);
+        assert!(decode_request(other).is_ok(), "ordinary K-SEAT envelope is valid");
+        assert!(!is_owner_instance_list_frame(other));
+        assert!(!is_owner_login_frame(other));
+        let response = product.dispatch_owner_instance_list_frame(LIST).unwrap();
+        assert_eq!(response, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"LOGGED_OUT","revision":"3","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"LOGGED_IN","revision":"3","version":"0.149.0"},{"driverId":"codex","installState":"MISSING","instanceId":"instanceC","loginState":"UNKNOWN","revision":"2","version":"0.149.0"}],"schema":"gogoke.37.instance-list.v1"}"#);
+        for invalid in [
+            &br#"{"schema":"gogoke.37.instance-list.v1","extra":true}"#[..],
+            &br#"{"schema":"gogoke.37.instance-list.v2"}"#[..],
+            &br#"{"schema":"gogoke.37.instance-list.v1","schema":"gogoke.37.instance-list.v1"}"#[..],
+        ] {
+            assert!(product.dispatch_owner_instance_list_frame(invalid).is_err(),
+                "only the exact private list frame is accepted");
+        }
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn pinned_codex_owner_login_failure_preserves_exit_and_stderr_without_account_read() {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -1276,6 +1414,18 @@ mod tests {
             prepared, runtime_home: runtime_home.clone(), runtime_identity,
             output: String::new(), halted: false,
         }));
+        let active = String::from_utf8(product.begin_owner_device_login(&command).unwrap()).unwrap();
+        assert!(active.contains("\"state\":\"PENDING\""));
+        assert!(active.contains("\"settled\":false"), "active login must retain its request");
+        if let Some(OwnerLoginSession::Active(active)) = &mut product.owner_login {
+            active.halted = true;
+        }
+        let halted = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(halted.contains("\"state\":\"UNKNOWN\""));
+        assert!(halted.contains("\"settled\":false"), "halted active custody is not final");
+        if let Some(OwnerLoginSession::Active(active)) = &mut product.owner_login {
+            active.halted = false;
+        }
         let error = product.status_owner_device_login(&command).unwrap_err();
         let diagnostic = format!("{error:?}");
         assert!(diagnostic.contains("code=Some(2)"), "actual exit code was not preserved");
@@ -1287,6 +1437,7 @@ mod tests {
         assert!(!runtime_home.exists(), "owned login runtime must still be cleaned");
         let replay = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(replay.contains("\"state\":\"UNKNOWN\""));
+        assert!(replay.contains("\"settled\":true"), "final CLI failure must be distinguishable from halted active custody");
         assert!(replay.contains("unexpected argument"));
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1");
         product.close_checked().unwrap();
