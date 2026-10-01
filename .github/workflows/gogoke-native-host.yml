@@ -18,7 +18,7 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     name: Native host Windows real process axes
-    timeout-minutes: 30
+    timeout-minutes: 45
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
@@ -336,7 +336,8 @@ jobs:
           $cases = @(
             @{ axis='R1'; filter='owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames' },
             @{ axis='R2'; filter='owner_login_preflight_errors_settle_original_request_without_process_custody' },
-            @{ axis='R4'; filter='owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed' }
+            @{ axis='R4'; filter='owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed' },
+            @{ axis='R5'; filter='owner_first_cli_factory_failures_keep_original_results_and_custody' }
           )
           foreach ($case in $cases) {
             try {
@@ -355,11 +356,17 @@ jobs:
                 $end = $source.IndexOf('        });', $start) + '        });'.Length
                 if ($helper -lt 0 -or $start -lt $helper -or $end -le $start) { throw 'R2 production fix locator missing' }
                 $mutated = $source.Remove($start,$end-$start)
-              } else {
+              } elseif ($case.axis -ceq 'R4') {
                 $start = $source.IndexOf('        if let Some(OwnerLoginSession::PendingAccount(pending)) = &mut self.owner_login {')
                 $end = $source.IndexOf('        let state = state_result.as_ref().cloned()', $start)
                 if ($start -lt 0 -or $end -le $start) { throw 'R4 production fix locator missing' }
                 $mutated = $source.Remove($start,$end-$start)
+              } else {
+                $start = $source.IndexOf('    fn preserve_owner_login_failure(')
+                $end = $source.IndexOf('    fn begin_owner_device_login(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R5 production fix locator missing' }
+                $oldBehavior = '    fn preserve_owner_login_failure(&mut self, command: &OwnerLoginCommand, failure: AccountObservationFailure) -> OrchestrationError { failure.error }' + "`n"
+                $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
               }
               [IO.File]::WriteAllText($path,$mutated,[Text.UTF8Encoding]::new($false))
               $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
