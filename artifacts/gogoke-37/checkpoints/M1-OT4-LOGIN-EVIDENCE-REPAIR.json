@@ -1,10 +1,10 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "CLI_IDENTITY_SERVICES_LIFECYCLE_SOURCE_READY_CLOUD_PENDING",
+  "state": "OWNER_OT4_LOGIN_READY_ALL_AFFECTED_CLOUD_AND_WIN11_PREPARATION_PASS",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
-  "installed_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+  "installed_source": "aae122c392393dc48fead2fa2f336d6af8af8267",
   "authorization": {
     "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
     "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
@@ -47,9 +47,8 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "All four protected ordinary-view domains equal before retirement, after replacement and while source1b product runs.",
   "next": [
-    "Fix exact candidate source, run cloud native/desktop/hygiene and verify named isolation/lifecycle/real CLI open and resume cases.",
-    "Trusted-main sign immutable candidate; same-byte cloud smoke and ordinary same-root installed readback with formal/data protection.",
-    "After full readiness call Owner once for OT4 actual Codex login."
+    "Owner OT4: start codexTestM1 login from actual installed candidate settings once; Controller has not started authentication.",
+    "After real login continue authenticated M1 product testing under existing permission tiers; no acceptance claim."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -174,7 +173,7 @@
     "latestReopen": "latest-reopen.json; ordinary same installation reopened on Owner request; before/after four formal domains unchanged; actual running process retained",
     "privateFailureEvidence": "owner-device-login-network-failure.png, owner-device-login-default-log.txt, ordinary-network-config-readback.json; no authentication material publicly committed"
   },
-  "prior_installed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "prior_installed_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
   "actual_owner_retry": {
     "sourceCommit": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
     "actualUIInstanceRevision": "2",
@@ -636,7 +635,7 @@
       "apps/desktop/native-host/src/store/session_transport/launch.rs",
       "docs/implementation/gogoke-37-cli-permissions.md"
     ],
-    "state": "SOURCE_READY_CLOUD_PENDING",
+    "state": "EXACT_SOURCE_CLOUD_AND_ACTUAL_WIN11_PREPARATION_PASS_OWNER_LOGIN_PENDING",
     "onlyAddedCapability": "lpacIdentityServices",
     "scope": "Ownerlogin/accountread and fixedCLI H session builds, requests and both actual suspended process creation paths; host-only flag, generic launch default unchanged",
     "networkPermissionTiers": "EXISTING_NETWORKED_WRITE_ONLY_INTERNETCLIENT; no tier upgrades",
@@ -665,26 +664,62 @@
     "cloudSource": "243e88b598782f254673eb8d6e24208843ca5871",
     "cloud": {
       "native": {
-        "runId": 36829915982,
+        "runId": 36835887293,
         "attempt": 1,
-        "state": "FAIL",
-        "libraryPassed": 563,
-        "failed": 1,
+        "state": "PASS",
+        "libraryPassed": 565,
+        "failed": 0,
         "ignored": 0,
+        "focusedPassed": 20,
+        "realProcessCasesPassed": 3,
         "newActualIsolationCase": "PASS",
-        "failedCase": "actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call",
-        "failureStage": "first capability-probe live ACL verification before resume",
-        "originalError": "Acl Os code2 NotFound",
-        "sameRunFocusedCase": "PASS 262.08sec",
-        "artifactId": 11147451147
-      },
-      "hygiene": {
-        "runId": 36829916220,
-        "state": "PASS"
+        "newActiveDirectoryCase": "PASS",
+        "sameActualPinnedCLIOpenAndResumeCase": "PASS_FULL_AND_FOCUSED",
+        "artifactId": 11149568905,
+        "independentReadbackSha256": "d1a0b883e939213432e4ddaee0c0a205e711f581bb0472db7ea2cd302ece2902",
+        "formalMutation": "NOT_EXECUTED"
       },
       "desktop": {
-        "runId": 36829916028,
-        "state": "RUNNING_AT_DIAGNOSTIC_CUT"
+        "runId": 36835887114,
+        "attempt": 1,
+        "state": "PASS_ALL_FIVE_JOBS",
+        "frozenArtifactId": 11150506780,
+        "reproArtifactId": 11149774581,
+        "comparisonArtifactId": 11151531098,
+        "sixComparedMembers": "BYTE_IDENTICAL",
+        "setupWrapperReproducibleClaim": false
+      },
+      "hygiene": {
+        "runId": 36835888102,
+        "state": "PASS"
+      },
+      "signing": {
+        "runId": 36840284034,
+        "attempt": 1,
+        "state": "PASS",
+        "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+        "signedArtifactId": 11151236837,
+        "keyPurpose": "TRUSTED_CI_CANDIDATE_NOT_OWNER_FORMAL",
+        "localVerification": "PASS_PURPOSE_BOUND_P256_AND_7_EXACT_FROZEN_MEMBERS",
+        "manifestSha256": "0973b061c45111ed76dc16afd1581d6148ca6e548d374902956d5997fbd47715",
+        "signatureSha256": "bdf1b49471763f16d15558dac93bb8f1c2ad0cf4c25bc6b4d5ff4da443f7d125"
+      },
+      "installedSmoke": {
+        "runId": 36840679004,
+        "attempt": 1,
+        "sourceCommit": "aae122c392393dc48fead2fa2f336d6af8af8267",
+        "smokeCommit": "aae122c392393dc48fead2fa2f336d6af8af8267",
+        "state": "PASS",
+        "platform": "WINDOWS_SERVER_NOT_OWNER_WIN11",
+        "smokeArtifactId": 11152571505,
+        "negativeArtifactId": 11152476348,
+        "smokeJsonSha256": "7c0ed4a1dbfb825d28ec55530ae8c726f5efcd34461f0606abb4ddd043c116f2",
+        "negativeJsonSha256": "aff1ed860563f8b5a671d027d0c6059e5fa81bd33983a87dd410240a120000a3",
+        "actualInstalledProductPositiveAndNegative": "PASS_TEST_RESULT_NOT_ADOPTED",
+        "readiness": "PASS",
+        "uninstall": "PASS",
+        "negativeAxesPassed": 5,
+        "actualRunnerMsixContext": "NOT_REPRODUCED_CONTEXT_REJECTION_CONTROLS_ONLY"
       }
     },
     "aclDiagnostic": {
@@ -747,6 +782,66 @@
         "FILE_DISPOSITION_INFO uses BOOLEAN u8.",
         "Do not assume delete-pending entries remain enumerable; verify actual state on held handle. Use stable aliased child to test strict rejection."
       ]
-    }
-  }
+    },
+    "sourceCommit": "aae122c392393dc48fead2fa2f336d6af8af8267",
+    "ordinaryWin11": {
+      "state": "PASS_ACTUAL_SIGNED_SAME_ROOT_INSTALL_BOOTSTRAP_PREPARATION_AND_READBACK_LOGIN_NOT_STARTED",
+      "installRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "candidateDataRoot": "%APPDATA%/app.gogoke.desktop.candidate/product-authority",
+      "taskView": "INTERACTIVE_LIMITED_REAL_LOCAL_AND_ROAMING_PATHS",
+      "installerExitCode": 0,
+      "actualInstalledHashes": "MATCH_FROZEN_INPUT",
+      "formalFourDomains": "UNCHANGED_BEFORE_AFTER_INSTALL_AND_WHILE_RUNNING",
+      "dataRootAndInstanceHomeIdentities": "PRESERVED",
+      "instanceRevision": "2",
+      "instanceCapacity": "4",
+      "originalWorktreeReplay": "SAME_ORIGINAL_REQUEST_AND_RESULT_NO_NEW_WORKTREE",
+      "liveProcessPathsParentsAndHashes": "MATCH_ACTUAL_INSTALLATION",
+      "independentProofSha256": "e706cc330cd3cef4757bbcbe347dd30b8f9eb49b376c0dcf27adff0c2bfc48e5",
+      "newInstallRootIdentity": "CHANGED_ON_REINSTALL_OLD_G4_MANIFEST_MUST_NOT_BE_REUSED",
+      "authentication": "NOT_STARTED",
+      "candidateNativeProgramSAC": "ACTUAL_NATIVE_HOST_RUNNING_NOT_FUTURE_CLI_ADMISSION_CLAIM",
+      "holderTask": "ONLY_CURRENT_INTERACTIVE_LIMITED_4_HOUR_PRODUCT_HOLDER_RETAINED",
+      "installationReceiptSha256": "22a610b44a574019cd592a398f25654d48e7fca831fc362a72ed949a50afbb8e",
+      "preparationReceiptSha256": "7521f2d490826843cbd01798e59771d456557d521645927f8867d175df9823cd",
+      "activeReadbackSha256": "8e8df1d05ce65d31e72471e22f4e8d7b3e64470b57cf0a2eed541e393a77e25d",
+      "activeFormalSnapshotSha256": "29a305d9f1e2458748042309e345536fcc20afc6d1306837a09bb83d1c8f30a8"
+    },
+    "exactBytes": {
+      "gogoke-0.1.13-windows-x64-unsigned-setup.exe": {
+        "length": 56543225,
+        "sha256": "bb6f617e9514d9da499cc00589fd2c0b112c79589cf3cd44fdb64039bb2bb207"
+      },
+      "gogoke-installed-shell.nsis.exe": {
+        "length": 26921984,
+        "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+      },
+      "gogoke-native-host.exe": {
+        "length": 7154176,
+        "sha256": "240f722a1075f981513af83dd2553ace1d8d7c9233dcc40e017baa08acf94570"
+      },
+      "gogoke-package-hashes.json": {
+        "length": 1754322,
+        "sha256": "8927ce31a45ee946570bd8742d10f0f2ada83664a26683bf6a076672ebdcab42"
+      },
+      "gogoke-portable.exe": {
+        "length": 26921984,
+        "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+      },
+      "gogoke-resources.windows.zip": {
+        "length": 49980652,
+        "sha256": "3d9d418f16cb753f2e11cc8c67cbfddfb73eacbe626d959fbbbb7ce7db55af2c"
+      },
+      "node.exe": {
+        "length": 91406496,
+        "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+      },
+      "resource-index.json": {
+        "length": 2898334,
+        "sha256": "e8c7a112e2af4c29d328d3c81e744c2f225c0f53bf627d67ec16fb703fa2f058"
+      }
+    },
+    "privateEvidenceDirectory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-identity-243e88b5"
+  },
+  "historical_evidence_notice": "Top-level cloud, repair_bytes and ordinary_replacement retain prior stderr-repair history. Latest identity-services candidate evidence is under cli_identity_services_implementation."
 }
