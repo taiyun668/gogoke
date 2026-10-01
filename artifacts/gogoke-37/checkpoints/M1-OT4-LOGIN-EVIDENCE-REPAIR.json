@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "OWNER_OT4_ATTEMPT_PRODUCT_DIAGNOSTIC_GAP_REPAIR_CLOUD_PENDING",
+  "state": "CLOUD_VERIFIED_ORDINARY_REPLACEMENT_IN_PROGRESS",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -21,7 +21,7 @@
     "logic_check": "Separately querying account state cannot explain why the device-code process failed. Preserve its original stderr and exit code before custody release; no inferred provider/network/OS cause."
   },
   "repair": {
-    "state": "SOURCE_IMPLEMENTED_NOT_COMPILED_LOCALLY",
+    "state": "EXACT_SOURCE_CLOUD_REGRESSION_PASS",
     "change": "Capture exact child stderr before durable confirmation releases pipes. Noncancel failed/missing exit code yields Owner-private error and retained UNKNOWN original-request output, without a secondary account/read process. Success and cancel retain existing stop, cleanup and account read.",
     "regression_control": "Actual pinned Codex CLI parser in existing isolated runtime receives an invalid synthetic flag; stderr and exit2, no device-auth or credential request. Production status/finish must preserve error, durable stop and runtime cleanup; same request readback starts no process. Cloud only.",
     "security_boundary_changed": false,
@@ -47,14 +47,108 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "No construction write to formal roots; before new install rerun ordinary formal protection snapshots.",
   "next": [
-    "Focused review then fixed-source native Windows/desktop/repro/hygiene cloud checks.",
-    "Trusted-main candidate signing of exact successful frozen bytes; same signed bytes cloud smoke.",
-    "Use same real ordinary candidate installation/data identities for replacement; no migration copy.",
-    "Reproduce actual login failure with new diagnostic on installed candidate. Read original error; fix demonstrated cause within current scope. Stop if SAC new component blocks, scope conflict or formal data change risk."
+    "Complete actual ordinary same-root replacement and verify installed bytes and all four formal snapshot domains.",
+    "Start the actual installed candidate, read bootstrap and existing native instance/capacity/worktree without initiating authentication.",
+    "Owner performs OT4 in real UI; read preserved direct error if device-login fails. Do not infer the original failure cause.",
+    "After successful Owner login continue authenticated M1 checks; no self-acceptance or public release."
   ],
   "M1Complete": false,
   "acceptance": false,
   "public_release": false,
   "controller_merge": false,
-  "route_reflection": "The missing output originated inside login completion, so fix that evidence path before outer diagnosis. Source review identifies a definite gap, not the original network/OS cause. Use an actual pinned CLI no-network parser failure control to avoid requiring Owner or producing device codes in cloud logs."
+  "route_reflection": "The missing output originated inside login completion, so fix that evidence path before outer diagnosis. Source review identifies a definite gap, not the original network/OS cause. Use an actual pinned CLI no-network parser failure control to avoid requiring Owner or producing device codes in cloud logs.",
+  "repair_source": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+  "observed_inbox_head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "cloud": {
+    "native": {
+      "runId": 36797428082,
+      "attempt": 1,
+      "state": "PASS",
+      "focusedPassed": 20,
+      "libraryPassed": 563,
+      "failed": 0,
+      "ignored": 0,
+      "realProcessAxes": 3,
+      "actualPinnedCliFailureRegression": "PASS_STDERR_EXIT_2_ORIGINAL_REQUEST_REPLAY_NO_SECOND_ACCOUNT_READ"
+    },
+    "desktop": {
+      "runId": 36797430935,
+      "attempt": 1,
+      "state": "PASS_ALL_FIVE_JOBS",
+      "frozenArtifactId": 11135153883,
+      "comparisonArtifactId": 11135476774,
+      "reproArtifactId": 11135665005,
+      "sixComparedMembers": "BYTE_IDENTICAL",
+      "setupWrapperReproducibleClaim": false
+    },
+    "hygiene": {
+      "runId": 36797433959,
+      "state": "PASS"
+    },
+    "signing": {
+      "runId": 36801981769,
+      "attempt": 1,
+      "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+      "state": "PASS",
+      "signedArtifactId": 11136367237,
+      "localVerification": "PURPOSE_BOUND_P256_AND_7_FROZEN_MEMBERS_PASS",
+      "manifestSha256": "10aad0dfb64c25a94ea9dd9a8408c75902c0ebbc000458e30c7221a4d915c3ec",
+      "signatureSha256": "7e4b32b4ee071117c9fb95f291c0886799f6d978d5f0efbb8883f406bd57a29b"
+    },
+    "installedSmoke": {
+      "runId": 36802281937,
+      "attempt": 1,
+      "sourceCommit": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+      "smokeCommit": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+      "state": "PASS",
+      "smokeArtifactId": 11136756943,
+      "negativeArtifactId": 11136841642,
+      "smokeJsonSha256": "8dd110b25beb28910dadfdc04052445ade194803b5bdb01430ab52173daae10d",
+      "negativeJsonSha256": "3c1c29c757ed68ff81afd8e2dfeafaa18ab2f437488f9675c39d694d911dfc51",
+      "negativeAxesPassed": 5,
+      "actualInstalledProductPositiveAndNegative": "PASS",
+      "actualReadiness": "PASS",
+      "actualUninstall": "PASS",
+      "platform": "WINDOWS_SERVER_NOT_OWNER_WIN11"
+    }
+  },
+  "repair_bytes": {
+    "setupSha256": "a985f447961ea6159af4cc8dff68742a482cb7bae7c96dc0e0f6fad1579da8c2",
+    "installedShellSha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a",
+    "nativeHostSha256": "39432c29310a39255a359246702e9e63ac9e30738e957d7cbb54987c33f15323",
+    "nodeSha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50",
+    "resourceIndexSha256": "ba4990f7abae41c1b2af6503671a215a66257ab375406b0af7cd8a0170693a3b"
+  },
+  "ordinary_replacement": {
+    "state": "INSTALL_IN_PROGRESS",
+    "sameActualInstalledRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+    "candidateDataRoot": "%APPDATA%/app.gogoke.desktop.candidate/product-authority",
+    "oldUninstallReceipt": "DELETED",
+    "preReplacementCustody": "13_STOPPED_0_ACTIVE",
+    "preservedBeforeInstall": "NATIVE_ROOT_DEV_INO_INSTANCE_HOME_BINDING_AND_REVISION_IDENTICAL",
+    "measurementCorrections": [
+      "Original 30-second parent bound falsely reported timeout; actual product finalizer later wrote DELETED. Read receipt from the real installation parent, not cloud RunnerTemp. No uninstall replay.",
+      "Normal finalizer retains empty directories. Cloud harness removes those directories; local replacement initially omitted this retirement cleanup. Installer exit2 on nonempty directory; no product byte change.",
+      "Snapshot script correctly refuses existing output. Give corrected continuation unique output names; preserve failed instrument records."
+    ],
+    "emptyDirectoryCleanup": {
+      "independentSeat": "m1_retired_empty_directory_audit",
+      "auditSha256": "c11fdf49ebe14ae740ee673ad06890f3f8eaff6e78c19a73e494c2b2fae36bde",
+      "directoriesAudited": 1092,
+      "files": 0,
+      "reparsePoints": 0,
+      "directoriesRemoved": 1092,
+      "individualAbsentReadbacks": 1092,
+      "state": "PASS",
+      "rule": "Every exact path remained within retired candidate installation root; dev/ino/plain-directory/empty-leaf rechecked before nonrecursive removal. Native data roots excluded."
+    },
+    "formalFilesDataHKCUShortcuts": "UNCHANGED_THROUGH_UNINSTALL_AND_CLEANUP",
+    "actualRepairedProductBootstrap": "NOT_RUN",
+    "actualLoginRetry": "NOT_RUN"
+  },
+  "private_evidence": {
+    "directory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-login-repair-8e1d6d0e",
+    "custody": "Actual installation and native data identities retained; original snapshots/failed instruments/audit/per-item readbacks retained. No credentials read.",
+    "publicRawStderrOrAuthenticationMaterial": false
+  }
 }
