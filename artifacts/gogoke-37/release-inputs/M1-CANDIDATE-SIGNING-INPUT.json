@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.candidate-signing-input.v1",
-  "state": "SIGNED_EXACT_FROZEN_BYTES_SMOKE_INSTRUMENT_REPAIR",
+  "state": "SIGNED_CLOUD_SMOKE_AND_ORDINARY_WIN11_PREPARATION_PASS_OT4_REQUIRED",
   "repository": "taiyun668/gogoke",
   "sourceCommit": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
   "sourceBranch": "codex/gogoke-37-l0",
@@ -121,28 +121,72 @@
     "signatureSha256": "116f0f519ce5c0d950c7579282d0cf35ae1585d689ed0423d98a88a6221de8a7"
   },
   "cloudInstalledSmoke": {
-    "state": "FAIL_BEFORE_INSTALL_INSTRUMENT_IDENTITY_ASSERTION",
-    "runId": 36790842113,
-    "reason": "Smoke dispatch checkout f0c7b6ed was incorrectly required to equal frozen source b989cd53; checkpoint-only commits advanced the branch. Separate exact workflow checkout and frozen source identities; require authorized source ancestry and all original signed build and member checks. Product bytes are unchanged; no resign or rebuild."
+    "runId": 36791836753,
+    "attempt": 1,
+    "state": "PASS",
+    "smokeArtifactId": 11133131768,
+    "negativeArtifactId": 11133041773,
+    "smokeJsonSha256": "ee3fdb3358e47f406789ae7abff872ce97a529d2b57308c863fbcce10fc3a851",
+    "negativeJsonSha256": "aedcf2f9f718eeb716148e8ec977558d0f09ac88c979e2efb12e3639cb87bead",
+    "actualInstalledProductPositiveAndNegative": "PASS",
+    "installedReadiness": "PASS",
+    "uninstall": "PASS",
+    "negativeAxesPassed": 5,
+    "negativeAxesFailed": 0,
+    "sourceAndSmokeIdentitiesSeparated": true,
+    "hygieneRunId": 36791840046,
+    "hygiene": "PASS"
   },
   "ordinaryWin11": {
-    "state": "FRESH_ORDINARY_PATH_AND_BASELINE_PASS_INSTALL_NOT_RUN",
-    "actualLocalAndRoamingPathsVerified": true,
-    "baselineTask": "Interactive/Limited",
-    "lastTaskResult": 0,
-    "packageStatus": 15700,
-    "session": 1,
-    "sacState": 1,
-    "gogokeProcessesBeforeBaseline": 0,
-    "formalFileCount": 12989,
-    "formalTreeSha256": "1eeed52ee69720002af6482c36871d6574c6f31995a2f6841dd9f3dc83e8d4c1",
-    "formalDataFileCount": 4,
-    "formalDataTreeSha256": "c4725cac68d0472fdb17ec8f0262970f7b9bbc74b4fbac49f342cf8822c5fc1d",
-    "privateBaselineSha256": "2db49816274c4dda520dbc84f07ab563baba3b86378c60b45a5c595be0f4e3e3",
-    "completedOwnedTaskRemoved": true,
-    "baselinePrivate": true
+    "version": "0.1.13",
+    "installationRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+    "installerExitCode": 0,
+    "installedShellNativeHostNodeAndIndexHashes": "PASS_EXACT_FROZEN_INPUT",
+    "actualBootstrap": {
+      "generationId": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0",
+      "setId": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466",
+      "version": "0.1.13"
+    },
+    "actualNativeInstanceRegistration": "APPLIED",
+    "actualFInstallState": {
+      "status": "APPLIED",
+      "installed": true
+    },
+    "instanceId": "codexTestM1",
+    "domainId": "gogokeSeatTestbedM1",
+    "instanceCapWrite": "APPLIED_VALUE_4",
+    "instanceCapacityReadback": "4",
+    "projectCapWrite": "APPLIED_VALUE_4",
+    "templateId": "codexSolHighM1",
+    "seatId": "codexSeatM1",
+    "seatLayer": "USER",
+    "permissionTier": "ISOLATED_WRITE",
+    "model": "gpt-6-sol",
+    "effort": "high",
+    "worktreeSourceRegistration": "APPLIED",
+    "seatCreationAndInstanceBinding": "APPLIED",
+    "hostCreatedWorktree": {
+      "baselineCommit": "3ed431cc8af5d1f9de4a17dc866a8fb04d0e9d1d",
+      "classification": "SINGLE",
+      "repositoryId": "gogokeSeatTestbed",
+      "seatId": "codexSeatM1",
+      "worktreeId": "codexWorktreeM1"
+    },
+    "worktreeCreateStatus": "APPLIED",
+    "formalBeforeAfter": {
+      "files": "UNCHANGED",
+      "data": "UNCHANGED",
+      "HKCURegistration": "UNCHANGED",
+      "shortcuts": "UNCHANGED",
+      "changedItems": 0,
+      "baselineRephotographedAfterActualOrdinaryPathVerification": true,
+      "activeCandidateFilesExcludedFromFormalSnapshot": true
+    },
+    "loginStarted": false,
+    "authenticatedModelQuestionCompact": "NOT_RUN"
   },
-  "OT4": "NOT_REQUESTED",
+  "OT4": "OWNER_LOGIN_REQUIRED_NOT_STARTED",
   "M1Complete": false,
-  "acceptance": false
+  "acceptance": false,
+  "readinessReceipt": "artifacts/gogoke-37/win11/M1-OT4-READINESS.json"
 }

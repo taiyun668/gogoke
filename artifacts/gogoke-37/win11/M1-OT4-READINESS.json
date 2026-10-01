@@ -1,0 +1,156 @@
+{
+  "schema": "gogoke.37.m1-ot4-readiness.v1",
+  "state": "OWNER_LOGIN_REQUIRED_OT4_M1_NOT_COMPLETE",
+  "repository": "taiyun668/gogoke",
+  "sourceCommit": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "workflowCommit": "c147e898c97c79323b460fd1828fe13199acdf81",
+  "mainActivation": {
+    "pr": 57,
+    "mergedByOwner": true,
+    "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+    "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "authorizationReceiptBlob": "8020812e3abf35887829f50c78ec9f513272bf70"
+  },
+  "signing": {
+    "runId": 36790723873,
+    "attempt": 1,
+    "artifactId": 11131322459,
+    "state": "PASS",
+    "localPurposeBoundP256Verification": "PASS",
+    "frozenMemberReadback": {
+      "verified": 7,
+      "mismatches": 0
+    }
+  },
+  "cloudInstalledSmoke": {
+    "runId": 36791836753,
+    "attempt": 1,
+    "state": "PASS",
+    "smokeArtifactId": 11133131768,
+    "negativeArtifactId": 11133041773,
+    "smokeJsonSha256": "ee3fdb3358e47f406789ae7abff872ce97a529d2b57308c863fbcce10fc3a851",
+    "negativeJsonSha256": "aedcf2f9f718eeb716148e8ec977558d0f09ac88c979e2efb12e3639cb87bead",
+    "actualInstalledProductPositiveAndNegative": "PASS",
+    "installedReadiness": "PASS",
+    "uninstall": "PASS",
+    "negativeAxesPassed": 5,
+    "negativeAxesFailed": 0,
+    "sourceAndSmokeIdentitiesSeparated": true,
+    "hygieneRunId": 36791840046,
+    "hygiene": "PASS"
+  },
+  "ordinaryWin11": {
+    "version": "0.1.13",
+    "installationRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+    "installerExitCode": 0,
+    "installedShellNativeHostNodeAndIndexHashes": "PASS_EXACT_FROZEN_INPUT",
+    "actualBootstrap": {
+      "generationId": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0",
+      "setId": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466",
+      "version": "0.1.13"
+    },
+    "actualNativeInstanceRegistration": "APPLIED",
+    "actualFInstallState": {
+      "status": "APPLIED",
+      "installed": true
+    },
+    "instanceId": "codexTestM1",
+    "domainId": "gogokeSeatTestbedM1",
+    "instanceCapWrite": "APPLIED_VALUE_4",
+    "instanceCapacityReadback": "4",
+    "projectCapWrite": "APPLIED_VALUE_4",
+    "templateId": "codexSolHighM1",
+    "seatId": "codexSeatM1",
+    "seatLayer": "USER",
+    "permissionTier": "ISOLATED_WRITE",
+    "model": "gpt-6-sol",
+    "effort": "high",
+    "worktreeSourceRegistration": "APPLIED",
+    "seatCreationAndInstanceBinding": "APPLIED",
+    "hostCreatedWorktree": {
+      "baselineCommit": "3ed431cc8af5d1f9de4a17dc866a8fb04d0e9d1d",
+      "classification": "SINGLE",
+      "repositoryId": "gogokeSeatTestbed",
+      "seatId": "codexSeatM1",
+      "worktreeId": "codexWorktreeM1"
+    },
+    "worktreeCreateStatus": "APPLIED",
+    "formalBeforeAfter": {
+      "files": "UNCHANGED",
+      "data": "UNCHANGED",
+      "HKCURegistration": "UNCHANGED",
+      "shortcuts": "UNCHANGED",
+      "changedItems": 0,
+      "baselineRephotographedAfterActualOrdinaryPathVerification": true,
+      "activeCandidateFilesExcludedFromFormalSnapshot": true
+    },
+    "loginStarted": false,
+    "authenticatedModelQuestionCompact": "NOT_RUN",
+    "settingsControl": "Actual installed Open settings control clicked; no login command or auth-page automation performed."
+  },
+  "testbed": {
+    "repository": "taiyun668/gogoke-seat-testbed",
+    "private": true,
+    "baselineCommit": "3ed431cc8af5d1f9de4a17dc866a8fb04d0e9d1d",
+    "writeScope": "ONLY_NATIVE_HOST_CREATED_ISOLATED_TESTBED_WORKTREE",
+    "writeToGogokeAllowed": false,
+    "subordinateSeatLimit": 3,
+    "subordinatesMayDelegate": false
+  },
+  "measurementCorrections": [
+    {
+      "name": "Frozen product versus smoke checkout identity",
+      "directEvidence": "Run36790842113 failed before installation because a checkpoint-only workflow SHA was required to equal the frozen source. Four authorized CI files now keep the two exact identities and require authorized ancestry; signed artifact and successful source build checks retained. Fresh Sol focused source review and actual cloud rerun passed."
+    },
+    {
+      "name": "Git path enumeration",
+      "directEvidence": "Get-Command returned two executable paths; the helper serialized both into one invalid filename. Actual product returned Windows123. Helper now selects one existing Git executable; native source registration and actual worktree creation passed."
+    },
+    {
+      "name": "Retained installed process custody",
+      "directEvidence": "After the first helper task ended, its product PID and diagnostic endpoint were absent. Same installed product reopened with live child custody; continuation used its actual existing User plane. No installation relocation or product byte change."
+    },
+    {
+      "name": "Immutable template repetition",
+      "directEvidence": "Replaying the entire preparation tried to recreate an already stored template and returned OperationConflict. Continued only from the failed source-registration step; native behavior was not altered."
+    }
+  ],
+  "privateEvidenceSha256": {
+    "ordinary-view.json": "0e04b45b8f1554d716c616d89a389d3888f91f6271e8c0c5dbe93d1514a17e2f",
+    "ordinary-baseline.json": "2db49816274c4dda520dbc84f07ab563baba3b86378c60b45a5c595be0f4e3e3",
+    "pre-install-snapshot.json": "6dd0e4dbb31637f18781d2e261755fa793c7b7babeaf4861ee9208c3d17b801e",
+    "post-install-snapshot.json": "4f62b5481b154e3272048fca569fd1c0f8b8d4f20de75204ab1072dc4d2d606b",
+    "install-result.json": "d90f7fa41549d6fda8fa4f88f9eefda532553c1935416c46aca7c9185a497cf7",
+    "attempt1-product-preparation-result.json": "412d3d22a3841074929b6144dcb00bfd212b2a910b6ddbaaffac943df036ef49",
+    "worktree-continuation-result.json": "e60a7e4c8ed05ce5fb63491c6b4f574f12bd02f19a589c3ae6bd710b98bdeb13",
+    "post-live-worktree-formal-snapshot.json": "1cf869f531dd50afa9acd0742ba149cbf2acffd18162b1cd0ee37725d6e7ca86",
+    "live-worktree-task-result.json": "5ee8ea4454eea5734d5a4e79fdfe96c4824c4f0908264842c49ad40d68d70ec6",
+    "active-formal-readback-result.json": "1a59ea7c31cae5d0829e9e3895b546cc5bc1af88a83dab02893325a44871b6db",
+    "ordinary-formal-only-snapshot.ps1": "03d8a4442c00b9aa2727bd339e75d31247dc2260bf0132160f832d0427c715b3",
+    "prepare-installed-product-held.mjs": "1fdc4a82ad2b320dcee451d8ed04be335ad59242a9133e8631f5086f33a2b640",
+    "continue-worktree-preparation.mjs": "d36e69637682bee2739ed656c19abb71361460b37d2df0abbbe4829ee09de77d"
+  },
+  "custody": {
+    "privateDirectory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-candidate-b989cd53",
+    "heldTaskNameFile": "held-task-name.txt",
+    "productEndpointFile": "installed-product-endpoint.json",
+    "heldTask": "Interactive/Limited; remains running to retain the exact installed product for OT4; four-hour task limit",
+    "completedOwnedTasksRemoved": true,
+    "retainedPrivateInstallationInstanceHomeWorktreeSourceAndEvidence": "Required for OT4 and subsequent M1; no credentials read or login invoked"
+  },
+  "ownerTouchpoint": {
+    "id": "OT4",
+    "reason": "Only Owner can authenticate the independent Codex test instance. All callable pre-login preparation has run through the actual installed product.",
+    "next": "In the actual candidate Settings > Codex > Design37 instance use codexTestM1; UI registration confirmation loads the persisted revision, then Start login. Complete official sign-in personally; registration or credential presence is not authenticated model proof.",
+    "foregroundAuthPage": "NOT_OPENED_OR_CLAIMED_VISIBLE_BY_CONTROLLER",
+    "foregroundBoundary": "AGENTS.md foreground-browser invariant: no sensitive authentication page was opened or automated, and no page is claimed visible. Settings UI local registration state is separate from the native registration already proved; its confirmation is part of the existing manual login UI flow."
+  },
+  "remaining": [
+    "OT4 independent instance login",
+    "Actual authenticated model/native question/append/compact and remaining M1 integration readbacks"
+  ],
+  "M1Complete": false,
+  "acceptance": false,
+  "publication": false,
+  "controllerMerge": false
+}

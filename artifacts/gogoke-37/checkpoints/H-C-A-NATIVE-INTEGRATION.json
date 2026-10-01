@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "M1_SIGNED_CANDIDATE_SMOKE_INSTRUMENT_REPAIR_WIN11_BASELINE_READY",
+  "state": "M1_SIGNING_CLOUD_SMOKE_WIN11_PREPARATION_PASS_OWNER_OT4_REQUIRED",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "last_pushed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
@@ -583,14 +583,13 @@
   },
   "next_signing_input": "artifacts/gogoke-37/release-inputs/M1-CANDIDATE-SIGNING-INPUT.json",
   "owner_dependency": {
-    "pr57": "OWNER_MERGED",
-    "merge": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
-    "exactFiveCiBlobsMatchReviewedHead": true,
-    "manifestAndAuthorizationBlobsUnchanged": true,
-    "controllerMerge": false,
-    "OT4": "NOT_YET_REQUIRED_INSTANCE_PREPARATION_PENDING"
+    "action": "OT4 independent Codex test-instance login",
+    "reason": "Only Owner can authenticate; actual installed product, program pin, persisted caps4 and native host worktree are prepared.",
+    "PR57": "OWNER_MERGED_MAIN_ACTIVATED_SIGNING_PASS",
+    "foregroundAuthenticationPage": "NOT_OPENED_OR_CLAIMED_VISIBLE",
+    "controllerMerge": false
   },
-  "route_reflection": "Read original failed step first: smoke-code checkout and frozen product source are separate identities after checkpoint commits. Preserve both exact hashes, ancestry and original signer/build/member verification instead of rebuilding unchanged product. Local signature and ordinary baseline checks run while focused source review proceeds.",
+  "route_reflection": "Separate frozen artifact and actual smoke-code identities without rebuilding product. Keep direct Windows error123 and correct the single Git path before continuing. Preserve live installed process custody between preparation and OT4; continue after the immutable-template creation point instead of replaying successful configuration. Both cloud and real Win11 evidence now bound to the same frozen bytes; authenticate only via genuine Owner OT4.",
   "next_signing_and_win11": {
     "signing": {
       "state": "PASS",
@@ -643,12 +642,91 @@
       "initialFinding": "Two downstream smoke instruments retained the same incorrect frozen-source/workflow-SHA equality. Logic and exact callsites confirmed before repair.",
       "result": "SOURCE_ONLY_NO_REMAINING_FINDING_AFTER_FOUR_CI_FILE_REPAIR",
       "cloudOrWin11Acceptance": false
-    }
+    },
+    "cloudInstalledSmokeRetry": {
+      "runId": 36791836753,
+      "attempt": 1,
+      "state": "PASS",
+      "smokeArtifactId": 11133131768,
+      "negativeArtifactId": 11133041773,
+      "smokeJsonSha256": "ee3fdb3358e47f406789ae7abff872ce97a529d2b57308c863fbcce10fc3a851",
+      "negativeJsonSha256": "aedcf2f9f718eeb716148e8ec977558d0f09ac88c979e2efb12e3639cb87bead",
+      "actualInstalledProductPositiveAndNegative": "PASS",
+      "installedReadiness": "PASS",
+      "uninstall": "PASS",
+      "negativeAxesPassed": 5,
+      "negativeAxesFailed": 0,
+      "sourceAndSmokeIdentitiesSeparated": true,
+      "hygieneRunId": 36791840046,
+      "hygiene": "PASS"
+    },
+    "ordinaryInstall": {
+      "version": "0.1.13",
+      "installationRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "installerExitCode": 0,
+      "installedShellNativeHostNodeAndIndexHashes": "PASS_EXACT_FROZEN_INPUT",
+      "actualBootstrap": {
+        "generationId": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0",
+        "setId": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466",
+        "version": "0.1.13"
+      },
+      "actualNativeInstanceRegistration": "APPLIED",
+      "actualFInstallState": {
+        "status": "APPLIED",
+        "installed": true
+      },
+      "instanceId": "codexTestM1",
+      "domainId": "gogokeSeatTestbedM1",
+      "instanceCapWrite": "APPLIED_VALUE_4",
+      "instanceCapacityReadback": "4",
+      "projectCapWrite": "APPLIED_VALUE_4",
+      "templateId": "codexSolHighM1",
+      "seatId": "codexSeatM1",
+      "seatLayer": "USER",
+      "permissionTier": "ISOLATED_WRITE",
+      "model": "gpt-6-sol",
+      "effort": "high",
+      "worktreeSourceRegistration": "APPLIED",
+      "seatCreationAndInstanceBinding": "APPLIED",
+      "hostCreatedWorktree": {
+        "baselineCommit": "3ed431cc8af5d1f9de4a17dc866a8fb04d0e9d1d",
+        "classification": "SINGLE",
+        "repositoryId": "gogokeSeatTestbed",
+        "seatId": "codexSeatM1",
+        "worktreeId": "codexWorktreeM1"
+      },
+      "worktreeCreateStatus": "APPLIED",
+      "formalBeforeAfter": {
+        "files": "UNCHANGED",
+        "data": "UNCHANGED",
+        "HKCURegistration": "UNCHANGED",
+        "shortcuts": "UNCHANGED",
+        "changedItems": 0,
+        "baselineRephotographedAfterActualOrdinaryPathVerification": true,
+        "activeCandidateFilesExcludedFromFormalSnapshot": true
+      },
+      "loginStarted": false,
+      "authenticatedModelQuestionCompact": "NOT_RUN"
+    },
+    "privatePreparation": {
+      "privateDirectory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-candidate-b989cd53",
+      "heldTaskNameFile": "held-task-name.txt",
+      "productEndpointFile": "installed-product-endpoint.json",
+      "heldTask": "Interactive/Limited; remains running to retain the exact installed product for OT4; four-hour task limit",
+      "completedOwnedTasksRemoved": true,
+      "retainedPrivateInstallationInstanceHomeWorktreeSourceAndEvidence": "Required for OT4 and subsequent M1; no credentials read or login invoked"
+    },
+    "readinessReceipt": "artifacts/gogoke-37/win11/M1-OT4-READINESS.json"
   },
   "fetch_measurement_correction": "Repository fetch config tracks the historical execution branch only. Fetching bare main did not update origin/main. Explicit refs/heads/main:refs/remotes/origin/main and inbox refspecs corrected remote-tracking readback before any dispatch.",
   "open_next": [
-    "Complete focused read-only review and rerun the exact signed candidate cloud installed smoke.",
-    "Install same signed frozen candidate in ordinary Win11 with formal snapshots; configure actual isolated test instance and both caps to4.",
-    "Prepare single OT4 login touchpoint only after installed identity and instance preparation; M1 remains incomplete."
-  ]
+    "OT4 independent instance login",
+    "Actual authenticated model/native question/append/compact and remaining M1 integration readbacks"
+  ],
+  "public_hygiene_final": {
+    "state": "PASS",
+    "committedTreeFilesScanned": 24832,
+    "leaks": 0,
+    "nativeProductByteChange": false
+  }
 }
