@@ -2142,7 +2142,7 @@ mod tests {
         let settled = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(settled.contains("\"settled\":true"));
         assert!(settled.contains("\"state\":\"LOGGED_OUT\""),
-            "the retained real account/read frame must produce the native state");
+            "the retained real account/read frame must produce the native state; actual Owner-private reply: {settled}");
         assert!(settled.contains("controlled account stop record failure"),
             "the original transient failure remains Owner-private");
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
