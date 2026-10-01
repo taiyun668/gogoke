@@ -8,14 +8,32 @@
   },
   "repository": "taiyun668/gogoke",
   "plan": {
-    "provenance_plan_commit": "4a37e1da3508dcda08f6b66579243628410950bf",
-    "public_plan_merge_commit": "420df17e147e9ffde5b1a187cb5d6ddcb701ec67",
+    "provenance_plan_commit": "8112f05f80e31709c635db033d99e208aeb5262f",
+    "public_plan_merge_commit": "19953964f2a95907563032ca51d509628b4da215",
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "public_plan_manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "public_plan_manifest_blob": "9d540cbac609b5ba21cb12e1640b375bcc980736",
     "stale_when": "the public plan MANIFEST.json blob differs from the value above"
   },
-  "authorized_lines": ["L0", "H", "A", "B1", "B2", "B3", "B4", "B5", "C", "D", "E", "F", "G"],
-  "authorized_milestones": ["M1", "M2", "M3"],
+  "authorized_lines": [
+    "L0",
+    "H",
+    "A",
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G"
+  ],
+  "authorized_milestones": [
+    "M1",
+    "M2",
+    "M3"
+  ],
   "start_condition": "Owner merges this separate authorization PR; Controller then reads back the actual merge, receipt bytes, and current plan MANIFEST blob before starting L0",
   "owner_touchpoints": "The bound PLAN.json retains its planned and conditional Owner decisions; this receipt does not complete them",
   "completion_claim": false
