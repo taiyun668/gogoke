@@ -35,6 +35,9 @@ pub(crate) struct LaunchEvidence {
     resume_request_id: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum VerificationPhase { PreActivation, Active }
+
 impl LaunchEvidence {
     pub(crate) fn observe(
         db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
@@ -163,19 +166,30 @@ impl LaunchEvidence {
     pub(crate) fn verify(&self, db: &mut VerifiedDatabaseConnection<'_>,
         root: &RootLock, owner: &OwnerIssuer, expected_operation: Option<&str>) -> Result<(), String> {
         let identity = evidence(authority::read_product_identity(db, owner))?;
-        self.verify_snapshot(db, root, owner, expected_operation, self.claim.revision, identity)
+        self.verify_snapshot(db, root, owner, expected_operation, self.claim.revision,
+            identity, VerificationPhase::PreActivation)
     }
 
     pub(crate) fn verify_in_transaction(&self, db: &mut VerifiedDatabaseConnection<'_>,
         root: &RootLock, owner: &OwnerIssuer, expected_operation: Option<&str>) -> Result<(), String> {
         let identity = evidence(authority::read_product_identity_in_current_transaction(db, owner))?;
-        self.verify_snapshot(db, root, owner, expected_operation, self.claim.revision, identity)
+        self.verify_snapshot(db, root, owner, expected_operation, self.claim.revision,
+            identity, VerificationPhase::PreActivation)
+    }
+
+    /// Called only after the exact prepared child has been activated.
+    pub(crate) fn verify_active_in_transaction(&self, db: &mut VerifiedDatabaseConnection<'_>,
+        root: &RootLock, owner: &OwnerIssuer, expected_operation: Option<&str>) -> Result<(), String> {
+        let identity = evidence(authority::read_product_identity_in_current_transaction(db, owner))?;
+        self.verify_snapshot(db, root, owner, expected_operation, self.claim.revision,
+            identity, VerificationPhase::Active)
     }
 
     pub(crate) fn verify_live(&self, db: &mut VerifiedDatabaseConnection<'_>,
         root: &RootLock, owner: &OwnerIssuer, operation: &str, revision: i64) -> Result<(), String> {
         let identity = evidence(authority::read_product_identity(db, owner))?;
-        self.verify_snapshot(db, root, owner, Some(operation), revision, identity)
+        self.verify_snapshot(db, root, owner, Some(operation), revision,
+            identity, VerificationPhase::Active)
     }
 
     pub(crate) fn adopt_resume(&mut self, db: &VerifiedDatabaseConnection<'_>,
@@ -195,7 +209,8 @@ impl LaunchEvidence {
     }
 
     fn verify_snapshot(&self, db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
-        owner: &OwnerIssuer, expected_operation: Option<&str>, revision: i64, identity: ProductIdentitySnapshot) -> Result<(), String> {
+        owner: &OwnerIssuer, expected_operation: Option<&str>, revision: i64,
+        identity: ProductIdentitySnapshot, phase: VerificationPhase) -> Result<(), String> {
         if identity != self.identity
             || evidence(seat::get(db, &self.seat.domain_id, &self.seat.seat_id))?.as_ref() != Some(&self.seat)
             || evidence(runtime::current_instance_pin(db, &self.claim.instance_id))? != self.pin {
@@ -260,7 +275,14 @@ impl LaunchEvidence {
             (&self.homes.session.path, &self.homes.session.identity, true),
             (&self.worktree.path, &self.worktree.identity,
                 matches!(self.tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite)),
-        ] { evidence(self.profile.verify_bound_tree_grant(path, identity, writable))?; }
+        ] {
+            match phase {
+                VerificationPhase::PreActivation =>
+                    evidence(self.profile.verify_bound_tree_grant(path, identity, writable))?,
+                VerificationPhase::Active =>
+                    evidence(self.profile.verify_bound_directory_grant(path, identity, writable))?,
+            };
+        }
         evidence(self.profile.verify_bound_program_grant(&self.program, &self.program_identity))?;
         let mut mapping = Vec::new();
         self.module.extend_environment(&mut mapping);

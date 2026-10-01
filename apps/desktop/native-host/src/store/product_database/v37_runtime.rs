@@ -398,7 +398,7 @@ impl<'root> ProductDatabase<'root> {
         let promoted=(|| -> Result<i64> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
-            failure(run.evidence.verify_in_transaction(&mut self.connection,self.root,
+            failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,
                 &self.owner,Some(&operation_id)))?;
             failure(h::promote_resume(&self.connection,&request.domain_id,&request.target_id,
                 &request.request_id,&operation_id,old.revision))
@@ -1418,7 +1418,7 @@ impl<'root> ProductDatabase<'root> {
         let applied = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
-            failure(run.evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
+            failure(run.evidence.verify_active_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             let next=current.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
             let advance=Statement::prepare(self.connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_claim SET revision=?1 WHERE domain_id=?2 AND session_id=?3 AND state='COMMITTED' AND revision=?4 AND process_operation_id=?5")?;

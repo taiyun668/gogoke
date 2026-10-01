@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.construction-checkpoint.v1",
-  "state": "CLI_IDENTITY_SERVICES_CLOUD_LIVE_ACL_NOTFOUND_DIRECT_CONTEXT_PENDING",
+  "state": "CLI_IDENTITY_SERVICES_LIFECYCLE_SOURCE_READY_CLOUD_PENDING",
   "repository": "taiyun668/gogoke",
   "branch": "codex/gogoke-37-l0",
   "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
@@ -47,9 +47,9 @@
   "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
   "formal_data": "All four protected ordinary-view domains equal before retirement, after replacement and while source1b product runs.",
   "next": [
-    "Complete fresh source audit and exact-source cloud build/isolation/hygiene checks.",
-    "Trusted-main sign and same-byte cloud smoke; ordinary same-root candidate replacement with fresh identity/formal snapshots.",
-    "Prepare actual native fixed CLI registration/home and permission readback, then call Owner once for OT4. Existing network tiers remain explicit; service capability is not network authority."
+    "Fix exact candidate source, run cloud native/desktop/hygiene and verify named isolation/lifecycle/real CLI open and resume cases.",
+    "Trusted-main sign immutable candidate; same-byte cloud smoke and ordinary same-root installed readback with formal/data protection.",
+    "After full readiness call Owner once for OT4 actual Codex login."
   ],
   "M1Complete": false,
   "acceptance": false,
@@ -694,12 +694,59 @@
     },
     "retirement": {
       "source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
-      "state": "PASS_RETIRED_DATA_PRESERVED_EMPTY_DIRECTORY_AUDIT_PENDING",
+      "state": "PASS_RETIRED_AND_AUDITED_EMPTY_DIRECTORY_CLEANUP_DATA_PRESERVED",
       "sameRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
       "formalFourDomains": "UNCHANGED",
       "nativeDataIdentity": "PRESERVED",
       "finalizer": "DELETED",
-      "oldProductCurrentlyRunning": false
+      "oldProductCurrentlyRunning": false,
+      "independentAuditSha256": "11310c30ea58d5cdc4889d50243312de301fa139775756fb80bfe808d58dc04b",
+      "manifestSha256": "33ad845d5c9a8868532a32edd901b2cef874cfcaba83b4d6890035585838117d",
+      "directoriesRemoved": 1092,
+      "individualAbsentReadbacks": 1092,
+      "filesDeleted": 0,
+      "cleanupReceiptSha256": "6349cce55ef6d1e41ae5ea8837df38d8435a1598cf754b1d190c99dedf51876a",
+      "cleanupIndividualReadbacksSha256": "7f90ebb361dc739ca89f2f1f09396bf2531a39280db5c327880cf87a3afa507f",
+      "diagnosticAndCleanupAuditSha256": "0eed764d4bcd2e2b4438f882e5366e40d5b8f5ceca136aa19467159f48845d2e",
+      "measurementCorrection": "Initial scheduled action selected Windows PowerShell5.1; incompatible snapshot wrapper exited before any deletion. Existing PowerShell7 action completed exact same audited objects; original error record retained."
+    },
+    "diagnosticSource": "de8444a1a3d337bd7d91a5f02312fae43c558be6",
+    "diagnosticCloud": {
+      "native": {
+        "runId": 36832766028,
+        "attempt": 1,
+        "state": "FAIL",
+        "libraryPassed": 563,
+        "failed": 1,
+        "ignored": 0,
+        "failedStage": "first capability-probe after activation",
+        "actualObject": "instanceA/.tmp/plugins-clone-<nonce>/plugins/<plugin>/tests/goldens/<file>.png",
+        "originalError": "open object Os code5 PermissionDenied",
+        "artifactId": 11148616203
+      },
+      "hygiene": {
+        "runId": 36833757740,
+        "state": "PASS"
+      },
+      "desktop": {
+        "runId": 36833753148,
+        "state": "CANCELLED_SUPERSEDED_IMPLEMENTATION"
+      }
+    },
+    "lifecycleRootCause": {
+      "directObjectSource": "Fixed 0.149.0 startup plugin synchronization owns CODEX_HOME/.tmp/plugins-clone-* and renames or cleans it during normal operation.",
+      "codeDefect": "Active authorization reused the preactivation recursive path snapshot although allowed CLI runtime descendants are dynamic; those descendants are not authorization inputs to capability/output/inbox/qcard/runtime calls.",
+      "exactWin32FiveSubcause": "NOT_ESTABLISHED; no claim that raw5 is delete-pending, no error-code swallowing",
+      "fixScope": "Keep strict grant/preactivation tree checks; Active validates stable roots on same ACL/identity handles plus all original Owner/E/F/H/pin/program/compat/Git bindings. Only two postactivation transaction checks switch to internal Active mode.",
+      "permissionScopeChanged": false,
+      "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.149.0/codex-rs/core-plugins/src/startup_sync.rs",
+      "specialist": "owner_schannel_boundary read-only; call ordering and plan invariant confirmed; no additional Owner decision required",
+      "newRetriesWaitsOrCLIChanges": false,
+      "actualRegression": "active_root_grant_survives_delete_pending_child_without_accepting_wrong_root; actual Windows held-handle DeletePending, Active root valid, wrong-root/tier rejected, strict admission stable hardlink descendant rejected",
+      "instrumentCorrections": [
+        "FILE_DISPOSITION_INFO uses BOOLEAN u8.",
+        "Do not assume delete-pending entries remain enumerable; verify actual state on held handle. Use stable aliased child to test strict rejection."
+      ]
     }
   }
 }

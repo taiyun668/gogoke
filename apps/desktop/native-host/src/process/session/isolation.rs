@@ -434,16 +434,8 @@ impl AppContainerProfile {
     pub(crate) fn verify_bound_tree_grant(&self, path: &Path,
         expected: &RootIdentity, writable: bool) -> Result<AclWitness, IsolationError> {
         require_bound_path(path, expected, true)?;
-        let root = open_physical_object(path, true, READ_CONTROL)?;
+        let witness = self.verify_bound_directory_grant(path, expected, writable)?;
         let rights = directory_rights(writable);
-        let root_aces = package_aces(root.0, self.sid)
-            .map_err(|error| acl_object(error, path, "read root ACEs"))?;
-        if root_aces.as_slice() != &[(GRANT_ACCESS, rights, OBJECT_AND_CONTAINER_INHERIT)] {
-            return Err(IsolationError::AclWitnessDetail { object: PathBuf::from("."),
-                sid: self.package_sid_string()?,
-                expected: format!("one explicit grant, rights={rights:#x}, flags={OBJECT_AND_CONTAINER_INHERIT:#x}"),
-                observed: root_aces });
-        }
         for (child, identity, directory) in collect_tree(path)? {
             let object = open_physical_object(&child, directory, READ_CONTROL)?;
             if file_identity(object.0)
@@ -464,6 +456,28 @@ impl AppContainerProfile {
                     observed: entries });
             }
             require_bound_path(&child, &identity, directory)?;
+        }
+        require_bound_path(path, expected, true)?;
+        Ok(witness)
+    }
+
+    /// Live child files can be created, renamed, and deleted by the admitted
+    /// process. Only the host-bound directory root is a stable launch grant.
+    pub(crate) fn verify_bound_directory_grant(&self, path: &Path,
+        expected: &RootIdentity, writable: bool) -> Result<AclWitness, IsolationError> {
+        let root = open_physical_object(path, true, READ_CONTROL)?;
+        if &file_identity(root.0)
+            .map_err(|error| acl_object(error, path, "read root identity"))? != expected {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        let rights = directory_rights(writable);
+        let root_aces = package_aces(root.0, self.sid)
+            .map_err(|error| acl_object(error, path, "read root ACEs"))?;
+        if root_aces.as_slice() != &[(GRANT_ACCESS, rights, OBJECT_AND_CONTAINER_INHERIT)] {
+            return Err(IsolationError::AclWitnessDetail { object: PathBuf::from("."),
+                sid: self.package_sid_string()?,
+                expected: format!("one explicit grant, rights={rights:#x}, flags={OBJECT_AND_CONTAINER_INHERIT:#x}"),
+                observed: root_aces });
         }
         require_bound_path(path, expected, true)?;
         Ok(AclWitness { identity: expected.clone(), package_sid: self.package_sid_string()?,
@@ -937,6 +951,65 @@ mod tests {
         let sibling_handle = open_physical_object(&sibling, true, READ_CONTROL).unwrap();
         assert!(package_aces(sibling_handle.0, profile.sid).unwrap().is_empty());
         drop(sibling_handle);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn active_root_grant_survives_delete_pending_child_without_accepting_wrong_root() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetFileInformationByHandle(handle: Handle, class: i32,
+                information: *const c_void, length: u32) -> i32;
+        }
+        #[repr(C)]
+        struct FileDispositionInfo { delete_file: u8 }
+        #[repr(C)]
+        #[derive(Default)]
+        struct FileStandardInfo { allocation_size: i64, end_of_file: i64,
+            links: u32, delete_pending: u8, directory: u8 }
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("gogoke-v37-active-root-{}-{nonce}", std::process::id()));
+        let home = base.join("instanceA");
+        let other = base.join("instanceB");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let profile = AppContainerProfile::derived_for_test("Gogoke37.ActiveRootAcl").unwrap();
+        let identity = crate::root::inspect_root(&home).unwrap().identity;
+        let other_identity = crate::root::inspect_root(&other).unwrap().identity;
+        let witness = profile.grant_bound_tree(&home, &identity, true).unwrap();
+        assert_eq!(profile.verify_bound_directory_grant(&home, &identity, true).unwrap(), witness);
+        assert!(matches!(profile.verify_bound_directory_grant(&home, &other_identity, true),
+            Err(IsolationError::AclWitnessMismatch)), "another physical root cannot inherit this witness");
+        assert!(matches!(profile.verify_bound_directory_grant(&home, &identity, false),
+            Err(IsolationError::AclWitnessDetail { .. })), "root ACE rights cannot change with the claimed tier");
+
+        let pending = home.join("dynamic-child.tmp");
+        std::fs::write(&pending, b"owned runtime data").unwrap();
+        let held = open_directory(&pending, DELETE_ACCESS | 0x0080).unwrap();
+        let disposition = FileDispositionInfo { delete_file: 1 };
+        let marked = unsafe { SetFileInformationByHandle(held.0, 4,
+            (&disposition as *const FileDispositionInfo).cast(), size_of::<FileDispositionInfo>() as u32) };
+        let original_error = io::Error::last_os_error();
+        assert_ne!(marked, 0, "actual file disposition failed: {original_error}");
+        let mut standard = FileStandardInfo::default();
+        let observed = unsafe { GetFileInformationByHandleEx(held.0, 1,
+            (&mut standard as *mut FileStandardInfo).cast(), size_of::<FileStandardInfo>() as u32) };
+        let original_error = io::Error::last_os_error();
+        assert_ne!(observed, 0, "actual held file state failed: {original_error}");
+        assert_ne!(standard.delete_pending, 0, "held file must actually be delete-pending");
+        assert_eq!(profile.verify_bound_directory_grant(&home, &identity, true).unwrap(), witness,
+            "active verification still reads the exact bound root while the child is delete-pending");
+        drop(held);
+        // A stable hard-linked leaf remains enumerable and must still be
+        // rejected by the unchanged pre-activation physical-file guard.
+        let outside = other.join("owned-instrument-file");
+        let alias = home.join("hard-linked-child");
+        std::fs::write(&outside, b"instrument-only bytes").unwrap();
+        std::fs::hard_link(&outside, &alias).unwrap();
+        assert!(matches!(profile.verify_bound_tree_grant(&home, &identity, true),
+            Err(IsolationError::DirectoryNotPhysical)), "strict admission still rejects aliased descendants");
         std::fs::remove_dir_all(base).unwrap();
     }
 

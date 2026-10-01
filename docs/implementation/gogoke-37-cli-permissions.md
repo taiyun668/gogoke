@@ -13,3 +13,5 @@
 公网访问仍受已有 `internetClient` 与 permission tier 限制。此次没有修改文件或目录 ACL、扩大文件目录授予范围、改变 Owner 默认 profile，或合并其他实例的 AppContainer SID。`registryRead` 保持原有行为。未标记 CLI 模式的独立宿主启动请求保持原能力；CLI 后代继承相同隔离 token 和 Job 约束，包括这项身份服务许可。启动时从 host-owned 布尔模式重建固定 capability 列表，并在 suspended child 上核对 AppContainer SID、capability SID、数量和有效启用状态后才允许 admission。
 
 固定 CLI 0.149.0 的非登录 Doctor HTTPS 检查在原 profile 中报告 TLS handshake/cert validation failure；同一 CLI、SID、home 和显式环境仅添加 `lpacIdentityServices` 后，指定网络检查取得实际 HTTP 405。同一 SID 环境的 system curl 也从 `SEC_E_SECPKG_NOT_FOUND` 变为 TLS 成功与 HTTP 400。这些对照确认该 HTTPS 路径需要这项身份服务许可；Doctor 的其他诊断并未整体通过，且外部测量未加载产品的路径兼容模块，不能替代正式产品流程。修复仍须经过云端原生隔离测试和实际签名候选装机回读，之后由 Owner 完成真实登录；跳过的检查不算通过。
+
+目录 ACL 的授予及进程激活前核验保留严格的根和后代检查。进程激活后的操作核对当前 Owner、席位、实例、会话、版本和操作绑定，并核对同一物理根的身份与继承 ACE、固定程序和 Git 元数据绑定；CLI 在获准目录中正常创建、删除或改名的运行文件可以变化。根级证据只证明该根，动态后代没有整树实时合格声明。
