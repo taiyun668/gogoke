@@ -19,7 +19,7 @@
     "lpacIdentityServices": "UNCHANGED",
     "credentials": "VENDOR_CLI_ONLY_HOST_NEVER_READS_WRITES_COPIES"
   },
-  "参照": "依次参照 gogo-party accounts.ts 的 PROVIDER_LOGIN/loginEnv、实例与席位运行时及界面；NaveHQ 的容器 OAuth/实例环境与 LoomOS 规格；仓库七份拆解/复用调研；最后核对官方登录文档和固定 CLI 0.149.0 源码、CodexMonitor/Paseo/Orca 等。采用已验证普通 codex login、实例 HOME/USERPROFILE 与真实 APPDATA/LOCALAPPDATA。不同处保留 gogoke 原有持久登录结果、精确 native Job/身份结算与 LPAC 自动 account/read，不照搬 taskkill 或宿主凭据读取。CLI 自己也可能尝试打开浏览器；宿主仍按原 URL 打开，不宣称总开页次数仅一次。",
+  "参照": "依次参照 gogo-party accounts.ts 的 PROVIDER_LOGIN/loginEnv、实例与席位运行时及界面；NaveHQ 的容器 OAuth/实例环境与 LoomOS 规格；仓库七份拆解/复用调研；最后核对官方登录文档和固定 CLI 0.149.0 源码、CodexMonitor/Paseo/Orca 等。采用已验证普通 codex login、实例 HOME/USERPROFILE 与真实 APPDATA/LOCALAPPDATA。不同处保留 gogoke 原有持久登录结果、精确 native Job/身份结算与 LPAC 自动 account/read，不照搬 taskkill 或宿主凭据读取。CLI 自己也可能尝试打开浏览器；宿主仍按原 URL 打开，不宣称总开页次数仅一次。 此次卸载测量修复先查自己的现有 parent_helper 与 production 生命周期锁读写/独占用法、update backup cleanup 的相同 FileAccess.ReadWrite/FileShare.None，再核对微软 CreateFileW：属性访问不受共享标志。直接以现有 observer 在自有临时文件上交叉验证其误判，采用与实际锁持有者同访问方式，未自创补偿等待；该云端既有夹具问题不需要登录或上游 UI 方案。",
   "implementationFiles": [
     "apps/desktop/native-host/src/store/product_database/v37_login.rs",
     "docs/implementation/gogoke-37-cli-permissions.md"
@@ -95,5 +95,30 @@
     "files": 24846,
     "leaks": 0
   },
-  "next": "Push corrected source; rerun affected full cloud commands; freeze only passing exact source and verify actual original Win11 before OT4"
+  "next": "Commit only instrument fix/evidence; rerun affected exact-source cloud pipeline and continue candidate freeze/sign/Win11",
+  "corrected_source": "ca8147f939c83446015f80082f3c2ac572cc889c",
+  "corrected_source_runs": {
+    "native": 36974421652,
+    "nativeState": "IN_PROGRESS_AT_TOOL_CORRECTION",
+    "desktop": 36974422062,
+    "desktopState": "FAIL_EXISTING_MEASUREMENT_PREDICATE",
+    "rootCause": "Attribute-only lock observation falsely reported finalizer exclusive data lock release; next helper got Win32 32"
+  },
+  "measurementFix": {
+    "file": "tools/ci/test_gogoke_uninstall_finalizer_cloud.py",
+    "source": "Existing fixture parent_helper and production lifecycle ReadWrite/None lock semantics; Microsoft CreateFileW sharing documentation",
+    "official": "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew",
+    "directEvidenceSha256": "e0327e1315bcb49f8a55b2d8b5b33bee4f610456121828295a901b446594b12e",
+    "directEvidence": {
+      "heldExclusiveReadWrite": true,
+      "oldAttributeObserverSaidReleased": true,
+      "sameReadWriteOpenWin32": 32,
+      "afterActualCloseReadWriteOpen": "PASS"
+    },
+    "change": "Observer uses same GENERIC_READ|GENERIC_WRITE as actual holder; cloud regression asserts live False and released True",
+    "newWaitRetryPermissionChange": false,
+    "productCodeChangedByThisFix": false,
+    "localNativeCompilation": false,
+    "privateTemporaryObjectCleanup": "ABSENT"
+  }
 }
