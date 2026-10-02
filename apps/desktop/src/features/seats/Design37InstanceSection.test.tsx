@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DESIGN37_INSTANCES_SCHEMA } from "./design37Instances";
 import { Design37InstanceSection } from "./Design37InstanceSection";
+import { createPreviewHost } from "./preview/host";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -168,5 +169,23 @@ describe("Design37InstanceSection", () => {
     render(<Design37InstanceSection />);
 
     expect((await screen.findByRole("alert")).textContent).toContain("Instance page returned an unexpected schema.");
+  });
+
+  it.each([true, false])("reads the same host login result after the page closes before completion (success=%s)", async (success) => {
+    const host = createPreviewHost();
+    invokeMock.mockImplementation((command, args) => host.invoke(command, args as Record<string, unknown>));
+    const first = render(<Design37InstanceSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "一键登录" }));
+    await screen.findByText(/登录：正在登录/);
+    const pending = await host.invoke("gogoke_design37_instances") as { instances: { login: { requestId: string } }[] };
+    first.unmount();
+    host.settle(success);
+    const settled = await host.invoke("gogoke_design37_instances") as { instances: { login: { requestId: string } }[] };
+    expect(settled.instances[0].login.requestId).toBe(pending.instances[0].login.requestId);
+    render(<Design37InstanceSection />);
+    if (success) await screen.findByText("宿主已检测到登录成功。");
+    else expect((await screen.findByRole("alert")).textContent).toContain("PREVIEW_CLI_FAILED: synthetic failure");
+    expect(await host.invoke("gogoke_design37_instances")).toEqual(settled);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "gogoke_design37_instance_login")).toHaveLength(1);
   });
 });

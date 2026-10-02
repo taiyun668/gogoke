@@ -141,6 +141,11 @@ describe("design 37 closed operation protocol", () => {
   it("runs operational session, ledger and inbox contract cases on the fake", async () => {
     await runV37CoreContractCases((caseId) => {
       const store = new V37CoreFakeStore();
+      if (caseId.startsWith("session") && !caseId.startsWith("session-cap-")) {
+        // Every ordinary session case has explicit E/F fixture facts; no fake default.
+        store.setProjectParallelCap("projectA", 1n);
+        store.setInstanceConcurrencyCap("instanceA", 1n);
+      }
       let grant = true;
       let activeTurn: string | null = caseId === "inbox-steer-ended" ? null : "turnA";
       let ledgerScopeReads = 0;
@@ -159,6 +164,7 @@ describe("design 37 closed operation protocol", () => {
         },
         verifyPinnedBinary: (digest: string) => digest === "verifiedDigest",
         verifyStopProof: (proof: string) => proof === "verifiedProof",
+        admissionInstance: () => "instanceA",
         sessionCapabilities: () => ({ compact: caseId !== "session-unsupported",
           "renew-session": true,
           resume: caseId.startsWith("session-resume") && caseId !== "session-resume-unsupported" }),
@@ -184,7 +190,7 @@ describe("design 37 closed operation protocol", () => {
         sendInput: (_sessionId: string, operation: "send" | "append-without-turn") =>
           ({ receiptId: "inputReceipt", createdTurn: operation === "send" }),
         changeGeneration: (_sessionId: string, _operation: "compact" | "renew-session", oldGeneration: string) =>
-          caseId === "session-unknown" ? "unknown" as const :
+          caseId === "session-unknown" || caseId === "session-cap-conservative" ? "unknown" as const :
             { newGeneration: (BigInt(oldGeneration) + 1n).toString(), receiptId: "generationReceipt" },
         reconnectGeneration: (_sessionId: string, claimedGeneration: string) =>
           ({ generation: caseId === "session-unknown" ? "2" : claimedGeneration,
@@ -211,7 +217,9 @@ describe("design 37 closed operation protocol", () => {
       };
       return { port: new V37CoreFakePort(store, options),
         reconstruct: () => new V37CoreFakePort(store, options), deliveryCalls: calls,
-        resumeCalls };
+        resumeCalls,
+        writeProjectCap: (domainId: string, cap: bigint) => store.setProjectParallelCap(domainId, cap),
+        writeInstanceCap: (instanceId: string, cap: bigint) => store.setInstanceConcurrencyCap(instanceId, cap) };
     });
   });
   it("exercises the common envelope for non-UI fake operations", async () => {
@@ -271,11 +279,14 @@ describe("design 37 closed operation protocol", () => {
   it("treats reordered valid wire bytes as a request-ID collision", async () => {
     const m1Store = new V37M1FakeStore();
     m1Store.templates.set("templateA", { instruction: "default" });
+    const coreStore = new V37CoreFakeStore();
+    coreStore.setProjectParallelCap("projectA", 1n);
+    coreStore.setInstanceConcurrencyCap("instanceA", 1n);
     const cases: readonly { name: string; port: V37Port; request: V37Request }[] = [
       { name: "generic", port: new V37FakePort(new V37FakeStore(), () => caller, () => true),
         request: request("K-INBOX", "enqueue", "rawBytesGeneric") },
-      { name: "core", port: new V37CoreFakePort(new V37CoreFakeStore(),
-        { caller: () => caller, granted: () => true }),
+      { name: "core", port: new V37CoreFakePort(coreStore,
+        { caller: () => caller, granted: () => true, admissionInstance: () => "instanceA" }),
       request: { ...request("K-SESSION", "admission-reserve", "rawBytesCore"),
         payload: { generation: "1" } } },
       { name: "M1", port: new V37M1FakePort(m1Store,

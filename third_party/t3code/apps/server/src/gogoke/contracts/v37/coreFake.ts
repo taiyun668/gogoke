@@ -6,6 +6,7 @@ type SessionState = "RESERVED" | "COMMITTED" | "RUNNING" | "STOPPING" | "STOPPED
 interface SessionBinding { readonly driverId: string; readonly instanceId: string;
   readonly pinnedBinaryDigest: string; }
 interface Session { state: SessionState; revision: bigint; generation: string;
+  domainId: string; instanceId: string;
   binding?: SessionBinding; pendingResumeRequestId?: string; }
 type InboxState = "PENDING" | "PREPARED" | "UNKNOWN" | "DELIVERED" | "CANCELLED" | "FAILED";
 interface Inbox { state: InboxState; revision: bigint; generation: string; body: string;
@@ -23,8 +24,31 @@ export class V37CoreFakeStore {
   readonly replies = new Map<string, StoredReply>();
   readonly sourceIds = new Set<string>();
   readonly subscriptions = new Map<string, Subscription>();
+  private readonly projectCaps = new Map<string, bigint>();
+  private readonly instanceCaps = new Map<string, bigint>();
   ledgerCursor = 0n;
   epoch = "1";
+
+  /** Fixture-only writes model the Owner's persisted E/F fields, never a wire operation. */
+  setProjectParallelCap(domainId: string, cap: bigint): void {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(domainId) ||
+        typeof cap !== "bigint" || cap <= 0n || cap > 9223372036854775807n) {
+      throw new Error("V37_CORE_INVALID: project_parallel_cap");
+    }
+    this.projectCaps.set(domainId, cap);
+  }
+
+  setInstanceConcurrencyCap(instanceId: string, cap: bigint): void {
+    const reserved = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/iu.test(instanceId);
+    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(instanceId) || reserved ||
+        typeof cap !== "bigint" || cap <= 0n || cap > 9223372036854775807n) {
+      throw new Error("V37_CORE_INVALID: instance_concurrency_cap");
+    }
+    this.instanceCaps.set(instanceId, cap);
+  }
+
+  projectParallelCap(domainId: string): bigint | undefined { return this.projectCaps.get(domainId); }
+  instanceConcurrencyCap(instanceId: string): bigint | undefined { return this.instanceCaps.get(instanceId); }
 }
 
 export interface V37CoreFakeOptions {
@@ -49,6 +73,7 @@ export interface V37CoreFakeOptions {
   readonly reconnectGeneration?: (sessionId: string, claimedGeneration: string) =>
     { readonly generation: string; readonly receiptId: string } | null;
   /** Trusted H observations. The native continuation reference never enters the request wire. */
+  readonly admissionInstance?: (sessionId: string, domainId: string) => string | null;
   readonly sessionBinding?: (sessionId: string) => SessionBinding | null;
   readonly resumeCustody?: (sessionId: string, oldGeneration: string) => "confirmed" | "unknown";
   readonly resumeGeneration?: (sessionId: string, oldGeneration: string) =>
@@ -338,8 +363,27 @@ export class V37CoreFakePort implements V37Port {
           !this.options.verifyStopProof?.(field(request.payload, "nativeStopProofId"))) {
         return encodeV37Receipt(reply("DENIED", current, current));
       }
+      let admission: Pick<Session, "domainId" | "instanceId"> | undefined;
+      if (request.operation === "admission-reserve") {
+        const instanceId = this.options.admissionInstance?.(request.targetId, request.domainId);
+        const projectCap = this.store.projectParallelCap(request.domainId);
+        const instanceCap = instanceId ? this.store.instanceConcurrencyCap(instanceId) : undefined;
+        if (!instanceId || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(instanceId) ||
+            projectCap === undefined || instanceCap === undefined) {
+          return encodeV37Receipt(reply("DENIED", current, current));
+        }
+        const occupied = [...this.store.sessions.values()].filter((other) => other.state !== "RELEASED");
+        if (BigInt(occupied.filter((other) => other.domainId === request.domainId).length) >= projectCap ||
+            BigInt(occupied.filter((other) => other.instanceId === instanceId).length) >= instanceCap) {
+          return encodeV37Receipt(reply("DENIED", current, current));
+        }
+        admission = { domainId: request.domainId, instanceId };
+      }
       const next = current + 1n;
-      this.store.sessions.set(storageKey, { state: transition[1], revision: next, generation,
+      const identity = admission ?? session;
+      if (!identity) return encodeV37Receipt(reply("CONFLICT", current, current));
+      this.store.sessions.set(storageKey, { domainId: identity.domainId, instanceId: identity.instanceId,
+        state: transition[1], revision: next, generation,
         ...(binding ? { binding } : {}) });
       return committed(reply("APPLIED", current, next, { state: transition[1], generation }));
     }

@@ -3,6 +3,8 @@ import { canonicalJson } from "../strictJson.ts";
 import { decodeV37Receipt, encodeV37Request, V37_SCHEMA, type V37Port, type V37Receipt, type V37Request } from "./protocol.ts";
 
 export type V37CoreCase = "session" | "session-more" | "session-release" |
+  "session-cap-missing" | "session-cap-limits" | "session-cap-conservative" |
+  "session-cap-invalid" | "session-cap-reopen" |
   "session-unsupported" | "session-unknown" | "session-resume" | "session-resume-unsupported" |
   "session-resume-custody-unknown" | "session-resume-binding-mismatch" |
   "session-resume-vendor-unknown" | "ledger" | "ledger-subscription" |
@@ -13,6 +15,9 @@ export interface V37CoreHarness {
   readonly port: V37Port;
   /** Reopen the implementation against the same durable store. */
   reconstruct(): V37Port;
+  /** Fixture-only E/F writes; these do not add operations to the public wire. */
+  writeProjectCap(domainId: string, cap: bigint): void | Promise<void>;
+  writeInstanceCap(instanceId: string, cap: bigint): void | Promise<void>;
   readonly deliveryCalls?: readonly string[];
   readonly resumeCalls?: readonly string[];
 }
@@ -111,6 +116,119 @@ export async function runV37CoreContractCases(factory: V37CoreHarnessFactory): P
       { generation: "1" }))).status, "APPLIED");
     assert.equal((await call(h.port, request("K-SESSION", "admission-commit", "commitReleased", "sessionR", "2",
       { generation: "1" }))).status, "CONFLICT");
+  }
+  // V00a E/F caps: the same H admission boundary reads both persisted values.
+  {
+    const h = factory("session-cap-missing");
+    const reserve = request("K-SESSION", "admission-reserve", "capMissingReserve", "capMissing", "0",
+      { generation: "1" });
+    assert.equal((await call(h.port, reserve)).status, "DENIED");
+    const projectMissing = factory("session-cap-missing");
+    await projectMissing.writeInstanceCap("instanceA", 1n);
+    assert.equal((await call(projectMissing.port, reserve)).status, "DENIED");
+    await h.writeProjectCap("projectA", 1n);
+    assert.equal((await call(h.port, reserve)).status, "DENIED");
+    await h.writeInstanceCap("instanceA", 1n);
+    assert.equal((await call(h.port, reserve)).status, "APPLIED");
+  }
+  {
+    const h = factory("session-cap-limits");
+    await h.writeProjectCap("projectA", 1n);
+    await h.writeInstanceCap("instanceA", 2n);
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "capReserveA", "capA", "0",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-commit", "capCommitA", "capA", "1",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "open", "capOpenA", "capA", "2",
+      { generation: "1", pinnedBinaryDigest: "verifiedDigest" }))).status, "APPLIED");
+    const reserveB = request("K-SESSION", "admission-reserve", "capReserveB", "capB", "0",
+      { generation: "1" });
+    assert.equal((await call(h.port, reserveB)).status, "DENIED");
+    await h.writeProjectCap("projectA", 3n);
+    assert.equal((await call(h.port, reserveB)).status, "APPLIED");
+    const reserveC = request("K-SESSION", "admission-reserve", "capReserveC", "capC", "0",
+      { generation: "1" });
+    assert.equal((await call(h.port, reserveC)).status, "DENIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-release", "capReleaseB", "capB", "1",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.reconstruct(), reserveC)).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "capReserveD", "capD", "0",
+      { generation: "1" }))).status, "DENIED");
+  }
+  {
+    const h = factory("session-cap-conservative");
+    await h.writeProjectCap("projectA", 1n);
+    await h.writeInstanceCap("instanceA", 1n);
+    for (const [operation, revision, payload] of [
+      ["admission-reserve", "0", { generation: "1" }],
+      ["admission-commit", "1", { generation: "1" }],
+      ["open", "2", { generation: "1", pinnedBinaryDigest: "verifiedDigest" }],
+      ["stop", "3", { generation: "1" }],
+      ["exit-and-stop-receipt", "4", { generation: "1", nativeStopProofId: "verifiedProof" }],
+    ] as const) {
+      assert.equal((await call(h.port, request("K-SESSION", operation, `capStopped${operation}`, "stoppedA",
+        revision, payload))).status, "APPLIED");
+    }
+    const reserveB = request("K-SESSION", "admission-reserve", "capConservativeB", "conservativeB", "0",
+      { generation: "1" });
+    assert.equal((await call(h.port, reserveB)).status, "DENIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-release", "capStoppedRelease", "stoppedA",
+      "5", { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, reserveB)).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-commit", "capConservativeCommitB",
+      "conservativeB", "1", { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "open", "capConservativeOpenB", "conservativeB",
+      "2", { generation: "1", pinnedBinaryDigest: "verifiedDigest" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "compact", "capConservativeUnknown", "conservativeB",
+      "3", { generation: "1" }))).status, "UNKNOWN");
+    const reserveC = request("K-SESSION", "admission-reserve", "capConservativeC", "conservativeC", "0",
+      { generation: "1" });
+    assert.equal((await call(h.port, reserveC)).status, "DENIED");
+    assert.equal((await call(h.port, request("K-SESSION", "reconnect", "capConservativeReconnect",
+      "conservativeB", "4", { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "stop", "capConservativeStopB", "conservativeB",
+      "5", { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "exit-and-stop-receipt", "capConservativeProofB",
+      "conservativeB", "6", { generation: "1", nativeStopProofId: "verifiedProof" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-release", "capConservativeReleaseB",
+      "conservativeB", "7", { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.reconstruct(), reserveC)).status, "APPLIED");
+  }
+  {
+    const h = factory("session-cap-invalid");
+    await h.writeProjectCap("projectA", 9223372036854775807n);
+    await h.writeInstanceCap("instanceA", 9223372036854775807n);
+    await h.writeProjectCap("projectA", 1n);
+    await h.writeInstanceCap("instanceA", 2n);
+    for (const bad of [0n, -1n, 9223372036854775808n]) {
+      await assert.rejects(async () => h.writeProjectCap("projectA", bad));
+      await assert.rejects(async () => h.writeInstanceCap("instanceA", bad));
+    }
+    await assert.rejects(async () => h.writeProjectCap("bad/domain", 2n));
+    await assert.rejects(async () => h.writeInstanceCap("CON", 2n));
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "capInvalidA", "invalidA", "0",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "capInvalidB", "invalidB", "0",
+      { generation: "1" }))).status, "DENIED");
+    await h.writeProjectCap("projectA", 3n);
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "capInvalidB2", "invalidB", "0",
+      { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.port, request("K-SESSION", "admission-reserve", "capInvalidC", "invalidC", "0",
+      { generation: "1" }))).status, "DENIED");
+  }
+  {
+    const h = factory("session-cap-reopen");
+    await h.writeProjectCap("projectA", 1n);
+    await h.writeInstanceCap("instanceA", 1n);
+    const reserveA = request("K-SESSION", "admission-reserve", "capReopenA", "reopenA", "0",
+      { generation: "1" });
+    const reserveB = request("K-SESSION", "admission-reserve", "capReopenB", "reopenB", "0",
+      { generation: "1" });
+    assert.equal((await call(h.reconstruct(), reserveA)).status, "APPLIED");
+    assert.equal((await call(h.reconstruct(), reserveB)).status, "DENIED");
+    assert.equal((await call(h.reconstruct(), request("K-SESSION", "admission-release", "capReopenRelease",
+      "reopenA", "1", { generation: "1" }))).status, "APPLIED");
+    assert.equal((await call(h.reconstruct(), reserveB)).status, "APPLIED");
   }
   {
     const h = factory("session-unsupported");
