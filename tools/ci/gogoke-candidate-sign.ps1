@@ -20,42 +20,75 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 if ((git -C $repoRoot rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
     throw 'Candidate signer is not the exact trusted main checkout.'
 }
-$authorizationMain = 'b75250c3b9987b9b09a0fa068f986e2c482a1044'
-$manifestBlob = '9d540cbac609b5ba21cb12e1640b375bcc980736'
-$manifestPath = 'docs/design/gogoke-37-plan-v1/MANIFEST.json'
+$receiptBlob = 'a1d4fb9d352da575a84129b8b22bad52577b6a5d'
 $receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
-if ((git -C $repoRoot rev-parse "HEAD:$manifestPath").Trim() -cne $manifestBlob) {
-    throw 'Trusted signer main has a different design 37 manifest.'
-}
-$receipt = Get-Content -LiteralPath (Join-Path $repoRoot $receiptPath) -Raw | ConvertFrom-Json
-if ($receipt.schema -cne 'gogoke.37.public-authorization.v1' -or
-    $receipt.repository -cne 'taiyun668/gogoke' -or
-    $receipt.plan.public_plan_manifest_blob -cne $manifestBlob) {
-    throw 'Trusted signer main authorization receipt does not bind the approved plan.'
-}
-$receiptBlob = '671cb15b811048c883e6f2f2671ba8a15fc4b55c'
+$planPath = 'docs/design/gogoke-37-plan-v1/PLAN.json'
+$verifierPath = Join-Path $repoRoot 'docs\design\gogoke-37-plan-v1\verify_plan.py'
 if ((git -C $repoRoot rev-parse "HEAD:$receiptPath").Trim() -cne $receiptBlob) {
     throw 'Trusted signer main public authorization receipt blob changed.'
 }
-foreach ($binding in @(@($manifestPath, $manifestBlob), @($receiptPath, $receiptBlob))) {
-    $current = gh api "repos/taiyun668/gogoke/contents/$($binding[0])?ref=main" | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $current.type -cne 'file' -or $current.sha -cne $binding[1]) {
-        throw 'Current main authorization changed before candidate signing.'
+$receipt = Get-Content -LiteralPath (Join-Path $repoRoot $receiptPath) -Raw | ConvertFrom-Json
+if ($receipt.schema -cne 'gogoke.37.public-authorization.v2' -or
+    $receipt.repository -cne 'taiyun668/gogoke' -or
+    $receipt.plan.scope_digest -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'Trusted signer main authorization receipt is malformed.'
+}
+$mainDigest = & python $verifierPath --scope-digest (Join-Path $repoRoot $planPath)
+if ($LASTEXITCODE -ne 0 -or @($mainDigest).Count -ne 1 -or $mainDigest -cne $receipt.plan.scope_digest) {
+    throw 'Trusted signer main plan scope differs from the Owner authorization.'
+}
+$currentMain = gh api 'repos/taiyun668/gogoke/commits/main' | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $currentMain.sha -cne $env:GITHUB_SHA) {
+    throw 'Trusted signer checkout is not current main.'
+}
+$introducing = $null
+foreach ($commit in @(git -C $repoRoot log --first-parent --format=%H HEAD -- $receiptPath)) {
+    if ((git -C $repoRoot rev-parse "${commit}:$receiptPath" 2>$null).Trim() -ceq $receiptBlob) {
+        $introducing = $commit
+        break
     }
 }
-$comparison = gh api "repos/taiyun668/gogoke/compare/$authorizationMain...$SourceCommit" | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $comparison.status -cnotin @('ahead', 'identical') -or
-    $comparison.merge_base_commit.sha -cne $authorizationMain) {
-    throw 'Candidate source is not descended from the authorized main commit.'
+if ($introducing -cnotmatch '^[0-9a-f]{40}$') { throw 'Receipt introduction is absent from main first-parent history.' }
+$parents = @((git -C $repoRoot rev-list --parents -n 1 $introducing).Trim() -split ' ')
+if ($parents.Count -ne 3 -or $parents[0] -cne $introducing -or
+    (git -C $repoRoot rev-parse "$($parents[1]):$receiptPath" 2>$null).Trim() -ceq $receiptBlob) {
+    throw 'Receipt was not introduced by a main merge commit.'
 }
-$sourceManifest = gh api "repos/taiyun668/gogoke/contents/$manifestPath`?ref=$SourceCommit" | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $sourceManifest.type -cne 'file' -or $sourceManifest.sha -cne $manifestBlob) {
-    throw 'Candidate source has a different design 37 manifest.'
+$mergedPulls = @(gh api "repos/taiyun668/gogoke/commits/$introducing/pulls" | ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0 -or $mergedPulls.Count -ne 1 -or
+    $mergedPulls[0].merge_commit_sha -cne $introducing -or $mergedPulls[0].number -le 0) {
+    throw 'Receipt merge has no unique associated pull request.'
+}
+$mergedPull = gh api "repos/taiyun668/gogoke/pulls/$($mergedPulls[0].number)" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or -not $mergedPull.merged -or
+    $mergedPull.base.ref -cne 'main' -or $mergedPull.base.repo.full_name -cne 'taiyun668/gogoke' -or
+    $mergedPull.merge_commit_sha -cne $introducing -or
+    $mergedPull.merged_by.login -cne 'taiyun668' -or -not $mergedPull.merged_at) {
+    throw 'Receipt merge is not the Owner-merged main pull request.'
+}
+$comparison = gh api "repos/taiyun668/gogoke/compare/$introducing...$SourceCommit" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $comparison.status -cnotin @('ahead', 'identical') -or
+    $comparison.merge_base_commit.sha -cne $introducing) {
+    throw 'Candidate source is not descended from the receipt-introducing main merge.'
 }
 $sourceReceipt = gh api "repos/taiyun668/gogoke/contents/$receiptPath`?ref=$SourceCommit" | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $sourceReceipt.type -cne 'file' -or $sourceReceipt.sha -cne $receiptBlob) {
     throw 'Candidate source has a different public authorization receipt.'
 }
+$sourcePlan = gh api "repos/taiyun668/gogoke/contents/$planPath`?ref=$SourceCommit" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $sourcePlan.type -cne 'file' -or $sourcePlan.encoding -cne 'base64' -or
+    $sourcePlan.size -le 0 -or $sourcePlan.size -gt 1048576) {
+    throw 'Candidate plan data is unavailable or unbounded.'
+}
+$planData = Join-Path $env:RUNNER_TEMP "gogoke-candidate-plan-$SourceCommit.json"
+if (Test-Path -LiteralPath $planData) { throw 'Candidate plan temporary path already exists.' }
+try {
+    [IO.File]::WriteAllBytes($planData, [Convert]::FromBase64String($sourcePlan.content))
+    $sourceDigest = & python $verifierPath --scope-digest $planData
+    if ($LASTEXITCODE -ne 0 -or @($sourceDigest).Count -ne 1 -or $sourceDigest -cne $receipt.plan.scope_digest) {
+        throw 'Candidate plan scope differs from the Owner authorization.'
+    }
+} finally { Remove-Item -LiteralPath $planData -Force -ErrorAction SilentlyContinue }
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
 $indexPath = Join-Path $artifactRoot 'resource-index.json'
 $packPath = Join-Path $artifactRoot 'gogoke-resources.windows.zip'
