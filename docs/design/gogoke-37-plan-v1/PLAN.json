@@ -23,7 +23,7 @@
   },
   {
    "path": "AGENTS.md",
-   "blob": "70f1dad3803d48f5221a365390f69bf910ac6b0f"
+   "blob": "b1ea55e9292bcfc824b3bba21be1e62f699b7b36"
   },
   {
    "path": "docs/model-routing.md",
@@ -1157,6 +1157,7 @@
      "id": "H.1",
      "milestone": "M1",
      "deliverables": [
+      "an experiment mode of the installed native host, reachable only in the test domain and never from the product path: it starts the pinned CLI with a chosen isolation, capability set and environment and returns the raw result, so that approach questions are answered on the Owner's machine without a new build",
       "pinned program identity to authorised launch to stdin and output events to stop fact to recovery",
       "one admission boundary (reserve, commit, release) in the existing coordination domain; E's parallel cap and F's instance concurrency are inputs to it, not separate admission facts",
       "instance home and per-session directories, explicit environment",
@@ -1886,13 +1887,13 @@
     "id": "OT1",
     "when": "PRE",
     "what": "Merge the finalised plan PR",
-    "why_only_owner": "Plans are merged by the Owner under current governance."
+    "why_only_owner": "The first plan, and any amendment that changes the scope digest, is merged by the Owner. Amendments that leave the scope digest unchanged are merged by the Controller after an independent audit."
    },
    {
     "id": "OT2",
     "when": "PRE",
-    "what": "Merge the separate authorization PR",
-    "why_only_owner": "Authorization binds the plan MANIFEST and must be merged by the Owner."
+    "what": "Merge the authorization receipt: a separate PR for the first plan, the same PR as any amendment that changes the scope digest",
+    "why_only_owner": "The receipt binds the scope the Owner authorizes. It changes only when the scope changes, in the same PR as that amendment."
    },
    {
     "id": "OT3",
@@ -1999,8 +2000,9 @@
   ],
   "receipt_path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
   "receipt_schema": "gogoke.37.public-authorization.v1",
-  "binding": "The receipt records the Git blob OID of docs/design/gogoke-37-plan-v1/MANIFEST.json read from origin/main after the plan merge. The S1-R4 authorization does not cover this plan and is not modified.",
-  "governance_note": "This mirrors the S1-R4 authorization pattern at a separate path. Merging this plan is the Owner's acceptance of that pattern for design 37."
+  "binding": "The receipt records the scope digest that verify_plan.py computes from PLAN.json (requirements, lines with write scopes and dependencies, milestones, shared-file ownership and paths, invariants, Owner touchpoints, governance, authorization, non-claims). Construction and the candidate signer check that the plan in force has that digest. The S1-R4 authorization does not cover this plan and is not modified.",
+  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (phase deliverables, contracts, checks, assets, source pins). It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR.",
+  "governance_note": "This follows the S1-R4 authorization pattern at a separate path, bound to scope instead of plan bytes. Merging this plan is the Owner's acceptance of that pattern for design 37."
  },
  "scope_nonclaims": [
   "This plan proves no code, cloud run, installer or Owner-machine result.",

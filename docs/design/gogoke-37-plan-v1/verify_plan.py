@@ -357,7 +357,35 @@ def check(plan: dict) -> list[str]:
         errors.append("the build-and-release governance must be referenced")
     if plan.get("authorization", {}).get("sequence") != REQUIRED_SEQUENCE:
         errors.append("authorization sequence must be exactly " + " -> ".join(REQUIRED_SEQUENCE))
+    if not str(plan.get("authorization", {}).get("amendment_rule", "")).strip():
+        errors.append("authorization needs an amendment_rule")
     return errors
+
+
+def scope_digest(plan: dict) -> str:
+    """SHA-256 over the parts of the plan that the Owner authorizes.
+
+    Requirements, lines with their write scopes and dependencies, milestones, shared-file
+    ownership and paths, invariants, Owner touchpoints, governance, authorization and the
+    non-claims. Phase deliverables, contracts, checks, assets and source pins are details:
+    amending them leaves the digest, and so the Owner's authorization, unchanged.
+    """
+    scope = {
+        "requirements": sorted((r.get("id"), r.get("text")) for r in plan.get("requirements", [])),
+        "lines": sorted(
+            (l.get("id"), sorted(l.get("write_scope", [])), sorted(l.get("depends", [])), bool(l.get("owns_shared_files")))
+            for l in plan.get("lines", [])),
+        "milestones": [m.get("id") for m in plan.get("milestones", [])],
+        "shared_files": [plan.get("shared_files", {}).get("owner"),
+                         sorted(f.get("path") for f in plan.get("shared_files", {}).get("files", []))],
+        "invariants": plan.get("invariants"),
+        "owner_touchpoints": plan.get("owner_touchpoints"),
+        "governance": plan.get("governance"),
+        "authorization": plan.get("authorization"),
+        "scope_nonclaims": plan.get("scope_nonclaims"),
+    }
+    blob = json.dumps(scope, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
 
 
 def check_manifest(root: Path) -> list[str]:
@@ -369,6 +397,9 @@ def check_manifest(root: Path) -> list[str]:
     for name in FILES:
         if man.get("sha256", {}).get(name) != hashlib.sha256((root / name).read_bytes()).hexdigest():
             errors.append(f"MANIFEST sha256 mismatch for {name}")
+    plan = load_json((root / "PLAN.json").read_text(encoding="utf-8"))
+    if man.get("scope_digest") != scope_digest(plan):
+        errors.append("MANIFEST scope_digest does not match PLAN.json")
     return errors
 
 
@@ -439,6 +470,7 @@ def self_test(plan: dict) -> list[str]:
     expect("truncated authorization sequence", lambda p: p["authorization"].update(sequence=["separate authorization PR", "L0"]))
     expect("required source dropped", lambda p: p.update(sources=[s for s in p["sources"] if s["path"] != "AGENTS.md"]))
     expect("milestone list changed", lambda p: p["milestones"].pop())
+    expect("amendment rule dropped", lambda p: p["authorization"].pop("amendment_rule", None))
     return missed
 
 
@@ -448,7 +480,11 @@ def main() -> int:
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--manifest", action="store_true")
     ap.add_argument("--sources-ref", help="verify pinned source blobs at this Git ref, e.g. origin/main")
+    ap.add_argument("--scope-digest", metavar="PLAN_JSON", help="print the scope digest of this PLAN.json and exit")
     args = ap.parse_args()
+    if args.scope_digest:
+        print(scope_digest(load_json(Path(args.scope_digest).read_text(encoding="utf-8"))))
+        return 0
     root = Path(args.root)
     plan = load_json((root / "PLAN.json").read_text(encoding="utf-8"))
     errors = check(plan)
