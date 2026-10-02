@@ -498,12 +498,17 @@ fn remove_owned_runtime(path: &Path, expected: &RootIdentity) -> Result<()> {
     let found = inspect_root(path).map_err(|error|
         OrchestrationError::V37StoreFailure(format!("login cleanup identity: {error:?}")))?;
     if &found.identity != expected { return Err(OrchestrationError::AccessDenied); }
+    fn original_io(operation: &str, entry: &Path, error: std::io::Error) -> OrchestrationError {
+        OrchestrationError::V37StoreFailure(format!(
+            "login runtime cleanup {operation}: name={:?}; {error}; raw_os_error={:?}",
+            entry.file_name(), error.raw_os_error()))
+    }
     fn remove_contents(path: &Path, depth: usize) -> Result<()> {
         if depth > 32 { return Err(OrchestrationError::AccessDenied); }
-        for entry in fs::read_dir(path).map_err(OrchestrationError::Io)? {
+        for entry in fs::read_dir(path).map_err(|error| original_io("read-directory", path, error))? {
             let entry = entry.map_err(OrchestrationError::Io)?;
             let child = entry.path();
-            let metadata = fs::symlink_metadata(&child).map_err(OrchestrationError::Io)?;
+            let metadata = fs::symlink_metadata(&child).map_err(|error| original_io("metadata", &child, error))?;
             if metadata.file_attributes() & REPARSE_POINT != 0 {
                 return Err(OrchestrationError::V37StoreFailure(format!(
                     "login runtime cleanup refuses reparse child: name={:?}; attributes={:#x}",
@@ -511,9 +516,9 @@ fn remove_owned_runtime(path: &Path, expected: &RootIdentity) -> Result<()> {
             }
             if metadata.is_dir() {
                 remove_contents(&child, depth + 1)?;
-                fs::remove_dir(&child).map_err(OrchestrationError::Io)?;
+                fs::remove_dir(&child).map_err(|error| original_io("remove-directory", &child, error))?;
             } else if metadata.is_file() {
-                fs::remove_file(&child).map_err(OrchestrationError::Io)?;
+                fs::remove_file(&child).map_err(|error| original_io("remove-file", &child, error))?;
             } else {
                 return Err(OrchestrationError::AccessDenied);
             }
@@ -521,7 +526,7 @@ fn remove_owned_runtime(path: &Path, expected: &RootIdentity) -> Result<()> {
         Ok(())
     }
     remove_contents(path, 0)?;
-    fs::remove_dir(path).map_err(OrchestrationError::Io)
+    fs::remove_dir(path).map_err(|error| original_io("remove-runtime-root", path, error))
 }
 
 fn retain_primary_cleanup_error(primary: OrchestrationError, cleanup: Result<()>,
@@ -2396,35 +2401,60 @@ mod tests {
         let mut product = ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
         let register = request("register","registerA",0,r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,V37Status::Applied);
-        for kind in ["digest","prepared","resume","active"] {
+        for kind in ["digest","prepared","resume","active","ordinary_active"] {
             product.owner_login = None;
-            let frame = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"first_{kind}\",\"expectedRevision\":1}}");
+            let revision = product.user_instance_revision("instanceA").unwrap();
+            let frame = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"first_{kind}\",\"expectedRevision\":{revision}}}");
             let command = owner_login_command(frame.as_bytes()).unwrap();
             let mut launch = product.prepare_owner_codex_login("instanceA").unwrap();
-            if kind != "active" { launch.login.launch.arguments = vec!["--version".into()]; }
+            if kind != "ordinary_active" { launch.login.launch.arguments = vec!["--version".into()]; }
             let original_home = launch.runtime_home.parent().unwrap().to_path_buf();
             let generated_cache = original_home.join("AppData/Local/Microsoft/Windows/INetCache/Content.IE5");
             if kind == "digest" { launch.login.binding.binary_digest_sha256 = format!("sha256:{}","0".repeat(64)); }
             if kind == "prepared" {
                 product.connection.execute("CREATE TRIGGER fail_first_prepare BEFORE INSERT ON gogoke_coordination_process_custody WHEN NEW.operation_id LIKE 'owner-login-%' BEGIN SELECT RAISE(ABORT,'controlled first prepare record failure'); END").unwrap();
             }
-            if kind == "active" {
+            if matches!(kind, "active" | "ordinary_active") {
                 product.connection.execute("CREATE TRIGGER fail_first_active BEFORE UPDATE OF state ON gogoke_coordination_process_custody WHEN NEW.state='ACTIVE' AND NEW.operation_id LIKE 'owner-login-%' BEGIN SELECT RAISE(ABORT,'controlled first active record failure'); END").unwrap();
             }
             let error = if kind == "resume" {
                 product.start_owner_device_login(&command,launch,|custodian,prepared|custodian.activate_with_failed_resume_for_test(prepared)).unwrap_err()
-            } else if kind == "active" {
-                // Let the same fixed ordinary CLI produce its real Windows
-                // profile cache before the existing controlled ACTIVE SQL
-                // failure. No OAuth code/state or credentials are supplied.
+            } else if kind == "ordinary_active" {
+                // Preserve the authentic ordinary-login counterexample too.
+                // Its Windows cache side effect is optional; completion of
+                // the actual CLI URL line is the login-stage observation.
                 product.start_owner_device_login(&command, launch, |custodian, prepared| {
                     let activated = custodian.activate(prepared)?;
                     let deadline = Instant::now() + Duration::from_secs(30);
-                    while !fs::symlink_metadata(&generated_cache).is_ok() && Instant::now() < deadline {
-                        std::thread::sleep(Duration::from_millis(20));
+                    let mut ready = false;
+                    while !ready && Instant::now() < deadline {
+                        let bytes = custodian.active(&prepared.ticket).unwrap().stderr_live_bytes().unwrap();
+                        ready = String::from_utf8_lossy(&bytes).split_inclusive('\n').any(|line|
+                            line.starts_with("https://auth.openai.com/oauth/authorize?") && line.ends_with('\n'));
+                        if !ready { std::thread::sleep(Duration::from_millis(20)); }
                     }
+                    assert!(ready, "actual ordinary CLI must publish its private URL before ACTIVE fault");
+                    Ok(activated)
+                }).unwrap_err()
+            } else if kind == "active" {
+                // This existing factory-failure fixture uses the real fixed
+                // CLI, with a controlled real mount-point at the OS cache
+                // path. Ordinary login does not always create this entry;
+                // the separate real OAuth test covers that authentic flow.
+                product.start_owner_device_login(&command, launch, |custodian, prepared| {
+                    let activated = custodian.activate(prepared)?;
+                    fs::create_dir_all(generated_cache.parent().unwrap()).unwrap();
+                    let target = path.join("owned-active-failure-cache-target");
+                    fs::create_dir(&target).unwrap();
+                    fs::write(target.join("sentinel"), b"retained controlled cache target").unwrap();
+                    let junction = std::process::Command::new("cmd.exe")
+                        .args(["/D", "/C", "mklink", "/J"])
+                        .arg(&generated_cache).arg(&target).output().unwrap();
+                    assert!(junction.status.success(), "controlled ACTIVE cache fixture: {}",
+                        String::from_utf8_lossy(&junction.stderr)
+                            .replace(path.to_string_lossy().as_ref(), "<test-root>"));
                     let observed = fs::symlink_metadata(&generated_cache)
-                        .expect("actual fixed CLI must generate cache before controlled ACTIVE failure");
+                        .expect("controlled physical cache entry before ACTIVE failure");
                     assert_eq!(observed.file_attributes() & (REPARSE_POINT | 0x10), REPARSE_POINT | 0x10);
                     Ok(activated)
                 }).unwrap_err()
@@ -2440,18 +2470,22 @@ mod tests {
             let output = output.to_well_formed_string().unwrap();
             assert!(output.contains(&cause),"{kind}: original error retained after the first Err");
             if kind == "prepared" { product.connection.execute("DROP TRIGGER fail_first_prepare").unwrap(); }
-            if kind == "active" {
+            if matches!(kind, "active" | "ordinary_active") {
                 product.connection.execute("DROP TRIGGER fail_first_active").unwrap();
                 assert!(matches!(fs::symlink_metadata(&generated_cache),
                     Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
                     "original first CLI failure reconciliation must unlink generated cache");
                 let observation = product.dispatch_owner_login_observation(
-                    &request("login-state", "afterFirstActiveFailure", 1, "{}"))
+                    &request("login-state", &format!("afterFirst_{kind}"), revision, "{}"))
                     .unwrap_or_else(|error| panic!("post-first-failure LPAC observation: {error:?}; original settlement: {}",
                         output.replace(original_home.to_string_lossy().as_ref(), "<instance-home>")
                             .replace(path.to_string_lossy().as_ref(), "<test-root>")));
                 assert!(String::from_utf8(observation).unwrap().contains("\"state\":\"LOGGED_OUT\""),
                     "same original home must remain admissible to LPAC after first CLI failure");
+                if kind == "active" {
+                    assert_eq!(fs::read(path.join("owned-active-failure-cache-target").join("sentinel")).unwrap(),
+                        b"retained controlled cache target");
+                }
             }
         }
         product.close_checked().unwrap();

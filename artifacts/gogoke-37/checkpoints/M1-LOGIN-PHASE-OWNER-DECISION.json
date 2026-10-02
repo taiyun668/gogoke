@@ -248,5 +248,47 @@
     "参照": "自然124依据自己的 stop proof parent_grace_exited 写入时序、现有 close_failure 用例对 Job 后代的处理及该次 Job 原文；保留实际自然退出哨兵拒绝，不用成功清理后代来改写父进程退出成因。junction 夹具采用 root/mod.rs 的既有 mklink 和正式 resolver 的 canonical 身份；原始错误复用当前 session 已保留的 settlement，不加外围探针。",
     "reflection": "本轮先前将新夹具的路径和共享判据当作已等价，造成一次无效整链往返。已改用现有根绑定/规范路径，并以真实句柄对照证明共享语义；先用短的既有聚焦执行取得未打印原文，再跑最终全链，减少完整构建往返。"
   },
-  "state": "DIRECT_ERROR_RETENTION_AND_NATURAL_SENTINEL_CORRECTION_FOCUSED_CLOUD_PENDING"
+  "e905FocusedReadback": {
+    "source": "e905e60ed9107b5e6798a1347c9eb0816f047e33",
+    "run": 36988347415,
+    "focusedPassed": 6,
+    "focusedFailed": 1,
+    "focusedSkipped": 0,
+    "actualCallbackCancelAndAutomaticLpacReadback": "PASS_STAGES_OK_OK_NO_REAL_AUTHORIZATION",
+    "cacheEntryAndAncestorPin": "PASS_REAL_JUNCTION_TARGET_PRESERVED",
+    "natural124": "PASS_STRICT_SENTINEL_REJECTION",
+    "remaining": "R5 original runtime cleanup Win32 32, then following create Win32 183; actual operation and object name previously omitted",
+    "focusedArtifact": 11218702000,
+    "focusedArtifactSha256": "fa73b96436355b6cbbe6f2abd73a986538fed15db98edd16875732997cf31c7e",
+    "machineArtifact": 11218617440,
+    "machineArtifactSha256": "a6cec6d4003ee6eef65be17779b422910e335b5378536b4b7fd63ba8b01e6b8b",
+    "fullLibraryServerAndMutations": "NOT_RUN",
+    "acceptance": false
+  },
+  "nextFocusedEvidence": {
+    "runtimeCleanup": "Retain exact operation, entry name and raw OS code from the existing failing filesystem call",
+    "factoryCacheFixture": "Ordinary CLI does not always generate the cache side effect; controlled real junction covers the retained first-child branch, while a separate ordinary-active case retains authentic login through complete private URL before the same SQL failure",
+    "originalCliCounterexampleRemoved": false,
+    "retryOrAclChange": false
+  },
+  "ordinary016Retirement": {
+    "state": "PASS_RETIRED_DATA_PRESERVED_EMPTY_DIRECTORY_AUDIT_PENDING",
+    "formalChanged": [],
+    "measurementIssue": "Process MainWindowHandle selected a blank auxiliary window; its close did not exit the actual product",
+    "correction": "Verified original installed resource page and endpoint custody, clicked its existing caption close button, then observed actual product and native processes exit before retirement",
+    "forceKill": false,
+    "dataMigratedOrCopied": false,
+    "new017Installation": "NOT_RUN"
+  },
+  "retainedAuditEvidence": {
+    "path": "%TEMP%/gogoke-risk-4506-login-cache-ddsyzlxg",
+    "files": 22,
+    "bytes": 283045076,
+    "reparsePoints": 0,
+    "cleanup": "AUTOMATIC_POLICY_BLOCKED_RECURSIVE_DELETE",
+    "approvalReason": "blocked by policy",
+    "bypass": false,
+    "retained": true
+  },
+  "state": "EXACT_RUNTIME_SHARING_ERROR_CONTEXT_PENDING_ORDINARY_016_RETIRED_SAFELY"
 }
