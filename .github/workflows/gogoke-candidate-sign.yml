@@ -1,19 +1,16 @@
 name: gogoke candidate resource signing
 
 on:
-  # Push only enters the workflow concurrency group. Both execution jobs
-  # require other events, so cancellation never grants signing or installation.
+  # Push only cancels an older candidate workflow. Signing and installation
+  # require an explicit dispatch at a stable point.
   push:
     branches:
       - main
       - codex/gogoke-37-l0
-  workflow_run:
-    workflows: ["gogoke desktop CI"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       source_commit:
-        description: Exact frozen desktop build commit; smoke code uses its dispatch revision
+        description: Exact desktop build commit; also the branch smoke workflow revision
         required: true
         type: string
       run_id:
@@ -34,15 +31,7 @@ permissions:
   actions: read
 
 concurrency:
-  # Ineligible completed builds skip both jobs and must not cancel useful work.
-  # Authorized pushes and dispatches still share the active candidate group.
-  group: >-
-    ${{ github.workflow }}-${{ (github.event_name != 'workflow_run' ||
-    (github.event.workflow_run.conclusion == 'success' &&
-    github.event.workflow_run.event == 'workflow_dispatch' &&
-    github.event.workflow_run.head_repository.full_name == 'taiyun668/gogoke' &&
-    github.event.workflow_run.head_branch == 'codex/gogoke-37-l0')) &&
-    'gogoke-37-candidate' || format('ignored-{0}', github.run_id) }}
+  group: ${{ github.workflow }}-gogoke-37-candidate
   cancel-in-progress: true
 
 jobs:
@@ -52,11 +41,7 @@ jobs:
     if: >-
       github.repository == 'taiyun668/gogoke' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'workflow_dispatch' &&
-        github.event.workflow_run.head_repository.full_name == 'taiyun668/gogoke' &&
-        github.event.workflow_run.head_branch == 'codex/gogoke-37-l0'))
+      github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
     runs-on: windows-latest
     environment: candidate-resource-signing
@@ -65,6 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Prove this workflow and verifier are running from main
         shell: pwsh
@@ -83,70 +69,89 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
-          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_run') {
-            $sourceCommit = [string]$event.workflow_run.head_sha
-            $runId = [long]$event.workflow_run.id
-            $runAttempt = 0
-            if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $runId -le 0) {
-              throw 'workflow_run source identity is malformed.'
-            }
-            $expectedName = "gogoke-windows-frozen-$sourceCommit-$runId"
-            $inventory = gh api "repos/taiyun668/gogoke/actions/runs/$runId/artifacts?per_page=100" | ConvertFrom-Json
-            if ($LASTEXITCODE -ne 0 -or $inventory.total_count -gt 100) {
-              throw 'Source artifact inventory is unavailable or unbounded.'
-            }
-            $matches = @($inventory.artifacts | Where-Object {
-              $_.name -ceq $expectedName -and -not $_.expired -and $_.size_in_bytes -gt 0
-            })
-            if ($matches.Count -ne 1) { throw 'Frozen source artifact identity is ambiguous or unavailable.' }
-            $artifactId = [long]$matches[0].id
-          } else {
-            $sourceCommit = [string]$event.inputs.source_commit
-            $runId = [long]$event.inputs.run_id
-            $runAttempt = [int]$event.inputs.run_attempt
-            $artifactId = [long]$event.inputs.artifact_id
-          }
+          $sourceCommit = [string]$event.inputs.source_commit
+          $runId = [long]$event.inputs.run_id
+          $runAttempt = [int]$event.inputs.run_attempt
+          $artifactId = [long]$event.inputs.artifact_id
           if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $runId -le 0 -or $artifactId -le 0) {
             throw 'Candidate signing identity is malformed.'
           }
-          # Read only metadata for the source commit. Never checkout or execute it in this job.
-          $authorizationMain = 'b75250c3b9987b9b09a0fa068f986e2c482a1044'
-          $manifestBlob = '9d540cbac609b5ba21cb12e1640b375bcc980736'
-          $manifestPath = 'docs/design/gogoke-37-plan-v1/MANIFEST.json'
+          # Candidate PLAN.json is data; only main's verifier executes.
+          $receiptBlob = 'a1d4fb9d352da575a84129b8b22bad52577b6a5d'
           $receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
-          if ((git rev-parse "HEAD:$manifestPath").Trim() -cne $manifestBlob) {
-            throw 'Trusted main no longer contains the authorized design 37 manifest blob.'
-          }
-          $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-          if ($receipt.schema -cne 'gogoke.37.public-authorization.v1' -or
-              $receipt.repository -cne 'taiyun668/gogoke' -or
-              $receipt.plan.public_plan_manifest_blob -cne $manifestBlob -or
-              $receipt.plan.public_plan_merge_commit -cne '19953964f2a95907563032ca51d509628b4da215') {
-            throw 'Trusted main public authorization receipt does not bind the approved plan.'
-          }
-          $receiptBlob = '671cb15b811048c883e6f2f2671ba8a15fc4b55c'
+          $planPath = 'docs/design/gogoke-37-plan-v1/PLAN.json'
+          $verifierPath = './docs/design/gogoke-37-plan-v1/verify_plan.py'
           if ((git rev-parse "HEAD:$receiptPath").Trim() -cne $receiptBlob) {
             throw 'Trusted main public authorization receipt blob changed.'
           }
-          $comparison = gh api "repos/taiyun668/gogoke/compare/$authorizationMain...$sourceCommit" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $comparison.status -cnotin @('ahead', 'identical') -or
-              $comparison.merge_base_commit.sha -cne $authorizationMain) {
-            throw 'Candidate source is not descended from the authorized main commit.'
+          $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+          if ($receipt.schema -cne 'gogoke.37.public-authorization.v2' -or
+              $receipt.repository -cne 'taiyun668/gogoke' -or
+              $receipt.plan.scope_digest -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Trusted main public authorization receipt is malformed.'
           }
-          $sourceManifest = gh api "repos/taiyun668/gogoke/contents/$manifestPath`?ref=$sourceCommit" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $sourceManifest.type -cne 'file' -or
-              $sourceManifest.sha -cne $manifestBlob) {
-            throw 'Candidate source does not contain the authorized design 37 manifest blob.'
+          $mainDigest = & python $verifierPath --scope-digest $planPath
+          if ($LASTEXITCODE -ne 0 -or @($mainDigest).Count -ne 1 -or $mainDigest -cne $receipt.plan.scope_digest) {
+            throw 'Trusted main plan scope differs from the Owner authorization.'
+          }
+          $currentMain = gh api 'repos/taiyun668/gogoke/commits/main' | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $currentMain.sha -cne $env:GITHUB_SHA) {
+            throw 'Trusted signing workflow checkout is not current main.'
+          }
+          $introducing = $null
+          foreach ($commit in @(git log --first-parent --format=%H HEAD -- $receiptPath)) {
+            if ((git rev-parse "${commit}:$receiptPath" 2>$null).Trim() -ceq $receiptBlob) {
+              $introducing = $commit
+              break
+            }
+          }
+          if ($introducing -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Receipt introduction is absent from main first-parent history.'
+          }
+          $parents = @((git rev-list --parents -n 1 $introducing).Trim() -split ' ')
+          if ($parents.Count -ne 3 -or $parents[0] -cne $introducing -or
+              (git rev-parse "$($parents[1]):$receiptPath" 2>$null).Trim() -ceq $receiptBlob) {
+            throw 'Receipt was not introduced by a main merge commit.'
+          }
+          $mergedPulls = @(gh api "repos/taiyun668/gogoke/commits/$introducing/pulls" | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0 -or $mergedPulls.Count -ne 1 -or
+              $mergedPulls[0].merge_commit_sha -cne $introducing -or $mergedPulls[0].number -le 0) {
+            throw 'Receipt merge has no unique associated pull request.'
+          }
+          $mergedPull = gh api "repos/taiyun668/gogoke/pulls/$($mergedPulls[0].number)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $mergedPull.merged -or
+              $mergedPull.base.ref -cne 'main' -or $mergedPull.base.repo.full_name -cne 'taiyun668/gogoke' -or
+              $mergedPull.merge_commit_sha -cne $introducing -or
+              $mergedPull.merged_by.login -cne 'taiyun668' -or -not $mergedPull.merged_at) {
+            throw 'Receipt merge is not the Owner-merged main pull request.'
+          }
+          $comparison = gh api "repos/taiyun668/gogoke/compare/$introducing...$sourceCommit" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $comparison.status -cnotin @('ahead', 'identical') -or
+              $comparison.merge_base_commit.sha -cne $introducing) {
+            throw 'Candidate source is not descended from the receipt-introducing main merge.'
           }
           $sourceReceipt = gh api "repos/taiyun668/gogoke/contents/$receiptPath`?ref=$sourceCommit" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $sourceReceipt.type -cne 'file' -or
               $sourceReceipt.sha -cne $receiptBlob) {
             throw 'Candidate source does not contain the same public authorization receipt.'
           }
-          $run = gh api "repos/taiyun668/gogoke/actions/runs/$runId" | ConvertFrom-Json
-          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_run') {
-            $runAttempt = [int]$run.run_attempt
+          $sourcePlan = gh api "repos/taiyun668/gogoke/contents/$planPath`?ref=$sourceCommit" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $sourcePlan.type -cne 'file' -or
+              $sourcePlan.encoding -cne 'base64' -or $sourcePlan.size -le 0 -or
+              $sourcePlan.size -gt 1048576) {
+            throw 'Candidate plan data is unavailable or unbounded.'
           }
+          $planData = Join-Path $env:RUNNER_TEMP "gogoke-candidate-plan-$sourceCommit.json"
+          if (Test-Path -LiteralPath $planData) { throw 'Candidate plan temporary path already exists.' }
+          try {
+            [IO.File]::WriteAllBytes($planData, [Convert]::FromBase64String($sourcePlan.content))
+            $sourceDigest = & python $verifierPath --scope-digest $planData
+            if ($LASTEXITCODE -ne 0 -or @($sourceDigest).Count -ne 1 -or
+                $sourceDigest -cne $receipt.plan.scope_digest) {
+              throw 'Candidate plan scope differs from the Owner authorization.'
+            }
+          } finally { Remove-Item -LiteralPath $planData -Force -ErrorAction SilentlyContinue }
+          $run = gh api "repos/taiyun668/gogoke/actions/runs/$runId" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $run.repository.full_name -cne 'taiyun668/gogoke' -or
               $run.head_repository.full_name -cne 'taiyun668/gogoke' -or
               $run.head_branch -cne 'codex/gogoke-37-l0' -or
@@ -314,18 +319,24 @@ jobs:
           if ($env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke' -or
               $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
               $env:GITHUB_REF -cne 'refs/heads/codex/gogoke-37-l0' -or
-              $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$' -or
-              $env:SOURCE_COMMIT_INPUT -cnotmatch '^[0-9a-f]{40}$' -or
+              $env:GITHUB_SHA -cne $env:SOURCE_COMMIT_INPUT -or
               (git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
             throw 'Installed smoke did not load its exact execution branch revision.'
           }
+      - name: Checkout current trusted main verifier code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          path: trusted-main
+          persist-credentials: false
       - name: Verify and download the exact signed candidate without executing it
         id: preflight
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          & ./tools/ci/gogoke-candidate-installed-preflight.ps1 `
+          & ./trusted-main/tools/ci/gogoke-candidate-installed-preflight.ps1 `
             -ExpectedSourceCommit $env:SOURCE_COMMIT_INPUT `
             -SigningRunId '${{ inputs.run_id }}' `
             -SigningRunAttempt '${{ inputs.run_attempt }}' `

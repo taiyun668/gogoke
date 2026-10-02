@@ -1,5 +1,5 @@
 {
-  "schema": "gogoke.37.public-authorization.v1",
+  "schema": "gogoke.37.public-authorization.v2",
   "owner_instruction": "OWNER_MERGED_PUBLIC_GOGOKE_37_AUTHORIZATION",
   "validity": {
     "path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
@@ -7,12 +7,16 @@
     "missing_stale_or_inconsistent": "FAIL_CLOSED"
   },
   "repository": "taiyun668/gogoke",
-  "plan": {
-    "provenance_plan_commit": "8112f05f80e31709c635db033d99e208aeb5262f",
-    "public_plan_merge_commit": "19953964f2a95907563032ca51d509628b4da215",
-    "public_plan_path": "docs/design/gogoke-37-plan-v1/",
+  "supersedes": {
+    "schema": "gogoke.37.public-authorization.v1",
     "public_plan_manifest_blob": "9d540cbac609b5ba21cb12e1640b375bcc980736",
-    "stale_when": "the public plan MANIFEST.json blob differs from the value above"
+    "reason": "bind the Owner-authorized scope instead of plan bytes, so detail amendments need no new receipt"
+  },
+  "plan": {
+    "public_plan_path": "docs/design/gogoke-37-plan-v1/",
+    "scope_digest": "274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656",
+    "digest_tool": "docs/design/gogoke-37-plan-v1/verify_plan.py --scope-digest PLAN.json, run from trusted main",
+    "stale_when": "the scope digest of the plan in force differs from the value above"
   },
   "authorized_lines": [
     "L0",
@@ -34,7 +38,8 @@
     "M2",
     "M3"
   ],
-  "start_condition": "Owner merges this separate authorization PR; Controller then reads back the actual merge, receipt bytes, and current plan MANIFEST blob before starting L0",
+  "start_condition": "Owner merges the PR that carries this receipt; Controller then reads back the actual merge, the receipt bytes, and recomputes the scope digest of main's PLAN.json with main's verifier before continuing",
   "owner_touchpoints": "The bound PLAN.json retains its planned and conditional Owner decisions; this receipt does not complete them",
-  "completion_claim": false
+  "completion_claim": false,
+  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (deliverable, contract and check descriptions, assets, source pins), never phase placement, milestone scope, conditional write constraints or durable contract ownership. Independent review must preserve requirements, invariants, security and recorded Owner decisions. It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR."
 }

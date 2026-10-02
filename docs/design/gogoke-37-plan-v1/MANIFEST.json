@@ -5,13 +5,14 @@
     "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
   "sha256": {
-    "PLAN.md": "e64fe7b2ba24957fe1f6cd7a26ed7549398797859561d5f5a8fa651b5e9d815f",
-    "PLAN.json": "97ee56c70cc7f4b06cbd7353a50441f9fd4668830f632e31ea2310ffdc5e6a65",
-    "verify_plan.py": "d153206e570bfa55ca115099da29b314d2e6b87eb3bbe4e4a05bfe333db7c177"
+    "PLAN.md": "42e4c25c94bce13d6c01127dba64e9754f0a1d98be258d10be63ebdbb546eff0",
+    "PLAN.json": "706491d0948ecba057ec37e81fc9a89ebd7578a78680568ad26a4f20d5a0c27b",
+    "verify_plan.py": "602b78abcab6264d4192eb1eca8d30646fd58cdfcf6733ffc9f6e24c108288e9"
   },
   "excluded": [
     "MANIFEST.json",
     "VALIDATION.json"
   ],
-  "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance"
+  "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance",
+  "scope_digest": "274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656"
 }
