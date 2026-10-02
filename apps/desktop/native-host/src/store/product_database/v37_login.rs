@@ -553,6 +553,27 @@ fn clean_environment(instance_home: &Path, runtime: &Path) -> Result<Vec<(String
     ])
 }
 
+/// Ordinary browser login runs with the native host's user token. Only the
+/// registered instance home is redirected; browser profile directories stay
+/// with this user so the fixed CLI's own opener can use the existing browser.
+/// This is a finite allowlist, never the host's arbitrary provider variables.
+fn ordinary_login_environment(instance_home: &Path, runtime: &Path) -> Result<Vec<(String, String)>> {
+    let mut environment = clean_environment(instance_home, runtime)?;
+    let instance = instance_home.to_string_lossy().into_owned();
+    for (key, value) in &mut environment {
+        if key == "HOME" || key == "USERPROFILE" { *value = instance.clone(); }
+        if key == "LOCALAPPDATA" || key == "APPDATA" {
+            let actual = std::env::var(key.as_str()).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("login {key} unavailable: {error}")))?;
+            if !Path::new(&actual).is_absolute() || actual.contains('\0') {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            *value = actual;
+        }
+    }
+    Ok(environment)
+}
+
 fn owner_login_profile_name(instance_id: &str, home_identity: &RootIdentity) -> String {
     // The registered physical home, rather than a wire path or request ID,
     // determines the isolation domain across login and account/read launches.
@@ -1269,14 +1290,15 @@ impl<'root> ProductDatabase<'root> {
         let (runtime, runtime_identity) = runtime_home(&home.path)?;
         let scope = (|| -> Result<_> {
             let mut environment = clean_environment(&home.path, &runtime)?;
+            let login_environment = ordinary_login_environment(&home.path, &runtime)?;
             grant_owner_login_scope(&profile, &home, &runtime, &runtime_identity, &program)?;
             let module = CompatModule::prepare(self.root, &home.path, &home.identity,
                 &profile, &profile_name).map_err(|source|
                     OrchestrationError::V37StoreFailure(format!("login path compatibility: {source}")))?;
             module.extend_environment(&mut environment);
-            Ok((environment, module))
+            Ok((login_environment, environment, module))
         })();
-        let (environment, module) = match scope {
+        let (login_environment, environment, module) = match scope {
             Ok(prepared) => prepared,
             Err(error) => {
                 let cleanup = remove_owned_runtime(&runtime, &runtime_identity);
@@ -1293,16 +1315,14 @@ impl<'root> ProductDatabase<'root> {
         let mut login = ProcessLaunch::new(program.clone());
         login.arguments = vec!["login".into()];
         login.current_directory = Some(runtime.clone());
-        login.environment = Some(environment.clone());
+        login.environment = Some(login_environment);
         // The fixed CLI writes its ordinary OAuth URL to stderr. The host
         // relays only complete original lines on the Owner-private pipe.
         // No credential bytes are sent to stdin.
         login.protocol_stdio = true;
         login.persistent_protocol_stdio = true;
-        login.app_container_profile = Some(profile_name.clone());
-        login.app_container_internet_client = true;
-        login.app_container_cli_identity_services = true;
-        login.path_compat = Some(module.clone());
+        // Owner-approved ordinary-user login keeps the fixed CLI's own
+        // browser/callback behavior. Only account/read below enters LPAC.
         let mut account_read = ProcessLaunch::new(program);
         account_read.arguments = vec![
             "-c".into(), "features.memories=false".into(),
@@ -1751,6 +1771,10 @@ mod tests {
     use crate::store::same_open::route_b_test_guard;
     use crate::store::session_transport::{decode_receipt, decode_request};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn environment_value<'a>(environment: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        environment.iter().find(|(name, _)| name == key).map(|(_, value)| value.as_str())
+    }
 
     fn callback_port_from_authorization_line(line: &str) -> Option<u16> {
         let query = line.strip_prefix("https://auth.openai.com/oauth/authorize?")?;
@@ -2577,18 +2601,38 @@ mod tests {
             &root, "instanceA").unwrap();
         let runtime = home.path.join("gogoke-login-runtime");
         let scoped = product.prepare_owner_codex_login("instanceA").unwrap();
-        let login_profile = scoped.login.launch.app_container_profile.as_deref().unwrap();
-        assert_eq!(scoped.account_read.launch.app_container_profile.as_deref(),
-            Some(login_profile), "ordinary login and account/read must share one isolated identity");
+        assert!(scoped.login.launch.app_container_profile.is_none());
+        assert!(scoped.login.launch.path_compat.is_none());
         assert_eq!(scoped.login.launch.arguments, vec!["login".to_owned()]);
-        assert!(scoped.login.launch.app_container_internet_client);
+        assert!(!scoped.login.launch.app_container_internet_client);
+        assert!(!scoped.login.launch.app_container_cli_identity_services);
+        assert!(scoped.account_read.launch.app_container_profile.is_some());
         assert!(scoped.account_read.launch.app_container_internet_client);
-        assert!(scoped.login.launch.app_container_cli_identity_services);
         assert!(scoped.account_read.launch.app_container_cli_identity_services);
+        assert!(scoped.account_read.launch.path_compat.is_some());
         assert_eq!(scoped.login.launch.application,
             scoped.account_read.launch.application);
-        assert_eq!(scoped.login.launch.environment,
-            scoped.account_read.launch.environment);
+        let login_environment = scoped.login.launch.environment.as_ref().unwrap();
+        let account_environment = scoped.account_read.launch.environment.as_ref().unwrap();
+        let instance = home.path.to_string_lossy();
+        let runtime_text = runtime.to_string_lossy();
+        for key in ["HOME", "USERPROFILE", "CODEX_HOME"] {
+            assert!(environment_value(login_environment, key) == Some(instance.as_ref()), "login {key} mismatch");
+        }
+        for key in ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"] {
+            assert!(environment_value(account_environment, key) == Some(runtime_text.as_ref()), "account/read {key} mismatch");
+        }
+        for key in ["LOCALAPPDATA", "APPDATA"] {
+            let actual = std::env::var(key).unwrap();
+            assert!(environment_value(login_environment, key) == Some(actual.as_str()), "login {key} is not host value");
+        }
+        for key in ["TEMP", "TMP"] {
+            assert!(environment_value(login_environment, key) == Some(runtime_text.as_ref()), "login {key} mismatch");
+        }
+        let mut login_keys: Vec<&str> = login_environment.iter().map(|(key, _)| key.as_str()).collect();
+        login_keys.sort_unstable();
+        assert_eq!(login_keys, ["APPDATA", "CODEX_HOME", "HOME", "LOCALAPPDATA", "RUST_LOG",
+            "SystemRoot", "TEMP", "TMP", "USERPROFILE", "WINDIR"]);
         assert_eq!(scoped.login.launch.current_directory.as_deref(), Some(runtime.as_path()));
         assert_eq!(scoped.account_read.launch.current_directory.as_deref(), Some(runtime.as_path()));
         remove_owned_runtime(&scoped.runtime_home, &scoped.runtime_identity).unwrap();
@@ -2664,28 +2708,24 @@ mod tests {
         let begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"ordinaryOAuthA","expectedRevision":1}"#;
         let status = br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"ordinaryOAuthA","expectedRevision":1}"#;
         let cancel = br#"{"schema":"gogoke.37.owner-login.v1","action":"cancel","instanceId":"instanceA","requestId":"ordinaryOAuthA","expectedRevision":1}"#;
-        // Capture the actual production preparation before either launch.
-        // The diagnostic control uses this same registered home and environment.
+        // Use the actual production preparation and custody path once.
         let first_scope = product.prepare_owner_codex_login("instanceA").unwrap();
-        let first_launch = first_scope.login.clone();
         let begin_command = owner_login_command(begin).unwrap();
         let safe_error = |error: &OrchestrationError| {
             let raw = format!("{error:?}");
-            // CI must retain the native reason without publishing OAuth queries.
+            // CI keeps only a numeric native code; original diagnostics remain
+            // on the Owner-private session, never in the public test log.
             let os_code = cli_os_error_code(&raw);
-            let redacted = raw.split_whitespace().map(|word|
-                if word.contains("https://") { "<authorization-url-redacted>" }
-                else { word }).collect::<Vec<_>>().join(" ");
-            format!("{redacted}; safe_os_code={os_code:?}")
+            format!("safe_os_code={os_code:?}")
         };
-        let stages = (|| -> std::result::Result<(_, _), String> {
+        let stages = (|| -> std::result::Result<std::result::Result<(), String>, String> {
             let started = match product.start_owner_device_login(&begin_command, first_scope,
                 |custodian, prepared| custodian.activate(prepared)) {
                 Ok(reply) => reply,
                 Err(error) => {
                     let status_result = product.dispatch_owner_login_frame(status);
                     let cancel_result = product.dispatch_owner_login_frame(cancel);
-                    return Err(format!("isolated fixed CLI start: {}; status_error={:?}; cancel_error={:?}",
+                    return Err(format!("ordinary-user fixed CLI start: {}; status_error={:?}; cancel_error={:?}",
                         safe_error(&error), status_result.err().as_ref().map(&safe_error),
                         cancel_result.err().as_ref().map(&safe_error)));
                 }
@@ -2780,7 +2820,7 @@ mod tests {
                 }
                 Ok(())
             };
-            let isolated_probe = probe_callback(&mut product, status, &prepared);
+            let production_probe = probe_callback(&mut product, status, &prepared);
             let cancelled = product.dispatch_owner_login_frame(cancel);
             let settled = match cancelled {
                 Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
@@ -2788,94 +2828,17 @@ mod tests {
                     .and_then(|reply| String::from_utf8(reply).ok())
                     .is_some_and(|text| text.contains("\"settled\":true")),
             };
-            if !settled { return Err(format!("original ordinary OAuth cancellation did not settle; lpac={isolated_probe:?}")); }
+            if !settled { return Err(format!("original ordinary OAuth cancellation did not settle; callback={production_probe:?}")); }
             assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
                 Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
                 "no-code/state callback must not write an auth file");
-            // Diagnostic control: same registered empty CODEX_HOME, fixed CLI,
-            // environment, arguments and cwd. Remove the LPAC identity/capabilities
-            // AND its bound shim. This compares the two launch combinations; it
-            // does not independently attribute a difference to the LPAC token.
-            // The production launch and its validation stay unchanged.
-            for port in [1455, 1457] {
-                let probe = TcpListener::bind(("127.0.0.1", port))
-                    .expect("OAuth callback port occupied before unisolated control");
-                drop(probe);
-            }
-            let revision = product.user_instance_revision("instanceA")
-                .unwrap_or_else(|_| panic!("unisolated control revision read failed"));
-            let mut control_scope = product.prepare_owner_codex_login("instanceA")
-                .unwrap_or_else(|_| panic!("unisolated control production preparation failed"));
-            let production_login = control_scope.login.clone();
-            // Login settlement advances the instance ledger revision. The
-            // binding's generation is that revision, not a new home/CLI identity.
-            if first_launch.launch.application != production_login.launch.application
-                || first_launch.binding.binary_digest_sha256 != production_login.binding.binary_digest_sha256
-                || first_launch.binding.profile_id != production_login.binding.profile_id
-                || first_launch.binding.domain_id != production_login.binding.domain_id
-                || first_launch.launch.arguments != production_login.launch.arguments
-                || first_launch.launch.current_directory != production_login.launch.current_directory
-                || first_launch.launch.environment != production_login.launch.environment {
-                return Err(format!("same registered CLI/home/environment comparison failed; lpac={isolated_probe:?}"));
-            }
-            if first_launch.binding.generation != begin_command.expected_revision.to_string()
-                || production_login.binding.generation != revision.to_string() {
-                return Err(format!("login binding does not match its current instance revision; lpac={isolated_probe:?}"));
-            }
-            assert!(first_launch.launch.path_compat.is_some());
-            assert!(production_login.launch.path_compat.is_some());
-            assert!(production_login.launch.environment.as_ref().is_some_and(|environment|
-                environment.iter().any(|(key, value)| key == "CODEX_HOME"
-                    && value == home.path.to_string_lossy().as_ref())));
-            control_scope.login.launch.app_container_profile = None;
-            control_scope.login.launch.app_container_internet_client = false;
-            control_scope.login.launch.app_container_cli_identity_services = false;
-            control_scope.login.launch.path_compat = None;
-            assert_eq!(control_scope.login.binding, production_login.binding);
-            assert!(control_scope.login.launch.environment == production_login.launch.environment);
-            assert!(control_scope.login.launch.path_compat.is_none());
-            drop(production_login); // release the cloned module lock before teardown
-            let control_begin = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
-            let control_command = owner_login_command(control_begin.as_bytes()).unwrap();
-            let control_status = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"status\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
-            let control_cancel = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"cancel\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
-            let control_started = match product.start_owner_device_login(&control_command, control_scope,
-                |custodian, prepared| custodian.activate(prepared)) {
-                Ok(reply) => reply,
-                Err(error) => {
-                    let status_result = product.dispatch_owner_login_frame(control_status.as_bytes());
-                    let cancel_result = product.dispatch_owner_login_frame(control_cancel.as_bytes());
-                    return Err(format!("unisolated fixed CLI start: {}; lpac={isolated_probe:?}; status_error={:?}; cancel_error={:?}",
-                        safe_error(&error), status_result.err().as_ref().map(&safe_error),
-                        cancel_result.err().as_ref().map(&safe_error)));
-                }
-            };
-            assert!(String::from_utf8(control_started)
-                .map(|text| text.contains("\"state\":\"PENDING\"")).unwrap_or(false));
-            let control_prepared = match product.owner_login.as_ref().unwrap() {
-                OwnerLoginSession::Active(active) => active.prepared.clone(),
-                _ => panic!("unisolated control lost active child custody"),
-            };
-            let control_probe = probe_callback(&mut product, control_status.as_bytes(), &control_prepared);
-            let control_cancelled = product.dispatch_owner_login_frame(control_cancel.as_bytes());
-            let control_settled = match control_cancelled {
-                Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
-                Err(_) => product.dispatch_owner_login_frame(control_status.as_bytes()).ok()
-                    .and_then(|reply| String::from_utf8(reply).ok())
-                    .is_some_and(|text| text.contains("\"settled\":true")),
-            };
-            if !control_settled { return Err(format!("unisolated cancellation did not settle; unisolated={control_probe:?}; lpac={isolated_probe:?}")); }
-            assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
-                Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
-                "unisolated no-code/state callback must not write an auth file");
-            Ok((isolated_probe, control_probe))
+            Ok(production_probe)
         })();
         // Keep the measured callback results even if subsequent teardown fails.
         // This contains only stage/code summaries, never the authorization URL.
         eprintln!("actual fixed CLI callback stages before teardown: {stages:?}");
-        drop(first_launch);
         product.close_checked().unwrap_or_else(|error|
-            panic!("ordinary OAuth custody close failed: {error:?}; stages={stages:?}"));
+            panic!("ordinary OAuth custody close failed: {}; stages={stages:?}", safe_error(&error)));
         drop(root);
         // Reuse temporary-home cleanup's per-entry/reparse-aware primitives.
         // Report the exact denied relative object rather than masking the two
@@ -2902,8 +2865,8 @@ mod tests {
         remove_test_entry(&path, &path).unwrap_or_else(|error|
             panic!("ordinary OAuth test cleanup failed: {error}; stages={stages:?}"));
         match stages {
-            Ok((isolated_probe, control_probe)) => assert!(control_probe.is_ok() && isolated_probe.is_ok(),
-                "actual fixed CLI callback stages (custody and root cleanup complete): unisolated_no_shim={control_probe:?}; lpac_with_shim={isolated_probe:?}"),
+            Ok(probe) => assert!(probe.is_ok(),
+                "production ordinary-user fixed CLI callback stages (custody and root cleanup complete): {probe:?}"),
             Err(error) => panic!("actual fixed CLI callback stages (custody and root cleanup complete): {error}"),
         }
     }

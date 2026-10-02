@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "AWAIT_OWNER_LOGIN_ONLY_SECURITY_BOUNDARY_DECISION",
+  "state": "OWNER_LOGIN_ONLY_EXCEPTION_APPROVED_IMPLEMENTATION_CLOUD_PENDING",
   "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。 本次回调对照沿用既有生产 prepare/start 和受控 Job 结算，不新增校验绕过：LPAC 专用 shim 必须绑定 profile，无隔离对照因此同时去除 shim，保留同一注册 home、CLI、环境、参数和工作目录；只比较两个启动组合，不据此独归因 LPAC token。 测试目录清理按现有 instance/temporary.rs 的逐对象删除及重解析点不跟随做法，先保留回调原始阶段结果，再报告具体被拒对象和 Windows 错误；不改权限、不加重试，不把清理失败当回调失败。 原位 0.1.16 已实测：同一固定 CLI 的 1455 回调连接超时，取消成功；云端无 LPAC/无 shim 对照返回预期 400。该对照不能独归因 token，也不能直接推出必须改变边界。gogo-party 已验证 loginEnv 为浏览器保留真实 APPDATA/LOCALAPPDATA；当前产品重定向这些目录，与参照不同，作为待核对差异，不直接照搬扩大权限。 聚焦机制复核核对 shim 仅处理 GetFinalPathNameByHandleW，不挂 socket/bind/listen；微软 loopback 例外属于系统网络隔离配置变更。没有找到满足原边界全部限制的现成修复。普通登录进程选项需 Owner 定边界；历史 loginEnv 的真实浏览器目录可复用，但不能把它宣称为 TCP 超时根因修复。",
   "reference_recheck": {
     "owner_rule_effective": "2026-10-01_IMMEDIATE_BEFORE_UNSPECIFIED_IMPLEMENTATION_DETAILS",
@@ -581,7 +581,7 @@
   "publicRelease": false,
   "controllerMerge": false,
   "callback_readback": "artifacts/gogoke-37/checkpoints/M1-ORDINARY-OAUTH-CALLBACK-READBACK.json",
-  "NEXT_ACTION": "Owner decides whether only the fixed vendor CLI login may use a normal current-user token and historical loginEnv; retain LPAC for account-read/model/seat sessions. No implementation until decision.",
+  "NEXT_ACTION": "Verify approved login-only same-user change in cloud full native suite and controlled desktop build; prepare exact signed 0.1.17 candidate and original Win11 callback test; notify OT4 once. No real LOGGED_IN claim before Owner authorization.",
   "premise_correction": "Original Win11 is now measured. A timeout plus cloud combination comparison supports this measured failure but does not isolate token from shim or prove a boundary expansion is the only fix.",
   "actual_win11_016": {
     "runtimeSource": "c3afa1499c59cfbb7a5a1a9b4072ad90d1e60591",
@@ -685,5 +685,6 @@
     "localFiles": 24845,
     "leaks": 0,
     "acceptance": false
-  }
+  },
+  "login_phase_owner_decision": "artifacts/gogoke-37/checkpoints/M1-LOGIN-PHASE-OWNER-DECISION.json"
 }

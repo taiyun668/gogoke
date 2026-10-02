@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.37.login-phase-owner-decision.v1",
+  "recordedDate": "2026-10-01",
+  "decision": "OWNER_APPROVED_FIXED_CLI_LOGIN_ORDINARY_SAME_USER",
+  "basis": "Owner current direct instruction; prior F.1/G.0 isolation rule overridden only for login",
+  "scope": {
+    "fixedCliVersion": "0.149.0",
+    "fixedCliSha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "loginOnly": true,
+    "sameUserAsHost": true,
+    "elevation": false,
+    "modelOutputExecuted": false,
+    "registeredHomeCopied": false,
+    "homeEnvironment": "HOME/USERPROFILE/CODEX_HOME original registered instance home",
+    "browserEnvironment": "Original LOCALAPPDATA/APPDATA",
+    "browserOpenedByHost": true,
+    "modelSessions": "ALL_EXISTING_LPAC",
+    "accountRead": "EXISTING_LPAC",
+    "lpacIdentityServices": "UNCHANGED",
+    "credentials": "VENDOR_CLI_ONLY_HOST_NEVER_READS_WRITES_COPIES"
+  },
+  "参照": "依次参照 gogo-party accounts.ts 的 PROVIDER_LOGIN/loginEnv、实例与席位运行时及界面；NaveHQ 的容器 OAuth/实例环境与 LoomOS 规格；仓库七份拆解/复用调研；最后核对官方登录文档和固定 CLI 0.149.0 源码、CodexMonitor/Paseo/Orca 等。采用已验证普通 codex login、实例 HOME/USERPROFILE 与真实 APPDATA/LOCALAPPDATA。不同处保留 gogoke 原有持久登录结果、精确 native Job/身份结算与 LPAC 自动 account/read，不照搬 taskkill 或宿主凭据读取。CLI 自己也可能尝试打开浏览器；宿主仍按原 URL 打开，不宣称总开页次数仅一次。",
+  "implementationFiles": [
+    "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+    "docs/implementation/gogoke-37-cli-permissions.md"
+  ],
+  "candidateVersion": "0.1.17",
+  "cloudNative": "NOT_RUN",
+  "cloudDesktop": "NOT_RUN",
+  "ordinaryWin11": "NOT_RUN",
+  "realOAuthAccountAuthorization": "NOT_RUN",
+  "automaticLoggedInReadback": "NOT_RUN_REQUIRES_OWNER_AUTHORIZATION_OF_CURRENT_EMPTY_INSTANCE",
+  "OT4": "Notify once after actual callback reachability and cancellation/status preparation; real account authorization and LOGGED_IN cannot precede Owner authorization",
+  "M1Complete": false,
+  "acceptance": false,
+  "publicRelease": false,
+  "controllerMerge": false
+}

@@ -1,7 +1,7 @@
 {
   "schema": "gogoke.37.oauth-callback-readback.v1",
   "source": "4b99854373c63d631138ff1f4c3257a34bdc4b47",
-  "state": "AWAIT_OWNER_LOGIN_ONLY_SECURITY_BOUNDARY_DECISION",
+  "state": "OWNER_LOGIN_ONLY_EXCEPTION_APPROVED_IMPLEMENTATION_CLOUD_PENDING",
   "scope": "Cloud Windows fresh registered empty instance home; actual fixed CLI; not Owner Win11 and not real account authorization",
   "fixed_cli": {
     "version": "0.149.0",
@@ -110,8 +110,8 @@
       "No system security changes",
       "No public release or Controller merge"
     ],
-    "authorizedByOwner": false,
-    "implemented": false,
+    "authorizedByOwner": true,
+    "implemented": true,
     "neededNow": true,
     "prerequisite": "Actual installed original Win11 callback measured; focused mechanism review found no existing same-boundary repair under current restrictions",
     "referenceEnvironment": "Reuse historical loginEnv: original registered CODEX_HOME and instance HOME/USERPROFILE, real APPDATA/LOCALAPPDATA for browser. Environment change is not claimed to fix TCP isolation; this follows existing desktop login implementation.",
@@ -209,7 +209,7 @@
     "boundaryChanged": false,
     "OT4Requested": false
   },
-  "next": "Owner decision on precisely scoped login-only token/environment change; no implementation before decision",
+  "next": "Cloud verification/build and exact signed frozen 0.1.17 candidate; original Win11 callback/cancel/readback; then one OT4 notification",
   "focused_mechanism_review": {
     "seat": "oauth_reference_boundary",
     "mode": "READ_ONLY_FOCUSED_REFERENCE_AND_MECHANISM_REVIEW",
@@ -232,5 +232,6 @@
     "localFiles": 24845,
     "leaks": 0,
     "acceptance": false
-  }
+  },
+  "login_phase_owner_decision": "artifacts/gogoke-37/checkpoints/M1-LOGIN-PHASE-OWNER-DECISION.json"
 }
