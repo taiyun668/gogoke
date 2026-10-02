@@ -2664,176 +2664,212 @@ mod tests {
         let begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"ordinaryOAuthA","expectedRevision":1}"#;
         let status = br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"ordinaryOAuthA","expectedRevision":1}"#;
         let cancel = br#"{"schema":"gogoke.37.owner-login.v1","action":"cancel","instanceId":"instanceA","requestId":"ordinaryOAuthA","expectedRevision":1}"#;
-        let started = match product.dispatch_owner_login_frame(begin) {
-            Ok(reply) => reply,
-            Err(_) => {
-                // A failed begin can retain original custody. Progress only
-                // that request before leaving an actionable CI failure.
-                let _ = product.dispatch_owner_login_frame(status);
-                let _ = product.dispatch_owner_login_frame(cancel);
-                panic!("real fixed CLI ordinary login start failed");
-            }
+        // Capture the actual production preparation before either launch.
+        // The diagnostic control uses this same registered home and environment.
+        let first_scope = product.prepare_owner_codex_login("instanceA").unwrap();
+        let first_launch = first_scope.login.clone();
+        let begin_command = owner_login_command(begin).unwrap();
+        let safe_error = |error: &OrchestrationError| {
+            let raw = format!("{error:?}");
+            // CI must retain the native reason without publishing OAuth queries.
+            let os_code = cli_os_error_code(&raw);
+            let redacted = raw.split_whitespace().map(|word|
+                if word.contains("https://") { "<authorization-url-redacted>" }
+                else { word }).collect::<Vec<_>>().join(" ");
+            format!("{redacted}; safe_os_code={os_code:?}")
         };
-        assert!(String::from_utf8(started).map(|text| text.contains("\"state\":\"PENDING\"")).unwrap_or(false));
-        let prepared = match product.owner_login.as_ref().unwrap() {
-            OwnerLoginSession::Active(active) => active.prepared.clone(),
-            _ => panic!("ordinary login did not retain active child custody"),
-        };
-        let probe_callback = |product: &mut ProductDatabase<'_>, status: &[u8],
-            prepared: &PreparedCustody| -> std::result::Result<(), String> {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            let mut callback_port = None;
-            let mut cli_error_code = None;
-            while Instant::now() < deadline {
-                let reply = match product.dispatch_owner_login_frame(status) {
-                    Ok(reply) => reply,
-                    Err(error) => {
-                        cli_error_code = cli_os_error_code(&format!("{error:?}"));
-                        product.dispatch_owner_login_frame(status)
-                            .map_err(|_| format!("owned login status failed after CLI error; {}",
-                                cli_error_code.clone().unwrap_or_else(|| "no safe CLI OS code observed".into())))?
+        let stages = (|| -> std::result::Result<(_, _), String> {
+            let started = match product.start_owner_device_login(&begin_command, first_scope,
+                |custodian, prepared| custodian.activate(prepared)) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    let status_result = product.dispatch_owner_login_frame(status);
+                    let cancel_result = product.dispatch_owner_login_frame(cancel);
+                    return Err(format!("isolated fixed CLI start: {}; status_error={:?}; cancel_error={:?}",
+                        safe_error(&error), status_result.err().as_ref().map(&safe_error),
+                        cancel_result.err().as_ref().map(&safe_error)));
+                }
+            };
+            assert!(String::from_utf8(started).map(|text| text.contains("\"state\":\"PENDING\"")).unwrap_or(false));
+            let prepared = match product.owner_login.as_ref().unwrap() {
+                OwnerLoginSession::Active(active) => active.prepared.clone(),
+                _ => panic!("ordinary login did not retain active child custody"),
+            };
+            let probe_callback = |product: &mut ProductDatabase<'_>, status: &[u8],
+                prepared: &PreparedCustody| -> std::result::Result<(), String> {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let mut callback_port = None;
+                let mut cli_error_code = None;
+                while Instant::now() < deadline {
+                    let reply = match product.dispatch_owner_login_frame(status) {
+                        Ok(reply) => reply,
+                        Err(error) => {
+                            cli_error_code = cli_os_error_code(&format!("{error:?}"));
+                            product.dispatch_owner_login_frame(status)
+                                .map_err(|_| format!("owned login status failed after CLI error; {}",
+                                    cli_error_code.clone().unwrap_or_else(|| "no safe CLI OS code observed".into())))?
+                        }
+                    };
+                    let text = String::from_utf8(reply)
+                        .map_err(|_| "owner-private status encoding failed".to_owned())?;
+                    // Keep full private output only in the session. A public CI
+                    // failure may report the raw OS code, never URL/query/home.
+                    let mut fields = object(Parser::parse(&text)
+                        .map_err(|_| "status parse failed".to_owned())?)
+                        .ok_or_else(|| "status shape failed".to_owned())?;
+                    let Some(Json::String(value)) = fields.remove(&JsonString::from_str("output")) else {
+                        return Err("owner-private login output missing".into());
+                    };
+                    let output = value.to_well_formed_string()
+                        .ok_or_else(|| "owner-private output malformed".to_owned())?;
+                    if cli_error_code.is_none() { cli_error_code = cli_os_error_code(&output); }
+                    let settled = matches!(fields.remove(&JsonString::from_str("settled")), Some(Json::Bool(true)));
+                    if settled {
+                        return Err(format!("fixed CLI settled before publishing OAuth URL; {}",
+                            cli_error_code.unwrap_or_else(|| "no safe CLI OS code observed".into())));
                     }
-                };
-                let text = String::from_utf8(reply)
-                    .map_err(|_| "owner-private status encoding failed".to_owned())?;
-                // Keep full private output only in the session. A public CI
-                // failure may report the raw OS code, never URL/query/home.
-                let mut fields = object(Parser::parse(&text)
-                    .map_err(|_| "status parse failed".to_owned())?)
-                    .ok_or_else(|| "status shape failed".to_owned())?;
-                let Some(Json::String(value)) = fields.remove(&JsonString::from_str("output")) else {
-                    return Err("owner-private login output missing".into());
-                };
-                let output = value.to_well_formed_string()
-                    .ok_or_else(|| "owner-private output malformed".to_owned())?;
-                if cli_error_code.is_none() { cli_error_code = cli_os_error_code(&output); }
-                let settled = matches!(fields.remove(&JsonString::from_str("settled")), Some(Json::Bool(true)));
-                if settled {
-                    return Err(format!("fixed CLI settled before publishing OAuth URL; {}",
-                        cli_error_code.unwrap_or_else(|| "no safe CLI OS code observed".into())));
+                    let complete_line = output.lines().find(|line|
+                        line.starts_with("https://auth.openai.com/oauth/authorize?")
+                        && output.contains(&format!("{line}\n")));
+                    if let Some(line) = complete_line {
+                        callback_port = callback_port_from_authorization_line(line);
+                        if callback_port.is_none() { return Err("CLI URL has no permitted localhost callback".into()); }
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
                 }
-                let complete_line = output.lines().find(|line|
-                    line.starts_with("https://auth.openai.com/oauth/authorize?")
-                    && output.contains(&format!("{line}\n")));
-                if let Some(line) = complete_line {
-                    callback_port = callback_port_from_authorization_line(line);
-                    if callback_port.is_none() { return Err("CLI URL has no permitted localhost callback".into()); }
-                    break;
+                let callback_port = callback_port
+                    .ok_or_else(|| format!("fixed CLI did not publish a complete OAuth URL while PENDING; {}",
+                        cli_error_code.unwrap_or_else(|| "no safe CLI OS code observed".into())))?;
+                let child = product.process_custodian.active(&prepared.ticket)
+                    .ok_or_else(|| "owned login child missing".to_owned())?;
+                if child.identity().pid != prepared.identity.pid
+                    || child.identity().creation_time_100ns != prepared.identity.creation_time_100ns {
+                    return Err("retained child identity changed".into());
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                let powershell = Path::new(&std::env::var("SystemRoot")
+                    .map_err(|_| "SystemRoot missing".to_owned())?)
+                    .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+                let owner_query = format!("(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort {callback_port} -State Listen -ErrorAction Stop).OwningProcess");
+                let owner = std::process::Command::new(powershell)
+                    .args(["-NoProfile", "-NonInteractive", "-Command", &owner_query])
+                    .output().map_err(|error| format!("Windows listener owner query failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+                if !owner.status.success() { return Err("Windows listener owner query failed".into()); }
+                let listener_pid: u32 = String::from_utf8(owner.stdout)
+                    .map_err(|_| "listener PID encoding failed".to_owned())?.trim().parse()
+                    .map_err(|_| "listener PID parse failed".to_owned())?;
+                if listener_pid != child.identity().pid { return Err("listener does not belong to retained child".into()); }
+                let address = format!("127.0.0.1:{callback_port}");
+                let mut socket = TcpStream::connect_timeout(
+                    &address.parse().unwrap(), Duration::from_secs(5))
+                    .map_err(|error| format!("callback socket connect failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+                socket.set_read_timeout(Some(Duration::from_secs(5)))
+                    .map_err(|error| format!("callback socket timeout setup failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+                let callback_request = format!("GET /auth/callback HTTP/1.1\r\nHost: localhost:{callback_port}\r\nConnection: close\r\n\r\n");
+                socket.write_all(callback_request.as_bytes())
+                    .map_err(|error| format!("callback socket write failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+                let mut response = String::new();
+                socket.read_to_string(&mut response)
+                    .map_err(|error| format!("callback socket read failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+                let status_line = response.lines().next().unwrap_or("<missing>");
+                let http_code = status_line.split_whitespace().nth(1)
+                    .filter(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()))
+                    .unwrap_or("<invalid>");
+                if http_code != "400" || !response.contains("State mismatch") {
+                    return Err(format!("real fixed CLI callback did not reject missing state; HTTP code: {http_code}"));
+                }
+                Ok(())
+            };
+            let isolated_probe = probe_callback(&mut product, status, &prepared);
+            let cancelled = product.dispatch_owner_login_frame(cancel);
+            let settled = match cancelled {
+                Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
+                Err(_) => product.dispatch_owner_login_frame(status).ok()
+                    .and_then(|reply| String::from_utf8(reply).ok())
+                    .is_some_and(|text| text.contains("\"settled\":true")),
+            };
+            if !settled { return Err(format!("original ordinary OAuth cancellation did not settle; lpac={isolated_probe:?}")); }
+            assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
+                Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
+                "no-code/state callback must not write an auth file");
+            // Diagnostic control: same registered empty CODEX_HOME, fixed CLI,
+            // environment, arguments and cwd. Remove the LPAC identity/capabilities
+            // AND its bound shim. This compares the two launch combinations; it
+            // does not independently attribute a difference to the LPAC token.
+            // The production launch and its validation stay unchanged.
+            for port in [1455, 1457] {
+                let probe = TcpListener::bind(("127.0.0.1", port))
+                    .expect("OAuth callback port occupied before unisolated control");
+                drop(probe);
             }
-            let callback_port = callback_port
-                .ok_or_else(|| format!("fixed CLI did not publish a complete OAuth URL while PENDING; {}",
-                    cli_error_code.unwrap_or_else(|| "no safe CLI OS code observed".into())))?;
-            let child = product.process_custodian.active(&prepared.ticket)
-                .ok_or_else(|| "owned login child missing".to_owned())?;
-            if child.identity().pid != prepared.identity.pid
-                || child.identity().creation_time_100ns != prepared.identity.creation_time_100ns {
-                return Err("retained child identity changed".into());
-            }
-            let powershell = Path::new(&std::env::var("SystemRoot")
-                .map_err(|_| "SystemRoot missing".to_owned())?)
-                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-            let owner_query = format!("(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort {callback_port} -State Listen -ErrorAction Stop).OwningProcess");
-            let owner = std::process::Command::new(powershell)
-                .args(["-NoProfile", "-NonInteractive", "-Command", &owner_query])
-                .output().map_err(|error| format!("Windows listener owner query failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
-            if !owner.status.success() { return Err("Windows listener owner query failed".into()); }
-            let listener_pid: u32 = String::from_utf8(owner.stdout)
-                .map_err(|_| "listener PID encoding failed".to_owned())?.trim().parse()
-                .map_err(|_| "listener PID parse failed".to_owned())?;
-            if listener_pid != child.identity().pid { return Err("listener does not belong to retained child".into()); }
-            let address = format!("127.0.0.1:{callback_port}");
-            let mut socket = TcpStream::connect_timeout(
-                &address.parse().unwrap(), Duration::from_secs(5))
-                .map_err(|error| format!("callback socket connect failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
-            socket.set_read_timeout(Some(Duration::from_secs(5)))
-                .map_err(|error| format!("callback socket timeout setup failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
-            let callback_request = format!("GET /auth/callback HTTP/1.1\r\nHost: localhost:{callback_port}\r\nConnection: close\r\n\r\n");
-            socket.write_all(callback_request.as_bytes())
-                .map_err(|error| format!("callback socket write failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
-            let mut response = String::new();
-            socket.read_to_string(&mut response)
-                .map_err(|error| format!("callback socket read failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
-            let status_line = response.lines().next().unwrap_or("<missing>");
-            let http_code = status_line.split_whitespace().nth(1)
-                .filter(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()))
-                .unwrap_or("<invalid>");
-            if http_code != "400" || !response.contains("State mismatch") {
-                return Err(format!("real fixed CLI callback did not reject missing state; HTTP code: {http_code}"));
-            }
-            Ok(())
-        };
-        let isolated_probe = probe_callback(&mut product, status, &prepared);
-        let cancelled = product.dispatch_owner_login_frame(cancel);
-        let settled = match cancelled {
-            Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
-            Err(_) => product.dispatch_owner_login_frame(status).ok()
-                .and_then(|reply| String::from_utf8(reply).ok())
-                .is_some_and(|text| text.contains("\"settled\":true")),
-        };
-        if !settled { panic!("original ordinary OAuth request did not settle after cancellation"); }
-        assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
-            Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
-            "no-code/state callback must not write an auth file");
-        // Positive control: use the same registered empty CODEX_HOME, fixed
-        // binary, clean environment and path compatibility, changing only
-        // the test launch's AppContainer isolation. The product stays LPAC.
-        for port in [1455, 1457] {
-            let probe = TcpListener::bind(("127.0.0.1", port))
-                .expect("OAuth callback port occupied before unisolated control");
-            drop(probe);
-        }
-        let revision = product.user_instance_revision("instanceA")
-            .unwrap_or_else(|_| panic!("unisolated control revision read failed"));
-        let mut control_scope = product.prepare_owner_codex_login("instanceA")
-            .unwrap_or_else(|_| panic!("unisolated control production preparation failed"));
-        let production_login = control_scope.login.clone();
-        assert!(production_login.launch.path_compat.is_some());
-        assert!(production_login.launch.environment.as_ref().is_some_and(|environment|
-            environment.iter().any(|(key, value)| key == "CODEX_HOME"
-                && value == home.path.to_string_lossy().as_ref())));
-        control_scope.login.launch.app_container_profile = None;
-        control_scope.login.launch.app_container_internet_client = false;
-        control_scope.login.launch.app_container_cli_identity_services = false;
-        assert_eq!(control_scope.login.binding, production_login.binding);
-        assert!(control_scope.login.launch.environment == production_login.launch.environment);
-        assert!(control_scope.login.launch.path_compat.is_some());
-        let control_begin = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
-        let control_command = owner_login_command(control_begin.as_bytes()).unwrap();
-        let control_status = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"status\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
-        let control_cancel = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"cancel\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
-        let control_started = match product.start_owner_device_login(&control_command, control_scope,
-            |custodian, prepared| custodian.activate(prepared)) {
-            Ok(reply) => reply,
-            Err(_) => {
-                let _ = product.dispatch_owner_login_frame(control_status.as_bytes());
-                let _ = product.dispatch_owner_login_frame(control_cancel.as_bytes());
-                panic!("unisolated fixed CLI control start failed");
-            }
-        };
-        assert!(String::from_utf8(control_started)
-            .map(|text| text.contains("\"state\":\"PENDING\"")).unwrap_or(false));
-        let control_prepared = match product.owner_login.as_ref().unwrap() {
-            OwnerLoginSession::Active(active) => active.prepared.clone(),
-            _ => panic!("unisolated control lost active child custody"),
-        };
-        let control_probe = probe_callback(&mut product, control_status.as_bytes(), &control_prepared);
-        let control_cancelled = product.dispatch_owner_login_frame(control_cancel.as_bytes());
-        let control_settled = match control_cancelled {
-            Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
-            Err(_) => product.dispatch_owner_login_frame(control_status.as_bytes()).ok()
-                .and_then(|reply| String::from_utf8(reply).ok())
-                .is_some_and(|text| text.contains("\"settled\":true")),
-        };
-        if !control_settled { panic!("unisolated control did not settle after cancellation"); }
-        assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
-            Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
-            "unisolated no-code/state callback must not write an auth file");
-        product.close_checked().unwrap_or_else(|_| panic!("ordinary OAuth custody did not close cleanly"));
+            let revision = product.user_instance_revision("instanceA")
+                .unwrap_or_else(|_| panic!("unisolated control revision read failed"));
+            let mut control_scope = product.prepare_owner_codex_login("instanceA")
+                .unwrap_or_else(|_| panic!("unisolated control production preparation failed"));
+            let production_login = control_scope.login.clone();
+            assert_eq!(first_launch.launch.application, production_login.launch.application);
+            assert_eq!(first_launch.binding, production_login.binding);
+            assert_eq!(first_launch.launch.arguments, production_login.launch.arguments);
+            assert_eq!(first_launch.launch.current_directory, production_login.launch.current_directory);
+            assert_eq!(first_launch.launch.environment, production_login.launch.environment);
+            assert!(first_launch.launch.path_compat.is_some());
+            assert!(production_login.launch.path_compat.is_some());
+            assert!(production_login.launch.environment.as_ref().is_some_and(|environment|
+                environment.iter().any(|(key, value)| key == "CODEX_HOME"
+                    && value == home.path.to_string_lossy().as_ref())));
+            control_scope.login.launch.app_container_profile = None;
+            control_scope.login.launch.app_container_internet_client = false;
+            control_scope.login.launch.app_container_cli_identity_services = false;
+            control_scope.login.launch.path_compat = None;
+            assert_eq!(control_scope.login.binding, production_login.binding);
+            assert!(control_scope.login.launch.environment == production_login.launch.environment);
+            assert!(control_scope.login.launch.path_compat.is_none());
+            drop(production_login); // release the cloned module lock before teardown
+            let control_begin = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
+            let control_command = owner_login_command(control_begin.as_bytes()).unwrap();
+            let control_status = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"status\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
+            let control_cancel = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"cancel\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
+            let control_started = match product.start_owner_device_login(&control_command, control_scope,
+                |custodian, prepared| custodian.activate(prepared)) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    let status_result = product.dispatch_owner_login_frame(control_status.as_bytes());
+                    let cancel_result = product.dispatch_owner_login_frame(control_cancel.as_bytes());
+                    return Err(format!("unisolated fixed CLI start: {}; lpac={isolated_probe:?}; status_error={:?}; cancel_error={:?}",
+                        safe_error(&error), status_result.err().as_ref().map(&safe_error),
+                        cancel_result.err().as_ref().map(&safe_error)));
+                }
+            };
+            assert!(String::from_utf8(control_started)
+                .map(|text| text.contains("\"state\":\"PENDING\"")).unwrap_or(false));
+            let control_prepared = match product.owner_login.as_ref().unwrap() {
+                OwnerLoginSession::Active(active) => active.prepared.clone(),
+                _ => panic!("unisolated control lost active child custody"),
+            };
+            let control_probe = probe_callback(&mut product, control_status.as_bytes(), &control_prepared);
+            let control_cancelled = product.dispatch_owner_login_frame(control_cancel.as_bytes());
+            let control_settled = match control_cancelled {
+                Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
+                Err(_) => product.dispatch_owner_login_frame(control_status.as_bytes()).ok()
+                    .and_then(|reply| String::from_utf8(reply).ok())
+                    .is_some_and(|text| text.contains("\"settled\":true")),
+            };
+            if !control_settled { return Err(format!("unisolated cancellation did not settle; unisolated={control_probe:?}; lpac={isolated_probe:?}")); }
+            assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
+                Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
+                "unisolated no-code/state callback must not write an auth file");
+            Ok((isolated_probe, control_probe))
+        })();
+        drop(first_launch);
+        product.close_checked().unwrap_or_else(|error|
+            panic!("ordinary OAuth custody close failed: {error:?}"));
         drop(root);
-        fs::remove_dir_all(path).unwrap_or_else(|_| panic!("ordinary OAuth isolated test root cleanup failed"));
-        assert!(control_probe.is_ok() && isolated_probe.is_ok(),
-            "actual fixed CLI callback stages: unisolated={control_probe:?}; lpac={isolated_probe:?}");
+        fs::remove_dir_all(path).unwrap_or_else(|error|
+            panic!("ordinary OAuth test cleanup failed: {error}; raw_os_error={:?}", error.raw_os_error()));
+        match stages {
+            Ok((isolated_probe, control_probe)) => assert!(control_probe.is_ok() && isolated_probe.is_ok(),
+                "actual fixed CLI callback stages (custody and root cleanup complete): unisolated_no_shim={control_probe:?}; lpac_with_shim={isolated_probe:?}"),
+            Err(error) => panic!("actual fixed CLI callback stages (custody and root cleanup complete): {error}"),
+        }
     }
 }
