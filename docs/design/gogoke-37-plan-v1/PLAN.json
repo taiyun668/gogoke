@@ -23,7 +23,7 @@
   },
   {
    "path": "AGENTS.md",
-   "blob": "81535646e1837f061bd607328fbe21f77c0df14e"
+   "blob": "30f27192e3b8971de2b274dd90afb8a32bb464a0"
   },
   {
    "path": "docs/model-routing.md",
@@ -1418,6 +1418,7 @@
      "id": "G.0",
      "milestone": "M1",
      "deliverables": [
+      "a browser preview of the UI: the vite dev server on the signed Node with the K-UI fakes behind the Tauri bridge, so that UI and interaction changes are seen in seconds without a native build, signing or installation; real data and the real app window are verified at the stable point",
       "minimal instance page through the opened Settings slot: instance list and four visible states of the Codex test instance, read from K-UI: not installed, not logged in, logged in, and error, where error includes a failed login with its raw reason; the new-version notice and general CLI exhaustion stay at M2 with F.2 and V13",
       "login started from the instance page: the host opens the browser, the device code has a copy action, progress refreshes by itself; on failure the raw reason is shown, on success the page shows logged in from the host's detection; after the page is closed and reopened or the UI restarts, the page reads the same login session and its result",
       "no login entry in the legacy Codex settings page"
