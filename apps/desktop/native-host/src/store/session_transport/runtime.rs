@@ -135,7 +135,7 @@ pub(crate) fn current_instance_pin(
 ) -> Result<InstancePin, AdmissionError> {
     let row = Statement::prepare(db.as_ptr(),
         "SELECT driver_id,program_digest,version FROM main.gogoke_v37_instances \
-         WHERE instance_id=?1 AND install_state='INSTALLED' AND login_state='LOGGED_IN'")?;
+         WHERE instance_id=?1 AND login_state='LOGGED_IN'")?;
     row.bind_text(1, instance_id)?;
     if !row.step_row()? { return Err(AdmissionError::Denied); }
     let pin = InstancePin { driver_id: row.column_text(0)?,
@@ -144,6 +144,12 @@ pub(crate) fn current_instance_pin(
         || !pin.digest.starts_with("sha256:")
         || !pin.digest[7..].bytes().all(|b| b.is_ascii_hexdigit()) || pin.version.is_empty()
         || row.step_row()? { return Err(AdmissionError::Denied); }
+    drop(row);
+    // F's install-state read uses this same catalog observation. Recheck the
+    // registered CLI bytes and version at every H admission; a persisted
+    // install_state is not maintained by that read.
+    instance::locate_pinned_program(&pin.driver_id, &pin.digest, &pin.version)
+        .map_err(AdmissionError::Catalog)?;
     Ok(pin)
 }
 
@@ -494,18 +500,32 @@ mod tests {
         let root = RootLock::acquire(&folder).unwrap();
         let path = folder.join("state.sqlite");
         let mut db = create_new(&root, &path).unwrap();
-        db.execute("CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY,driver_id TEXT,program_digest TEXT,version TEXT,install_state TEXT,login_state TEXT) STRICT").unwrap();
-        let digest = format!("sha256:{}", "a".repeat(64));
-        db.execute(&format!("INSERT INTO gogoke_v37_instances VALUES('instanceA','codex','{digest}','1.0','INSTALLED','UNKNOWN')")).unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        let catalog = instance::discover_program("codex").expect("actual fixed CLI catalog");
+        instance::register_instance(&mut db, &root, &instance::Registration {
+            request_id: "registerA", request_bytes: b"current H pin fixture",
+            instance_id: "instanceA", driver_id: "codex", program: &catalog,
+        }).unwrap();
+        let row = Statement::prepare(db.as_ptr(),
+            "SELECT program_digest,version,install_state FROM gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+        assert!(row.step_row().unwrap());
+        let digest = row.column_text(0).unwrap();
+        let version = row.column_text(1).unwrap();
+        assert_eq!(row.column_text(2).unwrap(), "UNKNOWN");
+        drop(row);
         assert!(matches!(current_instance_pin(&db, "instanceA"), Err(AdmissionError::Denied)));
         db.execute("UPDATE gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='instanceA'").unwrap();
-        assert_eq!(current_instance_pin(&db, "instanceA").unwrap().digest, digest);
-        db.execute("UPDATE gogoke_v37_instances SET program_digest='caller-value' WHERE instance_id='instanceA'").unwrap();
-        assert!(matches!(current_instance_pin(&db, "instanceA"), Err(AdmissionError::Denied)));
+        let current = current_instance_pin(&db, "instanceA").unwrap();
+        assert_eq!((current.digest, current.version), (digest, version));
+        db.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='sha256:{}' WHERE instance_id='instanceA'", "0".repeat(64))).unwrap();
+        assert!(matches!(current_instance_pin(&db, "instanceA"),
+            Err(AdmissionError::Catalog(instance::CatalogError::IdentityChanged))));
+        db.execute("UPDATE gogoke_v37_instances SET driver_id='missing-provider' WHERE instance_id='instanceA'").unwrap();
+        assert!(matches!(current_instance_pin(&db, "instanceA"),
+            Err(AdmissionError::Catalog(instance::CatalogError::UnknownDriver))));
         db.close_checked().unwrap();
         drop(root);
-        std::fs::remove_file(path).unwrap();
-        std::fs::remove_dir(folder).unwrap();
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

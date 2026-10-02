@@ -30,9 +30,9 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     name: Native host Windows real process axes
-    # Full real-process/library gates and eight compiled mutation/restore pairs.
-    # Two added pairs extend the previously measured six-pair job budget.
-    timeout-minutes: 65
+    # Full real-process/library gates and eleven compiled mutation/restore pairs.
+    # R10 adds three independent pairs to the measured eight-pair job workload.
+    timeout-minutes: 75
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
@@ -217,6 +217,9 @@ jobs:
             @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
             @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
             @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
+            @{ id = 'native-current-install-pin'; filter = 'pin_is_read_from_same_verified_store_and_requires_observed_login' },
+            @{ id = 'native-install-admission'; filter = 'product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial' },
+            @{ id = 'native-missing-program'; filter = 'rejects_root_or_platform_version_mismatch_and_missing_program' },
             @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
             @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
@@ -455,6 +458,51 @@ jobs:
             $restored | Out-Host
             if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
               throw "$($case.axis) unchanged test must pass after exact production restoration"
+            }
+          }
+      - name: Verify native installation facts with independent compiled mutations
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $cases = @(
+            @{ axis='R10-admission'; path='apps/desktop/native-host/src/store/session_transport/runtime.rs';
+               needle="WHERE instance_id=?1 AND login_state='LOGGED_IN'";
+               stale="WHERE instance_id=?1 AND install_state='INSTALLED' AND login_state='LOGGED_IN'";
+               filter='pin_is_read_from_same_verified_store_and_requires_observed_login' },
+            @{ axis='R10-rpc'; path='apps/desktop/native-host/src/store/session_transport/rpc_journal.rs';
+               needle="AND i.login_state='LOGGED_IN'";
+               stale="AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN'";
+               filter='actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
+            @{ axis='R10-resume'; path='apps/desktop/native-host/src/store/session_transport/episodes.rs';
+               needle="AND i.login_state='LOGGED_IN'";
+               stale="AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN'";
+               filter='actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' }
+          )
+          foreach ($case in $cases) {
+            $original = [IO.File]::ReadAllBytes($case.path)
+            $source = [Text.Encoding]::UTF8.GetString($original)
+            $hash = (Get-FileHash -LiteralPath $case.path).Hash
+            if ([regex]::Matches($source,[regex]::Escape($case.needle)).Count -ne 1) {
+              throw "$($case.axis) native fact predicate must match once"
+            }
+            try {
+              [IO.File]::WriteAllText($case.path,$source.Replace($case.needle,$case.stale),[Text.UTF8Encoding]::new($false))
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+              $code = $LASTEXITCODE
+              $output | Out-Host
+              if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) must compile and fail its unchanged native behavior test"
+              }
+            } finally {
+              [IO.File]::WriteAllBytes($case.path,$original)
+              if ((Get-FileHash -LiteralPath $case.path).Hash -cne $hash) { throw "$($case.axis) exact source restoration failed" }
+            }
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+            $output | Out-Host
+            if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+              throw "$($case.axis) unchanged test must pass after exact restoration"
             }
           }
       - name: Verify confirmed forced Job stop with a compiled failing mutation

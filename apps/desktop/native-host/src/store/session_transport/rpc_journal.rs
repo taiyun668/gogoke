@@ -280,7 +280,7 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
              AND h.generation=e.generation AND h.kind='SESSION' AND h.state='ACTIVE'
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
              AND i.driver_id='codex' AND i.version='0.149.0'
-             AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN'
+             AND i.login_state='LOGGED_IN'
              AND i.program_digest=c.binary_digest_sha256
              AND i.program_digest=oldc.binary_digest_sha256
           WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3

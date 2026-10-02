@@ -5,7 +5,8 @@ use crate::store::same_open::route_b_test_guard;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn operation(family: &str, verb: &str, id: &str, target: &str, revision: u64, payload: &str) -> V37Request {
-    decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"{family}","operation":"{verb}","requestId":"{id}","targetId":"{target}","domainId":"projectA","expectedRevision":"{revision}","payload":{payload}}}"#).as_bytes()).unwrap()
+    let domain = if family == "K-INSTANCE" { "global" } else { "projectA" };
+    decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"{family}","operation":"{verb}","requestId":"{id}","targetId":"{target}","domainId":"{domain}","expectedRevision":"{revision}","payload":{payload}}}"#).as_bytes()).unwrap()
 }
 
 #[test]
@@ -17,22 +18,29 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let root = RootLock::acquire(&path).unwrap();
     let database = path.join("state.sqlite");
     let mut product = ProductDatabase::open(&root, &database).unwrap();
-    let pin = instance::discover_program("codex").expect("actual cloud-pinned CLI catalog");
-    instance::register_instance(&mut product.connection, &root, &instance::Registration {
-        request_id: "register-cli", request_bytes: b"real cloud CLI registration",
-        instance_id: "instanceA", driver_id: "codex", program: &pin,
+    let register = operation("K-INSTANCE", "register", "register-cli", "instanceA", 0,
+        r#"{"driverId":"codex"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
+        V37Status::Applied, "actual cloud-pinned CLI User registration");
+    let install = operation("K-INSTANCE", "install-state", "read-real-install", "instanceA", 1, "{}");
+    let install_receipt = h::decode_receipt(&product.dispatch_user_request(&install).unwrap()).unwrap();
+    assert_eq!(install_receipt.status, V37Status::Applied);
+    assert_eq!((install_receipt.previous_revision, install_receipt.revision), (1, 1),
+        "real catalog install-state is observational");
+    assert!(String::from_utf8_lossy(&install_receipt.raw_bytes).contains("\"installed\":true"));
+    let stored = Statement::prepare(product.connection.as_ptr(),
+        "SELECT install_state,revision FROM gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+    assert!(stored.step_row().unwrap());
+    assert_eq!((stored.column_text(0).unwrap(), stored.column_text(1).unwrap()),
+        ("UNKNOWN".into(), "1".into()), "read must not manufacture INSTALLED");
+    drop(stored);
+    // Only login presence is synthetic. The installed CLI fact above and the
+    // H launch below are the actual fixed catalog, not a database substitute.
+    instance::record_observation(&mut product.connection, &root, &instance::ObservationRequest {
+        request_id: "fixture-login-admission", request_bytes: b"fixture-login-admission",
+        instance_id: "instanceA", expected_revision: 1,
+        observation: instance::InstanceObservation::LoggedIn,
     }).unwrap();
-    // Arrange the login-admission field only. This test never claims Owner
-    // authentication or a model response: its real CLI calls stop at thread/start.
-    for (id, revision, observation) in [
-        ("real-install-observation", 1, instance::InstanceObservation::Installed),
-        ("fixture-login-admission", 2, instance::InstanceObservation::LoggedIn),
-    ] {
-        instance::record_observation(&mut product.connection, &root, &instance::ObservationRequest {
-            request_id: id, request_bytes: id.as_bytes(), instance_id: "instanceA",
-            expected_revision: revision, observation,
-        }).unwrap();
-    }
     instance::set_instance_concurrency_cap(&mut product.connection, &product.owner, "instanceA", 1).unwrap();
     seat::set_project_parallel_cap(&mut product.connection, &product.owner, "projectA", 1).unwrap();
     seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
@@ -456,6 +464,12 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
         r#"{"seatId":"seatA","generation":"6"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&release).unwrap()).unwrap().status, V37Status::Applied);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
+    let final_instance = Statement::prepare(product.connection.as_ptr(),
+        "SELECT install_state,revision FROM gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+    assert!(final_instance.step_row().unwrap());
+    assert_eq!((final_instance.column_text(0).unwrap(), final_instance.column_text(1).unwrap()),
+        ("UNKNOWN".into(), "2".into()), "H open, RPC and recovery must not rewrite F's read-only install fact");
+    drop(final_instance);
     product.close_checked().unwrap();
     let mut product = ProductDatabase::open(&root, &database).unwrap();
     let replay=h::decode_receipt(&product.dispatch_user_request(&append).unwrap()).unwrap();

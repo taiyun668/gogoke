@@ -108,24 +108,18 @@ fn product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial() {
     let root = RootLock::acquire(&path).unwrap();
     let database = path.join("state.sqlite");
     let mut product = ProductDatabase::open(&root, &database).unwrap();
-    // This controlled observation is used only for storage/admission. No CLI
-    // launch, login validity, vendor capability or Win11 result is asserted.
-    let binary = path.join("pin-fixture.bin");
-    std::fs::write(&binary, b"admission-only native pin fixture").unwrap();
-    let pin = instance::ProgramObservation::observe(&binary, "0.149.0").unwrap();
-    instance::register_instance(&mut product.connection, &root, &instance::Registration {
-        request_id: "regA", request_bytes: b"admission-only registration fixture",
-        instance_id: "instanceA", driver_id: "codex", program: &pin,
+    let register = decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"regA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#).unwrap();
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
+        V37Status::Applied, "actual fixed CLI must be registered by User ingress");
+    let install = decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"install-state","requestId":"installA","targetId":"instanceA","domainId":"global","expectedRevision":"1","payload":{}}"#).unwrap();
+    let fact = h::decode_receipt(&product.dispatch_user_request(&install).unwrap()).unwrap();
+    assert_eq!((fact.status, fact.previous_revision, fact.revision), (V37Status::Applied, 1, 1));
+    // Capacity behavior arranges login presence only. Current installation is
+    // proven by the real catalog; the F read leaves stored UNKNOWN untouched.
+    instance::record_observation(&mut product.connection, &root, &instance::ObservationRequest {
+        request_id: "loginA", request_bytes: b"loginA", instance_id: "instanceA",
+        expected_revision: 1, observation: instance::InstanceObservation::LoggedIn,
     }).unwrap();
-    for (id, revision, observation) in [
-        ("installA", 1, instance::InstanceObservation::Installed),
-        ("loginA", 2, instance::InstanceObservation::LoggedIn),
-    ] {
-        instance::record_observation(&mut product.connection, &root, &instance::ObservationRequest {
-            request_id: id, request_bytes: id.as_bytes(), instance_id: "instanceA",
-            expected_revision: revision, observation,
-        }).unwrap();
-    }
     seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
         domain_id: "projectA", template_id: "templateA", settings_json: b"{}",
     }).unwrap();
@@ -140,6 +134,24 @@ fn product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial() {
     seat::set_project_parallel_cap(&mut product.connection, &product.owner, "projectA", 1).unwrap();
     assert_eq!(status(&mut product, &reserve_a), V37Status::Denied);
     instance::set_instance_concurrency_cap(&mut product.connection, &product.owner, "instanceA", 2).unwrap();
+    let stored_pin = Statement::prepare(product.connection.as_ptr(),
+        "SELECT program_digest FROM gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+    assert!(stored_pin.step_row().unwrap());
+    let actual_digest = stored_pin.column_text(0).unwrap();
+    drop(stored_pin);
+    product.connection.execute("UPDATE gogoke_v37_instances SET driver_id='missing-provider' WHERE instance_id='instanceA'").unwrap();
+    let missing = product.dispatch_user_request(&request("admission-reserve", "probeMissing", "sessionMissing", "seatA", 0)).unwrap();
+    assert_eq!(h::decode_receipt(&missing).unwrap().status,
+        V37Status::Unknown, "a missing native catalog driver cannot reserve");
+    assert!(String::from_utf8_lossy(&missing).contains("UnknownDriver"));
+    product.connection.execute("UPDATE gogoke_v37_instances SET driver_id='codex' WHERE instance_id='instanceA'").unwrap();
+    product.connection.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='sha256:{}' WHERE instance_id='instanceA'", "0".repeat(64))).unwrap();
+    let changed = product.dispatch_user_request(&request("admission-reserve", "probeChanged", "sessionChanged", "seatA", 0)).unwrap();
+    assert_eq!(h::decode_receipt(&changed).unwrap().status,
+        V37Status::Unknown, "changed CLI pin cannot reserve");
+    assert!(String::from_utf8_lossy(&changed).contains("IdentityChanged"));
+    product.connection.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='{actual_digest}' WHERE instance_id='instanceA'")).unwrap();
+    assert_eq!(seat::get(&product.connection, "projectA", "seatA").unwrap().unwrap().state, State::Idle);
     assert_eq!(status(&mut product, &reserve_a), V37Status::Applied);
     assert_eq!(status(&mut product, &reserve_a), V37Status::Replayed);
     let reserve_b = request("admission-reserve", "reserveB", "sessionB", "seatB", 0);
