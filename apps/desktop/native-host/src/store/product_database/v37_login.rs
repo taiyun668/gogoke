@@ -1024,7 +1024,11 @@ impl<'root> ProductDatabase<'root> {
         }
         if let (Some(runtime), Some(identity)) = (&pending.custody.runtime_home,
             &pending.custody.runtime_identity) {
-            if let Err(error) = remove_owned_runtime(runtime, identity) {
+            let cleanup = if pending.custody.operation_id.as_deref()
+                == Some(owner_login_operation_id(command).as_str()) {
+                self.cleanup_confirmed_owner_login_runtime(&pending.instance_id, runtime, identity)
+            } else { remove_owned_runtime(runtime, identity) };
+            if let Err(error) = cleanup {
                 pending.output.push_str(&format!("\naccount/read runtime cleanup: {error:?}"));
             }
         }
@@ -1180,13 +1184,12 @@ impl<'root> ProductDatabase<'root> {
             .map_err(OrchestrationError::V37StoreFailure)
     }
 
-    fn finish_confirmed_owner_login(&mut self, command: &OwnerLoginCommand,
-        mut active: ActiveOwnerLogin, cancelled: bool, login_failure: Option<String>) -> Result<Vec<u8>> {
-        let cleanup = (|| -> Result<()> {
-            let home = instance::resolve_codex_instance_home(&self.connection, self.root, &active.instance_id)
+    fn cleanup_confirmed_owner_login_runtime(&self, instance_id: &str,
+        runtime: &Path, identity: &RootIdentity) -> Result<()> {
+            let home = instance::resolve_codex_instance_home(&self.connection, self.root, instance_id)
                 .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                     "login cleanup registered home: {error:?}")))?;
-            if active.runtime_home.parent() != Some(home.path.as_path()) {
+            if runtime.parent() != Some(home.path.as_path()) {
                 return Err(OrchestrationError::AccessDenied);
             }
             // Preparation strictly verified the whole original home before
@@ -1194,8 +1197,13 @@ impl<'root> ProductDatabase<'root> {
             // cache entry is unlinked after durable Job/writer stop, before
             // the unchanged strict LPAC account/read preparation.
             login_cache::remove_generated_cache_junction(self.root, &home)?;
-            remove_owned_runtime(&active.runtime_home, &active.runtime_identity)
-        })();
+            remove_owned_runtime(runtime, identity)
+    }
+
+    fn finish_confirmed_owner_login(&mut self, command: &OwnerLoginCommand,
+        mut active: ActiveOwnerLogin, cancelled: bool, login_failure: Option<String>) -> Result<Vec<u8>> {
+        let cleanup = self.cleanup_confirmed_owner_login_runtime(&active.instance_id,
+            &active.runtime_home, &active.runtime_identity);
         let state_result = if cleanup.is_ok() && login_failure.is_none() {
             self.owner_login_account_state(command)
         } else {
@@ -2391,7 +2399,9 @@ mod tests {
             let frame = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"first_{kind}\",\"expectedRevision\":1}}");
             let command = owner_login_command(frame.as_bytes()).unwrap();
             let mut launch = product.prepare_owner_codex_login("instanceA").unwrap();
-            launch.login.launch.arguments = vec!["--version".into()];
+            if kind != "active" { launch.login.launch.arguments = vec!["--version".into()]; }
+            let original_home = launch.runtime_home.parent().unwrap().to_path_buf();
+            let generated_cache = original_home.join("AppData/Local/Microsoft/Windows/INetCache/Content.IE5");
             if kind == "digest" { launch.login.binding.binary_digest_sha256 = format!("sha256:{}","0".repeat(64)); }
             if kind == "prepared" {
                 product.connection.execute("CREATE TRIGGER fail_first_prepare BEFORE INSERT ON gogoke_coordination_process_custody WHEN NEW.operation_id LIKE 'owner-login-%' BEGIN SELECT RAISE(ABORT,'controlled first prepare record failure'); END").unwrap();
@@ -2401,6 +2411,21 @@ mod tests {
             }
             let error = if kind == "resume" {
                 product.start_owner_device_login(&command,launch,|custodian,prepared|custodian.activate_with_failed_resume_for_test(prepared)).unwrap_err()
+            } else if kind == "active" {
+                // Let the same fixed ordinary CLI produce its real Windows
+                // profile cache before the existing controlled ACTIVE SQL
+                // failure. No OAuth code/state or credentials are supplied.
+                product.start_owner_device_login(&command, launch, |custodian, prepared| {
+                    let activated = custodian.activate(prepared)?;
+                    let deadline = Instant::now() + Duration::from_secs(30);
+                    while !fs::symlink_metadata(&generated_cache).is_ok() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    let observed = fs::symlink_metadata(&generated_cache)
+                        .expect("actual fixed CLI must generate cache before controlled ACTIVE failure");
+                    assert_eq!(observed.file_attributes() & (REPARSE_POINT | 0x10), REPARSE_POINT | 0x10);
+                    Ok(activated)
+                }).unwrap_err()
             } else {
                 product.start_owner_device_login(&command,launch,|custodian,prepared|custodian.activate(prepared)).unwrap_err()
             };
@@ -2412,7 +2437,16 @@ mod tests {
             let Json::String(output) = &fields[&JsonString::from_str("output")] else { panic!("retained output") };
             assert!(output.to_well_formed_string().unwrap().contains(&cause),"{kind}: original error retained after the first Err");
             if kind == "prepared" { product.connection.execute("DROP TRIGGER fail_first_prepare").unwrap(); }
-            if kind == "active" { product.connection.execute("DROP TRIGGER fail_first_active").unwrap(); }
+            if kind == "active" {
+                product.connection.execute("DROP TRIGGER fail_first_active").unwrap();
+                assert!(matches!(fs::symlink_metadata(&generated_cache),
+                    Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
+                    "original first CLI failure reconciliation must unlink generated cache");
+                let observation = product.dispatch_owner_login_observation(
+                    &request("login-state", "afterFirstActiveFailure", 1, "{}")).unwrap();
+                assert!(String::from_utf8(observation).unwrap().contains("\"state\":\"LOGGED_OUT\""),
+                    "same original home must remain admissible to LPAC after first CLI failure");
+            }
         }
         product.close_checked().unwrap();
         drop(root);

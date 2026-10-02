@@ -193,5 +193,15 @@
     "validation": "NEW_EXACT_SOURCE_CLOUD_AND_ORIGINAL_WIN11_PENDING",
     "acceptance": false
   },
-  "state": "NARROW_CACHE_ENTRY_CORRECTION_PREPARING_EXACT_SOURCE_CLOUD"
+  "cacheSettlementBranchCorrection": {
+    "finding": "After ordinary CLI activation, an ACTIVE database write failure retains first-child custody in PendingAccount; that confirmed-stop path also needs the same fixed cache entry cleanup before another strict admission",
+    "logic": "The child has already resumed before the ACTIVE SQL write. Its generated Windows cache can therefore exist even though the ACTIVE row was not saved. The retained path previously cleaned only runtime and left the original home junction.",
+    "scope": "Reuse same original-home cleanup only when retained operation ID exactly equals this Owner login operation ID; LPAC account observation runtime cleanup remains unchanged",
+    "test": "Existing R5 fixture now activates the unchanged fixed CLI login until the real generated cache exists, triggers original ACTIVE SQL failure, requires confirmed reconciliation and cache absence, then executes LPAC account/read in the same original home",
+    "authorizationChanged": false,
+    "ownerDataAccessed": false,
+    "measurementProbePrivateSha256": "91c498dd8f19858b685da1ab8bf993577c04f3b60636af18cbc32a27de3ac9fc",
+    "validation": "NEW_EXACT_SOURCE_CLOUD_PENDING"
+  },
+  "state": "CACHE_SETTLEMENT_ALL_ACTIVATED_LOGIN_BRANCHES_CLOUD_PENDING"
 }
