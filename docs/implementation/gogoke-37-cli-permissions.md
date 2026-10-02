@@ -6,6 +6,8 @@ Owner 于 2026-10-01 裁决：仅由 Owner 发起的固定 CLI 登录阶段使�
 
 登录阶段拥有普通当前用户的文件访问权限；实例 home 环境与 Job 保管不构成 LPAC 文件隔离，没有提权或跨用户授权。此例外只适用于已准入的固定 CLI 登录，不能用于模型会话、模型产生的命令或其他程序。登录后的自动 `account/read` 及所有模型会话继续在原 LPAC 内，`lpacIdentityServices` 的边界不变。
 
+宿主通过同一固定 CLI 的 `app-server` 管道发送 `initialize`、`initialized` 和一次 `account/login/start`（`type: chatgpt`）开始普通 OAuth。固定 0.149.0 的该官方分支设置 `open_browser: false`，仅返回 `loginId` 和 `authUrl`；授权网址由宿主现有 opener 打开一次。匹配同一 `loginId` 的完成通知和取消请求只用于推进该登录操作，不能证明账号已登录：仍先完成原 Job 停止、持久确认、清理，再由原 LPAC `account/read` 检测。登录进程不接受模型或任意 RPC 请求。此调整修复直接运行 `codex login` 与宿主各打开一次浏览器的问题，不修改 CLI、默认浏览器或系统环境。
+
 普通登录沿用 gogo-party 的系统临时环境：`TEMP`、`TMP` 保留宿主原值，与原 `APPDATA`、`LOCALAPPDATA` 一样只读取有限键，不继承其他任意环境。普通登录可能触发 Windows 或浏览器的临时工作；CLI 的 Job 已停止，不等于这些临时文件已可删除。它们不放入必须立即清空的登录运行目录，宿主不清理系统临时目录。凭据 home 仍是原注册实例；`account/read` 和模型会话的 `TEMP`、`TMP` 继续指向原 LPAC 运行目录。
 
 | 路径与档位 | `lpacIdentityServices` | `internetClient` | 文件目录范围 |

@@ -70,9 +70,9 @@ impl NativeAccountState {
 }
 
 /// Two fixed launch specifications for the same pinned CLI and isolated home.
-/// `login` is started only by an explicit Owner action; its complete stderr
-/// lines and stdout are delivered on the Owner-private User pipe.
-/// `account_read` uses fixed app-server RPC.
+/// `login` is started only by an explicit Owner action. Its matched app-server
+/// authUrl and vendor errors are delivered on the Owner-private User pipe.
+/// `account_read` uses a separate fixed LPAC app-server RPC.
 /// Preparation creates only host-owned directories and data, with no process.
 pub(super) struct PreparedOwnerLogin {
     pub(super) login: PrepareRequest,
@@ -176,6 +176,87 @@ pub(super) struct ActiveOwnerLogin {
     output: String,
     stderr_seen: usize,
     halted: bool,
+    rpc: Option<LoginRpc>,
+}
+
+struct LoginRpc {
+    phase: LoginRpcPhase,
+    login_id: Option<String>,
+    early_completion: Option<Vec<u8>>,
+    response_started: Instant,
+    stdout_seen: usize,
+    frames_seen: usize,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LoginRpcPhase { SendInitialize, Initialize, Start, Completion, Complete }
+
+const LOGIN_START: &[u8] = b"{\"id\":4,\"method\":\"account/login/start\",\"params\":{\"type\":\"chatgpt\"}}\n";
+
+fn rpc_object(frame: &[u8]) -> std::result::Result<BTreeMap<JsonString, Json>, String> {
+    let text = std::str::from_utf8(frame).map_err(|error| format!("login RPC UTF-8: {error}"))?;
+    object(Parser::parse(text.trim_end()).map_err(|error| format!("login RPC JSON: {error:?}"))?)
+        .ok_or_else(|| "login RPC object required".into())
+}
+
+fn rpc_string(fields: &mut BTreeMap<JsonString, Json>, name: &str) -> Option<String> {
+    match fields.remove(&JsonString::from_str(name)) {
+        Some(Json::String(value)) => value.to_well_formed_string(),
+        _ => None,
+    }
+}
+
+fn login_rpc_vendor_error(frame: &[u8]) -> Option<String> {
+    rpc_object(frame).ok()?.remove(&JsonString::from_str("error"))
+        .map(|error| error.canonical())
+}
+
+fn login_start_result(frame: &[u8]) -> std::result::Result<(String, String), String> {
+    let mut fields = rpc_object(frame)?;
+    if !matches!(fields.remove(&JsonString::from_str("id")), Some(Json::Number(id)) if id == "4") {
+        return Err("login start RPC id mismatch".into());
+    }
+    if let Some(error) = fields.remove(&JsonString::from_str("error")) {
+        return Err(format!("login start vendor error: {}", error.canonical()));
+    }
+    let mut result = object(fields.remove(&JsonString::from_str("result"))
+        .ok_or_else(|| "login start result missing".to_owned())?)
+        .ok_or_else(|| "login start result object required".to_owned())?;
+    if rpc_string(&mut result, "type").as_deref() != Some("chatgpt") {
+        return Err("login start type mismatch".into());
+    }
+    let login_id = rpc_string(&mut result, "loginId")
+        .filter(|value| !value.is_empty() && value.len() <= 128
+            && value.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-'))
+        .ok_or_else(|| "login start loginId missing".to_owned())?;
+    let auth_url = rpc_string(&mut result, "authUrl")
+        .filter(|value| value.starts_with("https://auth.openai.com/oauth/authorize?")
+            && !value.chars().any(|ch| ch == '\r' || ch == '\n') && value.len() <= 65_536)
+        .ok_or_else(|| "login start complete authUrl missing".to_owned())?;
+    Ok((login_id, auth_url))
+}
+
+fn login_completion(frame: &[u8], expected_id: &str)
+    -> std::result::Result<Option<String>, String> {
+    let mut fields = rpc_object(frame)?;
+    if fields.contains_key(&JsonString::from_str("id")) {
+        return Err("login completion carried RPC id".into());
+    }
+    if rpc_string(&mut fields, "method").as_deref() != Some("account/login/completed") {
+        return Err("login completion method mismatch".into());
+    }
+    let mut params = object(fields.remove(&JsonString::from_str("params"))
+        .ok_or_else(|| "login completion params missing".to_owned())?)
+        .ok_or_else(|| "login completion params object required".to_owned())?;
+    if rpc_string(&mut params, "loginId").as_deref() != Some(expected_id) {
+        return Err("login completion loginId mismatch".into());
+    }
+    match params.remove(&JsonString::from_str("success")) {
+        Some(Json::Bool(true)) => Ok(None),
+        Some(Json::Bool(false)) => Ok(Some(rpc_string(&mut params, "error")
+            .unwrap_or_else(|| "login completion reported failure".into()))),
+        _ => Err("login completion success missing".into()),
+    }
 }
 
 fn append_complete_login_stderr(output: &mut String, stderr_seen: &mut usize,
@@ -564,7 +645,7 @@ fn clean_environment(instance_home: &Path, runtime: &Path) -> Result<Vec<(String
 
 /// Ordinary browser login runs with the native host's user token. Only the
 /// registered instance home is redirected; browser profile directories stay
-/// with this user so the fixed CLI's own opener can use the existing browser.
+/// with this user while the host opens the returned authorization URL.
 /// This is a finite allowlist, never the host's arbitrary provider variables.
 fn ordinary_login_environment(instance_home: &Path, runtime: &Path) -> Result<Vec<(String, String)>> {
     let mut environment = clean_environment(instance_home, runtime)?;
@@ -849,6 +930,9 @@ impl<'root> ProductDatabase<'root> {
             output: String::new(),
             stderr_seen: 0,
             halted: false,
+            rpc: Some(LoginRpc { phase: LoginRpcPhase::SendInitialize,
+                login_id: None, early_completion: None, response_started: Instant::now(),
+                stdout_seen: 0, frames_seen: 0 }),
         }));
         Ok(owner_login_reply(command, "PENDING", ""))
     }
@@ -883,6 +967,25 @@ impl<'root> ProductDatabase<'root> {
             return match finished {
                 Ok(_) => Err(error),
                 Err(stop_error) => Err(stop_error),
+            };
+        }
+        if active.rpc.is_some() {
+            let progress = self.advance_owner_login_rpc(&mut active);
+            return match progress {
+                Ok(None) => {
+                    let reply = owner_login_reply(command, "PENDING", &active.output);
+                    self.owner_login = Some(OwnerLoginSession::Active(active));
+                    Ok(reply)
+                }
+                Ok(Some(failure)) => self.finish_owner_device_login(command, active, false, failure),
+                Err(error) => {
+                    let finished = self.finish_owner_device_login(command, active, false,
+                        Some(error.clone()));
+                    match finished {
+                        Ok(_) => Err(OrchestrationError::V37StoreFailure(error)),
+                        Err(stop_error) => Err(stop_error),
+                    }
+                }
             };
         }
         let read = self.process_custodian.read_persistent_child_frame(
@@ -961,6 +1064,106 @@ impl<'root> ProductDatabase<'root> {
                         "owner login output: {error:?}; stop: {stop_error:?}"))),
                 }
             }
+        }
+    }
+
+    // Only JSON-RPC frames from the retained first child may advance login.
+    // Complete authUrl is the sole URL-bearing line returned to the host.
+    fn advance_owner_login_rpc(&self, active: &mut ActiveOwnerLogin)
+        -> std::result::Result<Option<Option<String>>, String> {
+        let rpc = active.rpc.as_mut().ok_or("login RPC state missing")?;
+        let process = self.process_custodian.active(&active.prepared.ticket)
+            .ok_or("owned login process absent")?;
+        if rpc.phase == LoginRpcPhase::SendInitialize {
+            process.write_persistent_frame(INITIALIZE)
+                .map_err(|error| format!("login initialize stdin: {error}; STDERR_TAIL: {}", process.stderr_tail()))?;
+            rpc.phase = LoginRpcPhase::Initialize;
+            rpc.response_started = Instant::now();
+        }
+        if matches!(rpc.phase, LoginRpcPhase::Initialize | LoginRpcPhase::Start)
+            && rpc.response_started.elapsed() >= RPC_DEADLINE {
+            return Err("login RPC deadline".into());
+        }
+        let frame = match self.process_custodian.read_persistent_child_frame(
+            &active.prepared.ticket, Duration::from_millis(250)) {
+            Ok(frame) => frame,
+            Err(error) if protocol_timed_out(&error) => {
+                if process.wait(Duration::ZERO).map_err(|error|
+                    format!("login child wait: {error}; STDERR_TAIL: {}", process.stderr_tail()))? {
+                    return Err(format!("login child exited before matched completion; STDERR_TAIL: {}", process.stderr_tail()));
+                }
+                return Ok(None);
+            }
+            Err(error) => return Err(format!("login RPC stdout: {error:?}; STDERR_TAIL: {}", process.stderr_tail())),
+        };
+        if frame.custody() != &active.prepared { return Err("login RPC custody mismatch".into()); }
+        rpc.stdout_seen = rpc.stdout_seen.saturating_add(frame.bytes().len());
+        rpc.frames_seen += 1;
+        if rpc.stdout_seen.saturating_add(active.stderr_seen) > 65_536 || rpc.frames_seen > MAX_RPC_FRAMES {
+            return Err("owner login output limit".into());
+        }
+        let mut fields = rpc_object(frame.bytes())?;
+        let method = rpc_string(&mut fields, "method");
+        if method.as_deref() == Some("account/login/completed") {
+            if rpc.phase == LoginRpcPhase::Start && rpc.login_id.is_none() {
+                if rpc.early_completion.is_some() { return Err("duplicate early login completion".into()); }
+                rpc.early_completion = Some(frame.bytes().to_vec());
+                return Ok(None);
+            }
+            if rpc.phase != LoginRpcPhase::Completion { return Err("unexpected login completion".into()); }
+            let login_id = rpc.login_id.as_deref().ok_or("loginId missing")?;
+            rpc.phase = LoginRpcPhase::Complete;
+            return login_completion(frame.bytes(), login_id).map(Some);
+        }
+        if method.is_some() {
+            if fields.contains_key(&JsonString::from_str("id")) {
+                return Err("login notification carried RPC id".into());
+            }
+            // Account update notifications are not evidence of login completion.
+            return Ok(None);
+        }
+        match rpc.phase {
+            LoginRpcPhase::Initialize => {
+                if rpc_frame_identity(frame.bytes(), "1") != RpcIdentity::Expected {
+                    return Err(match login_rpc_vendor_error(frame.bytes()) {
+                        Some(error) => format!("login initialize vendor error: {error}"),
+                        None => "login initialize response identity".into(),
+                    });
+                }
+                use crate::store::session_transport::codex_rpc::{self, Command, RpcId, Reply};
+                let init_id = RpcId::client(1).map_err(|error| format!("login initialize ID: {error:?}"))?;
+                let init_command = Command::Initialize { client_version: "0.1.0".into() };
+                if !matches!(codex_rpc::decode(frame.bytes(), Some((&init_id, &init_command))),
+                    Ok(Reply::Initialized { .. })) {
+                    return Err("login initialize response shape".into());
+                }
+                process.write_persistent_frame(INITIALIZED)
+                    .map_err(|error| format!("login initialized stdin: {error}; STDERR_TAIL: {}", process.stderr_tail()))?;
+                process.write_persistent_frame(LOGIN_START)
+                    .map_err(|error| format!("login start stdin: {error}; STDERR_TAIL: {}", process.stderr_tail()))?;
+                rpc.phase = LoginRpcPhase::Start;
+                rpc.response_started = Instant::now();
+                Ok(None)
+            }
+            LoginRpcPhase::Start => {
+                let (login_id, auth_url) = login_start_result(frame.bytes())?;
+                if active.stderr_seen.saturating_add(rpc.stdout_seen) > 65_536 {
+                    return Err("owner login output limit".into());
+                }
+                if !active.output.is_empty() && !active.output.ends_with('\n') { active.output.push('\n'); }
+                active.output.push_str(&auth_url);
+                active.output.push('\n');
+                rpc.login_id = Some(login_id);
+                rpc.phase = LoginRpcPhase::Completion;
+                match rpc.early_completion.take() {
+                    Some(early) => {
+                        rpc.phase = LoginRpcPhase::Complete;
+                        login_completion(&early, rpc.login_id.as_deref().unwrap()).map(Some)
+                    }
+                    None => Ok(None),
+                }
+            }
+            _ => Err("unexpected login RPC response".into()),
         }
     }
 
@@ -1108,6 +1311,34 @@ impl<'root> ProductDatabase<'root> {
 
     fn finish_owner_device_login(&mut self, command: &OwnerLoginCommand,
         mut active: ActiveOwnerLogin, cancelled: bool, inflight_failure: Option<String>) -> Result<Vec<u8>> {
+        let mut inflight_failure = inflight_failure;
+        if let Some(rpc) = &active.rpc {
+            if cancelled {
+                if let Some(login_id) = &rpc.login_id {
+                    // Cancellation is advisory. The Job stop and later LPAC
+                    // account/read remain authoritative even if OAuth wins.
+                    let request = format!(
+                        "{{\"id\":5,\"method\":\"account/login/cancel\",\"params\":{{\"loginId\":\"{login_id}\"}}}}\n");
+                    let sent = self.process_custodian.active(&active.prepared.ticket)
+                        .ok_or_else(|| "owned login process absent".to_owned())
+                        .and_then(|process| process.write_persistent_frame(request.as_bytes())
+                            .map_err(|error| error.to_string()));
+                    if let Err(error) = sent {
+                        let detail = format!("login cancel RPC stdin: {error}");
+                        if !active.output.is_empty() { active.output.push('\n'); }
+                        active.output.push_str(&detail);
+                    }
+                }
+            } else if rpc.phase == LoginRpcPhase::Complete {
+                if let Err(error) = self.process_custodian.close_child_input(&active.prepared.ticket) {
+                    let detail = format!("login completed stdin close: {error:?}");
+                    inflight_failure = Some(match inflight_failure {
+                        Some(original) => format!("{original}; {detail}"),
+                        None => detail,
+                    });
+                }
+            }
+        }
         let stop = self.process_custodian.stop(&active.prepared.ticket,
             StopBudgets::production(), || Ok(()));
         let proof = match stop {
@@ -1115,10 +1346,14 @@ impl<'root> ProductDatabase<'root> {
             Err(error) => {
                 let unknown = authority::mark_process_unknown(&mut self.connection,
                     &active.operation_id, &active.prepared);
+                if let Some(protocol) = &inflight_failure {
+                    if !active.output.is_empty() { active.output.push('\n'); }
+                    active.output.push_str(protocol);
+                }
                 active.halted = true;
                 self.owner_login = Some(OwnerLoginSession::Active(active));
                 return Err(OrchestrationError::V37StoreFailure(format!(
-                    "owner login stop: {error:?}; unknown record: {unknown:?}")));
+                    "owner login stop: {error:?}; protocol: {inflight_failure:?}; unknown record: {unknown:?}")));
             }
         };
         let process = self.process_custodian.active(&active.prepared.ticket)
@@ -1187,6 +1422,23 @@ impl<'root> ProductDatabase<'root> {
             .ok_or(OrchestrationError::AccessDenied)?;
         let bytes = process.stderr_live_bytes().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("owner login live stderr: {error}")))?;
+        if let Some(rpc) = &active.rpc {
+            if bytes.len() < active.stderr_seen {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "owner login stderr capture regressed".into()));
+            }
+            if rpc.stdout_seen.saturating_add(bytes.len()) > 65_536 {
+                return Err(OrchestrationError::V37StoreFailure("owner login output limit".into()));
+            }
+            if let Some(end) = bytes.iter().rposition(|byte| *byte == b'\n') {
+                std::str::from_utf8(&bytes[..=end]).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("owner login stderr UTF-8: {error}")))?;
+            }
+            // app-server logs are retained in the child, not sent as display
+            // text. Only the matched URL and vendor errors reach the host.
+            active.stderr_seen = bytes.len();
+            return Ok(());
+        }
         append_complete_login_stderr(&mut active.output, &mut active.stderr_seen, &bytes)
             .map_err(OrchestrationError::V37StoreFailure)
     }
@@ -1346,16 +1598,21 @@ impl<'root> ProductDatabase<'root> {
             generation: row.revision.to_string(),
         };
         let mut login = ProcessLaunch::new(program.clone());
-        login.arguments = vec!["login".into()];
+        login.arguments = vec![
+            "-c".into(), "features.memories=false".into(),
+            "-c".into(), "memories.generate_memories=false".into(),
+            "-c".into(), "memories.use_memories=false".into(),
+            "app-server".into(),
+        ];
         login.current_directory = Some(runtime.clone());
         login.environment = Some(login_environment);
-        // The fixed CLI writes its ordinary OAuth URL to stderr. The host
-        // relays only complete original lines on the Owner-private pipe.
-        // No credential bytes are sent to stdin.
+        // The official app-server returns its complete OAuth URL in the
+        // account/login/start response, without opening a browser itself.
+        // The host remains the only opener and sends no credential bytes.
         login.protocol_stdio = true;
         login.persistent_protocol_stdio = true;
-        // Owner-approved ordinary-user login keeps the fixed CLI's own
-        // browser/callback behavior. Only account/read below enters LPAC.
+        // The login app-server remains an ordinary same-user child. Only
+        // account/read below enters LPAC.
         let mut account_read = ProcessLaunch::new(program);
         account_read.arguments = vec![
             "-c".into(), "features.memories=false".into(),
@@ -1805,6 +2062,11 @@ mod tests {
     use crate::store::session_transport::{decode_receipt, decode_request};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn test_rpc_waiting(phase: LoginRpcPhase) -> LoginRpc {
+        LoginRpc { phase, login_id: None, early_completion: None,
+            response_started: Instant::now(), stdout_seen: 0, frames_seen: 0 }
+    }
+
     fn environment_value<'a>(environment: &'a [(String, String)], key: &str) -> Option<&'a str> {
         environment.iter().find(|(name, _)| name == key).map(|(_, value)| value.as_str())
     }
@@ -1919,6 +2181,7 @@ mod tests {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
+            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)),
         }));
         let deadline = Instant::now() + Duration::from_secs(45);
         let mut settled = None;
@@ -1960,7 +2223,7 @@ mod tests {
             crate::store::digest::sha256_hex(&fs::read(&powershell).unwrap()));
         login.launch.application = powershell;
         login.launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            "[Console]::Error.WriteLine('x' * 64000); [Console]::Error.Flush(); [Console]::Out.WriteLine('y' * 3000); exit 0".into()];
+            r#"[Console]::Error.WriteLine('x' * 64000); [Console]::Error.Flush(); [Console]::Out.WriteLine('{"id":1,"result":{"padding":"' + ('y' * 3000) + '"}}'); exit 0"#.into()];
         login.launch.app_container_profile = None;
         login.launch.app_container_internet_client = false;
         login.launch.app_container_cli_identity_services = false;
@@ -1982,6 +2245,7 @@ mod tests {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
+            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)),
         }));
         let _ = product.status_owner_device_login(&command);
         let reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
@@ -2010,6 +2274,85 @@ mod tests {
             None);
         assert_eq!(cli_os_error_code("Error logging in: Permission denied (os error 10013)"),
             Some("os error 10013".into()));
+    }
+
+    #[test]
+    fn app_server_login_accepts_only_matched_full_url_and_completion() {
+        let started = br#"{"id":4,"result":{"type":"chatgpt","loginId":"01234567-89ab-cdef-0123-456789abcdef","authUrl":"https://auth.openai.com/oauth/authorize?state=synthetic&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"}}"#;
+        let (login_id, url) = login_start_result(started).unwrap();
+        assert_eq!(callback_port_from_authorization_line(&url), Some(1455));
+        assert!(login_start_result(br#"{"id":3,"result":{"type":"chatgpt","loginId":"a","authUrl":"https://auth.openai.com/oauth/authorize?x=y"}}"#).is_err());
+        assert!(login_start_result(br#"{"id":4,"result":{"type":"chatgpt","loginId":"a","authUrl":"https://auth.openai.com/oauth/authorize?x=y\nsecond-line"}}"#).is_err());
+        let completed = br#"{"method":"account/login/completed","params":{"loginId":"01234567-89ab-cdef-0123-456789abcdef","success":true,"error":null}}"#;
+        assert_eq!(login_completion(completed, &login_id), Ok(None));
+        assert!(login_completion(completed, "other-id").is_err());
+        let failed = br#"{"method":"account/login/completed","params":{"loginId":"01234567-89ab-cdef-0123-456789abcdef","success":false,"error":"vendor denied"}}"#;
+        assert_eq!(login_completion(failed, &login_id), Ok(Some("vendor denied".into())));
+    }
+
+    #[test]
+    fn owned_login_rpc_completion_closes_stdin_and_reads_real_lpac_account() {
+        let _guard = route_b_test_guard();
+        for early in [false, true] {
+            let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "gogoke-v37-rpc-eof-{}-{nonce}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            let root = RootLock::acquire(&path).unwrap();
+            let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+            let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+            assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+                V37Status::Applied);
+            let mut launch = product.prepare_owner_codex_login("instanceA").unwrap();
+            let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+            launch.login.binding.binary_digest_sha256 = format!("sha256:{}",
+                crate::store::digest::sha256_hex(&fs::read(&powershell).unwrap()));
+            launch.login.launch.application = powershell;
+            let script = format!(r#"
+$null = [Console]::In.ReadLine()
+[Console]::Out.WriteLine('{{"id":1,"result":{{"userAgent":"controlled"}}}}')
+$null = [Console]::In.ReadLine()
+$null = [Console]::In.ReadLine()
+$started = '{{"id":4,"result":{{"type":"chatgpt","loginId":"01234567-89ab-cdef-0123-456789abcdef","authUrl":"https://auth.openai.com/oauth/authorize?state=synthetic&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"}}}}'
+$completed = '{{"method":"account/login/completed","params":{{"loginId":"01234567-89ab-cdef-0123-456789abcdef","success":true,"error":null}}}}'
+if ({early}) {{ [Console]::Out.WriteLine($completed); [Console]::Out.WriteLine($started) }}
+else {{ [Console]::Out.WriteLine($started); [Console]::Out.WriteLine($completed) }}
+while ($null -ne [Console]::In.ReadLine()) {{}}
+exit 0
+"#, early = if early { "$true" } else { "$false" });
+            launch.login.launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+                "-Command".into(), script];
+            launch.login.launch.environment = None;
+            let begin = owner_login_command(format!(
+                "{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"rpcEof{early}\",\"expectedRevision\":1}}")
+                .as_bytes()).unwrap();
+            let status = owner_login_command(format!(
+                "{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"status\",\"instanceId\":\"instanceA\",\"requestId\":\"rpcEof{early}\",\"expectedRevision\":1}}")
+                .as_bytes()).unwrap();
+            let begin_reply = product.start_owner_device_login(&begin, launch,
+                |custodian, prepared| custodian.activate(prepared)).unwrap();
+            assert!(String::from_utf8(begin_reply).unwrap().contains("\"state\":\"PENDING\""));
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut saw_complete_url = false;
+            let final_reply = loop {
+                assert!(Instant::now() < deadline, "controlled real Job app-server protocol did not settle");
+                let reply = String::from_utf8(product.status_owner_device_login(&status).unwrap()).unwrap();
+                if reply.contains("auth.openai.com/oauth/authorize?") {
+                    saw_complete_url = true;
+                }
+                if reply.contains("\"settled\":true") { break reply; }
+            };
+            assert!(saw_complete_url, "complete URL must reach the private reply");
+            assert!(final_reply.contains("\"state\":\"LOGGED_OUT\""),
+                "synthetic completion cannot substitute for the real LPAC account/read");
+            assert_eq!(scalar(&product,
+                "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2",
+                "first Job and automatic LPAC account/read must both durably stop");
+            product.close_checked().unwrap();
+            drop(root);
+            fs::remove_dir_all(path).unwrap();
+        }
     }
 
     #[test]
@@ -2214,7 +2557,7 @@ mod tests {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id,
             prepared, runtime_home: runtime_home.clone(), runtime_identity,
-            output: String::new(), stderr_seen: 0, halted: false,
+            output: String::new(), stderr_seen: 0, halted: false, rpc: None,
         }));
         let active = String::from_utf8(product.begin_owner_device_login(&command).unwrap()).unwrap();
         assert!(active.contains("\"state\":\"PENDING\""));
@@ -2279,7 +2622,7 @@ mod tests {
         product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
-            runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
+            runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None,
         }));
         let reply = match product.cancel_owner_device_login(&command) {
             Ok(reply) => reply,
@@ -2420,20 +2763,38 @@ mod tests {
             let error = if kind == "resume" {
                 product.start_owner_device_login(&command,launch,|custodian,prepared|custodian.activate_with_failed_resume_for_test(prepared)).unwrap_err()
             } else if kind == "ordinary_active" {
-                // Preserve the authentic ordinary-login counterexample too.
-                // Its Windows cache side effect is optional; completion of
-                // the actual CLI URL line is the login-stage observation.
+                // Preserve the authentic first-child ACTIVE fault after the
+                // fixed app-server returns a complete OAuth URL. This uses
+                // the same retained process and pipe as production.
                 product.start_owner_device_login(&command, launch, |custodian, prepared| {
                     let activated = custodian.activate(prepared)?;
                     let deadline = Instant::now() + Duration::from_secs(30);
-                    let mut ready = false;
-                    while !ready && Instant::now() < deadline {
-                        let bytes = custodian.active(&prepared.ticket).unwrap().stderr_live_bytes().unwrap();
-                        ready = String::from_utf8_lossy(&bytes).split_inclusive('\n').any(|line|
-                            line.starts_with("https://auth.openai.com/oauth/authorize?") && line.ends_with('\n'));
-                        if !ready { std::thread::sleep(Duration::from_millis(20)); }
+                    custodian.active(&prepared.ticket).unwrap()
+                        .write_persistent_frame(INITIALIZE).unwrap();
+                    loop {
+                        assert!(Instant::now() < deadline, "actual fixed CLI initialize timed out before ACTIVE fault");
+                        match custodian.read_persistent_child_frame(&prepared.ticket, Duration::from_millis(250)) {
+                            Ok(frame) if rpc_frame_identity(frame.bytes(), "1") == RpcIdentity::Expected => break,
+                            Ok(frame) if rpc_frame_identity(frame.bytes(), "1") == RpcIdentity::Notification => (),
+                            Err(error) if protocol_timed_out(&error) => (),
+                            _ => panic!("actual fixed CLI initialize response identity before ACTIVE fault"),
+                        }
                     }
-                    assert!(ready, "actual ordinary CLI must publish its private URL before ACTIVE fault");
+                    custodian.active(&prepared.ticket).unwrap()
+                        .write_persistent_frame(INITIALIZED).unwrap();
+                    custodian.active(&prepared.ticket).unwrap()
+                        .write_persistent_frame(LOGIN_START).unwrap();
+                    let ready = loop {
+                        assert!(Instant::now() < deadline, "actual fixed CLI login start timed out before ACTIVE fault");
+                        match custodian.read_persistent_child_frame(&prepared.ticket, Duration::from_millis(250)) {
+                            Ok(frame) if rpc_frame_identity(frame.bytes(), "4") == RpcIdentity::Expected =>
+                                break login_start_result(frame.bytes()).is_ok(),
+                            Ok(frame) if rpc_frame_identity(frame.bytes(), "4") == RpcIdentity::Notification => (),
+                            Err(error) if protocol_timed_out(&error) => (),
+                            _ => panic!("actual fixed CLI login start response identity before ACTIVE fault"),
+                        }
+                    };
+                    assert!(ready, "actual fixed CLI must return complete private authUrl before ACTIVE fault");
                     Ok(activated)
                 }).unwrap_err()
             } else if kind == "active" {
@@ -2565,7 +2926,7 @@ mod tests {
         let active = ActiveOwnerLogin {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id,
-            prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
+            prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None,
         };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(format!("{error:?}").contains("controlled account stop record failure"));
@@ -2612,7 +2973,7 @@ mod tests {
         assert!(product.process_custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(15)).unwrap());
         product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
         let active = ActiveOwnerLogin { instance_id:command.instance_id.clone(),request_id:command.request_id.clone(),
-            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false };
+            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false,rpc:None };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(matches!(&error, OrchestrationError::AccessDenied));
         let final_readback = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
@@ -2726,7 +3087,7 @@ mod tests {
         let scoped = product.prepare_owner_codex_login("instanceA").unwrap();
         assert!(scoped.login.launch.app_container_profile.is_none());
         assert!(scoped.login.launch.path_compat.is_none());
-        assert_eq!(scoped.login.launch.arguments, vec!["login".to_owned()]);
+        assert_eq!(scoped.login.launch.arguments, scoped.account_read.launch.arguments);
         assert!(!scoped.login.launch.app_container_internet_client);
         assert!(!scoped.login.launch.app_container_cli_identity_services);
         assert!(scoped.account_read.launch.app_container_profile.is_some());

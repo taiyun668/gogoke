@@ -212,6 +212,8 @@ jobs:
             @{ id = 'bound-instance-acl'; filter = 'bound_nonempty_tree_grants_only_its_recorded_instance_identity' },
             @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
             @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
+            @{ id = 'single-opener-real-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
+            @{ id = 'login-rpc-ordered-completion'; filter = 'owned_login_rpc_completion_closes_stdin_and_reads_real_lpac_account' },
             @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
             @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
             @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
