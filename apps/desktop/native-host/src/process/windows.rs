@@ -51,6 +51,8 @@ pub const STOP_OBSERVE_MS: u32 = 5_000;
 pub const HOST_STOP_DEADLINE_MS: u32 = 30_000;
 pub const STOP_TIMEOUT_EXIT_CODE: u32 = 124;
 pub const STOP_REFUSED_EXIT_CODE: u32 = 125;
+// Explicit whole-Job termination must not reuse the timeout/refusal sentinels.
+pub const STOP_FORCED_EXIT_CODE: u32 = 137;
 const CONTROLLED_FIXTURE_SHA256: &str = "sha256:2e66dac4ee497e023fd8d860178c77ef5b82e01b7bcd23dc868e9db80637f85c";
 /// Matches the Codex adapter's maximum JSONL frame (including LF).
 const PERSISTENT_FRAME_MAX_BYTES: usize = 1024 * 1024;
@@ -1852,7 +1854,7 @@ impl ManagedProcess {
             Ok(0) => {}
             Ok(_) => {
                 proof.kill_attempted = true;
-                if let Err(error) = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE) {
+                if let Err(error) = terminate_job(self.job.raw(), STOP_FORCED_EXIT_CODE) {
                     proof.errors.push(format!("TERMINATE_JOB_FAILED: {error}"));
                     proof.active_job_processes = self.active_job_processes().ok();
                     record_residual_job_members(&mut proof, members_before.as_deref(), self.job.raw());
@@ -1903,11 +1905,9 @@ impl ManagedProcess {
         }
         proof.parent_exited = wait_handle(self.process.raw(), 0).unwrap_or(false);
         proof.exit_code = process_exit_code(self.process.raw()).ok().flatten();
-        // 124 is the exact exit code supplied to a successful TerminateJobObject.
-        // The held Job's zero-process observation and writer fence above prove
-        // release; an unprompted 124 still needs reconciliation.
-        if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE)
-            && (proof.parent_grace_exited || !proof.kill_succeeded) {
+        // Active Job termination uses a distinct code. A natural 124 can occur
+        // after the grace observation, so sampling cannot authorize an exception.
+        if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) {
             proof
                 .errors
                 .push("STOP_EXIT_124_REQUIRES_RECONCILIATION".to_owned());
@@ -3494,11 +3494,11 @@ mod tests {
             grace_ms: 20, terminate_ms: 1_000, observe_ms: 1_000, host_deadline_ms: 3_000,
         }, || Ok(()))
             .expect("native stop proof");
-        assert_eq!(proof.exit_code, Some(STOP_TIMEOUT_EXIT_CODE));
         assert!(proof.kill_attempted && proof.kill_succeeded);
         assert!(proof.parent_exited && proof.writer_fence_verified);
         assert_eq!(proof.active_job_processes, Some(0));
         assert!(proof.errors.is_empty(), "confirmed forced Job stop must be durable: {proof:?}");
+        assert_eq!(proof.exit_code, Some(STOP_FORCED_EXIT_CODE));
         let revision = mark_process_stopped(&mut connection, "r2-02-test", &proof)
             .unwrap_or_else(|error| panic!("durable stop proof: {error:?}; original native proof: {proof:?}"));
         custodian.confirm_stop_durable(&DurableStopConfirmation {
@@ -3803,7 +3803,10 @@ mod tests {
         assert!(node.is_file(), "cloud-bound Node runtime must exist");
         assert_eq!(file_sha256(&node).expect("Node runtime digest"),
             env!("GOGOKE_CONTROLLED_NODE_SHA256"), "test uses the exact build-bound Node image");
-        let script = r#"const fs=require('fs');const cp=require('child_process');try{fs.writeFileSync(process.argv[1],'parent-started');const output=fs.openSync(process.argv[4],'wx');const child=cp.spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:['ignore',output,output],windowsHide:true});child.on('error',error=>fs.writeFileSync(process.argv[3],String(error)));child.unref();fs.closeSync(output);fs.writeFileSync(process.argv[2],String(child.pid));}catch(error){fs.writeFileSync(process.argv[3],String(error));process.exit(17)}"#;
+        // Node's non-detached Windows children belong to its own kill-on-close
+        // Job. unref() alone cannot establish this fixture's surviving child.
+        // Fixed libuv does not request CREATE_BREAKAWAY_FROM_JOB for detached.
+        let script = r#"const fs=require('fs');const cp=require('child_process');try{fs.writeFileSync(process.argv[1],'parent-started');const output=fs.openSync(process.argv[4],'wx');const child=cp.spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:['ignore',output,output],windowsHide:true,detached:true});child.on('error',error=>fs.writeFileSync(process.argv[3],String(error)));child.unref();fs.closeSync(output);fs.writeFileSync(process.argv[2],String(child.pid));}catch(error){fs.writeFileSync(process.argv[3],String(error));process.exit(17)}"#;
         let mut launch = ProcessLaunch::new(node);
         launch.arguments = vec![
             "-e".to_owned(), script.to_owned(),
@@ -3838,6 +3841,23 @@ mod tests {
         let child_pid: u32 = fs::read_to_string(&marker).expect("child pid marker")
             .parse().expect("actual spawned child pid");
         assert!(child_pid > 0);
+        const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+        let child = OwnedHandle::new(unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS, 0, child_pid)
+        }).unwrap_or_else(|| {
+            let source = io::Error::last_os_error();
+            panic!("open actual descendant pid={child_pid} win32={:?}: {source}", source.raw_os_error());
+        });
+        let child_identity = capture_identity(child.raw(), child_pid).expect("actual descendant identity");
+        assert_eq!(file_sha256(&child_identity.image_path).expect("actual descendant image digest"),
+            env!("GOGOKE_CONTROLLED_NODE_SHA256"));
+        assert_eq!(unsafe { WaitForSingleObject(child.raw(), 0) }, WAIT_TIMEOUT,
+            "actual descendant must remain alive: identity={child_identity:?} exit={:?} output={:?}",
+            process_exit_code(child.raw()), fs::read_to_string(&child_output).ok());
+        let mut child_in_job = 0;
+        assert_ne!(unsafe { IsProcessInJob(child.raw(), process.job.raw(), &mut child_in_job) }, 0,
+            "actual descendant Job query failed: {}", io::Error::last_os_error());
+        assert_eq!(child_in_job, 1, "actual descendant must belong to the exact owned Job");
         assert!(
             process.active_job_processes().expect("job accounting") >= 1,
             "descendant must remain in the owned job after parent exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?} child_output={:?}",
@@ -3865,6 +3885,9 @@ mod tests {
         assert_eq!(proof.disposition, StopDisposition::Stopped);
         assert!(proof.parent_exited);
         assert_eq!(proof.active_job_processes, Some(0));
+        assert_eq!(unsafe { WaitForSingleObject(child.raw(), 0) }, WAIT_OBJECT_0,
+            "same actual descendant must be stopped: identity={child_identity:?} exit={:?}",
+            process_exit_code(child.raw()));
         assert!(proof.writer_fence_verified);
         assert!(!proof.durable_receipt_saved);
         let _ = fs::remove_file(marker);
@@ -3907,7 +3930,7 @@ mod tests {
         assert_eq!(proof.active_job_processes, Some(0));
         assert!(proof.writer_fence_verified);
         assert!(!proof.durable_receipt_saved);
-        assert_eq!(proof.exit_code, Some(STOP_TIMEOUT_EXIT_CODE));
+        assert_eq!(proof.exit_code, Some(STOP_FORCED_EXIT_CODE));
         assert!(proof.errors.is_empty(), "successful forced Job stop: {proof:?}");
         let repeated = process.stop(StopBudgets::production(), || {
             panic!("second stop must not issue another close")

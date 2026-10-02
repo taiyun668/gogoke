@@ -463,10 +463,10 @@ jobs:
           $original = [IO.File]::ReadAllBytes($path)
           $source = [Text.Encoding]::UTF8.GetString($original)
           $hash = (Get-FileHash -LiteralPath $path).Hash
-          $fixed = 'if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE)' + "`n" + '            && (proof.parent_grace_exited || !proof.kill_succeeded) {'
+          $fixed = 'if let Err(error) = terminate_job(self.job.raw(), STOP_FORCED_EXIT_CODE) {'
           if ([regex]::Matches($source,[regex]::Escape($fixed)).Count -ne 1) { throw 'R8 stop proof fix must match once' }
           try {
-            [IO.File]::WriteAllText($path,$source.Replace($fixed,'if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) {'),[Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($path,$source.Replace($fixed,'if let Err(error) = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE) {'),[Text.UTF8Encoding]::new($false))
             $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml prepared_process_identity_is_durable_before_activation --lib -- --nocapture 2>&1
             $code = $LASTEXITCODE
             $output | Out-Host

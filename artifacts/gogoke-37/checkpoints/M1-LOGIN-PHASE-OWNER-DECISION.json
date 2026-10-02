@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.login-phase-owner-decision.v1",
-  "recordedDate": "2026-10-01",
+  "recordedDate": "2026-10-02",
   "decision": "OWNER_APPROVED_FIXED_CLI_LOGIN_ORDINARY_SAME_USER",
   "basis": "Owner current direct instruction; prior F.1/G.0 isolation rule overridden only for login",
   "scope": {
@@ -309,7 +309,7 @@
     "hostSystemTempCleanup": false,
     "retryWaitAclCapabilityCliModification": false,
     "independentMechanismReview": "oauth_reference_boundary",
-    "validation": "AFFECTED_CLOUD_PENDING",
+    "validation": "PASS_A9_FULL_LIBRARY_583_0_0_AND_FOCUSED_ORDINARY_CALLBACK_ACTIVE_FAILURE",
     "参照": "先重读 gogo-party accounts.ts 的 loginEnv 和 spawn：原 TEMP/TMP 保留，没有自设短命临时环境；对照本仓库 clean_environment/ordinary_login_environment 分支，确认普通登录误沿用了 LPAC 临时工作生命周期。采用已验证的系统临时环境语义，但继续有限 allowlist，不继承其他变量。依据现有拆解和固定 CLI 登录路径；没有改 CLI、系统安全设置、权限或重试，也不声称已确定文件持有者。"
   },
   "ordinaryG4Readback": {
@@ -332,7 +332,7 @@
       "packageStatus": 15700
     }
   },
-  "state": "ORDINARY_TEMP_ENVIRONMENT_CORRECTION_CLOUD_PENDING_G4_CLEANED",
+  "state": "DETACHED_FIXTURE_AND_DISTINCT_FORCED_STOP_CODE_LATEST_CLOUD_PENDING",
   "endedMeasurementTasks": {
     "independentAuditSha256": "7ddb505ca5de4aef90f4d197ff612112bc77a26853d04c0819db3000f9a7049e",
     "resultSha256": "094d52398a62a1c22c41dbc19e56d9d543acd098ff07e76646ba8482b022271c",
@@ -351,5 +351,49 @@
     "reproFailure": "standardwebhooks@1.1.1 upstream license hydration aborted due to timeout",
     "change": "Capture only controlled descendant stdout/stderr to an owned fixture file; preserve child-survival/Job/stop assertions and production code",
     "参照": "先回读现有真实 Job 后代夹具和原始失败：子进程输出被 stdio ignore 丢掉，不能据此判定产品失败。采用现有文件 marker 的直接数据机制保存子进程原文，不加等待、重试或改变断言；许可证超时保持失败记录，用同提交云端重跑。"
+  },
+  "descendantFixtureCorrection": {
+    "previousSource": "fc88f7a4fb6ed5ee8aa6662b365b3ffeae4139d0",
+    "diagnosticRun": 36995193866,
+    "state": "FAIL_0_PASS_1_FAIL_STDERR_EMPTY",
+    "fact": "Parent exit0, published child PID, Job0, captured child output empty",
+    "mechanism": "Pinned Node 24.13.1 libuv places non-detached children into its own KILL_ON_JOB_CLOSE Job; unref only removes event loop reference",
+    "change": "Only fixture uses detached:true; fixed libuv does not use CREATE_BREAKAWAY_FROM_JOB there. Retain real child handle, exact image digest, zero-time alive check, exact IsProcessInJob membership, same handle signaled after original stop",
+    "productionJobChanged": false,
+    "previousWholeLibrary": "Same fixture passed in a9 full library; this does not cancel separate focused failure or establish the libuv branch used in every old run",
+    "specialist": "oauth_reference_boundary",
+    "参照": "先查现有及091c7cfa历史真实后代夹具，再核固定Node24.13.1的libuv Windows process.c 65-91、988-1000、1016-1034及同版本官方options.detached。采用detached建立原测试所要求的存活前提，并复用现有Windows句柄/身份/Job查询证明实际对象；不改变生产Job、不请求breakaway、不加等待重试。",
+    "sources": [
+      "https://github.com/nodejs/node/blob/v24.13.1/deps/uv/src/win/process.c",
+      "https://nodejs.org/download/release/v24.13.1/docs/api/child_process.html#optionsdetached"
+    ]
+  },
+  "forcedStopCodeCorrection": {
+    "finding": "parent_grace_exited is not an atomic explanation of later exit124; natural124 between sampling and Job termination can be mistaken for forced termination",
+    "logic": "Preserve conservative natural124/125 rejection by assigning explicit stop a different code; no timing sample grants an exception",
+    "stopForcedExitCode": 137,
+    "meaning": "Application-selected Windows exit code, not evidence of SIGKILL",
+    "naturalTimeoutExitCode": 124,
+    "refusedExitCode": 125,
+    "protocolWriteTimeoutCode": "UNCHANGED_124",
+    "invariants": "Same identity, Job0, writer fence, close error, deadlines and durable receipts; 137 alone never grants release",
+    "mutation": "Replace only actual stop TerminateJob argument137 with124; unchanged real durable-stop test must fail its stop errors before checking numeric exitcode, then exact restoration must pass",
+    "capabilitiesCliSafetyOrPermissionChanges": false,
+    "specialist": "oauth_reference_boundary",
+    "参照": "先回读自己的stop producer、124/125消费者、durable confirmation及现有真实forced/natural测试和R8 mutation。复用原Windows TerminateJobObject退出码参数，区别主动停止和真实超时；保持协议写超时原124与其他所有拒绝条件。没有新增时序hook、采样窗口、等待或授权规则。"
+  },
+  "priorA9FullLibrary": {
+    "source": "a9a025a95020bb0ba0124a8ab6574a90cff51a9e",
+    "run": 36992709573,
+    "passed": 583,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "elapsedSeconds": 852.54,
+    "focusedPassed": 21,
+    "focusedFailed": 1,
+    "focusedSkipped": 0,
+    "mutationState": "PARTIAL_SUPERSEDED_SOURCE_NOT_FINAL_CANDIDATE_EVIDENCE",
+    "jobLogSha256": "e2f142fc507bf917a90498393c1dada04ed0ea3b062dc856b66879ca1eb1d9e9"
   }
 }
