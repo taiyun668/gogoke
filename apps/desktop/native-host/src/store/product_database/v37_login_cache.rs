@@ -45,11 +45,14 @@ fn failure(stage: &str, error: io::Error) -> OrchestrationError {
         "login Windows cache {stage}: {error}; raw_os_error={:?}", error.raw_os_error()))
 }
 
-fn open(path: &Path, delete: bool) -> Result<Option<Held>> {
+fn open(path: &Path) -> Result<Option<Held>> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // No-follow final entry; physical ancestors remain held without sharing
     // DELETE. Handles are non-inheritable and cannot rename out from under us.
-    let raw = unsafe { CreateFileW(wide.as_ptr(), 0x80 | if delete { 0x10000 } else { 0 },
+    // Attribute-only access does not establish Windows sharing exclusion.
+    // Reuse RootLock's DELETE + no-share-DELETE namespace pin for every
+    // ancestor as well as the leaf; ancestors are never marked for deletion.
+    let raw = unsafe { CreateFileW(wide.as_ptr(), 0x80 | 0x10000,
         3, std::ptr::null(), 3, 0x02200000, std::ptr::null_mut()) };
     if raw == -1isize as Handle {
         let error = io::Error::last_os_error();
@@ -91,7 +94,7 @@ pub(super) fn remove_generated_cache_junction(root: &RootLock, home: &ResolvedDi
     for part in relative.components().chain(Path::new(CACHE).components()) {
         path.push(part.as_os_str());
         let leaf = path == home.path.join(CACHE);
-        let Some(handle) = open(&path, leaf)? else {
+        let Some(handle) = open(&path)? else {
             // Only cache descendants may be absent; the registered home may not.
             return if path.starts_with(&home.path) && path != home.path { Ok(()) }
                 else { Err(OrchestrationError::AccessDenied) };
@@ -155,6 +158,11 @@ mod tests {
         assert!(create.status.success(), "owned junction fixture creation failed: {:?}", create.status);
         let attributes = std::os::windows::fs::MetadataExt::file_attributes(&fs::symlink_metadata(&entry).unwrap());
         assert_ne!(attributes & DIRECTORY, 0, "directory attributes select the directory deletion API");
+        let pinned_parent = open(entry.parent().unwrap()).unwrap().unwrap();
+        assert!(matches!(open(entry.parent().unwrap()),
+            Err(OrchestrationError::V37StoreFailure(ref error)) if error.contains("raw_os_error=Some(32)")),
+            "production ancestor pin must exclude a competing DELETE handle");
+        drop(pinned_parent);
         let mut wrong = home.clone();
         wrong.identity.file_id[0] ^= 1;
         assert!(remove_generated_cache_junction(&root, &wrong).is_err());

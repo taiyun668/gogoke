@@ -203,5 +203,23 @@
     "measurementProbePrivateSha256": "91c498dd8f19858b685da1ab8bf993577c04f3b60636af18cbc32a27de3ac9fc",
     "validation": "NEW_EXACT_SOURCE_CLOUD_PENDING"
   },
-  "state": "CACHE_SETTLEMENT_ALL_ACTIVATED_LOGIN_BRANCHES_CLOUD_PENDING"
+  "ancestorSharingInstrumentCorrection": {
+    "independentSeat": "login_cache_final_audit",
+    "logic": "Attribute-only access does not establish the promised Windows sharing exclusion; therefore adding no-share-DELETE to an attribute-only ancestor handle does not pin the namespace",
+    "sameOwnedEmptyDirectoryMeasurement": {
+      "attributeOnlyHandle": "OPEN_OK",
+      "competingDeleteWhileAttributeHandleHeld": "OPEN_OK",
+      "deleteAndAttributeHandle": "OPEN_OK",
+      "competingDeleteWhileDeleteHandleHeld": "FAIL_WIN32_32"
+    },
+    "receiptSha256": "4fbec96e1e92d0583c6e3403f35758b23ba30fa4ca240438c1ac52ce634d8962",
+    "change": "Reuse existing root namespace pin: DELETE|READ_ATTRIBUTES plus no DELETE sharing for ancestors and leaf; only leaf marked for deletion",
+    "targetAccess": false,
+    "ownerDataAccess": false,
+    "measurementDeletionOrRename": false,
+    "ownedEmptyFixtureCleanup": "ABSENT",
+    "cloudRegression": "Production open helper held on real fixture ancestor excludes competing DELETE with Win32 32",
+    "newCapabilityOrAclChange": false
+  },
+  "state": "CACHE_SETTLEMENT_AND_PROVEN_NAMESPACE_PIN_FINAL_CLOUD_PENDING"
 }
