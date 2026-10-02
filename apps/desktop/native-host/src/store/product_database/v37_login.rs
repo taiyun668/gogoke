@@ -2807,11 +2807,21 @@ mod tests {
             let mut control_scope = product.prepare_owner_codex_login("instanceA")
                 .unwrap_or_else(|_| panic!("unisolated control production preparation failed"));
             let production_login = control_scope.login.clone();
-            assert_eq!(first_launch.launch.application, production_login.launch.application);
-            assert_eq!(first_launch.binding, production_login.binding);
-            assert_eq!(first_launch.launch.arguments, production_login.launch.arguments);
-            assert_eq!(first_launch.launch.current_directory, production_login.launch.current_directory);
-            assert_eq!(first_launch.launch.environment, production_login.launch.environment);
+            // Login settlement advances the instance ledger revision. The
+            // binding's generation is that revision, not a new home/CLI identity.
+            if first_launch.launch.application != production_login.launch.application
+                || first_launch.binding.binary_digest_sha256 != production_login.binding.binary_digest_sha256
+                || first_launch.binding.profile_id != production_login.binding.profile_id
+                || first_launch.binding.domain_id != production_login.binding.domain_id
+                || first_launch.launch.arguments != production_login.launch.arguments
+                || first_launch.launch.current_directory != production_login.launch.current_directory
+                || first_launch.launch.environment != production_login.launch.environment {
+                return Err(format!("same registered CLI/home/environment comparison failed; lpac={isolated_probe:?}"));
+            }
+            if first_launch.binding.generation != begin_command.expected_revision.to_string()
+                || production_login.binding.generation != revision.to_string() {
+                return Err(format!("login binding does not match its current instance revision; lpac={isolated_probe:?}"));
+            }
             assert!(first_launch.launch.path_compat.is_some());
             assert!(production_login.launch.path_compat.is_some());
             assert!(production_login.launch.environment.as_ref().is_some_and(|environment|

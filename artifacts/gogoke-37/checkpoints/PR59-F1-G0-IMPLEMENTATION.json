@@ -519,7 +519,35 @@
         "cleanup": "NOT_PROVEN_FOR_OLD_CONTROL_FAILURE"
       },
       "current_control_revision": "Remove test-only LPAC module with profile/caps, mechanically compare first/second launch fields; retain safe native start reason and both phase results, close custody and remove test root before final callback assertion. Production launcher validation unchanged.",
-      "c3afa149_desktop_run": 36961350699
+      "c3afa149_desktop_run": 36961350699,
+      "6b2ed809_focused_cloud": {
+        "run": 36962224169,
+        "state": "FAIL_INSTRUMENT_FULL_BINDING_ASSERT_PRECONTROL",
+        "real_probes_passed": 4,
+        "real_probes_failed": 1,
+        "direct_evidence": "same digest/profile/domain; generation 1 then 2 after normal login settlement",
+        "no_product_revision_reset": true,
+        "unisolated_callback": "NOT_RUN",
+        "full_library": "NOT_RUN",
+        "compiled_mutations": "NOT_RUN",
+        "server": "NOT_RUN",
+        "cleanup": "NOT_PROVEN_FOR_OLD_ASSERT_PANIC",
+        "private_job_log_sha256": "fc7c58f9ec6afb411bd40091ef6817086ff38027d8293652dce87148a8a81a1c"
+      },
+      "control_comparison_correction": "Compare stable digest/profile/domain plus CLI/env/args/cwd; validate each generation against its own current revision. Mismatch returns through common custody and root cleanup, prints no environment values.",
+      "measurement_task_cleanup": {
+        "independentAudit": "oauth_known_findings_focus",
+        "objects": 2,
+        "removed": 2,
+        "absentReadbacks": 2,
+        "privateEvidenceRetained": true,
+        "receipt_sha256": "e06d437823cfa180fc56b0c4ccb38164072d79835443035c9383eb40f751fc94"
+      },
+      "6b2ed809_hygiene": {
+        "run": 36962310239,
+        "state": "PASS",
+        "local": "24844_FILES_0_LEAKS"
+      }
     }
   },
   "route_reflection_current": "Candidate cuts must use a controlled workflow_dispatch desktop build from the outset; pull_request success cannot satisfy trusted-main signing provenance. Download and preparation run alongside cloud smoke, preserving frozen bytes and avoiding another build/sign round trip.",
