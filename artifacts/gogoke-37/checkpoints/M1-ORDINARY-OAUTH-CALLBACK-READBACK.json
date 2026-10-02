@@ -1,7 +1,7 @@
 {
   "schema": "gogoke.37.oauth-callback-readback.v1",
   "source": "4b99854373c63d631138ff1f4c3257a34bdc4b47",
-  "state": "CLOUD_COMPARISON_COMPLETE_OWNER_LOGIN_BOUNDARY_DECISION_REQUIRED",
+  "state": "CLOUD_COMPARISON_COMPLETE_WIN11_ORIGINAL_PRODUCT_DIAGNOSTIC_PENDING",
   "scope": "Cloud Windows fresh registered empty instance home; actual fixed CLI; not Owner Win11 and not real account authorization",
   "fixed_cli": {
     "version": "0.149.0",
@@ -111,11 +111,24 @@
       "No public release or Controller merge"
     ],
     "authorizedByOwner": false,
-    "implemented": false
+    "implemented": false,
+    "neededNow": false,
+    "prerequisite": "First measure actual installed Win11 product under existing boundary; cloud combination difference does not prove Win11 requires a boundary change"
   },
   "M1Complete": false,
   "acceptance": false,
   "newCandidateInstalled": false,
   "publicRelease": false,
-  "controllerMerge": false
+  "controllerMerge": false,
+  "candidate_diagnostic": {
+    "source": "c3afa1499c59cfbb7a5a1a9b4072ad90d1e60591",
+    "version": "0.1.16",
+    "desktop_run": 36961350699,
+    "desktop": "PASS",
+    "signing_run": 36964828477,
+    "signed_artifact": 11208469342,
+    "signed_archive_sha256": "1a6cb5d4f99d1d2fba04199bf41edd105dfb777c4985ff7081c7459f70cda856",
+    "purpose": "Existing-boundary Win11 diagnosis, not M1 acceptance",
+    "ordinaryInstall": "NOT_RUN"
+  }
 }

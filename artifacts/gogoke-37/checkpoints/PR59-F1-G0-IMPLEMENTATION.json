@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "CLOUD_COMPARISON_COMPLETE_OWNER_LOGIN_BOUNDARY_DECISION_REQUIRED",
+  "state": "WIN11_ORIGINAL_PRODUCT_CALLBACK_DIAGNOSTIC_PREPARING",
   "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。 本次回调对照沿用既有生产 prepare/start 和受控 Job 结算，不新增校验绕过：LPAC 专用 shim 必须绑定 profile，无隔离对照因此同时去除 shim，保留同一注册 home、CLI、环境、参数和工作目录；只比较两个启动组合，不据此独归因 LPAC token。 测试目录清理按现有 instance/temporary.rs 的逐对象删除及重解析点不跟随做法，先保留回调原始阶段结果，再报告具体被拒对象和 Windows 错误；不改权限、不加重试，不把清理失败当回调失败。",
   "reference_recheck": {
     "owner_rule_effective": "2026-10-01_IMMEDIATE_BEFORE_UNSPECIFIED_IMPLEMENTATION_DETAILS",
@@ -580,5 +580,6 @@
   "publicRelease": false,
   "controllerMerge": false,
   "callback_readback": "artifacts/gogoke-37/checkpoints/M1-ORDINARY-OAUTH-CALLBACK-READBACK.json",
-  "NEXT_ACTION": "Owner decides the proposed login-only boundary change; do not implement unisolated production login without that decision. Continue resolving the separately recorded owned cloud test cleanup issue within scope when resuming."
+  "NEXT_ACTION": "Verify exact signed 0.1.16 frozen bytes and same-byte cloud smoke, refresh ordinary baseline, preserve original registered home/root identities, install actual candidate and measure Win11 callback under existing LPAC boundary. Ask for boundary decision only if direct Win11 evidence requires it.",
+  "premise_correction": "Cloud comparison alone cannot establish that Owner Win11 requires unisolated login; do not stop or request a boundary change before the original installed Win11 product is measured."
 }
