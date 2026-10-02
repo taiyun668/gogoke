@@ -571,7 +571,7 @@ fn ordinary_login_environment(instance_home: &Path, runtime: &Path) -> Result<Ve
     let instance = instance_home.to_string_lossy().into_owned();
     for (key, value) in &mut environment {
         if key == "HOME" || key == "USERPROFILE" { *value = instance.clone(); }
-        if key == "LOCALAPPDATA" || key == "APPDATA" {
+        if matches!(key.as_str(), "LOCALAPPDATA" | "APPDATA" | "TEMP" | "TMP") {
             let actual = std::env::var(key.as_str()).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("login {key} unavailable: {error}")))?;
             if !Path::new(&actual).is_absolute() || actual.contains('\0') {
@@ -2745,12 +2745,9 @@ mod tests {
         for key in ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"] {
             assert!(environment_value(account_environment, key) == Some(runtime_text.as_ref()), "account/read {key} mismatch");
         }
-        for key in ["LOCALAPPDATA", "APPDATA"] {
+        for key in ["LOCALAPPDATA", "APPDATA", "TEMP", "TMP"] {
             let actual = std::env::var(key).unwrap();
             assert!(environment_value(login_environment, key) == Some(actual.as_str()), "login {key} is not host value");
-        }
-        for key in ["TEMP", "TMP"] {
-            assert!(environment_value(login_environment, key) == Some(runtime_text.as_ref()), "login {key} mismatch");
         }
         let mut login_keys: Vec<&str> = login_environment.iter().map(|(key, _)| key.as_str()).collect();
         login_keys.sort_unstable();

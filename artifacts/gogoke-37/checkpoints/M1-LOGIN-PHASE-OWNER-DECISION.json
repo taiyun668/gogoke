@@ -290,5 +290,35 @@
     "bypass": false,
     "retained": true
   },
-  "state": "EXACT_RUNTIME_SHARING_ERROR_CONTEXT_PENDING_ORDINARY_016_RETIRED_SAFELY"
+  "runtimeTemporaryEnvironmentCorrection": {
+    "sourceWithDirectFailure": "6f313527",
+    "run": 36990788227,
+    "job": 110786266785,
+    "actualFailure": "After confirmed Job0/writer fence, remove-file of a UUID.tmp in login runtime gets Win32 32 in ordinary ACTIVE-fault and real callback/cancel paths; next runtime create183 is secondary",
+    "holderIdentity": "UNKNOWN_NOT_A_REPAIR_PREREQUISITE",
+    "logic": "A settled CLI Job does not prove every Windows temporary file placed in its runtime is immediately removable. Ordinary login had inherited LPAC TEMP/TMP redirection, contrary to the existing ordinary-login environment recipe.",
+    "change": "Only ordinary login preserves original host TEMP/TMP via the same finite key/path validation as APPDATA/LOCALAPPDATA; account/read and model LPAC TEMP/TMP remain isolated",
+    "currentDirectory": "UNCHANGED_FILE_FAILURE_DOES_NOT_SUPPORT_CWD_DIRECTORY_LOCK_HYPOTHESIS",
+    "credentialsHome": "UNCHANGED_ORIGINAL_INSTANCE_HOME",
+    "hostSystemTempCleanup": false,
+    "retryWaitAclCapabilityCliModification": false,
+    "independentMechanismReview": "oauth_reference_boundary",
+    "validation": "AFFECTED_CLOUD_PENDING",
+    "参照": "先重读 gogo-party accounts.ts 的 loginEnv 和 spawn：原 TEMP/TMP 保留，没有自设短命临时环境；对照本仓库 clean_environment/ordinary_login_environment 分支，确认普通登录误沿用了 LPAC 临时工作生命周期。采用已验证的系统临时环境语义，但继续有限 allowlist，不继承其他变量。依据现有拆解和固定 CLI 登录路径；没有改 CLI、系统安全设置、权限或重试，也不声称已确定文件持有者。"
+  },
+  "ordinaryG4Readback": {
+    "inventorySha256": "f702f16d94f8ebee12eb20e9fa4bced50faf5e0a43193214b33e162703668767",
+    "independentAuditSha256": "0cbfd5cd52d2a963c300edd2dc4b061f498416b64cb2e68d8b065404552f81c7",
+    "auditedCleanerSha256": "ea257a4be319ca2c05b34e38f45a165e26d56b5219ec75f6880be017a08dd9d4",
+    "resultSha256": "d42225823ce5b34586a9a8eb02d4070b4dfa0476b18d71a0dcb47fcf202148b6",
+    "state": "PASS_EACH_AUDITED_EMPTY_DIRECTORY_ABSENT",
+    "removed": 1113,
+    "readbackAbsent": 1113,
+    "originalInstallRoot": "RETAINED",
+    "authorityRootAndHome": "RETAINED_ORIGINAL_IDENTITIES",
+    "riskAuditTemp": "POLICY_BLOCKED_RETAINED_NOT_INCLUDED",
+    "detours": "RETAINED_NOT_INCLUDED",
+    "formalPostCleanup": "READBACK_PENDING"
+  },
+  "state": "ORDINARY_TEMP_ENVIRONMENT_CORRECTION_CLOUD_PENDING_G4_CLEANED"
 }

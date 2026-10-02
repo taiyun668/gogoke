@@ -6,6 +6,8 @@ Owner 于 2026-10-01 裁决：仅由 Owner 发起的固定 CLI 登录阶段使�
 
 登录阶段拥有普通当前用户的文件访问权限；实例 home 环境与 Job 保管不构成 LPAC 文件隔离，没有提权或跨用户授权。此例外只适用于已准入的固定 CLI 登录，不能用于模型会话、模型产生的命令或其他程序。登录后的自动 `account/read` 及所有模型会话继续在原 LPAC 内，`lpacIdentityServices` 的边界不变。
 
+普通登录沿用 gogo-party 的系统临时环境：`TEMP`、`TMP` 保留宿主原值，与原 `APPDATA`、`LOCALAPPDATA` 一样只读取有限键，不继承其他任意环境。普通登录可能触发 Windows 或浏览器的临时工作；CLI 的 Job 已停止，不等于这些临时文件已可删除。它们不放入必须立即清空的登录运行目录，宿主不清理系统临时目录。凭据 home 仍是原注册实例；`account/read` 和模型会话的 `TEMP`、`TMP` 继续指向原 LPAC 运行目录。
+
 | 路径与档位 | `lpacIdentityServices` | `internetClient` | 文件目录范围 |
 | --- | --- | --- | --- |
 | Owner 固定 CLI 登录（普通用户进程） | 不适用，不在 LPAC 内 | 不适用，使用当前用户网络权限 | 普通当前用户文件权限；凭据 home 固定到原注册实例 |
