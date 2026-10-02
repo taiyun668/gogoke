@@ -614,13 +614,23 @@ struct ChildProtocolHandles {
 /// tail must not cause a child blocked on a full stderr pipe to stop serving.
 /// The reader owns its handle; closing the retained Job closes all writers.
 struct StderrCapture {
-    tail: Arc<Mutex<(Vec<u8>, Option<String>)>>,
+    tail: Arc<Mutex<StderrState>>,
     reader: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+const LIVE_STDERR_MAX_BYTES: usize = 65_536;
+
+#[derive(Default)]
+struct StderrState {
+    tail: Vec<u8>,
+    live: Vec<u8>,
+    live_overflow: bool,
+    read_error: Option<String>,
 }
 
 impl StderrCapture {
     fn start(read: OwnedHandle) -> Result<Self, ProcessCustodyError> {
-        let tail = Arc::new(Mutex::new((Vec::new(), None)));
+        let tail = Arc::new(Mutex::new(StderrState::default()));
         let target = Arc::clone(&tail);
         let reader = thread::Builder::new().name("gogoke-child-stderr".into()).spawn(move || {
             let mut bytes = [0u8; 4096];
@@ -632,8 +642,8 @@ impl StderrCapture {
                     let error = io::Error::last_os_error();
                     if error.raw_os_error() != Some(109) {
                         match target.lock() {
-                            Ok(mut state) => state.1 = Some(error.to_string()),
-                            Err(poisoned) => poisoned.into_inner().1 = Some(error.to_string()),
+                            Ok(mut state) => state.read_error = Some(error.to_string()),
+                            Err(poisoned) => poisoned.into_inner().read_error = Some(error.to_string()),
                         }
                     }
                     break;
@@ -643,9 +653,13 @@ impl StderrCapture {
                     Ok(state) => state,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                state.0.extend_from_slice(&bytes[..count as usize]);
-                let excess = state.0.len().saturating_sub(4096);
-                if excess > 0 { state.0.drain(..excess); }
+                let chunk = &bytes[..count as usize];
+                let space = LIVE_STDERR_MAX_BYTES.saturating_sub(state.live.len());
+                state.live.extend_from_slice(&chunk[..chunk.len().min(space)]);
+                if chunk.len() > space { state.live_overflow = true; }
+                state.tail.extend_from_slice(chunk);
+                let excess = state.tail.len().saturating_sub(4096);
+                if excess > 0 { state.tail.drain(..excess); }
             }
         }).map_err(ProcessCustodyError::ProtocolPipe)?;
         Ok(Self { tail, reader: Mutex::new(Some(reader)) })
@@ -663,12 +677,19 @@ impl StderrCapture {
             }
         }
         match self.tail.lock() {
-            Ok(state) => match &state.1 {
-                Some(error) => format!("{}; stderr read failed: {error}", String::from_utf8_lossy(&state.0)),
-                None => String::from_utf8_lossy(&state.0).into_owned(),
+            Ok(state) => match &state.read_error {
+                Some(error) => format!("{}; stderr read failed: {error}", String::from_utf8_lossy(&state.tail)),
+                None => String::from_utf8_lossy(&state.tail).into_owned(),
             },
             Err(error) => format!("stderr tail state: {error}"),
         }
+    }
+
+    fn live_bytes(&self) -> Result<Vec<u8>, String> {
+        let state = self.tail.lock().map_err(|error| format!("stderr live state: {error}"))?;
+        if state.live_overflow { return Err("stderr live output exceeded 65536 bytes".into()); }
+        if let Some(error) = &state.read_error { return Err(format!("stderr live read failed: {error}")); }
+        Ok(state.live.clone())
     }
 }
 
@@ -1467,6 +1488,11 @@ impl ManagedProcess {
             Ok(count) => protocol.stderr.snapshot(count == 0),
             Err(error) => format!("{}; stderr writer custody: {error}", protocol.stderr.snapshot(false)),
         }
+    }
+    /// Exact bytes from the retained child, bounded without silently clipping
+    /// a possible OAuth authorization URL across a reader chunk boundary.
+    pub(crate) fn stderr_live_bytes(&self) -> Result<Vec<u8>, String> {
+        self.protocol.as_ref().ok_or("stderr was not admitted".to_owned())?.stderr.live_bytes()
     }
     pub fn identity(&self) -> &ProcessIdentity {
         &self.identity
@@ -2793,6 +2819,43 @@ mod tests {
         let tail = custodian.active(&prepared.ticket).unwrap().stderr_tail();
         assert!(tail.len() <= 4096);
         assert!(tail.ends_with("DIRECT_ERROR_1234\r\n"));
+    }
+
+    #[test]
+    fn active_child_stderr_exposes_complete_unclipped_original_line() {
+        fn read_stderr(custodian: &ProcessCustodian, ticket: &ProcessTicket, expected_len: usize) -> Vec<u8> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let bytes = custodian.active(ticket).unwrap().stderr_live_bytes().unwrap();
+                if bytes.len() >= expected_len { return bytes; }
+                assert!(Instant::now() < deadline, "owned stderr reader did not deliver expected bytes");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let mut launch = ProcessLaunch::new(powershell());
+        launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
+        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
+            "[Console]::Error.WriteLine('x' * 5000); [Console]::Error.Write('https://auth.openai.com/oauth/authorize?state=synthetic&part='); [Console]::Error.Flush(); [Console]::Out.WriteLine('first'); [Console]::ReadLine() | Out-Null; [Console]::Error.WriteLine('second'); [Console]::Error.Flush(); [Console]::Out.WriteLine('second'); [Console]::ReadLine() | Out-Null".into()];
+        let mut custodian = ProcessCustodian::new().unwrap();
+        let prepared = custodian.prepare(&request(launch)).unwrap();
+        custodian.activate(&prepared).unwrap();
+        let first = custodian.read_persistent_child_frame(&prepared.ticket, Duration::from_secs(15)).unwrap();
+        assert_eq!(first.custody(), &prepared);
+        assert_eq!(first.bytes(), b"first\r\n");
+        let prefix = format!("{}\r\n", "x".repeat(5000));
+        let partial = format!("{prefix}https://auth.openai.com/oauth/authorize?state=synthetic&part=");
+        assert_eq!(read_stderr(&custodian, &prepared.ticket, partial.len()), partial.as_bytes());
+        custodian.active(&prepared.ticket).unwrap().write_persistent_frame(b"go\n").unwrap();
+        let second = custodian.read_persistent_child_frame(&prepared.ticket, Duration::from_secs(15)).unwrap();
+        assert_eq!(second.custody(), &prepared);
+        assert_eq!(second.bytes(), b"second\r\n");
+        let complete = format!("{partial}second\r\n");
+        assert_eq!(read_stderr(&custodian, &prepared.ticket, complete.len()), complete.as_bytes());
+        custodian.active(&prepared.ticket).unwrap().write_persistent_frame(b"done\n").unwrap();
+        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(())).unwrap();
+        assert_eq!(proof.exit_code, Some(0));
+        assert!(proof.writer_fence_verified);
     }
 
     #[test]

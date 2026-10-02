@@ -1,6 +1,96 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "OT4_ACTUAL_CANCEL_STOP_PROOF_BUG_FIXED_NEW_BYTES_CLOUD_PENDING",
+  "state": "REFERENCE_RECHECK_COMPLETE_ORDINARY_OAUTH_BRIDGE_IMPLEMENTED_CLOUD_NOT_RUN",
+  "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。",
+  "reference_recheck": {
+    "owner_rule_effective": "2026-10-01_IMMEDIATE_BEFORE_UNSPECIFIED_IMPLEMENTATION_DETAILS",
+    "research_order": [
+      "OWN_HISTORY",
+      "REPOSITORY_RESEARCH",
+      "OFFICIAL_AND_RESEARCHED_UPSTREAM_SOURCE"
+    ],
+    "completed_before_product_changes": true,
+    "gogo_party": {
+      "head": "8812d3c075d78e196819a60b467bf9cb26f41cb7",
+      "files": {
+        "packages/room/src/accounts.ts": "9fdaa1c4b6d99746d0bb0864553ffcf1250c778f",
+        "packages/room/src/instances.ts": "3133e61ed856225595e9c7888eeb9db4a74ccb56",
+        "packages/room/public/index.html": "f72cd876cb0c25c4d7b355ff2637bb56c3bdb374",
+        "packages/seat-runtime/src/seat-runtime.ts": "220c036e96f3aee911ced48f2f6ea4e09b5681fc",
+        "packages/room/src/server.ts": "0961b392a5a7d6e64fa72a3a6898f1dba5c39259"
+      },
+      "login_mode": "codex login; Grok explicitly uses --oauth to avoid pipe-triggered device mode",
+      "credential_boundary": "Vendor CLI writes its own instance credentials; do not transfer credential files",
+      "adopt": "Instance-keyed host session, provider login/status commands, browser URL from CLI, preserved output tail and ownership check before retiring old sessions",
+      "difference": "Existing LPAC, durable history and native process custody remain; Room environment-only isolation and PID/taskkill cleanup do not replace these boundaries"
+    },
+    "navehq": {
+      "head": "9975703cacd2fa091872fd3ee6241d6a6af58068",
+      "sources": [
+        "scripts/navehq_phase9_codex_oauth_contract_gate.sh",
+        "docs/navehq_worker_runtime_profile_codex_wrapper_contract_v0.1.md",
+        "runtime/agent_runtime_port.js",
+        "runtime/cao_runtime_adapter.js"
+      ],
+      "finding": "Device-auth example targets a headless container; the script records authentication NOT_RUN, not proof that desktop OAuth needs device mode",
+      "adopt": "Explicit per-instance CODEX_HOME and isolation boundary; no host-auth copy or mount",
+      "reference_only": true
+    },
+    "loomos": {
+      "head": "cea9f607ca48067fd591086ef8800a547750931b",
+      "sources": [
+        "README.md",
+        "03_specs_施工图/手脚包规格.md",
+        "06_lessons_坑与轮子/wheels.md"
+      ],
+      "finding": "Contains manual browser-profile authorization and no-credential-reading requirements; no implemented CLI login lifecycle found in this tree",
+      "reference_only": true
+    },
+    "repository_research_blobs": {
+      "docs/research/upstream-reference-map.md": "49591e075761db050394ee7c252cfdca4f417c72",
+      "docs/research/reuse-blueprint.md": "f1443cd38087441fb61eb26d633e40943270e668",
+      "docs/research/2026-09-25-parts-source-teardown.md": "c46c83e56ab5411a7e719336056266f3423e7f5b",
+      "docs/research/2026-09-25-substrate-source-teardown.md": "6db54ed24c991208fa18edb32ded4ef8125dc827",
+      "docs/research/2026-09-26-kernel-parts-harvest.md": "6a222c92edf277b9d3845f72c9c2b20f6765af65",
+      "docs/research/2026-09-26-execution-layer-capability-table.md": "6e685a1c6317895cb9c009f3e89001c0d7797029",
+      "docs/research/2026-09-26-antigravity-cli-facts.md": "e39ee3ed95eb8acc44464c353283761dec320285"
+    },
+    "upstream": {
+      "official_auth": "https://learn.chatgpt.com/docs/auth",
+      "fixed_codex_tag": "rust-v0.149.0",
+      "fixed_codex_source": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+      "fixed_cli_login_source_sha256": "d97cd81c89bb36af68f09c7770ba96f1db7271443c9aac80744231ed858ea695",
+      "fixed_cli_server_source_sha256": "c93e0bda0d9ed7003e3935982c2432303dcadd5714ef5721394f4aea57d83202",
+      "ordinary_flow": "CLI owns PKCE/state/token exchange, default localhost:1455/auth/callback, fallback port 1457; device auth is a separate explicit mode",
+      "codexmonitor_existing_source": {
+        "apps/desktop/src-tauri/src/shared/codex_core.rs": "a09f9636737501e510e7e98df018cb951f486b3a",
+        "apps/desktop/src/features/app/hooks/useAccountSwitching.ts": "8e42d2e851223e9521d36efb9dd4dcba129efb17"
+      },
+      "codexmonitor_finding": "Existing donor integration requests account/login/start type chatgpt, receives authUrl, uses account/login/cancel and account/login/completed; its page-held IDs are not sufficient for current F.1/G.0",
+      "t3code": "Fixed imported donor d6f291303ddc0c9a14f570266a4d9eff6d431593 has account protocol schemas; schema presence is not a tested login product",
+      "paseo": {
+        "source": "aa3ffaeb6c194b40915eca2de1deec6c26e16c3f",
+        "file": "packages/server/src/server/agent/providers/codex-app-server-agent.ts",
+        "sha256": "777aee3dda44474490a860ceab2c2684ba109e5f2f33b735e6c001bd729bcc0c",
+        "finding": "Codex execution adapter resolves CODEX_HOME; no separate Codex account-login lifecycle found in this inspected source or login/auth file inventory"
+      },
+      "orca": {
+        "source": "ca2356c194122090982426128fbc4e33e407b677",
+        "file": "src/main/codex-accounts/codex-login-session.ts",
+        "sha256": "c586e50dd3300527cc2eb79174f4e8c1d717130130adf9e4fb9f3fcdf6148c3d",
+        "finding": "Managed-home ordinary login and original-output failures; credential-file watcher is outside gogoke host's credential boundary and will not be copied"
+      }
+    },
+    "prior_choices": {
+      "forced_device_auth": "NO_DESKTOP_REFERENCE_JUSTIFICATION_FOUND_REVIEW_FOR_ORDINARY_OAUTH",
+      "login_inside_lpac": "CURRENT_AUTHORIZED_BOUNDARY_NOT_PROOF_OF_DEVICE_MODE_REQUIREMENT",
+      "login_on_codex_settings_page": "SUPERSEDED_BY_OWNER_APPROVED_PR58_INSTANCE_PAGE"
+    },
+    "current_lpac_oauth_callback": "NOT_RUN_DO_NOT_INFER_FROM_UWP_DOCUMENTATION",
+    "product_changes_this_reference_pass": false,
+    "owner_account_security_settings_changed": false,
+    "M2_rule": "For each of the four remaining providers compare own PROVIDER_LOGIN and corresponding fixed-CLI official docs before login implementation; record adopted pattern and justified differences"
+  },
   "authorization": {
     "pr": 59,
     "merged_by": "taiyun668",
@@ -143,14 +233,14 @@
     "initial_instance": "PASS_ACTUAL_CODEX_TEST_INSTANCE_DRIVER_VERSION_0.149.0_REVISION_2_NOT_LOGGED_IN",
     "acceptance": false
   },
-  "OT4": "ACTUAL_BROWSER_AUTHORIZATION_FAILED_CANCEL_UNSETTLED_REPAIR_IN_PROGRESS",
+  "OT4": "BROWSER_REJECTED_DEVICE_MODE_ACTUAL_CANCEL_PASS_ORDINARY_OAUTH_REVIEW_IN_PROGRESS",
   "M1_complete": false,
   "product_acceptance": false,
   "preserved_untracked": [
     "apps/desktop/native-host/src/process/session/compat/detours-extract/",
     "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
   ],
-  "next_action": "Cloud build/full native and compiled R8/R9 failure mutations, independent review, prepare new same-byte candidate; investigate exact legacy temporary-runtime object and recovery scope without forging old proof or editing history. Then actual cancel/relogin and browser error evidence.",
+  "next_action": "Apply Owner's reference-before-implementation rule. Reuse ordinary vendor OAuth where compatible with existing LPAC; first resolve live stderr progress and actual authorization URL handling, then obtain exact fixed-CLI callback evidence through the installed product. No device-code account setting change, credential copy, CLI modification or unapproved capability.",
   "source_audit": {
     "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
     "findings": [
@@ -247,7 +337,7 @@
     "post_install_formal_four": "NO_CHANGES"
   },
   "owner_touchpoint": {
-    "state": "NOTIFIED_ONCE_WAITING_OT4_ACCOUNT_AUTHORIZATION",
+    "state": "ORDINARY_OAUTH_PRODUCT_REPAIR_BEFORE_NEXT_OT4",
     "type": "OT4_ACCOUNT_LOGIN",
     "reason": "Only Owner can authenticate and authorize the Codex account in the browser",
     "product_entry": "Settings / Instances / Codex test instance / One-click login",
@@ -365,7 +455,7 @@
       "set_id": "4aef5e3440865419f4ab50412b1fa2f786c393e29cc324f686a3b90a969884d9",
       "instance_readback": "codexTestM1_CODEX_0_149_0_REVISION_2_NOT_LOGGED_IN",
       "actual_ui": "INSTANCE_PAGE_ONE_CLICK_LOGIN_ENABLED",
-      "actual_fresh_login_cancel_and_relogin": "NOT_RUN_AWAITING_OWNER_ACCOUNT_ACTION",
+      "actual_fresh_login_cancel_and_relogin": "ACTUAL_CANCEL_PASS_NEW_LOGIN_NOT_RUN",
       "old_unknown": "RETAINED_NOT_STOPPED",
       "completed_helper_tasks": "PASS_SIX_INDEPENDENTLY_AUDITED_REGISTRATIONS_REMOVED_EACH_ABSENT_ACTIVE_HOLDER_RETAINED",
       "new_measurement_issue": "SKY_COORDINATE_GEOMETRY_UNAVAILABLE_REOBSERVED_SCREENSHOT_BACKED_STATE_BEFORE_ONE_INPUT_RETRY",
@@ -377,6 +467,33 @@
         "completed-measurement-task-audit.json": "03b94ad6ec1e142748177b260f0d00b123edbcdc1047d639e8107e463f82fa8e",
         "completed-measurement-task-cleanup.json": "5af694fdb70b5746e9256826651ae2e40a1f58fa3845e6cc70c6ecb03f633eb9"
       }
+    },
+    "oauth_current_cause": "OWNER_BROWSER_DIRECT_ERROR_DEVICE_CODE_SIGN_IN_NOT_ENABLED_FOR_ACCOUNT",
+    "ordinary_current_cancel": {
+      "source": "091c7cfa29eb4b610b62fc2bde3bd0e88884edfd",
+      "product_version": "0.1.15",
+      "state": "PASS_ACTUAL_CANCELLED_SETTLED_TRUE_SAME_ORIGINAL_REQUEST_NO_ERROR",
+      "instance": "codexTestM1",
+      "private_metadata_sha256": "939a3a62689c53bac5807bfa075264d50ac35ab1b6b29ea99cf3acd89bfd363a",
+      "credentialsRead": false,
+      "new_login_started_by_controller": false
+    },
+    "oauth_mode_review": {
+      "current": "Native product hardcodes login --device-auth at v37_login.rs",
+      "default_vendor_flow": "codex login supports browser OAuth with localhost callback",
+      "isolation_forces_device_mode": "NOT_PROVEN",
+      "owner_security_change": "NOT_PERFORMED",
+      "next": "Complete ordinary-login live-stderr and validated original-URL bridge; verify no-code/state callback against the actual fixed CLI on cloud Windows and then the real installed Win11 product, without any new capability or CLI byte change",
+      "direct_cause": "Fixed CLI prints ordinary OAuth authorization URL on stderr, but current product only consumes stdout while PENDING and only opens a hardcoded device-auth URL",
+      "premise_check": "The reference implementations and fixed CLI support ordinary OAuth; changing the host bridge does not change CLI bytes, credentials ownership or LPAC. Callback reachability remains unproved until direct execution.",
+      "specialist_review": "oauth_reference_boundary_READ_ONLY_NO_PRODUCT_OR_RUNTIME_CHANGES",
+      "local_ui_tests": "PASS_1_FILE_8_TESTS_0_FAILURES",
+      "cloud_native": "NOT_RUN_FOR_ORDINARY_OAUTH_SOURCE",
+      "ordinary_win11_oauth": "NOT_RUN",
+      "candidate_version_prepared": "0.1.16",
+      "measurement_correction": "PowerShell JSON projection cannot represent npm package-lock empty-name root property; Python standard JSON readback verified all four version fields, with no product failure",
+      "native_implementation": "Ordinary fixed login; complete exact-child live stderr; capture failure blocks account-read; validated original OAuth URL opened once by existing host",
+      "cloud_test": "Non-skipped fixed CLI production registration and LPAC callback, exact listener PID/creation, missing code/state returns expected HTTP400, original-request cancellation; NOT_RUN"
     }
   },
   "route_reflection_current": "Candidate cuts must use a controlled workflow_dispatch desktop build from the outset; pull_request success cannot satisfy trusted-main signing provenance. Download and preparation run alongside cloud smoke, preserving frozen bytes and avoiding another build/sign round trip.",

@@ -153,7 +153,7 @@ export function Design37InstanceSection() {
                   </div>
                 ) : null}
                 {instance.login?.authorizationUrl ? (
-                  <div className="settings-help">
+                  <div className="settings-help" style={{ overflowWrap: "anywhere" }}>
                     宿主授权地址：<code>{instance.login.authorizationUrl}</code>
                   </div>
                 ) : null}

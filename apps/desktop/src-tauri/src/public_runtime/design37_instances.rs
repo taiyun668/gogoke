@@ -12,15 +12,15 @@ type ReplyFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Sen
 
 trait LoginEnvironment: Send + Sync + 'static {
     fn request(&self, frame: String) -> ReplyFuture<'_>;
-    fn open_authorization(&self) -> Result<(), String>;
+    fn open_authorization(&self, url: &str) -> Result<(), String>;
 }
 struct InstalledEnvironment(tauri::AppHandle);
 impl LoginEnvironment for InstalledEnvironment {
     fn request(&self, frame: String) -> ReplyFuture<'_> {
         Box::pin(super::product_entry::gogoke_design37_user_operation(self.0.clone(), frame))
     }
-    fn open_authorization(&self) -> Result<(), String> {
-        self.0.opener().open_url(AUTHORIZATION_URL, None::<&str>)
+    fn open_authorization(&self, url: &str) -> Result<(), String> {
+        self.0.opener().open_url(url, None::<&str>)
             .map_err(|error| format!("GOGOKE_INSTANCE_AUTHORIZATION_OPEN_FAILED:{error}"))
     }
 }
@@ -126,13 +126,33 @@ fn device_code(text: &str) -> Option<String> {
         } else { None }
     })
 }
+// The fixed CLI prints its ordinary OAuth URL as a complete stderr line.
+// Follow Room's login pattern: use the URL from this login process. A partial
+// line must never open a syntactically valid but incomplete OAuth request.
+fn authorization_url(text: &str) -> Option<String> {
+    text.split_inclusive('\n').filter(|line| line.ends_with('\n')).find_map(|line| {
+        let candidate = line.trim();
+        let url = reqwest::Url::parse(candidate).ok()?;
+        if url.scheme() != "https" || url.host_str() != Some("auth.openai.com")
+            || !url.username().is_empty() || url.password().is_some()
+            || url.port().is_some_and(|port| port != 443) || url.fragment().is_some()
+        {
+            return None;
+        }
+        if url.path() == "/oauth/authorize" || candidate == AUTHORIZATION_URL {
+            Some(candidate.to_owned())
+        } else {
+            None
+        }
+    })
+}
 fn apply_reply(sessions: &Sessions, id: &str, request: &str, action: &str, reply: LoginReply) -> Result<bool, String> {
     let mut map = lock_sessions(sessions)?;
     let record = same_record(&mut map, id, request)?;
     record.view.output = display_text(&reply.output);
     record.view.device_code = device_code(&record.view.output);
-    if record.view.output.split_whitespace().any(|part| part == AUTHORIZATION_URL) {
-        record.view.authorization_url = Some(AUTHORIZATION_URL.into());
+    if record.view.authorization_url.is_none() {
+        record.view.authorization_url = authorization_url(&record.view.output);
     }
     record.settled = reply.settled;
     record.view.settled = reply.settled;
@@ -203,11 +223,11 @@ async fn drive<E: LoginEnvironment>(environment: Arc<E>, sessions: Sessions, id:
             let mut map = lock_sessions(&sessions)?;
             let record = same_record(&mut map, &id, &original.request_id)?;
             if pending && record.view.authorization_url.is_some() && record.view.browser_state == "NOT_REQUESTED" && !record.cancel_requested {
-                record.view.browser_state = "OPENED".into(); true
-            } else { false }
+                record.view.browser_state = "OPENED".into(); record.view.authorization_url.clone()
+            } else { None }
         };
-        if should_open {
-            if let Err(error) = environment.open_authorization() {
+        if let Some(url) = should_open {
+            if let Err(error) = environment.open_authorization(&url) {
                 let mut map = lock_sessions(&sessions)?;
                 let record = same_record(&mut map, &id, &original.request_id)?;
                 record.view.browser_state = "FAILED".into(); record.view.error = Some(error);
@@ -286,6 +306,7 @@ mod tests {
         replies: Mutex<VecDeque<Result<(&'static str, &'static str, bool), String>>>,
         actions: Mutex<Vec<serde_json::Value>>,
         opened: AtomicUsize,
+        opened_urls: Mutex<Vec<String>>,
         logged_in: AtomicBool,
     }
     impl LoginEnvironment for FakeEnvironment {
@@ -305,13 +326,14 @@ mod tests {
                     "requestId":request["requestId"],"state":state,"output":output,"settled":settled}).to_string())
             })
         }
-        fn open_authorization(&self) -> Result<(), String> {
+        fn open_authorization(&self, url: &str) -> Result<(), String> {
+            self.opened_urls.lock().unwrap().push(url.to_owned());
             self.opened.fetch_add(1, Ordering::SeqCst); Ok(())
         }
     }
     fn fake(replies: Vec<Result<(&'static str, &'static str, bool), String>>) -> Arc<FakeEnvironment> {
         Arc::new(FakeEnvironment { replies:Mutex::new(replies.into()), actions:Mutex::new(Vec::new()),
-            opened:AtomicUsize::new(0), logged_in:AtomicBool::new(false) })
+            opened:AtomicUsize::new(0), opened_urls:Mutex::new(Vec::new()), logged_in:AtomicBool::new(false) })
     }
     fn runtime() -> tokio::runtime::Runtime { tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap() }
     fn broker() -> Sessions { Arc::new(Mutex::new(BTreeMap::new())) }
@@ -322,7 +344,8 @@ mod tests {
             let sessions = broker();
             let original = reserve_login(&sessions, "instanceA", 2).unwrap().unwrap();
             assert!(reserve_login(&sessions, "instanceA", 2).unwrap().is_none());
-            let environment = fake(vec![Ok(("PENDING", "\u{1b}[94mhttps://auth.openai.com/codex/device\u{1b}[0m\nABCD-EFGHI\n", false)),
+            let url = "https://auth.openai.com/oauth/authorize?client_id=test-client&state=test-state&code_challenge=test-challenge&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
+            let environment = fake(vec![Ok(("PENDING", "https://auth.openai.com/oauth/authorize?client_id=test-client&state=test-state&code_challenge=test-challenge&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback\n", false)),
                 Ok(("LOGGED_IN", "Successfully logged in", true))]);
             // Production driver receives no frontend object or poll operation.
             drive(Arc::clone(&environment), Arc::clone(&sessions), "instanceA".into(), original.clone()).await.unwrap();
@@ -332,6 +355,7 @@ mod tests {
                 assert_eq!(reopened.instances[0].login.as_ref().unwrap().request_id, original.request_id);
             }
             assert_eq!(environment.opened.load(Ordering::SeqCst), 1);
+            assert_eq!(environment.opened_urls.lock().unwrap().as_slice(), &[url.to_owned()]);
             let actions = environment.actions.lock().unwrap();
             assert_eq!(actions.len(), 2);
             assert_eq!(actions[0]["action"], "begin"); assert_eq!(actions[1]["action"], "status");
@@ -401,9 +425,43 @@ mod tests {
         });
     }
     #[test]
+    fn ordinary_oauth_waits_for_complete_url_and_opens_the_original_once() {
+        runtime().block_on(async {
+            let sessions = broker();
+            let original = reserve_login(&sessions, "instanceA", 2).unwrap().unwrap();
+            let url = "https://auth.openai.com/oauth/authorize?state=test-state&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
+            let environment = fake(vec![
+                Ok(("PENDING", "Starting local login server on http://localhost:1455.\nhttps://auth.openai.com/oauth/authorize?state=test-", false)),
+                Ok(("PENDING", "https://auth.openai.com/oauth/authorize?state=test-state&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback\n", false)),
+                Ok(("PENDING", "https://auth.openai.com/oauth/authorize?state=test-state&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback\n", false)),
+                Ok(("LOGGED_IN", "Successfully logged in", true)),
+            ]);
+            assert!(authorization_url("https://auth.openai.com/oauth/authorize?state=test-").is_none());
+            drive(Arc::clone(&environment), Arc::clone(&sessions), "instanceA".into(), original.clone()).await.unwrap();
+            assert_eq!(environment.opened_urls.lock().unwrap().as_slice(), &[url.to_owned()]);
+            let reopened = page(environment.as_ref(), &sessions).await.unwrap();
+            let login = reopened.instances[0].login.as_ref().unwrap();
+            assert_eq!(login.authorization_url.as_deref(), Some(url));
+            assert_eq!(login.request_id, original.request_id);
+            assert!(login.settled);
+        });
+    }
+    #[test]
     fn only_exact_cli_authorization_is_eligible_and_terminal_controls_are_removed() {
         assert_eq!(display_text("\u{1b}[94mABCD-EFGHI\u{1b}[0m\r\n"),"ABCD-EFGHI\n");
         assert_eq!(device_code("device-code\nABCD-EFGHI").as_deref(),Some("ABCD-EFGHI"));
+        for invalid in [
+            "https://auth.openai.com.example/oauth/authorize?state=test\n",
+            "https://auth.openai.com@other.example/oauth/authorize?state=test\n",
+            "https://other.example@auth.openai.com/oauth/authorize?state=test\n",
+            "http://auth.openai.com/oauth/authorize?state=test\n",
+            "https://auth.openai.com:444/oauth/authorize?state=test\n",
+            "https://auth.openai.com/oauth/authorize?state=test#fragment\n",
+            "https://auth.openai.com/docs\n",
+        ] {
+            assert!(authorization_url(invalid).is_none(), "must not open: {invalid}");
+        }
+        assert_eq!(authorization_url(&format!("{AUTHORIZATION_URL}\n")).as_deref(), Some(AUTHORIZATION_URL));
         assert!(decode_login(r#"{"schema":"gogoke.37.owner-login.v1","instanceId":"other","requestId":"r","state":"PENDING","output":"","settled":false}"#,"instanceA","r").is_err());
     }
 }
