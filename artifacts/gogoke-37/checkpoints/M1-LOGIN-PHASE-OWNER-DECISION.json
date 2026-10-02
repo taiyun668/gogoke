@@ -25,8 +25,38 @@
     "docs/implementation/gogoke-37-cli-permissions.md"
   ],
   "candidateVersion": "0.1.17",
-  "cloudNative": "NOT_RUN",
-  "cloudDesktop": "NOT_RUN",
+  "cloudNative": {
+    "run": 36973390178,
+    "state": "FAIL_TEST_COMPILE",
+    "release": "PASS",
+    "requiredAxes": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 0,
+      "exit": 101
+    },
+    "focused": {
+      "executed": 0,
+      "filters": 22,
+      "exit": 101
+    },
+    "mutations": "INVALID_COMPILE_FAILURE_R1_R8_OTHER_AXES_NOT_RUN",
+    "lpacShim": "PASS_2_OF_2",
+    "artifact": 11212344396,
+    "sha256": "994f6e3c55df1e0fcdfb451494b14c20d601a52bbe846ded0063fb797cb6377d",
+    "cause": "Test close_checked returns SameOpenError but diagnostic formatter accepted OrchestrationError"
+  },
+  "cloudDesktop": {
+    "run": 36973389553,
+    "state": "IN_PROGRESS_AT_CORRECTION",
+    "browserFiles": 147,
+    "browserTests": 1052,
+    "browser": "PASS",
+    "hostAndRepro": "NOT_RUN_AT_RECORD"
+  },
   "ordinaryWin11": "NOT_RUN",
   "realOAuthAccountAuthorization": "NOT_RUN",
   "automaticLoggedInReadback": "NOT_RUN_REQUIRES_OWNER_AUTHORIZATION_OF_CURRENT_EMPTY_INSTANCE",
@@ -34,5 +64,36 @@
   "M1Complete": false,
   "acceptance": false,
   "publicRelease": false,
-  "controllerMerge": false
+  "controllerMerge": false,
+  "first_source": "2fdec460e18a7f13a99a2585d2c0ccbd36cf3d2e",
+  "serverFirstSource": {
+    "state": "PASS",
+    "files": 58,
+    "executed": 642,
+    "passed": 642,
+    "failed": 0,
+    "skipped": 0,
+    "artifact": 11212303708,
+    "sha256": "22b5d3e77b30968808ca4a166875bc7d52248613bd14d3ca58940a9c86f640ac"
+  },
+  "independentBatch": {
+    "seat": "ordinary_login_authorized_final_audit",
+    "source": "2fdec460e18a7f13a99a2585d2c0ccbd36cf3d2e",
+    "axes": "R1_R9_OAUTH_STDERR_URL_CANCEL_ENV_MODEL_LPAC_AUTHORITY_INSTRUMENTS_BYTES",
+    "findings": [
+      "Exact authorized CLI digest gate was tied to removed path_compat and must remain before ordinary login preparation",
+      "Test diagnostic formatter type mismatch blocks actual full test compilation"
+    ],
+    "acceptance": false
+  },
+  "corrections": [
+    "Reuse existing OBSERVED_CLI_SHA256 at private Owner preparation admission before home/runtime/launch; registered pin plus suspended binary binding remains",
+    "Negative registered-digest admission test uses unchanged installed fixed CLI and no alternate program launch",
+    "Format actual SameOpenError as its own Debug error while redacting test paths; preserve measured stage results"
+  ],
+  "localHygieneFirstSource": {
+    "files": 24846,
+    "leaks": 0
+  },
+  "next": "Push corrected source; rerun affected full cloud commands; freeze only passing exact source and verify actual original Win11 before OT4"
 }

@@ -1264,7 +1264,10 @@ impl<'root> ProductDatabase<'root> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let row = self.read_registered_instance(instance_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
-        if row.driver_id != "codex" || row.version != "0.149.0" {
+        if row.driver_id != "codex" || row.version != "0.149.0"
+            || row.program_digest != format!("sha256:{}",
+                gogoke_lpac_path_compat::OBSERVED_CLI_SHA256)
+        {
             return Err(OrchestrationError::AccessDenied);
         }
         let source = self.registration_source(instance_id, "codex")?
@@ -2584,6 +2587,37 @@ mod tests {
     }
 
     #[test]
+    fn owner_ordinary_login_rejects_a_registration_outside_the_authorized_cli_digest() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-login-digest-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let registered = product.register_user_instance(
+            &request("register", "registerA", 0, r#"{"driverId":"codex"}"#)).unwrap();
+        assert_eq!(decode_receipt(&registered).unwrap().status, V37Status::Applied);
+        let home = instance::resolve_codex_instance_home(&product.connection,
+            &root, "instanceA").unwrap();
+        // Only the test's recorded admission metadata changes. The fixed
+        // vendor program remains untouched and no alternate program runs.
+        let update = Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET program_digest=?1 WHERE instance_id=?2").unwrap();
+        update.bind_text(1, &format!("sha256:{}", "0".repeat(64))).unwrap();
+        update.bind_text(2, "instanceA").unwrap();
+        update.step_done().unwrap();
+        drop(update);
+        assert!(matches!(product.prepare_owner_codex_login("instanceA"),
+            Err(OrchestrationError::AccessDenied)));
+        assert!(!home.path.join("gogoke-login-runtime").exists());
+        assert!(product.owner_login.is_none());
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn pinned_codex_empty_home_reports_native_logout_and_durable_stop() {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -2838,7 +2872,9 @@ mod tests {
         // This contains only stage/code summaries, never the authorization URL.
         eprintln!("actual fixed CLI callback stages before teardown: {stages:?}");
         product.close_checked().unwrap_or_else(|error|
-            panic!("ordinary OAuth custody close failed: {}; stages={stages:?}", safe_error(&error)));
+            panic!("ordinary OAuth custody close failed: {}; stages={stages:?}",
+                format!("{error:?}").replace(home.path.to_string_lossy().as_ref(), "<instance-home>")
+                    .replace(path.to_string_lossy().as_ref(), "<test-root>")));
         drop(root);
         // Reuse temporary-home cleanup's per-entry/reparse-aware primitives.
         // Report the exact denied relative object rather than masking the two
