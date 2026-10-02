@@ -1,7 +1,7 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "WIN11_ORIGINAL_PRODUCT_CALLBACK_DIAGNOSTIC_PREPARING",
-  "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。 本次回调对照沿用既有生产 prepare/start 和受控 Job 结算，不新增校验绕过：LPAC 专用 shim 必须绑定 profile，无隔离对照因此同时去除 shim，保留同一注册 home、CLI、环境、参数和工作目录；只比较两个启动组合，不据此独归因 LPAC token。 测试目录清理按现有 instance/temporary.rs 的逐对象删除及重解析点不跟随做法，先保留回调原始阶段结果，再报告具体被拒对象和 Windows 错误；不改权限、不加重试，不把清理失败当回调失败。",
+  "state": "AWAIT_OWNER_LOGIN_ONLY_SECURITY_BOUNDARY_DECISION",
+  "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。 本次回调对照沿用既有生产 prepare/start 和受控 Job 结算，不新增校验绕过：LPAC 专用 shim 必须绑定 profile，无隔离对照因此同时去除 shim，保留同一注册 home、CLI、环境、参数和工作目录；只比较两个启动组合，不据此独归因 LPAC token。 测试目录清理按现有 instance/temporary.rs 的逐对象删除及重解析点不跟随做法，先保留回调原始阶段结果，再报告具体被拒对象和 Windows 错误；不改权限、不加重试，不把清理失败当回调失败。 原位 0.1.16 已实测：同一固定 CLI 的 1455 回调连接超时，取消成功；云端无 LPAC/无 shim 对照返回预期 400。该对照不能独归因 token，也不能直接推出必须改变边界。gogo-party 已验证 loginEnv 为浏览器保留真实 APPDATA/LOCALAPPDATA；当前产品重定向这些目录，与参照不同，作为待核对差异，不直接照搬扩大权限。 聚焦机制复核核对 shim 仅处理 GetFinalPathNameByHandleW，不挂 socket/bind/listen；微软 loopback 例外属于系统网络隔离配置变更。没有找到满足原边界全部限制的现成修复。普通登录进程选项需 Owner 定边界；历史 loginEnv 的真实浏览器目录可复用，但不能把它宣称为 TCP 超时根因修复。",
   "reference_recheck": {
     "owner_rule_effective": "2026-10-01_IMMEDIATE_BEFORE_UNSPECIFIED_IMPLEMENTATION_DETAILS",
     "research_order": [
@@ -22,7 +22,8 @@
       "login_mode": "codex login; Grok explicitly uses --oauth to avoid pipe-triggered device mode",
       "credential_boundary": "Vendor CLI writes its own instance credentials; do not transfer credential files",
       "adopt": "Instance-keyed host session, provider login/status commands, browser URL from CLI, preserved output tail and ownership check before retiring old sessions",
-      "difference": "Existing LPAC, durable history and native process custody remain; Room environment-only isolation and PID/taskkill cleanup do not replace these boundaries"
+      "difference": "Existing LPAC, durable history and native process custody remain; Room environment-only isolation and PID/taskkill cleanup do not replace these boundaries",
+      "login_environment": "Historical loginEnv keeps independent HOME/USERPROFILE but restores real APPDATA/LOCALAPPDATA for the user browser; current product runtime redirection differs, not changed in this checkpoint"
     },
     "navehq": {
       "head": "9975703cacd2fa091872fd3ee6241d6a6af58068",
@@ -86,7 +87,7 @@
       "login_inside_lpac": "CURRENT_AUTHORIZED_BOUNDARY_NOT_PROOF_OF_DEVICE_MODE_REQUIREMENT",
       "login_on_codex_settings_page": "SUPERSEDED_BY_OWNER_APPROVED_PR58_INSTANCE_PAGE"
     },
-    "current_lpac_oauth_callback": "NOT_RUN_DO_NOT_INFER_FROM_UWP_DOCUMENTATION",
+    "current_lpac_oauth_callback": "ACTUAL_WIN11_PORT1455_CONNECT_TIMEOUT_CANCEL_SETTLED_NO_REAL_AUTHORIZATION",
     "product_changes_this_reference_pass": false,
     "owner_account_security_settings_changed": false,
     "M2_rule": "For each of the four remaining providers compare own PROVIDER_LOGIN and corresponding fixed-CLI official docs before login implementation; record adopted pattern and justified differences",
@@ -580,6 +581,109 @@
   "publicRelease": false,
   "controllerMerge": false,
   "callback_readback": "artifacts/gogoke-37/checkpoints/M1-ORDINARY-OAUTH-CALLBACK-READBACK.json",
-  "NEXT_ACTION": "Verify exact signed 0.1.16 frozen bytes and same-byte cloud smoke, refresh ordinary baseline, preserve original registered home/root identities, install actual candidate and measure Win11 callback under existing LPAC boundary. Ask for boundary decision only if direct Win11 evidence requires it.",
-  "premise_correction": "Cloud comparison alone cannot establish that Owner Win11 requires unisolated login; do not stop or request a boundary change before the original installed Win11 product is measured."
+  "NEXT_ACTION": "Owner decides whether only the fixed vendor CLI login may use a normal current-user token and historical loginEnv; retain LPAC for account-read/model/seat sessions. No implementation until decision.",
+  "premise_correction": "Original Win11 is now measured. A timeout plus cloud combination comparison supports this measured failure but does not isolate token from shim or prove a boundary expansion is the only fix.",
+  "actual_win11_016": {
+    "runtimeSource": "c3afa1499c59cfbb7a5a1a9b4072ad90d1e60591",
+    "version": "0.1.16",
+    "state": "FAIL_ACTUAL_CALLBACK_CONNECT_TIMEOUT",
+    "actualInstallation": "PASS_FROZEN_BYTES_ORIGINAL_ROOT_AND_HOME_IDENTITIES_PRESERVED",
+    "instance": "codexTestM1",
+    "revision": 2,
+    "authFileRead": false,
+    "authFileContentsAccessed": false,
+    "authorizationPerformed": false,
+    "fixedCliModified": false,
+    "curl": {
+      "exit": 28,
+      "originalError": "Connection timed out after 5011 milliseconds",
+      "codeOrStateSent": false,
+      "responseBytes": 0,
+      "listener": "EXACT_FIXED_CLI_OWNED_BY_ACTUAL_NATIVE_HOST_PORT_1455"
+    },
+    "cancel": {
+      "state": "CANCELLED",
+      "settled": true,
+      "error": null
+    },
+    "formal": {
+      "files": "UNCHANGED",
+      "data": "UNCHANGED",
+      "registry": "UNCHANGED",
+      "shortcuts": "UNCHANGED"
+    },
+    "independentAudit": {
+      "seat": "oauth_known_findings_focus",
+      "verdict": "ACTUAL_INSTALL_IDENTITY_AND_ERROR_EVIDENCE_CHAIN_SUPPORTED",
+      "limitations": [
+        "This run only; not proof of all Win11 callback conditions",
+        "Cannot separate LPAC token and shim as causal variables",
+        "Packaged HKCU view is not ordinary Interactive/Limited registry authority",
+        "Product browser OPENED field is not proof of Owner-visible page"
+      ],
+      "acceptance": false
+    },
+    "privateEvidenceSha256": {
+      "verified-new-input.json": "d444395fdea8b8bff5af433194c3951cbd888cda772b6ff560ba1b94603c3d98",
+      "retirement-result.json": "65ce878de594e34cc52eb81a3966f164c16ee19e1d825e8bdcf36f8942c59291",
+      "empty-directory-inventory.json": "04b5b22ab83b56e0f0999bc950ec6bcd08fa80ff30c5c4e2ac9722bb775ecdbb",
+      "empty-directory-audit-result.json": "bd6abea200b2b397d28b1e3e9d570faac652009a40d60862479fd661b46833b0",
+      "empty-directory-cleanup-result.json": "73bda515daba88185f2f863b8274ded36b7a8e04510de7ef18006154e3ad7b0f",
+      "replacement-installation-result.json": "c49edc1c4366297b93fb317a2d6dca2cc43309c8d465c28a8b5d2ec6c4b28cb4",
+      "product-preparation-result.json": "648e76211b2773e4a5b2cd10ee15825b274c008ac5a8989f116d2a4f902d78e5",
+      "actual-oauth-callback-private-result.json": "69dd5e69ebe26eef0da8f523f4a8bb44ffdeeeddfe7d62a09c27372bfdb7b1ff",
+      "actual-callback-curl-original-stderr.txt": "aa115f021dbb85da7e547695c75936e2d512a0262f72cb21c70b6e34c02dbd9e",
+      "actual-cli-listener-custody.ps1": "96e197038ec247e0b0753432ae137978dddc2f4fa600233a600370e8e8bef787",
+      "post-callback-formal-readback.json": "e7291127d19328d0097c37d4a35f6f74b320a3f7a82e157d06bb1fad9c46fc05",
+      "pre-transition-formal.json": "4ef84081c52681f450d356f129997844745c2e3156dd0182b050fa4c534dfae5",
+      "post-callback-formal.json": "47c872268045d9775df01aaac73dac9376cfceb515d6dad0402dde9a1ccced8b",
+      "completed-measurement-task-cleanup.json": "ed80f9271f1423a181bbc6a8697b13d262a318d18c1af6ab76d7bd07a1f140b6"
+    },
+    "g4": {
+      "emptyDirectoriesRemoved": 1113,
+      "emptyDirectoryAbsentReadbacks": 1113,
+      "independentlyAudited": true,
+      "rootAndDataPreserved": true,
+      "measurementTasksRemoved": 6,
+      "taskAbsentReadbacks": 6,
+      "liveProductHolderRetained": true
+    },
+    "boundaryChanged": false,
+    "OT4Requested": false
+  },
+  "measurement_corrections_016": [
+    "Missing signed Node path located before operation",
+    "Old native exit observed before uninstall, no force kill",
+    "Missing previous private custody metadata restored; no product or credential copy",
+    "Failed preoperation snapshots preserved under exact private evidence subdirectory",
+    "Retirement wrapper now propagates nested measurement exit",
+    "Fresh 1114-directory inventory replaces stale 1090-directory cleanup assumptions before deletion and independent audit",
+    "All-PowerShell wrapper LASTEXITCODE assumption corrected; successful cleanup was not repeated",
+    "Readonly reserved input variable renamed before listener measurement",
+    "Null scheduled-task triggers filtered before count; first cleanup attempt stopped before any deletion",
+    "Reference-repo remote query was not product authority; exact gogoke remote/main/branch checked separately"
+  ],
+  "focused_mechanism_review": {
+    "seat": "oauth_reference_boundary",
+    "mode": "READ_ONLY_FOCUSED_REFERENCE_AND_MECHANISM_REVIEW",
+    "premise": "Actual fixed CLI listener exists but measured TCP callback connection times out; cloud no-LPAC/no-shim control returns HTTP400",
+    "finding": "Evidence supports presenting a login-only normal-current-user option, not claiming token-alone causation or Win11 OAuth success",
+    "shim": "GetFinalPathNameByHandleW import compatibility only; no socket/bind/listen hook found",
+    "unchangedBoundaryFix": "No existing implementation found satisfying no capability addition, no system security change, fixed CLI and host credential boundary",
+    "rejectedAlternatives": [
+      "App-server account/login/start still requires localhost callback",
+      "Host receiving/forwarding authorization codes changes credential boundary",
+      "AppContainer loopback exception changes system network-isolation configuration"
+    ],
+    "sources": [
+      "https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationsetappcontainerconfig",
+      "https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/troubleshooting-uwp-firewall"
+    ],
+    "acceptance": false
+  },
+  "hygiene_current_evidence": {
+    "localFiles": 24845,
+    "leaks": 0,
+    "acceptance": false
+  }
 }

@@ -1,7 +1,7 @@
 {
   "schema": "gogoke.37.oauth-callback-readback.v1",
   "source": "4b99854373c63d631138ff1f4c3257a34bdc4b47",
-  "state": "CLOUD_COMPARISON_COMPLETE_WIN11_ORIGINAL_PRODUCT_DIAGNOSTIC_PENDING",
+  "state": "AWAIT_OWNER_LOGIN_ONLY_SECURITY_BOUNDARY_DECISION",
   "scope": "Cloud Windows fresh registered empty instance home; actual fixed CLI; not Owner Win11 and not real account authorization",
   "fixed_cli": {
     "version": "0.149.0",
@@ -102,7 +102,7 @@
     "reasonApprovalRequired": "Owner F.1/G.0 instruction expressly retains the current fixed CLI and LPAC isolation boundary; removing login-stage LPAC requires a new decision",
     "reference": "Historical gogo-party PROVIDER_LOGIN uses ordinary codex login in an instance home; fixed official CLI supports browser OAuth. Design37 section9 keeps instance homes separate from daily CLI homes and credentials vendor-owned",
     "change": "Only Owner-initiated login: same fixed CLI and original registered instance home, normal current-user process without LPAC or its shim. Keep native process custody, fixed login arguments, persistent session, cancellation, original error and automatic status readback",
-    "permissionEffect": "Login process receives normal current-user filesystem rights and no longer has LPAC file isolation during login; no elevation",
+    "permissionEffect": "Only fixed vendor CLI login receives ordinary current-user filesystem rights and loses LPAC file isolation during login; fixed CODEX_HOME and Job custody do not substitute for filesystem isolation. No elevation.",
     "preserved": [
       "Model/seat sessions and account-read retain existing LPAC profile/capabilities",
       "Host never reads/writes/copies credentials",
@@ -112,12 +112,14 @@
     ],
     "authorizedByOwner": false,
     "implemented": false,
-    "neededNow": false,
-    "prerequisite": "First measure actual installed Win11 product under existing boundary; cloud combination difference does not prove Win11 requires a boundary change"
+    "neededNow": true,
+    "prerequisite": "Actual installed original Win11 callback measured; focused mechanism review found no existing same-boundary repair under current restrictions",
+    "referenceEnvironment": "Reuse historical loginEnv: original registered CODEX_HOME and instance HOME/USERPROFILE, real APPDATA/LOCALAPPDATA for browser. Environment change is not claimed to fix TCP isolation; this follows existing desktop login implementation.",
+    "afterApproval": "Cloud callback and settlement/regression checks, exact frozen candidate chain, original Win11 callback and cancellation, then one OT4 interaction; verify ordinary-login credentials are usable by LPAC account-read and model sessions without host credential reads"
   },
   "M1Complete": false,
   "acceptance": false,
-  "newCandidateInstalled": false,
+  "newCandidateInstalled": true,
   "publicRelease": false,
   "controllerMerge": false,
   "candidate_diagnostic": {
@@ -129,6 +131,106 @@
     "signed_artifact": 11208469342,
     "signed_archive_sha256": "1a6cb5d4f99d1d2fba04199bf41edd105dfb777c4985ff7081c7459f70cda856",
     "purpose": "Existing-boundary Win11 diagnosis, not M1 acceptance",
-    "ordinaryInstall": "NOT_RUN"
+    "ordinaryInstall": "PASS_ACTUAL_FROZEN_BYTES_ORIGINAL_ROOT_AND_HOME",
+    "sameByteCloudSmoke": {
+      "run": 36965493633,
+      "state": "PASS",
+      "artifact": 11209663952,
+      "sha256": "2edf8d2d4c30fa7dcdf14eb26fbcb7a5683ec6e803157eaf127c21efcf0e8b43",
+      "negativeArtifact": 11210625360,
+      "negativeSha256": "c35f024cd9674510a0bb829c9893e1eae3d2b93c1359f091b831738017b8d2cd"
+    }
+  },
+  "actual_win11": {
+    "runtimeSource": "c3afa1499c59cfbb7a5a1a9b4072ad90d1e60591",
+    "version": "0.1.16",
+    "state": "FAIL_ACTUAL_CALLBACK_CONNECT_TIMEOUT",
+    "actualInstallation": "PASS_FROZEN_BYTES_ORIGINAL_ROOT_AND_HOME_IDENTITIES_PRESERVED",
+    "instance": "codexTestM1",
+    "revision": 2,
+    "authFileRead": false,
+    "authFileContentsAccessed": false,
+    "authorizationPerformed": false,
+    "fixedCliModified": false,
+    "curl": {
+      "exit": 28,
+      "originalError": "Connection timed out after 5011 milliseconds",
+      "codeOrStateSent": false,
+      "responseBytes": 0,
+      "listener": "EXACT_FIXED_CLI_OWNED_BY_ACTUAL_NATIVE_HOST_PORT_1455"
+    },
+    "cancel": {
+      "state": "CANCELLED",
+      "settled": true,
+      "error": null
+    },
+    "formal": {
+      "files": "UNCHANGED",
+      "data": "UNCHANGED",
+      "registry": "UNCHANGED",
+      "shortcuts": "UNCHANGED"
+    },
+    "independentAudit": {
+      "seat": "oauth_known_findings_focus",
+      "verdict": "ACTUAL_INSTALL_IDENTITY_AND_ERROR_EVIDENCE_CHAIN_SUPPORTED",
+      "limitations": [
+        "This run only; not proof of all Win11 callback conditions",
+        "Cannot separate LPAC token and shim as causal variables",
+        "Packaged HKCU view is not ordinary Interactive/Limited registry authority",
+        "Product browser OPENED field is not proof of Owner-visible page"
+      ],
+      "acceptance": false
+    },
+    "privateEvidenceSha256": {
+      "verified-new-input.json": "d444395fdea8b8bff5af433194c3951cbd888cda772b6ff560ba1b94603c3d98",
+      "retirement-result.json": "65ce878de594e34cc52eb81a3966f164c16ee19e1d825e8bdcf36f8942c59291",
+      "empty-directory-inventory.json": "04b5b22ab83b56e0f0999bc950ec6bcd08fa80ff30c5c4e2ac9722bb775ecdbb",
+      "empty-directory-audit-result.json": "bd6abea200b2b397d28b1e3e9d570faac652009a40d60862479fd661b46833b0",
+      "empty-directory-cleanup-result.json": "73bda515daba88185f2f863b8274ded36b7a8e04510de7ef18006154e3ad7b0f",
+      "replacement-installation-result.json": "c49edc1c4366297b93fb317a2d6dca2cc43309c8d465c28a8b5d2ec6c4b28cb4",
+      "product-preparation-result.json": "648e76211b2773e4a5b2cd10ee15825b274c008ac5a8989f116d2a4f902d78e5",
+      "actual-oauth-callback-private-result.json": "69dd5e69ebe26eef0da8f523f4a8bb44ffdeeeddfe7d62a09c27372bfdb7b1ff",
+      "actual-callback-curl-original-stderr.txt": "aa115f021dbb85da7e547695c75936e2d512a0262f72cb21c70b6e34c02dbd9e",
+      "actual-cli-listener-custody.ps1": "96e197038ec247e0b0753432ae137978dddc2f4fa600233a600370e8e8bef787",
+      "post-callback-formal-readback.json": "e7291127d19328d0097c37d4a35f6f74b320a3f7a82e157d06bb1fad9c46fc05",
+      "pre-transition-formal.json": "4ef84081c52681f450d356f129997844745c2e3156dd0182b050fa4c534dfae5",
+      "post-callback-formal.json": "47c872268045d9775df01aaac73dac9376cfceb515d6dad0402dde9a1ccced8b",
+      "completed-measurement-task-cleanup.json": "ed80f9271f1423a181bbc6a8697b13d262a318d18c1af6ab76d7bd07a1f140b6"
+    },
+    "g4": {
+      "emptyDirectoriesRemoved": 1113,
+      "emptyDirectoryAbsentReadbacks": 1113,
+      "independentlyAudited": true,
+      "rootAndDataPreserved": true,
+      "measurementTasksRemoved": 6,
+      "taskAbsentReadbacks": 6,
+      "liveProductHolderRetained": true
+    },
+    "boundaryChanged": false,
+    "OT4Requested": false
+  },
+  "next": "Owner decision on precisely scoped login-only token/environment change; no implementation before decision",
+  "focused_mechanism_review": {
+    "seat": "oauth_reference_boundary",
+    "mode": "READ_ONLY_FOCUSED_REFERENCE_AND_MECHANISM_REVIEW",
+    "premise": "Actual fixed CLI listener exists but measured TCP callback connection times out; cloud no-LPAC/no-shim control returns HTTP400",
+    "finding": "Evidence supports presenting a login-only normal-current-user option, not claiming token-alone causation or Win11 OAuth success",
+    "shim": "GetFinalPathNameByHandleW import compatibility only; no socket/bind/listen hook found",
+    "unchangedBoundaryFix": "No existing implementation found satisfying no capability addition, no system security change, fixed CLI and host credential boundary",
+    "rejectedAlternatives": [
+      "App-server account/login/start still requires localhost callback",
+      "Host receiving/forwarding authorization codes changes credential boundary",
+      "AppContainer loopback exception changes system network-isolation configuration"
+    ],
+    "sources": [
+      "https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationsetappcontainerconfig",
+      "https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/troubleshooting-uwp-firewall"
+    ],
+    "acceptance": false
+  },
+  "hygiene_current_evidence": {
+    "localFiles": 24845,
+    "leaks": 0,
+    "acceptance": false
   }
 }
