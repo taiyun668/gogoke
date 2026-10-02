@@ -47,7 +47,7 @@
    "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
   "construction_baseline": "MAIN_AT_MAPPING_SNAPSHOT",
-  "rule": "The asset and shared-file mapping was read at mapping_snapshot: main after PR #27 merged the Owner-accepted R2-05 delivery, one tree holding the delivered product code and current governance. The earlier two-tree snapshot (main d0e739be plus execution branch df63d8b7) was superseded after the controller's T00 record artifacts/gogoke-37/t00/T00-RECHECK-161448a4.json found drift; this revision absorbs it. Before authorization, T00 re-reads every shared file and asset at the authorization base commit; any change from mapping_snapshot is a plan amendment, which changes MANIFEST and so any authorization binding."
+  "rule": "The asset and shared-file mapping was read at mapping_snapshot: main after PR #27 merged the Owner-accepted R2-05 delivery, one tree holding the delivered product code and current governance. The earlier two-tree snapshot (main d0e739be plus execution branch df63d8b7) was superseded after the controller's T00 record artifacts/gogoke-37/t00/T00-RECHECK-161448a4.json found drift; this revision absorbs it. Before authorization, T00 re-reads every shared file and asset at the authorization base commit; any change from mapping_snapshot is a plan amendment. Detail amendments preserve the authorized scope digest; scope amendments carry an updated receipt in the same Owner-merged PR."
  },
  "invariants": {
   "fact_ledger": "Git/GitHub",
@@ -1999,9 +1999,9 @@
    "parallel lines"
   ],
   "receipt_path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
-  "receipt_schema": "gogoke.37.public-authorization.v1",
-  "binding": "The receipt records the scope digest that verify_plan.py computes from PLAN.json (requirements, lines with write scopes and dependencies, milestones, shared-file ownership and paths, invariants, Owner touchpoints, governance, authorization, non-claims). Construction and the candidate signer check that the plan in force has that digest. The S1-R4 authorization does not cover this plan and is not modified.",
-  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (phase deliverables, contracts, checks, assets, source pins). It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR.",
+  "receipt_schema": "gogoke.37.public-authorization.v2",
+  "binding": "The receipt records the scope digest that verify_plan.py computes from PLAN.json (requirements, lines with write scopes and dependencies, phase-to-milestone placement, milestone scope, conditional shared-file ownership and paths, durable contract ownership, invariants, Owner touchpoints, governance, authorization, non-claims). Construction and the candidate signer check that the plan in force has that digest. The S1-R4 authorization does not cover this plan and is not modified.",
+  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (deliverable, contract and check descriptions, assets, source pins), never phase placement, milestone scope, conditional write constraints or durable contract ownership. Independent review must preserve requirements, invariants, security and recorded Owner decisions. It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR.",
   "governance_note": "This follows the S1-R4 authorization pattern at a separate path, bound to scope instead of plan bytes. Merging this plan is the Owner's acceptance of that pattern for design 37."
  },
  "scope_nonclaims": [

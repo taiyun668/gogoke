@@ -14,11 +14,9 @@ $repo = 'taiyun668/gogoke'
 $branch = 'codex/gogoke-37-l0'
 $sourceWorkflow = '.github/workflows/gogoke-desktop.yml'
 $signingWorkflow = '.github/workflows/gogoke-candidate-sign.yml'
-$authorizationMain = 'b75250c3b9987b9b09a0fa068f986e2c482a1044'
-$manifestBlob = '9d540cbac609b5ba21cb12e1640b375bcc980736'
-$receiptBlob = '671cb15b811048c883e6f2f2671ba8a15fc4b55c'
-$manifestPath = 'docs/design/gogoke-37-plan-v1/MANIFEST.json'
+$receiptBlob = 'a1d4fb9d352da575a84129b8b22bad52577b6a5d'
 $receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
+$planPath = 'docs/design/gogoke-37-plan-v1/PLAN.json'
 $maxArchiveBytes = 1073741824L
 $maxExtractedBytes = 1073741824L
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -209,8 +207,9 @@ if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hos
     $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') {
     throw 'Candidate preflight requires the exact controlled branch workflow checkout'
 }
-if ((git -C $repoRoot rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
-    throw 'Candidate preflight code is not loaded from the exact branch workflow checkout'
+if ($repoRoot -ne [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'trusted-main')) -or
+    (git -C $repoRoot rev-parse HEAD).Trim() -cnotmatch '^[0-9a-f]{40}$') {
+    throw 'Candidate preflight code is not loaded from the trusted main checkout'
 }
 if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN) -or
     [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or
@@ -220,21 +219,80 @@ if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN) -or
 $gh = Get-Command gh -CommandType Application -ErrorAction Stop
 $script:ghPath = [IO.Path]::GetFullPath($gh.Source)
 if (-not [IO.Path]::IsPathFullyQualified($script:ghPath)) { throw 'gh executable path is not absolute' }
+$trustedMain = (git -C $repoRoot rev-parse HEAD).Trim()
+$currentMain = Read-Api "repos/$repo/commits/main"
+if ($currentMain.sha -cne $trustedMain) { throw 'Trusted preflight checkout is not current main' }
+if ((git -C $repoRoot rev-parse "HEAD:$receiptPath").Trim() -cne $receiptBlob) {
+    throw 'Trusted main public authorization receipt blob changed'
+}
+$receipt = Get-Content -LiteralPath (Join-Path $repoRoot $receiptPath) -Raw | ConvertFrom-Json -AsHashtable
+if ($receipt.schema -cne 'gogoke.37.public-authorization.v2' -or
+    $receipt.repository -cne $repo -or $receipt.plan.scope_digest -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'Trusted main public authorization receipt is malformed'
+}
+$verifierPath = Join-Path $repoRoot 'docs\design\gogoke-37-plan-v1\verify_plan.py'
+$mainDigest = & python $verifierPath --scope-digest (Join-Path $repoRoot $planPath)
+if ($LASTEXITCODE -ne 0 -or @($mainDigest).Count -ne 1 -or $mainDigest -cne $receipt.plan.scope_digest) {
+    throw 'Current main plan scope differs from the Owner authorization'
+}
+$introducing = $null
+foreach ($commit in @(git -C $repoRoot log --first-parent --format=%H HEAD -- $receiptPath)) {
+    if ((git -C $repoRoot rev-parse "${commit}:$receiptPath" 2>$null).Trim() -ceq $receiptBlob) {
+        $introducing = $commit
+        break
+    }
+}
+if ($introducing -cnotmatch '^[0-9a-f]{40}$') {
+    throw 'Receipt introduction is absent from main first-parent history'
+}
+$parents = @((git -C $repoRoot rev-list --parents -n 1 $introducing).Trim() -split ' ')
+if ($parents.Count -ne 3 -or $parents[0] -cne $introducing -or
+    (git -C $repoRoot rev-parse "$($parents[1]):$receiptPath" 2>$null).Trim() -ceq $receiptBlob) {
+    throw 'Receipt was not introduced by a main merge commit'
+}
+$mergedPulls = @(Read-Api "repos/$repo/commits/$introducing/pulls")
+if ($mergedPulls.Count -ne 1 -or $mergedPulls[0].merge_commit_sha -cne $introducing -or
+    $mergedPulls[0].number -le 0) {
+    throw 'Receipt merge has no unique associated pull request'
+}
+$mergedPull = Read-Api "repos/$repo/pulls/$($mergedPulls[0].number)"
+if (-not $mergedPull.merged -or $mergedPull.base.ref -cne 'main' -or
+    $mergedPull.base.repo.full_name -cne $repo -or
+    $mergedPull.merge_commit_sha -cne $introducing -or
+    $mergedPull.merged_by.login -cne 'taiyun668' -or -not $mergedPull.merged_at) {
+    throw 'Receipt merge is not the Owner-merged main pull request'
+}
+function Assert-PlanScope([string]$Revision) {
+    $metadata = Read-Api "repos/$script:repo/contents/$script:planPath`?ref=$Revision"
+    if ($metadata.type -cne 'file' -or $metadata.encoding -cne 'base64' -or
+        $metadata.size -le 0 -or $metadata.size -gt 1048576) {
+        throw 'Plan data is unavailable or unbounded'
+    }
+    $dataPath = Join-Path $env:RUNNER_TEMP "gogoke-plan-$Revision.json"
+    if (Test-Path -LiteralPath $dataPath) { throw 'Plan temporary path already exists' }
+    try {
+        [IO.File]::WriteAllBytes($dataPath, [Convert]::FromBase64String($metadata.content))
+        $digest = & python $script:verifierPath --scope-digest $dataPath
+        if ($LASTEXITCODE -ne 0 -or @($digest).Count -ne 1 -or $digest -cne $script:receipt.plan.scope_digest) {
+            throw 'Plan scope differs from the Owner authorization'
+        }
+    } finally { Remove-Item -LiteralPath $dataPath -Force -ErrorAction SilentlyContinue }
+}
 $signRun = Read-Api "repos/$repo/actions/runs/$SigningRunId"
 Assert-Run $signRun $SigningRunId $SigningRunAttempt $signRun.head_sha 'main' $signingWorkflow 'gogoke candidate resource signing'
 if ($signRun.head_sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Trusted signing main SHA is malformed' }
-foreach ($revision in @('main', $signRun.head_sha, $ExpectedSourceCommit)) {
-    $manifestMetadata = Read-Api "repos/$repo/contents/$manifestPath`?ref=$revision"
+if ($signRun.event -cne 'workflow_dispatch') { throw 'Candidate signing was not explicitly dispatched' }
+foreach ($revision in @($signRun.head_sha, $ExpectedSourceCommit)) {
     $receiptMetadata = Read-Api "repos/$repo/contents/$receiptPath`?ref=$revision"
-    if ($manifestMetadata.type -cne 'file' -or $manifestMetadata.sha -cne $manifestBlob -or
-        $receiptMetadata.type -cne 'file' -or $receiptMetadata.sha -cne $receiptBlob) {
-        throw 'Signing main or source revision differs from the authorized design 37 blobs'
+    if ($receiptMetadata.type -cne 'file' -or $receiptMetadata.sha -cne $receiptBlob) {
+        throw 'Signing main or source revision differs from the authorized receipt'
     }
+    Assert-PlanScope $revision
 }
-$comparison = Read-Api "repos/$repo/compare/$authorizationMain...$ExpectedSourceCommit"
+$comparison = Read-Api "repos/$repo/compare/$introducing...$ExpectedSourceCommit"
 if ($comparison.status -cnotin @('ahead', 'identical') -or
-    $comparison.merge_base_commit.sha -cne $authorizationMain) {
-    throw 'Source revision is not descended from the authorized main commit'
+    $comparison.merge_base_commit.sha -cne $introducing) {
+    throw 'Source revision is not descended from the receipt-introducing main merge'
 }
 Assert-UniqueJob $SigningRunId $SigningRunAttempt 'Verify source run and sign candidate resource bytes'
 # The source run ID is in the name, but only the signed manifest can provide it.

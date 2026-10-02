@@ -357,6 +357,8 @@ def check(plan: dict) -> list[str]:
         errors.append("the build-and-release governance must be referenced")
     if plan.get("authorization", {}).get("sequence") != REQUIRED_SEQUENCE:
         errors.append("authorization sequence must be exactly " + " -> ".join(REQUIRED_SEQUENCE))
+    if plan.get("authorization", {}).get("receipt_schema") != "gogoke.37.public-authorization.v2":
+        errors.append("authorization receipt_schema must be gogoke.37.public-authorization.v2")
     if not str(plan.get("authorization", {}).get("amendment_rule", "")).strip():
         errors.append("authorization needs an amendment_rule")
     return errors
@@ -365,19 +367,24 @@ def check(plan: dict) -> list[str]:
 def scope_digest(plan: dict) -> str:
     """SHA-256 over the parts of the plan that the Owner authorizes.
 
-    Requirements, lines with their write scopes and dependencies, milestones, shared-file
-    ownership and paths, invariants, Owner touchpoints, governance, authorization and the
-    non-claims. Phase deliverables, contracts, checks, assets and source pins are details:
-    amending them leaves the digest, and so the Owner's authorization, unchanged.
+    Bind phase placement, milestone scope, conditional shared-file constraints and
+    durable contract ownership as well as write paths and the existing scope fields.
+    Deliverable, contract and check descriptions, assets and source pins are details;
+    their independent review must still preserve requirements and invariants.
     """
     scope = {
         "requirements": sorted((r.get("id"), r.get("text")) for r in plan.get("requirements", [])),
         "lines": sorted(
-            (l.get("id"), sorted(l.get("write_scope", [])), sorted(l.get("depends", [])), bool(l.get("owns_shared_files")))
+            (l.get("id"), sorted(l.get("write_scope", [])), sorted(l.get("depends", [])), bool(l.get("owns_shared_files")),
+             sorted((p.get("id"), p.get("milestone")) for p in l.get("phases", [])))
             for l in plan.get("lines", [])),
-        "milestones": [m.get("id") for m in plan.get("milestones", [])],
+        "milestones": [(m.get("id"), m.get("scope_note")) for m in plan.get("milestones", [])],
         "shared_files": [plan.get("shared_files", {}).get("owner"),
-                         sorted(f.get("path") for f in plan.get("shared_files", {}).get("files", []))],
+                         plan.get("shared_files", {}).get("conditional_rule"),
+                         sorted((f.get("path"), bool(f.get("conditional")))
+                                for f in plan.get("shared_files", {}).get("files", []))],
+        "contract_owners": sorted((k.get("id"), k.get("durable_owner"))
+                                  for k in plan.get("contracts", {}).get("operations", [])),
         "invariants": plan.get("invariants"),
         "owner_touchpoints": plan.get("owner_touchpoints"),
         "governance": plan.get("governance"),
@@ -471,6 +478,26 @@ def self_test(plan: dict) -> list[str]:
     expect("required source dropped", lambda p: p.update(sources=[s for s in p["sources"] if s["path"] != "AGENTS.md"]))
     expect("milestone list changed", lambda p: p["milestones"].pop())
     expect("amendment rule dropped", lambda p: p["authorization"].pop("amendment_rule", None))
+    expect("stale receipt schema", lambda p: p["authorization"].update(receipt_schema="gogoke.37.public-authorization.v1"))
+
+    bound = scope_digest(plan)
+
+    def expect_scope(name, mutate, changed=True):
+        p = copy.deepcopy(plan)
+        mutate(p)
+        if check(p) or (scope_digest(p) != bound) != changed:
+            missed.append("scope: " + name)
+
+    expect_scope("phase moved to another milestone", lambda p: p["lines"][idx["B2"]]["phases"][0].update(milestone="M1"))
+    expect_scope("milestone scope changed", lambda p: p["milestones"][2].update(scope_note="Changed project scope"))
+    expect_scope("conditional shared file made unconditional", lambda p: next(
+        f for f in p["shared_files"]["files"] if f.get("conditional")).update(conditional=False))
+    expect_scope("conditional shared-file rule changed", lambda p: p["shared_files"].update(conditional_rule="Changed conditional write rule"))
+    expect_scope("contract durable owner changed", lambda p: next(
+        k for k in p["contracts"]["operations"] if k["id"] == "K-SESSION").update(durable_owner="E"))
+    expect_scope("deliverable description only", lambda p: p["lines"][idx["B2"]]["phases"][0]["deliverables"].append("Implementation clarification"), False)
+    expect_scope("contract description only", lambda p: p["contracts"]["operations"][0].update(seams="Implementation clarification"), False)
+    expect_scope("check description only", lambda p: p["checks"][0].update(observe=p["checks"][0]["observe"] + " Editorial clarification."), False)
     return missed
 
 

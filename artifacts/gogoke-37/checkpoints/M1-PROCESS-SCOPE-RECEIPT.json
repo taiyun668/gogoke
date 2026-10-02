@@ -1,0 +1,29 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "recordedDate": "2026-10-02",
+  "state": "PR61_SCOPE_AND_SIGNING_IMPLEMENTED_INDEPENDENT_REVIEW_PENDING",
+  "changes": [
+    "Owner's stage-light rules applied immediately; no further candidate installation for small fixes",
+    "PR61 signing chain uses trusted main scope verifier over candidate PLAN data, fixed v2 receipt blob and mechanically located Owner-merged main receipt introduction",
+    "Automatic workflow_run signing removed; explicit stable-point dispatch retained",
+    "Independent findings corrected in this same PR: phase placement, milestone scope, conditional shared-file rules and durable contract ownership bound; receipt schema v2 consistent"
+  ],
+  "results": {
+    "installed017": "Original installed 0.1.17 reopened: codexTestM1 LOGGED_IN revision 3; original home retained, no new login or credential access",
+    "hostRestart": "Native durable login observation is current; new host has no prior in-memory login view. This does not claim a new OAuth authorization",
+    "formalSnapshot": "Ordinary Interactive/Limited view; protected files, data, shortcuts and registration unchanged after reopening",
+    "M1": "Not complete: installed 0.1.17 cannot admit the real model session because of the stale installation-state predicate; exact b53 fixes passed cloud and independent review, not yet installed",
+    "cloudSource": "b53b2bf920dbb6eaf53f398fa5ea187ef00b16ec",
+    "nativeRun": 37021355274,
+    "desktopRun": 37021361620,
+    "hygieneRun": 37021341292,
+    "cloud": "native 585, focused 27, required 3, shim 2, server 642, browser 1052: all passed without skips; 11 compiled production mutations failed behaviorally and passed after restoration",
+    "oldAutomaticSigner": "Old main workflow automatically completed run 37026836988 when the desktop run finished. Retained as history; no manual signing, installation or public release from this result",
+    "PR61": "Plan/manifest self-test, scope-to-receipt comparison and PowerShell AST passed; full independent final review and exact-head cloud checks pending",
+    "activation": "NOT_RUN: current main still contains v1; v2 trusted-main positive activation requires Owner merge of PR61"
+  },
+  "next": "Finish PR61 independent review and cloud checks, make ready for the single Owner merge; read exact merged receipt and recompute main scope digest, then continue M1 and deliver the G0 preview. Reuse the authenticated original instance home; no repeated OT4 unless actual login state requires it.",
+  "reference": "参照：沿用既有候选签名/装机链、S1-R4 回执、Git 第一父链和 GitHub 完整 PR 的 merged_by 直接数据；不再以 MANIFEST 字节变化推断范围变化。保留 CLI、登录与 LPAC 的既定边界。摘要补字段保护原计划范围，描述性交付与验收文字继续由独立审计后修改，避免重新绑定所有计划字节。G0 预览后续复用实例页及既有 K-UI 假实现测试边界，仅迭代界面，不替代真实产品实测。",
+  "publicRelease": false,
+  "acceptance": false
+}
