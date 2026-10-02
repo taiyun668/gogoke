@@ -15,6 +15,10 @@ on:
         description: Verify the changed natural-exit fixture only; full library and mutation gates are NOT_RUN
         type: boolean
         default: false
+      ordinary_oauth_fixture_only:
+        description: Verify ordinary OAuth callback and stderr repairs only; full library, mutation and server gates are NOT_RUN
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -184,7 +188,7 @@ jobs:
             run_attempt = '${{ github.run_attempt }}'
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
-            evidence_scope = if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
+            evidence_scope = if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
             release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
@@ -228,6 +232,15 @@ jobs:
           } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') {
             $probes = @($probes | Where-Object { $_.id -eq 'stop-124-negative' })
             Write-Host 'Focused changed natural-exit fixture only; full library and mutation suites NOT_RUN.'
+          } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') {
+            $probes = @(
+              @{ id = 'ordinary-oauth-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
+              @{ id = 'final-stderr-drain'; filter = 'zero_exit_tail_stderr_settles_failure_without_cancellation_or_account_read' },
+              @{ id = 'mixed-output-budget'; filter = 'mixed_login_output_limit_is_failure_even_when_child_exits_zero' },
+              @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
+              @{ id = 'cancel-stderr'; filter = 'cancelled_pinned_cli_preserves_stderr_before_confirmed_release' }
+            )
+            Write-Host 'Focused ordinary OAuth repairs only; full library, compiled mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
@@ -282,7 +295,7 @@ jobs:
           path: ${{ runner.temp }}/gogoke-native-host-evidence/focused-*
           if-no-files-found: error
       - name: Run all native-host library unit tests
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -343,7 +356,7 @@ jobs:
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
       - name: Verify F.1 production fixes with compiled failing mutations
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -398,10 +411,18 @@ jobs:
                   '        self.owner_login = Some(OwnerLoginSession::PendingFirstStop(pending)); Ok(reply)' + "`n" + '    }' + "`n"
                 $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
               } elseif ($case.axis -ceq 'R9') {
-                $start = $source.IndexOf('        if cancelled {', $source.IndexOf('    fn finish_owner_device_login('))
-                $end = $source.IndexOf('        let login_failure =', $start)
-                if ($start -lt 0 -or $end -le $start) { throw 'R9 cancellation stderr locator missing' }
-                $mutated = $source.Remove($start,$end-$start)
+                $start = $source.IndexOf('    fn finish_owner_device_login(')
+                $end = $source.IndexOf('    fn append_owner_login_stderr(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R9 finish method locator missing' }
+                $method = $source.Substring($start,$end-$start)
+                $live = 'self.append_owner_login_stderr(&mut active)'
+                if ([regex]::Matches($method,[regex]::Escape($live)).Count -ne 1) { throw 'R9 final live stderr locator must match once' }
+                $method = $method.Replace($live,'Ok::<(), OrchestrationError>(())')
+                $cancelStart = $method.IndexOf('        if cancelled {')
+                $cancelEnd = $method.IndexOf('        let login_failure =', $cancelStart)
+                if ($cancelStart -lt 0 -or $cancelEnd -le $cancelStart) { throw 'R9 cancellation stderr locator missing' }
+                $method = $method.Remove($cancelStart,$cancelEnd-$cancelStart)
+                $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
               } else {
                 $start = $source.IndexOf('    fn finish_confirmed_account_observation(')
                 $end = $source.IndexOf('    fn observe_account_via_active_cli(', $start)
@@ -431,7 +452,7 @@ jobs:
             }
           }
       - name: Verify confirmed forced Job stop with a compiled failing mutation
-        if: ${{ !cancelled() && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only }}
+        if: ${{ !cancelled() && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -486,7 +507,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only }}
+    if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest

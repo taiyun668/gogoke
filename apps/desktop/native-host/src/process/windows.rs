@@ -667,13 +667,8 @@ impl StderrCapture {
 
     fn snapshot(&self, all_writers_stopped: bool) -> String {
         if all_writers_stopped {
-            match self.reader.lock() {
-                Ok(mut reader) => if let Some(reader) = reader.take() {
-                    if let Err(error) = reader.join() {
-                        return format!("stderr reader panicked: {error:?}");
-                    }
-                },
-                Err(error) => return format!("stderr reader state: {error}"),
+            if let Err(error) = self.drain_after_writers_stopped() {
+                return error;
             }
         }
         match self.tail.lock() {
@@ -683,6 +678,14 @@ impl StderrCapture {
             },
             Err(error) => format!("stderr tail state: {error}"),
         }
+    }
+
+    fn drain_after_writers_stopped(&self) -> Result<(), String> {
+        let mut reader = self.reader.lock().map_err(|error| format!("stderr reader state: {error}"))?;
+        if let Some(reader) = reader.take() {
+            reader.join().map_err(|error| format!("stderr reader panicked: {error:?}"))?;
+        }
+        Ok(())
     }
 
     fn live_bytes(&self) -> Result<Vec<u8>, String> {
@@ -1493,6 +1496,12 @@ impl ManagedProcess {
     /// a possible OAuth authorization URL across a reader chunk boundary.
     pub(crate) fn stderr_live_bytes(&self) -> Result<Vec<u8>, String> {
         self.protocol.as_ref().ok_or("stderr was not admitted".to_owned())?.stderr.live_bytes()
+    }
+    /// Call only after a stop proof fenced every Job writer and observed an
+    /// empty Job. Joining the reader makes the following live snapshot final.
+    pub(crate) fn drain_stderr_after_writers_stopped(&self) -> Result<(), String> {
+        self.protocol.as_ref().ok_or("stderr was not admitted".to_owned())?
+            .stderr.drain_after_writers_stopped()
     }
     pub fn identity(&self) -> &ProcessIdentity {
         &self.identity
@@ -3932,7 +3941,9 @@ mod tests {
         let proof = close_failure.stop(StopBudgets::production(), ||
             Err("controlled close binding failure".into()));
         assert_eq!(proof.exit_code, Some(0));
-        assert!(!proof.kill_attempted);
+        // Parent exit alone does not prove the Job is empty. If a remaining
+        // member required termination, that termination must have succeeded.
+        assert_eq!(proof.kill_attempted, proof.kill_succeeded);
         assert!(proof.parent_exited && proof.writer_fence_verified);
         assert_eq!(proof.active_job_processes, Some(0));
         assert_eq!(proof.disposition, StopDisposition::ResidualCustody);

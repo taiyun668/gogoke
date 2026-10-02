@@ -1,0 +1,76 @@
+{
+  "schema": "gogoke.37.independent-audit-receipt.v1",
+  "source": "e2b3faa3fad2e8e24168d2c6233c6e19a6ae6bd9",
+  "baseline": "d347926c7b08e63400a60ee2757631ae114e4206",
+  "seat": "ordinary_oauth_final_audit",
+  "read_only": true,
+  "axes": ["CLI/home/profile", "stderr/UTF8/budget", "URL/opener", "stop/receipt/account-read", "cancel/remount", "real Windows instruments", "authority/credentials", "source/cloud/signing"],
+  "result": "FAIL_NOT_ACCEPTANCE",
+  "findings": [
+    {
+      "id": "A1",
+      "premise": "Exact fixed CLI published the complete URL; actual redirect port and retained listener PID checks passed before host TCP connect.",
+      "evidence": "callback socket connect failed: connection timed out; raw_os_error=None",
+      "conclusion": "Cloud ordinary OAuth callback is not reachable in this measured LPAC path. Network cause UNKNOWN; not error 10013 and not a Win11 result.",
+      "next": "Same fixed CLI, registered empty home and environment without LPAC as the previously authorized diagnostic control. Do not change production capabilities or security settings."
+    },
+    {
+      "id": "A2",
+      "premise": "Job writer fence does not prove the stderr reader has consumed its final queued bytes.",
+      "conclusion": "Final live validation precedes reader join; late failure can be missed after exit zero.",
+      "revision": "Final drain before validation; real Windows zero-exit trailing stderr regression. Scheduling interleaving not forced by a production test hook."
+    },
+    {
+      "id": "A3",
+      "premise": "New complete stderr contributes to the same output budget as later stdout.",
+      "conclusion": "The combined overflow branch still passes cancellation=true and may run account-read.",
+      "revision": "Explicit inflight failure, cancellation=false, retained failure after exit zero; real mixed-stream budget regression."
+    },
+    {
+      "id": "A4",
+      "premise": "Both desktop lanes ran all seven host login tests with zero fail/ignore.",
+      "conclusion": "The old six-test guard rejected a successful measured suite.",
+      "revision": "Update both exact-count guards to seven."
+    },
+    {
+      "id": "A5",
+      "premise": "New final live-stderr retention remains after the old R9 mutation removes only the cancelled-tail block.",
+      "conclusion": "The old mutation fails on missing marker, not on missing original CLI reason.",
+      "revision": "Withdraw both final retention paths in the mutation and check original CLI reason before the marker. Compiled verification pending."
+    },
+    {
+      "id": "A6",
+      "premise": "Close-error fixture parent exited zero, but its owned Job still contained one unidentified member; identity query returned Win32 5.",
+      "conclusion": "Stopping the residual Job is consistent with production custody. The close-binding failure contract does not imply no termination attempt.",
+      "revision": "Require attempted termination to succeed when attempted; retain zero parent exit, writer fence, Job zero, residual custody and original close-binding error. Preserve every natural-124 assertion. Do not call the unknown member conhost."
+    }
+  ],
+  "native": {
+    "run": 36957047275,
+    "whole": "FAIL",
+    "release": "PASS_EXIT_0",
+    "required_axes": "PASS_3_OF_3",
+    "focused": "PASS_22_OF_22",
+    "library": {"passed": 578, "failed": 2, "skipped": 0, "exit_code": 101},
+    "lpac_shim": "PASS_2_OF_2",
+    "server": "PASS_642_OF_642_0_FAIL_0_SKIP",
+    "compiled_mutations": "R1_R2_R4_R5_R6_R7_R9_R8_COMPILED_FAILURE_AND_EXACT_RESTORE_PASS_R9_SEMANTIC_LIMITATION_A5",
+    "artifact": 11207117686,
+    "artifact_sha256": "5b148b1707b0f70f981ecf7bfa854b0e977e261c5889ca0b977ade6983a8f1cb",
+    "root_direct_log_sha256": "4e8fac258e32ac8393d97e38c031ece6a8312d1dfa6a779d882f5b432a887790",
+    "platform": "WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP"
+  },
+  "desktop": {
+    "run": 36957047378,
+    "whole": "FAIL",
+    "host_tests_each_lane": "PASS_7_OF_7_THEN_REJECTED_BY_OLD_SIX_GUARD",
+    "browser": "PASS_147_FILES_1052_TESTS_TYPECHECK_BUILD",
+    "host_mutation": "NOT_RUN",
+    "freeze_and_repro": "NOT_RUN"
+  },
+  "hygiene": {"run": 36956953191, "result": "PASS"},
+  "audit_workspace": "54 auditor-owned temporary downloads removed and absence read back; original two Detours untracked objects retained",
+  "win11_ordinary_oauth": "NOT_RUN",
+  "acceptance": false,
+  "public_release": false
+}

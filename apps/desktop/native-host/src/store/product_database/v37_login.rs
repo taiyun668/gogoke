@@ -848,7 +848,8 @@ impl<'root> ProductDatabase<'root> {
         if let Err(error) = self.append_owner_login_stderr(&mut active) {
             if !active.output.is_empty() { active.output.push('\n'); }
             active.output.push_str(&format!("owner login stderr: {error:?}"));
-            let finished = self.finish_owner_device_login(command, active, false);
+            let finished = self.finish_owner_device_login(command, active, false,
+                Some(format!("owner login stderr: {error:?}")));
             return match finished {
                 Ok(_) => Err(error),
                 Err(stop_error) => Err(stop_error),
@@ -864,7 +865,8 @@ impl<'root> ProductDatabase<'root> {
                     return Err(OrchestrationError::AccessDenied);
                 }
                 if active.output.len().saturating_add(output.bytes().len()) > 65_536 {
-                    let finished = self.finish_owner_device_login(command, active, true);
+                    let finished = self.finish_owner_device_login(command, active, false,
+                        Some("owner login output limit".into()));
                     return match finished {
                         Ok(_) => Err(OrchestrationError::Invalid("owner login output limit")),
                         Err(error) => Err(error),
@@ -889,7 +891,7 @@ impl<'root> ProductDatabase<'root> {
                         return Err(OrchestrationError::Io(error));
                     }
                 };
-                if exited { self.finish_owner_device_login(command, active, false) }
+                if exited { self.finish_owner_device_login(command, active, false, None) }
                 else {
                     let reply = owner_login_reply(command, "PENDING", &active.output);
                     self.owner_login = Some(OwnerLoginSession::Active(active));
@@ -911,9 +913,9 @@ impl<'root> ProductDatabase<'root> {
                             "owner login output: {error:?}; wait: {wait_error}")));
                     }
                 };
-                if exited { self.finish_owner_device_login(command, active, false) }
+                if exited { self.finish_owner_device_login(command, active, false, None) }
                 else {
-                    let finished = self.finish_owner_device_login(command, active, false);
+                    let finished = self.finish_owner_device_login(command, active, false, None);
                     match finished {
                         Ok(_) => Err(OrchestrationError::Process(error)),
                         Err(stop_error) => Err(OrchestrationError::V37StoreFailure(format!(
@@ -922,7 +924,7 @@ impl<'root> ProductDatabase<'root> {
                 }
             }
             Err(error) => {
-                let finished = self.finish_owner_device_login(command, active, false);
+                let finished = self.finish_owner_device_login(command, active, false, None);
                 match finished {
                     Ok(_) => Err(OrchestrationError::Process(error)),
                     Err(stop_error) => Err(OrchestrationError::V37StoreFailure(format!(
@@ -949,7 +951,7 @@ impl<'root> ProductDatabase<'root> {
                 Ok(reply)
             }
             OwnerLoginSession::Active(active) =>
-                self.finish_owner_device_login(command, active, true),
+                self.finish_owner_device_login(command, active, true, None),
             OwnerLoginSession::PendingFirstStop(pending) =>
                 self.progress_pending_first_stop(command, pending),
             OwnerLoginSession::PendingAccount(pending) =>
@@ -1071,7 +1073,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn finish_owner_device_login(&mut self, command: &OwnerLoginCommand,
-        mut active: ActiveOwnerLogin, cancelled: bool) -> Result<Vec<u8>> {
+        mut active: ActiveOwnerLogin, cancelled: bool, inflight_failure: Option<String>) -> Result<Vec<u8>> {
         let stop = self.process_custodian.stop(&active.prepared.ticket,
             StopBudgets::production(), || Ok(()));
         let proof = match stop {
@@ -1085,16 +1087,26 @@ impl<'root> ProductDatabase<'root> {
                     "owner login stop: {error:?}; unknown record: {unknown:?}")));
             }
         };
-        let stderr_capture_failure = self.append_owner_login_stderr(&mut active).err()
+        let process = self.process_custodian.active(&active.prepared.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        let drain_failure = if proof.writer_fence_verified && proof.active_job_processes == Some(0) {
+            process.drain_stderr_after_writers_stopped().err()
+                .map(|error| format!("owner login stderr drain: {error}"))
+        } else { None };
+        // The child may have exited before its stderr reader consumed the
+        // final pipe bytes. Drain first; only then validate the live bytes.
+        let stderr = process.stderr_tail();
+        let live_failure = self.append_owner_login_stderr(&mut active).err()
             .map(|error| format!("owner login stderr: {error:?}"));
+        let failures: Vec<String> = [inflight_failure, drain_failure, live_failure]
+            .into_iter().flatten().collect();
+        let stderr_capture_failure = (!failures.is_empty()).then(|| failures.join("; "));
         if let Some(error) = &stderr_capture_failure {
             if !active.output.is_empty() { active.output.push('\n'); }
             active.output.push_str(error);
         }
-        // Capture the exact child's retained stderr before durable confirmation
-        // releases its pipes. Exit failure is not an account-state observation.
-        let stderr = self.process_custodian.active(&active.prepared.ticket)
-            .ok_or(OrchestrationError::AccessDenied)?.stderr_tail();
+        // Exit failure is not an account-state observation. The original
+        // stderr tail remains attached until durable confirmation releases it.
         // Cancellation still owns the original CLI diagnostic. It must not
         // discard a vendor error that arrived before the Owner cancelled.
         if cancelled {
@@ -1808,7 +1820,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_live_stderr_settles_failure_without_cancellation_or_account_read() {
+    fn zero_exit_tail_stderr_settles_failure_without_cancellation_or_account_read() {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!(
@@ -1829,7 +1841,7 @@ mod tests {
             crate::store::digest::sha256_hex(&fs::read(&powershell).unwrap()));
         login.launch.application = powershell;
         login.launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            "$stderr=[Console]::OpenStandardError(); $stderr.WriteByte(255); $stderr.WriteByte(10); $stderr.Flush(); [Console]::Out.WriteLine('ready'); [Console]::ReadLine() | Out-Null".into()];
+            "[Console]::Error.Write('x' * 5000); [Console]::Error.Flush(); $stderr=[Console]::OpenStandardError(); $stderr.WriteByte(255); $stderr.WriteByte(10); $stderr.Flush(); exit 0".into()];
         login.launch.app_container_profile = None;
         login.launch.app_container_internet_client = false;
         login.launch.app_container_cli_identity_services = false;
@@ -1843,6 +1855,9 @@ mod tests {
         authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
         product.process_custodian.activate(&prepared).unwrap();
         authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+        let child = product.process_custodian.active(&prepared.ticket).unwrap();
+        assert!(child.wait(Duration::from_secs(15)).unwrap(), "controlled child did not exit");
+        assert_eq!(child.exit_code().unwrap(), Some(0), "controlled child must exit zero");
         product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
@@ -1863,6 +1878,63 @@ mod tests {
         assert_eq!(scalar(&product,
             "SELECT count(*) FROM gogoke_coordination_process_custody WHERE operation_id LIKE 'login-observe-%'"), "0",
             "capture failure must not start account/read or report LOGGED_IN");
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn mixed_login_output_limit_is_failure_even_when_child_exits_zero() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-mixed-login-limit-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
+            V37Status::Applied);
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+            product.prepare_owner_codex_login("instanceA").unwrap();
+        let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        login.binding.binary_digest_sha256 = format!("sha256:{}",
+            crate::store::digest::sha256_hex(&fs::read(&powershell).unwrap()));
+        login.launch.application = powershell;
+        login.launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
+            "[Console]::Error.WriteLine('x' * 64000); [Console]::Error.Flush(); [Console]::Out.WriteLine('y' * 3000); exit 0".into()];
+        login.launch.app_container_profile = None;
+        login.launch.app_container_internet_client = false;
+        login.launch.app_container_cli_identity_services = false;
+        login.launch.environment = None;
+        login.launch.path_compat = None;
+        let prepared = product.process_custodian.prepare(&login).unwrap();
+        drop(login);
+        drop(account_read);
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"mixedLimitA","expectedRevision":1}"#).unwrap();
+        let operation_id = owner_login_operation_id(&command);
+        authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+        let child = product.process_custodian.active(&prepared.ticket).unwrap();
+        assert!(child.wait(Duration::from_secs(15)).unwrap());
+        assert_eq!(child.exit_code().unwrap(), Some(0));
+        let _tail = child.stderr_tail(); // drain the exact child's written stderr before status
+        product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
+            instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
+            expected_revision: command.expected_revision, operation_id, prepared,
+            runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
+        }));
+        let _ = product.status_owner_device_login(&command);
+        let reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(reply.contains("\"settled\":true"));
+        assert!(reply.contains("\"state\":\"UNKNOWN\""));
+        assert!(reply.contains("owner login output limit"));
+        assert!(!reply.contains("owner login cancelled"));
+        assert_eq!(scalar(&product,
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE operation_id LIKE 'login-observe-%'"), "0",
+            "mixed stream output limit must not run account/read");
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
@@ -2162,8 +2234,8 @@ mod tests {
         };
         let reply = String::from_utf8(reply).unwrap();
         assert!(reply.contains("\"settled\":true"), "original cancellation did not settle: {reply}");
-        assert!(reply.contains("owner login cancelled: STDERR_TAIL:"));
         assert!(reply.contains("unexpected argument"), "actual fixed CLI stderr was discarded: {reply}");
+        assert!(reply.contains("owner login cancelled: STDERR_TAIL:"));
         assert!(!runtime_home.exists());
         assert_eq!(scalar(&product,
             "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state!='STOPPED'"), "0");
@@ -2379,7 +2451,7 @@ mod tests {
             expected_revision: command.expected_revision, operation_id,
             prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
         };
-        let error = product.finish_owner_device_login(&command, active, false).unwrap_err();
+        let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(format!("{error:?}").contains("controlled account stop record failure"));
         let pending = product.status_owner_device_login(&command).unwrap();
         let pending = String::from_utf8(pending).unwrap();
@@ -2425,7 +2497,7 @@ mod tests {
         product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
         let active = ActiveOwnerLogin { instance_id:command.instance_id.clone(),request_id:command.request_id.clone(),
             expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false };
-        let error = product.finish_owner_device_login(&command, active, false).unwrap_err();
+        let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(matches!(&error, OrchestrationError::AccessDenied));
         let final_readback = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(final_readback.contains("\"settled\":true"));
@@ -2607,7 +2679,8 @@ mod tests {
             OwnerLoginSession::Active(active) => active.prepared.clone(),
             _ => panic!("ordinary login did not retain active child custody"),
         };
-        let probe = (|| -> std::result::Result<(), String> {
+        let probe_callback = |product: &mut ProductDatabase<'_>, status: &[u8],
+            prepared: &PreparedCustody| -> std::result::Result<(), String> {
             let deadline = Instant::now() + Duration::from_secs(30);
             let mut callback_port = None;
             let mut cli_error_code = None;
@@ -2690,7 +2763,8 @@ mod tests {
                 return Err(format!("real fixed CLI callback did not reject missing state; HTTP code: {http_code}"));
             }
             Ok(())
-        })();
+        };
+        let isolated_probe = probe_callback(&mut product, status, &prepared);
         let cancelled = product.dispatch_owner_login_frame(cancel);
         let settled = match cancelled {
             Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
@@ -2702,9 +2776,64 @@ mod tests {
         assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
             Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
             "no-code/state callback must not write an auth file");
+        // Positive control: use the same registered empty CODEX_HOME, fixed
+        // binary, clean environment and path compatibility, changing only
+        // the test launch's AppContainer isolation. The product stays LPAC.
+        for port in [1455, 1457] {
+            let probe = TcpListener::bind(("127.0.0.1", port))
+                .expect("OAuth callback port occupied before unisolated control");
+            drop(probe);
+        }
+        let revision = product.user_instance_revision("instanceA")
+            .unwrap_or_else(|_| panic!("unisolated control revision read failed"));
+        let mut control_scope = product.prepare_owner_codex_login("instanceA")
+            .unwrap_or_else(|_| panic!("unisolated control production preparation failed"));
+        let production_login = control_scope.login.clone();
+        assert!(production_login.launch.path_compat.is_some());
+        assert!(production_login.launch.environment.as_ref().is_some_and(|environment|
+            environment.iter().any(|(key, value)| key == "CODEX_HOME"
+                && value == home.path.to_string_lossy().as_ref())));
+        control_scope.login.launch.app_container_profile = None;
+        control_scope.login.launch.app_container_internet_client = false;
+        control_scope.login.launch.app_container_cli_identity_services = false;
+        assert_eq!(control_scope.login.binding, production_login.binding);
+        assert!(control_scope.login.launch.environment == production_login.launch.environment);
+        assert!(control_scope.login.launch.path_compat.is_some());
+        let control_begin = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"begin\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
+        let control_command = owner_login_command(control_begin.as_bytes()).unwrap();
+        let control_status = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"status\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
+        let control_cancel = format!("{{\"schema\":\"gogoke.37.owner-login.v1\",\"action\":\"cancel\",\"instanceId\":\"instanceA\",\"requestId\":\"ordinaryOAuthControl\",\"expectedRevision\":{revision}}}");
+        let control_started = match product.start_owner_device_login(&control_command, control_scope,
+            |custodian, prepared| custodian.activate(prepared)) {
+            Ok(reply) => reply,
+            Err(_) => {
+                let _ = product.dispatch_owner_login_frame(control_status.as_bytes());
+                let _ = product.dispatch_owner_login_frame(control_cancel.as_bytes());
+                panic!("unisolated fixed CLI control start failed");
+            }
+        };
+        assert!(String::from_utf8(control_started)
+            .map(|text| text.contains("\"state\":\"PENDING\"")).unwrap_or(false));
+        let control_prepared = match product.owner_login.as_ref().unwrap() {
+            OwnerLoginSession::Active(active) => active.prepared.clone(),
+            _ => panic!("unisolated control lost active child custody"),
+        };
+        let control_probe = probe_callback(&mut product, control_status.as_bytes(), &control_prepared);
+        let control_cancelled = product.dispatch_owner_login_frame(control_cancel.as_bytes());
+        let control_settled = match control_cancelled {
+            Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
+            Err(_) => product.dispatch_owner_login_frame(control_status.as_bytes()).ok()
+                .and_then(|reply| String::from_utf8(reply).ok())
+                .is_some_and(|text| text.contains("\"settled\":true")),
+        };
+        if !control_settled { panic!("unisolated control did not settle after cancellation"); }
+        assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
+            Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
+            "unisolated no-code/state callback must not write an auth file");
         product.close_checked().unwrap_or_else(|_| panic!("ordinary OAuth custody did not close cleanly"));
         drop(root);
         fs::remove_dir_all(path).unwrap_or_else(|_| panic!("ordinary OAuth isolated test root cleanup failed"));
-        assert_eq!(probe, Ok(()), "ordinary OAuth callback probe failed");
+        assert!(control_probe.is_ok() && isolated_probe.is_ok(),
+            "actual fixed CLI callback stages: unisolated={control_probe:?}; lpac={isolated_probe:?}");
     }
 }

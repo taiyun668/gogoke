@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
-  "state": "REFERENCE_RECHECK_COMPLETE_ORDINARY_OAUTH_BRIDGE_IMPLEMENTED_CLOUD_NOT_RUN",
+  "state": "ORDINARY_OAUTH_SOURCE_REVISIONS_COMPLETE_SAME_CLI_NETWORK_CONTROL_CLOUD_PENDING",
   "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。",
   "reference_recheck": {
     "owner_rule_effective": "2026-10-01_IMMEDIATE_BEFORE_UNSPECIFIED_IMPLEMENTATION_DETAILS",
@@ -89,7 +89,8 @@
     "current_lpac_oauth_callback": "NOT_RUN_DO_NOT_INFER_FROM_UWP_DOCUMENTATION",
     "product_changes_this_reference_pass": false,
     "owner_account_security_settings_changed": false,
-    "M2_rule": "For each of the four remaining providers compare own PROVIDER_LOGIN and corresponding fixed-CLI official docs before login implementation; record adopted pattern and justified differences"
+    "M2_rule": "For each of the four remaining providers compare own PROVIDER_LOGIN and corresponding fixed-CLI official docs before login implementation; record adopted pattern and justified differences",
+    "ci_reference": "Reuse existing native-host changed-fixture modes for a focused OAuth/control run; full library, compiled mutation and server suites explicitly NOT_RUN in that mode. Default full workflow stays unchanged."
   },
   "authorization": {
     "pr": 59,
@@ -493,7 +494,19 @@
       "candidate_version_prepared": "0.1.16",
       "measurement_correction": "PowerShell JSON projection cannot represent npm package-lock empty-name root property; Python standard JSON readback verified all four version fields, with no product failure",
       "native_implementation": "Ordinary fixed login; complete exact-child live stderr; capture failure blocks account-read; validated original OAuth URL opened once by existing host",
-      "cloud_test": "Non-skipped fixed CLI production registration and LPAC callback, exact listener PID/creation, missing code/state returns expected HTTP400, original-request cancellation; NOT_RUN"
+      "cloud_test": "Non-skipped fixed CLI production registration and LPAC callback, exact listener PID/creation, missing code/state returns expected HTTP400, original-request cancellation; NOT_RUN",
+      "independent_audit": "artifacts/gogoke-37/checkpoints/M1-ORDINARY-OAUTH-E2B3-AUDIT.json",
+      "old_source_cloud": "e2b3_NATIVE_FULL_578_PASS_2_FAIL_DESKTOP_SEVEN_TESTS_PASS_OLD_SIX_COUNTER_FAIL",
+      "network_direct_evidence": "Fixed CLI owned listener verified; LPAC callback TCP connect timed out, raw_os_error None; cloud only, not a Win11 diagnosis",
+      "same_home_unisolated_control": "TEST_ONLY_PREVIOUSLY_AUTHORIZED_DIAGNOSTIC_NOT_A_PRODUCTION_ISOLATION_CHANGE_NOT_RUN",
+      "source_fixes": "Drain after writer fence before final live validation; mixed output failure not cancellation; host count7; meaningful R9 all diagnostic retention withdrawn; close-binding fixture follows actual Job contract",
+      "focused_ci_plan": "Five exact real Windows regression/control filters; full library, compiled mutations and server NOT_RUN until callback root cause is resolved",
+      "ordinary_baseline": "PASS_REAL_LOCALCACHE_HOME_PRESENT_AUTH_FILE_ABSENT_METADATA_ONLY_0_CALLBACK_LISTENERS_NO_LOGIN_STARTED",
+      "measurement_corrections": [
+        "Existing signed PowerShell discovered after an unavailable assumed runtime path",
+        "Readonly automatic HOME variable replaced with instanceHome; failed snapshot retained and new ordinary snapshot captured",
+        "Static source count readback uses explicit UTF-8"
+      ]
     }
   },
   "route_reflection_current": "Candidate cuts must use a controlled workflow_dispatch desktop build from the outset; pull_request success cannot satisfy trusted-main signing provenance. Download and preparation run alongside cloud smoke, preserving frozen bytes and avoiding another build/sign round trip.",
