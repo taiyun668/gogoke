@@ -227,7 +227,13 @@
     "nativeJob": 110764873392,
     "focusedPassed": 22,
     "serverPassed": 642,
-    "library": { "executed": 583, "passed": 579, "failed": 4, "ignored": 0, "cargoExit": 101 },
+    "library": {
+      "executed": 583,
+      "passed": 579,
+      "failed": 4,
+      "ignored": 0,
+      "cargoExit": 101
+    },
     "directJobLogSha256": "8334d4389e419d3391cb21705403d7b553bb3e952452b9fba964df50e0ac6eb8",
     "failures": [
       "Natural parent exit 124 with a remaining Job member: fixture assumed no termination; production success of descendant cleanup can mask the earlier natural sentinel",
@@ -318,7 +324,32 @@
     "authorityRootAndHome": "RETAINED_ORIGINAL_IDENTITIES",
     "riskAuditTemp": "POLICY_BLOCKED_RETAINED_NOT_INCLUDED",
     "detours": "RETAINED_NOT_INCLUDED",
-    "formalPostCleanup": "READBACK_PENDING"
+    "formalPostCleanup": "PASS_FORMAL_CHANGED_ZERO",
+    "formalReadback": {
+      "beforeSha256": "a10fd96e123d9b47bc7c6d3276a3c96abe285efaba0ecf547d7c3e5f566bfe54",
+      "afterSha256": "54f1076c11cc947f39b46759cf1756747fd8d64a4a895e85f7b383643a10d13b",
+      "formalChanged": 0,
+      "packageStatus": 15700
+    }
   },
-  "state": "ORDINARY_TEMP_ENVIRONMENT_CORRECTION_CLOUD_PENDING_G4_CLEANED"
+  "state": "ORDINARY_TEMP_ENVIRONMENT_CORRECTION_CLOUD_PENDING_G4_CLEANED",
+  "endedMeasurementTasks": {
+    "independentAuditSha256": "7ddb505ca5de4aef90f4d197ff612112bc77a26853d04c0819db3000f9a7049e",
+    "resultSha256": "094d52398a62a1c22c41dbc19e56d9d543acd098ff07e76646ba8482b022271c",
+    "removed": 7,
+    "readbackAbsent": 7,
+    "evidenceAndDataDeleted": false
+  },
+  "currentCloudFailures": {
+    "source": "a9a025a95020bb0ba0124a8ab6574a90cff51a9e",
+    "nativeRun": 36992709573,
+    "focusedPass": 21,
+    "focusedFail": 1,
+    "focusedSkip": 0,
+    "failure": "job-descendant: parent exit0, child pid published, Job0 before stop; child stderr was ignored, cause UNKNOWN",
+    "desktopRun": 36992713265,
+    "reproFailure": "standardwebhooks@1.1.1 upstream license hydration aborted due to timeout",
+    "change": "Capture only controlled descendant stdout/stderr to an owned fixture file; preserve child-survival/Job/stop assertions and production code",
+    "参照": "先回读现有真实 Job 后代夹具和原始失败：子进程输出被 stdio ignore 丢掉，不能据此判定产品失败。采用现有文件 marker 的直接数据机制保存子进程原文，不加等待、重试或改变断言；许可证超时保持失败记录，用同提交云端重跑。"
+  }
 }

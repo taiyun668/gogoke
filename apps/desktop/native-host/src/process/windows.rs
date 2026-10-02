@@ -3797,18 +3797,20 @@ mod tests {
         let marker = unique_marker("descendant");
         let entry_marker = unique_marker("descendant-entry");
         let error_marker = unique_marker("descendant-error");
+        let child_output = unique_marker("descendant-output");
         let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
             .expect("cloud-bound Node runtime path"));
         assert!(node.is_file(), "cloud-bound Node runtime must exist");
         assert_eq!(file_sha256(&node).expect("Node runtime digest"),
             env!("GOGOKE_CONTROLLED_NODE_SHA256"), "test uses the exact build-bound Node image");
-        let script = r#"const fs=require('fs');const cp=require('child_process');try{fs.writeFileSync(process.argv[1],'parent-started');const child=cp.spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:'ignore',windowsHide:true});child.unref();fs.writeFileSync(process.argv[2],String(child.pid));}catch(error){fs.writeFileSync(process.argv[3],String(error));process.exit(17)}"#;
+        let script = r#"const fs=require('fs');const cp=require('child_process');try{fs.writeFileSync(process.argv[1],'parent-started');const output=fs.openSync(process.argv[4],'wx');const child=cp.spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:['ignore',output,output],windowsHide:true});child.on('error',error=>fs.writeFileSync(process.argv[3],String(error)));child.unref();fs.closeSync(output);fs.writeFileSync(process.argv[2],String(child.pid));}catch(error){fs.writeFileSync(process.argv[3],String(error));process.exit(17)}"#;
         let mut launch = ProcessLaunch::new(node);
         launch.arguments = vec![
             "-e".to_owned(), script.to_owned(),
             entry_marker.to_string_lossy().into_owned(),
             marker.to_string_lossy().into_owned(),
             error_marker.to_string_lossy().into_owned(),
+            child_output.to_string_lossy().into_owned(),
         ];
         let captured = Arc::new(Mutex::new(None));
         let captured_for_callback = Arc::clone(&captured);
@@ -3838,12 +3840,13 @@ mod tests {
         assert!(child_pid > 0);
         assert!(
             process.active_job_processes().expect("job accounting") >= 1,
-            "descendant must remain in the owned job after parent exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?}",
+            "descendant must remain in the owned job after parent exit: elapsed_ms={} process_exit_code={:?} active_job_processes={:?} entry_marker={} error_marker={:?} child_output={:?}",
             started.elapsed().as_millis(),
             process_exit_code(process.process.raw()).ok().flatten(),
             process.active_job_processes().ok(),
             entry_marker.exists(),
-            fs::read_to_string(&error_marker).ok()
+            fs::read_to_string(&error_marker).ok(),
+            fs::read_to_string(&child_output).ok()
         );
         assert_eq!(
             captured.lock().expect("identity lock").as_ref(),
@@ -3867,6 +3870,7 @@ mod tests {
         let _ = fs::remove_file(marker);
         let _ = fs::remove_file(entry_marker);
         let _ = fs::remove_file(error_marker);
+        fs::remove_file(child_output).expect("remove controlled child output");
     }
 
     #[test]
