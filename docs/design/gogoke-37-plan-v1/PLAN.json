@@ -23,7 +23,7 @@
   },
   {
    "path": "AGENTS.md",
-   "blob": "b1ea55e9292bcfc824b3bba21be1e62f699b7b36"
+   "blob": "81535646e1837f061bd607328fbe21f77c0df14e"
   },
   {
    "path": "docs/model-routing.md",
@@ -1157,7 +1157,6 @@
      "id": "H.1",
      "milestone": "M1",
      "deliverables": [
-      "an experiment mode of the installed native host, reachable only in the test domain and never from the product path: it starts the pinned CLI with a chosen isolation, capability set and environment and returns the raw result, so that approach questions are answered on the Owner's machine without a new build",
       "pinned program identity to authorised launch to stdin and output events to stop fact to recovery",
       "one admission boundary (reserve, commit, release) in the existing coordination domain; E's parallel cap and F's instance concurrency are inputs to it, not separate admission facts",
       "instance home and per-session directories, explicit environment",
