@@ -12,6 +12,8 @@ use crate::root::{inspect_root, RootIdentity};
 #[cfg(all(test, windows))]
 #[path = "v37_login_trace.rs"]
 mod directed_trace;
+#[path = "v37_login_cache.rs"]
+mod login_cache;
 use crate::store::atomic::Parser;
 use crate::store::instance::{InstanceObservation, ObservationRequest};
 use std::fs;
@@ -1180,7 +1182,20 @@ impl<'root> ProductDatabase<'root> {
 
     fn finish_confirmed_owner_login(&mut self, command: &OwnerLoginCommand,
         mut active: ActiveOwnerLogin, cancelled: bool, login_failure: Option<String>) -> Result<Vec<u8>> {
-        let cleanup = remove_owned_runtime(&active.runtime_home, &active.runtime_identity);
+        let cleanup = (|| -> Result<()> {
+            let home = instance::resolve_codex_instance_home(&self.connection, self.root, &active.instance_id)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+                    "login cleanup registered home: {error:?}")))?;
+            if active.runtime_home.parent() != Some(home.path.as_path()) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            // Preparation strictly verified the whole original home before
+            // this fixed ordinary login ran. Only this Windows-generated
+            // cache entry is unlinked after durable Job/writer stop, before
+            // the unchanged strict LPAC account/read preparation.
+            login_cache::remove_generated_cache_junction(self.root, &home)?;
+            remove_owned_runtime(&active.runtime_home, &active.runtime_identity)
+        })();
         let state_result = if cleanup.is_ok() && login_failure.is_none() {
             self.owner_login_account_state(command)
         } else {
@@ -2858,9 +2873,7 @@ mod tests {
             let cancelled = product.dispatch_owner_login_frame(cancel);
             let settled = match cancelled {
                 Ok(reply) => String::from_utf8(reply).map(|text| text.contains("\"settled\":true")).unwrap_or(false),
-                Err(_) => product.dispatch_owner_login_frame(status).ok()
-                    .and_then(|reply| String::from_utf8(reply).ok())
-                    .is_some_and(|text| text.contains("\"settled\":true")),
+                Err(error) => return Err(format!("ordinary OAuth cancellation failed: {}; callback={production_probe:?}", safe_error(&error))),
             };
             if !settled { return Err(format!("original ordinary OAuth cancellation did not settle; callback={production_probe:?}")); }
             assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
@@ -2993,7 +3006,7 @@ mod tests {
                     remove_test_entry(base, &child.path())?;
                 }
             }
-            let deleted = if metadata.is_dir() { fs::remove_dir(entry) } else { fs::remove_file(entry) };
+            let deleted = if attributes & 0x10 != 0 { fs::remove_dir(entry) } else { fs::remove_file(entry) };
             deleted.map_err(|error| format!("test deletion {relative:?}: {error}; raw_os_error={:?}; attributes={attributes}; {}",
                 error.raw_os_error(), failed_entry_details(base, entry)))
         }

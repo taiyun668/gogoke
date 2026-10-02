@@ -751,7 +751,7 @@ fn remove_content_preserving_marker(path: &Path) -> Result<(), TemporaryHomeErro
         let child = entry.path();
         let metadata = fs::symlink_metadata(&child)?;
         if metadata.file_attributes() & REPARSE_POINT != 0 {
-            if metadata.is_dir() { fs::remove_dir(&child)?; }
+            if metadata.file_attributes() & 0x10 != 0 { fs::remove_dir(&child)?; }
             else { fs::remove_file(&child)?; }
         } else if metadata.is_dir() { fs::remove_dir_all(&child)?; }
         else { fs::remove_file(&child)?; }

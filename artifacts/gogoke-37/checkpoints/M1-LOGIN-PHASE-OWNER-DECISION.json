@@ -132,8 +132,8 @@
     "cleanup": "FAIL_WIN32_5",
     "relativeObject": "v37-instances/instanceA/AppData/Local/Microsoft/Windows/INetCache/Content.IE5",
     "attributes": 9238,
-    "reparseTag": "UNKNOWN",
-    "cannotCallJunctionYet": true,
+    "reparseTag": "0xa0000003_CONFIRMED_BY_SAME_ENTRY_NO_FOLLOW_HANDLE",
+    "cannotCallJunctionYet": false,
     "actualWin11Affected": "NOT_RUN_UNKNOWN",
     "subsequentAdmission": "If retained in instance home, strict physical-tree grant rejects next account/read, login and new H session; already-active H is not assumed blocked",
     "independentSourceReview": "oauth_known_findings_focus and oauth_reference_boundary",
@@ -142,5 +142,56 @@
     "targetContentsRead": false,
     "targetPathsPublished": false
   },
-  "state": "DIRECT_HOME_REPARSE_FAILURE_EVIDENCE_PENDING_NO_BOUNDARY_RELAXATION"
+  "latestDirectEvidence": {
+    "source": "8ff61faf20abbfeef8f423a66679bb84855abb57",
+    "nativeRun": 36979884620,
+    "nativeJob": 110751773904,
+    "state": "FAIL_POST_CANCEL_LPAC_READBACK_AND_FIXTURE_ENTRY_DELETION",
+    "attributes": "0x2416",
+    "tag": "0xa0000003",
+    "entryDeleteOpen": "PASS",
+    "parentDeleteChildOpen": "PASS",
+    "rootCause": "symlink_metadata().is_dir() is false for directory junctions; fixture selected remove_file instead of the directory deletion API. Ordinary login also leaves that Windows cache junction in original home, so strict LPAC readback correctly refuses it.",
+    "targetOpened": false,
+    "credentialsAccessed": false
+  },
+  "completedCa8147Native": {
+    "run": 36974421652,
+    "source": "ca8147f939c83446015f80082f3c2ac572cc889c",
+    "release": "PASS",
+    "requiredAxesPassed": 3,
+    "focusedPassed": 22,
+    "libraryPassed": 581,
+    "libraryFailed": 1,
+    "librarySkipped": 0,
+    "libraryExit": 101,
+    "serverPassed": 642,
+    "compiledMutationAndRestore": "R1_R2_R4_R5_R6_R7_R9_R8_VALID_BEHAVIOR_FAILURE_AND_EXACT_RESTORE_PASS",
+    "nativeArtifact": 11214611986,
+    "nativeArtifactSha256": "7ae941e7722753289b7a024e6b34403a3cf8e863fc4d72843ac088fe14ea8bd6",
+    "independentSeat": "login_phase_ca8147_final",
+    "acceptance": false
+  },
+  "completed314Desktop": {
+    "run": 36975506414,
+    "source": "314e1e742263eb47d9c01f7754f4e10584923f2f",
+    "state": "PASS_ALL_FIVE_JOBS_AFTER_LOCK_INSTRUMENT_FIX",
+    "ordinaryWin11": "NOT_RUN"
+  },
+  "cacheCorrection": {
+    "参照": "先核对自己的 temporary.rs 入口清理、root/mod.rs 物理目录绑定与 isolation.rs FileDispositionInfo 用法，再核对既有调研和微软文件 API、Rust Metadata 文档。采用同句柄 no-follow 目录入口删除；RootLock 自己已有根绑定，避免与自己的 DELETE 句柄冲突。不同处只清理固定 CLI 普通登录生成的 Content.IE5 mount-point，不泛化链接删除、不跳过严格整树检查。没有额外能力、ACL 修改或重试等待。",
+    "sourceReferences": [
+      "https://doc.rust-lang.org/std/fs/struct.Metadata.html#method.is_dir",
+      "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_disposition_info"
+    ],
+    "production": "After original login Job/writer stop, resolve original DB home, hold physical ancestors without DELETE sharing, inspect fixed entry no-follow directory/tag, unlink same handle, confirm absence before unchanged LPAC account/read",
+    "physicalCacheData": "RETAIN",
+    "junctionTarget": "NEVER_OPEN_OR_MODIFY",
+    "otherReparsePoints": "UNCHANGED_STRICT_REJECTION",
+    "threatModel": "Ordinary login is the authorized same-host-user fixed CLI; no elevation or model execution. Model LPAC remains a different restricted boundary and is not granted traversal of the generated link. Same-user in-place conversion of a held directory remains the existing main-documented legacy risk; no attack reproduction.",
+    "validation": "NEW_EXACT_SOURCE_CLOUD_AND_ORIGINAL_WIN11_PENDING",
+    "acceptance": false
+  },
+  "state": "NARROW_CACHE_ENTRY_CORRECTION_PREPARING_EXACT_SOURCE_CLOUD"
 }
