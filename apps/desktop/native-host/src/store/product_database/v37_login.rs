@@ -2870,12 +2870,37 @@ mod tests {
                 "unisolated no-code/state callback must not write an auth file");
             Ok((isolated_probe, control_probe))
         })();
+        // Keep the measured callback results even if subsequent teardown fails.
+        // This contains only stage/code summaries, never the authorization URL.
+        eprintln!("actual fixed CLI callback stages before teardown: {stages:?}");
         drop(first_launch);
         product.close_checked().unwrap_or_else(|error|
-            panic!("ordinary OAuth custody close failed: {error:?}"));
+            panic!("ordinary OAuth custody close failed: {error:?}; stages={stages:?}"));
         drop(root);
-        fs::remove_dir_all(path).unwrap_or_else(|error|
-            panic!("ordinary OAuth test cleanup failed: {error}; raw_os_error={:?}", error.raw_os_error()));
+        // Reuse temporary-home cleanup's per-entry/reparse-aware primitives.
+        // Report the exact denied relative object rather than masking the two
+        // callback results behind remove_dir_all's pathless error. No retry or
+        // permission change; the fresh cloud test root is the only target.
+        fn remove_test_entry(base: &Path, entry: &Path) -> std::result::Result<(), String> {
+            use std::os::windows::fs::MetadataExt;
+            let relative = entry.strip_prefix(base)
+                .map_err(|_| "test cleanup target escaped its root".to_owned())?;
+            let metadata = fs::symlink_metadata(entry).map_err(|error|
+                format!("test metadata {relative:?}: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+            let attributes = metadata.file_attributes();
+            if metadata.is_dir() && attributes & 0x400 == 0 {
+                for child in fs::read_dir(entry).map_err(|error|
+                    format!("test directory read {relative:?}: {error}; raw_os_error={:?}", error.raw_os_error()))? {
+                    let child = child.map_err(|error|
+                        format!("test directory entry {relative:?}: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+                    remove_test_entry(base, &child.path())?;
+                }
+            }
+            let deleted = if metadata.is_dir() { fs::remove_dir(entry) } else { fs::remove_file(entry) };
+            deleted.map_err(|error| format!("test deletion {relative:?}: {error}; raw_os_error={:?}; attributes={attributes}", error.raw_os_error()))
+        }
+        remove_test_entry(&path, &path).unwrap_or_else(|error|
+            panic!("ordinary OAuth test cleanup failed: {error}; stages={stages:?}"));
         match stages {
             Ok((isolated_probe, control_probe)) => assert!(control_probe.is_ok() && isolated_probe.is_ok(),
                 "actual fixed CLI callback stages (custody and root cleanup complete): unisolated_no_shim={control_probe:?}; lpac_with_shim={isolated_probe:?}"),

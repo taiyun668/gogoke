@@ -1,7 +1,7 @@
 {
   "schema": "gogoke.37.controller-checkpoint.v1",
   "state": "ORDINARY_OAUTH_CALLBACK_CONTROL_INSTRUMENT_CORRECTED_CLOUD_PENDING",
-  "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。 本次回调对照沿用既有生产 prepare/start 和受控 Job 结算，不新增校验绕过：LPAC 专用 shim 必须绑定 profile，无隔离对照因此同时去除 shim，保留同一注册 home、CLI、环境、参数和工作目录；只比较两个启动组合，不据此独归因 LPAC token。",
+  "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。 本次回调对照沿用既有生产 prepare/start 和受控 Job 结算，不新增校验绕过：LPAC 专用 shim 必须绑定 profile，无隔离对照因此同时去除 shim，保留同一注册 home、CLI、环境、参数和工作目录；只比较两个启动组合，不据此独归因 LPAC token。 测试目录清理按现有 instance/temporary.rs 的逐对象删除及重解析点不跟随做法，先保留回调原始阶段结果，再报告具体被拒对象和 Windows 错误；不改权限、不加重试，不把清理失败当回调失败。",
   "reference_recheck": {
     "owner_rule_effective": "2026-10-01_IMMEDIATE_BEFORE_UNSPECIFIED_IMPLEMENTATION_DETAILS",
     "research_order": [
@@ -545,6 +545,30 @@
       },
       "6b2ed809_hygiene": {
         "run": 36962310239,
+        "state": "PASS",
+        "local": "24844_FILES_0_LEAKS"
+      },
+      "c8e86e52_focused_cloud": {
+        "run": 36962989437,
+        "state": "FAIL_INSTRUMENT_CLEANUP_OS5_MASKED_STAGES",
+        "real_probes_passed": 4,
+        "real_probes_failed": 1,
+        "control_cli_started": true,
+        "cli_browser_children": "EDGE_STARTED_IN_CONTROL_JOB",
+        "authorizationPerformed": false,
+        "callback_results": "UNKNOWN_NOT_LOGGED_BEFORE_CLEANUP_PANIC",
+        "custodyClose": "PASS",
+        "rootDeletion": "FAIL_WIN32_5_OBJECT_UNKNOWN",
+        "full_library": "NOT_RUN",
+        "compiled_mutations": "NOT_RUN",
+        "server": "NOT_RUN",
+        "private_job_log_sha256": "8845dc73b1ece96d914665d736d43f849eecdea92b4c79900403f2b3bc0d612a",
+        "focused_artifact": 11208813466,
+        "focused_artifact_digest": "94a180d8b21deb36b6bc4122962880e82e1736593eacba36ec11747a62a417d0"
+      },
+      "measurement_result_retention": "Print safe measured phase/code results before teardown and preserve them with exact denied relative object/Win32 error on cleanup failure. Cleanup remains a required assertion; no permission change, retry or wait compensation.",
+      "c8e86e52_hygiene": {
+        "run": 36962992347,
         "state": "PASS",
         "local": "24844_FILES_0_LEAKS"
       }
