@@ -19,7 +19,7 @@
     "lpacIdentityServices": "UNCHANGED",
     "credentials": "VENDOR_CLI_ONLY_HOST_NEVER_READS_WRITES_COPIES"
   },
-  "参照": "依次参照 gogo-party accounts.ts 的 PROVIDER_LOGIN/loginEnv、实例与席位运行时及界面；NaveHQ 的容器 OAuth/实例环境与 LoomOS 规格；仓库七份拆解/复用调研；最后核对官方登录文档和固定 CLI 0.149.0 源码、CodexMonitor/Paseo/Orca 等。采用已验证普通 codex login、实例 HOME/USERPROFILE 与真实 APPDATA/LOCALAPPDATA。不同处保留 gogoke 原有持久登录结果、精确 native Job/身份结算与 LPAC 自动 account/read，不照搬 taskkill 或宿主凭据读取。CLI 自己也可能尝试打开浏览器；宿主仍按原 URL 打开，不宣称总开页次数仅一次。 此次卸载测量修复先查自己的现有 parent_helper 与 production 生命周期锁读写/独占用法、update backup cleanup 的相同 FileAccess.ReadWrite/FileShare.None，再核对微软 CreateFileW：属性访问不受共享标志。直接以现有 observer 在自有临时文件上交叉验证其误判，采用与实际锁持有者同访问方式，未自创补偿等待；该云端既有夹具问题不需要登录或上游 UI 方案。",
+  "参照": "依次参照 gogo-party accounts.ts 的 PROVIDER_LOGIN/loginEnv、实例与席位运行时及界面；NaveHQ 的容器 OAuth/实例环境与 LoomOS 规格；仓库七份拆解/复用调研；最后核对官方登录文档和固定 CLI 0.149.0 源码、CodexMonitor/Paseo/Orca 等。采用已验证普通 codex login、实例 HOME/USERPROFILE 与真实 APPDATA/LOCALAPPDATA。不同处保留 gogoke 原有持久登录结果、精确 native Job/身份结算与 LPAC 自动 account/read，不照搬 taskkill 或宿主凭据读取。CLI 自己也可能尝试打开浏览器；宿主仍按原 URL 打开，不宣称总开页次数仅一次。 此次卸载测量修复先查自己的现有 parent_helper 与 production 生命周期锁读写/独占用法、update backup cleanup 的相同 FileAccess.ReadWrite/FileShare.None，再核对微软 CreateFileW：属性访问不受共享标志。直接以现有 observer 在自有临时文件上交叉验证其误判，采用与实际锁持有者同访问方式，未自创补偿等待；该云端既有夹具问题不需要登录或上游 UI 方案。 重解析后续准入问题已核对现有 isolation.rs 整树物理对象/继承 ACE 契约、temporary.rs 的不跟随入口删除、已有普通 junction 清理及仓库调研。没有可直接采用的此类 OS5 清理。专门机制复核指出根 SetSecurityInfo 的继承传播不能仅靠枚举跳过链接来证明安全，因此保留严格准入，不放宽扫描；下一次在原失败位置保留 no-follow tag、身份、ACL 和删除访问原文，同时实测取消后的原 LPAC account/read，不把回调阶段通过当登录闭环通过。",
   "implementationFiles": [
     "apps/desktop/native-host/src/store/product_database/v37_login.rs",
     "docs/implementation/gogoke-37-cli-permissions.md"
@@ -95,7 +95,7 @@
     "files": 24846,
     "leaks": 0
   },
-  "next": "Commit only instrument fix/evidence; rerun affected exact-source cloud pipeline and continue candidate freeze/sign/Win11",
+  "next": "One focused cloud execution of existing real CLI callback test with same-object failure details and post-cancel LPAC readback; then repair root cause, final exact-source cloud and original Win11",
   "corrected_source": "ca8147f939c83446015f80082f3c2ac572cc889c",
   "corrected_source_runs": {
     "native": 36974421652,
@@ -120,5 +120,27 @@
     "productCodeChangedByThisFix": false,
     "localNativeCompilation": false,
     "privateTemporaryObjectCleanup": "ABSENT"
-  }
+  },
+  "ca8147_callback_and_home_aftermath": {
+    "nativeRun": 36974421652,
+    "library": {
+      "passed": 581,
+      "failed": 1,
+      "skipped": 0
+    },
+    "callbackAndCancel": "PASS_MEASURED_BEFORE_TEARDOWN_NOT_REAL_AUTHORIZATION",
+    "cleanup": "FAIL_WIN32_5",
+    "relativeObject": "v37-instances/instanceA/AppData/Local/Microsoft/Windows/INetCache/Content.IE5",
+    "attributes": 9238,
+    "reparseTag": "UNKNOWN",
+    "cannotCallJunctionYet": true,
+    "actualWin11Affected": "NOT_RUN_UNKNOWN",
+    "subsequentAdmission": "If retained in instance home, strict physical-tree grant rejects next account/read, login and new H session; already-active H is not assumed blocked",
+    "independentSourceReview": "oauth_known_findings_focus and oauth_reference_boundary",
+    "boundaryNotChanged": true,
+    "nextDirectEvidence": "Same entry no-follow tag/FileId/DACL and DELETE/parent DELETE_CHILD open outcomes; existing real test adds post-cancel LPAC account/read requirement",
+    "targetContentsRead": false,
+    "targetPathsPublished": false
+  },
+  "state": "DIRECT_HOME_REPARSE_FAILURE_EVIDENCE_PENDING_NO_BOUNDARY_RELAXATION"
 }

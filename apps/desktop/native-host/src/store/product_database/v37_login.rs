@@ -2866,6 +2866,16 @@ mod tests {
             assert!(matches!(fs::symlink_metadata(home.path.join("auth.json")),
                 Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
                 "no-code/state callback must not write an auth file");
+            let revision = product.user_instance_revision("instanceA")
+                .map_err(|error| safe_error(&error))?;
+            let readback = product.dispatch_owner_login_observation(
+                &request("login-state", "ordinaryOAuthAfterCancel", revision, "{}"))
+                .map_err(|error| format!("post-cancel LPAC account/read: {}; callback={production_probe:?}",
+                    safe_error(&error)))?;
+            if !String::from_utf8(readback).map_err(|error| error.to_string())?
+                .contains("\"state\":\"LOGGED_OUT\"") {
+                return Err("empty original home must remain readable by LPAC account/read".into());
+            }
             Ok(production_probe)
         })();
         // Keep the measured callback results even if subsequent teardown fails.
@@ -2880,6 +2890,94 @@ mod tests {
         // Report the exact denied relative object rather than masking the two
         // callback results behind remove_dir_all's pathless error. No retry or
         // permission change; the fresh cloud test root is the only target.
+        // Read only the failing entry itself. Open-reparse-point handles never
+        // read its target; these probes neither delete nor change permissions.
+        fn failed_entry_details(base: &Path, entry: &Path) -> String {
+            use std::ffi::c_void;
+            use std::os::windows::ffi::OsStrExt;
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn CreateFileW(path: *const u16, access: u32, share: u32,
+                    security: *mut c_void, disposition: u32, flags: u32,
+                    template: *mut c_void) -> *mut c_void;
+                fn GetFileInformationByHandleEx(handle: *mut c_void, class: u32,
+                    data: *mut c_void, length: u32) -> i32;
+                fn CloseHandle(handle: *mut c_void) -> i32;
+                fn LocalFree(memory: *mut c_void) -> *mut c_void;
+            }
+            #[link(name = "advapi32")]
+            extern "system" {
+                fn GetSecurityInfo(handle: *mut c_void, kind: u32, info: u32,
+                    owner: *mut *mut c_void, group: *mut *mut c_void,
+                    dacl: *mut *mut c_void, sacl: *mut *mut c_void,
+                    descriptor: *mut *mut c_void) -> u32;
+                fn ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor: *mut c_void, revision: u32, info: u32,
+                    text: *mut *mut u16, length: *mut u32) -> i32;
+            }
+            fn open(path: &Path, access: u32) -> std::result::Result<*mut c_void, std::io::Error> {
+                let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+                let handle = unsafe { CreateFileW(wide.as_ptr(), access, 7,
+                    std::ptr::null_mut(), 3, 0x02200000, std::ptr::null_mut()) };
+                if handle.is_null() || handle as isize == -1 { Err(std::io::Error::last_os_error()) }
+                else { Ok(handle) }
+            }
+            fn access(path: &Path, desired: u32) -> String {
+                match open(path, desired) {
+                    Ok(handle) => format!("OPEN_OK_CLOSE={}", unsafe { CloseHandle(handle) }),
+                    Err(error) => format!("{error}; raw_os_error={:?}", error.raw_os_error()),
+                }
+            }
+            let mut details = vec![format!("entry_DELETE={}", access(entry, 0x10000))];
+            if let Some(parent) = entry.parent() {
+                details.push(format!("parent_DELETE_CHILD={}", access(parent, 0x40)));
+            }
+            match open(entry, 0x80) {
+                Ok(handle) => {
+                    let mut tag = [0u32; 2];
+                    let mut id = [0u64; 3];
+                    let tag_ok = unsafe { GetFileInformationByHandleEx(handle, 9,
+                        tag.as_mut_ptr().cast(), 8) };
+                    let tag_error = (tag_ok == 0).then(std::io::Error::last_os_error);
+                    let id_ok = unsafe { GetFileInformationByHandleEx(handle, 18,
+                        id.as_mut_ptr().cast(), 24) };
+                    let id_error = (id_ok == 0).then(std::io::Error::last_os_error);
+                    details.push(format!("tag={tag:x?}; tag_result={tag_ok}; tag_error={tag_error:?}; no_follow_id={id:x?}; id_result={id_ok}; id_error={id_error:?}; close={}",
+                        unsafe { CloseHandle(handle) }));
+                }
+                Err(error) => details.push(format!("entry_attributes_open={error}")),
+            }
+            match open(entry, 0x20000) {
+                Ok(handle) => {
+                    let mut descriptor = std::ptr::null_mut();
+                    let status = unsafe { GetSecurityInfo(handle, 1, 4,
+                        std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+                        std::ptr::null_mut(), &mut descriptor) };
+                    if status == 0 && !descriptor.is_null() {
+                        let mut text = std::ptr::null_mut();
+                        let mut length = 0;
+                        let converted = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                            descriptor, 1, 4, &mut text, &mut length) };
+                        if converted != 0 && !text.is_null() && length <= 65536 {
+                            let sddl = String::from_utf16_lossy(unsafe {
+                                std::slice::from_raw_parts(text, length as usize) });
+                            details.push(format!("link_dacl={}", sddl.trim_end_matches('\0')));
+                        } else { details.push(format!("link_dacl_conversion={converted}; error={:?}", std::io::Error::last_os_error())); }
+                        if !text.is_null() { unsafe { LocalFree(text.cast()); } }
+                        unsafe { LocalFree(descriptor); }
+                    } else { details.push(format!("link_dacl_status={status}")); }
+                    details.push(format!("link_dacl_handle_close={}", unsafe { CloseHandle(handle) }));
+                }
+                Err(error) => details.push(format!("link_READ_CONTROL={error}")),
+            }
+            details.push(match fs::read_link(entry) {
+                Ok(target) => format!("target_text_has_test_root_prefix={}; target_text_sha256={}",
+                    target.starts_with(base), crate::store::digest::sha256_hex(
+                        target.to_string_lossy().as_bytes())),
+                Err(error) => format!("read_link={error}; raw_os_error={:?}", error.raw_os_error()),
+            });
+            details.join("; ")
+        }
         fn remove_test_entry(base: &Path, entry: &Path) -> std::result::Result<(), String> {
             use std::os::windows::fs::MetadataExt;
             let relative = entry.strip_prefix(base)
@@ -2896,7 +2994,8 @@ mod tests {
                 }
             }
             let deleted = if metadata.is_dir() { fs::remove_dir(entry) } else { fs::remove_file(entry) };
-            deleted.map_err(|error| format!("test deletion {relative:?}: {error}; raw_os_error={:?}; attributes={attributes}", error.raw_os_error()))
+            deleted.map_err(|error| format!("test deletion {relative:?}: {error}; raw_os_error={:?}; attributes={attributes}; {}",
+                error.raw_os_error(), failed_entry_details(base, entry)))
         }
         remove_test_entry(&path, &path).unwrap_or_else(|error|
             panic!("ordinary OAuth test cleanup failed: {error}; stages={stages:?}"));
