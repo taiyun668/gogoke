@@ -422,7 +422,9 @@ jobs:
                 $live = 'self.append_owner_login_stderr(&mut active)'
                 if ([regex]::Matches($method,[regex]::Escape($live)).Count -ne 1) { throw 'R9 final live stderr locator must match once' }
                 $method = $method.Replace($live,'Ok::<(), OrchestrationError>(())')
-                $cancelStart = $method.IndexOf('        if cancelled {')
+                $cancelAnchor = '// Cancellation still owns the original CLI diagnostic.'
+                if ([regex]::Matches($method,[regex]::Escape($cancelAnchor)).Count -ne 1) { throw 'R9 final cancellation diagnostic anchor must match once' }
+                $cancelStart = $method.IndexOf('        if cancelled {', $method.IndexOf($cancelAnchor))
                 $cancelEnd = $method.IndexOf('        let login_failure =', $cancelStart)
                 if ($cancelStart -lt 0 -or $cancelEnd -le $cancelStart) { throw 'R9 cancellation stderr locator missing' }
                 $method = $method.Remove($cancelStart,$cancelEnd-$cancelStart)

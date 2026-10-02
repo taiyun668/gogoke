@@ -45,7 +45,18 @@
     "measurementIssue": "Stopped-native metadata reader cannot open state.sqlite while the real host is active; sqlite reports unable to open database file. Original successful product/API and formal results remain separate PASS; task exit1 is retained, not called PASS.",
     "nextNativeMetadata": "Read same original authority database only after actual product gracefully closes for the candidate upgrade; do not copy database or bypass its live lock"
   },
-  "cloud": "NOT_RUN_NEW_SOURCE_PENDING",
+  "cloud": "NEW_EXACT_SOURCE_REQUIRED_AFTER_CI_LOCATOR_CORRECTION",
+  "finalAuditInstrumentCorrection": {
+    "seat": "single_opener_final_audit",
+    "finding": "R9 mutation selected the first cancellation block; after login RPC addition it would remove stop/proof definitions and fail compilation rather than the stderr behavior assertion",
+    "logic": "The first cancellation block is now the vendor cancellation request, not final stderr retention. A syntax failure cannot establish the intended behavior regression. The actual final diagnostic already has a unique comment anchor.",
+    "change": "Anchor R9 removal at the unique final cancellation diagnostic comment; preserve original RPC cancellation, stop proof, stderr reads and all existing tests",
+    "productionChangedByCorrection": false,
+    "previousSource": "bec163bdc795b12371aec53ad20d8235ac6838f0",
+    "previousNativeRun": "37010754153",
+    "previousDesktopRun": "37010759514",
+    "previousClaims": "Partial server and browser results only; superseded for candidate freeze. No full native, mutation, signing or Win11 PASS claimed."
+  },
   "focusedReview": {
     "seat": "single_opener_protocol_review",
     "result": "NO_MECHANISM_BLOCKER_TO_CLOUD_VALIDATION",
