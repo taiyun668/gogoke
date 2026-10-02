@@ -3873,21 +3873,27 @@ mod tests {
             Some(process.identity())
         );
 
-        let proof = process.stop(
-            StopBudgets {
-                grace_ms: 50,
-                terminate_ms: 1_000,
-                observe_ms: 1_000,
-                host_deadline_ms: 3_000,
-            },
-            || Ok(()),
-        );
+        let budgets = StopBudgets {
+            grace_ms: 50,
+            terminate_ms: 1_000,
+            observe_ms: 1_000,
+            host_deadline_ms: 3_000,
+        };
+        let stop_started = Instant::now();
+        let proof = process.stop(budgets, || Ok(()));
         assert_eq!(proof.disposition, StopDisposition::Stopped);
         assert!(proof.parent_exited);
         assert_eq!(proof.active_job_processes, Some(0));
-        assert_eq!(unsafe { WaitForSingleObject(child.raw(), 0) }, WAIT_OBJECT_0,
-            "same actual descendant must be stopped: identity={child_identity:?} exit={:?}",
+        // Whole-Job accounting and process signaling are not an atomic snapshot.
+        // Confirm the same child within the original total stop deadline.
+        let child_finished = wait_bounded(child.raw(), budgets.observe_ms,
+            budgets.host_deadline_ms, stop_started)
+            .expect("observe the same actual descendant within the original stop deadline");
+        assert!(child_finished,
+            "same actual descendant must be stopped within the original budget: identity={child_identity:?} exit={:?} proof={proof:?}",
             process_exit_code(child.raw()));
+        assert_eq!(process_exit_code(child.raw()).expect("actual descendant final exit"),
+            Some(STOP_FORCED_EXIT_CODE));
         assert!(proof.writer_fence_verified);
         assert!(!proof.durable_receipt_saved);
         let _ = fs::remove_file(marker);

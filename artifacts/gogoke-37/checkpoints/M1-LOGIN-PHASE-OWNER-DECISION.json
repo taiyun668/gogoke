@@ -332,7 +332,7 @@
       "packageStatus": 15700
     }
   },
-  "state": "DETACHED_FIXTURE_AND_DISTINCT_FORCED_STOP_CODE_LATEST_CLOUD_PENDING",
+  "state": "SAME_CHILD_KERNEL_COMPLETION_FIXTURE_CORRECTION_CLOUD_PENDING",
   "endedMeasurementTasks": {
     "independentAuditSha256": "7ddb505ca5de4aef90f4d197ff612112bc77a26853d04c0819db3000f9a7049e",
     "resultSha256": "094d52398a62a1c22c41dbc19e56d9d543acd098ff07e76646ba8482b022271c",
@@ -395,5 +395,46 @@
     "focusedSkipped": 0,
     "mutationState": "PARTIAL_SUPERSEDED_SOURCE_NOT_FINAL_CANDIDATE_EVIDENCE",
     "jobLogSha256": "e2f142fc507bf917a90498393c1dada04ed0ea3b062dc856b66879ca1eb1d9e9"
+  },
+  "kernelCompletionFixtureCorrection": {
+    "source": "de509c2c61a58d5339d774df435e744d3bea419e",
+    "run": 36996820858,
+    "job": 110805675625,
+    "focusedPassed": 21,
+    "focusedFailed": 1,
+    "focusedSkipped": 0,
+    "artifact": 11222676545,
+    "artifactSha256": "671b8b6c44632a9a92b673f70ee0c28f2435e6bae4bda72d6e6fdb022c540bbf",
+    "directFact": "Actual child image/alive/exact Job succeeded; original stop Stopped/Job0 succeeded; immediate child wait returned258, later exit query137. These are separate observations.",
+    "invalidPremise": "Job0 must atomically imply same child process signal at a zero-time wait",
+    "change": "Only fixture awaits same original child handle once via existing wait_bounded, counted from immediately before original stop; original total deadline3000ms and single observe cap1000ms unchanged; timeout or API error still fails; final child exit137 required",
+    "productionChanged": false,
+    "retryOrNewBudget": false,
+    "writerConclusion": "No direct evidence of remaining active writer; do not infer a specific kernel rundown phase",
+    "specialist": "oauth_reference_boundary",
+    "参照": "先回读自己的stop proof、同句柄Wait和既有wait_bounded，再核微软TerminateJobObject/TerminateProcess的异步完成语义和Job accounting文档。采用现有预算等待真实进程结束；不以退出码替代句柄完成，不添加新的计时起点、循环或补偿参数。",
+    "sources": [
+      "https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject",
+      "https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information"
+    ]
+  },
+  "retainedAdditionalAuditEvidence": {
+    "path": "%TEMP%/gogoke-risk-a9a025a9-f24fdca8",
+    "files": 71,
+    "bytes": 33748895,
+    "inventorySha256": "f890f48868ee320db2a69cf5c3ec7fcd30fc7a5912aafe15112a0493447ec517",
+    "cleanup": "AUTOMATIC_POLICY_BLOCKED_RECURSIVE_DELETE",
+    "approvalReason": "blocked by policy",
+    "bypass": false,
+    "retained": true
+  },
+  "temporaryDiagnosticRefCleanup": {
+    "ref": "codex/gogoke-37-descendant-diagnostic",
+    "run": 36995193866,
+    "head": "fc88f7a4fb6ed5ee8aa6662b365b3ffeae4139d0",
+    "state": "PASS_EXACT_TEMPORARY_CI_REF_ABSENT",
+    "sourceRetainedInExecutionAncestry": true,
+    "artifactsRemoved": false
   }
 }
