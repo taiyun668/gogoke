@@ -32,7 +32,9 @@ jobs:
     name: Native host Windows real process axes
     # Full real-process/library gates and eleven compiled mutation/restore pairs.
     # R10 adds three independent pairs to the measured eight-pair job workload.
-    timeout-minutes: 75
+    # A cold Windows run exhausted 75 minutes during the second R10 restore;
+    # retain all eleven pairs and their restore checks under a finite CI bound.
+    timeout-minutes: 105
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1

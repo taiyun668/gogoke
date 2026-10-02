@@ -3490,9 +3490,10 @@ mod tests {
         custodian.activate(&prepared).expect("activate exact prepared identity");
         mark_process_active(&mut connection, "r2-02-test", &prepared).expect("durable ACTIVE");
         assert!(mark_process_active(&mut connection, "r2-02-test", &prepared).is_err());
-        let proof = custodian.stop(&prepared.ticket, StopBudgets {
-            grace_ms: 20, terminate_ms: 1_000, observe_ms: 1_000, host_deadline_ms: 3_000,
-        }, || Ok(()))
+        // This positive custody/durable-stop case exercises the production
+        // path, not a 20 ms scheduler deadline for the close-hook thread.
+        // Explicit deadline refusal is covered by blocking_close_hook_cannot_hold_host_past_deadline.
+        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()))
             .expect("native stop proof");
         assert!(proof.kill_attempted && proof.kill_succeeded);
         assert!(proof.parent_exited && proof.writer_fence_verified);
