@@ -1906,7 +1906,8 @@ impl ManagedProcess {
         // 124 is the exact exit code supplied to a successful TerminateJobObject.
         // The held Job's zero-process observation and writer fence above prove
         // release; an unprompted 124 still needs reconciliation.
-        if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) && !proof.kill_succeeded {
+        if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE)
+            && (proof.parent_grace_exited || !proof.kill_succeeded) {
             proof
                 .errors
                 .push("STOP_EXIT_124_REQUIRES_RECONCILIATION".to_owned());
@@ -3927,7 +3928,9 @@ mod tests {
         assert!(natural.wait(Duration::from_secs(15)).expect("natural process exit"));
         let proof = natural.stop(StopBudgets::production(), || Ok(()));
         assert_eq!(proof.exit_code, Some(STOP_TIMEOUT_EXIT_CODE));
-        assert!(!proof.kill_attempted && !proof.kill_succeeded);
+        assert!(proof.parent_grace_exited, "natural parent exit precedes any Job member cleanup: {proof:?}");
+        assert_eq!(proof.kill_attempted, proof.kill_succeeded,
+            "remaining Job members, if any, must be successfully stopped: {proof:?}");
         assert!(proof.parent_exited && proof.writer_fence_verified);
         assert_eq!(proof.active_job_processes, Some(0));
         assert_eq!(proof.disposition, StopDisposition::ResidualCustody);

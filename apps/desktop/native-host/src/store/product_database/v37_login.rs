@@ -505,7 +505,9 @@ fn remove_owned_runtime(path: &Path, expected: &RootIdentity) -> Result<()> {
             let child = entry.path();
             let metadata = fs::symlink_metadata(&child).map_err(OrchestrationError::Io)?;
             if metadata.file_attributes() & REPARSE_POINT != 0 {
-                return Err(OrchestrationError::AccessDenied);
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "login runtime cleanup refuses reparse child: name={:?}; attributes={:#x}",
+                    child.file_name(), metadata.file_attributes())));
             }
             if metadata.is_dir() {
                 remove_contents(&child, depth + 1)?;
@@ -2435,7 +2437,8 @@ mod tests {
             assert!(status.contains("\"state\":\"UNKNOWN\""));
             let fields = object(Parser::parse(&status).unwrap()).unwrap();
             let Json::String(output) = &fields[&JsonString::from_str("output")] else { panic!("retained output") };
-            assert!(output.to_well_formed_string().unwrap().contains(&cause),"{kind}: original error retained after the first Err");
+            let output = output.to_well_formed_string().unwrap();
+            assert!(output.contains(&cause),"{kind}: original error retained after the first Err");
             if kind == "prepared" { product.connection.execute("DROP TRIGGER fail_first_prepare").unwrap(); }
             if kind == "active" {
                 product.connection.execute("DROP TRIGGER fail_first_active").unwrap();
@@ -2443,7 +2446,10 @@ mod tests {
                     Err(ref error) if error.kind() == std::io::ErrorKind::NotFound),
                     "original first CLI failure reconciliation must unlink generated cache");
                 let observation = product.dispatch_owner_login_observation(
-                    &request("login-state", "afterFirstActiveFailure", 1, "{}")).unwrap();
+                    &request("login-state", "afterFirstActiveFailure", 1, "{}"))
+                    .unwrap_or_else(|error| panic!("post-first-failure LPAC observation: {error:?}; original settlement: {}",
+                        output.replace(original_home.to_string_lossy().as_ref(), "<instance-home>")
+                            .replace(path.to_string_lossy().as_ref(), "<test-root>")));
                 assert!(String::from_utf8(observation).unwrap().contains("\"state\":\"LOGGED_OUT\""),
                     "same original home must remain admissible to LPAC after first CLI failure");
             }
@@ -2796,10 +2802,12 @@ mod tests {
         let begin_command = owner_login_command(begin).unwrap();
         let safe_error = |error: &OrchestrationError| {
             let raw = format!("{error:?}");
-            // CI keeps only a numeric native code; original diagnostics remain
-            // on the Owner-private session, never in the public test log.
-            let os_code = cli_os_error_code(&raw);
-            format!("safe_os_code={os_code:?}")
+            // Retain the actual error category/stage and OS code. Only paths
+            // and the complete private authorization URL line are redacted.
+            raw.split("\\n").filter(|line| !line.contains("https://auth.openai.com/oauth/authorize?"))
+                .collect::<Vec<_>>().join("\\n")
+                .replace(home.path.to_string_lossy().as_ref(), "<instance-home>")
+                .replace(path.to_string_lossy().as_ref(), "<test-root>")
         };
         let stages = (|| -> std::result::Result<std::result::Result<(), String>, String> {
             let started = match product.start_owner_device_login(&begin_command, first_scope,

@@ -234,6 +234,8 @@ jobs:
             Write-Host 'Focused changed natural-exit fixture only; full library and mutation suites NOT_RUN.'
           } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') {
             $probes = @(
+              @{ id = 'ordinary-cache-entry'; filter = 'generated_cache_junction_unlinks_only_entry_and_preserves_target' },
+              @{ id = 'first-cli-failure-cache'; filter = 'owner_first_cli_factory_failures_keep_original_results_and_custody' },
               @{ id = 'ordinary-oauth-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
               @{ id = 'final-stderr-drain'; filter = 'zero_exit_tail_stderr_settles_failure_without_cancellation_or_account_read' },
               @{ id = 'mixed-output-budget'; filter = 'mixed_login_output_limit_is_failure_even_when_child_exits_zero' },
@@ -461,7 +463,7 @@ jobs:
           $original = [IO.File]::ReadAllBytes($path)
           $source = [Text.Encoding]::UTF8.GetString($original)
           $hash = (Get-FileHash -LiteralPath $path).Hash
-          $fixed = 'if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) && !proof.kill_succeeded {'
+          $fixed = 'if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE)' + "`n" + '            && (proof.parent_grace_exited || !proof.kill_succeeded) {'
           if ([regex]::Matches($source,[regex]::Escape($fixed)).Count -ne 1) { throw 'R8 stop proof fix must match once' }
           try {
             [IO.File]::WriteAllText($path,$source.Replace($fixed,'if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) {'),[Text.UTF8Encoding]::new($false))

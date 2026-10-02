@@ -15,7 +15,7 @@ type Handle = *mut c_void;
 const DIRECTORY: u32 = 0x10;
 const REPARSE: u32 = 0x400;
 const MOUNT_POINT: u32 = 0xa0000003;
-const CACHE: &str = "AppData/Local/Microsoft/Windows/INetCache/Content.IE5";
+const CACHE: &str = r"AppData\Local\Microsoft\Windows\INetCache\Content.IE5";
 
 #[repr(C)]
 #[derive(Default)]
@@ -103,14 +103,23 @@ pub(super) fn remove_generated_cache_junction(root: &RootLock, home: &ResolvedDi
         if path == home.path && identity(&handle)? != home.identity {
             return Err(OrchestrationError::AccessDenied);
         }
-        if observed.attributes & DIRECTORY == 0 { return Err(OrchestrationError::AccessDenied); }
+        if observed.attributes & DIRECTORY == 0 {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "login Windows cache entry is not a directory: attributes={:#x}", observed.attributes)));
+        }
         if !leaf {
-            if observed.attributes & REPARSE != 0 { return Err(OrchestrationError::AccessDenied); }
+            if observed.attributes & REPARSE != 0 {
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "login Windows cache ancestor is reparse: attributes={:#x}; tag={:#x}", observed.attributes, observed.tag)));
+            }
             ancestors.push(handle);
             continue;
         }
         if observed.attributes & REPARSE == 0 { return Ok(()); } // Real cache directories are data.
-        if observed.tag != MOUNT_POINT { return Err(OrchestrationError::AccessDenied); }
+        if observed.tag != MOUNT_POINT {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "login Windows cache entry tag mismatch: attributes={:#x}; tag={:#x}", observed.attributes, observed.tag)));
+        }
         // Delete the directory junction itself using the same verified handle.
         // Rust symlink_metadata().is_dir() is false for a directory junction;
         // selecting DeleteFileW from that value instead would give Win32 5.
@@ -145,17 +154,20 @@ mod tests {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let base = std::env::temp_dir().join(format!("gogoke-login-cache-{}-{nonce}", std::process::id()));
         let root_path = base.join("authority");
-        let home_path = root_path.join("v37-instances/instanceA");
+        let home_path = root_path.join("v37-instances").join("instanceA");
         let entry = home_path.join(CACHE);
         let target = base.join("owned-fixture-target");
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::create_dir(&target).unwrap();
         fs::write(target.join("sentinel"), b"unchanged owned fixture").unwrap();
         let root = RootLock::acquire(&root_path).unwrap();
-        let home = ResolvedDirectory { identity: inspect_root(&home_path).unwrap().identity, path: home_path };
+        let observed_home = inspect_root(&home_path).unwrap();
+        let home = ResolvedDirectory { identity: observed_home.identity, path: observed_home.canonical_path };
         let create = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"])
             .arg(&entry).arg(&target).output().unwrap();
-        assert!(create.status.success(), "owned junction fixture creation failed: {:?}", create.status);
+        assert!(create.status.success(), "owned junction fixture creation failed: {:?}; stderr={}",
+            create.status, String::from_utf8_lossy(&create.stderr)
+                .replace(base.to_string_lossy().as_ref(), "<owned-fixture-root>"));
         let attributes = std::os::windows::fs::MetadataExt::file_attributes(&fs::symlink_metadata(&entry).unwrap());
         assert_ne!(attributes & DIRECTORY, 0, "directory attributes select the directory deletion API");
         let pinned_parent = open(entry.parent().unwrap()).unwrap().unwrap();

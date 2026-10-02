@@ -221,5 +221,32 @@
     "cloudRegression": "Production open helper held on real fixture ancestor excludes competing DELETE with Win32 32",
     "newCapabilityOrAclChange": false
   },
-  "state": "CACHE_SETTLEMENT_AND_PROVEN_NAMESPACE_PIN_FINAL_CLOUD_PENDING"
+  "c949CloudFailureBatch": {
+    "source": "c949863079b41e498dbec7bf24d4904838314f47",
+    "nativeRun": 36983982999,
+    "nativeJob": 110764873392,
+    "focusedPassed": 22,
+    "serverPassed": 642,
+    "library": { "executed": 583, "passed": 579, "failed": 4, "ignored": 0, "cargoExit": 101 },
+    "directJobLogSha256": "8334d4389e419d3391cb21705403d7b553bb3e952452b9fba964df50e0ac6eb8",
+    "failures": [
+      "Natural parent exit 124 with a remaining Job member: fixture assumed no termination; production success of descendant cleanup can mask the earlier natural sentinel",
+      "Cache fixture mklink exit1 discarded stderr; its manually supplied home also lacked the production resolver canonical path",
+      "First ACTIVE failure generated cache entry is absent, but subsequent LPAC preparation gets Io183; existing settlement contains an unprinted cleanup error",
+      "Real ordinary callback succeeds, cancellation fails; old test formatter collapses even actual Io codes to None"
+    ],
+    "corrections": [
+      "Preserve refusal of natural parent124 based on pre-termination parent_grace_exited, even if remaining Job cleanup succeeds; retain all other stop invariants and real compiled mutation",
+      "Reuse existing root junction fixture command and canonical physical home; retain command stderr",
+      "Retain actual settlement cleanup and cancel error category/stage/OS diagnostics, redacting private authorization line and test paths",
+      "Use existing focused cloud dispatch with the two affected existing tests added before another complete gate run"
+    ],
+    "unknownRootCause": "Runtime cleanup and cancellation original detail not yet printed; do not infer permissions, retry, change ACL or relax strict traversal",
+    "ordinaryWin11NewCandidate": "NOT_RUN",
+    "formalProductTouched": false,
+    "acceptance": false,
+    "参照": "自然124依据自己的 stop proof parent_grace_exited 写入时序、现有 close_failure 用例对 Job 后代的处理及该次 Job 原文；保留实际自然退出哨兵拒绝，不用成功清理后代来改写父进程退出成因。junction 夹具采用 root/mod.rs 的既有 mklink 和正式 resolver 的 canonical 身份；原始错误复用当前 session 已保留的 settlement，不加外围探针。",
+    "reflection": "本轮先前将新夹具的路径和共享判据当作已等价，造成一次无效整链往返。已改用现有根绑定/规范路径，并以真实句柄对照证明共享语义；先用短的既有聚焦执行取得未打印原文，再跑最终全链，减少完整构建往返。"
+  },
+  "state": "DIRECT_ERROR_RETENTION_AND_NATURAL_SENTINEL_CORRECTION_FOCUSED_CLOUD_PENDING"
 }
