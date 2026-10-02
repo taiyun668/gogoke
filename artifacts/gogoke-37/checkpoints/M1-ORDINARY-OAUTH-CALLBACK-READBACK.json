@@ -1,0 +1,121 @@
+{
+  "schema": "gogoke.37.oauth-callback-readback.v1",
+  "source": "4b99854373c63d631138ff1f4c3257a34bdc4b47",
+  "state": "CLOUD_COMPARISON_COMPLETE_OWNER_LOGIN_BOUNDARY_DECISION_REQUIRED",
+  "scope": "Cloud Windows fresh registered empty instance home; actual fixed CLI; not Owner Win11 and not real account authorization",
+  "fixed_cli": {
+    "version": "0.149.0",
+    "sha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "modified": false
+  },
+  "same_fields_mechanically_verified": [
+    "application",
+    "binary_digest",
+    "profile_id",
+    "domain_id",
+    "registered_home",
+    "complete_environment",
+    "arguments",
+    "current_directory"
+  ],
+  "instance_revisions": "Each native binding matches its own current instance revision; normal settlement advances revision, no reset",
+  "comparison": {
+    "production_lpac_with_shim": {
+      "result": "TCP_CONNECT_TIMEOUT",
+      "original_error": "callback socket connect failed: connection timed out; raw_os_error=None"
+    },
+    "diagnostic_no_lpac_no_shim": {
+      "result": "PASS",
+      "response": "HTTP400_STATE_MISMATCH",
+      "listener": "MATCHES_HELD_CLI_PID_AND_CREATION_TIME"
+    },
+    "limits": [
+      "Does not isolate the LPAC token from the path shim as a causal variable",
+      "Not a Win11 result",
+      "No real OAuth account authorization or model call tested"
+    ]
+  },
+  "cloud_run": 36964093619,
+  "release_build": "PASS",
+  "required_process_axes": {
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0
+  },
+  "focused_probes": {
+    "passed": 4,
+    "failed": 1,
+    "skipped": 0,
+    "overall": "FAIL"
+  },
+  "lpac_shim_tests": {
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0
+  },
+  "full_library": "NOT_RUN",
+  "compiled_mutations": "NOT_RUN",
+  "server": "NOT_RUN",
+  "cleanup": {
+    "custodyClose": "PASS",
+    "rootDeletion": "FAIL",
+    "relativeObject": "v37-instances/instanceA/gogoke-login-runtime/AppData/Local/Microsoft/Windows/INetCache/Content.IE5",
+    "win32": 5,
+    "attributes": 9238,
+    "reparsePoint": true,
+    "followed": false,
+    "permissionChange": false,
+    "retry": false,
+    "exactDenialCause": "UNKNOWN",
+    "remainingWork": "Resolve owned cloud test reparse-directory cleanup; do not infer callback failure from cleanup failure"
+  },
+  "browser": "Fixed CLI launched Edge children in the cloud diagnostic control; no user-visible-page or authorization claim",
+  "private_job_log_sha256": "1bb01cf632ffa0afe6af6e577ea223ea5314773be5b62bdc993d44e0f234afec",
+  "artifacts": [
+    {
+      "id": 11209485646,
+      "sha256": "b3d7857c5643b4c76e01807c1a1ddea080b6396868c25a5475c168454c515bc4"
+    },
+    {
+      "id": 11208089294,
+      "sha256": "dc8dda0aefe9ab48384756ba4617fde0a582d469ac79e65f3a0c23e0312996fe"
+    }
+  ],
+  "independent_review": {
+    "seat": "oauth_known_findings_focus",
+    "scope": "Read-only known-findings source and current cloud log review",
+    "finalAcceptance": false
+  },
+  "hygiene": {
+    "run": 36964097079,
+    "state": "PASS",
+    "localFiles": 24844,
+    "localLeaks": 0
+  },
+  "desktop_previous_source": {
+    "source": "c3afa1499c59cfbb7a5a1a9b4072ad90d1e60591",
+    "run": 36961350699,
+    "state": "PASS_ALL_JOBS",
+    "currentSourceGate": false
+  },
+  "proposed_owner_decision": {
+    "reasonApprovalRequired": "Owner F.1/G.0 instruction expressly retains the current fixed CLI and LPAC isolation boundary; removing login-stage LPAC requires a new decision",
+    "reference": "Historical gogo-party PROVIDER_LOGIN uses ordinary codex login in an instance home; fixed official CLI supports browser OAuth. Design37 section9 keeps instance homes separate from daily CLI homes and credentials vendor-owned",
+    "change": "Only Owner-initiated login: same fixed CLI and original registered instance home, normal current-user process without LPAC or its shim. Keep native process custody, fixed login arguments, persistent session, cancellation, original error and automatic status readback",
+    "permissionEffect": "Login process receives normal current-user filesystem rights and no longer has LPAC file isolation during login; no elevation",
+    "preserved": [
+      "Model/seat sessions and account-read retain existing LPAC profile/capabilities",
+      "Host never reads/writes/copies credentials",
+      "No CLI byte changes",
+      "No system security changes",
+      "No public release or Controller merge"
+    ],
+    "authorizedByOwner": false,
+    "implemented": false
+  },
+  "M1Complete": false,
+  "acceptance": false,
+  "newCandidateInstalled": false,
+  "publicRelease": false,
+  "controllerMerge": false
+}
