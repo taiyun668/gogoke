@@ -987,15 +987,47 @@ fn e2_takeover_and_current_policy_grant_are_required_for_child_dispatch() {
         authorize_child_dispatch(db,&caller,&child).unwrap();
         assert!(matches!(authorize_current_call(db,&caller,"projectB","worker",
             CallAction::Dispatch),Err(SeatError::Denied)));
-        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","worker"),Ok(None)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","worker"),Err(SeatError::Denied)));
         assert!(matches!(authorize_merge_for_f2(db,&caller,"projectB","lead"),Ok(None)));
         assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","lead"),Err(SeatError::Denied)));
         configure_call_grant(db,owner,"projectA","lead","MAIN",CallAction::Merge,None,2).unwrap();
         assert_eq!(authorize_merge_for_f2(db,&caller,"projectA","lead").unwrap(),
             Some("turnA".into()));
+        assert_eq!(authorize_merge_for_f2(db,&caller,"projectA","worker").unwrap(),
+            Some("turnA".into()),"reviewer caller may merge another seat's stopped work");
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","missingSource"),
+            Err(SeatError::Denied)));
         configure_call_grant(db,owner,"projectA","lead","MAIN",CallAction::Merge,Some(1),3).unwrap();
         assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","lead"),
             Err(SeatError::Denied)),"expired merge grant cannot be reused");
+    });
+}
+
+#[test]
+fn tuned_takeover_question_content_invalidates_old_answer_in_same_transaction() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnA").unwrap();
+        answer_takeover(db,&caller,"q","Original answer",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerA",b"original answer").unwrap();
+        assert!(takeover_ready(db,&active).unwrap());
+        let idle=set_dispatch_state(db,&active,false).unwrap();
+        let unrelated=tune(db,NativeOrigin::user(owner),SeatChange {
+            domain_id:"projectA",seat_id:"lead",expected_generation:idle.generation,
+            expected_revision:idle.revision,request_id:"tuneInstruction",
+            request_bytes:b"original instruction tune",
+        },"instruction","\"revised\"").unwrap().seat;
+        assert!(takeover_ready(db,&unrelated).unwrap(),
+            "unrelated copied-setting change preserves cited answers");
+        let changed=tune(db,NativeOrigin::user(owner),SeatChange {
+            domain_id:"projectA",seat_id:"lead",expected_generation:unrelated.generation,
+            expected_revision:unrelated.revision,request_id:"tuneQuestion",
+            request_bytes:b"original question tune",
+        },"takeoverQuestions",r#"[{"id":"q","prompt":"What changed?"}]"#).unwrap().seat;
+        assert!(!takeover_ready(db,&changed).unwrap());
+        assert!(read_state_card(db,&changed).unwrap().takeover_answers.is_empty(),
+            "same question ID with changed content has no inherited answer");
     });
 }
 
@@ -1031,10 +1063,20 @@ fn e2_gate_rejection_stops_stage_and_reserves_one_escalation() {
         assert!(begin_escalation(db,&submitter,EscalationCause::RejectCap {
             gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap().replayed);
         mark_escalation_unknown(db,"projectA","triggerA").unwrap();
+        let uncertain=begin_escalation(db,&submitter,EscalationCause::RejectCap {
+            gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap();
+        assert!(uncertain.replayed && uncertain.state=="UNKNOWN");
+        let wrong=NativeDeliveryEvidence::from_verified_c_delivery("projectA","triggerA",
+            "otherRequest","reviewer","receiptA").unwrap();
+        assert!(matches!(settle_escalation(db,&wrong),Err(SeatError::Denied)));
         let evidence=NativeDeliveryEvidence::from_verified_c_delivery("projectA","triggerA",
-            "reviewer","receiptA").unwrap();
-        assert!(matches!(settle_escalation(db,&evidence),Err(SeatError::Unknown)),
-            "an unknown send never accepts a new delivery assertion");
+            "escalateA","reviewer","receiptA").unwrap();
+        assert_eq!(settle_escalation(db,&evidence).unwrap().state,"DELIVERED");
+        assert!(settle_escalation(db,&evidence).unwrap().replayed);
+        let conflicting=NativeDeliveryEvidence::from_verified_c_delivery("projectA","triggerA",
+            "escalateA","reviewer","differentReceipt").unwrap();
+        assert!(matches!(settle_escalation(db,&conflicting),Err(SeatError::Unknown)),
+            "a second different receipt cannot replace the original");
         let recovered=recover_trigger(db,&submitter,&scheduled,2,"triggerRecoverA",
             b"original trigger recover").unwrap();
         assert_eq!(recovered.revision,3);

@@ -13,7 +13,7 @@ E.2 native seat/call-policy primitives are on `codex/gogoke-37-m2-e2`. This is a
 
 The host records its observed available parallelism as a native machine fact and computes admission as `min(Owner project cap, machine limit)` without updating the Owner row. Absent OS or Owner input denies. Lead-created and changed child seats must fit the current user-seat instance/model/effort/permission scope. A copied template supplies takeover questions; cited or explicit-unknown answers, the current state card and health action intent survive in native rows. Codex instruction rendering produces candidate bytes only; actual CLI discovery remains unproven.
 
-K-POLICY uses a current native caller and no implicit grant. It records scoped call grants with expiry, gate submit/decision and stage transition, rejection reason/cap, configured escalation route, stable trigger registration/recovery/cancel, and one delivery intent followed by trusted external receipt settlement. Missing delivery is `UNKNOWN`; replay does not grant a second external action. F.2 can consume `authorize_merge_for_f2` only with the original H caller, matching project/seat and current `MERGE`→`MAIN` grant.
+K-POLICY uses a current native caller and no implicit grant. It records scoped call grants with expiry, gate submit/decision and stage transition, rejection reason/cap, configured escalation route, stable trigger registration/recovery/cancel, and one delivery intent followed by trusted external receipt settlement. Missing delivery is `UNKNOWN`; the same original trusted receipt may later settle it, while replay never grants a second send. F.2 can consume `authorize_merge_for_f2` with the current H merge caller's same-project `MERGE`→`MAIN` grant; the original writer's source-seat metadata is checked separately and may name another seat.
 
 ## VALIDATION
 
@@ -29,7 +29,7 @@ The E0596 compile error above was the only observed code error in the first clou
 
 ## INVARIANTS_CHECKED
 
-Owner cap stays in its E.1 table, with no default or host edit. A stale/reclaimed caller, cross-project target, subordinate-to-Owner call, missing/expired grant, unanswered takeover set, bypassed/rejected gate, uncertain trigger, or unknown delivery cannot authorize the next action. H's existing LPAC/fixed CLI path and F.1 identity/home/credentials remain outside this branch. No scheduler, login, model process, signing, installed data or main merge was run here.
+Owner cap stays in its E.1 table, with no default or host edit. A stale/reclaimed caller, cross-project target, subordinate-to-Owner call, missing/expired grant, unanswered takeover set, bypassed/rejected gate, uncertain trigger, or unknown delivery cannot authorize a new external action. A tuned takeover question invalidates old answers even when its ID is unchanged. H's existing LPAC/fixed CLI path and F.1 identity/home/credentials remain outside this branch. No scheduler, login, model process, signing, installed data or main merge was run here.
 
 ## RISKS
 

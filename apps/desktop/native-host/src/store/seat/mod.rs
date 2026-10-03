@@ -1157,6 +1157,9 @@ pub(crate) fn tune(
         let Json::Object(mut settings) = Parser::parse(settings_json)? else {
             return Err(SeatError::SchemaDrift);
         };
+        let reset_takeover_answers=setting=="takeoverQuestions" &&
+            settings.get(&JsonString::from_str("takeoverQuestions")).map(Json::canonical)
+                != Some(value.canonical());
         settings.insert(JsonString::from_str(setting), value);
         let updated_settings = Json::Object(settings).canonical();
         validate_template_settings(updated_settings.as_bytes())?;
@@ -1185,6 +1188,12 @@ pub(crate) fn tune(
         if seat.generation != next_generation || seat.revision != next_revision
             || seat.settings_json.as_deref() != Some(updated_settings.as_str()) {
             return Err(SeatError::Conflict);
+        }
+        if reset_takeover_answers {
+            let clear=Statement::prepare(db.as_ptr(),
+                "DELETE FROM main.gogoke_v37_seat_takeover_answers WHERE domain_id=?1 AND seat_id=?2")?;
+            clear.bind_text(1,input.domain_id)?;clear.bind_text(2,input.seat_id)?;
+            clear.step_done()?;
         }
         record_operation(db, input.request_id, &fp, &seat)?;
         Ok(SeatReceipt { seat, replayed: false })

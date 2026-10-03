@@ -129,14 +129,18 @@ pub(crate) fn authorize_current_call(db:&VerifiedDatabaseConnection<'_>,caller:&
     Ok(revision)
 }
 
-/// F.2 supplies the exact seat bound to its registered worktree. H supplies
-/// this caller only for the active original turn. A different seat is denied.
+/// F.2 supplies the original writer's stored seat. H supplies the distinct
+/// current merge caller and its original turn. The source seat is provenance,
+/// never an authorization substitute for the caller's current MAIN grant.
 pub(crate) fn authorize_merge_for_f2(db:&VerifiedDatabaseConnection<'_>,
     caller:&NativeSeatCall,worktree_domain_id:&str,
     worktree_seat_id:&str)->Result<Option<String>,SeatError> {
-    if caller.domain_id!=worktree_domain_id || caller.seat_id!=worktree_seat_id {
+    if caller.domain_id!=worktree_domain_id {
         return Ok(None);
     }
+    let source=read(db,worktree_domain_id,worktree_seat_id)?.ok_or(SeatError::Denied)?;
+    if source.domain_id!=worktree_domain_id || source.seat_id!=worktree_seat_id ||
+        source.incarnation.is_empty() {return Err(SeatError::Denied);}
     authorize_current_call(db,caller,&caller.domain_id,"MAIN",CallAction::Merge)?;
     Ok(Some(caller.turn_id.clone()))
 }
@@ -657,15 +661,15 @@ pub(crate) fn begin_escalation(db:&mut VerifiedDatabaseConnection<'_>,caller:&Na
 /// This token can only be constructed after the existing C/H delivery path
 /// verifies its original receipt and destination. It does not assert a send.
 pub(crate) struct NativeDeliveryEvidence {
-    domain_id:String,trigger_id:String,to_seat_id:String,receipt_id:String,
+    domain_id:String,trigger_id:String,request_id:String,to_seat_id:String,receipt_id:String,
 }
 impl NativeDeliveryEvidence {
-    pub(crate) fn from_verified_c_delivery(domain:&str,trigger:&str,destination:&str,
-        receipt:&str)->Result<Self,SeatError> {
-        if [domain,trigger,destination,receipt].iter().any(|value|!valid_id(value)) {
+    pub(crate) fn from_verified_c_delivery(domain:&str,trigger:&str,request:&str,
+        destination:&str,receipt:&str)->Result<Self,SeatError> {
+        if [domain,trigger,request,destination,receipt].iter().any(|value|!valid_id(value)) {
             return Err(SeatError::Invalid("delivery evidence"));
         }
-        Ok(Self {domain_id:domain.into(),trigger_id:trigger.into(),
+        Ok(Self {domain_id:domain.into(),trigger_id:trigger.into(),request_id:request.into(),
             to_seat_id:destination.into(),receipt_id:receipt.into()})
     }
 }
@@ -676,25 +680,38 @@ pub(crate) fn settle_escalation(db:&mut VerifiedDatabaseConnection<'_>,
     evidence:&NativeDeliveryEvidence)->Result<EscalationIntent,SeatError> {
     transact(db,|db| {
         let q=Statement::prepare(db.as_ptr(),
-            "SELECT from_seat_id,to_seat_id,reason,state,revision,COALESCE(delivery_receipt_id,'') FROM main.gogoke_v37_seat_policy_escalations WHERE domain_id=?1 AND trigger_id=?2")?;
+            "SELECT from_seat_id,to_seat_id,reason,state,revision,COALESCE(delivery_receipt_id,''),request_id FROM main.gogoke_v37_seat_policy_escalations WHERE domain_id=?1 AND trigger_id=?2")?;
         q.bind_text(1,&evidence.domain_id)?;q.bind_text(2,&evidence.trigger_id)?;
         if !q.step_row()? {return Err(SeatError::Denied);}
         let from=q.column_text(0)?;let to=q.column_text(1)?;let reason=q.column_text(2)?;
         let state=q.column_text(3)?;
         let revision=q.column_text(4)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
         let old_receipt=q.column_text(5)?;
-        if q.step_row()? || to!=evidence.to_seat_id {return Err(SeatError::Denied);}
+        let original_request=q.column_text(6)?;
+        if q.step_row()? || to!=evidence.to_seat_id ||
+            original_request!=evidence.request_id {return Err(SeatError::Denied);}
         if state=="DELIVERED" && old_receipt==evidence.receipt_id {
             return Ok(EscalationIntent {trigger_id:evidence.trigger_id.clone(),from_seat_id:from,
                 to_seat_id:to,reason,state:"DELIVERED".into(),revision,replayed:true});
         }
-        if state!="INTENT" || !old_receipt.is_empty() {return Err(SeatError::Unknown);}
+        if !matches!(state.as_str(),"INTENT"|"UNKNOWN") || !old_receipt.is_empty() {
+            return Err(SeatError::Unknown);
+        }
         let next=revision.checked_add(1).ok_or(SeatError::Conflict)?;
         let update=Statement::prepare(db.as_ptr(),
-            "UPDATE main.gogoke_v37_seat_policy_escalations SET state='DELIVERED',delivery_receipt_id=?1,revision=?2 WHERE domain_id=?3 AND trigger_id=?4 AND state='INTENT' AND revision=?5")?;
+            "UPDATE main.gogoke_v37_seat_policy_escalations SET state='DELIVERED',delivery_receipt_id=?1,revision=?2 WHERE domain_id=?3 AND trigger_id=?4 AND request_id=?5 AND state IN ('INTENT','UNKNOWN') AND revision=?6")?;
         update.bind_text(1,&evidence.receipt_id)?;update.bind_i64(2,next)?;
         update.bind_text(3,&evidence.domain_id)?;update.bind_text(4,&evidence.trigger_id)?;
-        update.bind_i64(5,revision)?;update.step_done()?;
+        update.bind_text(5,&evidence.request_id)?;update.bind_i64(6,revision)?;
+        update.step_done()?;
+        let verify=Statement::prepare(db.as_ptr(),
+            "SELECT state,delivery_receipt_id,revision FROM main.gogoke_v37_seat_policy_escalations WHERE domain_id=?1 AND trigger_id=?2 AND request_id=?3")?;
+        verify.bind_text(1,&evidence.domain_id)?;verify.bind_text(2,&evidence.trigger_id)?;
+        verify.bind_text(3,&evidence.request_id)?;
+        if !verify.step_row()? || verify.column_text(0)?!="DELIVERED" ||
+            verify.column_text(1)?!=evidence.receipt_id ||
+            verify.column_text(2)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)? != next ||
+            verify.step_row()? {return Err(SeatError::Conflict);}
         Ok(EscalationIntent {trigger_id:evidence.trigger_id.clone(),from_seat_id:from,
             to_seat_id:to,reason,state:"DELIVERED".into(),revision:next,replayed:false})
     })
