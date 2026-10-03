@@ -4,7 +4,7 @@
 //! registered Codex home, current RootLock observations, and the ACTIVE H
 //! owner binding to agree before a caller can use either path.
 
-use super::registry::{resolve_registered_codex_home, RegistryError};
+use super::registry::{resolve_registered_codex_home, resolve_registered_provider_home, RegistryError};
 use super::temporary::{resolve_active_session_home, TemporaryHomeError};
 use crate::process::AppContainerProfile;
 use crate::root::{RootIdentity, RootLock};
@@ -78,6 +78,22 @@ pub(crate) fn resolve_codex_session_launch_homes(
         instance,
         session: ResolvedDirectory { path, identity },
     })
+}
+
+/// The driver is the native F program pin, never a caller-selected home/path.
+/// Session ownership, generation, ACTIVE state and physical identities retain
+/// the exact existing checks. This resolver does not grant an ACL or launch.
+pub(crate) fn resolve_provider_session_launch_homes(
+    connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    profile: &AppContainerProfile, instance_id: &str, home_id: &str,
+    domain_id: &str, owner_id: &str, generation: &str, expected_driver: &str,
+) -> Result<InstanceLaunchHomes, LaunchHomeError> {
+    let (path, identity) = resolve_registered_provider_home(
+        connection, root, instance_id, expected_driver)?;
+    let instance = ResolvedDirectory { path, identity };
+    let (path, identity) = resolve_active_session_home(
+        connection, root, profile, instance_id, home_id, domain_id, owner_id, generation)?;
+    Ok(InstanceLaunchHomes { instance, session: ResolvedDirectory { path, identity } })
 }
 
 #[cfg(test)]

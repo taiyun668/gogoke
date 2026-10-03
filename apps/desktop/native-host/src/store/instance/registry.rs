@@ -616,6 +616,21 @@ pub(super) fn resolve_registered_codex_home(
     root: &RootLock,
     instance_id: &str,
 ) -> Result<(PathBuf, RootIdentity), RegistryError> {
+    resolve_registered_provider_home(connection, root, instance_id, "codex")
+}
+
+/// Internal H extension: the expected driver comes from the native instance
+/// pin. All home marker, retained identity and legacy-layout checks are shared
+/// with the existing Codex resolver; no wire path or home is accepted.
+pub(super) fn resolve_registered_provider_home(
+    connection: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock,
+    instance_id: &str,
+    expected_driver: &str,
+) -> Result<(PathBuf, RootIdentity), RegistryError> {
+    if !matches!(expected_driver, "codex" | "claude" | "opencode" | "grok" | "antigravity") {
+        return Err(RegistryError::Invalid("registered driver"));
+    }
     if !valid_id(instance_id) {
         return Err(RegistryError::Invalid("instance_id"));
     }
@@ -624,7 +639,7 @@ pub(super) fn resolve_registered_codex_home(
     else {
         return Err(RegistryError::Unknown);
     };
-    if driver != "codex" || home_ref != format!("instance-home-{instance_id}")
+    if driver != expected_driver || home_ref != format!("instance-home-{instance_id}")
         || recorded_identity.is_empty()
     {
         return Err(RegistryError::Unknown);
