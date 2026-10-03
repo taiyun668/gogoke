@@ -48,6 +48,7 @@ pub(crate) struct LaunchEvidence {
     tier: PermissionTier,
     resume_old: Option<ClaimObservation>,
     resume_request_id: Option<String>,
+    launch_admission: Option<seat::NativeLeadAdmission>,
 }
 
 #[derive(Clone, Copy)]
@@ -91,16 +92,29 @@ impl LaunchEvidence {
         domain_id: &str, seat_id: &str, session_id: &str,
         repository_id: &str, worktree_id: &str,
     ) -> Result<Self, String> {
-        let identity = evidence(authority::read_product_identity(db, owner))?;
+        Self::observe_with_origin(db,root,owner,&NativeOrigin::user(owner),
+            domain_id,seat_id,session_id,repository_id,worktree_id)
+    }
+
+    pub(crate) fn observe_with_origin(
+        db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,host:&OwnerIssuer,
+        origin:&NativeOrigin<'_>,domain_id:&str,seat_id:&str,session_id:&str,
+        repository_id:&str,worktree_id:&str,
+    )->Result<Self,String> {
+        let identity = evidence(authority::read_product_identity(db, host))?;
         let seat = evidence(seat::get(db, domain_id, seat_id))?
             .ok_or("native session launch: missing seat")?;
         if seat.state != State::Busy { return Err("native session launch: seat is not busy".into()); }
-        let claim = evidence(runtime::observe_claim(db, &NativeOrigin::user(owner),
+        let claim = evidence(runtime::observe_claim(db, origin,
             domain_id, seat_id, session_id))?.ok_or("native session launch: missing claim")?;
         if claim.phase != SessionPhase::Committed || claim.process_operation_id.is_some() {
             return Err("native session launch: claim is not an unused committed reservation".into());
         }
-        Self::build(db,root,owner,identity,seat,claim,repository_id,worktree_id,None,None)
+        let admission=match origin {
+            NativeOrigin::Lead(admission)=>Some((*admission).clone()),
+            NativeOrigin::User(_)=>None,
+        };
+        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission)
     }
 
     pub(crate) fn observe_resume(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -159,13 +173,13 @@ impl LaunchEvidence {
         let candidate=ClaimObservation {generation,home_id,binding_id,instance_id,
             phase:SessionPhase::Committed,process_operation_id:None,..old.clone()};
         Self::build(db,root,owner,identity,seat,candidate,repository_id,worktree_id,
-            Some(old),Some(request_id.to_owned()))
+            Some(old),Some(request_id.to_owned()),None)
     }
 
     fn build(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         identity: ProductIdentitySnapshot, seat: Seat, claim: ClaimObservation,
         repository_id: &str, worktree_id: &str, resume_old: Option<ClaimObservation>,
-        resume_request_id: Option<String>) -> Result<Self,String> {
+        resume_request_id: Option<String>,launch_admission:Option<seat::NativeLeadAdmission>) -> Result<Self,String> {
         let domain_id=&claim.domain_id;
         let session_id=&claim.session_id;
         let seat_id=&seat.seat_id;
@@ -214,7 +228,7 @@ impl LaunchEvidence {
         };
         let observed = Self { identity, seat, claim, pin, homes, repository_id: repository_id.into(),
             worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
-            resume_old,resume_request_id };
+            resume_old,resume_request_id,launch_admission };
         observed.verify(db, root, owner, None)?;
         Ok(observed)
     }
@@ -274,9 +288,17 @@ impl LaunchEvidence {
             || evidence(runtime::current_instance_pin(db, &self.claim.instance_id))? != self.pin {
             return Err("native session launch: current identity/seat/pin changed".into());
         }
-        let current = evidence(runtime::observe_claim(db, &NativeOrigin::user(owner),
+        let current = evidence(runtime::observe_claim_bound(db,
             &self.claim.domain_id, &self.seat.seat_id, &self.claim.session_id))?
             .ok_or("native session launch: claim no longer current")?;
+        if matches!(phase,VerificationPhase::PreActivation) {
+            if let Some(admission)=&self.launch_admission {
+                let same=evidence(runtime::observe_claim(db,&NativeOrigin::lead(admission),
+                    &self.claim.domain_id,&self.seat.seat_id,&self.claim.session_id))?
+                    .ok_or("native child launch: original reservation no longer current")?;
+                if same!=current {return Err("native child launch: reservation identity changed".into());}
+            }
+        }
         let claim = if let Some(old)=&self.resume_old {
             if &current!=old || old.phase!=SessionPhase::Stopped
                 || old.revision!=revision || old.process_operation_id.is_none() {
