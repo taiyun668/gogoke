@@ -255,6 +255,8 @@ impl<'root> ProductDatabase<'root> {
                 .map(|sync|sync_reply(&sync)).map_err(side_error);
         }
         drop(prior);
+        d::rebind_current(&mut self.connection,&self.owner,&request.domain_id,id,
+            d::read_current_cache_continuity).map_err(side_error)?;
         let live=d::derive_current(&mut self.connection,&self.owner,&request.domain_id,id).map_err(side_error)?;
         if live.session_id!=request.target_id || live.generation!=generation {
             return Err(OrchestrationError::AccessDenied);

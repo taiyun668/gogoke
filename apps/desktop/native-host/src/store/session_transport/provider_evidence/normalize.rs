@@ -238,6 +238,12 @@ pub(crate) fn claude(frame: &[u8], bound_session: &str, bound_thread: &str)
             check_binding(frame, &session_id, bound_session)?;
             Ok(Output::Terminal { reason: subtype, reported_error: Some(is_error) })
         }
+        // These are original H input/control acknowledgements, not model
+        // messages. H consumes their captured A source before projection.
+        stream_json::ClaudeData::ControlResponse { .. } =>
+            Ok(Output::Unhandled { method:"control_response".into(),raw_frame:frame.to_vec() }),
+        stream_json::ClaudeData::UserReplay { .. } =>
+            Ok(Output::Unhandled { method:"user_replay".into(),raw_frame:frame.to_vec() }),
         stream_json::ClaudeData::ControlRequest { request_id, subtype } =>
             Ok(Output::Unhandled { method: format!("control_request/{:?}/{:?}", subtype, request_id),
                 raw_frame: frame.to_vec() }),

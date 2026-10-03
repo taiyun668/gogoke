@@ -455,8 +455,10 @@ impl LaunchEvidence {
             "-c".into(), format!("log_dir={}", crate::store::atomic::Json::String(
                 crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
             "app-server".into()] } else { match self.pin.driver_id.as_str() {
-                "claude" => ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
-                    .into_iter().map(str::to_owned).collect(),
+                "claude" => {
+                    let (model,effort)=self.settings()?;
+                    evidence(commands::claude_launch_args(&model,&effort,None))?
+                },
                 // The pinned top-level --pure switch disables external plugins;
                 // it does not by itself prove memory isolation or model choice.
                 "opencode" => vec!["--pure".into(), "acp".into()],
