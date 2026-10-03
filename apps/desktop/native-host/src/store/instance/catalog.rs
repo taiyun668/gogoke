@@ -13,6 +13,24 @@ use std::ptr;
 
 const CODEX_DRIVER: &str = "codex";
 const CODEX_VERSION: &str = "0.160.0";
+
+/// The product's verified catalog is the only source of an upgrade notice.
+/// A registry value, PATH lookup or network response cannot silently replace
+/// the binary pinned by the running host. An unknown version is not ordered.
+pub(crate) fn known_new_version(driver: &str, registered_version: &str) -> Option<&'static str> {
+    fn parts(version: &str) -> Option<[u64; 3]> {
+        let mut fields = version.split('.');
+        let values = [fields.next()?, fields.next()?, fields.next()?];
+        if fields.next().is_some() || values.iter().any(|value| value.is_empty()
+            || (value.len() > 1 && value.starts_with('0'))
+            || !value.bytes().all(|byte| byte.is_ascii_digit())) { return None; }
+        Some([values[0].parse().ok()?, values[1].parse().ok()?, values[2].parse().ok()?])
+    }
+    if driver != CODEX_DRIVER || parts(registered_version)? >= parts(CODEX_VERSION)? {
+        return None;
+    }
+    Some(CODEX_VERSION)
+}
 const ROOT_PACKAGE: &str = "@openai/codex";
 const PLATFORM_VERSION: &str = "0.160.0-win32-x64";
 const MAX_PACKAGE_BYTES: u64 = 64 * 1024;
@@ -236,6 +254,15 @@ pub(crate) fn locate_pinned_program(driver_id: &str, digest: &str,
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_notice_only_names_a_known_newer_pinned_version() {
+        assert_eq!(known_new_version("codex", "0.149.0"), Some("0.160.0"));
+        for version in ["0.160.0", "0.161.0", "0.16x.0", "00.149.0", "0.149.0-beta"] {
+            assert_eq!(known_new_version("codex", version), None);
+        }
+        assert_eq!(known_new_version("claude", "0.149.0"), None);
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture(run: impl FnOnce(&Path, &Path, &Path, &Path)) {
