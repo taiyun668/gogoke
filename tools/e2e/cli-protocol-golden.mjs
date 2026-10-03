@@ -247,15 +247,15 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
       : null;
     const lane = actualDirection === "in" ? "inbound" : "outbound";
     const sequence = ++laneSequences[lane];
-    const sessionAlias = frame.sessionId === undefined ? null : aliases.alias("session", frame.sessionId);
-    const operationAlias = frame.operationId === undefined ? null : aliases.alias("operation", frame.operationId);
-    const generationAlias = frame.generation === undefined ? null : aliases.alias("generation", frame.generation);
+    const sessionAlias = frame.sessionId == null ? null : aliases.alias("session", frame.sessionId);
+    const operationAlias = frame.operationId == null ? null : aliases.alias("operation", frame.operationId);
+    const generationAlias = frame.generation == null ? null : aliases.alias("generation", frame.generation);
     const epochAlias = frame.sourceEpoch == null ? null : aliases.alias("epoch", frame.sourceEpoch);
     const ticketAlias = frame.processTicket == null ? null : aliases.alias("ticket", frame.processTicket);
     const custodianNonceAlias = frame.custodianNonce == null ? null : aliases.alias("custodian", frame.custodianNonce);
-    const cursorAlias = frame.sourceCursor === undefined ? null : aliases.alias("cursor", frame.sourceCursor);
+    const cursorAlias = frame.sourceCursor == null ? null : aliases.alias("cursor", frame.sourceCursor);
     const reference = { lane, sequence };
-    if (frame.sourceKind === "frame" && frame.sourceCursor !== undefined) {
+    if (frame.sourceKind === "frame" && frame.sourceCursor != null) {
       const matches = cursorReferences.get(String(frame.sourceCursor)) || [];
       matches.push({ ...reference, sessionId: frame.sessionId ?? null, operationId: frame.operationId ?? null, generation: frame.generation ?? null, sourceEpoch: frame.sourceEpoch ?? null });
       cursorReferences.set(String(frame.sourceCursor), matches);
@@ -273,7 +273,7 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
       sourceEpochAlias: epochAlias,
       ticketAlias,
       custodianNonceAlias,
-      stepId: frame.stepId === undefined ? null : aliases.alias("step", frame.stepId),
+      stepId: frame.stepId == null ? null : aliases.alias("step", frame.stepId),
       phase: frame.sourceKind === "command" ? String(frame.phase).toUpperCase() : null,
       rpcRole,
       rpcIdAlias,
@@ -352,19 +352,19 @@ function normalizeLedgerOutput(document, cursorReferences, aliases, redactions) 
   let ambiguous = 0;
   let unmatched = 0;
   const events = sourceRows.map((row, index) => {
-    const candidates = row.rawCursor !== undefined ? cursorReferences.get(String(row.rawCursor)) || [] : [];
+    const candidates = row.rawCursor != null ? cursorReferences.get(String(row.rawCursor)) || [] : [];
     const filtered = candidates.filter(candidate =>
-      (row.sourceEpoch === undefined || String(candidate.sourceEpoch) === String(row.sourceEpoch))
-      && (row.sessionId === undefined || String(candidate.sessionId) === String(row.sessionId))
-      && (row.operationId === undefined || String(candidate.operationId) === String(row.operationId))
-      && (row.generation === undefined || String(candidate.generation) === String(row.generation)));
+      (row.sourceEpoch == null || String(candidate.sourceEpoch) === String(row.sourceEpoch))
+      && (row.sessionId == null || String(candidate.sessionId) === String(row.sessionId))
+      && (row.operationId == null || String(candidate.operationId) === String(row.operationId))
+      && (row.generation == null || String(candidate.generation) === String(row.generation)));
     const sourceFrame = filtered.length === 1 ? { lane: filtered[0].lane, sequence: filtered[0].sequence } : null;
     let linkMethod = null;
     if (sourceFrame) {
-      if (row.sourceEpoch !== undefined) { exactScoped += 1; linkMethod = "sourceEpoch+sourceCursor"; }
-      else if (row.sessionId !== undefined || row.operationId !== undefined || row.generation !== undefined) { exactScoped += 1; linkMethod = "availableScope+sourceCursor"; }
+      if (row.sourceEpoch != null) { exactScoped += 1; linkMethod = "sourceEpoch+sourceCursor"; }
+      else if (row.sessionId != null || row.operationId != null || row.generation != null) { exactScoped += 1; linkMethod = "availableScope+sourceCursor"; }
       else { uniqueCursorFallback += 1; linkMethod = "unique-sourceCursor-fallback"; }
-    } else if (filtered.length > 1 || (candidates.length > 1 && row.sourceEpoch === undefined && row.sessionId === undefined && row.operationId === undefined && row.generation === undefined)) {
+    } else if (filtered.length > 1 || (candidates.length > 1 && row.sourceEpoch == null && row.sessionId == null && row.operationId == null && row.generation == null)) {
       ambiguous += 1;
     } else {
       unmatched += 1;
@@ -373,11 +373,11 @@ function normalizeLedgerOutput(document, cursorReferences, aliases, redactions) 
       sequence: index + 1,
       sourceFrame,
       linkMethod,
-      sourceEpochAlias: row.sourceEpoch === undefined ? null : aliases.alias("epoch", row.sourceEpoch),
-      rawSourceCursorAlias: row.rawCursor === undefined ? null : aliases.alias("cursor", row.rawCursor),
-      ledgerCursorAlias: row.ledgerCursor === undefined ? null : aliases.alias("ledger-cursor", row.ledgerCursor),
-      ledgerSourceCursorAlias: row.ledgerSourceCursor === undefined ? null : aliases.alias("ledger-source-cursor", row.ledgerSourceCursor),
-      sessionAlias: row.sessionId === undefined ? null : aliases.alias("session", row.sessionId),
+      sourceEpochAlias: row.sourceEpoch == null ? null : aliases.alias("epoch", row.sourceEpoch),
+      rawSourceCursorAlias: row.rawCursor == null ? null : aliases.alias("cursor", row.rawCursor),
+      ledgerCursorAlias: row.ledgerCursor == null ? null : aliases.alias("ledger-cursor", row.ledgerCursor),
+      ledgerSourceCursorAlias: row.ledgerSourceCursor == null ? null : aliases.alias("ledger-source-cursor", row.ledgerSourceCursor),
+      sessionAlias: row.sessionId == null ? null : aliases.alias("session", row.sessionId),
       event: sanitize(row.event, `normalized-event:${index + 1}`, aliases, redactions, ""),
     };
   });
