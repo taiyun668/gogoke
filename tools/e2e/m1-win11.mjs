@@ -162,7 +162,15 @@ async function runTurn(session, question) {
   check(JSON.parse(contents).marker === session.marker, 'Actual tool file marker, not assistant self-report');
   session.fileSha256 = createHash('sha256').update(contents).digest('hex');
   session.artifacts.push({ file: session.file, marker: session.marker, sha256: session.fileSha256 });
-  if (question) check(JSON.stringify(events).includes(session.steerMarker), 'Vendor output consumed same-turn steer');
+  if (question) {
+    const assistantOutput = events.filter(event => event._meta?.codexMethod === 'item/agentMessage/delta' &&
+      event._meta?.turnId === completed._meta.turnId && event._meta?.threadId === session.threadId)
+      .map(event => event.content?.type === 'text' ? event.content.text : '').join('');
+    session.liveSteerObserved = assistantOutput.includes(session.steerMarker);
+    // The protocol permits completed agentMessage without text deltas. The
+    // required consumption assertion uses that exact raw frame after close.
+    session.steerVerification = 'DIRECT_ORIGINAL_COMPLETION_FRAME_REQUIRED';
+  }
   session.turnCompleted = true; product.save();
 }
 
@@ -263,7 +271,6 @@ try {
   journal.currentEndpoint = product.endpoint ?? null; product.save(); process.exitCode = 1;
   // Preserve a still-running real product and its original request for Controller.
   // No forced termination, credential reset, mutation replay or fake fallback.
-  product.socket?.close(); product.child?.stderr.destroy(); product.child?.unref();
-  try { await product.tester?.dispose(); }
+  try { await product.preserveFailure(); }
   catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); }
 }

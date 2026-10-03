@@ -1,5 +1,7 @@
 # Gogoke 37 固定 Codex CLI 权限
 
+H 向固定 CLI 0.160.0 的每个新 `turn/start` 显式发送 `approvalPolicy: never` 和 `sandboxPolicy: externalSandbox`；`networkAccess` 仅由 H 已核验的权限档位决定，只有 `NETWORKED_WRITE` 为 `enabled`，其余为 `restricted`。这是 CLI 对外部隔离的协议声明，LPAC token、目录 ACL、固定程序和 Job 仍执行实际权限边界，不增加任何系统能力或路径授权。`thread/start`、`thread/resume` 的 `sandbox` 字段不能表达这个官方策略，因此不在那里拼造值。旧 RPC 记录恢复时保留其原字节，不能把已写出的命令换成新策略；新的发送不能走旧记录的缺省策略分支。
+
 Owner 授权固定 Codex CLI 的 `account/read` 和 H 模型会话取得 Windows `lpacIdentityServices` capability。它允许 AppContainer 调用 Windows 身份及 SSPI 安全包服务，以初始化 Schannel；它本身不是网络许可，也不能据此推断未知 Windows 服务的完整可达范围只等于 TLS。
 
 Owner 于 2026-10-01 裁决：仅由 Owner 发起的固定 CLI 登录阶段使用与宿主同一用户的普通进程，不在 LPAC 内。原位普通 OAuth 的 localhost 回调曾在现有 LPAC 组合中连接超时；采用 gogo-party 已有的登录方式，不修改 CLI 或系统网络隔离设置。登录进程只运行固定登录命令，不接收或执行模型输出；宿主仍保管进程、会话、取消、原始错误和结果，并自己打开授权网址。凭据由 CLI 写入原注册实例：`HOME`、`USERPROFILE` 和 `CODEX_HOME` 指向该实例自己的 home；保留原 `LOCALAPPDATA`、`APPDATA`，使浏览器使用原有用户环境。宿主不读取、写入或复制凭据。

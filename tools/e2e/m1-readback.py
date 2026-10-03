@@ -20,16 +20,18 @@ database = root / "state.sqlite"
 def files():
     return {p.name: {"length": p.stat().st_size,
                      "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
-            for p in (database, Path(str(database) + "-wal")) if p.exists()}
+            for p in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm")) if p.exists()}
 
 wal, shm = Path(str(database) + "-wal"), Path(str(database) + "-shm")
-if wal.exists() and wal.stat().st_size and not shm.exists():
-    raise RuntimeError("No existing SHM; refuse a read that would create one")
+if wal.exists() and wal.stat().st_size:
+    raise RuntimeError("Product must be closed and checkpointed; refuse a nonempty WAL")
 result = {"schema": "gogoke.37.private-e2e-ledger.v1", "databaseWrites": False,
           "credentialReads": False, "rootIdentity": [root.stat().st_dev, root.stat().st_ino],
           "filesBefore": files(), "frames": [], "commands": [], "sessions": []}
 
-with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+# The caller has closed the actual product. immutable disables WAL sidecar
+# creation; it is never used to observe an active writer's database.
+with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as connection:
     connection.execute("PRAGMA query_only=ON")
     result["epoch"] = connection.execute("SELECT epoch FROM v37_ledger_meta WHERE singleton=1").fetchone()[0]
     result["cursor"] = str(connection.execute("SELECT COALESCE(MAX(cursor),0) FROM v37_ledger_index").fetchone()[0])
@@ -84,6 +86,15 @@ with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
                 "unresolvedRawFrames": sum(row[5] == "PENDING" for row in incoming)}
             summary["unresolvedRawMethods"] = [json.loads(bytes(row[4]).decode("utf-8")).get("method")
                 for row in incoming if row[5] == "PENDING"]
+            summary["steerConsumptionRequired"] = bool(session.get("steerMarker"))
+            original_turn = session.get("turns", [{}])[0] if session.get("turns") else {}
+            summary["steerConsumedInOriginalCompletion"] = bool(session.get("steerMarker")) and any(
+                frame.get("method") == "item/completed"
+                and frame.get("params", {}).get("threadId") == original_turn.get("threadId")
+                and frame.get("params", {}).get("turnId") == original_turn.get("turnId")
+                and frame.get("params", {}).get("item", {}).get("type") == "agentMessage"
+                and session["steerMarker"] in frame.get("params", {}).get("item", {}).get("text", "")
+                for frame in parsed_in)
             summary["everyObservedTurnDurable"] = bool(session.get("turns")) and all(
                 any(frame.get("params", {}).get("threadId") == turn["threadId"]
                     and frame.get("params", {}).get("turn", {}).get("id") == turn["turnId"]
@@ -100,6 +111,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
         result["directReadbackComplete"] = result["actualFlowReportedComplete"] and len(result["sessions"]) == 2 and all(
             row["successfulTurns"] >= (2 if index == 0 else 1) and row["everyObservedTurnDurable"]
             and row["sourceCursorsContinuous"] and row["allEpisodesStopped"]
+            and (not row["steerConsumptionRequired"] or row["steerConsumedInOriginalCompletion"])
             for index, row in enumerate(result["sessions"])) and result["sessions"][0]["contextCompactionCompletions"] > 0
 
 result["filesAfter"] = files()

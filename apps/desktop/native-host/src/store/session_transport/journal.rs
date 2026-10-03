@@ -1204,11 +1204,11 @@ mod tests {
 "#;
         let request=parse_request(&input(raw)).unwrap();
         let command=codex_rpc::Command::TurnStart {thread_id:"threadA".into(),
-            cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"hello".into()};
+            cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"hello".into(),network_access:Some(true)};
         validate_codex_send(&request,&command,"threadA").unwrap();
         assert!(matches!(validate_codex_send(&request,&command,"threadB"),Err(JournalError::Conflict)));
         let changed=codex_rpc::Command::TurnStart {thread_id:"threadA".into(),
-            cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"changed".into()};
+            cwd:"sealed-test-directory".into(),model:"m".into(),effort:"high".into(),text:"changed".into(),network_access:Some(true)};
         assert!(matches!(validate_codex_send(&request,&changed,"threadA"),Err(JournalError::Conflict)));
         let extra=String::from_utf8(raw.to_vec()).unwrap().replace("\"body\":\"hello\"",
             "\"body\":\"hello\",\"callerGrant\":\"fake\"");
@@ -1258,7 +1258,7 @@ mod tests {
             ("thread-start".to_owned(),codex_rpc::Command::ThreadStart {cwd:"fixture-directory".into(),model:"m".into()},
              codex_rpc::RpcId::Number(3), b"{\"id\":3,\"result\":{\"thread\":{\"id\":\"threadA\",\"cwd\":\"fixture-directory\"}}}\n".as_slice()),
             (step_id.clone(),codex_rpc::Command::TurnStart {thread_id:"threadA".into(),cwd:"fixture-directory".into(),
-             model:"m".into(),effort:"high".into(),text:"hello".into()},codex_rpc::RpcId::Number(4),
+             model:"m".into(),effort:"high".into(),text:"hello".into(),network_access:Some(true)},codex_rpc::RpcId::Number(4),
              b"{\"id\":4,\"result\":{\"turn\":{\"id\":\"turnA\",\"status\":\"inProgress\"}}}\n".as_slice()),
         ];
         assert!(recover_codex_turn_request(&mut db,&stdin).unwrap().is_none());

@@ -84,6 +84,9 @@ pub(crate) enum Command {
         model: String,
         effort: String,
         text: String,
+        // Some comes only from H's verified LPAC tier. None retains an exact
+        // historical command for recovery; new model writes never use None.
+        network_access: Option<bool>,
     },
     TurnSteer {
         thread_id: String,
@@ -241,6 +244,7 @@ impl Command {
                 model,
                 effort,
                 text,
+                network_access,
             } => {
                 for (value, field) in [
                     (thread_id, "thread id"),
@@ -251,13 +255,21 @@ impl Command {
                 ] {
                     required(value, field)?;
                 }
-                return Ok(obj([
-                    ("threadId", s(thread_id)),
-                    ("cwd", s(cwd)),
-                    ("model", s(model)),
-                    ("effort", s(effort)),
-                    ("input", text_input(text)),
-                ]));
+                let mut params = BTreeMap::from([
+                    (k("threadId"), s(thread_id)),
+                    (k("cwd"), s(cwd)),
+                    (k("model"), s(model)),
+                    (k("effort"), s(effort)),
+                    (k("input"), text_input(text)),
+                ]);
+                if let Some(network_access) = network_access {
+                    params.insert(k("approvalPolicy"), s("never"));
+                    params.insert(k("sandboxPolicy"), obj([
+                        ("type", s("externalSandbox")),
+                        ("networkAccess", s(if *network_access { "enabled" } else { "restricted" })),
+                    ]));
+                }
+                return Ok(Json::Object(params));
             }
             Self::TurnSteer {
                 thread_id,
@@ -654,12 +666,35 @@ pub(crate) fn decode_stored_turn_start(frame: &[u8]) -> Result<(RpcId, Command),
         return Err(RpcError::Invalid("stored turn input"));
     };
     if inputs.len() != 1 { return Err(RpcError::Invalid("stored turn input count")); }
+    let network_access = match params.get(&k("sandboxPolicy")) {
+        None => {
+            if params.contains_key(&k("approvalPolicy")) {
+                return Err(RpcError::Invalid("stored turn partial permission policy"));
+            }
+            None
+        }
+        Some(policy) => {
+            if string(field(params, "approvalPolicy")?, "approval policy")? != "never" {
+                return Err(RpcError::Invalid("stored turn approval policy"));
+            }
+            let policy = object(policy, "sandbox policy")?;
+            if string(field(policy, "type")?, "sandbox type")? != "externalSandbox" {
+                return Err(RpcError::Invalid("stored turn external sandbox"));
+            }
+            Some(match string(field(policy, "networkAccess")?, "network access")?.as_str() {
+                "enabled" => true,
+                "restricted" => false,
+                _ => return Err(RpcError::Invalid("stored turn network access")),
+            })
+        }
+    };
     let command = Command::TurnStart {
         thread_id: string(field(params, "threadId")?, "thread id")?,
         cwd: string(field(params, "cwd")?, "cwd")?,
         model: string(field(params, "model")?, "model")?,
         effort: string(field(params, "effort")?, "effort")?,
         text: string(field(object(&inputs[0], "text input")?, "text")?, "text")?,
+        network_access,
     };
     if command.encode(Some(&id))? != frame {
         return Err(RpcError::Invalid("stored turn command mismatch"));
@@ -1127,11 +1162,45 @@ mod tests {
             model: "gpt-6-sol".into(),
             effort: "high".into(),
             text: "hello".into(),
+            network_access: Some(true),
         };
         let encoded =
             String::from_utf8(turn.encode(Some(&RpcId::client(3).unwrap())).unwrap()).unwrap();
         assert!(encoded.contains("\"effort\":\"high\""));
         assert!(encoded.contains("\"input\":[{\"text\":\"hello\",\"type\":\"text\"}]"));
+        assert!(encoded.contains("\"approvalPolicy\":\"never\""));
+        assert!(encoded.contains("\"sandboxPolicy\":{\"networkAccess\":\"enabled\",\"type\":\"externalSandbox\"}"));
+    }
+
+    #[test]
+    fn stored_turn_permission_policy_preserves_exact_history_and_rejects_changes() {
+        // Recovery retains a pre-policy command's bytes rather than upgrading
+        // an already written vendor command to the current permission policy.
+        let legacy = b"{\"id\":9,\"method\":\"turn/start\",\"params\":{\"cwd\":\"sealed-tree\",\"effort\":\"high\",\"input\":[{\"text\":\"go\",\"type\":\"text\"}],\"model\":\"m\",\"threadId\":\"t\"}}\n";
+        let (id, command) = decode_stored_turn_start(legacy).unwrap();
+        assert!(matches!(&command, Command::TurnStart { network_access: None, .. }));
+        assert_eq!(command.encode(Some(&id)).unwrap(), legacy);
+        for network_access in [false, true] {
+            let command = Command::TurnStart { thread_id: "t".into(), cwd: "sealed-tree".into(),
+                model: "m".into(), effort: "high".into(), text: "go".into(),
+                network_access: Some(network_access) };
+            let frame = command.encode(Some(&id)).unwrap();
+            let (recovered_id, recovered) = decode_stored_turn_start(&frame).unwrap();
+            assert!(matches!(&recovered, Command::TurnStart { network_access: Some(value), .. }
+                if *value == network_access));
+            assert_eq!(recovered.encode(Some(&recovered_id)).unwrap(), frame);
+            let text = String::from_utf8(frame).unwrap();
+            for changed in [
+                text.replace("\"approvalPolicy\":\"never\",", ""),
+                text.replace("\"approvalPolicy\":\"never\"", "\"approvalPolicy\":\"on-request\""),
+                text.replace("\"type\":\"externalSandbox\"", "\"type\":\"dangerFullAccess\""),
+                text.replace("\"networkAccess\":", "\"unexpected\":false,\"networkAccess\":"),
+                text.replace("\"threadId\":\"t\"", "\"permissions\":\":workspace\",\"threadId\":\"t\""),
+            ] {
+                assert!(decode_stored_turn_start(changed.as_bytes()).is_err(),
+                    "partial, mixed or altered stored policy must not be recovered");
+            }
+        }
     }
 
     #[test]
@@ -1238,6 +1307,7 @@ mod tests {
             model: "m".into(),
             effort: "high".into(),
             text: "go".into(),
+            network_access: Some(true),
         };
         assert!(matches!(
             decode(

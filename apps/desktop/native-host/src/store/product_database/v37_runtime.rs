@@ -1751,7 +1751,7 @@ impl<'root> ProductDatabase<'root> {
         let thread_id = run.thread_id.clone().ok_or(OrchestrationError::Invalid("native send thread absent"))?;
         let command = if request.operation=="append-without-turn" {Command::AppendWithoutTurn {thread_id:thread_id.clone(),text}} else {Command::TurnStart { thread_id: thread_id.clone(),
             cwd: run.evidence.cwd().to_string_lossy().into_owned(), model: run.model.clone(),
-            effort: run.effort.clone(), text }};
+            effort: run.effort.clone(), text, network_access: Some(run.evidence.network_access()) }};
         // Reject a command which cannot be encoded before occupying the H
         // intent. The largest legal ID bounds every ID the runtime allocates.
         failure(command.encode(Some(&failure(RpcId::client(9_007_199_254_740_991))?)))?;

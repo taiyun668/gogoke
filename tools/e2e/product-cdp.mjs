@@ -27,6 +27,16 @@ export class ActualProduct {
     fs.writeFileSync(temporary, JSON.stringify(this.journal, null, 2) + '\n');
     fs.renameSync(temporary, this.config.result);
   }
+  get stderr() {
+    if (!this.stderrFile) return '';
+    const fd = fs.openSync(this.stderrFile, 'r');
+    try {
+      const length = fs.fstatSync(fd).size;
+      const tail = Buffer.alloc(Math.min(length, 8192));
+      fs.readSync(fd, tail, 0, tail.length, length - tail.length);
+      return tail.toString('utf8');
+    } finally { fs.closeSync(fd); }
+  }
   async custody(before = false) {
     const c = this.config;
     const args = ['-NoProfile', '-NonInteractive', '-File', path.join(here, 'candidate-custody.ps1'),
@@ -63,15 +73,29 @@ export class ActualProduct {
     await new Promise(resolve => listener.close(resolve));
     // Reuse the installed-product handshake namespace accepted by the product.
     const ready = path.join(process.env.TMP, `gogoke-update-${randomUUID().replaceAll('-', '')}.ready`);
-    this.child = spawn(path.join(this.config.installed, 'gogoke.exe'), [`--gogoke-update-ready=${ready}`], {
-      cwd: this.config.installed, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
-        `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` },
-    });
-    this.childError = null; this.stderr = '';
+    // Windows libuv adds non-detached children to a kill-on-parent-close Job.
+    // The actual product's custody must not depend on the test driver's life.
+    this.stderrFile = path.join(this.config.evidenceDirectory, `${id('product-stderr')}.log`);
+    const stderrFd = fs.openSync(this.stderrFile, 'wx');
+    try {
+      this.child = spawn(path.join(this.config.installed, 'gogoke.exe'), [`--gogoke-update-ready=${ready}`], {
+        cwd: this.config.installed, windowsHide: true, detached: true,
+        stdio: ['ignore', 'ignore', stderrFd],
+        env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
+          `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` },
+      });
+    } finally { fs.closeSync(stderrFd); }
+    this.childError = null;
     this.child.once('error', error => { this.childError = error; });
-    this.child.stderr.on('data', bytes => { this.stderr = (this.stderr + bytes).slice(-8192); });
-    this.endpoint = { pid: this.child.pid, port, setId, generationId: index.generationId, readyPath: ready };
+    const child = this.child;
+    this.child.once('exit', (code, signal) => {
+      this.journal.productExits ??= [];
+      this.journal.productExits.push({ pid: child.pid, code, signal,
+        observedAt: new Date().toISOString(), stderrTail: this.stderr });
+      this.save();
+    });
+    this.endpoint = { pid: this.child.pid, port, setId, generationId: index.generationId,
+      readyPath: ready, stderrPath: this.stderrFile };
     this.journal.currentEndpoint = this.endpoint; this.save();
     const deadline = Date.now() + 60000;
     let target;
@@ -208,5 +232,20 @@ export class ActualProduct {
     }
     this.journal.closes.push({ pid: this.endpoint.pid, exitCode: code, forceKill: false }); this.save();
     if (code !== 0) throw Error(`Actual product exit=${code}; ${this.stderr}`);
+  }
+  async preserveFailure() {
+    // Retain the original task and child handle until Controller settles and
+    // normally closes the real product. No kill, input replay or OS stop claim.
+    this.journal.failedProductHeld = Boolean(this.child && this.child.exitCode === null &&
+      this.child.signalCode === null && !this.childError);
+    this.save();
+    if (this.journal.failedProductHeld) {
+      await new Promise(resolve => {
+        this.child.once('exit', resolve); this.child.once('error', resolve);
+      });
+    }
+    this.journal.failedProductHeld = false; this.save();
+    this.socket?.close();
+    if (this.tester) { await this.tester.dispose(); this.tester = null; }
   }
 }

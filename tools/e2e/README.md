@@ -58,11 +58,23 @@ failure reason is reconciled using its **exact original bytes and request ID**;
 the native RPC journal fences a second vendor write. Transport loss or an actual
 failure reason preserves the case for Controller repair.
 
+On Windows, the driver launches the candidate detached from Node's own
+kill-on-close Job and directs stderr to a unique private file. On FAIL it keeps
+the original child handle and task alive until Controller settles and normally
+closes that product; it does not destroy its pipes, terminate it, or invent a
+stop fact. Exit code, signal and stderr tail are retained. This does not claim
+that any outer Task Scheduler Job is absent.
+
 After normal close, run `m1-readback.py STATE_ROOT OUTPUT E2E_JOURNAL`. This reads
 only the case's existing RPC/raw/normalized ledger and stop facts, checks every
 observed turn (including the resumed turn), and retains unknown raw methods
 explicitly. Ledger stream ordinals and `_meta.rawSourceCursor` are different
 facts. The runner's completed flow alone is not M1 completion or Owner acceptance.
+Steer consumption is asserted from the original completed agentMessage for the
+same thread and turn; optional live deltas and User delivery receipts are not
+substitutes for that vendor evidence.
+The closed-product observer rejects a nonempty WAL and uses SQLite immutable
+read mode so it cannot create WAL/SHM sidecars; all three files are compared.
 
 ## Real CLI recordings
 
