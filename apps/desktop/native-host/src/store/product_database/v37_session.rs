@@ -240,10 +240,6 @@ impl<'root> ProductDatabase<'root> {
             seat::authorize_child_dispatch(&self.connection,caller,&child)?;
             let repository=user_payload_string(request,"repositoryId")?;
             let outcome=(|| {
-                if child.state==State::Busy {
-                    return f::recover_registered_native_child_worktree(&mut self.connection,
-                        self.root,caller,&child,request);
-                }
                 let pin=f::resolve_registered_git(&mut self.connection,self.root,
                     &self.owner,&repository,&mut self.process_custodian)?;
                 f::create_and_register_native_child_worktree(&mut self.connection,self.root,
