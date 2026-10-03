@@ -403,7 +403,9 @@ pub(crate) fn claude_launch_args(model: &str, effort: &str,
         "--print".to_owned(), "--input-format".to_owned(), "stream-json".to_owned(),
         "--output-format".to_owned(), "stream-json".to_owned(),
         "--verbose".to_owned(), "--replay-user-messages".to_owned(),
-        "--safe-mode".to_owned(), "--model".to_owned(), model.to_owned(),
+        "--safe-mode".to_owned(), "--disallowedTools".to_owned(),
+        "Agent,EnterWorktree,ExitWorktree".to_owned(),
+        "--model".to_owned(), model.to_owned(),
         "--effort".to_owned(), effort.to_owned(),
     ];
     if let Some(id) = resume_id {

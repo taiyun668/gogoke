@@ -51,3 +51,13 @@ Grok Build 1.0.41 fixed exe `agent --help` reports `Usage: grok agent [OPTIONS] 
 - Fixed official source pointers and limits are recorded in the frozen adapters' `REFERENCES.md` and `PROBE.md` files: OpenCode `v1.18.32` ACP service, official ACP guide; Claude Code CLI/headless reference; Antigravity CLI headless reference and 1.2.11 release. No CLI was started or upgraded for this package.
 
 `commands.rs` is not included from `mod.rs` in this package, so cloud compilation and real installed product behavior are **NOT_RUN** here. The Controller owns shared integration and all final authority checks.
+# Fixed Claude leaf sessions
+
+The fixed 2.1.196 help says `--safe-mode` leaves built-in tools available.
+Leaf seats therefore also use its existing `--disallowedTools` flag for
+`Agent,EnterWorktree,ExitWorktree`: child-seat orchestration and worktree
+identity remain with the native E/F/H path. This changes argv only, not the
+fixed CLI bytes or LPAC capabilities. The original fixed help and the official
+[CLI reference](https://code.claude.com/docs/en/cli-reference) support the flag;
+actual initialized tool exposure remains a stable-point CLI golden check.
+
