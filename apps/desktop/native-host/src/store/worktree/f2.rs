@@ -273,6 +273,11 @@ where F: FnMut(&str) -> Result<bool> {
     while episodes.step_row()? {
         let episode_domain=episodes.column_text(0)?;
         let session=episodes.column_text(1)?;
+        let process=episodes.column_text(2)?;
+        let phase=episodes.column_text(3)?;
+        // H marks FAILED only for a cancelled resume INTENT that never
+        // acquired a process operation. It cannot hold a workspace handle.
+        if phase=="FAILED" && process.is_empty() { continue; }
         match original_session_worktree(db,&episode_domain,&session)? {
             Some(target) if !overlaps(&target)?=>continue,
             Some(_)=>{},
@@ -281,8 +286,6 @@ where F: FnMut(&str) -> Result<bool> {
             // this H process-episode table.
             None=>return Err(WorktreeError::Denied),
         }
-        let process = episodes.column_text(2)?;
-        let phase = episodes.column_text(3)?;
         let fact = episodes.column_text(4)?;
         let custody = episodes.column_text(5)?;
         let proof = episodes.column_text(6)?;
