@@ -1310,7 +1310,13 @@ impl<'root> ProductDatabase<'root> {
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
-        self.dispatch_native_open_registered(request, SessionPurpose::Work, None)
+        self.dispatch_native_open_registered(request, SessionPurpose::Work, None, None)
+    }
+
+    pub(super) fn dispatch_native_child_open(&mut self,request:&V37Request,
+        caller:&seat::NativeSeatCall)->Result<Vec<u8>> {
+        let admission=seat::NativeLeadAdmission::from_model_call(caller)?;
+        self.dispatch_native_open_registered(request,SessionPurpose::Work,None,Some(&admission))
     }
 
     /// Only the native User side-open composition chooses this registration.
@@ -1320,11 +1326,11 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request,V37Status::Conflict,
                 request.expected_revision,request.expected_revision,Default::default()));
         }
-        self.dispatch_native_open_registered(request, SessionPurpose::SideChat, Some(side_id))
+        self.dispatch_native_open_registered(request, SessionPurpose::SideChat, Some(side_id), None)
     }
 
     fn dispatch_native_open_registered(&mut self, request: &V37Request,
-        purpose: SessionPurpose, side_id: Option<&str>) -> Result<Vec<u8>> {
+        purpose: SessionPurpose, side_id: Option<&str>,admission:Option<&seat::NativeLeadAdmission>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if request.payload.len() != 4 {
             return Ok(encode_receipt(request, V37Status::Denied,
@@ -1378,8 +1384,9 @@ impl<'root> ProductDatabase<'root> {
                 request.expected_revision, request.expected_revision, Default::default()));
         }
         drop(fenced);
-        let evidence = failure(LaunchEvidence::observe(&mut self.connection, self.root,
-            &self.owner, &request.domain_id, &seat_id, &request.target_id, &repository_id, &worktree_id))?;
+        let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
+        let evidence = failure(LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
+            &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id))?;
         let (model, effort) = failure(evidence.settings())?;
         let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
             &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;

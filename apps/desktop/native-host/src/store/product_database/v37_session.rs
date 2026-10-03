@@ -307,21 +307,40 @@ impl<'root> ProductDatabase<'root> {
     /// as atomic with the subsequent admission or OS process creation.
     fn prepare_user_session_home(&mut self, request: &V37Request, seat_id: &str,
         generation: &str) -> Result<(String, String)> {
-        self.prepare_session_home(request, seat_id, generation, false)
+        self.prepare_session_home(request, seat_id, generation, false, None)
     }
 
     /// A stopped session keeps its admission. A resume candidate prepares a
     /// separate F home for the next process generation while E remains BUSY.
     pub(super) fn prepare_resume_session_home(&mut self, request: &V37Request,
         seat_id: &str, generation: &str) -> Result<(String, String)> {
-        self.prepare_session_home(request, seat_id, generation, true)
+        self.prepare_session_home(request, seat_id, generation, true, None)
+    }
+
+    pub(super) fn prepare_native_child_session_home(&mut self,request:&V37Request,
+        seat_id:&str,generation:&str,caller:&seat::NativeSeatCall)->Result<(String,String)> {
+        self.prepare_session_home(request,seat_id,generation,false,Some(caller))
+    }
+
+    fn check_native_child_home_caller(&self,request:&V37Request,child:&seat::Seat,
+        caller:&seat::NativeSeatCall)->Result<()> {
+        if request.domain_id!=caller.domain_id() {return Err(OrchestrationError::AccessDenied)};
+        if child.state==State::Idle {seat::authorize_child_dispatch(&self.connection,caller,child)?;}
+        else {
+            let admission=seat::NativeLeadAdmission::from_model_call(caller)?;
+            runtime::observe_claim(&self.connection,&NativeOrigin::lead(&admission),
+                &request.domain_id,&child.seat_id,&request.target_id)?
+                .ok_or(OrchestrationError::AccessDenied)?;
+        }
+        Ok(())
     }
 
     fn prepare_session_home(&mut self, request: &V37Request, seat_id: &str,
-        generation: &str, resume: bool) -> Result<(String, String)> {
+        generation: &str, resume: bool,caller:Option<&seat::NativeSeatCall>) -> Result<(String, String)> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let seat = seat::get(&self.connection, &request.domain_id, seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
+        if let Some(caller)=caller {self.check_native_child_home_caller(request,&seat,caller)?;}
         if seat.instance_id.is_empty() || !matches!(seat.state, State::Idle | State::Busy) {
             return Err(OrchestrationError::AccessDenied);
         }
@@ -348,6 +367,7 @@ impl<'root> ProductDatabase<'root> {
             let now = seat::get(&self.connection, &request.domain_id, seat_id)?
                 .ok_or(OrchestrationError::AccessDenied)?;
             if now != seat { return Err(OrchestrationError::OperationConflict); }
+            if let Some(caller)=caller {self.check_native_child_home_caller(request,&now,caller)?;}
             let found = Statement::prepare(self.connection.as_ptr(),
                 "SELECT binding_id,instance_id,generation,state FROM main.gogoke_v37_h_owner_binding WHERE domain_id=?1 AND kind='SESSION' AND owner_id=?2 AND generation=?3")?;
             found.bind_text(1, &request.domain_id)?;
@@ -379,6 +399,7 @@ impl<'root> ProductDatabase<'root> {
         let preparation_hash = crate::store::digest::sha256_hex(
             format!("{}\n{}", request.domain_id, request.request_id).as_bytes());
         let preparation_id = format!("homeprep-{}", &preparation_hash[..40]);
+        if let Some(caller)=caller {self.check_native_child_home_caller(request,&seat,caller)?;}
         let home = instance::create_temporary_home(&mut self.connection, self.root, &profile,
             &instance::CreateTemporaryHome {
                 request_id: &preparation_id, request_bytes: &request.raw_bytes, home_id: &home_id,
