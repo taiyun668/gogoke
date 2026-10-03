@@ -14,7 +14,7 @@
   },
   "plan": {
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "scope_digest": "274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656",
+    "scope_digest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
     "digest_tool": "docs/design/gogoke-37-plan-v1/verify_plan.py --scope-digest PLAN.json, run from trusted main",
     "stale_when": "the scope digest of the plan in force differs from the value above"
   },
@@ -41,5 +41,5 @@
   "start_condition": "Owner merges the PR that carries this receipt; Controller then reads back the actual merge, the receipt bytes, and recomputes the scope digest of main's PLAN.json with main's verifier before continuing",
   "owner_touchpoints": "The bound PLAN.json retains its planned and conditional Owner decisions; this receipt does not complete them",
   "completion_claim": false,
-  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (deliverable, contract and check descriptions, assets, source pins), never phase placement, milestone scope, conditional write constraints or durable contract ownership. Independent review must preserve requirements, invariants, security and recorded Owner decisions. It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR."
+  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (phase placement and milestone notes, deliverable, contract and check descriptions, assets, source pins); it never widens write scope, adds a shared file, changes contract ownership or a recorded Owner decision. Independent review must preserve requirements, invariants and security. It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR."
 }

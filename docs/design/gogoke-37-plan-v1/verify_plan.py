@@ -352,6 +352,33 @@ def check(plan: dict) -> list[str]:
     if not ot.get("planned") or not ot.get("conditional"):
         errors.append("planned and conditional Owner touchpoints must both be listed")
 
+    # who needs what when: a planned touchpoint or a phase may only rely on phases that land
+    # at or before its own milestone
+    for t in ot.get("planned", []):
+        m = t.get("milestone")
+        if m not in MILESTONES:
+            errors.append(f"touchpoint {t.get('id')} needs a milestone in {MILESTONES}")
+            continue
+        for ref in t.get("needs", []):
+            w = when(ref)
+            if w is None:
+                errors.append(f"touchpoint {t.get('id')} needs unknown line or phase {ref}")
+            elif MILESTONES.index(w) > MILESTONES.index(m):
+                errors.append(f"touchpoint {t.get('id')} at {m} needs {ref}, which lands at {w}")
+    for lid, l in lines.items():
+        for ph in l.get("phases", []):
+            for ref in ph.get("needs", []):
+                w = when(ref)
+                if w is None:
+                    errors.append(f"phase {ph.get('id')} needs unknown line or phase {ref}")
+                elif MILESTONES.index(w) > MILESTONES.index(ph.get("milestone", "PRE")):
+                    errors.append(f"phase {ph.get('id')} at {ph.get('milestone')} needs {ref}, which lands at {w}")
+
+    # precedents: every construction line names what it reuses, or says what was searched
+    for lid, l in lines.items():
+        if lid != "T00" and not [s for s in l.get("precedents", []) if str(s).strip()]:
+            errors.append(f"line {lid} names no precedents (list them, or say what was searched)")
+
     # governance and authorization
     if "docs/governance/gogoke-build-and-release.md" not in plan.get("governance", {}).get("references", []):
         errors.append("the build-and-release governance must be referenced")
@@ -367,18 +394,19 @@ def check(plan: dict) -> list[str]:
 def scope_digest(plan: dict) -> str:
     """SHA-256 over the parts of the plan that the Owner authorizes.
 
-    Bind phase placement, milestone scope, conditional shared-file constraints and
-    durable contract ownership as well as write paths and the existing scope fields.
-    Deliverable, contract and check descriptions, assets and source pins are details;
-    their independent review must still preserve requirements and invariants.
+    Bind write paths and dependencies, milestone ids, conditional shared-file constraints,
+    durable contract ownership and the other scope fields. Phase placement, milestone
+    notes, deliverable, contract and check descriptions, assets and source pins are
+    details (Owner 2026-10-03): moving a phase grants no new write scope or permission,
+    and the Owner sees each milestone's delivery at acceptance. Independent review of a
+    detail amendment must still preserve requirements, invariants and security.
     """
     scope = {
         "requirements": sorted((r.get("id"), r.get("text")) for r in plan.get("requirements", [])),
         "lines": sorted(
-            (l.get("id"), sorted(l.get("write_scope", [])), sorted(l.get("depends", [])), bool(l.get("owns_shared_files")),
-             sorted((p.get("id"), p.get("milestone")) for p in l.get("phases", [])))
+            (l.get("id"), sorted(l.get("write_scope", [])), sorted(l.get("depends", [])), bool(l.get("owns_shared_files")))
             for l in plan.get("lines", [])),
-        "milestones": [(m.get("id"), m.get("scope_note")) for m in plan.get("milestones", [])],
+        "milestones": [m.get("id") for m in plan.get("milestones", [])],
         "shared_files": [plan.get("shared_files", {}).get("owner"),
                          plan.get("shared_files", {}).get("conditional_rule"),
                          sorted((f.get("path"), bool(f.get("conditional")))
@@ -478,6 +506,10 @@ def self_test(plan: dict) -> list[str]:
     expect("required source dropped", lambda p: p.update(sources=[s for s in p["sources"] if s["path"] != "AGENTS.md"]))
     expect("milestone list changed", lambda p: p["milestones"].pop())
     expect("amendment rule dropped", lambda p: p["authorization"].pop("amendment_rule", None))
+    expect("touchpoint needs a later phase", lambda p: p["owner_touchpoints"]["planned"][0]["needs"].append("G.1"))
+    expect("touchpoint without milestone", lambda p: p["owner_touchpoints"]["planned"][0].pop("milestone", None))
+    expect("phase needs a later phase", lambda p: next(ph for ph in p["lines"][idx["H"]]["phases"] if ph["milestone"] == "M1").setdefault("needs", []).append("E.2"))
+    expect("line precedents dropped", lambda p: p["lines"][idx["B4"]].update(precedents=[]))
     expect("stale receipt schema", lambda p: p["authorization"].update(receipt_schema="gogoke.37.public-authorization.v1"))
 
     bound = scope_digest(plan)
@@ -488,8 +520,9 @@ def self_test(plan: dict) -> list[str]:
         if check(p) or (scope_digest(p) != bound) != changed:
             missed.append("scope: " + name)
 
-    expect_scope("phase moved to another milestone", lambda p: p["lines"][idx["B2"]]["phases"][0].update(milestone="M1"))
-    expect_scope("milestone scope changed", lambda p: p["milestones"][2].update(scope_note="Changed project scope"))
+    expect_scope("phase moved to an earlier milestone", lambda p: next(ph for ph in p["lines"][idx["E"]]["phases"] if ph["id"] == "E.3").update(milestone="M2"), False)
+    expect_scope("milestone note changed", lambda p: p["milestones"][2].update(scope_note="Changed project scope"), False)
+    expect_scope("write scope widened", lambda p: p["lines"][idx["B2"]]["write_scope"].append("apps/desktop/src/features/b2-extra/"))
     expect_scope("conditional shared file made unconditional", lambda p: next(
         f for f in p["shared_files"]["files"] if f.get("conditional")).update(conditional=False))
     expect_scope("conditional shared-file rule changed", lambda p: p["shared_files"].update(conditional_rule="Changed conditional write rule"))
