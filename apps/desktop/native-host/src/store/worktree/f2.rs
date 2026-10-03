@@ -728,9 +728,9 @@ mod tests {
     #[test]
     fn physical_overlap_includes_mixed_parent_and_child_but_not_sibling() {
         let identity = |id| RootIdentity { volume_serial: 1, file_id: [id; 16] };
-        let mixed = Path::new("C:/root/mixed/space");
-        let single = Path::new("C:/root/mixed/space/member");
-        let sibling = Path::new("C:/root/mixed/other/member");
+        let mixed = Path::new("C:/fixture/mixed/space");
+        let single = Path::new("C:/fixture/mixed/space/member");
+        let sibling = Path::new("C:/fixture/mixed/other/member");
         assert!(physical_roots_overlap(mixed, &identity(1), &identity(2),
             single, &identity(3), &identity(4)));
         assert!(physical_roots_overlap(single, &identity(3), &identity(4),

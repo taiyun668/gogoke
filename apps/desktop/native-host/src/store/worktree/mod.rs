@@ -278,7 +278,14 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     let mut current_m1: Vec<_> = SCHEMA[..4].iter()
         .map(|(name, sql)| (name.to_string(), sql.to_string())).collect();
     current_m1.sort_by(|a, b| a.0.cmp(&b.0));
-    if !observed.is_empty() && observed != previous && observed != current_m1 {
+    // An unpinned historical source can coexist with the F.2 graph tables.
+    // Match that exact family, then add only the missing empty pin table;
+    // never infer a Git executable from the old source's digest or version.
+    let mut unpinned_f2: Vec<_> = SCHEMA.iter()
+        .filter(|(name, _)| *name != "gogoke_v37_worktree_programs")
+        .map(|(name, sql)| (name.to_string(), sql.to_string())).collect();
+    unpinned_f2.sort_by(|a, b| a.0.cmp(&b.0));
+    if !observed.is_empty() && observed != previous && observed != current_m1 && observed != unpinned_f2 {
         return Err(WorktreeError::SchemaDrift);
     }
     transaction(db, |db| {
@@ -289,7 +296,8 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         // Preserve the exact earlier tables and every record. A missing
         // native program registration is denied at restore, never inferred.
         let added = if observed.is_empty() { &SCHEMA[..] }
-            else if observed == previous { &SCHEMA[3..] } else { &SCHEMA[4..] };
+            else if observed == previous { &SCHEMA[3..] }
+            else if observed == unpinned_f2 { &SCHEMA[3..4] } else { &SCHEMA[4..] };
         for (_, sql) in added {
             db.execute(sql)?;
         }
