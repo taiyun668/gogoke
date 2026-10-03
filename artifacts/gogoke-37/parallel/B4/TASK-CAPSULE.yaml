@@ -1,0 +1,74 @@
+capsule_id: G37-B4.1-GROK-ACP
+plan_version: gogoke-37-plan-v1
+work_package: B4.1
+kind: construction
+execution_route: Codex child worker; model/profile NOT_EXPOSED_TO_WORKER
+base_commit: 546d4e9d573d90ecbfc5be6250aabbed6afbe45f
+authorization_ref: artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json at authorized baseline; scope digest 274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656
+input_artifacts:
+  - docs/design/gogoke-37-plan-v1/PLAN.json
+  - docs/design/gogoke-37-plan-v1/MANIFEST.json
+  - artifacts/gogoke-37/checkpoints/L0-CONTRACT-d5f8726b.json
+  - artifacts/gogoke-37/l0/SHARED_EXTENSION_MAP.json
+  - docs/research/adapter-spike/01-capability-evidence.md
+  - docs/research/adapter-spike/02-mvp-adapter-decision.md
+  - docs/research/2026-09-26-execution-layer-capability-table.md
+  - docs/research/source-audit/06-runtime-protocol-and-adapter-sources.md
+  - docs/research/reuse-blueprint.md
+  - docs/research/upstream-reference-map.md
+input_artifact_digests_sha256:
+  docs/design/gogoke-37-plan-v1/PLAN.json: 706491d0948ecba057ec37e81fc9a89ebd7578a78680568ad26a4f20d5a0c27b
+  docs/design/gogoke-37-plan-v1/MANIFEST.json: 22aa81642421f54a1bf4335b48f9f4c7beaf087f3e1c372fcef8ffcdd5f02c4b
+  artifacts/gogoke-37/checkpoints/L0-CONTRACT-d5f8726b.json: 85f514d140ff6c2417a90bbef39e4680216c80f77b54675a1d76b9a02dc0755d
+  artifacts/gogoke-37/l0/SHARED_EXTENSION_MAP.json: c94d450ab551a8d5376e806ea89ee0cca8ccad18d15315e26d8499b07522b869
+  docs/research/adapter-spike/00-public-distribution-and-scope.md: ad47f5e9d6360bbd58f56b3cea050e2f0ba3dda67c91f1331b7db104e9afa246
+  docs/research/adapter-spike/01-capability-evidence.md: 0aef024a2bac6c60c6a252a77cdc67d0888d8aac9129e86ec7129a0156ded485
+  docs/research/adapter-spike/02-mvp-adapter-decision.md: da8068f9ad40694c9d2462d61b5bc95ae79179e86cce4ef2c5a6ce3f1d49a0a6
+  docs/research/2026-09-26-execution-layer-capability-table.md: d1e961080bd148bd2eb3fbacbc833eff87d417605535a4eb9c035415bcf12af0
+  docs/research/source-audit/06-runtime-protocol-and-adapter-sources.md: 51e10151b4c5607a138a99c2965e95c79ec39fed303d914face4198a38265dbc
+  docs/research/reuse-blueprint.md: 9843027efa3b0a6fa31181210fb079f51f938a2fd80f085ad33db47a7d91a56b
+  docs/research/upstream-reference-map.md: 5be980ab4dde478f3d98e2b0c387ae16cea3bcb47a207a3017d01760bbc797f9
+worktree: .controller-worktrees/m2-b4
+branch: codex/gogoke-37-m2-b4
+allowed_paths:
+  - third_party/t3code/apps/server/src/gogoke/adapters/grok/
+  - artifacts/gogoke-37/parallel/B4/
+forbidden_paths:
+  - shared exports, lockfiles, native entry points, CI, frozen contracts, governance, plan, or other worker trees
+  - credentials, owner CLI homes, login flows, installation, signing, release, publication, main merge
+capability_behavior_ids:
+  - B4.1 ACP protocol
+  - B4.1 interrupt-and-resume with explicit acknowledgement
+  - B4.1 capability report
+  - B4.1 memory behavior at pinned version
+test_check_ids:
+  - protocol golden from actual fixed-version no-auth probe
+  - signed-Node focused protocol golden test
+  - affected existing cloud checks, after commit/push
+acceptance_stage: M2 construction only; no self-acceptance
+runtime_permissions: direct PowerShell and repository file tools; OpenJS-signed Node v24.14.0 with vite-plus test runner; public Grok CLI 1.0.41 version/help/no-login ACP and inspect probes observed; no auth, model request, login, or user credential access
+real_calls: false
+contract_changes_allowed: false
+self_acceptance_allowed: false
+independent_review_route: fresh independent auditor / Controller as assigned
+risk_audit_route: Controller decides from affected risks; no auditor assigned to worker
+stop_conditions:
+  - any need to alter plan, L0 contract, shared integration ownership, or LPAC boundary
+  - actual Owner login or authentication step
+  - any unresolved secure instruction/memory isolation assumption
+  - identity mismatch, credential exposure, or evidence that the pinned CLI consumes external project context
+return_schema: code paths, exact commit and CI runs/jobs, observed versus advertised capabilities, source references, NOT_RUN and UNKNOWN axes, SHARED_INTEGRATION handoff, independent review request; no acceptance claim
+local_verification: focused protocol golden 2 passed; full package typecheck failed on existing repository diagnostics, with no diagnostics in the B4 adapter paths
+task_result:
+  state: IMPLEMENTATION_READY_FOR_INDEPENDENT_REVIEW
+  commit: PENDING
+  push: PENDING
+  cloud_checks: PENDING_EXACT_PUSHED_COMMIT
+  commit_hook_issue: initial commit was refused because prepare had temporarily registered t3code's vendored Vite hook into shared Git config; Root identified the source and removed only that erroneous local registration; no tracked hook/config file changed and no hook was bypassed
+  temporary_probe_data: two untracked CLI log/cache directories remain because the recursive cleanup command was blocked by automatic policy; both are excluded from the six-file commit and contain local paths, so must not be published
+  acceptance: false
+phase_id: B4.1
+plan_commit: 546d4e9d573d90ecbfc5be6250aabbed6afbe45f
+next_work_kind: Controller integration / H LPAC process wiring and Root-directed isolated provider test after OT4
+next_platform: cloud CI for service package; native Windows remains H-owned and NOT_RUN here
+decisions_required: none for this scoped package; instruction discovery finding returned to Root for global M2 handling
