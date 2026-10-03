@@ -55,9 +55,9 @@ pub(crate) fn begin_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssu
         }
         if matches!(mode,SyncMode::Append) && !append_verified(db,&s.session_id,&generation)? {return Err(SideError::Unknown);}
         // Starting a side chat still needs H's held admission, no local cap.
-        let live=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND state='COMMITTED'")?;
-        live.bind_text(1,domain)?;live.bind_text(2,&s.session_id)?;live.bind_text(3,&generation)?;
-        if !live.step_row()? {return Err(SideError::Denied);}drop(live);
+        let held=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND state='COMMITTED'")?;
+        held.bind_text(1,domain)?;held.bind_text(2,&s.session_id)?;held.bind_text(3,&generation)?;
+        if !held.step_row()? {return Err(SideError::Denied);}drop(held);
         let row=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_side_sync(domain_id,sync_id,side_id,request_digest,mode,generation,epoch,after_cursor,through_cursor,state,native_receipt_id,session_id,process_operation_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'PREPARED','',?10,?11)")?;
         for (i,v) in [domain,&request.request_id,id,&crate::store::digest::sha256_hex(&request.raw_bytes),mode.name(),&generation,&s.epoch,&s.synced_cursor.to_string(),&through.to_string(),&s.session_id,&live.process_operation_id].iter().enumerate() {row.bind_text((i+1) as i32,v)?;}
         row.step_done()?;
@@ -105,9 +105,9 @@ pub(crate) fn settle_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIss
                 match receipt.status {
                     V37Status::Applied|V37Status::Replayed=>{
                         let body=receipt.into_result();
-                        if body.get(&JsonString::from_str("createdTurn"))!=Some(&Json::Bool(sync.mode=="QUESTION")) ||
-                            body.get(&JsonString::from_str("generation"))!=Some(&text(&sync.generation)) ||
-                            (sync.mode=="APPEND" && body.get(&JsonString::from_str("deliveryBasis"))!=Some(&text("NATIVE_INJECT_ITEMS_ACK"))) {
+                        if !matches!(body.get(&JsonString::from_str("createdTurn")),Some(Json::Bool(value)) if *value==(sync.mode=="QUESTION")) ||
+                            !matches!(body.get(&JsonString::from_str("generation")),Some(Json::String(value)) if value==&JsonString::from_str(&sync.generation)) ||
+                            (sync.mode=="APPEND" && !matches!(body.get(&JsonString::from_str("deliveryBasis")),Some(Json::String(value)) if value==&JsonString::from_str("NATIVE_INJECT_ITEMS_ACK"))) {
                             return Err(SideError::Unknown);
                         }
                         let Some(Json::String(receipt_id))=body.get(&JsonString::from_str("receiptId")) else {return Err(SideError::Unknown);};
