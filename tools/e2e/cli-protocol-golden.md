@@ -27,6 +27,17 @@ Inputs accept the earlier `gogoke.37.private-direct-frames.v1` plus `gogoke.37.a
 
 ## Compare captures
 
+The current readback joins normalized rows to the unique original
+`raw.resolved_event_id = index.source_event_id` relation, carrying operation,
+generation and process custody. Raw ordinals can repeat after compact or renew
+inside one host epoch; they are disambiguated by the recorded physical scope.
+RPC pairing uses session, operation, generation, process ticket and custodian
+nonce when available. `WRITTEN` answers legitimately have no observed source
+epoch/cursor, so those nullable observation fields are not custody identifiers.
+Legacy captures without custody retain the stricter recorded-epoch association;
+missing or ambiguous associations remain explicit. These are measurement fixes
+on existing bytes, without replaying a product or CLI request.
+
 ```powershell
 & $SignedNode tools/e2e/cli-protocol-golden.mjs compare `
   --baseline $PrivateBaselineBundle `

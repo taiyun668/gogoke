@@ -1,0 +1,148 @@
+{
+  "schema": "gogoke.37.stable-point.v1",
+  "milestone": "M1",
+  "state": "REAL_E2E_AND_FROZEN_CHAIN_COMPLETE",
+  "acceptance": false,
+  "publicRelease": false,
+  "product": {
+    "source": "d83a1cc3c86dee4cd8154c0939409b5adb56ed1e",
+    "version": "0.1.22",
+    "main": "e43f1ac0b1492dce0f9ef5d469df4a240e11e7c9",
+    "scopeDigest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+    "receiptBlob": "fae816fb4e43f55623ffcee4c008d3febd63d7ad",
+    "members": {
+      "gogoke-0.1.22-windows-x64-unsigned-setup.exe": {
+        "length": 56758822,
+        "sha256": "9d3e12e89ed16f1a24c3ef42bbe8b67635db3953bf3891ed4a25e8feaa9678c3"
+      },
+      "gogoke-installed-shell.nsis.exe": {
+        "length": 27157504,
+        "sha256": "36cff7b299a53cca6c1b0dc2f89fba35c4649428d130685201e80f382fb81b87"
+      },
+      "gogoke-native-host.exe": {
+        "length": 7344128,
+        "sha256": "3af3f4d2597e4e515626cd4d4c9a29e223ddd6dd46d022294f1e72b057b4f40e"
+      },
+      "gogoke-package-hashes.json": {
+        "length": 1851507,
+        "sha256": "9a7ed2bb6acf53db5c09c8633c56b4b44f0283804fef0e5332ade779098f1427"
+      },
+      "gogoke-portable.exe": {
+        "length": 27157504,
+        "sha256": "291608d9619dbd92917705e3610a31207087f01693d99b7ba81243c2fbdfe84f"
+      },
+      "gogoke-resources.windows.zip": {
+        "length": 49983257,
+        "sha256": "77ef7869af87ab284417471de915acb91bb60baf2d8aba2d512dea71ad6abaf0"
+      },
+      "node.exe": {
+        "length": 91406496,
+        "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+      },
+      "resource-index.json": {
+        "length": 3042123,
+        "sha256": "270e67eddc57d392df8071d804364ebc783630c716215eda5a78c50363466e58"
+      }
+    },
+    "manifestSha256": "5bd74545b51adf7682c0a3f38ec436573604017322d48cd64adbf6a6e138fdef",
+    "signatureSha256": "39a69c13ab59bb51eb68871da1f2f0c10d00b29a041e74925cd833d8d7fbab0b"
+  },
+  "cloud": {
+    "desktop": 37130337682,
+    "native": 37130335325,
+    "hygiene": 37130336502,
+    "trustedMainSigner": 37133404091,
+    "sameByteInstalledSmoke": 37133605413,
+    "frozenArtifact": 11276804155,
+    "signedArtifact": 11277850324,
+    "allRequiredProductChecks": "SUCCESS",
+    "frozenArchiveSha256": "50edbce78d6ca477d23ec6eb3ffbe9b003008bc838812eb56d5ae33de69f68d7",
+    "signedArchiveSha256": "43c23a9e7dda6f7929380adc9de8146ee5e27d8a926a57168224c406ee344db3"
+  },
+  "win11": {
+    "sameOriginalInstance": "codexTestM1",
+    "fixedCliVersion": "0.160.0",
+    "fixedCliSha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+    "model": "gpt-6.1-sol",
+    "effort": "high",
+    "logicalSessions": 2,
+    "physicalEpisodes": 5,
+    "rawFrames": 338,
+    "outboundJournalCommands": 46,
+    "allEpisodesStopped": true,
+    "sameTurnSteerConsumed": true,
+    "normalCaptionCloses": 2,
+    "formalFiveFieldsUnchanged": true,
+    "memoryPreservation": "PASS_REAL_BEFORE_AFTER_NO_MEMORY_JOBS",
+    "databaseReadonlyUnchanged": true,
+    "agentActs": 0,
+    "authenticationActions": false,
+    "toolEvidence": "Independent raw review: 3 completed fileChange, 2 CMD exit0; all 17 started items completed; no tool error payload. The automated command assertion alone is not a generic future-tool assertion."
+  },
+  "cleanup": {
+    "auditedEmptyDirectories": 1114,
+    "filesDeleted": 0,
+    "result": "EACH_AUDITED_EMPTY_DIRECTORY_ABSENT",
+    "nativeHomeAndRootIdentitiesPreserved": true,
+    "untrackedCustodyRetained": [
+      ".controller-worktrees/",
+      "native compat detours source/extraction from prior work"
+    ],
+    "otherPolicyRefusedObjects": "RETAINED_NO_BYPASS"
+  },
+  "golden": {
+    "capture": "codex160-m1-22-final",
+    "officialSourceCommit": "a956835d020762cb2b570053af06f643a11c0ecc",
+    "bothDirections": true,
+    "normalizedLinks": "218/218",
+    "rpcPairs": "41/41",
+    "ambiguous": 0,
+    "controllerUse": "Selected real successful regression capture after direct evidence review; private bytes retained, not Owner acceptance.",
+    "baselineStatus": "REVIEW_REQUIRED",
+    "associationLimits": "Actual 218 normalized rows have their complete original scope and one unique raw frame; RPC pairs use physical custody. Legacy normalized available-scope/unique-cursor fallback remains, so missing scope alone is not claimed to forbid every link."
+  },
+  "evidenceHashes": {
+    "m1-e2e-result.json": "989eef8e0db9f45b3ed8bb24ba316f7b78d79c1d359744e4ec43f9e98cbc286b",
+    "direct-readback.json": "25d83515761698db9d44db4567eb067b68778618bd7a8517d28b8ade753a5881",
+    "direct-readback-scoped.json": "ba9492e85bbe4e57ed0c910775ff4b25846dca6a8b261f3a639b0d75c1a899ab",
+    "golden-m1-22.json": "ec54a66489434cd38acb1cc4370b80e389f51615dbaac16be9b37eda94bfef39",
+    "golden-m1-22-scoped.json": "f55e002125c4b50f6a4cb5f3649b2f890dcbc74aaae39ba3594b11cd8e05b870",
+    "formal-before.json": "d4734aa045e5ceddf88c4cb5385d0ed8df2031ada5332306ed2624981038ce29",
+    "formal-after.json": "570c932a1f77f2f94bb7be89049bdd16435d3d9825e199673e9e2d429daa9309",
+    "memory-before.json": "7b0b3d2151c4e438960362e2a69efe58891c3046264f58f096d21ca8680af50a",
+    "memory-after.json": "6a37f99df4844b8214a712702b17a0f3666b476f35288de8c58015a8eb770f41",
+    "golden-m1-22-final.json": "776dd7ed360488458a28aa5ded729c581a37ee9ef402485e659b8019778cb177",
+    "m1-golden-null-fix-review-sol-high.md": "3b54a1e6d74a9aeb9eccfbe94996e0a5317196f63e23f053936e6a33b029abcc"
+  },
+  "independentReview": {
+    "riskReport": "M1-22-RISK-AUDIT.md",
+    "riskReportSha256": "3f303a40eb531181655e17c815b83834153ebdd24fada5848d87f44d72a46942",
+    "riskInventorySha256": "69e5214feb2066c8c733baa7e85ec8bbe5258c1dc72ccda9dc657739c12cb8d1",
+    "riskScope": "Product d83, actual driver fc0a7d9a, real original bytes; no new blocker. Golden association correction reviewed separately.",
+    "measurementCommit": "fc0a7d9a6bf4f16dbe29b40b9edc7e88e73c8df5",
+    "goldenCorrectionCommit": "df3d60340c813b3b4a9489bf0dc35ba158c5a0fe",
+    "goldenCorrectionScriptSha256": "50bc29e13af981633b08e1db3b72852439eaf615f0413303e0da78de7af8739f",
+    "goldenFocusedReport": "m1-golden-null-fix-review-sol-high.md",
+    "goldenFocusedReportSha256": "3b54a1e6d74a9aeb9eccfbe94996e0a5317196f63e23f053936e6a33b029abcc",
+    "goldenFocusedConclusion": "Known explicit-null false association fixed; private controls and original actual tuples checked. No product replay or product acceptance.",
+    "productSourceUnchanged": "apps/, third_party/ and .github/ are byte-identical to frozen product source d83a1cc3; later commits repair measurement and record evidence only."
+  },
+  "failures": {
+    "firstCase": "EPERM replacing an open atomic measurement journal; retained unchanged as failure, original stopped episode released and caption closed. New independent case rerun completed on identical installed product bytes.",
+    "controls": "Open destination denied replacement both with and without DELETE sharing; closed-reader control succeeded. Live observation now reads append-only stdout.",
+    "productCompensation": "NONE; no retry, wait workaround, CLI patch, extra capability or product repackage."
+  },
+  "knownLimits": [
+    "Original local Windows PowerShell ETW initialization remains unsupported; fixed CMD developer instructions were exercised, not an OS-wide PowerShell ban.",
+    "Pending raw non-event notifications stay in A; no impact established in this capture.",
+    "Current-user/no-elevation empty-directory reparse residual remains Owner-accepted; perMachine or elevated installation requires its repair first.",
+    "No Owner acceptance, public release, CLI upgrade or new login is claimed."
+  ],
+  "references": "Reused actual installed-product CDP and native origin/RPC journals; GOGO PARTY instance homes, checked official Codex 0.160 tag and fixed package; existing CompatModule physical custody. Measurements use original immutable DB and original snapshot files. Golden correlation uses the existing resolved-event-id relation and original ticket/nonce, not inferred epoch or synthetic frames.",
+  "pathReflection": "Embedding full snapshots in every journal write and reading the atomic target caused avoidable measurement round trips. Keep original snapshots once, record references/hashes, observe append-only progress, reuse frozen installed bytes for tool repairs.",
+  "next": "Continue M2 shared native ingress/login/sidechat integration and cloud checks in independent construction trees; M1 checkpoint is a record, not a stop point.",
+  "inboxReadback": {
+    "commit": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "UNCHANGED_NO_NEW_ENTRY"
+  }
+}

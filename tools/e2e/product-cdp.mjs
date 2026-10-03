@@ -26,6 +26,14 @@ export class ActualProduct {
     const temporary = `${this.config.result}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(this.journal, null, 2) + '\n');
     fs.renameSync(temporary, this.config.result);
+    // Observe a live run through its append-only stdout log. Windows can
+    // refuse replacement of an open journal target even with DELETE sharing.
+    const progress = JSON.stringify({ state: this.journal.state,
+      operation: this.journal.operations?.at(-1)?.request?.operation ?? null,
+      sessions: this.journal.sessions?.map(({ generation, turns }) => ({
+        generation, turns: turns?.length ?? 0,
+      })) ?? [], closes: this.journal.closes?.length ?? 0 });
+    if (progress !== this.lastProgress) { console.log(progress); this.lastProgress = progress; }
   }
   get stderr() {
     if (!this.stderrFile) return '';
