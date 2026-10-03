@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Codex0149Adapter, CODEX_SOURCE_CAPABILITIES, codexMemoryOffAppServerArgs,
+import { Codex0160Adapter, CODEX_SOURCE_CAPABILITIES, codexMemoryOffAppServerArgs,
   type CodexAppServerTransport, type CodexMethod } from "./adapter.ts";
 import { CodexJsonlDecoder, CodexProtocolError, buildQuestionCardResponse, decodeCodexFrame } from "./protocol.ts";
 
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(`${JSON.stringify(value)}\n`);
 
-test("0.149.0 adapter binds resume and steering to the exact thread and active turn", async () => {
+test("0.160.0 adapter binds resume and steering to the exact thread and active turn", async () => {
   const calls: Array<{ method: CodexMethod; params: Readonly<Record<string, unknown>> }> = [];
   const transport: CodexAppServerTransport = {
     async request(method, params) {
@@ -16,7 +16,7 @@ test("0.149.0 adapter binds resume and steering to the exact thread and active t
       return {};
     },
   };
-  const adapter = new Codex0149Adapter(transport, "0.149.0");
+  const adapter = new Codex0160Adapter(transport, "0.160.0");
   assert.deepEqual(await adapter.resume("thread-one"), { status: "resumed", threadId: "thread-one" });
   assert.deepEqual(await adapter.steer("thread-one", "turn-one", "focus"),
     { status: "accepted", turnId: "turn-one" });
@@ -29,9 +29,9 @@ test("0.149.0 adapter binds resume and steering to the exact thread and active t
 
 test("append does not start a turn and compaction ACK is not completion", async () => {
   const calls: Array<{ method: CodexMethod; params: Readonly<Record<string, unknown>> }> = [];
-  const adapter = new Codex0149Adapter({ async request(method, params) {
+  const adapter = new Codex0160Adapter({ async request(method, params) {
     calls.push({ method, params }); return {};
-  } }, "0.149.0");
+  } }, "0.160.0");
   assert.deepEqual(await adapter.appendWithoutTurn("thread-one", "later context"),
     { status: "append-acknowledged" });
   assert.deepEqual(await adapter.requestCompaction("thread-one"),
@@ -45,15 +45,15 @@ test("append does not start a turn and compaction ACK is not completion", async 
 });
 
 test("version mismatch and changed active turn fail closed", async () => {
-  assert.throws(() => new Codex0149Adapter({ async request() { return {}; } }, "0.158.0"),
+  assert.throws(() => new Codex0160Adapter({ async request() { return {}; } }, "0.149.0"),
     (error: unknown) => error instanceof CodexProtocolError && error.code === "VERSION_MISMATCH");
-  const adapter = new Codex0149Adapter({ async request() { return { turnId: "other-turn" }; } }, "0.149.0");
+  const adapter = new Codex0160Adapter({ async request() { return { turnId: "other-turn" }; } }, "0.160.0");
   await assert.rejects(adapter.steer("thread-one", "turn-one", "focus"),
     (error: unknown) => error instanceof CodexProtocolError && error.code === "INVALID_RESPONSE");
 });
 
 test("native question request remains bound and unanswered", () => {
-  // Matches rust-v0.149.0 app-server-protocol ToolRequestUserInputParams.
+  // Matches rust-v0.160.0 app-server-protocol ToolRequestUserInputParams.
   const encoded = bytes({ id: 47, method: "item/tool/requestUserInput", params: {
     threadId: "thread-one", turnId: "turn-one", itemId: "item-one", isBlocking: true,
     autoResolutionMs: null, questions: [{ id: "q1", header: "Choice", question: "Which?",

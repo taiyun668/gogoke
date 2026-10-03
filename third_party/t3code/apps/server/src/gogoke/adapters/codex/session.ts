@@ -44,7 +44,7 @@ export type CodexSessionEvent =
  * H-owned transport. A lost response leaves acceptance unknown; callers must
  * use their durable operation journal before attempting a replay.
  */
-export class Codex0149Session {
+export class Codex0160Session {
   private readonly transport: CodexSessionTransport;
   private phaseValue: CodexSessionPhase = "new";
   private memoryOffCwd: string | null = null;

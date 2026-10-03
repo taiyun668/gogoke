@@ -67,12 +67,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $prefix = Join-Path $env:APPDATA 'npm'
-          & npm install --global --prefix $prefix --ignore-scripts '@openai/codex@0.149.0'
+          & npm install --global --prefix $prefix --ignore-scripts '@openai/codex@0.160.0'
           if ($LASTEXITCODE -ne 0) { throw "Codex CLI install failed: $LASTEXITCODE" }
           $binary = Join-Path $prefix 'node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
           if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Pinned Codex CLI image missing' }
           $version = & $binary --version
-          if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.149.0') { throw "Pinned Codex CLI version mismatch: $version" }
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
       - name: Build native-host release image and check test-hook exclusion
         id: release-build
         shell: pwsh
@@ -220,6 +220,10 @@ jobs:
             @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
             @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
             @{ id = 'native-current-install-pin'; filter = 'pin_is_read_from_same_verified_store_and_requires_observed_login' },
+            @{ id = 'manual-repin-product'; filter = 'user_manual_program_repin_observes_fixed_cli_and_preserves_original_instance' },
+            @{ id = 'manual-repin-preservation'; filter = 'manual_repin_preserves_home_creation_credentials_and_legacy_unknown_exactly' },
+            @{ id = 'manual-repin-conflicts'; filter = 'manual_repin_rejects_pending_claim_episode_and_generation_change_without_writes' },
+            @{ id = 'manual-repin-witness'; filter = 'manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness' },
             @{ id = 'native-install-admission'; filter = 'product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial' },
             @{ id = 'native-missing-program'; filter = 'rejects_root_or_platform_version_mismatch_and_missing_program' },
             @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },

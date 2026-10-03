@@ -1,4 +1,4 @@
-//! Fixed x64 Codex 0.149 LPAC path-API compatibility module.
+//! Fixed x64 Codex 0.160 LPAC path-API compatibility module.
 //! The host owns launch authorization, verified image identity, Job custody,
 //! exact home mapping, module file custody, and thread resume.
 
@@ -14,9 +14,9 @@ pub const MODULE_SHA256: &str = env!("GOGOKE_LPAC_PATH_MODULE_SHA256");
 pub const SHIM_SOURCE_SHA256: &str = env!("GOGOKE_LPAC_PATH_SHIM_SHA256");
 pub const DETOURS_COMMIT: &str = "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833";
 pub const DETOURS_LICENSE: &str = "MIT";
-pub const SUPPORTED_CLI_VERSION: &str = "0.149.0-win32-x64";
+pub const SUPPORTED_CLI_VERSION: &str = "0.160.0-win32-x64";
 pub const OBSERVED_CLI_SHA256: &str =
-    "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00";
+    "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d";
 
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 const WC_NO_BEST_FIT_CHARS: u32 = 0x400;

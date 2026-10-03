@@ -237,7 +237,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
              AND c.generation=e.generation AND c.state IN ('ACTIVE','UNKNOWN')
              AND c.binary_digest_sha256=oldc.binary_digest_sha256
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
-             AND i.driver_id='codex' AND i.version='0.149.0'
+             AND i.driver_id='codex' AND i.version='0.160.0'
              AND i.login_state='LOGGED_IN'
              AND i.program_digest=c.binary_digest_sha256
            JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id

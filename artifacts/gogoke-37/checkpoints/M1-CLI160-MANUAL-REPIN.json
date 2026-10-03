@@ -1,0 +1,30 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "CLI160_SOURCE_PREPARED_CLOUD_PENDING_M1_NOT_COMPLETE",
+  "changed": [
+    "Owner 已认可先升级官方 CLI 再复测 GPT-6.1-Sol/high；同步 native catalog、LPAC 固定 image、登录/启动/恢复、TS adapter 和云端 fixture 到 0.160.0。CLI 源码不改。",
+    "实现计划已授权 F.2 的手动升级后重新绑定入口作为 M1 依赖；空 payload，宿主测量固定程序身份。同一实例、原 physical home、原 creation journal 和凭据不动；只换 program pin/version、revision+1、login UNKNOWN。",
+    "当前活动登录/模型 custody、非 RELEASED H claim 和未完成换代拒绝换绑；同一请求精确回放不重复观察或推进 revision。历史 global/gen2 UNKNOWN 保持原样，不据 PID 缺席伪造停止事实，也不把它误当作 H 准入锁。",
+    "新增产品处理器/catalog/home 集成回读测试以及事务保全、冲突和 witness 完整性测试，接入现有 Windows focused/full suite；不把内部处理器测试称为 UserOriginProof/pipe 入口实测。"
+  ],
+  "results": {
+    "trusted_main_scope_digest": "274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656; matches merged receipt v2",
+    "official_archive": "npm 0.160.0-win32-x64 SHA512 integrity verified; archived codex.exe SHA256 fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d; PE AMD64 and one expected path API import observed. No installed execution claim.",
+    "local_signed_node": "Adapter 22, preview 2 and contract 12 focused tests passed; no native build/run",
+    "source_hygiene": "24861 tracked files, 0 leaks; diff whitespace check passed",
+    "independent_source_review": "三项聚焦修正静态到位，未发现本批新增产品阻塞；原生/cloud 行为结果未验证，不是验收。",
+    "native_cloud": "NOT_RUN_FOR_THIS_SOURCE; previous 25b081c1 run is not CLI160 evidence",
+    "actual_machine": "Official CLI is still 0.149.0; installed product is frozen 0.1.18. Original generation7 is STOPPED and must be released through that product before manual upgrade. No package, credential, registration or formal data change in this source stage."
+  },
+  "参照": [
+    "按顺序对照 gogo-party accounts.ts 和席位运行时的实例自有 home/手动 CLI 管理，再核仓库 upstream-reference-map、reuse-blueprint 与现有 K-INSTANCE/F.2 合同。沿用已有 native catalog、OwnerIssuer、RootLock、creation journal 和 CAS；不新增自动升级器或凭据迁移。",
+    "官方 npm 元数据、rust-v0.160.0 固定 tag a956835d020762cb2b570053af06f643a11c0ecc 与 0.149 协议对照未见本次调用的破坏性变更；既有 dotted memory-off 配置正确，保持原实现。官方 changelog 记录 0.159.1 增加 GPT-6.1-Sol。",
+    "不同处：既有注册校验把当前 program pin 当 creation pin，故显式保留原注册事实并以同事务 APPLIED upgrade witness 解释新 pin；回执绑定完整请求 fingerprint。它不改变 CLI、LPAC 能力或原 home。"
+  ],
+  "next": [
+    "提交推送并完成受影响云端检查；独立复核实际 diff 与行为结果。",
+    "稳定后走一次冻结签名/候选装机链；通过旧产品释放 generation7，普通视图手动升级官方固定 CLI；新产品换绑同一原实例并自动 account-read。",
+    "保持 GPT-6.1-Sol/high，用新请求复测真实 LPAC 产品会话并继续 M1；新组件若被 SAC 拦截则交 Owner。"
+  ],
+  "acceptance": false
+}

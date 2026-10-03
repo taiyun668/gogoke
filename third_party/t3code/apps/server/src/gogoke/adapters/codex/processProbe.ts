@@ -212,11 +212,11 @@ export async function installedCodexProgram(): Promise<{ executable: string; ver
   const platform = join(root, "node_modules", "@openai", "codex-win32-x64");
   const platformPackage = parseStrictJsonBytes(await readFile(join(platform, "package.json")));
   if (!record(rootPackage) || !record(platformPackage) ||
-      rootPackage.name !== "@openai/codex" || rootPackage.version !== "0.149.0" ||
-      platformPackage.name !== "@openai/codex" || platformPackage.version !== "0.149.0-win32-x64")
-    throw new CodexProtocolError("VERSION_MISMATCH", "installed npm package is not pinned 0.149.0");
+      rootPackage.name !== "@openai/codex" || rootPackage.version !== "0.160.0" ||
+      platformPackage.name !== "@openai/codex" || platformPackage.version !== "0.160.0-win32-x64")
+    throw new CodexProtocolError("VERSION_MISMATCH", "installed npm package is not pinned 0.160.0");
   const executable = join(platform, "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe");
-  return { executable, version: "0.149.0", sha256: await sha256OfRegularFile(executable) };
+  return { executable, version: "0.160.0", sha256: await sha256OfRegularFile(executable) };
 }
 
 const errorCode = (error: unknown): string =>
@@ -240,7 +240,7 @@ export async function probeInstalledCodex(threadProbe = false): Promise<ProbeRes
       cwd: home, env: isolatedProbeEnvironment(home), windowsHide: true,
       timeout: 5_000, maxBuffer: 4_096,
     });
-    if (versionProcess.stdout.trim() !== "codex-cli 0.149.0")
+    if (versionProcess.stdout.trim() !== "codex-cli 0.160.0")
       throw new CodexProtocolError("VERSION_MISMATCH", "binary --version differs from package");
     result = { ...result, versionOutput: versionProcess.stdout.trim() };
     transport = await CodexStdioProbeTransport.launch({

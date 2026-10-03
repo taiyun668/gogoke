@@ -102,6 +102,62 @@ fn remove_instance_home(root: &RootLock) {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[test]
+fn user_manual_program_repin_observes_fixed_cli_and_preserves_original_instance() {
+    fixture(|root, product| {
+        let old_path = root.canonical_root().canonical_path.join("old-cli.fixture");
+        std::fs::write(&old_path, b"synthetic old registered program").unwrap();
+        let old = instance::ProgramObservation::observe(&old_path, "0.149.0").unwrap();
+        let registration = register_request();
+        instance::register_instance(&mut product.connection, root, &instance::Registration {
+            request_id: &registration.request_id, request_bytes: &registration.raw_bytes,
+            instance_id: "instanceA", driver_id: "codex", program: &old,
+        }).unwrap();
+        instance::record_observation(&mut product.connection, root, &instance::ObservationRequest {
+            request_id: "old-login", request_bytes: b"synthetic original login observation",
+            instance_id: "instanceA", expected_revision: 1, observation: instance::InstanceObservation::LoggedIn,
+        }).unwrap();
+        instance::record_observation(&mut product.connection, root, &instance::ObservationRequest {
+            request_id: "old-install", request_bytes: b"synthetic original install observation",
+            instance_id: "instanceA", expected_revision: 2, observation: instance::InstanceObservation::InstallUnknown,
+        }).unwrap();
+        let source = product.registration_source("instanceA", "codex").unwrap().unwrap();
+        assert!(product.registered_home_is_current(&source, "instanceA").unwrap());
+        let identity = scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let creation = scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='registerReadA'");
+        let home = root.canonical_root().canonical_path.join("v37-instances").join("instanceA");
+        let sentinel = home.join("repin-preserved.fixture");
+        std::fs::write(&sentinel, b"synthetic preserved instance bytes").unwrap();
+        let input = instance_request("repin-after-manual-upgrade", "repinA", "instanceA", "3");
+        let applied = decode_receipt(&product.dispatch_user_request(&input).unwrap()).unwrap();
+        assert_eq!((applied.status, applied.previous_revision, applied.revision), (V37Status::Applied, 3, 4));
+        let expected_digest = format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_CLI_SHA256);
+        assert_eq!(scalar(product, "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), expected_digest);
+        assert_eq!(scalar(product, "SELECT version FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "0.160.0");
+        assert_eq!(scalar(product, "SELECT install_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "UNKNOWN");
+        assert_eq!(scalar(product, "SELECT login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "UNKNOWN");
+        assert_eq!(scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), identity);
+        assert_eq!(scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='registerReadA'"), creation);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"synthetic preserved instance bytes");
+        assert!(product.registered_home_is_current(&source, "instanceA").unwrap());
+        let version = String::from_utf8(product.dispatch_user_request(
+            &instance_request("version-and-new-version", "versionA", "instanceA", "4")).unwrap()).unwrap();
+        assert!(version.contains(&expected_digest) && version.contains("0.160.0"), "{version}");
+        let install = String::from_utf8(product.dispatch_user_request(
+            &instance_request("install-state", "installA", "instanceA", "4")).unwrap()).unwrap();
+        assert!(install.contains("\"installed\":true"), "{install}");
+        let replay = decode_receipt(&product.dispatch_user_request(&input).unwrap()).unwrap();
+        assert_eq!((replay.status, replay.previous_revision, replay.revision), (V37Status::Replayed, 3, 4));
+        let mut changed_raw = input.raw_bytes.clone(); changed_raw.push(b'\n');
+        let changed = decode_request(&changed_raw).unwrap();
+        assert_eq!(decode_receipt(&product.dispatch_user_request(&changed).unwrap()).unwrap().status, V37Status::Conflict);
+        assert_eq!(decode_receipt(&product.dispatch_user_request(
+            &instance_request("repin-after-manual-upgrade", "samePin", "instanceA", "4")).unwrap()).unwrap().status, V37Status::Denied);
+        assert_eq!(scalar(product, "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "4");
+        std::fs::remove_file(old_path).unwrap(); remove_instance_home(root);
+    });
+}
 fn spec(product: &ProductDatabase<'_>, permission: &str, depth: u8) -> GrantSpec {
     GrantSpec { principal_id: product.owner.principal_id().into(), seat_id: product.owner.seat_id().into(),
         permission: permission.into(), promotion_kind: "GLOBAL_LESSON".into(),

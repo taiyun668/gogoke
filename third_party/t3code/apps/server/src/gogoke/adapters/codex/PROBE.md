@@ -1,4 +1,6 @@
-# Codex 0.149.0 app-server process probe
+# Historical Codex 0.149.0 app-server process probe
+
+This file records a historical local observation of Codex 0.149.0. The active adapter source is now pinned to official `rust-v0.160.0`; all package versions, executable hash, and results below remain evidence only for the earlier 0.149.0 probe. No physical 0.160.0 probe is claimed here.
 
 2026-09-29, Windows 11 Owner machine. This probes the installed npm Codex CLI in an empty disposable `CODEX_HOME`, with a child environment that excludes inherited API keys and auth tokens. The CLI was not logged in through this probe. No model turn, authentication request, approval response, or quota-consuming operation was sent.
 

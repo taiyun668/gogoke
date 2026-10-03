@@ -220,8 +220,9 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
       true);
     assert.equal((await call(h.port, instanceReq("K-INSTANCE", "repin-after-manual-upgrade", "badRepin", "instanceA", "1",
       { programDigest: "unverifiedDigest", version: "2" }))).status, "DENIED");
-    assert.equal((await call(h.port, instanceReq("K-INSTANCE", "repin-after-manual-upgrade", "repinA", "instanceA", "1",
-      { programDigest: "newVerifiedDigest", version: "2" }))).status, "APPLIED");
+    const repin = instanceReq("K-INSTANCE", "repin-after-manual-upgrade", "repinA", "instanceA", "1");
+    assert.equal((await call(h.port, repin)).status, "APPLIED");
+    assert.equal((await call(h.reconstruct(), repin)).status, "REPLAYED");
     const version = await call(h.reconstruct(), instanceReq("K-INSTANCE", "version-and-new-version", "versionRead", "instanceA", "2"));
     assert.equal(version.result.programDigest, "newVerifiedDigest");
     assert.equal(version.result.version, "2");

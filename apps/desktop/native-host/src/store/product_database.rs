@@ -234,12 +234,104 @@ impl<'root> ProductDatabase<'root> {
                 "install-state" => self.read_user_instance(request, false),
                 "login-state" => self.read_user_instance(request, true),
                 "concurrency-input" => self.read_user_instance_capacity(request),
+                "repin-after-manual-upgrade" => self.repin_user_instance(request),
+                "version-and-new-version" => self.read_user_instance_version(request),
                 _ => Ok(encode_receipt(request, V37Status::Unsupported,
                     request.expected_revision, request.expected_revision, Default::default())),
             };
         }
         Ok(encode_receipt(request, V37Status::Unsupported,
             request.expected_revision, request.expected_revision, Default::default()))
+    }
+
+    fn read_user_instance_version(&self, request: &V37Request) -> Result<Vec<u8>> {
+        let current = self.read_registered_instance(&request.target_id)?;
+        let revision = current.as_ref().map(|row| row.revision).unwrap_or(0);
+        let mut result = BTreeMap::new();
+        let status = if request.domain_id != "global" || !request.payload.is_empty() {
+            V37Status::Denied
+        } else if current.is_none() { V37Status::Conflict }
+        else if request.expected_revision != revision { V37Status::Stale }
+        else {
+            let row = current.expect("present instance");
+            result.insert(JsonString::from_str("version"), Json::String(JsonString::from_str(&row.version)));
+            result.insert(JsonString::from_str("programDigest"), Json::String(JsonString::from_str(&row.program_digest)));
+            V37Status::Applied
+        };
+        Ok(encode_receipt(request, status, revision, revision, result))
+    }
+
+    /// F.2 manual upgrade: native observation, no caller-supplied program pin,
+    /// no auto installer and no persistent home/credential operation.
+    fn repin_user_instance(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        authority::read_product_identity(&mut self.connection, &self.owner)?;
+        let revision = self.user_instance_revision(&request.target_id)?;
+        let respond = |status, before, after, reason: Option<String>| {
+            let mut result = BTreeMap::new();
+            if let Some(reason) = reason {
+                result.insert(JsonString::from_str("reason"), Json::String(JsonString::from_str(&reason)));
+            }
+            encode_receipt(request, status, before, after, result)
+        };
+        if request.domain_id != "global" || !request.payload.is_empty()
+            || request.expected_revision == 0 || request.expected_revision >= i64::MAX as u64 {
+            return Ok(respond(V37Status::Denied, revision, revision, None));
+        }
+        let input = instance::ProgramRepin { request_id: &request.request_id,
+            request_bytes: &request.raw_bytes, instance_id: &request.target_id,
+            expected_revision: request.expected_revision as i64 };
+        let outcome = match instance::reconcile_program_repin(&self.connection, self.root, &input) {
+            Ok(Some(replay)) => Ok(replay),
+            Err(error) => Err(error),
+            Ok(None) => {
+                if revision != request.expected_revision {
+                    return Ok(respond(V37Status::Stale, revision, revision, None));
+                }
+                if self.owner_login.as_ref().is_some_and(|session|
+                    v37_login::pending_login_for_instance(session, &request.target_id))
+                    || self.native_sessions.values().any(|session|
+                        session.evidence.instance_id() == request.target_id) {
+                    return Ok(respond(V37Status::Conflict, revision, revision,
+                        Some("current native instance process custody is pending".into())));
+                }
+                let row = self.read_registered_instance(&request.target_id)?
+                    .ok_or(OrchestrationError::Invalid("instance for manual upgrade"))?;
+                if row.driver_id != "codex" { return Ok(respond(V37Status::Denied, revision, revision, None)); }
+                let source = self.registration_source(&request.target_id, &row.driver_id)?;
+                if !source.as_ref().map(|source|
+                    self.registered_home_is_current(source, &request.target_id)).transpose()?.unwrap_or(false) {
+                    return Ok(respond(V37Status::Unknown, revision, revision,
+                        Some("manual upgrade registered home identity is not confirmed".into())));
+                }
+                let observed = match instance::discover_program("codex") {
+                    Ok(program) => program,
+                    Err(error) => return Ok(respond(V37Status::Failed, revision, revision,
+                        Some(format!("manual upgrade native program observation: {error:?}")))),
+                };
+                let digest = format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_CLI_SHA256);
+                if !observed.matches_pin(&digest, "0.160.0") {
+                    return Ok(respond(V37Status::Denied, revision, revision,
+                        Some("manual upgrade does not match the fixed native CLI identity".into())));
+                }
+                instance::repin_program(&mut self.connection, self.root, &self.owner, &input, &observed)
+            },
+        };
+        match outcome {
+            Ok(receipt) => {
+                let mut result = BTreeMap::new();
+                result.insert(JsonString::from_str("programDigest"), Json::String(JsonString::from_str(&receipt.program_digest)));
+                result.insert(JsonString::from_str("version"), Json::String(JsonString::from_str(&receipt.version)));
+                result.insert(JsonString::from_str("loginState"), Json::String(JsonString::from_str("UNKNOWN")));
+                Ok(encode_receipt(request, if receipt.disposition == RegistrationDisposition::Replayed {
+                    V37Status::Replayed } else { V37Status::Applied }, request.expected_revision,
+                    receipt.revision as u64, result))
+            },
+            Err(error) => Ok(respond(match error {
+                RegistryError::RequestConflict | RegistryError::InstanceConflict => V37Status::Conflict,
+                RegistryError::Invalid(_) | RegistryError::IdentityChanged | RegistryError::Authority(_) => V37Status::Denied,
+                _ => V37Status::Unknown,
+            }, revision, revision, Some(format!("native manual program repin: {error:?}")))),
+        }
     }
 
     fn read_registered_instance(&self, instance_id: &str) -> Result<Option<RegisteredInstance>> {

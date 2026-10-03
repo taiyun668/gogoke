@@ -39,6 +39,8 @@ pub(crate) struct LaunchEvidence {
 enum VerificationPhase { PreActivation, Active }
 
 impl LaunchEvidence {
+    pub(crate) fn instance_id(&self) -> &str { &self.claim.instance_id }
+
     pub(crate) fn observe(
         db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         domain_id: &str, seat_id: &str, session_id: &str,
@@ -89,7 +91,7 @@ impl LaunchEvidence {
             return Err("native resume: duplicate old custody".into());
         }
         let pin=evidence(runtime::current_instance_pin(db,&old.instance_id))?;
-        if pin.driver_id!="codex" || pin.version!="0.149.0" || pin.digest!=old_digest {
+        if pin.driver_id!="codex" || pin.version!="0.160.0" || pin.digest!=old_digest {
             return Err("native resume: trusted pinned binary changed".into());
         }
         let row=crate::store::atomic::Statement::prepare(db.as_ptr(),
@@ -124,7 +126,7 @@ impl LaunchEvidence {
         let seat_id=&seat.seat_id;
         let tier=evidence(seat::permission_tier(&seat))?;
         let pin = evidence(runtime::current_instance_pin(db, &claim.instance_id))?;
-        if pin.driver_id != "codex" || pin.version != "0.149.0" {
+        if pin.driver_id != "codex" || pin.version != "0.160.0" {
             return Err("native session launch: unsupported pinned driver/version".into());
         }
         let suffix = crate::store::digest::sha256_hex(format!("{}\n{}\n{}\n{}\n{}",

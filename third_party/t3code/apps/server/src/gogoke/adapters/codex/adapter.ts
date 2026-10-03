@@ -14,7 +14,7 @@ export interface CodexAppServerTransport {
 export interface CodexCapabilityReport {
   readonly driver: "codex";
   readonly pinnedVersion: typeof CODEX_PINNED_VERSION;
-  readonly protocolSource: "openai/codex rust-v0.149.0";
+  readonly protocolSource: "openai/codex rust-v0.160.0";
   readonly runtimeEvidence: "UNKNOWN";
   readonly methods: Readonly<Record<CodexMethod, "SOURCE_PRESENT_RUNTIME_UNVERIFIED">>;
   readonly features: Readonly<Record<"resume" | "inTurnSteer" | "appendWithoutTurn" |
@@ -25,7 +25,7 @@ export interface CodexCapabilityReport {
 export const CODEX_SOURCE_CAPABILITIES: CodexCapabilityReport = Object.freeze({
   driver: "codex",
   pinnedVersion: CODEX_PINNED_VERSION,
-  protocolSource: "openai/codex rust-v0.149.0",
+  protocolSource: "openai/codex rust-v0.160.0",
   runtimeEvidence: "UNKNOWN",
   methods: Object.freeze({
     "thread/resume": "SOURCE_PRESENT_RUNTIME_UNVERIFIED",
@@ -66,7 +66,7 @@ const emptyResult = (value: unknown, method: string): void => {
 };
 
 /** Protocol actions only. No fallback creates a fresh thread or changes target. */
-export class Codex0149Adapter {
+export class Codex0160Adapter {
   private readonly transport: CodexAppServerTransport;
   constructor(transport: CodexAppServerTransport, observedVersion: string) {
     if (observedVersion !== CODEX_PINNED_VERSION) {

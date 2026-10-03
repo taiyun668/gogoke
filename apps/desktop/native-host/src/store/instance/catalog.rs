@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 
 const CODEX_DRIVER: &str = "codex";
-const CODEX_VERSION: &str = "0.149.0";
+const CODEX_VERSION: &str = "0.160.0";
 const ROOT_PACKAGE: &str = "@openai/codex";
-const PLATFORM_VERSION: &str = "0.149.0-win32-x64";
+const PLATFORM_VERSION: &str = "0.160.0-win32-x64";
 const MAX_PACKAGE_BYTES: u64 = 64 * 1024;
 const REPARSE_POINT: u32 = 0x400;
 
@@ -255,12 +255,12 @@ mod tests {
         let platform_package = platform.join("package.json");
         fs::write(
             &root_package,
-            br#"{"name":"@openai/codex","version":"0.149.0"}"#,
+            br#"{"name":"@openai/codex","version":"0.160.0"}"#,
         )
         .unwrap();
         fs::write(
             &platform_package,
-            br#"{"name":"@openai/codex","version":"0.149.0-win32-x64"}"#,
+            br#"{"name":"@openai/codex","version":"0.160.0-win32-x64"}"#,
         )
         .unwrap();
         fs::write(&binary, b"controlled fixture executable bytes").unwrap();
@@ -306,7 +306,7 @@ mod tests {
             ));
             fs::write(
                 root_package,
-                br#"{"name":"@openai/codex","version":"0.149.0"}"#,
+                br#"{"name":"@openai/codex","version":"0.160.0"}"#,
             )
             .unwrap();
             fs::write(
@@ -320,7 +320,7 @@ mod tests {
             ));
             fs::write(
                 platform_package,
-                br#"{"name":"@openai/codex","version":"0.149.0-win32-x64"}"#,
+                br#"{"name":"@openai/codex","version":"0.160.0-win32-x64"}"#,
             )
             .unwrap();
             fs::remove_file(binary).unwrap();
@@ -334,14 +334,14 @@ mod tests {
     #[test]
     fn rejects_claimed_package_name_and_duplicate_json_version() {
         fixture(|root, root_package, _, _| {
-            fs::write(root_package, br#"{"name":"not-codex","version":"0.149.0"}"#).unwrap();
+            fs::write(root_package, br#"{"name":"not-codex","version":"0.160.0"}"#).unwrap();
             assert!(matches!(
                 discover_at(root, "codex"),
                 Err(CatalogError::PackageIdentity)
             ));
             fs::write(
                 root_package,
-                br#"{"name":"@openai/codex","version":"0.149.0","version":"0.149.0"}"#,
+                br#"{"name":"@openai/codex","version":"0.160.0","version":"0.160.0"}"#,
             )
             .unwrap();
             assert!(matches!(

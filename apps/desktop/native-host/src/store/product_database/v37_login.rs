@@ -514,6 +514,15 @@ fn same_owner_login(session: &OwnerLoginSession, command: &OwnerLoginCommand) ->
         && revision == command.expected_revision
 }
 
+pub(super) fn pending_login_for_instance(session: &OwnerLoginSession, instance: &str) -> bool {
+    match session {
+        OwnerLoginSession::Active(active) => active.instance_id == instance,
+        OwnerLoginSession::PendingFirstStop(pending) => pending.active.instance_id == instance,
+        OwnerLoginSession::PendingAccount(pending) => pending.instance_id == instance,
+        OwnerLoginSession::Final { .. } => false,
+    }
+}
+
 fn owner_login_operation_id(command: &OwnerLoginCommand) -> String {
     let identity = format!("{}\n{}\n{}", command.instance_id,
         command.request_id, command.expected_revision);
@@ -1546,7 +1555,7 @@ impl<'root> ProductDatabase<'root> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let row = self.read_registered_instance(instance_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
-        if row.driver_id != "codex" || row.version != "0.149.0"
+        if row.driver_id != "codex" || row.version != "0.160.0"
             || row.program_digest != format!("sha256:{}",
                 gogoke_lpac_path_compat::OBSERVED_CLI_SHA256)
         {
@@ -2436,7 +2445,7 @@ exit 0
         assert!(!is_owner_instance_list_frame(other));
         assert!(!is_owner_login_frame(other));
         let registered = product.dispatch_owner_instance_list_frame(LIST).unwrap();
-        assert_eq!(registered, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"UNKNOWN","revision":"1","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"UNKNOWN","revision":"1","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceC","loginState":"UNKNOWN","revision":"1","version":"0.149.0"}],"schema":"gogoke.37.instance-list.v1"}"#,
+        assert_eq!(registered, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"UNKNOWN","revision":"1","version":"0.160.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"UNKNOWN","revision":"1","version":"0.160.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceC","loginState":"UNKNOWN","revision":"1","version":"0.160.0"}],"schema":"gogoke.37.instance-list.v1"}"#,
             "registration's stored UNKNOWN install state must resolve from the actual pinned program");
         for (id, observation, request_id) in [
             ("instanceA", InstanceObservation::LoggedOut, "logoutA"),
@@ -2447,7 +2456,7 @@ exit 0
                     instance_id: id, expected_revision: 1, observation }).unwrap();
         }
         let observed = product.dispatch_owner_instance_list_frame(LIST).unwrap();
-        assert_eq!(observed, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"LOGGED_OUT","revision":"2","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"LOGGED_IN","revision":"2","version":"0.149.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceC","loginState":"UNKNOWN","revision":"1","version":"0.149.0"}],"schema":"gogoke.37.instance-list.v1"}"#);
+        assert_eq!(observed, br#"{"instances":[{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceA","loginState":"LOGGED_OUT","revision":"2","version":"0.160.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceB","loginState":"LOGGED_IN","revision":"2","version":"0.160.0"},{"driverId":"codex","installState":"INSTALLED","instanceId":"instanceC","loginState":"UNKNOWN","revision":"1","version":"0.160.0"}],"schema":"gogoke.37.instance-list.v1"}"#);
         for invalid in [
             &br#"{"schema":"gogoke.37.instance-list.v1","extra":true}"#[..],
             &br#"{"schema":"gogoke.37.instance-list.v2"}"#[..],
@@ -2959,7 +2968,7 @@ exit 0
             Err(OrchestrationError::AccessDenied)), "a new request reaches its own preflight after release");
         // A later login child can stop successfully while account/read fails
         // before preparation. Its retained Final must keep that raw cause.
-        product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.149.0' WHERE instance_id='instanceA'").unwrap();
+        product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.160.0' WHERE instance_id='instanceA'").unwrap();
         let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         login.launch.arguments = vec!["--version".into()];
@@ -3080,7 +3089,7 @@ exit 0
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         let registered = decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap();
         assert_eq!(registered.status, V37Status::Applied,
-            "CI must install the exact 0.149.0 native catalog, not skip the test");
+            "CI must install the exact 0.160.0 native catalog, not skip the test");
         let home = instance::resolve_codex_instance_home(&product.connection,
             &root, "instanceA").unwrap();
         let runtime = home.path.join("gogoke-login-runtime");

@@ -51,6 +51,8 @@ export interface V37M1FakeOptions {
   readonly verifyProgramDigest?: (digest: string) => boolean;
   readonly hostRegistration?: (instanceId: string, driverId: string) =>
     { homeRef: string; programDigest: string; version: string } | null;
+  readonly hostProgramUpgrade?: (instanceId: string, driverId: string) =>
+    { programDigest: string; version: string } | null;
   readonly nativeCardCapability?: (driverId: string) => boolean | null;
   readonly isSeatBusy?: (seatId: string) => boolean;
   readonly capacity?: (instanceId: string) => string;
@@ -428,15 +430,21 @@ export class V37M1FakePort implements V37Port {
     }
     if (!instance) return encodeV37Receipt(reply("CONFLICT"));
     if (request.operation === "repin-after-manual-upgrade") {
-      const digest = nonempty(request.payload, "programDigest");
-      const version = nonempty(request.payload, "version");
-      if (digest === instance.programDigest || !this.options.verifyProgramDigest?.(digest)) {
+      if (Object.keys(request.payload).length !== 0) return encodeV37Receipt(reply("DENIED"));
+      if ((this.options.activeInstanceAdmissions?.(request.targetId) ?? 0) !== 0) {
+        return encodeV37Receipt(reply("CONFLICT"));
+      }
+      const observed = this.options.hostProgramUpgrade?.(request.targetId, instance.driverId);
+      if (!observed || !observed.version || observed.programDigest === instance.programDigest ||
+          !this.options.verifyProgramDigest?.(observed.programDigest)) {
         return encodeV37Receipt(reply("DENIED"));
       }
+      const { programDigest: digest, version } = observed;
       instance.programDigest = digest;
       instance.version = version;
+      instance.loginState = "UNKNOWN";
       instance.revision += 1n;
-      return committed(reply("APPLIED", instance.revision, { version, programDigest: digest }));
+      return committed(reply("APPLIED", instance.revision, { version, programDigest: digest, loginState: "UNKNOWN" }));
     }
     if (request.operation === "install-state" || request.operation === "login-state" ||
         request.operation === "version-and-new-version" || request.operation === "concurrency-input") {

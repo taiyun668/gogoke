@@ -11,10 +11,10 @@ pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use catalog::{discover_program, locate_pinned_program, CatalogError};
 pub(crate) use cap::{read_instance_concurrency_cap, set_instance_concurrency_cap};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
-    register_instance, record_observation,
+    register_instance, record_observation, repin_program, reconcile_program_repin,
     InstanceObservation, ObservationRequest, ProgramObservation, Registration,
     RegistrationDisposition, RegistrationJournalPhase, RegistrationPreflight,
-    RegistrationReplay, RegistryError};
+    RegistrationReplay, RegistryError, ProgramRepin, ProgramRepinReceipt};
 pub(crate) use resolver::{resolve_codex_instance_home,
     resolve_codex_session_launch_homes, InstanceLaunchHomes, LaunchHomeError,
     ResolvedDirectory};

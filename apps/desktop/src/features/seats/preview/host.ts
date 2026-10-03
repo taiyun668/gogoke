@@ -21,7 +21,7 @@ export function createPreviewHost() {
   const allowed = (_caller: V37TrustedCaller, request: V37Request) =>
     request.domainId === "preview" && request.targetId === DESIGN37_TEST_INSTANCE_ID;
   const page = () => ({ schema: DESIGN37_INSTANCES_SCHEMA, instances: present ? [{
-    instanceId: DESIGN37_TEST_INSTANCE_ID, driverId: "codex", version: "0.149.0",
+    instanceId: DESIGN37_TEST_INSTANCE_ID, driverId: "codex", version: "0.160.0",
     revision: String(revision), state, ...(login ? { login } : {}),
   }] : [] });
   const port = new V37UiForwardingFakePort({

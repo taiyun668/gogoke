@@ -1,12 +1,12 @@
 # Fixed LPAC path compatibility package
 
-This package is only for the native x64 Codex CLI 0.149.0 launched by H inside
-its verified LPAC profile. The observed installed binary is PE machine `0x8664`,
-SHA-256 `14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00`,
+This package is only for the native x64 Codex CLI 0.160.0 launched by H inside
+its verified LPAC profile. The official npm platform archive binary is PE machine `0x8664`,
+SHA-256 `fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d`,
 and imports `GetFinalPathNameByHandleW` once from `kernel32.dll`. This is a
-read-only observation of the installed pinned version; the host still performs
-its own program identity checks at every launch. The failure being addressed
-was original flags `0` returning `0` / Win32 `5` after an LPAC-denied open of
+read-only archive observation, not an installed launch result; the host still performs
+its own program identity checks at every launch. The original 0.149.0 failure
+was flags `0` returning `0` / Win32 `5` after an LPAC-denied open of
 `\??\MountPointManager`, although the exact F home metadata handle opened.
 
 The DLL is built at cloud build time and embedded in Rust as `MODULE_BYTES`.

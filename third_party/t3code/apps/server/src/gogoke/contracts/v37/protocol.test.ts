@@ -118,6 +118,7 @@ describe("design 37 closed operation protocol", () => {
         verifyProgramDigest: (digest: string) =>
           digest === "verifiedDigest" || digest === "newVerifiedDigest",
         hostRegistration: () => ({ homeRef: "homeA", programDigest: "verifiedDigest", version: "1" }),
+        hostProgramUpgrade: () => ({ programDigest: "newVerifiedDigest", version: "2" }),
         isSeatBusy: () => caseId === "seat-busy",
         capacity: () => "3",
         isTakeoverLead: (seatId: string) => seatId === "leadA",

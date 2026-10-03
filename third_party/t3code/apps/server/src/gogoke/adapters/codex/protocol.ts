@@ -1,7 +1,7 @@
 import { ContractCodecError, parseStrictJsonBytes } from "../../contracts/strictJson.ts";
 
-/** Direct source: openai/codex rust-v0.149.0 (commit 758ef40f), app-server-protocol. */
-export const CODEX_PINNED_VERSION = "0.149.0" as const;
+/** Direct source: openai/codex rust-v0.160.0 (commit a956835d), app-server-protocol. */
+export const CODEX_PINNED_VERSION = "0.160.0" as const;
 const MAX_FRAME_BYTES = 1024 * 1024;
 
 export class CodexProtocolError extends Error {
@@ -71,7 +71,7 @@ export function parseQuestionCard(id: string | number, params: unknown): CodexQu
       !(params.autoResolutionMs === undefined || params.autoResolutionMs === null ||
         (Number.isSafeInteger(params.autoResolutionMs) &&
         (params.autoResolutionMs as number) >= 0))) {
-    throw new CodexProtocolError("INVALID_QUESTION_CARD", "required 0.149.0 question fields");
+    throw new CodexProtocolError("INVALID_QUESTION_CARD", "required 0.160.0 question fields");
   }
   const ids = new Set<string>();
   const questions = params.questions.map((value: unknown): CodexQuestion => {

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Codex0149Session, type CodexSessionTransport } from "./session.ts";
+import { Codex0160Session, type CodexSessionTransport } from "./session.ts";
 import { CodexProtocolError, decodeCodexFrame } from "./protocol.ts";
 
 const frame = (value: unknown) => decodeCodexFrame(new TextEncoder().encode(JSON.stringify(value)));
 const memoryOffConfig = { config: { features: { memories: false },
   memories: { generate_memories: false, use_memories: false } } };
 
-test("0.149.0 session initializes, starts a thread and binds a turn before steering", async () => {
+test("0.160.0 session initializes, starts a thread and binds a turn before steering", async () => {
   const calls: Array<{ method: string; params: object }> = [];
   const transport: CodexSessionTransport = {
     async request(method, params) {
@@ -21,8 +21,8 @@ test("0.149.0 session initializes, starts a thread and binds a turn before steer
     },
     async notify(method) { calls.push({ method, params: {} }); },
   };
-  const session = new Codex0149Session(transport, "0.149.0");
-  assert.deepEqual(session.capabilityReport(), { pinnedVersion: "0.149.0",
+  const session = new Codex0160Session(transport, "0.160.0");
+  assert.deepEqual(session.capabilityReport(), { pinnedVersion: "0.160.0",
     runtimeEvidence: "UNKNOWN", observedMethods: [] });
   await session.initialize("test");
   await session.verifyMemoryOff("D:/isolated-instance");
@@ -38,14 +38,14 @@ test("0.149.0 session initializes, starts a thread and binds a turn before steer
 
 test("capability discovery counts actual returned pages and keeps pagination visible", async () => {
   const calls: string[] = [];
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       calls.push(method);
       if (method === "model/list") return { data: [{ id: "m" }], nextCursor: "next-models" };
       if (method === "experimentalFeature/list") return { data: [], nextCursor: null };
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   assert.deepEqual(await session.discover(), { modelPageCount: 1, modelNextCursor: "next-models",
     featurePageCount: 0, featureNextCursor: null });
@@ -57,7 +57,7 @@ test("capability discovery counts actual returned pages and keeps pagination vis
 test("one initialized session verifies effective memory-off and redacts local account details", async () => {
   const calls: Array<{ method: string; params: object }> = [];
   let account: unknown = { account: null, requiresOpenaiAuth: true };
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method, params) {
       calls.push({ method, params });
       if (method === "config/read") return { config: {
@@ -67,7 +67,7 @@ test("one initialized session verifies effective memory-off and redacts local ac
       if (method === "account/read") return account;
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   await session.verifyMemoryOff("D:/isolated-instance");
   await assert.rejects(session.startThread("D:/other-project"), /MEMORY_NOT_VERIFIED/);
@@ -83,7 +83,7 @@ test("one initialized session verifies effective memory-off and redacts local ac
 });
 
 test("memory-on effective config cannot precede a Codex thread", async () => {
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return { config: {
         features: { memories: true },
@@ -91,7 +91,7 @@ test("memory-on effective config cannot precede a Codex thread", async () => {
       } };
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   await assert.rejects(session.verifyMemoryOff("D:/isolated-instance"), /MEMORY_NOT_DISABLED/);
   assert.equal(session.phase, "recovery-required");
@@ -99,13 +99,13 @@ test("memory-on effective config cannot precede a Codex thread", async () => {
 });
 
 test("resumed Codex thread must report the verified working directory", async () => {
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
       if (method === "thread/resume") return { thread: { id: "thread-a", cwd: "D:/other-project" } };
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   await session.verifyMemoryOff("D:/isolated-instance");
   await assert.rejects(session.resume("thread-a", "D:/isolated-instance"), /different cwd/);
@@ -113,13 +113,13 @@ test("resumed Codex thread must report the verified working directory", async ()
 });
 
 test("new Codex thread must report the verified working directory", async () => {
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
       if (method === "thread/start") return { thread: { id: "thread-a", cwd: "D:/other-project" } };
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   await session.verifyMemoryOff("D:/isolated-instance");
   await assert.rejects(session.startThread("D:/isolated-instance"), /different cwd/);
@@ -127,7 +127,7 @@ test("new Codex thread must report the verified working directory", async () => 
 });
 
 test("native question uses exact server request ID and terminal event closes the turn", async () => {
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
       if (method === "thread/resume") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
@@ -135,7 +135,7 @@ test("native question uses exact server request ID and terminal event closes the
       return {};
     },
     async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   await session.verifyMemoryOff("D:/isolated-instance");
   await session.resume("thread-a", "D:/isolated-instance");
@@ -159,11 +159,11 @@ test("native question uses exact server request ID and terminal event closes the
 
 test("append and compact have separate ACK and observed completion semantics", async () => {
   const calls: string[] = [];
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) { calls.push(method); return method === "config/read" ? memoryOffConfig :
       method === "thread/start" ? { thread: { id: "thread-a", cwd: "D:/isolated-instance" } } : {}; },
     async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   await session.verifyMemoryOff("D:/isolated-instance");
   await session.startThread("D:/isolated-instance");
@@ -181,7 +181,7 @@ test("append and compact have separate ACK and observed completion semantics", a
 });
 
 test("failed transport is unknown acceptance and never falls back to a new thread", async () => {
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
       if (method === "thread/resume") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
@@ -190,7 +190,7 @@ test("failed transport is unknown acceptance and never falls back to a new threa
       return {};
     },
     async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test");
   await session.verifyMemoryOff("D:/isolated-instance");
   await session.resume("thread-a", "D:/isolated-instance");
@@ -203,14 +203,14 @@ test("failed transport is unknown acceptance and never falls back to a new threa
 });
 
 test("malformed mutation ACK remains unknown and cannot be retried on this connection", async () => {
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
       if (method === "thread/start") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
       if (method === "thread/inject_items") return { accepted: true };
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test"); await session.verifyMemoryOff("D:/isolated-instance");
   await session.startThread("D:/isolated-instance");
   await assert.rejects(session.appendWithoutTurn("context"),
@@ -221,14 +221,14 @@ test("malformed mutation ACK remains unknown and cannot be retried on this conne
 });
 
 test("wrong thread or turn never creates a native question", async () => {
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
       if (method === "thread/resume") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
       if (method === "turn/start") return { turn: { id: "turn-a", status: "inProgress" } };
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test"); await session.verifyMemoryOff("D:/isolated-instance");
   await session.resume("thread-a", "D:/isolated-instance"); await session.startTurn("hello");
   assert.throws(() => session.observe(frame({ id: "server-1", method: "item/tool/requestUserInput", params: {
@@ -240,14 +240,14 @@ test("wrong thread or turn never creates a native question", async () => {
 
 test("terminal notification before turn/start response is retained without a phantom active turn", async () => {
   let release!: (value: unknown) => void;
-  const session = new Codex0149Session({
+  const session = new Codex0160Session({
     async request(method) {
       if (method === "config/read") return memoryOffConfig;
       if (method === "thread/start") return { thread: { id: "thread-a", cwd: "D:/isolated-instance" } };
       if (method === "turn/start") return await new Promise<unknown>((resolve) => { release = resolve; });
       return {};
     }, async notify() {},
-  }, "0.149.0");
+  }, "0.160.0");
   await session.initialize("test"); await session.verifyMemoryOff("D:/isolated-instance");
   await session.startThread("D:/isolated-instance");
   const pending = session.startTurn("fast");

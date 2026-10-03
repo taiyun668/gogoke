@@ -890,7 +890,7 @@ mod tests {
         initialize_process_custody_schema(&mut connection).unwrap();
         let program_path = root_path.join("test-program.bin");
         fs::write(&program_path, b"fixture program bytes").unwrap();
-        let program = ProgramObservation::observe(&program_path, "0.149.0").unwrap();
+        let program = ProgramObservation::observe(&program_path, "0.160.0").unwrap();
         register_instance(&mut connection, &root, &Registration {
             request_id: "instanceReg", request_bytes: b"register instance", instance_id: "instanceA",
             driver_id: "codex", program: &program,
