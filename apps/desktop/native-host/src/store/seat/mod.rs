@@ -28,7 +28,8 @@ pub(crate) use continuity::{answer_takeover,answer_takeover_at_seat_revision,mar
     read_state_card,settle_health_receipt,takeover_questions,takeover_ready,
     update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
     TakeoverQuestion};
-pub(crate) use orchestration::{authorize_child_dispatch,orchestration_scope,
+pub(crate) use orchestration::{authorize_child_dispatch,current_child_dispatch_context,
+    orchestration_scope,
     render_codex_instruction,seat_effort,OrchestrationScope,RenderedInstruction};
 
 const LEGACY_SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT NOT NULL REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
@@ -169,8 +170,22 @@ pub(crate) struct NativeLeadAdmission {
     seat_id: String,
     incarnation: String,
     generation: i64,
+    model_call: Option<NativeSeatCall>,
 }
 impl NativeLeadAdmission {
+    pub(crate) fn from_model_call(caller:&NativeSeatCall)->Result<Self,SeatError> {
+        if caller.model_proof().is_none() || caller.tool()!=Some("gogoke_seat") {
+            return Err(SeatError::Denied);
+        }
+        Ok(Self {domain_id:caller.domain_id().to_owned(),seat_id:caller.seat_id().to_owned(),
+            incarnation:caller.incarnation().to_owned(),generation:caller.generation(),
+            model_call:Some(caller.clone())})
+    }
+    pub(crate) fn model_call(&self)->Option<&NativeSeatCall> {self.model_call.as_ref()}
+    pub(crate) fn parent_identity(&self)->(&str,&str,i64) {
+        (&self.domain_id,&self.seat_id,self.generation)
+    }
+    pub(crate) fn parent_incarnation(&self)->&str {&self.incarnation}
     pub(crate) fn from_native_runtime_snapshot(seat: &Seat) -> Result<Self, SeatError> {
         if seat.layer != Layer::User || seat.state != State::Busy {
             return Err(SeatError::Denied);
@@ -180,6 +195,7 @@ impl NativeLeadAdmission {
             seat_id: seat.seat_id.clone(),
             incarnation: seat.incarnation.clone(),
             generation: seat.generation,
+            model_call: None,
         })
     }
 }

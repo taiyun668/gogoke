@@ -89,6 +89,7 @@ fn requires_response(command: &Command) -> bool {
     !matches!(
         command,
         Command::Initialized | Command::QuestionAnswer { .. }
+            | Command::DynamicToolResponse { .. }
     )
 }
 
@@ -387,9 +388,45 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
     let Some((operation,driver))=candidate_binding_fields(db,&step.fields(),required_state)?
         else {return Ok(None)};
     if driver!="codex" {return Err(RpcJournalError::Denied);}
-    if !matches!(step.command,Command::Initialize { .. }|Command::Initialized
+    if !matches!(step.command,Command::Initialize { .. }
+        |Command::InitializeHostTools { .. }|Command::Initialized
         |Command::ConfigRead { .. }|Command::ThreadResume { .. }) {
         return Err(RpcJournalError::Denied);
+    }
+    if let Some(change)=super::generation_change::active_for_session(db,
+        step.domain_id,step.session_id)? {
+        if change.request_id!=step.open_request_id || change.stage!="OLD_STOPPED"
+            || change.owner_stop_request_id.is_some()
+            || change.raw_hex!=hex(step.open_request_bytes)
+            || change.old_generation==step.custody.binding.generation {
+            return Err(RpcJournalError::Denied);
+        }
+        let old=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
+                 AND a.session_id=e.session_id AND a.generation=e.old_generation
+                 AND a.process_operation_id=?5 AND a.state='STOPPED'
+               JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id
+                 AND c.generation=a.generation AND c.state='STOPPED'
+                 AND c.stop_proof_hash=a.stop_fact_id
+              WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+                AND e.process_operation_id=?4 AND e.old_generation=?6
+                AND e.seat_id=?7 AND c.ticket=?8 AND c.custodian_nonce=?9")?;
+        for (index,value) in [step.domain_id,step.session_id,step.open_request_id,
+            operation.as_str(),change.old_operation.as_str(),
+            change.old_generation.as_str(),change.seat_id.as_str(),
+            change.old_ticket.as_str(),change.old_nonce.as_str()]
+            .iter().enumerate() {old.bind_text((index+1) as i32,value)?;}
+        if !old.step_row()? || old.step_row()? {return Err(RpcJournalError::Denied);}
+    } else if !plain_protocol_resume_episode(db,step.domain_id,step.session_id,
+        step.open_request_id,&operation,&step.custody.binding.generation,
+        step.open_request_bytes)? {return Err(RpcJournalError::Denied);}
+    if let Command::ThreadResume {thread_id,..}=step.command {
+        if observed_old_acp_session_id(db,step.domain_id,step.session_id,&operation,
+            &step.custody.binding.generation,step.open_request_id)?.as_str()!=thread_id.as_str() {
+            return Err(RpcJournalError::Denied);
+        }
     }
     Ok(Some(operation))
 }
@@ -404,7 +441,7 @@ fn has_process_episode_schema(db: &VerifiedDatabaseConnection<'_>) -> Result<boo
 /// A public K-SESSION resume has an original episode but no compact/renew
 /// generation-change row. Reconstruct its authority only from that original
 /// request, stopped old physical generation, and held candidate identity.
-fn plain_acp_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+fn plain_protocol_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &str,
     session: &str, request_id: &str, operation: &str, generation: &str,
     raw_request: &[u8]) -> Result<bool> {
     let request=super::decode_request(raw_request).map_err(|_|RpcJournalError::Denied)?;
@@ -480,7 +517,7 @@ fn plain_acp_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &str,
         else {after.parse::<u64>().ok()==Some(claim)};
     Ok(adjacent && before==request.expected_revision && claim_matches
         && matches!((driver.as_str(),version.as_str()),
-            ("opencode","1.18.32")|("grok","1.0.41")))
+            ("codex","0.160.0")|("opencode","1.18.32")|("grok","1.0.41")))
 }
 
 /// A native-only proof that a prepared C steer has no H writer step and that
@@ -716,10 +753,10 @@ fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
                     .iter().enumerate() {old.bind_text((index+1) as i32,value)?;}
                 old.step_row()? && !old.step_row()?
             }
-        } else if driver=="opencode" || driver=="grok" {
-            plain_acp_resume_episode(db,domain,session,request_id,operation,
+        } else {
+            plain_protocol_resume_episode(db,domain,session,request_id,operation,
                 generation,&unhex(&original_hex)?)?
-        } else {false};
+        };
         if !authorized {return Err(RpcJournalError::Denied);}
     }
     Ok(Some((old,driver)))
@@ -983,6 +1020,42 @@ fn assert_current_binding(
     Ok((operation, driver))
 }
 
+/// Reuse the ordinary H claim/seat/instance/home and full physical custody
+/// check for a captured Codex model call. The open bytes come from H's own
+/// episode, not from the tool arguments or the caller.
+pub(super) fn current_codex_model_binding(
+    db:&VerifiedDatabaseConnection<'_>, custody:&PreparedCustody,
+    domain:&str, session:&str,
+) -> Result<(String,String,String,String)> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT e.request_id,e.raw_hex,e.seat_id,e.seat_incarnation
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
+             AND a.session_id=e.session_id AND a.generation=e.generation
+             AND a.process_operation_id=e.process_operation_id
+             AND a.state='COMMITTED'
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
+            AND e.phase='ACTIVE'")?;
+    q.bind_text(1,domain)?;q.bind_text(2,session)?;
+    q.bind_text(3,&custody.binding.generation)?;
+    if !q.step_row()? {return Err(RpcJournalError::Denied);}
+    let open_id=q.column_text(0)?;
+    let open_bytes=unhex(&q.column_text(1)?)?;
+    let seat_id=q.column_text(2)?;
+    let incarnation=q.column_text(3)?;
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}
+    drop(q);
+    let fields=StepFields {domain_id:domain,session_id:session,
+        open_request_id:&open_id,open_request_bytes:&open_bytes,
+        step_id:"model-call-source",custody};
+    original_open(db,&fields)?;
+    let (operation,driver)=assert_current_binding(db,&fields,&["ACTIVE"],false)?;
+    if driver!="codex" || !atom(&seat_id) || !atom(&incarnation) {
+        return Err(RpcJournalError::Denied);
+    }
+    Ok((operation,open_id,seat_id,incarnation))
+}
+
 fn original_open(db: &VerifiedDatabaseConnection<'_>, step: &StepFields<'_>) -> Result<()> {
     if !raw(step.open_request_bytes) {
         return Err(RpcJournalError::Invalid("open request bytes"));
@@ -1026,6 +1099,20 @@ pub(crate) fn prepare(
     owner: &OwnerIssuer,
     step: &Step<'_>,
 ) -> Result<PreparedStep> {
+    prepare_with_model_caller(db,owner,step,None)
+}
+
+pub(crate) fn prepare_model_tool_response(
+    db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    caller:&crate::store::seat::NativeSeatCall,step:&Step<'_>,
+) -> Result<PreparedStep> {
+    prepare_with_model_caller(db,owner,step,Some(caller))
+}
+
+fn prepare_with_model_caller(
+    db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    step:&Step<'_>,caller:Option<&crate::store::seat::NativeSeatCall>,
+) -> Result<PreparedStep> {
     for (value, name) in [
         (step.domain_id, "domain"),
         (step.session_id, "session"),
@@ -1039,6 +1126,19 @@ pub(crate) fn prepare(
     let encoded = step.command.encode(step.rpc_id)?;
     transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
+        if let Command::DynamicToolResponse {request_id,..}=step.command {
+            let caller=caller.ok_or(RpcJournalError::Denied)?;
+            super::model_call::revalidate_model_call_in_transaction(db,caller)
+                .map_err(|_|RpcJournalError::Denied)?;
+            let proof=caller.model_proof().ok_or(RpcJournalError::Denied)?;
+            if step.step_id!=proof.host_request_id() || step.rpc_id.is_some()
+                || step.custody!=proof.custody()
+                || step.domain_id!=proof.domain_id()
+                || step.session_id!=proof.session_id()
+                || request_id!=proof.typed_rpc_id() {
+                return Err(RpcJournalError::Denied);
+            }
+        } else if caller.is_some() {return Err(RpcJournalError::Denied);}
         original_open(db, &step.fields())?;
         let operation = assert_native_binding(db, step, &["PREPARED", "ACTIVE"], false)?;
         if let Some(change)=super::generation_change::active_for_session(db,
@@ -1053,7 +1153,8 @@ pub(crate) fn prepare(
                     if thread_id==&change.thread_id);
             let candidate_handshake=change.stage=="OLD_STOPPED"
                 && step.open_request_id==change.request_id && operation!=change.old_operation
-                && matches!(step.command,Command::Initialize {..}|Command::Initialized
+                && matches!(step.command,Command::Initialize {..}
+                    |Command::InitializeHostTools {..}|Command::Initialized
                     |Command::ConfigRead {..}|Command::ThreadResume {..});
             if !original_compact && !candidate_handshake {return Err(RpcJournalError::Denied);}
         }
@@ -1379,7 +1480,7 @@ fn assert_acp_binding(db: &VerifiedDatabaseConnection<'_>, step: &AcpStep<'_>,
             candidate_acp_change_matches(db,step,&operation,change)?
         } else {
             acp_candidate_step_id(&operation,step.command)?==step.step_id
-                && plain_acp_resume_episode(db,step.domain_id,step.session_id,
+                && plain_protocol_resume_episode(db,step.domain_id,step.session_id,
                     step.open_request_id,&operation,&step.custody.binding.generation,
                     step.open_request_bytes)?
         };
