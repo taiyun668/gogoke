@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
       code_mode_fixture_only:
-        description: Verify fixed official Code Mode member and its grant mutation only; full library, other mutations and server gates are NOT_RUN
+        description: Verify fixed Code Mode file permission binding and its production grant mutation only; full library, other mutations and server gates are NOT_RUN
         type: boolean
         default: false
 
@@ -232,7 +232,6 @@ jobs:
             @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
             @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
             @{ id = 'code-mode-member-binding'; filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file' },
-            @{ id = 'code-mode-member-real-lpac'; filter = 'official_code_mode_member_runs_in_same_lpac_job_only_after_exact_grant' },
             @{ id = 'native-current-install-pin'; filter = 'pin_is_read_from_same_verified_store_and_requires_observed_login' },
             @{ id = 'manual-repin-product'; filter = 'user_manual_program_repin_observes_fixed_cli_and_preserves_original_instance' },
             @{ id = 'manual-repin-preservation'; filter = 'manual_repin_preserves_home_creation_credentials_and_legacy_unknown_exactly' },
@@ -269,8 +268,8 @@ jobs:
             )
             Write-Host 'Focused ordinary OAuth repairs only; full library, compiled mutations and server suites NOT_RUN.'
           } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') {
-            $probes = @($probes | Where-Object { $_.id -in @('code-mode-member-binding','code-mode-member-real-lpac') })
-            Write-Host 'Fixed Code Mode member and grant mutation only; full library, other mutations and server suites NOT_RUN.'
+            $probes = @($probes | Where-Object { $_.id -in @('code-mode-member-binding') })
+            Write-Host 'Fixed Code Mode file permission binding and grant mutation only; real CLI tool execution remains Win11 E2E NOT_RUN; full library, other mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
@@ -400,7 +399,7 @@ jobs:
           if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) {
             throw 'Exact component production grant must match once'
           }
-          $filter = 'official_code_mode_member_runs_in_same_lpac_job_only_after_exact_grant'
+          $filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file'
           try {
             [IO.File]::WriteAllText($path,$source.Replace($needle,''),[Text.UTF8Encoding]::new($false))
             $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
