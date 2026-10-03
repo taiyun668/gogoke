@@ -143,7 +143,8 @@ class AliasRegistry {
 
   alias(category, raw) {
     const value = String(raw);
-    const key = `${category}\u0000${category === "rpc" ? `${typeof raw}:` : ""}${value}`;
+    const typed = category === "rpc" || category === "claude-control" || category === "claude-user";
+    const key = `${category}\u0000${typed ? `${typeof raw}:` : ""}${value}`;
     if (!this.#aliases.has(key)) {
       const ordinal = (this.#next.get(category) || 0) + 1;
       this.#next.set(category, ordinal);
@@ -212,6 +213,23 @@ function classifyFailureEvidence(evidence) {
   return { classification: "real_cli_tool_error_unclassified", matchedOutputFields: outputs.length };
 }
 
+function claudeAssociation(parsed, direction) {
+  if (parsed.type === "control_request" && (typeof parsed.request_id === "string" || typeof parsed.request_id === "number")) {
+    return { namespace: "claude-control", role: "request", id: parsed.request_id };
+  }
+  if (parsed.type === "control_response" && parsed.response && typeof parsed.response === "object"
+      && (typeof parsed.response.request_id === "string" || typeof parsed.response.request_id === "number")) {
+    return { namespace: "claude-control", role: "response", id: parsed.response.request_id };
+  }
+  if (parsed.type !== "user" || (typeof parsed.uuid !== "string" && typeof parsed.uuid !== "number")
+      || parsed.isSynthetic === true || parsed.tool_use_result !== undefined || parsed.parent_tool_use_id != null
+      || !parsed.message || typeof parsed.message !== "object" || parsed.message.role !== "user") return null;
+  const content = parsed.message.content;
+  const humanContent = typeof content === "string" || (Array.isArray(content) && content.length > 0
+    && content.every(part => part && typeof part === "object" && part.type !== "tool_result"));
+  return humanContent ? { namespace: "claude-user", role: direction === "out" ? "input" : "echo", id: parsed.uuid } : null;
+}
+
 function normalizeRawFrames(document, direction, aliases, redactions) {
   if (!["gogoke.37.private-direct-frames.v1", "gogoke.37.private-e2e-ledger.v1"].includes(document?.schema) || !Array.isArray(document.frames)) {
     fail("raw frame input has an unsupported private-capture schema");
@@ -240,7 +258,8 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
     try { parsed = JSON.parse(frame.originalFrame); } catch { fail("a raw originalFrame is not valid JSON"); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail("a raw originalFrame is not a JSON object");
     const protocolMessage = sanitize(parsed, `${frame.sourceKind}:${index + 1}`, aliases, redactions, "");
-    const hasRpcId = Object.hasOwn(parsed, "id");
+    const claude = claudeAssociation(parsed, actualDirection);
+    const hasRpcId = !claude && Object.hasOwn(parsed, "id");
     const rpcRole = !hasRpcId ? "notification" : Object.hasOwn(parsed, "method") ? "request" : (Object.hasOwn(parsed, "result") || Object.hasOwn(parsed, "error")) ? "response" : "message-with-id";
     const rpcIdAlias = hasRpcId && (typeof parsed.id === "string" || typeof parsed.id === "number")
       ? aliases.alias(idCategory("id", "$.id", parsed) || "rpc", parsed.id)
@@ -278,6 +297,8 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
       rpcRole,
       rpcIdAlias,
       rpcIdType: rpcIdAlias === null ? null : typeof parsed.id,
+      ...(claude ? { protocolNamespace: claude.namespace, protocolRole: claude.role,
+        protocolIdAlias: aliases.alias(claude.namespace, claude.id), protocolIdType: typeof claude.id } : {}),
       message: protocolMessage,
     };
   });
@@ -293,33 +314,51 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
   };
 }
 
-function correlateFrames(frames) {
-  const requests = frames.filter(frame => frame.rpcRole === "request" && frame.rpcIdAlias);
-  const responses = frames.filter(frame => frame.rpcRole === "response" && frame.rpcIdAlias);
+function physicalScope(frame) {
+  const custody = frame.ticketAlias != null && frame.custodianNonceAlias != null;
+  const values = [frame.sessionAlias, frame.operationAlias, frame.generationAlias,
+    ...(custody ? [frame.ticketAlias, frame.custodianNonceAlias] : [frame.sourceEpochAlias])];
+  return values.some(value => value === null) ? null : { custody };
+}
+
+function samePhysicalScope(request, response, scope) {
+  return response.sessionAlias === request.sessionAlias && response.operationAlias === request.operationAlias
+    && response.generationAlias === request.generationAlias
+    && (scope.custody ? response.ticketAlias === request.ticketAlias && response.custodianNonceAlias === request.custodianNonceAlias
+      : response.sourceEpochAlias === request.sourceEpochAlias);
+}
+
+function correlateFrames(frames, namespace = "rpc") {
+  const isRequest = frame => namespace === "rpc" ? frame.rpcRole === "request" && frame.rpcIdAlias
+    : frame.protocolNamespace === namespace && ["request", "input"].includes(frame.protocolRole) && frame.protocolIdAlias;
+  const isResponse = frame => namespace === "rpc" ? frame.rpcRole === "response" && frame.rpcIdAlias
+    : frame.protocolNamespace === namespace && ["response", "echo"].includes(frame.protocolRole) && frame.protocolIdAlias;
+  const idOf = frame => namespace === "rpc" ? frame.rpcIdAlias : frame.protocolIdAlias;
+  const requests = frames.filter(isRequest);
+  const responses = frames.filter(isResponse);
   const pairs = [];
   const unmatchedRequests = [];
   const unmatchedResponses = [];
   const usedResponses = new Set();
   for (const request of requests) {
-    const custodyScope = request.ticketAlias != null && request.custodianNonceAlias != null;
-    const scope = [request.sessionAlias, request.operationAlias, request.generationAlias,
-      ...(custodyScope ? [request.ticketAlias, request.custodianNonceAlias] : [request.sourceEpochAlias])];
-    if (scope.some(value => value === null)) {
+    const scope = physicalScope(request);
+    if (!scope) {
       unmatchedRequests.push({ lane: request.lane, sequence: request.sequence, reason: "missing-physical-scope" });
       continue;
     }
-    const candidates = responses.filter(candidate => candidate.rpcIdAlias === request.rpcIdAlias && candidate.lane !== request.lane
-      && candidate.sessionAlias === request.sessionAlias && candidate.operationAlias === request.operationAlias
-      && candidate.generationAlias === request.generationAlias
-      && (custodyScope ? candidate.ticketAlias === request.ticketAlias && candidate.custodianNonceAlias === request.custodianNonceAlias
-        : candidate.sourceEpochAlias === request.sourceEpochAlias));
+    const candidates = responses.filter(candidate => idOf(candidate) === idOf(request) && candidate.lane !== request.lane
+      && samePhysicalScope(request, candidate, scope));
     if (candidates.length !== 1 || usedResponses.has(candidates[0] ?? null)) {
       unmatchedRequests.push({ lane: request.lane, sequence: request.sequence, reason: candidates.length > 1 ? "ambiguous-response" : candidates.length === 0 ? "no-opposite-response-in-scope" : "response-already-associated" });
       continue;
     }
     const response = candidates[0];
     usedResponses.add(response);
-    pairs.push({ request: { lane: request.lane, sequence: request.sequence }, response: { lane: response.lane, sequence: response.sequence }, rpcIdAlias: request.rpcIdAlias, rpcIdType: request.rpcIdType, scope: { session: request.sessionAlias, operation: request.operationAlias, generation: request.generationAlias, sourceEpoch: request.sourceEpochAlias, ticket: request.ticketAlias, custodianNonce: request.custodianNonceAlias }, basis: custodyScope ? "same-native-process-custody" : "recorded-source-epoch" });
+    pairs.push({ request: { lane: request.lane, sequence: request.sequence }, response: { lane: response.lane, sequence: response.sequence },
+      ...(namespace === "rpc" ? { rpcIdAlias: request.rpcIdAlias, rpcIdType: request.rpcIdType }
+        : { protocolNamespace: namespace, protocolIdAlias: request.protocolIdAlias, protocolIdType: request.protocolIdType }),
+      scope: { session: request.sessionAlias, operation: request.operationAlias, generation: request.generationAlias, sourceEpoch: request.sourceEpochAlias, ticket: request.ticketAlias, custodianNonce: request.custodianNonceAlias },
+      basis: scope.custody ? "same-native-process-custody" : "recorded-source-epoch" });
   }
   for (const response of responses) if (!usedResponses.has(response)) unmatchedResponses.push({ lane: response.lane, sequence: response.sequence });
   return {
@@ -489,6 +528,8 @@ function importCapture(options) {
   const directionComplete = outCount > 0 && inCount > 0;
   const baselineStatus = outcome === "failed" ? "NOT_READY_FAILED_CAPTURE" : !directionComplete ? "NOT_READY_MISSING_DIRECTION" : "REVIEW_REQUIRED";
   const correlation = correlateFrames(normalizedRaw.frames);
+  const claudeControlCorrelation = correlateFrames(normalizedRaw.frames, "claude-control");
+  const claudeUserEchoCorrelation = correlateFrames(normalizedRaw.frames, "claude-user");
 
   // Attach only the raw cursor-to-frame correlation data, never original frame text.
   const capture = {
@@ -514,6 +555,8 @@ function importCapture(options) {
       sourceRecordCounts: { frames: normalizedRaw.sourceFrameCount, commands: normalizedRaw.sourceCommandCount, excludedUnprovenCommands: normalizedRaw.unprovenCommandCount },
       ordering: normalizedRaw.ordering,
       requestResponseCorrelation: correlation,
+      claudeControlCorrelation,
+      claudeUserEchoCorrelation,
       normalizedFrameLinks: { matched: outputEvents.linkedToRawFrames, totalEvents: outputEvents.count, ...outputEvents.linkCoverage },
       redactions: { count: redactions.length, fields: redactions },
       evidenceProvenance: "Controller-provided private direct frame capture and matching normalized-output/failure records",
@@ -663,6 +706,8 @@ function compareBundles(options) {
       normalizedEventSequence: { baseline: baseEventMethods, candidate: nextEventMethods, changedPositions: eventOrderChanges },
       semanticValueChanges: semanticChanges,
       responseAssociations: { baseline: base.manifest.requestResponseCorrelation, candidate: next.manifest.requestResponseCorrelation },
+      claudeControlAssociations: { baseline: base.manifest.claudeControlCorrelation ?? null, candidate: next.manifest.claudeControlCorrelation ?? null },
+      claudeUserEchoes: { baseline: base.manifest.claudeUserEchoCorrelation ?? null, candidate: next.manifest.claudeUserEchoCorrelation ?? null },
       directionCoverage: { baseline: base.manifest.directionCoverage, candidate: next.manifest.directionCoverage },
       redactionCounts: { baseline: base.manifest.redactions?.count ?? null, candidate: next.manifest.redactions?.count ?? null },
     },
