@@ -255,7 +255,14 @@ fn project_parallel_cap_requires_explicit_valid_owner_value() {
 fn previous_seat_schema_migrates_without_inventing_a_cap() {
     fixture(|db, owner| {
         let before = create_user(db, owner, "lead", "createLead");
-        db.execute("DROP TABLE gogoke_v37_seat_project_caps").unwrap();
+        // Build the actual old schema, including absence of later E.2 tables.
+        // Removing only the cap from the current schema creates schema drift.
+        let old_tables = previous_schema();
+        for (name, _) in expected_schema() {
+            if !old_tables.iter().any(|(old, _)| old == &name) {
+                db.execute(&format!("DROP TABLE {name}")).unwrap();
+            }
+        }
         assert_eq!(schema(db).unwrap(), previous_schema());
         initialize_schema(db).unwrap();
         assert_eq!(schema(db).unwrap(), expected_schema());
