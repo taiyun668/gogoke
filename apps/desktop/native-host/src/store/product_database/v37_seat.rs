@@ -2,7 +2,7 @@
 //! The parent must verify UserOriginProof before invoking either method.
 use super::*;
 use crate::store::atomic::Parser;
-use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, Seat, SeatChange, SeatError, SeatReceipt, State, StoreTemplate};
+use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, Seat, SeatChange, SeatError, SeatReceipt, State};
 
 fn key(name: &str) -> JsonString { JsonString::from_str(name) }
 
@@ -35,7 +35,7 @@ pub(super) fn is_user_v37_configuration_frame(frame: &[u8]) -> bool {
         if schema.to_well_formed_string().as_deref() == Some("gogoke.37.owner-configuration.v1"))
 }
 
-fn string_field(payload: &BTreeMap<JsonString, Json>, name: &'static str) -> Result<String> {
+pub(super) fn string_field(payload: &BTreeMap<JsonString, Json>, name: &'static str) -> Result<String> {
     match payload.get(&key(name)) {
         Some(Json::String(value)) => value.to_well_formed_string()
             .filter(|value| !value.is_empty() && !value.contains('\0'))
@@ -66,8 +66,6 @@ fn seat_result(seat: &Seat) -> Result<BTreeMap<JsonString, Json>> {
             State::Idle => "IDLE", State::Busy => "BUSY", State::Reclaimed => "RECLAIMED",
         }))),
         (key("generation"), Json::String(JsonString::from_str(&seat.generation.to_string()))),
-        (key("takeoverReady"), Json::Bool(false)),
-        (key("takeoverAnswers"), Json::Null),
     ]);
     result.insert(key("instanceId"), if seat.instance_id.is_empty() { Json::Null }
         else { Json::String(JsonString::from_str(&seat.instance_id)) });
@@ -125,6 +123,166 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// H may project only the exact User answer which C already settled for
+    /// this live turn. Neither model prose nor request payload becomes an
+    /// answer; the source reference names C's original receipt.
+    pub(crate) fn dispatch_native_takeover_answer(&mut self, request:&V37Request,
+        caller:&seat::NativeSeatCall)->Result<Vec<u8>> {
+        if request.family!="K-SEAT" || request.operation!="takeover-answers" {
+            return Err(OrchestrationError::Invalid("takeover operation"));
+        }
+        if request.domain_id!=caller.domain_id() || request.target_id!=caller.seat_id() ||
+            !exact_payload(request,&["cardId","cardAnswerRequestId","answerRevision"]) {
+            return Ok(receipt(request,V37Status::Denied,request.expected_revision,
+                request.expected_revision,BTreeMap::new()));
+        }
+        let card_id=string_field(&request.payload,"cardId")?;
+        let answer_request=string_field(&request.payload,"cardAnswerRequestId")?;
+        let answer_revision=string_field(&request.payload,"answerRevision")?.parse::<i64>()
+            .ok().filter(|value|*value>=0).ok_or(OrchestrationError::Invalid("answerRevision"))?;
+        let present=seat::get(&self.connection,&request.domain_id,&request.target_id)?;
+        let Some(present)=present else {return Ok(receipt(request,V37Status::Conflict,0,0,BTreeMap::new()));};
+        let seat_revision=seat_revision(&present)?;
+        if seat_revision!=request.expected_revision {
+            return Ok(receipt(request,V37Status::Stale,seat_revision,seat_revision,BTreeMap::new()));
+        }
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,o.native_receipt_id FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
+        q.bind_text(1,&request.domain_id)?;q.bind_text(2,&card_id)?;
+        q.bind_text(3,&answer_request)?;
+        if !q.step_row()? {
+            return Ok(receipt(request,V37Status::Denied,seat_revision,seat_revision,BTreeMap::new()));
+        }
+        let question_id=q.column_text(0)?;let answer_wire=q.column_text(1)?;
+        let source_seat=q.column_text(2)?;let source_turn=q.column_text(3)?;
+        let source_generation=q.column_text(4)?;let source_receipt=q.column_text(5)?;
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(q);
+        if source_seat!=caller.seat_id() || source_turn!=caller.turn_id() ||
+            source_generation!=present.generation.to_string() || source_receipt.is_empty() {
+            return Ok(receipt(request,V37Status::Denied,seat_revision,seat_revision,BTreeMap::new()));
+        }
+        let Json::Object(wire)=Parser::parse(&answer_wire)? else {return Err(OrchestrationError::Invalid("C answer wire"));};
+        let Some(Json::Object(result))=wire.get(&key("result")) else {return Err(OrchestrationError::Invalid("C answer result"));};
+        let Some(Json::Object(answers))=result.get(&key("answers")) else {return Err(OrchestrationError::Invalid("C answers"));};
+        let Some(Json::Object(answer))=answers.get(&key(&question_id)) else {return Err(OrchestrationError::Invalid("C question answer"));};
+        let Some(Json::Array(values))=answer.get(&key("answers")) else {return Err(OrchestrationError::Invalid("C answer values"));};
+        let [Json::String(value)]=values.as_slice() else {return Err(OrchestrationError::Invalid("C answer count"));};
+        let text=value.to_well_formed_string().filter(|value|!value.is_empty())
+            .ok_or(OrchestrationError::Invalid("C answer text"))?;
+        let source_ref=format!("C-QCARD:{card_id}:{answer_request}:{source_receipt}");
+        let prior=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_seat_continuity_operations WHERE domain_id=?1 AND request_id=?2")?;
+        prior.bind_text(1,&request.domain_id)?;prior.bind_text(2,&request.request_id)?;
+        let replayed=prior.step_row()?;
+        if replayed && prior.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(prior);
+        let outcome=seat::answer_takeover_at_seat_revision(&mut self.connection,caller,
+            &question_id,&text,seat::AnswerBasis::Cited {source_ref},present.revision,
+            answer_revision,&request.request_id,&request.raw_bytes);
+        match outcome {
+            Ok(revision)=>Ok(receipt(request,if replayed {V37Status::Replayed} else {V37Status::Applied},seat_revision,seat_revision,
+                BTreeMap::from([
+                    (key("questionId"),Json::String(JsonString::from_str(&question_id))),
+                    (key("answerRevision"),Json::String(JsonString::from_str(&revision.to_string()))),
+                ]))),
+            Err(error)=>{
+                let status=status_for(&error,request,Some(&present));
+                let mut result=BTreeMap::new();
+                if status==V37Status::Unknown {
+                    result.insert(key("reason"),Json::String(JsonString::from_str(&format!("native takeover store: {error:?}"))));
+                }
+                Ok(receipt(request,status,seat_revision,seat_revision,result))
+            }
+        }
+    }
+
+    fn dispatch_user_state_card(&mut self,request:&V37Request)->Result<Vec<u8>> {
+        self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let read=(||->Result<Vec<u8>> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            let identity=Statement::prepare(self.connection.as_ptr(),
+                "SELECT lower(hex(request_bytes)) FROM main.v37_ledger_receipt WHERE family='K-SEAT' AND domain_id=?1 AND request_id=?2")?;
+            identity.bind_text(1,&request.domain_id)?;identity.bind_text(2,&request.request_id)?;
+            if identity.step_row()? {
+                let raw:String=request.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+                let same=identity.column_text(0)?==raw;
+                if identity.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                if !same {return Ok(receipt(request,V37Status::Conflict,request.expected_revision,
+                    request.expected_revision,BTreeMap::new()));}
+            }
+            drop(identity);
+            let present=seat::get(&self.connection,&request.domain_id,&request.target_id)?;
+            let revision=present.as_ref().map(seat_revision).transpose()?.unwrap_or(0);
+            if !exact_payload(request,&[]) {
+                return Ok(receipt(request,V37Status::Denied,revision,revision,BTreeMap::new()));
+            }
+            let Some(seat)=present else {
+                return Ok(receipt(request,V37Status::Conflict,0,0,BTreeMap::new()));
+            };
+            if request.expected_revision!=revision {
+                return Ok(receipt(request,V37Status::Stale,revision,revision,BTreeMap::new()));
+            }
+            let card=seat::read_state_card(&self.connection,&seat)?;
+            let questions=seat::takeover_questions(&seat)?;
+            let mut result=seat_result(&seat)?;
+            result.insert(key("takeoverReady"),Json::Bool(card.takeover_ready));
+            result.insert(key("takeoverQuestions"),Json::Array(questions.into_iter().map(|question|
+                Json::Object(BTreeMap::from([
+                    (key("id"),Json::String(JsonString::from_str(&question.id))),
+                    (key("prompt"),Json::String(JsonString::from_str(&question.prompt))),
+                ]))).collect()));
+            result.insert(key("takeoverAnswers"),Json::Array(card.takeover_answers.into_iter().map(|answer|
+                Json::Object(BTreeMap::from([
+                    (key("questionId"),Json::String(JsonString::from_str(&answer.question_id))),
+                    (key("answer"),Json::String(JsonString::from_str(&answer.answer))),
+                    (key("basis"),Json::String(JsonString::from_str(&answer.basis))),
+                    (key("sourceRef"),Json::String(JsonString::from_str(&answer.source_ref))),
+                    (key("howToFind"),Json::String(JsonString::from_str(&answer.how_to_find))),
+                ]))).collect()));
+            result.insert(key("stateCardRevision"),Json::String(JsonString::from_str(&card.revision.to_string())));
+            result.insert(key("stateCard"),match card.card_json {
+                Some(json)=>Parser::parse(&json)?,None=>Json::Null,
+            });
+            let prior=Statement::prepare(self.connection.as_ptr(),
+                "SELECT lower(hex(request_bytes)),receipt_bytes FROM main.v37_ledger_receipt WHERE family='K-SEAT' AND domain_id=?1 AND request_id=?2")?;
+            prior.bind_text(1,&request.domain_id)?;prior.bind_text(2,&request.request_id)?;
+            if prior.step_row()? {
+                let raw:String=request.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+                let saved_raw=prior.column_text(0)?;
+                let saved_receipt=prior.column_text(1)?;
+                if prior.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                if saved_raw!=raw {return Ok(receipt(request,V37Status::Conflict,revision,revision,BTreeMap::new()));}
+                let saved=crate::store::session_transport::decode_receipt(saved_receipt.as_bytes())
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("seat card receipt: {error:?}")))?;
+                if saved.family!="K-SEAT"||saved.operation!="state-card"||
+                    saved.target_id!=request.target_id {return Err(OrchestrationError::OperationConflict);}
+                let old=saved.into_result();
+                let same=old.len()==result.len()&&old.iter().all(|(key,value)|
+                    result.get(key).is_some_and(|current|current.canonical()==value.canonical()));
+                if !same {return Ok(receipt(request,V37Status::Stale,revision,revision,BTreeMap::new()));}
+                return Ok(receipt(request,V37Status::Replayed,revision,revision,old));
+            }
+            drop(prior);
+            let bytes=receipt(request,V37Status::Applied,revision,revision,result);
+            if bytes.len()>crate::ipc::MAX_FRAME_BYTES {return Err(OrchestrationError::Invalid("state card receipt bound"));}
+            let insert=Statement::prepare(self.connection.as_ptr(),
+                "INSERT INTO main.v37_ledger_receipt(family,domain_id,request_id,request_bytes,receipt_bytes) VALUES('K-SEAT',?1,?2,?3,?4)")?;
+            insert.bind_text(1,&request.domain_id)?;insert.bind_text(2,&request.request_id)?;
+            insert.bind_blob(3,&request.raw_bytes)?;insert.bind_blob(4,&bytes)?;insert.step_done()?;
+            Ok(bytes)
+        })();
+        match read {
+            Ok(bytes)=>{self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;Ok(bytes)},
+            Err(primary)=>{
+                if let Err(error)=self.connection.execute("ROLLBACK") {
+                    return Err(OrchestrationError::V37StoreFailure(format!("seat state card: {primary:?}; rollback: {error:?}")));
+                }
+                Err(primary)
+            }
+        }
+    }
+
     /// Parent integration: dispatch K-SEAT only after the UserOriginProof check.
     /// The native Owner issuer, never request JSON, establishes the user layer.
     pub(super) fn dispatch_user_seat(&mut self, request: &V37Request) -> Result<Vec<u8>> {
@@ -133,22 +291,9 @@ impl<'root> ProductDatabase<'root> {
             return Ok(receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, BTreeMap::new()));
         }
+        if request.operation == "state-card" {return self.dispatch_user_state_card(request);}
         let prior = current(self, request)?;
         let prior_revision = prior.as_ref().map(seat_revision).transpose()?.unwrap_or(0);
-        if request.operation == "state-card" {
-            if !exact_payload(request, &[]) {
-                return Ok(receipt(request, V37Status::Denied, prior_revision, prior_revision, BTreeMap::new()));
-            }
-            // A current Owner check precedes every scoped read. ProductDatabase's
-            // single connection is the seat store's connection, not a duplicate.
-            return Ok(match prior {
-                None => receipt(request, V37Status::Conflict, 0, 0, BTreeMap::new()),
-                Some(_) if request.expected_revision != prior_revision =>
-                    receipt(request, V37Status::Stale, prior_revision, prior_revision, BTreeMap::new()),
-                Some(seat) => receipt(request, V37Status::Applied,
-                    prior_revision, prior_revision, seat_result(&seat)?),
-            });
-        }
         let native = NativeOrigin::user(&self.owner);
         let outcome: std::result::Result<SeatReceipt, SeatError> = match request.operation.as_str() {
             "create-from-template" => {
@@ -263,6 +408,92 @@ impl<'root> ProductDatabase<'root> {
                 _ => Err(OrchestrationError::Invalid(name)),
             }
         };
+        let revision = |name: &'static str| -> Result<i64> {
+            let value = string_field(&fields, name)?;
+            value.parse::<i64>().ok().filter(|value| *value >= 0)
+                .ok_or(OrchestrationError::Invalid(name))
+        };
+        let policy_domain = if command.starts_with("policy-") || command=="seat-template" {
+            Some((string_field(&fields, "domainId")?, string_field(&fields, "requestId")?))
+        } else { None };
+        let policy = match command.as_str() {
+            "seat-template" if fields.len() == 6 => {
+                let template_id=string_field(&fields,"templateId")?;
+                let settings=match fields.get(&key("settings")) {
+                    Some(value @ Json::Object(_))=>value.canonical(),
+                    _=>return Err(OrchestrationError::Invalid("settings")),
+                };
+                let (domain,request_id)=policy_domain.as_ref().expect("template command");
+                Some(seat::apply_owner_policy_configuration(&mut self.connection,&self.owner,
+                    domain,request_id,frame,seat::OwnerPolicyCommand::Template {
+                        template_id:&template_id,settings_json:settings.as_bytes()})?)
+            }
+            "policy-initialize" if fields.len() == 6 => {
+                let stage = string_field(&fields, "stage")?;
+                if revision("expectedRevision")? != 0 {
+                    return Err(OrchestrationError::Invalid("expectedRevision"));
+                }
+                let (domain, request_id) = policy_domain.as_ref().expect("policy command");
+                Some(seat::apply_owner_policy_configuration(&mut self.connection, &self.owner,
+                    domain, request_id, frame, seat::OwnerPolicyCommand::Initialize {stage:&stage})?)
+            }
+            "policy-call-grant" if fields.len() == 9 => {
+                let caller = string_field(&fields, "callerSeatId")?;
+                let target = string_field(&fields, "targetId")?;
+                let action = match string_field(&fields, "action")?.as_str() {
+                    "DISPATCH" => seat::CallAction::Dispatch,
+                    "REVIEW" => seat::CallAction::Review,
+                    "MESSAGE" => seat::CallAction::Message,
+                    "MERGE" => seat::CallAction::Merge,
+                    _ => return Err(OrchestrationError::Invalid("action")),
+                };
+                let expires_at_ms = match fields.get(&key("expiresAtMs")) {
+                    Some(Json::Null) => None,
+                    Some(Json::String(value)) => Some(value.to_well_formed_string()
+                        .and_then(|text| text.parse::<i64>().ok())
+                        .filter(|value| *value > 0)
+                        .ok_or(OrchestrationError::Invalid("expiresAtMs"))?),
+                    _ => return Err(OrchestrationError::Invalid("expiresAtMs")),
+                };
+                let (domain, request_id) = policy_domain.as_ref().expect("policy command");
+                Some(seat::apply_owner_policy_configuration(&mut self.connection, &self.owner,
+                    domain, request_id, frame, seat::OwnerPolicyCommand::Grant { caller: &caller,
+                    target: &target, action, expires_at_ms,
+                    expected_revision: revision("expectedRevision")? })?)
+            }
+            "policy-gate" if fields.len() == 11 => {
+                let gate_id = string_field(&fields, "gateId")?;
+                let submitter = string_field(&fields, "submitterSeatId")?;
+                let reviewer = string_field(&fields, "reviewerSeatId")?;
+                let from_stage = string_field(&fields, "fromStage")?;
+                let to_stage = string_field(&fields, "toStage")?;
+                let (domain, request_id) = policy_domain.as_ref().expect("policy command");
+                Some(seat::apply_owner_policy_configuration(&mut self.connection, &self.owner,
+                    domain, request_id, frame, seat::OwnerPolicyCommand::Gate {gate_id:&gate_id,submitter:&submitter,
+                    reviewer:&reviewer,from_stage:&from_stage,to_stage:&to_stage,
+                    reject_cap:cap("rejectCap")?,expected_revision:revision("expectedRevision")?})?)
+            }
+            "policy-escalation-route" if fields.len() == 8 => {
+                let from_seat = string_field(&fields, "fromSeatId")?;
+                let reason = string_field(&fields, "reason")?;
+                let to_seat = string_field(&fields, "toSeatId")?;
+                let (domain, request_id) = policy_domain.as_ref().expect("policy command");
+                Some(seat::apply_owner_policy_configuration(&mut self.connection, &self.owner,
+                    domain, request_id, frame, seat::OwnerPolicyCommand::Route {from_seat:&from_seat,
+                    reason:&reason,to_seat:&to_seat,expected_revision:revision("expectedRevision")?})?)
+            }
+            _ => None,
+        };
+        if let Some((revision, replayed)) = policy {
+            let (_, request_id) = policy_domain.as_ref().expect("policy command");
+            return Ok(Json::Object(BTreeMap::from([
+                (key("schema"), Json::String(JsonString::from_str("gogoke.37.owner-configuration.v1"))),
+                (key("command"), Json::String(JsonString::from_str(&command))),
+                (key("requestId"), Json::String(JsonString::from_str(&request_id))),
+                (key("status"), Json::String(JsonString::from_str(if replayed {"REPLAYED"} else {"APPLIED"}))),
+                (key("revision"), Json::String(JsonString::from_str(&revision.to_string()))),
+            ])).canonical().into_bytes());
+        }
         match command.as_str() {
             "project-parallel-cap" if fields.len() == 4 => {
                 let domain = string_field(&fields, "domainId")?;
@@ -271,17 +502,6 @@ impl<'root> ProductDatabase<'root> {
             "instance-concurrency-cap" if fields.len() == 4 => {
                 let instance = string_field(&fields, "instanceId")?;
                 instance::set_instance_concurrency_cap(&mut self.connection, &self.owner, &instance, cap("value")?)?;
-            }
-            "seat-template" if fields.len() == 5 => {
-                let domain = string_field(&fields, "domainId")?;
-                let template = string_field(&fields, "templateId")?;
-                let settings = match fields.get(&key("settings")) {
-                    Some(value @ Json::Object(_)) => value.canonical(),
-                    _ => return Err(OrchestrationError::Invalid("settings")),
-                };
-                seat::store_template(&mut self.connection, NativeOrigin::user(&self.owner), StoreTemplate {
-                    domain_id: &domain, template_id: &template, settings_json: settings.as_bytes(),
-                })?;
             }
             "worktree-source" if fields.len() == 5 => {
                 let repository = string_field(&fields, "repositoryId")?;
@@ -356,7 +576,14 @@ mod tests {
             assert_eq!(seat::read_project_parallel_cap(&product.connection, "projectA").unwrap(), 2);
             assert!(product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"project-parallel-cap","domainId":"projectA","value":0}"#).is_err());
             assert!(product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"project-parallel-cap","domainId":"projectA","value":2,"sql":"DROP TABLE"}"#).is_err());
-            config(product, r#"{"schema":"gogoke.37.owner-configuration.v1","command":"seat-template","domainId":"projectA","templateId":"templateA","settings":{"instruction":"default"}}"#);
+            let template=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"seat-template","domainId":"projectA","requestId":"templateAConfig","templateId":"templateA","settings":{"instruction":"default"}}"#;
+            config(product, template);
+            assert!(String::from_utf8(config(product,template)).unwrap().contains("\"REPLAYED\""));
+            assert!(product.configure_user_v37(template.replace("default","changed").as_bytes()).is_err());
+            let policy=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-initialize","domainId":"projectA","requestId":"policyInit","stage":"OPEN","expectedRevision":"0"}"#;
+            config(product,policy);
+            assert!(String::from_utf8(config(product,policy)).unwrap().contains("\"REPLAYED\""));
+            assert!(product.configure_user_v37(policy.replace("OPEN","DONE").as_bytes()).is_err());
             let insert = Statement::prepare(product.connection.as_ptr(),
                 "INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
             insert.step_done().unwrap();
@@ -366,11 +593,19 @@ mod tests {
                 r#"{"layer":"USER","templateId":"templateA"}"#);
             assert_eq!(status(product, &create), V37Status::Applied);
             assert_eq!(status(product, &create), V37Status::Replayed);
+            let grant=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-call-grant","domainId":"projectA","requestId":"grantA","callerSeatId":"seatA","targetId":"OWNER","action":"MESSAGE","expiresAtMs":null,"expectedRevision":"1"}"#;
+            assert!(String::from_utf8(config(product,grant)).unwrap().contains("\"revision\":\"2\""));
+            assert!(String::from_utf8(config(product,grant)).unwrap().contains("\"REPLAYED\""));
+            assert!(product.configure_user_v37(grant.replace("grantA","grantB").as_bytes()).is_err());
             let card = request("state-card", "cardA", "seatA", 1, "{}");
             let card_receipt = product.dispatch_user_seat(&card).unwrap();
             assert_eq!(decode_receipt(&card_receipt).unwrap().status, V37Status::Applied);
             let card_text = std::str::from_utf8(&card_receipt).unwrap();
             assert!(card_text.contains("\"instruction\":\"default\""));
+            assert!(card_text.contains("\"takeoverReady\":false"));
+            assert_eq!(status(product,&card),V37Status::Replayed);
+            assert_eq!(status(product,&request("state-card","cardA","seatA",1,
+                r#"{"forged":true}"#)),V37Status::Conflict);
             assert_eq!(status(product, &request("tune", "tuneA", "seatA", 1,
                 r#"{"setting":"instruction","value":"changed"}"#)), V37Status::Applied);
             assert_eq!(status(product, &card), V37Status::Stale);

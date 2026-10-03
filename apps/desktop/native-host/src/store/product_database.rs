@@ -35,6 +35,7 @@ use std::path::Path;
 type Result<T> = std::result::Result<T, OrchestrationError>;
 
 mod v37_seat;
+mod v37_policy;
 mod v37_session;
 mod v37_runtime;
 mod v37_output;
@@ -227,6 +228,8 @@ impl<'root> ProductDatabase<'root> {
 
     fn dispatch_user_request(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         if request.family == "K-SEAT" { return self.dispatch_user_seat(request); }
+        if request.family == "K-POLICY" { return Ok(encode_receipt(request, V37Status::Unsupported,
+            request.expected_revision, request.expected_revision, Default::default())); }
         if request.family == "K-SESSION" { return self.dispatch_user_session(request); }
         if request.family == "K-QCARD" { return self.dispatch_user_qcard(request); }
         if request.family == "K-LEDGER" { return self.dispatch_user_ledger(request); }

@@ -81,6 +81,22 @@ fn record_operation(db:&VerifiedDatabaseConnection<'_>,domain:&str,request:&str,
 pub(crate) fn answer_takeover(db:&mut VerifiedDatabaseConnection<'_>,
     caller:&policy::NativeSeatCall,question_id:&str,answer:&str,basis:AnswerBasis,
     expected_answer_revision:i64,request_id:&str,original_raw:&[u8])->Result<i64,SeatError> {
+    answer_takeover_inner(db,caller,question_id,answer,basis,None,
+        expected_answer_revision,request_id,original_raw)
+}
+
+pub(crate) fn answer_takeover_at_seat_revision(db:&mut VerifiedDatabaseConnection<'_>,
+    caller:&policy::NativeSeatCall,question_id:&str,answer:&str,basis:AnswerBasis,
+    expected_seat_revision:i64,expected_answer_revision:i64,request_id:&str,
+    original_raw:&[u8])->Result<i64,SeatError> {
+    answer_takeover_inner(db,caller,question_id,answer,basis,Some(expected_seat_revision),
+        expected_answer_revision,request_id,original_raw)
+}
+
+fn answer_takeover_inner(db:&mut VerifiedDatabaseConnection<'_>,
+    caller:&policy::NativeSeatCall,question_id:&str,answer:&str,basis:AnswerBasis,
+    expected_seat_revision:Option<i64>,expected_answer_revision:i64,
+    request_id:&str,original_raw:&[u8])->Result<i64,SeatError> {
     validate(caller.domain_id(),question_id,request_id,original_raw)?;
     if answer.is_empty()||answer.len()>8192||expected_answer_revision<0 {
         return Err(SeatError::Invalid("takeover answer"));
@@ -97,6 +113,9 @@ pub(crate) fn answer_takeover(db:&mut VerifiedDatabaseConnection<'_>,
     transact(db,|db| {
         let seat=policy::current_caller(db,caller)?;
         if seat.layer!=Layer::User||seat.instance_id.is_empty() {return Err(SeatError::Denied);}
+        if expected_seat_revision.is_some_and(|expected|expected!=seat.revision) {
+            return Err(SeatError::Conflict);
+        }
         if let Some(old)=prior_operation(db,caller.domain_id(),request_id,"takeover-answer",&fp)? {
             return Ok(old);
         }

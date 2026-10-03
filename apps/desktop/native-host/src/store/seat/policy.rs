@@ -34,6 +34,7 @@ impl NativeSeatCall {
     }
     pub(crate) fn seat_id(&self)->&str { &self.seat_id }
     pub(crate) fn domain_id(&self)->&str { &self.domain_id }
+    pub(crate) fn turn_id(&self)->&str { &self.turn_id }
 }
 
 pub(super) fn current_caller(db:&VerifiedDatabaseConnection<'_>, caller:&NativeSeatCall)->Result<Seat,SeatError> {
@@ -223,6 +224,116 @@ pub(crate) fn configure_escalation_route(db:&mut VerifiedDatabaseConnection<'_>,
         q.bind_text(1,domain)?;q.bind_text(2,from_seat)?;q.bind_text(3,reason)?;
         q.bind_text(4,to_seat)?;q.bind_i64(5,next)?;q.step_done()?;
         advance_head(db,domain,expected_policy_revision)
+    })
+}
+
+/// The User pipe supplies bytes and an id; only the retained OwnerIssuer grants
+/// authority. Its receipt is committed with the policy change, so an exact
+/// replay cannot apply the same configuration twice after a lost response.
+pub(crate) enum OwnerPolicyCommand<'a> {
+    Template {template_id:&'a str,settings_json:&'a [u8]},
+    Initialize {stage:&'a str},
+    Grant {caller:&'a str,target:&'a str,action:CallAction,
+        expires_at_ms:Option<i64>,expected_revision:i64},
+    Gate {gate_id:&'a str,submitter:&'a str,reviewer:&'a str,
+        from_stage:&'a str,to_stage:&'a str,reject_cap:i64,expected_revision:i64},
+    Route {from_seat:&'a str,reason:&'a str,to_seat:&'a str,expected_revision:i64},
+}
+
+pub(crate) fn apply_owner_policy_configuration(db:&mut VerifiedDatabaseConnection<'_>,
+    issuer:&OwnerIssuer,domain:&str,request_id:&str,raw:&[u8],
+    command:OwnerPolicyCommand<'_>)->Result<(i64,bool),SeatError> {
+    validate(domain,domain,request_id,raw)?;
+    let operation=match &command {
+        OwnerPolicyCommand::Template{..}=>"seat-template",
+        OwnerPolicyCommand::Initialize{..}=>"policy-initialize",
+        OwnerPolicyCommand::Grant{..}=>"policy-call-grant",
+        OwnerPolicyCommand::Gate{..}=>"policy-gate",
+        OwnerPolicyCommand::Route{..}=>"policy-escalation-route",
+    };
+    let fp=fingerprint(&["owner-policy",operation,domain],raw);
+    transact(db,|db| {
+        check_current_owner(db,issuer)?;
+        if let Some(previous)=prior_event(db,domain,request_id,operation,&fp)? {
+            return Ok((previous.policy_revision,true));
+        }
+        let revision=match command {
+            OwnerPolicyCommand::Template{template_id,settings_json}=>{
+                if !valid_id(template_id) {return Err(SeatError::Invalid("template_id"));}
+                validate_template_settings(settings_json)?;
+                let settings=std::str::from_utf8(settings_json)
+                    .map_err(|_|SeatError::Invalid("template_settings"))?;
+                let q=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_seat_templates(domain_id,template_id,settings_json,revision) VALUES(?1,?2,?3,1)")?;
+                q.bind_text(1,domain)?;q.bind_text(2,template_id)?;
+                q.bind_text(3,settings)?;q.step_done()?;
+                1
+            }
+            OwnerPolicyCommand::Initialize{stage}=>{
+                if !valid_id(stage) {return Err(SeatError::Invalid("policy stage"));}
+                let q=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_seat_policy_head(domain_id,revision,current_stage) VALUES(?1,1,?2)")?;
+                q.bind_text(1,domain)?;q.bind_text(2,stage)?;q.step_done()?;
+                1
+            }
+            OwnerPolicyCommand::Grant{caller,target,action,expires_at_ms,expected_revision}=>{
+                if !valid_id(caller)||!valid_id(target)||expected_revision<1||
+                    expires_at_ms.is_some_and(|expiry|expiry<=0)||
+                    (action==CallAction::Merge&&target!="MAIN") {
+                    return Err(SeatError::Invalid("call grant"));
+                }
+                if head_revision(db,domain)?!=expected_revision {return Err(SeatError::Conflict);}
+                let source=read(db,domain,caller)?.ok_or(SeatError::Denied)?;
+                if source.state==State::Reclaimed || (source.layer==Layer::Lead&&target=="OWNER") ||
+                    (action==CallAction::Dispatch&&caller==target) {return Err(SeatError::Denied);}
+                if target!="MAIN"&&target!="OWNER" {
+                    let destination=read(db,domain,target)?.ok_or(SeatError::Denied)?;
+                    if destination.state==State::Reclaimed {return Err(SeatError::Denied);}
+                }
+                let next=expected_revision.checked_add(1).ok_or(SeatError::Conflict)?;
+                let q=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_seat_policy_grants(domain_id,caller_seat_id,target_id,action,expires_at_ms,revision) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(domain_id,caller_seat_id,target_id,action) DO UPDATE SET expires_at_ms=excluded.expires_at_ms,revision=excluded.revision")?;
+                q.bind_text(1,domain)?;q.bind_text(2,caller)?;q.bind_text(3,target)?;
+                q.bind_text(4,action.sql())?;q.bind_i64(5,expires_at_ms.unwrap_or(0))?;
+                q.bind_i64(6,next)?;q.step_done()?;
+                advance_head(db,domain,expected_revision)?
+            }
+            OwnerPolicyCommand::Gate{gate_id,submitter,reviewer,from_stage,to_stage,
+                reject_cap,expected_revision}=>{
+                if [gate_id,submitter,reviewer,from_stage,to_stage].iter().any(|value|!valid_id(value))||
+                    submitter==reviewer||from_stage==to_stage||reject_cap<=0||expected_revision<1 {
+                    return Err(SeatError::Invalid("gate configuration"));
+                }
+                if head_revision(db,domain)?!=expected_revision {return Err(SeatError::Conflict);}
+                let q=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_seat_policy_gates(domain_id,gate_id,submitter_seat_id,reviewer_seat_id,from_stage,to_stage,reject_cap,reject_count,state,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,0,'READY',1)")?;
+                for (index,value) in [domain,gate_id,submitter,reviewer,from_stage,to_stage].iter().enumerate() {
+                    q.bind_text((index+1) as i32,value)?;
+                }
+                q.bind_i64(7,reject_cap)?;q.step_done()?;
+                advance_head(db,domain,expected_revision)?
+            }
+            OwnerPolicyCommand::Route{from_seat,reason,to_seat,expected_revision}=>{
+                if !valid_id(from_seat)||!valid_id(to_seat)||
+                    !matches!(reason,"REJECT_CAP"|"STALL")||expected_revision<1||from_seat==to_seat {
+                    return Err(SeatError::Invalid("escalation route"));
+                }
+                if head_revision(db,domain)?!=expected_revision {return Err(SeatError::Conflict);}
+                let source=read(db,domain,from_seat)?.ok_or(SeatError::Denied)?;
+                if source.layer==Layer::Lead&&to_seat=="OWNER" {return Err(SeatError::Denied);}
+                if to_seat!="OWNER" {read(db,domain,to_seat)?.ok_or(SeatError::Denied)?;}
+                let next=expected_revision.checked_add(1).ok_or(SeatError::Conflict)?;
+                let q=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_seat_policy_routes(domain_id,from_seat_id,reason,to_seat_id,revision) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(domain_id,from_seat_id,reason) DO UPDATE SET to_seat_id=excluded.to_seat_id,revision=excluded.revision")?;
+                q.bind_text(1,domain)?;q.bind_text(2,from_seat)?;q.bind_text(3,reason)?;
+                q.bind_text(4,to_seat)?;q.bind_i64(5,next)?;q.step_done()?;
+                advance_head(db,domain,expected_revision)?
+            }
+        };
+        record_event(db,domain,PolicyEvent {event_id:request_id.into(),
+            operation:operation.into(),target_id:domain.into(),policy_revision:revision,
+            state:"APPLIED".into(),detail:String::new(),replayed:false},&fp)?;
+        Ok((revision,false))
     })
 }
 
