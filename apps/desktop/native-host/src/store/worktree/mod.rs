@@ -1580,7 +1580,7 @@ fn mixed_seat_space_id(domain: &str, seat: &str, incarnation: &str) -> Result<St
 fn verify_mixed_members(db: &VerifiedDatabaseConnection<'_>, space_id: &str,
     domain: &str, seat: &str, incarnation: &str) -> Result<()> {
     let members = Statement::prepare(db.as_ptr(),
-        "SELECT m.domain_id,m.seat_id,w.domain_id,w.seat_id,w.seat_incarnation,o.domain_id,o.seat_id,o.seat_incarnation,o.phase FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktrees w ON w.worktree_id=m.worktree_id LEFT JOIN main.gogoke_v37_worktree_operations o ON o.worktree_id=m.worktree_id WHERE m.space_id=?1")?;
+        "SELECT m.domain_id,m.seat_id,COALESCE(w.domain_id,''),COALESCE(w.seat_id,''),COALESCE(w.seat_incarnation,''),COALESCE(o.domain_id,''),COALESCE(o.seat_id,''),COALESCE(o.seat_incarnation,''),COALESCE(o.phase,''),m.repository_id,COALESCE(w.repository_id,''),COALESCE(o.repository_id,''),COALESCE(w.state,'') FROM main.gogoke_v37_worktree_members m LEFT JOIN main.gogoke_v37_worktrees w ON w.worktree_id=m.worktree_id LEFT JOIN main.gogoke_v37_worktree_operations o ON o.worktree_id=m.worktree_id WHERE m.space_id=?1")?;
     members.bind_text(1, space_id)?;
     while members.step_row()? {
         for index in [0, 2, 5] {
@@ -1591,6 +1591,12 @@ fn verify_mixed_members(db: &VerifiedDatabaseConnection<'_>, space_id: &str,
         }
         for index in [4, 7] {
             if members.column_text(index)? != incarnation { return Err(WorktreeError::Denied); }
+        }
+        let repository = members.column_text(9)?;
+        if !atom(&repository) || members.column_text(10)? != repository
+            || members.column_text(11)? != repository
+            || members.column_text(12)? != "REGISTERED" {
+            return Err(WorktreeError::Denied);
         }
         if members.column_text(8)? != "REGISTERED" { return Err(WorktreeError::Unknown); }
     }
