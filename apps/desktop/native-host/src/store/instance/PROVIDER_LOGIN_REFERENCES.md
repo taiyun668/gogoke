@@ -143,6 +143,7 @@ displayed but do not become process frames, status evidence, or durable facts.
   [ACP authentication](https://opencode.ai/docs/cli/acp/). They document
   `opencode auth login` and terminal-auth metadata. More direct fixed-tag
   sources are [providers.ts](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/cli/cmd/providers.ts),
+  [Auth.Service](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/auth/index.ts),
   [OpenAI browser plugin](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/openai/codex.ts),
   [plugin loader](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/index.ts),
   and [CLI flag parser](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/index.ts).
@@ -158,7 +159,9 @@ displayed but do not become process frames, status evidence, or durable facts.
   inventory only; no login, positive OAuth entry, model turn, or browser flow
   was exercised.
   The fixed source's browser callback calls `Auth.set(openai, oauth)` before
-  printing `Login successful`. The pinned `@clack/prompts@1.0.0-alpha.1`
+  printing `Login successful`. `Auth.Service.set` awaits `writeJson` to the
+  CLI's own local data path before returning; the host never reads that file.
+  The pinned `@clack/prompts@1.0.0-alpha.1`
   [spinner](https://github.com/bombshell-dev/clack/blob/aece08386ee630a3b5d888460fe0028fc05dfe05/packages/prompts/src/spinner.ts)
   and [symbols](https://github.com/bombshell-dev/clack/blob/aece08386ee630a3b5d888460fe0028fc05dfe05/packages/prompts/src/common.ts)
   identify the exact LF line with `◇` or `o`, optionally green CSI color.
