@@ -987,8 +987,15 @@ fn e2_takeover_and_current_policy_grant_are_required_for_child_dispatch() {
         authorize_child_dispatch(db,&caller,&child).unwrap();
         assert!(matches!(authorize_current_call(db,&caller,"projectB","worker",
             CallAction::Dispatch),Err(SeatError::Denied)));
-        assert!(matches!(authorize_merge_for_f2(db,&caller,"worker"),Ok(None)));
-        assert!(matches!(authorize_merge_for_f2(db,&caller,"lead"),Err(SeatError::Denied)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","worker"),Ok(None)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectB","lead"),Ok(None)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","lead"),Err(SeatError::Denied)));
+        configure_call_grant(db,owner,"projectA","lead","MAIN",CallAction::Merge,None,2).unwrap();
+        assert_eq!(authorize_merge_for_f2(db,&caller,"projectA","lead").unwrap(),
+            Some("turnA".into()));
+        configure_call_grant(db,owner,"projectA","lead","MAIN",CallAction::Merge,Some(1),3).unwrap();
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","lead"),
+            Err(SeatError::Denied)),"expired merge grant cannot be reused");
     });
 }
 

@@ -132,8 +132,11 @@ pub(crate) fn authorize_current_call(db:&VerifiedDatabaseConnection<'_>,caller:&
 /// F.2 supplies the exact seat bound to its registered worktree. H supplies
 /// this caller only for the active original turn. A different seat is denied.
 pub(crate) fn authorize_merge_for_f2(db:&VerifiedDatabaseConnection<'_>,
-    caller:&NativeSeatCall,worktree_seat_id:&str)->Result<Option<String>,SeatError> {
-    if caller.seat_id!=worktree_seat_id { return Ok(None); }
+    caller:&NativeSeatCall,worktree_domain_id:&str,
+    worktree_seat_id:&str)->Result<Option<String>,SeatError> {
+    if caller.domain_id!=worktree_domain_id || caller.seat_id!=worktree_seat_id {
+        return Ok(None);
+    }
     authorize_current_call(db,caller,&caller.domain_id,"MAIN",CallAction::Merge)?;
     Ok(Some(caller.turn_id.clone()))
 }
@@ -155,7 +158,12 @@ pub(crate) fn current_call_permission_table(db:&VerifiedDatabaseConnection<'_>,
         let expiry=q.column_text(2)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
         if expiry<0 { return Err(SeatError::SchemaDrift); }
         if expiry>0 && expiry<=now { continue; }
-        rows.push(CallPermissionRow {target_id:q.column_text(0)?,action:q.column_text(1)?,
+        let target_id=q.column_text(0)?;
+        if target_id!="MAIN" && target_id!="OWNER" &&
+            !matches!(read(db,&caller.domain_id,&target_id)?,Some(target) if target.state!=State::Reclaimed) {
+            continue;
+        }
+        rows.push(CallPermissionRow {target_id,action:q.column_text(1)?,
             expires_at_ms:if expiry==0 {None}else{Some(expiry)}});
     }
     Ok((revision,rows))
