@@ -2100,7 +2100,8 @@ mod tests {
         }
         let redirect = String::from_utf8(decoded).ok()?;
         [1455u16, 1457u16].into_iter().find(|port|
-            redirect == format!("http://localhost:{port}/auth/callback"))
+            ["localhost", "127.0.0.1"].into_iter().any(|host|
+                redirect == format!("http://{host}:{port}/auth/callback")))
     }
 
     fn cli_os_error_code(output: &str) -> Option<String> {
@@ -2272,6 +2273,18 @@ mod tests {
 
     #[test]
     fn ordinary_callback_port_comes_from_complete_cli_redirect_uri() {
+        // Official 0.160 uses the IPv4 loopback literal; retain the earlier
+        // spelling for historical protocol fixtures, with the same endpoint.
+        for port in [1455u16, 1457u16] {
+            assert_eq!(callback_port_from_authorization_line(&format!(
+                "https://auth.openai.com/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A{port}%2Fauth%2Fcallback")), Some(port));
+        }
+        for redirect in ["http%3A%2F%2F127.0.0.2%3A1455%2Fauth%2Fcallback",
+            "http%3A%2F%2F127.0.0.1%3A1456%2Fauth%2Fcallback",
+            "http%3A%2F%2F127.0.0.1%3A1455%2Fother"] {
+            assert_eq!(callback_port_from_authorization_line(&format!(
+                "https://auth.openai.com/oauth/authorize?redirect_uri={redirect}")), None);
+        }
         assert_eq!(callback_port_from_authorization_line(
             "https://auth.openai.com/oauth/authorize?state=synthetic&redirect_uri=http%3A%2F%2Flocalhost%3A1457%2Fauth%2Fcallback"),
             Some(1457));
@@ -3265,7 +3278,7 @@ exit 0
                         && output.contains(&format!("{line}\n")));
                     if let Some(line) = complete_line {
                         callback_port = callback_port_from_authorization_line(line);
-                        if callback_port.is_none() { return Err("CLI URL has no permitted localhost callback".into()); }
+                        if callback_port.is_none() { return Err("CLI URL has no permitted fixed loopback callback".into()); }
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(50));
@@ -3297,7 +3310,7 @@ exit 0
                     .map_err(|error| format!("callback socket connect failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
                 socket.set_read_timeout(Some(Duration::from_secs(5)))
                     .map_err(|error| format!("callback socket timeout setup failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
-                let callback_request = format!("GET /auth/callback HTTP/1.1\r\nHost: localhost:{callback_port}\r\nConnection: close\r\n\r\n");
+                let callback_request = format!("GET /auth/callback HTTP/1.1\r\nHost: 127.0.0.1:{callback_port}\r\nConnection: close\r\n\r\n");
                 socket.write_all(callback_request.as_bytes())
                     .map_err(|error| format!("callback socket write failed: {error}; raw_os_error={:?}", error.raw_os_error()))?;
                 let mut response = String::new();
