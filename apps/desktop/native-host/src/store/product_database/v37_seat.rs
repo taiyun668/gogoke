@@ -272,9 +272,16 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(receipt(request,V37Status::Stale,revision,revision,BTreeMap::new()));
             }
             let card=seat::read_state_card(&self.connection,&seat)?;
-            let questions=seat::takeover_questions(&seat)?;
+            // Missing copied questions are a readable configuration fact,
+            // not a completed takeover. The write checks remain strict.
+            let questions=match seat::takeover_questions(&seat) {
+                Ok(questions)=>Some(questions),
+                Err(SeatError::Denied)=>None,
+                Err(error)=>return Err(error.into()),
+            };
             let mut result=seat_result(&seat)?;
             result.insert(key("takeoverReady"),Json::Bool(card.takeover_ready));
+            result.insert(key("takeoverQuestionsConfigured"),Json::Bool(questions.is_some()));
             // The CLI already received these User answers. Its model needs
             // their native C references to consume them without a human
             // copying opaque request IDs. These are not authority tokens;
@@ -305,7 +312,7 @@ impl<'root> ProductDatabase<'root> {
                 ])));}
                 result.insert(key("nativeAnswerSources"),Json::Array(refs));
             }
-            result.insert(key("takeoverQuestions"),Json::Array(questions.into_iter().map(|question|
+            result.insert(key("takeoverQuestions"),Json::Array(questions.into_iter().flatten().map(|question|
                 Json::Object(BTreeMap::from([
                     (key("id"),Json::String(JsonString::from_str(&question.id))),
                     (key("prompt"),Json::String(JsonString::from_str(&question.prompt))),
@@ -704,6 +711,7 @@ mod tests {
             let card_receipt = product.dispatch_user_seat(&card).unwrap();
             assert_eq!(decode_receipt(&card_receipt).unwrap().status, V37Status::Applied);
             let card_text = std::str::from_utf8(&card_receipt).unwrap();
+            assert!(card_text.contains("\"takeoverQuestionsConfigured\":false"));
             assert!(card_text.contains("\"instruction\":\"default\""));
             assert!(card_text.contains("\"takeoverReady\":false"));
             assert_eq!(status(product,&card),V37Status::Replayed);

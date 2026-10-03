@@ -258,7 +258,7 @@ fn sealed_call_rechecks_current_h_claim_source_and_actual_native_stop() {
             db.execute("COMMIT").unwrap();
         }
         db.execute("BEGIN IMMEDIATE").unwrap();
-        let changed = CALL.replace("self-authorize", "different-action");
+        let changed = format!("{}\n", CALL.replace("self-authorize", "different-action"));
         let update = Statement::prepare(db.as_ptr(), "UPDATE main.v37_ledger_raw_source SET raw_bytes=?1 WHERE operation_id='processA' AND source_cursor='4'").unwrap();
         update.bind_blob(1, changed.as_bytes()).unwrap(); update.step_done().unwrap(); drop(update);
         denied(revalidate_model_call_in_transaction(db, &sealed), "captured byte changes invalidate the original sealed permission");
@@ -278,11 +278,12 @@ const PARENT_SCOPE: &str = r#"{"model":"m","effort":"high","permissionTier":"REA
 const CHILD_SETTINGS: &str = r#"{"model":"m","effort":"high","permissionTier":"READ_ONLY"}"#;
 
 fn install_settings(db: &mut VerifiedDatabaseConnection<'_>, seat_id: &str, settings: &str) {
+    let settings = Parser::parse(settings).unwrap().canonical();
     let insert = Statement::prepare(db.as_ptr(),
         "INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json)
          VALUES('projectA',?1,'fixtureTemplate',?2) ON CONFLICT(domain_id,seat_id)
          DO UPDATE SET settings_json=excluded.settings_json").unwrap();
-    insert.bind_text(1, seat_id).unwrap(); insert.bind_text(2, settings).unwrap();
+    insert.bind_text(1, seat_id).unwrap(); insert.bind_text(2, &settings).unwrap();
     insert.step_done().unwrap();
 }
 

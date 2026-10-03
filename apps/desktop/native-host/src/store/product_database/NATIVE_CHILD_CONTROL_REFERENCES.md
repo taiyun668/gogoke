@@ -50,6 +50,10 @@ H episode to have no committed stop request. The physical stop routine still
 captures its original tail before committing STOPPED, but those captured model
 calls cannot create effects after the stop intent. This reuses the same H
 fence and does not make fact capture depend on a live model authorization.
+The state-card adapter follows E's existing readable not-ready result when a
+seat has no copied takeover questions. It reports takeoverQuestionsConfigured=false
+without inventing questions or completing takeover; core effect authorization
+and answer validation retain their strict configured-question checks.
 
 F's BUSY readback is only for the composite seat dispatch's exact original
 reservation. Standalone worktree create retains its existing Idle-only check:

@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn wire(request_id: &str) -> &'static [u8] {
     match request_id {
         "createLead" => br#"{"op":"create-from-template","requestId":"createLead","domainId":"projectA","seatId":"lead","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
+        "createOrdinary" => br#"{"op":"create-from-template","requestId":"createOrdinary","domainId":"projectA","seatId":"ordinary","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "createAnother" => br#"{"op":"create-from-template","requestId":"createAnother","domainId":"projectA","seatId":"another","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "reviewerCreate" => br#"{"op":"create-from-template","requestId":"reviewerCreate","domainId":"projectA","seatId":"reviewer","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "busyBind" => br#"{"op":"bind-instance","requestId":"busyBind","domainId":"projectA","seatId":"lead","expectedGeneration":2,"expectedRevision":2,"instanceId":"instanceB"}"#,
