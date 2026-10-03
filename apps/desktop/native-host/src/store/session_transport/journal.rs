@@ -1374,9 +1374,11 @@ pub(crate) fn complete_claude_send_from_source(
             _ => return Err(JournalError::Denied),
         };
         match source.state {
-            RawSourceState::Pending => ledger::resolve_raw_source_no_event(connection,
-                &key.operation_id, &key.source_epoch, &key.source_cursor,
-                CLAUDE_RESULT_NO_EVENT)?,
+            RawSourceState::Pending => {
+                ledger::resolve_raw_source_no_event(connection,
+                    &key.operation_id, &key.source_epoch, &key.source_cursor,
+                    CLAUDE_RESULT_NO_EVENT)?;
+            },
             RawSourceState::NoEvent if prior.state == JournalState::Receipted
                 && source.no_event_reason.as_deref() == Some(CLAUDE_RESULT_NO_EVENT) => {},
             _ => return Err(JournalError::Conflict),
