@@ -18,6 +18,9 @@ use std::collections::BTreeMap;
 pub(crate) enum HostHealthError {
     Denied,
     Conflict,
+    Utf8 { field:&'static str, cause:std::str::Utf8Error },
+    Integer { field:&'static str, cause:std::num::ParseIntError },
+    Wire { field:&'static str, cause:super::V37WireError },
     Store(AtomicError),
     Authority(OrchestrationError),
     Rpc(rpc_journal::RpcJournalError),
@@ -97,7 +100,8 @@ impl HostHealthProof {
 
 fn key(value:&str)->JsonString {JsonString::from_str(value)}
 fn object(raw:&[u8])->Result<Fields> {
-    let text=std::str::from_utf8(raw).map_err(|_|HostHealthError::Denied)?;
+    let text=std::str::from_utf8(raw).map_err(|cause|HostHealthError::Utf8 {
+        field:"JSON object",cause})?;
     let Json::Object(fields)=Parser::parse(text.trim_end_matches('\n'))? else {
         return Err(HostHealthError::Denied);
     };
@@ -114,8 +118,10 @@ fn string(object:&Fields,name:&str)->Option<String> {
 fn unhex(value:&str)->Result<Vec<u8>> {
     if value.len()%2!=0 {return Err(HostHealthError::Denied)}
     value.as_bytes().chunks_exact(2).map(|pair| {
-        let text=std::str::from_utf8(pair).map_err(|_|HostHealthError::Denied)?;
-        u8::from_str_radix(text,16).map_err(|_|HostHealthError::Denied)
+        let text=std::str::from_utf8(pair).map_err(|cause|HostHealthError::Utf8 {
+            field:"hex pair",cause})?;
+        u8::from_str_radix(text,16).map_err(|cause|HostHealthError::Integer {
+            field:"hex byte",cause})
     }).collect()
 }
 fn typed_id(object:&Fields)->Result<codex_rpc::RpcId> {
@@ -123,7 +129,7 @@ fn typed_id(object:&Fields)->Result<codex_rpc::RpcId> {
         Some(Json::String(value))=>Ok(codex_rpc::RpcId::String(
             value.to_well_formed_string().ok_or(HostHealthError::Denied)?)),
         Some(Json::Number(value))=>Ok(codex_rpc::RpcId::Number(
-            value.parse().map_err(|_|HostHealthError::Denied)?)),
+            value.parse().map_err(|cause|HostHealthError::Integer {field:"RPC id",cause})?)),
         _=>Err(HostHealthError::Denied),
     }
 }
@@ -214,8 +220,10 @@ fn ordinary_work_turn(db:&VerifiedDatabaseConnection<'_>,custody:&PreparedCustod
         let request_id=q.column_text(0)?;
         let raw=unhex(&q.column_text(1)?)?;
         let receipt_raw=unhex(&q.column_text(2)?)?;
-        let request=decode_request(&raw).map_err(|_|HostHealthError::Denied)?;
-        let receipt=decode_receipt(&receipt_raw).map_err(|_|HostHealthError::Denied)?;
+        let request=decode_request(&raw).map_err(|cause|HostHealthError::Wire {
+            field:"saved H request",cause})?;
+        let receipt=decode_receipt(&receipt_raw).map_err(|cause|HostHealthError::Wire {
+            field:"saved H receipt",cause})?;
         if request.family!="K-SESSION" || request.operation!="send" || request.payload.len()!=2
             || request.domain_id!=source.domain_id || request.target_id!=source.session_id
             || request.request_id!=request_id || receipt.status!=V37Status::Applied
