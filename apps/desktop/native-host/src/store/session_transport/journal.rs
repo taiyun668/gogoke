@@ -939,6 +939,11 @@ pub(crate) fn read_acp_send_completed(
     let receipt = decode_receipt(receipt_bytes)
         .map_err(|_| JournalError::Invalid("stored ACP receipt"))?;
     let status = receipt.status;
+    if receipt.previous_revision != request.expected_revision
+        || receipt.revision != request.expected_revision.checked_add(1)
+            .ok_or(JournalError::Invalid("revision overflow"))? {
+        return Err(JournalError::Conflict);
+    }
     let result = receipt.into_result();
     if status == V37Status::Applied
         && !matches!(result.get(&JsonString::from_str("createdTurn")),
@@ -957,7 +962,14 @@ pub(crate) fn read_acp_send_completed(
         JournalError::Rpc(super::rpc_journal::RpcJournalError::AcpDecode {
             reason: error.reason, raw_frame: error.raw_frame }))?;
     let (expected_status, stop_reason) = acp_terminal_status(&observation)?;
+    let receipt_identity = format!("{}\n{}\n{}\n{}",
+        crate::store::digest::sha256_hex(input.request_bytes),
+        crate::store::digest::sha256_hex(&source.raw_bytes),
+        record.process_operation_id, record.custodian_nonce);
+    let expected_receipt_id = format!("rpc-{}",
+        &crate::store::digest::sha256_hex(receipt_identity.as_bytes())[..40]);
     if status != expected_status
+        || field("receiptId").as_deref() != Some(expected_receipt_id.as_str())
         || field("generation").as_deref() != Some(input.generation)
         || field("deliveryBasis").as_deref() != Some("ACP_PROMPT_RESPONSE")
         || field("stopReason").as_deref() != Some(stop_reason)
