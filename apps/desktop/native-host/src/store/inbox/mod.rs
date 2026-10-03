@@ -1835,7 +1835,9 @@ mod tests {
         db.execute("CREATE TABLE gogoke_v37_h_generation(domain_id TEXT,session_id TEXT,generation TEXT,request_id TEXT,process_operation_id TEXT) STRICT").unwrap();
         db.execute("CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT,domain_id TEXT,instance_id TEXT,kind TEXT,owner_id TEXT,generation TEXT,state TEXT) STRICT").unwrap();
         db.execute("CREATE TABLE gogoke_v37_seats(domain_id TEXT,seat_id TEXT,incarnation TEXT,generation TEXT,instance_id TEXT,state TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY,driver_id TEXT,version TEXT) STRICT").unwrap();
         authority::initialize_process_custody_schema(&mut db).unwrap();
+        db.execute("INSERT INTO gogoke_v37_instances VALUES('instanceA','codex','0.160.0')").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_claim VALUES('projectA','sessionA','1','operationA','COMMITTED',NULL)").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','1','seatA')").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES('projectA','openA','sessionA','1',NULL,'',1,2,'operationA','bindingA','instanceA','homeA','seatA','incarnationA','ACTIVE',NULL)").unwrap();
