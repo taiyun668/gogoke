@@ -11,9 +11,9 @@ environment configuration.
 
 | CLI pin | Recipe | Environment intent | Browser and completion |
 | --- | --- | --- | --- |
-| Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME` and `USERPROFILE` use the registered instance home; inherited `CLAUDE_CONFIG_DIR` is removed so it cannot redirect that CLI. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status` is the documented read; use only its documented exit contract (0 logged in, 1 not logged in; other codes unknown). Do not parse later-added `configDirectory` output fields on `2.1.196`. |
-| OpenCode `1.18.32` | `opencode auth login`, as recorded by B3's integration contract and the official CLI/ACP docs. | `HOME` and `USERPROFILE` use the registered instance home; inherited `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` are removed. Preserve original `APPDATA` and `LOCALAPPDATA`; do not set undocumented data-directory flags. | No exact-version URL or browser suppression behavior is recorded. H must not auto-open output URLs. Exit status alone is not login proof; no fixed-version status parser is included. |
-| Grok Build `1.0.41` | **Unsupported.** The historical Room recipe and mutable official guide are not exact-version evidence for the installed executable. No `--oauth`, device-auth, or other login flag is emitted. | Intended home bindings are listed as data only: `HOME` / `USERPROFILE` to the instance home and `GROK_HOME` to its `.grok` child, with original AppData preserved. | **Unsupported** until the exact pinned executable's login command, browser behavior, and completion signal are evidenced. |
+| Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status` is the documented read; use only its documented exit contract (0 logged in, 1 not logged in; other codes unknown). Do not parse later-added `configDirectory` output fields on `2.1.196`. |
+| OpenCode `1.18.32` | `opencode auth login`, as recorded by B3's integration contract and the official CLI/ACP docs. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | No exact-version URL or browser suppression behavior is recorded. H must not auto-open output URLs. Exit status alone is not login proof; no fixed-version status parser is included. |
+| Grok Build `1.0.41` | **Unsupported.** The historical Room recipe and mutable official guide are not exact-version evidence for the installed executable. No `--oauth`, device-auth, or other login flag is emitted. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home, matching H's model launch selector; preserve original AppData for browser context. | **Unsupported** until the exact pinned executable's login command, browser behavior, and completion signal are evidenced. |
 | Antigravity CLI `1.2.11` | The exact official tag says first launch of `agy` authenticates through system keyring and opens the browser if needed. **Unsupported as an instance login**: it exposes no documented login-only command, and the system keyring is shared across this Windows user. | Local home bindings cannot isolate the system keyring identity. | The CLI owns first-launch browser behavior; H must not open a duplicate URL. Account status stays `UNKNOWN`; do not turn a shared keyring session into per-instance readiness. |
 | Codex `0.160` | Out of scope; existing Codex login path stays unchanged. | This module makes no Codex launch or environment change. | Existing `v37_login` owns its Codex browser URL and callback flow. |
 
@@ -23,6 +23,23 @@ the final explicit environment from its approved source; these descriptors do
 not authorize inheriting arbitrary parent variables. The login process uses
 the logged-in user token, while every model process continues to require its
 existing LPAC route.
+
+## Home-selector reconciliation
+
+The H launch environment audited at commit `cc48ef5f` is the direct reference:
+`apps/desktop/native-host/src/store/session_transport/launch.rs` sets Claude's
+`CLAUDE_CONFIG_DIR` and Grok's `GROK_HOME` to the registered instance root. For
+OpenCode it sets all four XDG directories below that root and sets
+`OPENCODE_CONFIG_DIR` / `OPENCODE_CONFIG` beneath `.opencode`. The earlier login
+intent removed `CLAUDE_CONFIG_DIR` and OpenCode selectors and pointed Grok at
+`<instance>/.grok`; those differences could make a successful login write to a
+different store than the model process reads. The recipes now carry the same
+selector values for both login and any status command. This change is limited
+to child-environment intent; it does not alter H or read credentials.
+
+For login processes, `APPDATA` and `LOCALAPPDATA` still preserve the original
+user values so a CLI-owned browser uses the user's existing browser context.
+The provider-specific home selectors above control credential/config locations.
 
 `https_url_candidate_for_manual_owner_display` extracts one syntactically
 bounded `https://` candidate from already captured text. It does not prove the

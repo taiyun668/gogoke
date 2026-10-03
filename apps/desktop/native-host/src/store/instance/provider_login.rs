@@ -19,7 +19,7 @@ pub(crate) enum LoginProvider {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EnvironmentValue {
     InstanceHome,
-    InstanceHomeChild(&'static str),
+    InstanceHomeChild(&'static [&'static str]),
     PreserveUserValue,
     RemoveInherited,
 }
@@ -72,6 +72,7 @@ pub(crate) struct ProviderLoginRecipe {
     pub argv: &'static [&'static str],
     pub instructions: &'static str,
     pub availability: RecipeAvailability,
+    /// Apply the same selectors to the login and `status_argv` child.
     pub environment: &'static [EnvironmentIntent],
     pub browser: BrowserBehavior,
     pub completion: CompletionBehavior,
@@ -91,7 +92,7 @@ const CLAUDE_ENV: &[EnvironmentIntent] = &[
     EnvironmentIntent { name: "USERPROFILE", value: EnvironmentValue::InstanceHome },
     EnvironmentIntent { name: "APPDATA", value: EnvironmentValue::PreserveUserValue },
     EnvironmentIntent { name: "LOCALAPPDATA", value: EnvironmentValue::PreserveUserValue },
-    EnvironmentIntent { name: "CLAUDE_CONFIG_DIR", value: EnvironmentValue::RemoveInherited },
+    EnvironmentIntent { name: "CLAUDE_CONFIG_DIR", value: EnvironmentValue::InstanceHome },
 ];
 
 const GROK_ENV: &[EnvironmentIntent] = &[
@@ -99,7 +100,7 @@ const GROK_ENV: &[EnvironmentIntent] = &[
     EnvironmentIntent { name: "USERPROFILE", value: EnvironmentValue::InstanceHome },
     EnvironmentIntent { name: "APPDATA", value: EnvironmentValue::PreserveUserValue },
     EnvironmentIntent { name: "LOCALAPPDATA", value: EnvironmentValue::PreserveUserValue },
-    EnvironmentIntent { name: "GROK_HOME", value: EnvironmentValue::InstanceHomeChild(".grok") },
+    EnvironmentIntent { name: "GROK_HOME", value: EnvironmentValue::InstanceHome },
 ];
 
 const OPENCODE_ENV: &[EnvironmentIntent] = &[
@@ -107,8 +108,12 @@ const OPENCODE_ENV: &[EnvironmentIntent] = &[
     EnvironmentIntent { name: "USERPROFILE", value: EnvironmentValue::InstanceHome },
     EnvironmentIntent { name: "APPDATA", value: EnvironmentValue::PreserveUserValue },
     EnvironmentIntent { name: "LOCALAPPDATA", value: EnvironmentValue::PreserveUserValue },
-    EnvironmentIntent { name: "OPENCODE_CONFIG", value: EnvironmentValue::RemoveInherited },
-    EnvironmentIntent { name: "OPENCODE_CONFIG_DIR", value: EnvironmentValue::RemoveInherited },
+    EnvironmentIntent { name: "XDG_CONFIG_HOME", value: EnvironmentValue::InstanceHomeChild(&[".config"]) },
+    EnvironmentIntent { name: "XDG_DATA_HOME", value: EnvironmentValue::InstanceHomeChild(&[".local", "share"]) },
+    EnvironmentIntent { name: "XDG_CACHE_HOME", value: EnvironmentValue::InstanceHomeChild(&[".cache"]) },
+    EnvironmentIntent { name: "XDG_STATE_HOME", value: EnvironmentValue::InstanceHomeChild(&[".local", "state"]) },
+    EnvironmentIntent { name: "OPENCODE_CONFIG_DIR", value: EnvironmentValue::InstanceHomeChild(&[".opencode"]) },
+    EnvironmentIntent { name: "OPENCODE_CONFIG", value: EnvironmentValue::InstanceHomeChild(&[".opencode", "opencode.json"]) },
 ];
 
 const CLAUDE: ProviderLoginRecipe = ProviderLoginRecipe {
@@ -196,8 +201,11 @@ impl EnvironmentIntent {
     pub(crate) fn value_for(self, instance_home: &Path) -> Option<String> {
         match self.value {
             EnvironmentValue::InstanceHome => Some(instance_home.to_string_lossy().into_owned()),
-            EnvironmentValue::InstanceHomeChild(child) => {
-                Some(instance_home.join(child).to_string_lossy().into_owned())
+            EnvironmentValue::InstanceHomeChild(components) => {
+                let path = components.iter().fold(instance_home.to_path_buf(), |path, component| {
+                    path.join(*component)
+                });
+                Some(path.to_string_lossy().into_owned())
             }
             EnvironmentValue::PreserveUserValue | EnvironmentValue::RemoveInherited => None,
         }
