@@ -78,7 +78,7 @@ export class ClaudeStreamSession {
         throw new ClaudeProtocolError("SESSION_CHANGED", "result event belongs to another session");
       if (this.sessionIdValue === null) throw new ClaudeProtocolError("SESSION_BINDING", "result arrived before init");
       const terminal = Object.freeze({ sessionId: this.sessionIdValue,
-        status: frame.isError || (frame.subtype !== null && frame.subtype !== "success") ? "failed" as const : "completed" as const,
+        status: frame.isError || frame.subtype !== "success" ? "failed" as const : "completed" as const,
         error: frame.isError, subtype: frame.subtype });
       this.terminalValue = terminal;
       this.statusValue = "idle";
@@ -98,12 +98,13 @@ export class ClaudeStreamSession {
     return Object.freeze(["--resume", sessionId]);
   }
 
-  /** Start a turn on this initialized process. The caller records UNKNOWN until an assistant event arrives. */
+  /** Write the first input before init, as the existing seat runtime does. Native identity remains unknown until init. */
   startTurn(text: string): Uint8Array {
-    if (this.statusValue !== "idle" || this.sessionIdValue === null)
-      throw new ClaudeProtocolError("INVALID_STATE", "session is not initialized and idle");
+    if (this.statusValue !== "idle")
+      throw new ClaudeProtocolError("INVALID_STATE", "session is not idle");
+    const bytes = encodeClaudeUserInput(text);
     this.statusValue = "running";
-    return encodeClaudeUserInput(text);
+    return bytes;
   }
 
   /** Appending input during a turn has no vendor receipt and may race the turn boundary. */

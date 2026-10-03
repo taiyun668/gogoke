@@ -28,7 +28,7 @@ export type ClaudeFrame =
   | { readonly kind: "init"; readonly sessionId: string; readonly model: string | null; readonly raw: JsonRecord }
   | { readonly kind: "assistant"; readonly sessionId: string | null; readonly text: string; readonly raw: JsonRecord }
   | { readonly kind: "stream-event"; readonly sessionId: string | null; readonly raw: JsonRecord }
-  | { readonly kind: "result"; readonly sessionId: string | null; readonly subtype: string | null;
+  | { readonly kind: "result"; readonly sessionId: string; readonly subtype: string;
       readonly isError: boolean; readonly text: string | null; readonly raw: JsonRecord }
   | { readonly kind: "control-request"; readonly requestId: string | null; readonly subtype: string | null;
       readonly raw: JsonRecord }
@@ -61,9 +61,10 @@ export function decodeClaudeFrame(bytes: Uint8Array): ClaudeFrame {
   }
   if (type === "stream_event") return Object.freeze({ kind: "stream-event", sessionId, raw: value });
   if (type === "result") {
-    return Object.freeze({ kind: "result", sessionId,
-      subtype: typeof value.subtype === "string" ? value.subtype : null,
-      isError: value.is_error === true,
+    if (typeof value.is_error !== "boolean") throw new ClaudeProtocolError("INVALID_FIELD", "is_error");
+    return Object.freeze({ kind: "result", sessionId: requiredString(value.session_id, "session_id"),
+      subtype: requiredString(value.subtype, "subtype"),
+      isError: value.is_error,
       text: typeof value.result === "string" ? value.result : null,
       raw: value });
   }
