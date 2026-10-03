@@ -1273,6 +1273,8 @@ fn claude_result_is_first_after_echo(connection: &VerifiedDatabaseConnection<'_>
             Ok(stream_json::ClaudeData::Result { .. }
                 | stream_json::ClaudeData::UserReplay { .. }) =>
                     return Err(JournalError::Conflict),
+            Ok(stream_json::ClaudeData::Unhandled {frame_type:Some(kind)})
+                if kind=="user" => return Err(JournalError::Conflict),
             Ok(_) => {},
             Err(_) => return Err(JournalError::Conflict),
         }
@@ -1435,10 +1437,10 @@ pub(crate) fn complete_claude_send_from_source(
     })
 }
 
-/// Strong historical readback after the physical process has a StopFact.
-/// It reconstructs the original H User, H echo, A init/result and receipt
-/// without a live PreparedCustody or a second provider read/write.
-pub(crate) fn read_stopped_claude_send_completed(
+/// Strong readback of an already completed original User receipt from its
+/// H/A rows. ACTIVE/UNKNOWN are historical read states only and do not grant
+/// a new live action; STOPPED additionally requires the physical StopFact.
+pub(crate) fn read_original_claude_send_completed(
     connection: &VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
 ) -> Result<Option<ClaudeSendCompleted>, JournalError> {
     let (request, text, identity) = claude_send_request(input)?;
@@ -1447,22 +1449,34 @@ pub(crate) fn read_stopped_claude_send_completed(
     };
     input_matches(input, &request, &record)?;
     if record.state != JournalState::Receipted { return Ok(None); }
-    let stopped = Statement::prepare(connection.as_ptr(),
-        "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+    let episode = Statement::prepare(connection.as_ptr(),
+        "SELECT e.request_id FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_operation o
+             ON o.domain_id=e.domain_id AND o.request_id=e.request_id
+            AND o.session_id=e.session_id AND o.raw_hex=e.raw_hex
+            AND o.operation='open' AND o.status IN ('APPLIED','UNKNOWN')
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
            JOIN main.gogoke_coordination_process_custody c
              ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
             AND c.generation=e.generation
           WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
-            AND e.process_operation_id=?4 AND e.phase='STOPPED'
-            AND e.stop_fact_id IS NOT NULL AND e.stop_fact_id=c.stop_proof_hash
-            AND c.state='STOPPED' AND c.ticket=?5 AND c.custodian_nonce=?6")?;
+            AND e.process_operation_id=?4 AND e.old_generation IS NULL
+            AND c.ticket=?5 AND c.custodian_nonce=?6
+            AND i.driver_id='claude' AND i.version='2.1.196'
+            AND ((e.phase='STOPPED' AND c.state='STOPPED'
+                  AND e.stop_fact_id IS NOT NULL
+                  AND e.stop_fact_id=c.stop_proof_hash)
+              OR (e.phase IN ('ACTIVE','UNKNOWN')
+                  AND c.state IN ('ACTIVE','UNKNOWN')))")?;
     for (index, value) in [record.domain_id.as_str(), record.session_id.as_str(),
         record.generation.as_str(), record.process_operation_id.as_str(),
         record.ticket.as_str(), record.custodian_nonce.as_str()].iter().enumerate() {
-        stopped.bind_text((index + 1) as i32, value)?;
+        episode.bind_text((index + 1) as i32, value)?;
     }
-    if !stopped.step_row()? || stopped.step_row()? { return Err(JournalError::Denied); }
-    drop(stopped);
+    if !episode.step_row()? { return Err(JournalError::Denied); }
+    let open_request_id = episode.column_text(0)?;
+    if episode.step_row()? { return Err(JournalError::Denied); }
+    drop(episode);
     let echo = Statement::prepare(connection.as_ptr(),
         "SELECT s.command_hex,hex(r.raw_bytes),s.source_epoch,s.source_cursor
            FROM main.gogoke_v37_rpc_steps s
@@ -1474,12 +1488,13 @@ pub(crate) fn read_stopped_claude_send_completed(
           WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3
             AND s.process_operation_id=?4 AND s.ticket=?5
             AND s.custodian_nonce=?6 AND s.step_id=?7
+            AND s.open_request_id=?8
             AND s.phase='OBSERVED' AND s.requires_response=1
             AND r.state='NO_EVENT' AND r.no_event_reason='CLAUDE_STDIN_ACK'")?;
     for (index, value) in [record.domain_id.as_str(), record.session_id.as_str(),
         record.generation.as_str(), record.process_operation_id.as_str(),
         record.ticket.as_str(), record.custodian_nonce.as_str(),
-        identity.step_id.as_str()].iter().enumerate() {
+        identity.step_id.as_str(), open_request_id.as_str()].iter().enumerate() {
         echo.bind_text((index + 1) as i32, value)?;
     }
     if !echo.step_row()? { return Err(JournalError::Denied); }
