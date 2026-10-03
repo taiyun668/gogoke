@@ -1320,6 +1320,16 @@ impl ProcessCustodian {
         Ok(bytes.map(|bytes| OriginBoundFrame { custody: custody.clone(), bytes }))
     }
 
+    /// Display-only unfinished stdout from the exact retained reader. This
+    /// neither consumes bytes nor creates an OriginBoundFrame, ACK or StopFact.
+    pub(crate) fn persistent_stdout_fragment(&self,ticket:&ProcessTicket)
+        -> Result<Vec<u8>,ProcessCustodyError> {
+        let (_,process)=self.active.get(ticket).ok_or_else(||
+            ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?;
+        process.persistent_stdout_fragment().map_err(|error|
+            self.protocol_error_with_stderr(ticket,ProcessCustodyError::ProtocolPipe(error)))
+    }
+
     /// This is runtime evidence for the exact retained process. Do not persist
     /// it to a public artifact: provider errors can contain private account data.
     pub(crate) fn protocol_error_with_stderr(&self, ticket: &ProcessTicket,
@@ -1606,6 +1616,17 @@ impl ManagedProcess {
 
     pub(crate) fn poll_persistent_frame(&self) -> io::Result<Option<Vec<u8>>> {
         self.persistent_frame(None)
+    }
+
+    pub(crate) fn persistent_stdout_fragment(&self) -> io::Result<Vec<u8>> {
+        if !self.persistent_protocol_stdio {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,"persistent stdio was not admitted"));
+        }
+        let state=self.persistent_reader.try_lock().map_err(|error|match error {
+            TryLockError::WouldBlock=>io::Error::new(io::ErrorKind::WouldBlock,"persistent reader busy"),
+            TryLockError::Poisoned(_)=>io::Error::new(io::ErrorKind::Other,"persistent reader state unknown"),
+        })?;
+        Ok(state.partial.clone())
     }
 
     fn persistent_frame(&self, deadline: Option<Duration>) -> io::Result<Option<Vec<u8>>> {
@@ -2978,6 +2999,10 @@ mod tests {
             .expect_err("partial output must not become a successful empty result");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("7 bytes"));
+        assert_eq!(managed.persistent_stdout_fragment().unwrap(),b"partial",
+            "the exact unterminated bytes remain available for private display");
+        assert_eq!(managed.persistent_stdout_fragment().unwrap(),b"partial",
+            "display cannot consume or turn a fragment into a protocol frame");
         assert_eq!(managed.read_persistent_frame(Duration::from_secs(1)).unwrap_err().kind(),
             io::ErrorKind::InvalidData, "terminal stream preserves partial-frame uncertainty");
     }
