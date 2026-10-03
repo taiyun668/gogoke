@@ -27,7 +27,7 @@ const SOURCE_REMOTE_SSH: &str = "git@github.com:taiyun668/gogoke-seat-testbed.gi
 
 mod f2;
 pub(crate) use f2::{cleanup_stop_gate, cleanup_worktree, graph_query, merge_worktree,
-    register_created_worktree, CleanupReceipt, ExactStopFact, GraphMember,
+    register_created_worktree, repository_for_worktree, CleanupReceipt, ExactStopFact, GraphMember,
     MergeReceipt, RegisterReceipt, WorktreeGraph};
 
 fn remote_kind(remote: &str) -> Option<&'static str> {
