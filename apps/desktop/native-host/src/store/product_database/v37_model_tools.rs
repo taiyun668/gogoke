@@ -121,9 +121,9 @@ impl<'root> ProductDatabase<'root> {
         seat::current_child_dispatch_context(&self.connection,caller,&child)?;
         let release=self.child_control_stage(caller,&child,"admission-release","-release")?;
         if release.is_none() && u64::try_from(child.revision).ok()!=Some(request.expected_revision) {
-            return Ok(crate::store::session_transport::encode_receipt(request,V37Status::Stale,
-                request.expected_revision,u64::try_from(child.revision).map_err(|error|
-                    OrchestrationError::V37StoreFailure(format!("native child seat revision: {error}")))?,Default::default()));
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "native child stop seat revision stale: expected {}, current {}",
+                request.expected_revision,child.revision)));
         }
         let row=Statement::prepare(self.connection.as_ptr(),
             "SELECT a.session_id,a.instance_id,a.home_id,a.generation,a.revision,a.state
@@ -159,8 +159,7 @@ impl<'root> ProductDatabase<'root> {
                 let receipt=crate::store::session_transport::decode_receipt(&bytes).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("native child stop receipt: {error:?}")))?;
                 if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {
-                    return Ok(crate::store::session_transport::encode_receipt(request,receipt.status,
-                        request.expected_revision,request.expected_revision,receipt.into_result()));
+                    return Ok(bytes);
                 }
             }
             let stopped=runtime::observe_stop_fact(&self.connection,&request.domain_id,&session)?
@@ -187,14 +186,17 @@ impl<'root> ProductDatabase<'root> {
             &child.seat_id,&input).map_err(|error|OrchestrationError::V37StoreFailure(
                 format!("native child release: {error:?}")))?;
         let status=if matches!(released,AdmissionResult::Replayed(_)) {V37Status::Replayed} else {V37Status::Applied};
-        applied_revision(released)?;
+        let claim_revision=applied_revision(released)?;
         let idle=seat::get(&self.connection,&child.domain_id,&child.seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
         if idle.state!=seat::State::Idle {return Err(OrchestrationError::OperationConflict)};
         let revision=u64::try_from(idle.revision).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native child Idle revision: {error}")))?;
-        Ok(crate::store::session_transport::encode_receipt(request,status,request.expected_revision,revision,
+        // The local adapter's stop composes the existing H operations. Return
+        // that admitted H release envelope, not a new public K-SEAT operation.
+        Ok(crate::store::session_transport::encode_receipt(&release,status,release.expected_revision,claim_revision,
             BTreeMap::from([(key("state"),string("IDLE")),(key("sessionId"),string(&session)),
+                (key("seatId"),string(&child.seat_id)),(key("seatRevision"),string(&revision.to_string())),
                 (key("generation"),string(&idle.generation.to_string())),(key("stoppedGeneration"),string(&generation))])))
     }
 

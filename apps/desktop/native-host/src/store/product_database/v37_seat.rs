@@ -275,6 +275,36 @@ impl<'root> ProductDatabase<'root> {
             let questions=seat::takeover_questions(&seat)?;
             let mut result=seat_result(&seat)?;
             result.insert(key("takeoverReady"),Json::Bool(card.takeover_ready));
+            // The CLI already received these User answers. Its model needs
+            // their native C references to consume them without a human
+            // copying opaque request IDs. These are not authority tokens;
+            // takeover-answers still verifies the original H write in E.
+            if let Some(caller)=caller.filter(|caller|caller.seat_id()==request.target_id) {
+                let sources=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT c.question_id,c.card_id,o.request_id,COALESCE(a.revision,0)
+                       FROM main.gogoke_v37_qcard_native c
+                       JOIN main.gogoke_v37_qcard_native_operations o
+                         ON o.domain_id=c.domain_id AND o.card_id=c.card_id
+                       LEFT JOIN main.gogoke_v37_seat_takeover_answers a
+                         ON a.domain_id=c.domain_id AND a.seat_id=c.seat_id AND a.question_id=c.question_id
+                      WHERE c.domain_id=?1 AND c.seat_id=?2 AND c.turn_id=?3 AND c.generation=?4
+                        AND c.vendor_thread_id=?5 AND c.state='ANSWERED' AND o.state='ANSWERED'
+                        AND c.answer_kind='WIRE' AND o.native_receipt_id!=''
+                      ORDER BY c.card_id,o.request_id")?;
+                let generation=caller.generation().to_string();
+                for (index,value) in [caller.domain_id(),caller.seat_id(),caller.turn_id(),generation.as_str(),
+                    caller.thread_id().ok_or(OrchestrationError::AccessDenied)?].iter().enumerate() {
+                    sources.bind_text((index+1) as i32,value)?;
+                }
+                let mut refs=Vec::new();
+                while sources.step_row()? {refs.push(Json::Object(BTreeMap::from([
+                    (key("questionId"),Json::String(JsonString::from_str(&sources.column_text(0)?))),
+                    (key("cardId"),Json::String(JsonString::from_str(&sources.column_text(1)?))),
+                    (key("cardAnswerRequestId"),Json::String(JsonString::from_str(&sources.column_text(2)?))),
+                    (key("answerRevision"),Json::String(JsonString::from_str(&sources.column_text(3)?))),
+                ])));}
+                result.insert(key("nativeAnswerSources"),Json::Array(refs));
+            }
             result.insert(key("takeoverQuestions"),Json::Array(questions.into_iter().map(|question|
                 Json::Object(BTreeMap::from([
                     (key("id"),Json::String(JsonString::from_str(&question.id))),

@@ -1040,10 +1040,10 @@ fn host_tool_input_schema() -> Json {
 
 fn host_tools() -> Json {
     Json::Array([
-        ("gogoke_seat", "Create, dispatch, stop and release, tune or read a subordinate seat within the native parent scope. Dispatch confirms submission only; state-card reads control facts, not private task output."),
+        ("gogoke_seat", "Manage only direct subordinate seats in the native parent scope. create-from-template: targetId=new seat ID, expectedRevision='0', payload={layer:'LEAD',templateId,instanceId}. dispatch: targetId=child seat ID, payload={repositoryId,layout:'SINGLE'|'MIXED',body}; confirms submission only. stop: targetId=child, payload={}; derives the session, proves process stop, then releases admission. state-card: payload={}; reads self or child control facts, not private task output; self includes nativeAnswerSources for its own answered current-turn cards. tune: payload={setting,value}. bind-instance/change-instance: payload={instanceId}. reclaim/short-to-long: payload={}. Existing child operations require its current seat revision as a string. No caller, domain, grant or path is accepted from model arguments."),
         ("gogoke_policy", "Read native permission facts and submit or decide an authorized stage gate."),
-        ("gogoke_worktree", "Read, register or merge a host-created worktree within native permission facts."),
-        ("gogoke_takeover", "Read a takeover card or consume its already written native answer."),
+        ("gogoke_worktree", "create: targetId=Idle child seat ID, expectedRevision='0', payload={repositoryId,layout:'SINGLE'|'MIXED'}; creates and registers a host-derived worktree and returns worktreeId. merge: targetId=worktreeId, payload={decision:'MERGE',reason}; needs current merge permission and lifecycle revision as a string. No filesystem path, caller or grant is accepted."),
+        ("gogoke_takeover", "takeover-answers: targetId=self seat ID, expectedRevision=self current seat revision as a string, payload={cardId,cardAnswerRequestId,answerRevision}. Ask the native requestUserInput questions from the self state-card takeoverQuestions, using their exact question IDs. After the User answers, read self state-card nativeAnswerSources for those opaque references and answerRevision. Only the original already-written current-turn C answer can be consumed; model text alone is not an answer."),
     ].into_iter().map(|(name, description)| obj([
         ("type", s("function")), ("name", s(name)),
         ("description", s(description)), ("inputSchema", host_tool_input_schema()),

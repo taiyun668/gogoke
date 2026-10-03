@@ -21,6 +21,14 @@ therefore binds the original H generation to exactly the new Idle generation
 minus one, with unchanged incarnation and instance; it cannot follow a later
 child generation or a new dispatch. The control receipt labels the current
 generation separately from the stopped generation.
+The private stop adapter returns the existing K-SESSION admission-release
+receipt plus child control metadata. It does not add stop to the closed public
+K-SEAT wire; the original H stop failure receipt remains unchanged.
+Tool descriptions list the actual admitted payloads. A model's self state card
+also exposes references to its own already-answered current-turn native C cards,
+reusing C's original source rows. No child answer text, new permission or store
+is added. The existing takeover callback still verifies the physical H written
+receipt inside E; displaying a reference does not authorize an answer.
 
 Dispatch continues to return submission ACK. It does not block the parent
 model from issuing later stop/control calls. State-card/control receipts do
