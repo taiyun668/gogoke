@@ -40,6 +40,7 @@ const PROJECT_CAPS: &str = "CREATE TABLE gogoke_v37_seat_project_caps(domain_id 
 #[derive(Debug)]
 pub(crate) enum SeatError {
     Invalid(&'static str),
+    HostResourceObservation(String),
     Denied,
     Conflict,
     Busy,
