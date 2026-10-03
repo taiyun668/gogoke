@@ -10,6 +10,7 @@ use crate::store::sidechat::{self as d, SideError};
 const OPEN: &str = "gogoke.37.owner-side-open.v1";
 const QUESTION: &str = "gogoke.37.owner-side-question.v1";
 const COLLECT: &str = "gogoke.37.owner-side-collect.v1";
+const THREAD: &str = "gogoke.37.owner-side-thread.v1";
 const QUESTION_BOUNDARY: &str = "\nExplicit user question:\n";
 
 fn key(name: &str) -> JsonString { JsonString::from_str(name) }
@@ -55,7 +56,7 @@ pub(super) fn is_owner_side_frame(frame: &[u8]) -> bool {
     let Ok(value)=std::str::from_utf8(frame) else {return false;};
     let Ok(Json::Object(fields))=Parser::parse(value) else {return false;};
     matches!(fields.get(&key("schema")),Some(Json::String(schema))
-        if matches!(schema.to_well_formed_string().as_deref(),Some(OPEN|QUESTION|COLLECT)))
+        if matches!(schema.to_well_formed_string().as_deref(),Some(OPEN|QUESTION|COLLECT|THREAD)))
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -162,6 +163,43 @@ impl<'root> ProductDatabase<'root> {
                     (key("revision"),text(&side.revision.to_string())),(key("sourceEpoch"),text(&side.epoch)),
                     (key("sourceCursor"),text(&side.cursor.to_string())),(key("syncedCursor"),text(&side.synced_cursor.to_string())),
                 ])).canonical().into_bytes())
+            },
+            THREAD => {
+                let domain=string(&mut fields,"domainId")?;
+                let id=string(&mut fields,"sideId")?;
+                let epoch=string(&mut fields,"ledgerEpoch")?;
+                let after=string(&mut fields,"afterCursor")?;
+                if !fields.is_empty() {return Err(OrchestrationError::Invalid("side thread fields"));}
+                let cursor=after.parse::<u64>().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("side thread cursor: {error}")))?;
+                if cursor.to_string()!=after || cursor>i64::MAX as u64 {
+                    return Err(OrchestrationError::Invalid("side thread cursor"));
+                }
+                // D derives both persisted seat incarnations and sideId before
+                // A returns history. Current model admission is not its source.
+                let page=d::read_thread(&mut self.connection,&self.owner,&domain,&id,
+                    &ledger::LedgerPosition {epoch:epoch.clone(),cursor},2).map_err(side_error)?;
+                let mut events=Vec::new();
+                for event in page.events {
+                    events.push(Json::Object(BTreeMap::from([
+                        (key("cursor"),text(&event.cursor.to_string())),
+                        (key("sourceEventId"),text(&event.input.event_id)),
+                        (key("sourceEpoch"),text(&event.input.source_epoch)),
+                        (key("sourceCursor"),text(&event.input.source_cursor)),
+                        (key("sessionId"),text(&event.input.session_id)),
+                        (key("sideId"),text(&id)),
+                        (key("update"),Parser::parse(&event.input.update_json)?),
+                    ])));
+                }
+                let bytes=Json::Object(BTreeMap::from([
+                    (key("schema"),text("gogoke.37.side-thread.v1")),(key("sideId"),text(&id)),
+                    (key("ledgerEpoch"),text(&epoch)),(key("afterCursor"),text(&after)),
+                    (key("cursor"),text(&page.cursor.to_string())),(key("events"),Json::Array(events)),
+                ])).canonical().into_bytes();
+                if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+                    return Err(OrchestrationError::Invalid("side thread response exceeds transport bound"));
+                }
+                Ok(bytes)
             },
             QUESTION => {
                 let id=string(&mut fields,"sideId")?;

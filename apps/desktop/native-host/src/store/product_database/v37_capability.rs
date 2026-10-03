@@ -43,6 +43,7 @@ impl<'root> ProductDatabase<'root> {
         if revision!=request.expected_revision {return Ok(encode_receipt(request,V37Status::Stale,revision,revision,Default::default()));}
         run.evidence.verify_live(&mut self.connection,self.root,&self.owner,&operation,claim.revision).map_err(OrchestrationError::V37StoreFailure)?;
         let pin=runtime::current_instance_pin(&self.connection,&claim.instance_id).map_err(|error|OrchestrationError::V37StoreFailure(format!("native capability pin: {error:?}")))?;
+        let result=if pin.driver_id=="codex" {
         let digest=crate::store::digest::sha256_hex(&request.raw_bytes);
         let mut cursor=None;
         let mut seen=BTreeSet::new();
@@ -92,6 +93,34 @@ impl<'root> ProductDatabase<'root> {
             (JsonString::from_str("evidenceBasis"),text("NATIVE_LOADED_THREAD_FEATURE_RESPONSE")),
             (JsonString::from_str("modelBehaviour"),text("NOT_RUN")),
         ]);
+        result
+        } else if matches!(pin.driver_id.as_str(),"opencode"|"grok") {
+            let (declared,source)=self.native_acp_declaration(&key)?;
+            BTreeMap::from([
+                (JsonString::from_str("generation"),text(&generation)),
+                (JsonString::from_str("threadId"),text(&thread)),
+                (JsonString::from_str("driverId"),text(&pin.driver_id)),
+                (JsonString::from_str("version"),text(&pin.version)),
+                (JsonString::from_str("binaryDigest"),text(&pin.digest)),
+                (JsonString::from_str("processOperationId"),text(&operation)),
+                (JsonString::from_str("loadedThreadFeatures"),Json::Null),
+                (JsonString::from_str("declaredCapabilities"),declared),
+                (JsonString::from_str("declarationSource"),source),
+                (JsonString::from_str("capabilities"),Json::Object(BTreeMap::from([
+                    (JsonString::from_str("resume"),text("SOURCE_PRESENT_NATIVE_RUNTIME_NOT_INTEGRATED")),
+                    (JsonString::from_str("inTurnSteer"),text("UNSUPPORTED")),
+                    (JsonString::from_str("appendWithoutTurn"),text("UNSUPPORTED")),
+                    (JsonString::from_str("nativeQuestionCard"),text("UNSUPPORTED_REPLY_ENCODER")),
+                    (JsonString::from_str("manualCompaction"),text("UNSUPPORTED")),
+                    (JsonString::from_str("interruptAndResume"),text("SOURCE_PRESENT_NATIVE_RUNTIME_NOT_INTEGRATED")),
+                    (JsonString::from_str("memoryOffLaunch"),text("NOT_RUN")),
+                ]))),
+                (JsonString::from_str("evidenceBasis"),text("NATIVE_ACP_INITIALIZE_DECLARATION")),
+                (JsonString::from_str("modelBehaviour"),text("NOT_RUN")),
+            ])
+        } else {
+            return Ok(encode_receipt(request,V37Status::Unsupported,revision,revision,Default::default()));
+        };
         let signature=Json::Object(result).canonical();
         self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
         let read=(||->Result<Vec<u8>> {

@@ -16,6 +16,9 @@ pub(crate) mod provider_evidence;
 pub(crate) use wire::{decode_receipt, decode_request, encode_receipt, V37Receipt, V37Request,
     V37Status, V37WireError};
 pub(crate) use journal::{complete_stdin_request, mark_stdin_write_unknown,
+    AcpSendInput, AcpSendIdentity, prepare_acp_send_request,
+    complete_acp_send_from_source, read_acp_send_completed,
+    mark_acp_send_written, mark_acp_send_write_unknown,
     complete_codex_turn_request,
     recover_codex_turn_request,
     reconcile_observed_codex_sends,
