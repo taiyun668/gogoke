@@ -41,9 +41,15 @@ cannot replace that custody while cleanup remains pending.
 requires both a documented exit code and matching boolean `loggedIn`; any
 mismatch is Unknown. OpenCode's fixed `auth list --pure` lists local credentials.
 The observed empty-home output, exit 0 and `0 credentials`, establishes
-LOGGED_OUT without a host read of `auth.json`. Nonempty output stays Unknown
-until a positive fixed-byte observation unambiguously identifies the `openai`
-OAuth entry. Login exit zero never supplies that fact. Grok has no evidenced
+LOGGED_OUT without a host read of `auth.json`. Nonempty output alone stays
+Unknown because its display name does not identify the provider ID. The
+original pinned `openai` browser callback instead stores the OAuth entry
+before printing Clack's complete LF-terminated `Login successful` line. Only
+that original custodied line together with durable STOPPED exit 0, no
+cancellation/capture failure, and the same F pin/home records
+`CREDENTIAL_PRESENT_NO_VALIDITY_CHECK`; exit zero alone never does. A later
+ambiguous inventory leaves that durable observation intact, while the exact
+empty `0 credentials` inventory records LOGGED_OUT. Grok has no evidenced
 independent status command and remains Unknown. Antigravity remains Unsupported
 because its Windows keyring is shared. Codex retains its existing app-server path.
 
@@ -63,7 +69,7 @@ does not establish their launch result.
 | CLI pin | Recipe | Environment intent | Browser and completion |
 | --- | --- | --- | --- |
 | Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status --json` is the independent read; only matching documented exit 0/`loggedIn:true` or 1/`loggedIn:false` is classified. Do not parse other account fields. |
-| OpenCode `1.18.32` | `opencode auth login --pure --provider openai --method "ChatGPT Pro/Plus (browser)"`. Fixed help and tagged source show both selectors skip terminal menus. `--pure` skips external plugins while retaining the built-in OpenAI auth plugin. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | The selected built-in method prints a complete `Go to:` authorization URL, waits on localhost:1455, and does not call a browser opener. The User host may open that exact printed URL once. `auth list --pure` proves the observed empty inventory; positive OAuth identity remains Unknown pending fixed-byte evidence. Login exit never proves state. |
+| OpenCode `1.18.32` | `opencode auth login --pure --provider openai --method "ChatGPT Pro/Plus (browser)"`. Fixed help and tagged source show both selectors skip terminal menus. `--pure` skips external plugins while retaining the built-in OpenAI auth plugin. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | The selected built-in method prints a complete `Go to:` authorization URL, waits on localhost:1455, and does not call a browser opener. The User host may open that exact printed URL once. The fixed callback stores the local OAuth entry before its exact complete success line. That original line plus durable successful stop proves local credential presence; `auth list --pure` independently proves the observed empty inventory. No remote token validity is claimed. |
 | Grok Build `1.0.41` | `grok login --oauth`. Exact fixed-binary `--help` evidence confirms this command and OAuth option. This is command-shape evidence only; the runtime flow is not qualified. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home, matching H's model launch selector; preserve original AppData for browser context. | Browser-opening behavior and completion remain unknown. The help exposes no `--no-browser` or status flag. H must not auto-open an output URL or infer login success from process exit; status detection is Unsupported. |
 | Antigravity CLI `1.2.11` | The exact official tag says first launch of `agy` authenticates through system keyring and opens the browser if needed. **Unsupported as an instance login**: it exposes no documented login-only command, and the system keyring is shared across this Windows user. | Local home bindings cannot isolate the system keyring identity. | The CLI owns first-launch browser behavior; H must not open a duplicate URL. Account status stays `UNKNOWN`; do not turn a shared keyring session into per-instance readiness. |
 | Codex `0.160` | Out of scope; existing Codex login path stays unchanged. | This module makes no Codex launch or environment change. | Existing `v37_login` owns its Codex browser URL and callback flow. |
@@ -102,8 +108,9 @@ browser, so its output URL remains a manual fallback only. Grok behavior is
 Unknown. These cases cannot share a generic output-URL auto-opener.
 
 No recipe treats a zero login exit code, an output substring, or host-observed
-file presence as login completion. State comes only from a separately custodied
-fixed CLI status command. Raw stdout/stderr stays on the User-private path and
+file presence as login completion. OpenCode's fixed callback provides a narrow
+original-process completion contract; other state comes from a separately
+custodied fixed CLI status command. Raw stdout/stderr stays on the User-private path and
 must retain the original failure reason. Unfinished stdout fragments may be
 displayed but do not become process frames, status evidence, or durable facts.
 
@@ -151,11 +158,17 @@ displayed but do not become process frames, status evidence, or durable facts.
   inventory only; no login, positive OAuth entry, model turn, or browser flow
   was exercised.
   The fixed source's browser callback calls `Auth.set(openai, oauth)` before
-  printing `Login successful`. That is stronger than login exit zero, but the
-  current positive `auth list` bytes have not been measured and the list prints
-  a display name rather than the provider ID. A strict positive local-presence
-  parser needs the exact fixed CLI output after an Owner-authorized isolated
-  login at the stable point; it does not need a remote token-validity probe.
+  printing `Login successful`. The pinned `@clack/prompts@1.0.0-alpha.1`
+  [spinner](https://github.com/bombshell-dev/clack/blob/aece08386ee630a3b5d888460fe0028fc05dfe05/packages/prompts/src/spinner.ts)
+  and [symbols](https://github.com/bombshell-dev/clack/blob/aece08386ee630a3b5d888460fe0028fc05dfe05/packages/prompts/src/common.ts)
+  identify the exact LF line with `◇` or `o`, optionally green CSI color.
+  The host recognizes only that complete line from the original prepared
+  process after STOPPED exit 0 and no cancellation/capture failure. It records
+  the same local-presence semantics as Codex's
+  `CREDENTIAL_PRESENT_NO_VALIDITY_CHECK`, not remote token validity. An
+  independent `auth list` positive parser remains Unknown because its display
+  name does not identify the provider ID. Actual Owner Windows positive
+  output and browser/SAC outcome remain NOT_RUN at the stable point.
 - Grok official source snapshot:
   [authentication guide at source-audit commit](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
   B4 records the installed `1.0.41` version observation but states the source

@@ -187,6 +187,7 @@ pub(super) struct ActiveOwnerLogin {
     halted: bool,
     rpc: Option<LoginRpc>,
     provider: Option<instance::provider_login::PreparedProviderLogin>,
+    provider_completion_frame: bool,
 }
 
 struct LoginRpc {
@@ -962,6 +963,7 @@ impl<'root> ProductDatabase<'root> {
                 login_id: None, early_completion: None, response_started: Instant::now(),
                 stdout_seen: 0, frames_seen: 0 }),
             provider: None,
+            provider_completion_frame: false,
         }));
         Ok(owner_login_reply(command, "PENDING", ""))
     }
@@ -1035,6 +1037,10 @@ impl<'root> ProductDatabase<'root> {
                         Ok(_) => Err(OrchestrationError::Invalid("owner login output limit")),
                         Err(error) => Err(error),
                     };
+                }
+                if active.provider.as_ref().is_some_and(|provider| provider.driver_id == "opencode")
+                    && provider_runtime::opencode_login_success_frame(output.bytes()) {
+                    active.provider_completion_frame = true;
                 }
                 active.output.push_str(&String::from_utf8_lossy(output.bytes()));
                 let visible = if active.provider.is_some() { self.provider_display_output(&active) }
@@ -1540,7 +1546,8 @@ impl<'root> ProductDatabase<'root> {
         let state_result = if cleanup.is_ok() &&
             (login_failure.is_none() || active.provider.is_some()) {
             if let Some(provider) = active.provider.take() {
-                self.provider_login_account_state(command, provider)
+                self.provider_login_account_state(command, provider,
+                    active.provider_completion_frame && !cancelled && login_failure.is_none())
             } else { self.owner_login_account_state(command) }
         } else {
             Ok("UNKNOWN".to_owned())
@@ -1596,7 +1603,7 @@ impl<'root> ProductDatabase<'root> {
                 instance::provider_login::LoginPreparation::Unsupported { .. } =>
                     return Ok("UNKNOWN".into()),
             };
-            return self.provider_login_account_state(command, provider);
+            return self.provider_login_account_state(command, provider, false);
         }
         let request_id = format!("{}-account-read", command.request_id);
         let raw_bytes = format!("owner-login-account-read:{}:{}",
@@ -2276,6 +2283,7 @@ mod tests {
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
             rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)), provider: None,
+            provider_completion_frame: false,
         }));
         let deadline = Instant::now() + Duration::from_secs(45);
         let mut settled = None;
@@ -2340,6 +2348,7 @@ mod tests {
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
             rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)), provider: None,
+            provider_completion_frame: false,
         }));
         let _ = product.status_owner_device_login(&command);
         let reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
@@ -2664,6 +2673,7 @@ exit 0
             expected_revision: command.expected_revision, operation_id,
             prepared, runtime_home: runtime_home.clone(), runtime_identity,
             output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
+            provider_completion_frame: false,
         }));
         let active = String::from_utf8(product.begin_owner_device_login(&command).unwrap()).unwrap();
         assert!(active.contains("\"state\":\"PENDING\""));
@@ -2729,6 +2739,7 @@ exit 0
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
+            provider_completion_frame: false,
         }));
         let reply = match product.cancel_owner_device_login(&command) {
             Ok(reply) => reply,
@@ -3101,6 +3112,7 @@ exit 0
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id,
             prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
+            provider_completion_frame: false,
         };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(format!("{error:?}").contains("controlled account stop record failure"));
@@ -3147,7 +3159,7 @@ exit 0
         assert!(product.process_custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(15)).unwrap());
         product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
         let active = ActiveOwnerLogin { instance_id:command.instance_id.clone(),request_id:command.request_id.clone(),
-            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false,rpc:None,provider:None };
+            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false,rpc:None,provider:None,provider_completion_frame:false };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(matches!(&error, OrchestrationError::AccessDenied));
         let final_readback = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
