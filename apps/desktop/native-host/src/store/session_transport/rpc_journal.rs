@@ -401,6 +401,88 @@ fn has_process_episode_schema(db: &VerifiedDatabaseConnection<'_>) -> Result<boo
     Ok(q.step_row()?)
 }
 
+/// A public K-SESSION resume has an original episode but no compact/renew
+/// generation-change row. Reconstruct its authority only from that original
+/// request, stopped old physical generation, and held candidate identity.
+fn plain_acp_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+    session: &str, request_id: &str, operation: &str, generation: &str,
+    raw_request: &[u8]) -> Result<bool> {
+    let request=super::decode_request(raw_request).map_err(|_|RpcJournalError::Denied)?;
+    if request.family!="K-SESSION" || request.operation!="resume"
+        || request.domain_id!=domain || request.target_id!=session
+        || request.request_id!=request_id || request.raw_bytes.as_slice()!=raw_request {
+        return Ok(false);
+    }
+    if super::generation_change::active_for_session(db,domain,session)?.is_some()
+        || super::generation_change::read(db,domain,request_id)?.is_some() {
+        return Ok(false);
+    }
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT e.old_generation,e.previous_revision,COALESCE(e.result_revision,''),
+                a.revision,e.phase,i.driver_id,i.version
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
+             AND a.session_id=e.session_id AND a.generation=e.old_generation
+             AND a.instance_id=e.instance_id AND a.state='STOPPED'
+             AND a.stop_fact_id IS NOT NULL
+           JOIN main.gogoke_v37_h_process_episode olde
+             ON olde.domain_id=a.domain_id AND olde.session_id=a.session_id
+             AND olde.generation=a.generation
+             AND olde.process_operation_id=a.process_operation_id
+             AND olde.phase='STOPPED' AND olde.stop_fact_id=a.stop_fact_id
+           JOIN main.gogoke_coordination_process_custody oldc
+             ON oldc.operation_id=a.process_operation_id AND oldc.domain_id=a.domain_id
+             AND oldc.generation=a.generation AND oldc.state='STOPPED'
+             AND oldc.stop_proof_hash=a.stop_fact_id
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+             AND c.generation=e.generation AND c.state IN ('PREPARED','ACTIVE','UNKNOWN')
+             AND c.binary_digest_sha256=oldc.binary_digest_sha256
+           JOIN main.gogoke_v37_h_seat_binding sb
+             ON sb.domain_id=a.domain_id AND sb.session_id=a.session_id
+             AND sb.generation=a.generation AND sb.seat_id=e.seat_id
+             AND sb.seat_incarnation=e.seat_incarnation
+           JOIN main.gogoke_v37_seats s ON s.domain_id=sb.domain_id
+             AND s.seat_id=sb.seat_id AND s.incarnation=sb.seat_incarnation
+             AND CAST(s.generation AS TEXT)=sb.generation AND s.state='BUSY'
+             AND s.instance_id=e.instance_id
+           JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id
+             AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id
+             AND b.owner_id=e.session_id AND b.generation=e.generation
+             AND b.kind='SESSION' AND b.state='ACTIVE'
+           JOIN main.gogoke_v37_instance_homes h ON h.home_id=e.home_id
+             AND h.instance_id=e.instance_id AND h.domain_id=e.domain_id
+             AND h.owner_id=e.session_id AND h.generation=e.generation
+             AND h.kind='SESSION' AND h.state='ACTIVE'
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+             AND i.login_state='LOGGED_IN' AND i.program_digest=c.binary_digest_sha256
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+            AND e.process_operation_id=?4 AND e.generation=?5
+            AND e.old_generation IS NOT NULL AND e.raw_hex=?6
+            AND e.phase IN ('PREPARED','UNKNOWN')")?;
+    let original_hex=hex(raw_request);
+    for (index,value) in [domain,session,request_id,operation,generation,
+        original_hex.as_str()].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Ok(false);}
+    let old=q.column_text(0)?;
+    let before=q.column_text(1)?.parse::<u64>().map_err(|_|RpcJournalError::Denied)?;
+    let after=q.column_text(2)?;
+    let claim=q.column_text(3)?.parse::<u64>().map_err(|_|RpcJournalError::Denied)?;
+    let phase=q.column_text(4)?;
+    let driver=q.column_text(5)?;
+    let version=q.column_text(6)?;
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}
+    let adjacent=old.parse::<u64>().ok().and_then(|value|value.checked_add(1))
+        ==generation.parse::<u64>().ok();
+    let claim_matches=if phase=="PREPARED" {claim==before}
+        else {after.parse::<u64>().ok()==Some(claim)};
+    Ok(adjacent && before==request.expected_revision && claim_matches
+        && matches!((driver.as_str(),version.as_str()),
+            ("opencode","1.18.32")|("grok","1.0.41")))
+}
+
 /// A native-only proof that a prepared C steer has no H writer step and that
 /// A captured the exact terminal notification from its original process.
 /// The caller must hold BEGIN IMMEDIATE through its C state transition.
@@ -563,7 +645,10 @@ fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
     session: &str, operation: &str, generation: &str,
     request_id: &str) -> Result<Option<(bool,String)>> {
     let q=Statement::prepare(db.as_ptr(),
-        "SELECT CASE WHEN e.old_generation IS NULL THEN '0' ELSE '1' END,i.driver_id,i.version
+        "SELECT CASE WHEN e.old_generation IS NULL THEN '0' ELSE '1' END,
+                i.driver_id,i.version,e.phase,e.raw_hex,
+                CASE WHEN g.request_id IS NULL THEN '1' ELSE '0' END,
+                COALESCE(e.old_generation,'')
            FROM main.gogoke_v37_h_process_episode e
            LEFT JOIN main.gogoke_v37_h_generation g
              ON g.domain_id=e.domain_id AND g.request_id=e.request_id
@@ -581,10 +666,6 @@ fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
                   AND c.state IN ('ACTIVE','UNKNOWN'))
               OR (e.phase IN ('PREPARED','UNKNOWN') AND e.old_generation IS NOT NULL
                   AND c.state IN ('ACTIVE','UNKNOWN')
-                  AND EXISTS(SELECT 1 FROM main.gogoke_v37_h_generation_change x
-                    WHERE x.domain_id=e.domain_id AND x.session_id=e.session_id
-                      AND x.request_id=e.request_id AND x.stage='OLD_STOPPED'
-                      AND x.owner_stop_request_id IS NULL AND x.raw_hex=e.raw_hex)
                   AND EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim a
                     JOIN main.gogoke_coordination_process_custody oldc
                       ON oldc.operation_id=a.process_operation_id
@@ -601,9 +682,45 @@ fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
     let old=q.column_text(0)?=="1";
     let driver=q.column_text(1)?;
     let version=q.column_text(2)?;
+    let phase=q.column_text(3)?;
+    let original_hex=q.column_text(4)?;
+    let candidate=q.column_text(5)?=="1";
+    let old_generation=q.column_text(6)?;
     if q.step_row()? || !matches!((driver.as_str(),version.as_str()),
         ("codex","0.160.0")|("opencode","1.18.32")|("grok","1.0.41")) {
         return Err(RpcJournalError::Conflict);
+    }
+    if candidate && old && matches!(phase.as_str(),"PREPARED"|"UNKNOWN") {
+        let change=super::generation_change::active_for_session(db,domain,session)?;
+        let authorized=if let Some(change)=change {
+            let same=change.request_id==request_id && change.session_id==session
+                && change.old_generation==old_generation && change.stage=="OLD_STOPPED"
+                && change.owner_stop_request_id.is_none()
+                && change.raw_hex==original_hex;
+            if !same {false} else {
+                let old=Statement::prepare(db.as_ptr(),
+                    "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+                       JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
+                         AND a.session_id=e.session_id AND a.generation=e.old_generation
+                         AND a.process_operation_id=?6 AND a.state='STOPPED'
+                       JOIN main.gogoke_coordination_process_custody c
+                         ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id
+                         AND c.generation=a.generation AND c.state='STOPPED'
+                         AND c.stop_proof_hash=a.stop_fact_id
+                      WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+                        AND e.process_operation_id=?4 AND e.generation=?5
+                        AND e.seat_id=?7 AND c.ticket=?8 AND c.custodian_nonce=?9")?;
+                for (index,value) in [domain,session,request_id,operation,generation,
+                    change.old_operation.as_str(),change.seat_id.as_str(),
+                    change.old_ticket.as_str(),change.old_nonce.as_str()]
+                    .iter().enumerate() {old.bind_text((index+1) as i32,value)?;}
+                old.step_row()? && !old.step_row()?
+            }
+        } else if driver=="opencode" || driver=="grok" {
+            plain_acp_resume_episode(db,domain,session,request_id,operation,
+                generation,&unhex(&original_hex)?)?
+        } else {false};
+        if !authorized {return Err(RpcJournalError::Denied);}
     }
     Ok(Some((old,driver)))
 }
@@ -1256,6 +1373,17 @@ fn assert_acp_binding(db: &VerifiedDatabaseConnection<'_>, step: &AcpStep<'_>,
             | ("grok", commands::AcpCommand::SessionLoad { .. })) {
             return Err(RpcJournalError::Denied);
         }
+        let change=super::generation_change::active_for_session(db,
+            step.domain_id,step.session_id)?;
+        let authorized=if let Some(change)=change.as_ref() {
+            candidate_acp_change_matches(db,step,&operation,change)?
+        } else {
+            acp_candidate_step_id(&operation,step.command)?==step.step_id
+                && plain_acp_resume_episode(db,step.domain_id,step.session_id,
+                    step.open_request_id,&operation,&step.custody.binding.generation,
+                    step.open_request_bytes)?
+        };
+        if !authorized {return Err(RpcJournalError::Denied);}
         return Ok((operation,driver,true));
     }
     let (operation,driver)=assert_current_binding(db,&step.fields(),states,
@@ -1723,12 +1851,7 @@ pub(super) fn prepare_acp_in_transaction(db: &mut VerifiedDatabaseConnection<'_>
         }
         let change=super::generation_change::active_for_session(db,
             step.domain_id, step.session_id)?;
-        if candidate {
-            let Some(change)=change.as_ref() else {return Err(RpcJournalError::Denied)};
-            if !candidate_acp_change_matches(db,step,&operation,change)? {
-                return Err(RpcJournalError::Denied);
-            }
-        } else if change.is_some() {
+        if !candidate && change.is_some() {
             return Err(RpcJournalError::Denied);
         }
         if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {

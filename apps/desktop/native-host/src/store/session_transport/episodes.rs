@@ -292,14 +292,13 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     if !observed.step_row()? || observed.step_row()? {return Err(AtomicError::OperationConflict);}
     drop(observed);
     if driver!="codex" {
-        let change=active_change.as_ref().ok_or(AtomicError::OperationConflict)?;
         let actual=super::rpc_journal::observed_thread_id(connection,domain,session,
             operation_id,new_generation,request_id,ticket,nonce)
             .map_err(|_|AtomicError::OperationConflict)?;
         let old=super::rpc_journal::observed_old_acp_session_id(connection,domain,session,
             operation_id,new_generation,request_id)
             .map_err(|_|AtomicError::OperationConflict)?;
-        if actual!=old || change.thread_id!=old {
+        if actual!=old || active_change.as_ref().is_some_and(|change|change.thread_id!=old) {
             return Err(AtomicError::OperationConflict);
         }
         if driver=="opencode" {

@@ -15,6 +15,14 @@ use crate::store::ledger::{self, RawSourceKey, RawSourceState};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_PROVIDER_FAILURE_BYTES: usize = 16 * 1024;
+
+fn provider_failure_excerpt(raw: &[u8]) -> Result<(&str, bool), JournalError> {
+    let text=std::str::from_utf8(raw).map_err(|_|JournalError::Denied)?;
+    let mut end=text.len().min(MAX_PROVIDER_FAILURE_BYTES);
+    while !text.is_char_boundary(end) {end-=1;}
+    Ok((&text[..end],end<text.len()))
+}
 
 #[derive(Debug)]
 pub(crate) enum JournalError {
@@ -939,6 +947,10 @@ pub(crate) fn complete_acp_send_from_source(
             // The original prompt response proves this User send created and
             // ended a provider turn. It does not prove task success.
             result.insert(JsonString::from_str("createdTurn"), Json::Bool(true));
+        } else {
+            let (excerpt,truncated)=provider_failure_excerpt(&raw_response)?;
+            result.insert(JsonString::from_str("providerFailureRawExcerpt"),string(excerpt));
+            result.insert(JsonString::from_str("providerFailureTruncated"),Json::Bool(truncated));
         }
         let mut receipt_bytes = encode_receipt(&request, status,
             request.expected_revision, revision, result);
@@ -1079,6 +1091,9 @@ pub(crate) fn read_acp_send_completed(
         JournalError::Rpc(super::rpc_journal::RpcJournalError::AcpDecode {
             reason: error.reason, raw_frame: error.raw_frame }))?;
     let (expected_status, stop_reason) = acp_terminal_status(&observation)?;
+    let expected_failure=if expected_status==V37Status::Failed {
+        Some(provider_failure_excerpt(&source.raw_bytes)?)
+    } else {None};
     let receipt_identity = format!("{}\n{}\n{}\n{}",
         crate::store::digest::sha256_hex(input.request_bytes),
         crate::store::digest::sha256_hex(&source.raw_bytes),
@@ -1093,7 +1108,11 @@ pub(crate) fn read_acp_send_completed(
         || field("sourceEpoch").as_deref() != Some(key.source_epoch.as_str())
         || field("sourceCursor").as_deref() != Some(key.source_cursor.as_str())
         || field("rawResponseSha256").as_deref()
-            != Some(crate::store::digest::sha256_hex(&source.raw_bytes).as_str()) {
+            != Some(crate::store::digest::sha256_hex(&source.raw_bytes).as_str())
+        || field("providerFailureRawExcerpt").as_deref()!=expected_failure.map(|(text,_)|text)
+        || result.get(&JsonString::from_str("providerFailureTruncated"))
+            .and_then(|value|if let Json::Bool(value)=value {Some(*value)} else {None})
+            != expected_failure.map(|(_,truncated)|truncated) {
         return Err(JournalError::Conflict);
     }
     Ok(Some(AcpSendCompleted {
@@ -1409,6 +1428,10 @@ pub(crate) fn complete_claude_send_from_source(
         ]);
         if status == V37Status::Applied {
             result.insert(JsonString::from_str("createdTurn"), Json::Bool(true));
+        } else {
+            let (excerpt,truncated)=provider_failure_excerpt(&source.raw_bytes)?;
+            result.insert(JsonString::from_str("providerFailureRawExcerpt"),string(excerpt));
+            result.insert(JsonString::from_str("providerFailureTruncated"),Json::Bool(truncated));
         }
         let mut receipt_bytes = encode_receipt(&request, status,
             request.expected_revision, revision, result);
@@ -1566,6 +1589,9 @@ pub(crate) fn read_original_claude_send_completed(
                 else { V37Status::Failed }, subtype.as_str()),
         _ => return Err(JournalError::Denied),
     };
+    let expected_failure=if expected_status==V37Status::Failed {
+        Some(provider_failure_excerpt(&source.raw_bytes)?)
+    } else {None};
     let receipt_identity = format!("{}\n{}\n{}\n{}\n{}",
         crate::store::digest::sha256_hex(input.request_bytes),
         crate::store::digest::sha256_hex(&raw_echo),
@@ -1582,6 +1608,10 @@ pub(crate) fn read_original_claude_send_completed(
         || field("resultSubtype").as_deref() != Some(subtype)
         || field("rawResultSha256").as_deref()
             != Some(crate::store::digest::sha256_hex(&source.raw_bytes).as_str())
+        || field("providerFailureRawExcerpt").as_deref()!=expected_failure.map(|(text,_)|text)
+        || result.get(&JsonString::from_str("providerFailureTruncated"))
+            .and_then(|value|if let Json::Bool(value)=value {Some(*value)} else {None})
+            != expected_failure.map(|(_,truncated)|truncated)
         || matches!(result.get(&JsonString::from_str("createdTurn")), Some(Json::Bool(true)))
             != (status == V37Status::Applied) {
         return Err(JournalError::Conflict);
