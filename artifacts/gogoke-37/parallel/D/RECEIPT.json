@@ -15,10 +15,13 @@
     "artifacts/gogoke-37/parallel/D/RECEIPT.json"
   ],
   "IMPORTANT_DIFF": [
+    "Owner historical read/archive/restore and fact collection retain stable seat-incarnation/side ownership after H release and E generation change; new inputs separately derive current same-incarnation H/A source and reader bindings.",
+    "A native H cache-identity observation preserves context continuity or rebuilds only the fact-reference queue. Generation/process/instance changes without cache evidence remain UNKNOWN; no pending input is resent and no turn starts during rebind.",
+    "Each sync intent pins its original H session/process operation/generation. Historical reconciliation settles that old intent and never advances a different current reader's cursor.",
     "Native D registry/lifecycle, raw-byte request replay and immutable receipts use the verified product connection and native Owner issuer.",
     "Main context is referenced by A epoch/cursor; D persists pending ranges and original H request digests, not a second main transcript.",
     "Source-seat reference pages preserve A page positions even when filtering yields no events; own transcript reads retain the SIDE tier.",
-    "Sync intent grants one original H send; PREPARED/UNKNOWN after restart cannot grant resend. Completion uses H's original custody journal, generation, createdTurn and receipt identity.",
+    "Sync intent grants one original H send; PREPARED/UNKNOWN after restart cannot grant resend. Completion uses H's original custody journal, immutable session/process/generation, createdTurn and receipt identity.",
     "Unknown append capability stays UNKNOWN and queues references for the next explicit question; no generated placeholder turn.",
     "Deletion requires H StopFact and removes only A's matching side tier in the same transaction. Side history does not issue main-control or transfer authority."
   ],
@@ -29,7 +32,7 @@
     "schema_sql": "signed Node SQLite in-memory syntax and exact stored definition check passed; source only, not native persistence evidence or product fallback",
     "diff_check": "exit 0",
     "native_compile": "NOT_RUN: cloud only; Root-owned module export is not wired in this branch",
-    "native_storage_test": "NOT_RUN: committed Windows same-open integration test; synthetic H/E rows, not provider or custody evidence",
+    "native_storage_test": "NOT_RUN: committed Windows same-open integration test includes release/generation changes, history preservation, current source denial, missing cache facts, rebind, old ACK isolation and seat-incarnation change; synthetic H/E/cache/receipt rows are not provider or custody evidence",
     "native_k_side_conformance": "NOT_RUN",
     "real_provider_e2e": "NOT_RUN",
     "same_pin_append_without_turn": "UNKNOWN: no current-pin behavior evidence supplied"
@@ -38,13 +41,14 @@
   "INVARIANTS_CHECKED": [
     "All edits stay within the three D write roots.",
     "No shared exports, database, H admission, K-SESSION entry, dependencies or workflows changed.",
+    "Frozen K-SIDE wire remains unchanged; Root-only current binding/cache observations cannot be supplied by a serialized Node flag or raw session choice.",
     "No model process, credential read, login, CLI install, native local build, signing, installation, release or merge executed.",
     "TS safety tests reject GLOBAL/SIDE reference leakage and nested history-tag injection; empty filtered pages cannot hide the main tail.",
     "The code does not create a local parallel-cap authority or ordinary-user model fallback."
   ],
   "RISKS": [
     "Rust sources remain uncompiled until Root exports the module and executes cloud native checks.",
-    "Product user origin, H admission, A output tier registration and native-backed conformance remain integration work.",
+    "Product user origin, H admission, A output tier registration, actual old/new native cache observations and native-backed conformance remain integration work.",
     "Large reference material fails the transport bound explicitly; no silent truncation or invented delivery is claimed."
   ],
   "DEVIATIONS_FROM_PLAN": [],
