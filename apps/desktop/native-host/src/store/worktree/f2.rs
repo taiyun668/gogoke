@@ -85,23 +85,35 @@ pub(crate) fn register_created_worktree(db: &mut VerifiedDatabaseConnection<'_>,
     root: &RootLock, owner: &OwnerIssuer, raw_request: &[u8]) -> Result<RegisterReceipt> {
     let request = crate::store::session_transport::decode_request(raw_request)
         .map_err(|_| WorktreeError::Invalid("register request"))?;
+    register_created_worktree_request(db, root, owner, &request, |_| Ok(()))
+}
+
+pub(crate) fn register_created_worktree_request(db: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, owner: &OwnerIssuer,
+    request: &crate::store::session_transport::V37Request,
+    mut authorize: impl FnMut(&VerifiedDatabaseConnection<'_>) -> Result<()>,
+) -> Result<RegisterReceipt> {
     if request.family!="K-WORKTREE" || request.operation!="register" ||
         request.expected_revision!=1 || !request.payload.is_empty() ||
-        !atom(&request.target_id) { return Err(WorktreeError::Invalid("register wire")); }
-    let fingerprint=sha256_hex(raw_request);
+        !atom(&request.target_id) || !atom(&request.request_id)
+        || !atom(&request.domain_id) || request.raw_bytes.is_empty()
+        || request.raw_bytes.len()>65_536 { return Err(WorktreeError::Invalid("register wire")); }
+    let fingerprint=sha256_hex(&request.raw_bytes);
     let old=Statement::prepare(db.as_ptr(),
         "SELECT request_hash,worktree_id,operation,phase FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
     old.bind_text(1,&request.request_id)?;
     if old.step_row()? {
+        authorize(db)?;
         if old.column_text(0)?!=fingerprint || old.column_text(1)?!=request.target_id ||
             old.column_text(2)?!="REGISTER" { return Err(WorktreeError::Conflict); }
         if old.column_text(3)?!="APPLIED" { return Err(WorktreeError::Unknown); }
-        return Ok(RegisterReceipt {worktree_id:request.target_id,revision:2,replayed:true});
+        return Ok(RegisterReceipt {worktree_id:request.target_id.clone(),revision:2,replayed:true});
     }
     let physical=resolve_id(db,root,&request.target_id)?;
     drop(physical);
     transaction(db, |db| {
         check_owner_in_current_transaction(db,owner)?;
+        authorize(db)?;
         let row=Statement::prepare(db.as_ptr(),
             "SELECT domain_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
         row.bind_text(1,&request.target_id)?;
@@ -591,6 +603,19 @@ pub(crate) fn merge_worktree(
 ) -> Result<MergeReceipt> {
     let request = crate::store::session_transport::decode_request(raw_request)
         .map_err(|_| WorktreeError::Invalid("merge request"))?;
+    merge_worktree_request(db, root, pin, custodian, &request, authorize)
+}
+
+/// The native H ingress already established the typed request from its exact
+/// A frame. Keep those bytes as the journal identity; do not decode them as a
+/// public K-WORKTREE wrapper or canonicalize them a second time.
+pub(crate) fn merge_worktree_request(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian,
+    request: &crate::store::session_transport::V37Request,
+    authorize: impl FnOnce(&VerifiedDatabaseConnection<'_>, &str, &str, &str)
+        -> Result<Option<String>>,
+) -> Result<MergeReceipt> {
     if request.family != "K-WORKTREE" || request.operation != "merge" ||
         request.expected_revision == 0 || request.expected_revision >= i64::MAX as u64 ||
         !atom(&request.target_id) || request.payload.len() != 2 {
@@ -608,7 +633,11 @@ pub(crate) fn merge_worktree(
     if reason.trim().is_empty() || reason.len() > 4096 || reason.chars().any(char::is_control) {
         return Err(WorktreeError::Invalid("merge reason"));
     }
-    let fingerprint = sha256_hex(raw_request);
+    if request.raw_bytes.is_empty() || request.raw_bytes.len() > 65_536
+        || !atom(&request.request_id) || !atom(&request.domain_id) {
+        return Err(WorktreeError::Invalid("merge request"));
+    }
+    let fingerprint = sha256_hex(&request.raw_bytes);
     let existing = Statement::prepare(db.as_ptr(),
         "SELECT request_hash,worktree_id,operation,phase,COALESCE(result_commit,''),cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
     existing.bind_text(1, &request.request_id)?;
@@ -844,7 +873,23 @@ mod tests {
         let count = Statement::prepare(db.as_ptr(),
             "SELECT count(*) FROM main.gogoke_coordination_process_custody").unwrap();
         assert!(count.step_row().unwrap()); assert_eq!(count.column_text(0).unwrap(), "0");
-        drop(count); drop(pin); drop(custodian);
+        drop(count);
+        // H's typed native call keeps the original A bytes, which are not a
+        // public K-WORKTREE wrapper. The same receipt is recoverable only
+        // from that exact source, without entering a Git effect.
+        let mut native = session_transport::decode_request(raw).unwrap();
+        native.raw_bytes = b"{\"method\":\"item/tool/call\",\"id\":44}\n".to_vec();
+        let native_record = merge_receipt_record(&native, 3, &commit);
+        let update = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED',request_hash=?1,cause=?2 WHERE request_id='mergeA'").unwrap();
+        update.bind_text(1, &sha256_hex(&native.raw_bytes)).unwrap();
+        update.bind_text(2, &native_record).unwrap(); update.step_done().unwrap(); drop(update);
+        assert_eq!(merge_worktree_request(&mut db, &root, &pin, &mut custodian,
+            &native, authorize).unwrap(), expected);
+        native.raw_bytes.push(b' ');
+        assert!(matches!(merge_worktree_request(&mut db, &root, &pin, &mut custodian,
+            &native, authorize), Err(WorktreeError::Conflict)));
+        drop(pin); drop(custodian);
         db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
     }
 
