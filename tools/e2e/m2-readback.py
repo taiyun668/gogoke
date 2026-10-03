@@ -59,17 +59,19 @@ def one(connection, sql, args=()):
     return values[0]
 
 def git(program, cwd, *args):
-    observed = subprocess.run([str(program), "-C", str(cwd), *args],
+    observed = subprocess.run([str(program), "--no-optional-locks", "-C", str(cwd), *args],
                               capture_output=True, text=True, timeout=30, check=False,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if observed.returncode:
         raise RuntimeError(f"Read-only Git {args[0]} exit={observed.returncode}: {observed.stderr[-2048:]}")
     return observed.stdout.strip()
 
 def git_bytes(program, cwd, *args):
-    observed = subprocess.run([str(program), "-C", str(cwd), *args],
+    observed = subprocess.run([str(program), "--no-optional-locks", "-C", str(cwd), *args],
                               capture_output=True, timeout=30, check=False,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if observed.returncode:
         raise RuntimeError(f"Read-only Git {args[0]} exit={observed.returncode}: {observed.stderr[-2048:]!r}")
     return observed.stdout

@@ -76,6 +76,20 @@ substitutes for that vendor evidence.
 The closed-product observer rejects a nonempty WAL and uses SQLite immutable
 read mode so it cannot create WAL/SHM sidecars; all three files are compared.
 
+## M2 flow
+
+[m2-win11.md](m2-win11.md) describes the main native model takeover, child
+dispatch, real tool write, stop/release and merge path. Its optional
+[m2-sidechat.md](m2-sidechat.md) case uses separate source and side sessions.
+Both attach to the actual installed candidate, retain exact request bytes and
+require immutable readback after normal close. The new M2 drivers have not yet
+been run on the Owner's Win11; the three other-provider logins and recordings
+remain NOT_RUN, and Antigravity awaits the Owner scope decision.
+
+M2 recordings use `cli-protocol-golden.mjs import --session-id` to keep each
+original provider session and its actual F/H binary identity separate. Missing
+directions or normalized events remain incomplete recordings.
+
 ## Real CLI recordings
 
 Monitor a running case through its append-only stdout log. Read the JSON

@@ -42,8 +42,7 @@ contains a real local path, account name, credential or token.
    only that exact native question. It never sends a User-origin equivalent of
    a model-authorized create, dispatch, stop or merge.
 3. The native tool's original H send receipt supplies a child session locator
-   when the fixed CLI exposes it. A model text locator is untrusted and is
-   accepted only to select a read-only H query. The child's real `output-stream`
+   when the fixed CLI exposes it. A model text locator is rejected. The child's real `output-stream`
    must carry an original completed turn. The lead then invokes its own native
    `gogoke_seat stop`; the driver observes the child Idle fact. It stops the
    lead without releasing its admission and closes the product normally.
@@ -77,7 +76,7 @@ On failure the original product is held for Controller disposition; no force
 kill, implicit stop, credential reset or fresh login occurs.
 The Controller's native tool integration must return the dispatch-created
 logical `worktreeId` in that original H send ACK, with `seatId` and
-`seatGeneration`, while preserving H's original receipt bytes. The driver
+`generation`, while preserving H's original receipt bytes. The driver
 checks that ACK selector against the later immutable A/F/H facts. If the
 installed candidate lacks this API, the case fails with its original output;
 the model's final prose cannot supply a missing authoritative selector.
@@ -87,8 +86,8 @@ the model's final prose cannot supply a missing authoritative selector.
 The M2 main path exercises a subset of V00b, V06 and V11. The other M2
 checks, including V03b, V04b, V08, V10, V12 and V13, require their own
 real-case evidence; this driver does not mark them PASS. The separate V12
-side-chat module owns its own source/side sessions and may attach its case IDs
-after Root integrates it; it must never stop or restart a live main-chain
+side-chat module owns its own source/side sessions and attaches its case IDs
+only when explicitly configured; it must never stop or restart a live main-chain
 parent. Its two User-authorized test worktrees need actual F create/register
 receipts in this run. After normal close, `m2-readback.py ... side-worktrees`
 returns both registered physical paths and Python `stat` identities, bound to
