@@ -1,7 +1,7 @@
 //! Native launch evidence for the product's existing E/F/H composition.
 //! Logical IDs select stored facts; they never supply a path or permission.
 use super::runtime::{self, ClaimObservation, InstancePin, SessionPhase};
-use crate::process::{AppContainerProfile, CompatModule, NativeBinding, PrepareRequest, ProcessLaunch};
+use crate::process::{AppContainerProfile, CompatModule, DirectoryRoots, NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::{RootIdentity, RootLock};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
 use crate::store::instance::{self, InstanceLaunchHomes};
@@ -41,7 +41,8 @@ pub(crate) struct LaunchEvidence {
     program: PathBuf,
     program_identity: RootIdentity,
     code_mode: Option<super::codex_component::BoundCodexComponent>,
-    module: Arc<CompatModule>,
+    module: Option<Arc<CompatModule>>,
+    directory_roots: Option<Arc<DirectoryRoots>>,
     tier: PermissionTier,
     resume_old: Option<ClaimObservation>,
     resume_request_id: Option<String>,
@@ -192,13 +193,18 @@ impl LaunchEvidence {
         let code_mode = if pin.driver_id == "codex" {
             Some(super::codex_component::BoundCodexComponent::prepare(&program, &profile)?)
         } else { None };
-        let module = evidence(CompatModule::prepare_with_roots(root, &[
+        let roots = [
             (homes.instance.path.clone(), homes.instance.identity.clone()),
             (homes.session.path.clone(), homes.session.identity.clone()),
             (worktree.path.clone(), worktree.identity.clone()),
-        ], &profile, &profile_name))?;
+        ];
+        let (module, directory_roots) = if pin.driver_id == "codex" {
+            (Some(evidence(CompatModule::prepare_with_roots(root, &roots, &profile, &profile_name))?), None)
+        } else {
+            (None, Some(Arc::new(evidence(DirectoryRoots::prepare(root, &roots))?)))
+        };
         let observed = Self { identity, seat, claim, pin, homes, repository_id: repository_id.into(),
-            worktree, profile, profile_name, program, program_identity, code_mode, module, tier,
+            worktree, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id };
         observed.verify(db, root, owner, None)?;
         Ok(observed)
@@ -327,9 +333,14 @@ impl LaunchEvidence {
         }
         evidence(self.profile.verify_bound_program_grant(&self.program, &self.program_identity))?;
         if let Some(code_mode) = &self.code_mode { code_mode.verify(&self.profile)?; }
-        let mut mapping = Vec::new();
-        self.module.extend_environment(&mut mapping);
-        evidence(self.module.validate_launch(Some(&self.profile_name), Some(&mapping)))
+        if let Some(module) = &self.module {
+            let mut mapping = Vec::new();
+            module.extend_environment(&mut mapping);
+            evidence(module.validate_launch(Some(&self.profile_name), Some(&mapping)))
+        } else {
+            evidence(self.directory_roots.as_ref()
+                .ok_or("native session launch: physical directory custody absent")?.verify())
+        }
     }
 
     pub(crate) fn cwd(&self) -> &Path { &self.worktree.path }
@@ -427,7 +438,7 @@ impl LaunchEvidence {
                 _ => return Err("native session launch: unsupported pinned driver/version".into()),
             }
         }
-        self.module.extend_environment(&mut environment);
+        if let Some(module) = &self.module { module.extend_environment(&mut environment); }
         let mut launch = ProcessLaunch::new(self.program.clone());
         launch.arguments = if self.pin.driver_id == "codex" { vec!["-c".into(), "features.memories=false".into(),
             "-c".into(), "memories.generate_memories=false".into(),
@@ -456,7 +467,8 @@ impl LaunchEvidence {
         launch.app_container_profile = Some(self.profile_name.clone());
         launch.app_container_internet_client = self.tier == PermissionTier::NetworkedWrite;
         launch.app_container_cli_identity_services = true;
-        launch.path_compat = Some(self.module.clone());
+        launch.path_compat = self.module.clone();
+        launch.directory_roots = self.directory_roots.clone();
         launch.worktree_guard = Some(evidence(self.worktree.retained_pointer())?);
         Ok(PrepareRequest { launch, binding: NativeBinding {
             binary_digest_sha256: self.pin.digest.clone(), profile_id: self.claim.instance_id.clone(),
