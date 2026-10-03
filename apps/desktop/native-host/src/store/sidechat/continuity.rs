@@ -75,7 +75,20 @@ fn observed(db:&VerifiedDatabaseConnection<'_>,s:&Side,session:&str,generation:&
     if original.family!="K-SESSION" || original.domain_id!=s.domain_id || original.target_id!=session
         || original.request_id!=open_id.as_str() ||
         (prior.is_empty() && original.operation!="open") ||
-        (!prior.is_empty() && original.operation!="resume") {return Err(SideError::Conflict);}
+        (!prior.is_empty() && !matches!(original.operation.as_str(),"resume"|"compact"|"renew-session")) {
+        return Err(SideError::Conflict);
+    }
+    if matches!(original.operation.as_str(),"compact"|"renew-session") {
+        if session!=s.session_id || prior!=&s.binding_generation {return Err(SideError::Conflict);}
+        let change=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_generation_change
+            WHERE domain_id=?1 AND request_id=?2 AND raw_hex=?3 AND operation=?4
+              AND session_id=?5 AND old_generation=?6 AND old_process_operation_id=?7
+              AND seat_id=?8 AND stage IN ('OLD_STOPPED','APPLIED')")?;
+        for (index,value) in [s.domain_id.as_str(),open_id.as_str(),raw.as_str(),
+            original.operation.as_str(),session,prior.as_str(),s.binding_process_operation_id.as_str(),
+            s.seat_id.as_str()].iter().enumerate() {change.bind_text((index+1) as i32,value)?;}
+        if !change.step_row()? || change.step_row()? {return Ok(None);}
+    }
     if prior.is_empty() {
         let operation_row=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_operation
             WHERE domain_id=?1 AND request_id=?2 AND session_id=?3 AND raw_hex=?4
