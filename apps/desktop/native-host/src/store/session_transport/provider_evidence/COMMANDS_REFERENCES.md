@@ -60,4 +60,3 @@ identity remain with the native E/F/H path. This changes argv only, not the
 fixed CLI bytes or LPAC capabilities. The original fixed help and the official
 [CLI reference](https://code.claude.com/docs/en/cli-reference) support the flag;
 actual initialized tool exposure remains a stable-point CLI golden check.
-

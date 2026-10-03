@@ -392,8 +392,12 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(());
             }
             if driver!="codex" {return Err(OrchestrationError::Invalid("native provider metadata resume unsupported"));}
+            let host_tools=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                .evidence.host_tools_enabled();
+            let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
+                else {Command::Initialize {client_version:"0.1.0".into()}};
             self.native_rpc(&key,&format!("{operation_id}-initialize"),Some(1),
-                &Command::Initialize {client_version:"0.1.0".into()})?;
+                &initialize)?;
             self.native_rpc(&key,&format!("{operation_id}-initialized"),None,
                 &Command::Initialized)?;
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;

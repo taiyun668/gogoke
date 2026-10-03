@@ -132,11 +132,16 @@ impl<'root> ProductDatabase<'root> {
             operation:"create".into(),request_id:format!("{host_id}-worktree"),
             target_id:child.seat_id.clone(),domain_id:request.domain_id.clone(),expected_revision:0,
             payload:BTreeMap::from([(key("repositoryId"),string(&repository)),(key("layout"),string(&layout))])};
-        let pin=crate::store::worktree::resolve_registered_git(&mut self.connection,self.root,&self.owner,
-            &repository,&mut self.process_custodian).map_err(|error|OrchestrationError::V37StoreFailure(
-                format!("native child Git pin: {error:?}")))?;
-        let tree=crate::store::worktree::create_and_register_native_child_worktree(&mut self.connection,
-            self.root,&self.owner,&pin,&mut self.process_custodian,caller,&child,&tree_request)
+        let tree=if child.state==seat::State::Busy {
+            crate::store::worktree::recover_registered_native_child_worktree(&mut self.connection,
+                self.root,caller,&child,&tree_request)
+        } else {
+            let pin=crate::store::worktree::resolve_registered_git(&mut self.connection,self.root,&self.owner,
+                &repository,&mut self.process_custodian).map_err(|error|OrchestrationError::V37StoreFailure(
+                    format!("native child Git pin: {error:?}")))?;
+            crate::store::worktree::create_and_register_native_child_worktree(&mut self.connection,
+                self.root,&self.owner,&pin,&mut self.process_custodian,caller,&child,&tree_request)
+        }
             .map_err(|error|OrchestrationError::V37StoreFailure(format!("native child worktree: {error:?}")))?;
         let (instance,home)=self.prepare_native_child_session_home(&reserve,&child.seat_id,&generation,caller)?;
         let admission=seat::NativeLeadAdmission::from_model_call(caller)?;
