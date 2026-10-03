@@ -650,6 +650,7 @@ mod tests {
         initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incarnationA','USER','LONG','instanceA','IDLE',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatB','incarnationB','USER','LONG','instanceA','IDLE',1,1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_worktree_sources VALUES('repoA','sourceA','sourceIdentity','commonA','commonIdentity','HTTPS','baseline','gitDigest','gitVersion',1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','wtA','repoA','projectA','seatA','incarnationA',1,1,'NetworkedWrite','instanceA',1,'pathA','pathIdentity','pointerHash',10,'pointerIdentity','commonIdentity','baseline','REGISTERED',1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','projectA','SESSION','sessionA','1','ACTIVE')").unwrap();
@@ -669,11 +670,11 @@ mod tests {
         db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','projectA','1','STOPPED','proofA')").unwrap();
         assert_eq!(fixture_gate(&db,false).unwrap(),vec![ExactStopFact {
             process_operation_id:"processA".into(),stop_fact_id:"proofA".into() }]);
-        // A live claim on another sealed worktree of the same instance and
-        // seat incarnation does not overlap this physical tree.
+        // Another seat on the same instance is decided by the sealed physical
+        // root, not by seat identity or a different worktree ID.
         db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingB','instanceA','projectA','SESSION','sessionB','2','ACTIVE')").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('projectA','sessionB','instanceA','homeB','bindingB','2','RESERVED',1)").unwrap();
-        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('projectA','sessionB','seatA','incarnationA','2')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('projectA','sessionB','seatB','incarnationB','2')").unwrap();
         let other=original.replace("openA","openB").replace("sessionA","sessionB").replace("treeA","treeB");
         let other_hex=other.bytes().map(|byte|format!("{byte:02x}")).collect::<String>();
         let insert=Statement::prepare(db.as_ptr(),
