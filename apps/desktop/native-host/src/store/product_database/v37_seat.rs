@@ -198,9 +198,24 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn dispatch_user_state_card(&mut self,request:&V37Request)->Result<Vec<u8>> {
+        self.dispatch_state_card(request, None)
+    }
+
+    fn dispatch_state_card(&mut self,request:&V37Request,
+        caller:Option<&seat::NativeSeatCall>)->Result<Vec<u8>> {
         self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
         let read=(||->Result<Vec<u8>> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            if let Some(caller)=caller {
+                crate::store::session_transport::model_call::revalidate_model_call_in_transaction(
+                    &self.connection,caller).map_err(|error|OrchestrationError::V37StoreFailure(
+                        format!("native state card caller: {error:?}")))?;
+                if request.target_id!=caller.seat_id() {
+                    seat::current_child_dispatch_context(&self.connection,caller,&request.target_id)
+                        .map_err(|error|OrchestrationError::V37StoreFailure(
+                            format!("native state card scope: {error:?}")))?;
+                }
+            }
             let identity=Statement::prepare(self.connection.as_ptr(),
                 "SELECT lower(hex(request_bytes)) FROM main.v37_ledger_receipt WHERE family='K-SEAT' AND domain_id=?1 AND request_id=?2")?;
             identity.bind_text(1,&request.domain_id)?;identity.bind_text(2,&request.request_id)?;
@@ -286,36 +301,55 @@ impl<'root> ProductDatabase<'root> {
     /// Parent integration: dispatch K-SEAT only after the UserOriginProof check.
     /// The native Owner issuer, never request JSON, establishes the user layer.
     pub(super) fn dispatch_user_seat(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_seat_request(request, None)
+    }
+
+    pub(super) fn dispatch_native_seat(&mut self,request:&V37Request,
+        caller:&seat::NativeSeatCall)->Result<Vec<u8>> {
+        if request.domain_id!=caller.domain_id() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        self.dispatch_seat_request(request, Some(caller))
+    }
+
+    fn dispatch_seat_request(&mut self,request:&V37Request,
+        caller:Option<&seat::NativeSeatCall>)->Result<Vec<u8>> {
         if request.family != "K-SEAT" { return Err(OrchestrationError::Invalid("family")); }
         if request.operation == "takeover-answers" {
             return Ok(receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, BTreeMap::new()));
         }
-        if request.operation == "state-card" {return self.dispatch_user_state_card(request);}
+        if request.operation == "state-card" {return self.dispatch_state_card(request,caller);}
         let prior = current(self, request)?;
         let prior_revision = prior.as_ref().map(seat_revision).transpose()?.unwrap_or(0);
-        let native = NativeOrigin::user(&self.owner);
+        let admission=caller.map(seat::NativeLeadAdmission::from_model_call).transpose()?;
+        let native = match admission.as_ref() {
+            Some(admission)=>NativeOrigin::lead(admission),
+            None=>NativeOrigin::user(&self.owner),
+        };
         let outcome: std::result::Result<SeatReceipt, SeatError> = match request.operation.as_str() {
             "create-from-template" => {
                 if request.expected_revision != 0 {
                     return Ok(receipt(request, V37Status::Stale, prior_revision, prior_revision, BTreeMap::new()));
                 }
-                // NativeOrigin::user currently creates USER seats. A LEAD seat
-                // needs an explicit Owner API in seat::mod; a wire layer is not
-                // an authority constructor.
                 if !exact_payload(request, &["layer", "templateId"])
-                    || string_field(&request.payload, "layer").ok().as_deref() != Some("USER") {
+                    || string_field(&request.payload, "layer").ok().as_deref()
+                        != Some(if caller.is_some() {"LEAD"} else {"USER"}) {
                     return Ok(receipt(request, V37Status::Unsupported, 0, 0, BTreeMap::new()));
                 }
                 let template_id = match string_field(&request.payload, "templateId") {
                     Ok(value) => value,
                     Err(_) => return Ok(receipt(request, V37Status::Denied, 0, 0, BTreeMap::new())),
                 };
-                seat::create(&mut self.connection, native, CreateSeat {
+                let input=CreateSeat {
                     domain_id: &request.domain_id, seat_id: &request.target_id,
                     template_id: &template_id, instance_id: None, kind: Kind::Long,
                     request_id: &request.request_id, request_bytes: &request.raw_bytes,
-                })
+                };
+                match caller {
+                    Some(caller)=>seat::create_native_child(&mut self.connection,caller,input),
+                    None=>seat::create(&mut self.connection,native,input),
+                }
             }
             "tune" | "bind-instance" | "change-instance" | "reclaim" | "short-to-long" => {
                 let expected_fields: &[&str] = if matches!(request.operation.as_str(), "bind-instance" | "change-instance") {

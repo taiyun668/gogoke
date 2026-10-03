@@ -39,6 +39,7 @@ mod v37_policy;
 mod v37_session;
 mod v37_runtime;
 mod v37_output;
+mod v37_model_tools;
 mod v37_qcard;
 mod v37_qcard_user;
 mod v37_ledger_user;

@@ -433,6 +433,7 @@ impl<'root> ProductDatabase<'root> {
                     continue;
                 }
             }
+            if driver=="codex" && self.dispatch_captured_model_tool(key,&raw)? {continue;}
             let output=if driver=="codex" {
                 codex_output::normalize(&raw.raw_bytes,&thread_id).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("native output: {error:?}")))?
