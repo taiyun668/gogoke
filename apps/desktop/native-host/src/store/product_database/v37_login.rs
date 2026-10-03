@@ -446,14 +446,18 @@ impl<'root> ProductDatabase<'root> {
             };
             let revision = row.revision.to_string();
             let string = |value: &str| Json::String(JsonString::from_str(value));
-            instances.push(Json::Object(BTreeMap::from([
+            let mut fields=BTreeMap::from([
                 (JsonString::from_str("instanceId"), string(&instance_id)),
                 (JsonString::from_str("driverId"), string(&row.driver_id)),
                 (JsonString::from_str("version"), string(&row.version)),
                 (JsonString::from_str("installState"), string(&install_state)),
                 (JsonString::from_str("loginState"), string(&login_state)),
                 (JsonString::from_str("revision"), string(&revision)),
-            ])));
+            ]);
+            if let Some(version)=instance::known_new_version(&row.driver_id,&row.version) {
+                fields.insert(JsonString::from_str("newVersion"),string(version));
+            }
+            instances.push(Json::Object(fields));
         }
         let response = Json::Object(BTreeMap::from([
             (JsonString::from_str("schema"), Json::String(JsonString::from_str(INSTANCE_LIST_SCHEMA))),

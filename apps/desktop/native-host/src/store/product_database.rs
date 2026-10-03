@@ -265,6 +265,9 @@ impl<'root> ProductDatabase<'root> {
             let row = current.expect("present instance");
             result.insert(JsonString::from_str("version"), Json::String(JsonString::from_str(&row.version)));
             result.insert(JsonString::from_str("programDigest"), Json::String(JsonString::from_str(&row.program_digest)));
+            if let Some(version)=instance::known_new_version(&row.driver_id,&row.version) {
+                result.insert(JsonString::from_str("newVersion"),Json::String(JsonString::from_str(version)));
+            }
             V37Status::Applied
         };
         Ok(encode_receipt(request, status, revision, revision, result))
