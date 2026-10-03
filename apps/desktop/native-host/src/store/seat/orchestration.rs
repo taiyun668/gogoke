@@ -122,7 +122,7 @@ pub(crate) fn authorize_child_dispatch(db:&VerifiedDatabaseConnection<'_>,
 
 /// Root/H can reuse this common check only inside a separate exact matching
 /// reservation check. BUSY alone never authorizes an open or commit.
-fn current_child_dispatch_context(db:&VerifiedDatabaseConnection<'_>,
+pub(crate) fn current_child_dispatch_context(db:&VerifiedDatabaseConnection<'_>,
     caller:&policy::NativeSeatCall,child:&Seat)->Result<Seat,SeatError> {
     let parent=policy::current_caller(db,caller)?;
     if parent.layer!=Layer::User||child.layer!=Layer::Lead||

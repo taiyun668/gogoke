@@ -5,10 +5,10 @@
 //! reconciliation reads the original operation; a new request cannot retry it.
 
 use crate::store::atomic::{AtomicError, Statement};
-use crate::store::authority::{self, ProductIdentitySnapshot};
+use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
 use crate::store::instance;
 use crate::store::same_open::VerifiedDatabaseConnection;
-use crate::store::seat::{self, NativeOrigin, State as SeatState};
+use crate::store::seat::{self, Layer as SeatLayer, NativeOrigin, State as SeatState};
 use super::admission::{self, AdmissionError, AdmissionRequest, AdmissionResult, TrustedLimits};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +75,100 @@ pub(crate) fn reserve_native(
         admission::bind_seat_in_transaction(db, &current, request.session_id)?;
         current_instance_pin(db, request.instance_id)?;
         persisted_limits(db, request.domain_id, request.instance_id)
+    })
+}
+
+fn exact_lead_reservation(db:&VerifiedDatabaseConnection<'_>,
+    seat:&seat::Seat,request:&AdmissionRequest<'_>,
+    replay_request:Option<&str>) -> Result<(),AdmissionError> {
+    if seat.state!=SeatState::Busy || seat.instance_id!=request.instance_id
+        || seat.generation.to_string()!=request.generation
+        || seat.domain_id!=request.domain_id {return Err(AdmissionError::Denied);}
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT o.request_id FROM main.gogoke_v37_h_operation o
+           JOIN main.gogoke_v37_h_claim a ON a.domain_id=o.domain_id
+             AND a.session_id=o.session_id AND a.instance_id=?3
+             AND a.home_id=?4 AND a.generation=?5
+             AND a.state IN ('RESERVED','COMMITTED')
+           JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=a.domain_id
+             AND sb.session_id=a.session_id AND sb.generation=a.generation
+             AND sb.seat_id=?6 AND sb.seat_incarnation=?7
+          WHERE o.domain_id=?1 AND o.session_id=?2
+            AND o.operation='admission-reserve' AND o.status='APPLIED'")?;
+    for (index,value) in [request.domain_id,request.session_id,request.instance_id,
+        request.home_id,request.generation,seat.seat_id.as_str(),
+        seat.incarnation.as_str()].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Err(AdmissionError::Denied);}
+    let original=q.column_text(0)?;
+    if q.step_row()? || replay_request.is_some_and(|wanted|wanted!=original) {
+        return Err(AdmissionError::Denied);
+    }
+    Ok(())
+}
+
+fn lead_child_for_admission(db:&mut VerifiedDatabaseConnection<'_>,
+    admission:&seat::NativeLeadAdmission,seat_id:&str,
+    request:&AdmissionRequest<'_>,first_reserve:bool)->Result<seat::Seat,AdmissionError> {
+    let caller=admission.model_call().ok_or(AdmissionError::Denied)?;
+    let parent=super::model_call::revalidate_model_call_in_transaction(db,caller)
+        .map_err(|_|AdmissionError::Denied)?;
+    let (domain,parent_id,generation)=admission.parent_identity();
+    if parent.layer!=SeatLayer::User || parent.domain_id!=domain
+        || parent.seat_id!=parent_id || parent.incarnation!=admission.parent_incarnation()
+        || parent.generation!=generation || domain!=request.domain_id {
+        return Err(AdmissionError::Denied);
+    }
+    let child=seat::get(db,request.domain_id,seat_id).map_err(AdmissionError::Seat)?
+        .ok_or(AdmissionError::Denied)?;
+    if child.seat_id!=seat_id || child.instance_id!=request.instance_id
+        || child.layer!=SeatLayer::Lead
+        || child.parent_seat_id.as_deref()!=Some(parent_id) {
+        return Err(AdmissionError::Denied);
+    }
+    if child.state==SeatState::Idle && first_reserve {
+        seat::authorize_child_dispatch(db,caller,&child).map_err(AdmissionError::Seat)?;
+        if child.generation.checked_add(1).map(|next|next.to_string()).as_deref()
+            !=Some(request.generation) {return Err(AdmissionError::Denied);}
+        seat::set_dispatch_state_in_transaction(db,&child,true)
+            .map_err(AdmissionError::Seat)
+    } else {
+        seat::current_child_dispatch_context(db,caller,&child)
+            .map_err(AdmissionError::Seat)?;
+        exact_lead_reservation(db,&child,request,
+            if first_reserve {Some(request.request_id)} else {None})?;
+        Ok(child)
+    }
+}
+
+/// Root's native Owner issuer authenticates the DB/root. A Lead admission
+/// separately carries the exact H/A model-call proof and current E grant.
+pub(crate) fn reserve_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
+    host:&OwnerIssuer,origin:&NativeOrigin<'_>,seat_id:&str,
+    request:&AdmissionRequest<'_>)->Result<AdmissionResult,AdmissionError> {
+    if matches!(origin,NativeOrigin::User(_)) {return reserve_native(db,origin,seat_id,request);}
+    let NativeOrigin::Lead(admission)=origin else {return Err(AdmissionError::Denied)};
+    let identity=authority::read_product_identity(db,host).map_err(AdmissionError::Identity)?;
+    admission::reserve_admission(db,request,|db| {
+        check_owner_current(db,&identity)?;
+        let child=lead_child_for_admission(db,admission,seat_id,request,true)?;
+        admission::bind_seat_in_transaction(db,&child,request.session_id)?;
+        current_instance_pin(db,request.instance_id)?;
+        persisted_limits(db,request.domain_id,request.instance_id)
+    })
+}
+
+pub(crate) fn commit_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
+    host:&OwnerIssuer,origin:&NativeOrigin<'_>,seat_id:&str,
+    request:&AdmissionRequest<'_>)->Result<AdmissionResult,AdmissionError> {
+    if matches!(origin,NativeOrigin::User(_)) {return commit_native(db,origin,seat_id,request);}
+    let NativeOrigin::Lead(admission)=origin else {return Err(AdmissionError::Denied)};
+    let identity=authority::read_product_identity(db,host).map_err(AdmissionError::Identity)?;
+    admission::commit_admission(db,request,|db| {
+        check_owner_current(db,&identity)?;
+        lead_child_for_admission(db,admission,seat_id,request,false)?;
+        current_instance_pin(db,request.instance_id).map(|_|())
     })
 }
 
@@ -263,11 +357,22 @@ pub(crate) fn observe_claim(
     seat_id: &str,
     session_id: &str,
 ) -> Result<Option<ClaimObservation>, AtomicError> {
-    // The User variant carries the native OwnerIssuer. The opaque Lead
-    // admission presently has no H-facing method to revalidate its live
-    // channel, seat incarnation and generation. Deny it until E supplies
-    // that bridge rather than trusting a model-provided seat string.
-    if !matches!(origin, NativeOrigin::User(_)) { return Ok(None); }
+    if let NativeOrigin::Lead(admission)=origin {
+        let caller=admission.model_call().ok_or(AtomicError::OperationConflict)?;
+        let child=seat::get(db,domain_id,seat_id)
+            .map_err(|_|AtomicError::OperationConflict)?
+            .ok_or(AtomicError::OperationConflict)?;
+        seat::current_child_dispatch_context(db,caller,&child)
+            .map_err(|_|AtomicError::OperationConflict)?;
+    }
+    observe_claim_bound(db,domain_id,seat_id,session_id)
+}
+
+/// Pure H bound-fact read for an already admitted child. It grants no new
+/// admission or launch permission and does not retain the parent turn.
+pub(crate) fn observe_claim_bound(
+    db:&VerifiedDatabaseConnection<'_>,domain_id:&str,seat_id:&str,session_id:&str,
+) -> Result<Option<ClaimObservation>,AtomicError> {
     let row = Statement::prepare(db.as_ptr(),
         "SELECT a.instance_id,a.home_id,a.binding_id,a.generation,a.revision,a.state,\
                 COALESCE(a.process_operation_id,'') \

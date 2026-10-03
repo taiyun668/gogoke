@@ -23,25 +23,77 @@ impl CallAction {
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub(crate) struct NativeSeatCall {
     domain_id:String, seat_id:String, incarnation:String, generation:i64, turn_id:String,
+    proof:Option<crate::store::session_transport::model_call::ModelCallProof>,
 }
 impl NativeSeatCall {
+    pub(crate) fn from_model_proof(
+        proof:crate::store::session_transport::model_call::ModelCallProof,
+    )->Result<Self,SeatError> {
+        if proof.generation()<1 || !valid_id(proof.domain_id())
+            || !valid_id(proof.seat_id()) || !valid_id(proof.turn_id()) {
+            return Err(SeatError::Denied);
+        }
+        Ok(Self {domain_id:proof.domain_id().to_owned(),seat_id:proof.seat_id().to_owned(),
+            incarnation:proof.incarnation().to_owned(),generation:proof.generation(),
+            turn_id:proof.turn_id().to_owned(),proof:Some(proof)})
+    }
     /// H alone calls this after verifying the live session and original turn.
     /// A seat snapshot or a turn string received over IPC is not that proof.
+    #[cfg(test)]
     pub(crate) fn from_verified_h_turn(seat:&Seat, turn_id:&str)->Result<Self,SeatError> {
         if seat.state!=State::Busy || !valid_id(turn_id) { return Err(SeatError::Denied); }
         Ok(Self {domain_id:seat.domain_id.clone(),seat_id:seat.seat_id.clone(),
-            incarnation:seat.incarnation.clone(),generation:seat.generation,turn_id:turn_id.into()})
+            incarnation:seat.incarnation.clone(),generation:seat.generation,turn_id:turn_id.into(),
+            proof:None})
     }
     pub(crate) fn seat_id(&self)->&str { &self.seat_id }
     pub(crate) fn domain_id(&self)->&str { &self.domain_id }
+    pub(crate) fn incarnation(&self)->&str {&self.incarnation}
+    pub(crate) fn generation(&self)->i64 {self.generation}
     pub(crate) fn turn_id(&self)->&str { &self.turn_id }
+    pub(crate) fn model_proof(&self)
+        ->Option<&crate::store::session_transport::model_call::ModelCallProof> {
+        self.proof.as_ref()
+    }
+    pub(crate) fn session_id(&self)->Option<&str> {self.proof.as_ref().map(|proof|proof.session_id())}
+    pub(crate) fn thread_id(&self)->Option<&str> {self.proof.as_ref().map(|proof|proof.thread_id())}
+    pub(crate) fn tool(&self)->Option<&str> {self.proof.as_ref().map(|proof|proof.tool())}
+    pub(crate) fn call_id(&self)->Option<&str> {self.proof.as_ref().map(|proof|proof.call_id())}
+    pub(crate) fn typed_rpc_id(&self)
+        ->Option<&crate::store::session_transport::codex_rpc::RpcId> {
+        self.proof.as_ref().map(|proof|proof.typed_rpc_id())
+    }
+    pub(crate) fn raw_sha256(&self)->Option<&str> {
+        self.proof.as_ref().map(|proof|proof.raw_sha256())
+    }
+    pub(crate) fn host_request_id(&self)->Option<&str> {
+        self.proof.as_ref().map(|proof|proof.host_request_id())
+    }
+    pub(crate) fn raw_request_bytes(&self)->Option<&[u8]> {
+        self.proof.as_ref().map(|proof|proof.raw_request_bytes())
+    }
+    pub(crate) fn source_locator(&self)->Option<&crate::store::ledger::RawSourceKey> {
+        self.proof.as_ref().map(|proof|proof.source())
+    }
+    pub(crate) fn arguments_json(&self)->Option<&str> {
+        self.proof.as_ref().map(|proof|proof.arguments_json())
+    }
 }
 
 pub(super) fn current_caller(db:&VerifiedDatabaseConnection<'_>, caller:&NativeSeatCall)->Result<Seat,SeatError> {
+    if caller.proof.is_some() {
+        return crate::store::session_transport::model_call::revalidate_model_call_in_transaction(
+            db,caller).map_err(|_|SeatError::Denied);
+    }
+    #[cfg(not(test))]
+    {return Err(SeatError::Denied);}
+    #[cfg(test)]
+    {
     let seat=read(db,&caller.domain_id,&caller.seat_id)?.ok_or(SeatError::Denied)?;
     if seat.state!=State::Busy || seat.incarnation!=caller.incarnation ||
         seat.generation!=caller.generation { return Err(SeatError::Denied); }
     Ok(seat)
+    }
 }
 
 fn now_ms()->Result<i64,SeatError> {
