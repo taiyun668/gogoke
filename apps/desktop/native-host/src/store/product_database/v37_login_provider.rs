@@ -325,6 +325,7 @@ impl<'root> ProductDatabase<'root> {
             proof,
             durable_revision: None,
             abort_prepared,
+            released: false,
             frame: None,
             request: None,
         };
