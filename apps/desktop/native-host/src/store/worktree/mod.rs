@@ -27,7 +27,8 @@ const SOURCE_REMOTE_SSH: &str = "git@github.com:taiyun668/gogoke-seat-testbed.gi
 
 mod f2;
 pub(crate) use f2::{cleanup_stop_gate, cleanup_worktree, graph_query, merge_worktree,
-    CleanupReceipt, ExactStopFact, GraphMember, MergeReceipt, WorktreeGraph};
+    register_created_worktree, CleanupReceipt, ExactStopFact, GraphMember,
+    MergeReceipt, RegisterReceipt, WorktreeGraph};
 
 fn remote_kind(remote: &str) -> Option<&'static str> {
     // Classify only. Never store the remote text, contact it, invoke a
@@ -65,8 +66,8 @@ const SCHEMA: [(&str, &str); 8] = [
     ("gogoke_v37_worktree_programs", "CREATE TABLE gogoke_v37_worktree_programs(repository_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktree_sources(repository_id),git_path TEXT NOT NULL) STRICT"),
     ("gogoke_v37_worktree_spaces", "CREATE TABLE gogoke_v37_worktree_spaces(space_id TEXT PRIMARY KEY,path_id TEXT NOT NULL UNIQUE,classification TEXT NOT NULL CHECK(classification IN ('SINGLE','MIXED')),state TEXT NOT NULL CHECK(state IN ('ACTIVE','UNKNOWN','CLEANED')),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_worktree_members", "CREATE TABLE gogoke_v37_worktree_members(worktree_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktrees(worktree_id),space_id TEXT NOT NULL REFERENCES gogoke_v37_worktree_spaces(space_id),repository_id TEXT NOT NULL,domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,UNIQUE(space_id,repository_id,domain_id,seat_id)) STRICT"),
-    ("gogoke_v37_worktree_lifecycle", "CREATE TABLE gogoke_v37_worktree_lifecycle(worktree_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktrees(worktree_id),state TEXT NOT NULL CHECK(state IN ('REGISTERED','MERGE_INTENT','MERGE_UNKNOWN','MERGED','CLEANUP_INTENT','CLEANUP_UNKNOWN','CLEANED')),revision INTEGER NOT NULL CHECK(revision>=1),merge_reason TEXT,merge_target_commit TEXT,stop_fact_id TEXT) STRICT"),
-    ("gogoke_v37_worktree_lifecycle_ops", "CREATE TABLE gogoke_v37_worktree_lifecycle_ops(request_id TEXT PRIMARY KEY,request_hash TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES gogoke_v37_worktrees(worktree_id),operation TEXT NOT NULL CHECK(operation IN ('MERGE','CLEANUP')),phase TEXT NOT NULL CHECK(phase IN ('INTENT','UNKNOWN','APPLIED','FAILED')),cause TEXT NOT NULL DEFAULT '',result_commit TEXT,UNIQUE(worktree_id,operation,request_id)) STRICT"),
+    ("gogoke_v37_worktree_lifecycle", "CREATE TABLE gogoke_v37_worktree_lifecycle(worktree_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktrees(worktree_id),state TEXT NOT NULL CHECK(state IN ('CREATED','REGISTERED','MERGE_INTENT','MERGE_UNKNOWN','MERGED','CLEANUP_INTENT','CLEANUP_UNKNOWN','CLEANED')),revision INTEGER NOT NULL CHECK(revision>=1),merge_reason TEXT,merge_target_commit TEXT,stop_fact_id TEXT) STRICT"),
+    ("gogoke_v37_worktree_lifecycle_ops", "CREATE TABLE gogoke_v37_worktree_lifecycle_ops(request_id TEXT PRIMARY KEY,request_hash TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES gogoke_v37_worktrees(worktree_id),operation TEXT NOT NULL CHECK(operation IN ('REGISTER','MERGE','CLEANUP')),phase TEXT NOT NULL CHECK(phase IN ('INTENT','UNKNOWN','APPLIED','FAILED')),cause TEXT NOT NULL DEFAULT '',result_commit TEXT,UNIQUE(worktree_id,operation,request_id)) STRICT"),
 ];
 
 #[derive(Debug)]
@@ -1286,6 +1287,12 @@ pub(crate) fn register_source(
     })?;
     let source = fs::canonicalize(input.source_path)?;
     let source_id = inspect_root(&source)?.identity;
+    // The merge target is the registered primary checkout, never another
+    // linked worktree or a caller supplied directory inside one.
+    let dot_git = fs::symlink_metadata(source.join(".git"))?;
+    if !dot_git.is_dir() || dot_git.file_attributes() & REPARSE_POINT != 0 {
+        return Err(WorktreeError::Denied);
+    }
     let top = git(
         db,
         root,
@@ -1525,7 +1532,16 @@ pub(crate) fn create_worktree(
     custodian: &mut ProcessCustodian,
     input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
-    create_worktree_in_space(db, root, owner, pin, custodian, None, input)
+    create_worktree_in_space(db, root, owner, pin, custodian, None, false, input)
+}
+
+/// M2's separate create/register contract uses this entry. The original M1
+/// create entry above remains immediately registered for existing requests.
+pub(crate) fn create_m2_single_worktree(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian, input: CreateWorktree<'_>,
+) -> Result<ResolvedBinding> {
+    create_worktree_in_space(db, root, owner, pin, custodian, None, true, input)
 }
 
 /// A mixed space has one host-generated physical parent and separate linked
@@ -1537,12 +1553,13 @@ pub(crate) fn create_mixed_worktree(
     input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
     if !atom(space_id) { return Err(WorktreeError::Invalid("space id")); }
-    create_worktree_in_space(db, root, owner, pin, custodian, Some(space_id), input)
+    create_worktree_in_space(db, root, owner, pin, custodian, Some(space_id), true, input)
 }
 
 fn create_worktree_in_space(
     db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
     pin: &GitProgramPin, custodian: &mut ProcessCustodian, space_id: Option<&str>,
+    requires_registration: bool,
     input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
     if ![
@@ -1813,6 +1830,11 @@ fn create_worktree_in_space(
                 member.bind_text(3, input.repository_id)?; member.bind_text(4, input.domain_id)?;
                 member.bind_text(5, input.seat_id)?; member.step_done()?;
             }
+            if requires_registration {
+                let lifecycle = Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_worktree_lifecycle(worktree_id,state,revision) VALUES(?1,'CREATED',1)")?;
+                lifecycle.bind_text(1, input.target_id)?; lifecycle.step_done()?;
+            }
             let update=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_worktree_operations SET phase='REGISTERED' WHERE request_id=?1 AND phase='INTENT'")?;
             update.bind_text(1, input.request_id)?;
             update.step_done()?;
@@ -2000,6 +2022,12 @@ fn resolve_id(
     }
     let common_identity = inspect_root(&common)?.identity;
     if common_identity.opaque() != common_identity_text {
+        return Err(WorktreeError::Denied);
+    }
+    let source_git = source.join(".git");
+    let source_git_meta = fs::symlink_metadata(&source_git)?;
+    if !source_git_meta.is_dir() || source_git_meta.file_attributes() & REPARSE_POINT != 0 ||
+        fs::canonicalize(&source_git)? != common {
         return Err(WorktreeError::Denied);
     }
     let (actual_hash, actual_len, pointer_identity, pointer_guard) =

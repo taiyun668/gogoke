@@ -25,6 +25,63 @@ pub(crate) struct WorktreeGraph {
     pub(crate) members: Vec<GraphMember>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegisterReceipt {
+    pub(crate) worktree_id: String,
+    pub(crate) revision: i64,
+    pub(crate) replayed: bool,
+}
+
+/// F.2 registers an already created physical tree; it never repeats `git
+/// worktree add`. The old M1 create entry is intentionally still immediate.
+pub(crate) fn register_created_worktree(db: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, owner: &OwnerIssuer, raw_request: &[u8]) -> Result<RegisterReceipt> {
+    let request = crate::store::session_transport::decode_request(raw_request)
+        .map_err(|_| WorktreeError::Invalid("register request"))?;
+    if request.family!="K-WORKTREE" || request.operation!="register" ||
+        request.expected_revision!=1 || !request.payload.is_empty() ||
+        !atom(&request.target_id) { return Err(WorktreeError::Invalid("register wire")); }
+    let fingerprint=sha256_hex(raw_request);
+    let old=Statement::prepare(db.as_ptr(),
+        "SELECT request_hash,worktree_id,operation,phase FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
+    old.bind_text(1,&request.request_id)?;
+    if old.step_row()? {
+        if old.column_text(0)?!=fingerprint || old.column_text(1)?!=request.target_id ||
+            old.column_text(2)?!="REGISTER" { return Err(WorktreeError::Conflict); }
+        if old.column_text(3)?!="APPLIED" { return Err(WorktreeError::Unknown); }
+        return Ok(RegisterReceipt {worktree_id:request.target_id,revision:2,replayed:true});
+    }
+    let physical=resolve_id(db,root,&request.target_id)?;
+    drop(physical);
+    transaction(db, |db| {
+        check_owner_in_current_transaction(db,owner)?;
+        let row=Statement::prepare(db.as_ptr(),
+            "SELECT domain_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
+        row.bind_text(1,&request.target_id)?;
+        if !row.step_row()? || row.column_text(0)?!=request.domain_id || row.step_row()? {
+            return Err(WorktreeError::Denied);
+        }
+        let state=lifecycle(db,&request.target_id)?.ok_or(WorktreeError::Denied)?;
+        if state.0!="CREATED" || state.1!=1 { return Err(WorktreeError::Denied); }
+        let pending=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1")?;
+        pending.bind_text(1,&request.target_id)?;
+        if pending.step_row()? { return Err(WorktreeError::Unknown); }
+        let update=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_worktree_lifecycle SET state='REGISTERED',revision=2 WHERE worktree_id=?1 AND state='CREATED' AND revision=1")?;
+        update.bind_text(1,&request.target_id)?; update.step_done()?;
+        let changed=Statement::prepare(db.as_ptr(),"SELECT changes()")?;
+        if !changed.step_row()? || changed.column_text(0)?!="1" {
+            return Err(WorktreeError::Unknown);
+        }
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_worktree_lifecycle_ops(request_id,request_hash,worktree_id,operation,phase) VALUES(?1,?2,?3,'REGISTER','APPLIED')")?;
+        insert.bind_text(1,&request.request_id)?; insert.bind_text(2,&fingerprint)?;
+        insert.bind_text(3,&request.target_id)?; insert.step_done()?;
+        Ok(RegisterReceipt {worktree_id:request.target_id.clone(),revision:2,replayed:false})
+    })
+}
+
 fn lifecycle(db: &VerifiedDatabaseConnection<'_>, worktree_id: &str)
     -> Result<Option<(String, i64, Option<String>, Option<String>)>> {
     let q = Statement::prepare(db.as_ptr(),
@@ -101,6 +158,39 @@ pub(crate) struct ExactStopFact {
     pub(crate) stop_fact_id: String,
 }
 
+fn original_session_worktree(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+    session: &str) -> Result<Option<String>> {
+    let rows=Statement::prepare(db.as_ptr(),
+        "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open'")?;
+    rows.bind_text(1,domain)?; rows.bind_text(2,session)?;
+    let mut found: Option<String>=None;
+    while rows.step_row()? {
+        let raw=rows.column_text(0)?;
+        if raw.len()%2!=0 || raw.len()>131_072 { return Err(WorktreeError::Denied); }
+        let mut bytes=Vec::with_capacity(raw.len()/2);
+        for chunk in raw.as_bytes().chunks_exact(2) {
+            let hex=std::str::from_utf8(chunk).map_err(|_|WorktreeError::Denied)?;
+            bytes.push(u8::from_str_radix(hex,16).map_err(|_|WorktreeError::Denied)?);
+        }
+        let request=crate::store::session_transport::decode_request(&bytes)
+            .map_err(|_|WorktreeError::Denied)?;
+        if request.family!="K-SESSION" || request.operation!="open" ||
+            request.domain_id!=domain || request.target_id!=session {
+            return Err(WorktreeError::Denied);
+        }
+        let target=match request.payload.get(&JsonString::from_str("worktreeId")) {
+            Some(Json::String(value))=>value.to_well_formed_string()
+                .ok_or(WorktreeError::Denied)?,
+            _=>return Err(WorktreeError::Denied),
+        };
+        if !atom(&target) || found.as_ref().is_some_and(|old| old!=&target) {
+            return Err(WorktreeError::Denied);
+        }
+        found=Some(target);
+    }
+    Ok(found)
+}
+
 /// An unstarted reservation is still an active reservation. A STOPPED claim
 /// also occupies capacity until release. Every native process ever assigned
 /// to this seat incarnation must have its own matching persisted StopFact.
@@ -116,23 +206,37 @@ pub(crate) fn cleanup_stop_gate(db: &VerifiedDatabaseConnection<'_>, worktree_id
     let incarnation = binding.column_text(2)?;
     if binding.step_row()? { return Err(WorktreeError::SchemaDrift); }
     let reservations = Statement::prepare(db.as_ptr(),
-        "SELECT 1 FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id AND s.session_id=a.session_id WHERE s.domain_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3 AND a.state!='RELEASED' LIMIT 1")?;
+        "SELECT a.session_id FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id AND s.session_id=a.session_id WHERE s.domain_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3 AND a.state!='RELEASED'")?;
     reservations.bind_text(1, &domain)?;
     reservations.bind_text(2, &seat)?;
     reservations.bind_text(3, &incarnation)?;
-    if reservations.step_row()? { return Err(WorktreeError::Denied); }
+    while reservations.step_row()? {
+        let session=reservations.column_text(0)?;
+        // No open request means an unresolved reservation could still target
+        // this tree. A recorded *different* sealed worktree does not overlap.
+        match original_session_worktree(db,&domain,&session)? {
+            Some(target) if target!=worktree_id=>continue,
+            _=>return Err(WorktreeError::Denied),
+        }
+    }
     let episodes = Statement::prepare(db.as_ptr(),
-        "SELECT COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,'') FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.domain_id=?1 AND e.seat_id=?2 AND (e.seat_incarnation=?3 OR e.seat_incarnation IS NULL) ORDER BY e.process_operation_id")?;
+        "SELECT e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,'') FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation LEFT JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=e.domain_id AND s.session_id=e.session_id WHERE e.domain_id=?1 AND (e.seat_id=?2 OR (e.seat_id IS NULL AND s.seat_id=?2)) AND (e.seat_incarnation=?3 OR (e.seat_incarnation IS NULL AND s.seat_incarnation=?3)) ORDER BY e.process_operation_id")?;
     episodes.bind_text(1, &domain)?;
     episodes.bind_text(2, &seat)?;
     episodes.bind_text(3, &incarnation)?;
     let mut proofs = Vec::new();
     while episodes.step_row()? {
-        let process = episodes.column_text(0)?;
-        let phase = episodes.column_text(1)?;
-        let fact = episodes.column_text(2)?;
-        let custody = episodes.column_text(3)?;
-        let proof = episodes.column_text(4)?;
+        let session=episodes.column_text(0)?;
+        match original_session_worktree(db,&domain,&session)? {
+            Some(target) if target!=worktree_id=>continue,
+            Some(_)=>{},
+            None=>return Err(WorktreeError::Denied),
+        }
+        let process = episodes.column_text(1)?;
+        let phase = episodes.column_text(2)?;
+        let fact = episodes.column_text(3)?;
+        let custody = episodes.column_text(4)?;
+        let proof = episodes.column_text(5)?;
         if process.is_empty() || phase != "STOPPED" || fact.is_empty()
             || custody != "STOPPED" || proof != fact { return Err(WorktreeError::Denied); }
         proofs.push(ExactStopFact { process_operation_id: process, stop_fact_id: fact });
@@ -326,7 +430,7 @@ pub(crate) fn merge_worktree(
     }
     let binding = resolve_id(db, root, &request.target_id)?;
     let source = Statement::prepare(db.as_ptr(),
-        "SELECT s.source_path,s.git_digest,s.git_version,w.domain_id,w.seat_id,w.instance_id FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_worktree_sources s ON s.repository_id=w.repository_id WHERE w.worktree_id=?1")?;
+        "SELECT s.source_path,s.git_digest,s.git_version,w.domain_id,w.seat_id,w.instance_id,s.common_path FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_worktree_sources s ON s.repository_id=w.repository_id WHERE w.worktree_id=?1")?;
     source.bind_text(1, &request.target_id)?;
     if !source.step_row()? { return Err(WorktreeError::Denied); }
     let source_path = PathBuf::from(source.column_text(0)?);
@@ -334,6 +438,7 @@ pub(crate) fn merge_worktree(
         source.column_text(3)? != request.domain_id { return Err(WorktreeError::Denied); }
     let seat_id = source.column_text(4)?;
     let instance_id = source.column_text(5)?;
+    let common = PathBuf::from(source.column_text(6)?);
     if source.step_row()? { return Err(WorktreeError::SchemaDrift); }
     // Both trees must be clean before an effect is even reserved. Git's
     // porcelain output may have multiple lines; nonempty means no merge.
@@ -352,6 +457,11 @@ pub(crate) fn merge_worktree(
     if !hex_commit(&before) || !hex_commit(&incoming) || before == incoming {
         return Err(WorktreeError::Denied);
     }
+    // The seat's new commit may contain attributes not present at source
+    // registration. Re-run the existing no-external-driver gate on the exact
+    // incoming tree before Git merge can evaluate its contents.
+    source_checkout_has_no_external_drivers(db, root, custodian, pin,
+        &binding.path, &common, &incoming)?;
     git(db, root, custodian, pin, "merge_baseline", Some(&binding.path), &[
         "merge-base".into(), "--is-ancestor".into(), binding.baseline_commit.clone(), incoming.clone(),
     ], false)?;
@@ -472,11 +582,27 @@ mod tests {
         db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED'").unwrap();
         assert!(matches!(cleanup_stop_gate(&db,"treeA"),Err(WorktreeError::Denied)),
             "released without exact StopFact is insufficient");
+        let original=r#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"repositoryId":"repoA","worktreeId":"treeA"}}"#;
+        let raw_hex=original.bytes().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA',?1,'open','sessionA','APPLIED',1,2)").unwrap();
+        insert.bind_text(1,&raw_hex).unwrap(); insert.step_done().unwrap(); drop(insert);
         db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1','00',1,'processA','instanceA','homeA','bindingA','seatA','incarnationA','STOPPED','proofA')").unwrap();
         assert!(matches!(cleanup_stop_gate(&db,"treeA"),Err(WorktreeError::Denied)));
         db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','projectA','1','STOPPED','proofA')").unwrap();
         assert_eq!(cleanup_stop_gate(&db,"treeA").unwrap(),vec![ExactStopFact {
             process_operation_id:"processA".into(),stop_fact_id:"proofA".into() }]);
+        // A live claim on another sealed worktree of the same instance and
+        // seat incarnation does not overlap this physical tree.
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingB','instanceA','projectA','SESSION','sessionB','2','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('projectA','sessionB','instanceA','homeB','bindingB','2','RESERVED',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('projectA','sessionB','seatA','incarnationA','2')").unwrap();
+        let other=original.replace("openA","openB").replace("sessionA","sessionB").replace("treeA","treeB");
+        let other_hex=other.bytes().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openB',?1,'open','sessionB','UNKNOWN',1,1)").unwrap();
+        insert.bind_text(1,&other_hex).unwrap(); insert.step_done().unwrap(); drop(insert);
+        assert_eq!(cleanup_stop_gate(&db,"treeA").unwrap().len(),1);
         db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='otherProof'").unwrap();
         assert!(matches!(cleanup_stop_gate(&db,"treeA"),Err(WorktreeError::Denied)));
         db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
