@@ -174,11 +174,12 @@ impl<'root> ProductDatabase<'root> {
         if question.trim().is_empty() {return Err(OrchestrationError::Invalid("side explicit question"));}
         let generation=user_payload_string(request,"generation")?;
         let prior=Statement::prepare(self.connection.as_ptr(),
-            "SELECT side_id,session_id,generation,mode FROM main.gogoke_v37_side_sync WHERE domain_id=?1 AND sync_id=?2")?;
+            "SELECT side_id,session_id,generation,mode,origin_request_digest FROM main.gogoke_v37_side_sync WHERE domain_id=?1 AND sync_id=?2")?;
         prior.bind_text(1,&request.domain_id)?;prior.bind_text(2,&request.request_id)?;
         if prior.step_row()? {
             if prior.column_text(0)?!=id || prior.column_text(1)?!=request.target_id
-                || prior.column_text(2)?!=generation || prior.column_text(3)?!="QUESTION" || prior.step_row()? {
+                || prior.column_text(2)?!=generation || prior.column_text(3)?!="QUESTION"
+                || prior.column_text(4)?!=crate::store::digest::sha256_hex(&request.raw_bytes) || prior.step_row()? {
                 return Err(OrchestrationError::OperationConflict);
             }
             drop(prior);
@@ -228,7 +229,7 @@ impl<'root> ProductDatabase<'root> {
         };
         payload.insert(key("body"),text(&body));
         let input=decode(Json::Object(assembled).canonical().as_bytes())?;
-        let sync=d::begin_sync(&mut self.connection,&self.owner,&input.domain_id,id,&input,
+        let sync=d::begin_sync_from_user(&mut self.connection,&self.owner,&input.domain_id,id,&input,&request.raw_bytes,
             d::SyncMode::Question,side.cursor,|_,_,_|Ok(false)).map_err(side_error)?;
         if sync.may_submit {
             // All current grant and H stdin checks are the actual existing

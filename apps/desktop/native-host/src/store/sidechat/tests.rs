@@ -102,6 +102,13 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     let generation=current_binding(&db,&s).unwrap().generation;
     let send=decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"questionA","targetId":"sideSession","domainId":"projectA","expectedRevision":"2","payload":{{"generation":"{generation}","body":"synthetic explicit question"}}}}"#).as_bytes()).unwrap();
     let intent=begin_sync(&mut db,&owner,"projectA","sideA",&send,SyncMode::Question,4,|_,_,_|Ok(false)).unwrap();assert!(intent.may_submit);
+    // Even before an H row exists, composing the same H body cannot change
+    // the original User request identity by whitespace or a different body.
+    let changed_origin=format!(" {}",std::str::from_utf8(&send.raw_bytes).unwrap());
+    assert!(matches!(begin_sync_from_user(&mut db,&owner,"projectA","sideA",&send,
+        changed_origin.as_bytes(),SyncMode::Question,4,|_,_,_|Ok(false)),Err(SideError::Conflict)));
+    assert!(!begin_sync_from_user(&mut db,&owner,"projectA","sideA",&send,
+        &send.raw_bytes,SyncMode::Question,4,|_,_,_|Ok(false)).unwrap().may_submit);
     let unknown=settle_sync(&mut db,&owner,"projectA","questionA").unwrap();assert_eq!(unknown.state,"UNKNOWN");
     db.close_checked().unwrap();let mut db=open_product_database(&root,&database).unwrap();initialize_schema(&mut db).unwrap();
     let retry=begin_sync(&mut db,&owner,"projectA","sideA",&send,SyncMode::Question,4,|_,_,_|Ok(false)).unwrap();assert!(!retry.may_submit);

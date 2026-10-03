@@ -472,7 +472,7 @@ pub(crate) fn reference_batch(db: &mut VerifiedDatabaseConnection<'_>, owner: &O
 }
 
 mod sync;
-pub(crate) use sync::{begin_sync, settle_sync, SyncMode};
+pub(crate) use sync::{begin_sync, begin_sync_from_user, settle_sync, SyncMode};
 
 #[cfg(all(test,windows))]
 mod tests;

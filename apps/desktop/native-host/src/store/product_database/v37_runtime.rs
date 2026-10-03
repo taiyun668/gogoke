@@ -1264,6 +1264,10 @@ impl<'root> ProductDatabase<'root> {
     /// Only the native User side-open composition chooses this registration.
     pub(super) fn dispatch_native_side_open(&mut self, request: &V37Request,
         side_id: &str) -> Result<Vec<u8>> {
+        if !self.user_session_request_identity_matches(request)? {
+            return Ok(encode_receipt(request,V37Status::Conflict,
+                request.expected_revision,request.expected_revision,Default::default()));
+        }
         self.dispatch_native_open_registered(request, SessionPurpose::SideChat, Some(side_id))
     }
 

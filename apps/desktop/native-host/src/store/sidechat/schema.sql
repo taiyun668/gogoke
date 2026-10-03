@@ -41,6 +41,7 @@ CREATE TABLE gogoke_v37_side_sync (
     sync_id TEXT NOT NULL,
     side_id TEXT NOT NULL,
     request_digest TEXT NOT NULL,
+    origin_request_digest TEXT NOT NULL CHECK(length(origin_request_digest)=64 AND origin_request_digest NOT GLOB '*[^0-9a-f]*'),
     mode TEXT NOT NULL CHECK(mode IN ('APPEND','QUESTION')),
     session_id TEXT NOT NULL,
     process_operation_id TEXT NOT NULL,

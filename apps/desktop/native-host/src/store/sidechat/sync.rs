@@ -4,13 +4,13 @@ use crate::store::session_transport::{self, JournalState, StdinJournalKey};
 pub(crate) enum SyncMode { Append, Question }
 impl SyncMode { fn name(&self)->&'static str { match self {Self::Append=>"APPEND",Self::Question=>"QUESTION"} } }
 
-fn load_sync(db:&VerifiedDatabaseConnection<'_>,domain:&str,id:&str)->Result<Option<(Sync,String)>> {
-    let row=Statement::prepare(db.as_ptr(),"SELECT side_id,mode,generation,epoch,after_cursor,through_cursor,state,native_receipt_id,request_digest,session_id,process_operation_id FROM main.gogoke_v37_side_sync WHERE domain_id=?1 AND sync_id=?2")?;
+fn load_sync(db:&VerifiedDatabaseConnection<'_>,domain:&str,id:&str)->Result<Option<(Sync,String,String)>> {
+    let row=Statement::prepare(db.as_ptr(),"SELECT side_id,mode,generation,epoch,after_cursor,through_cursor,state,native_receipt_id,request_digest,session_id,process_operation_id,origin_request_digest FROM main.gogoke_v37_side_sync WHERE domain_id=?1 AND sync_id=?2")?;
     row.bind_text(1,domain)?;row.bind_text(2,id)?;
     if !row.step_row()? {return Ok(None);}
     Ok(Some((Sync {sync_id:id.into(),side_id:row.column_text(0)?,mode:row.column_text(1)?,generation:row.column_text(2)?,epoch:row.column_text(3)?,
         after:number(row.column_text(4)?)?,through:number(row.column_text(5)?)?,state:row.column_text(6)?,native_receipt_id:row.column_text(7)?,
-        session_id:row.column_text(9)?,process_operation_id:row.column_text(10)?,may_submit:false},row.column_text(8)?)))
+        session_id:row.column_text(9)?,process_operation_id:row.column_text(10)?,may_submit:false},row.column_text(8)?,row.column_text(11)?)))
 }
 
 /// The raw request is the exact H send/append that will carry the references.
@@ -21,6 +21,24 @@ fn load_sync(db:&VerifiedDatabaseConnection<'_>,domain:&str,id:&str)->Result<Opt
 pub(crate) fn begin_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,domain:&str,id:&str,
     request:&V37Request,mode:SyncMode,through:u64,
     append_verified:impl FnOnce(&VerifiedDatabaseConnection<'_>,&str,&str)->Result<bool>)->Result<Sync> {
+    begin_sync_bound(db,owner,domain,id,request,&request.raw_bytes,mode,through,append_verified)
+}
+
+/// Native UI composition preserves its original user request separately from
+/// the actual H input after the host has attached source-ledger references.
+pub(crate) fn begin_sync_from_user(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,domain:&str,id:&str,
+    request:&V37Request,original_user_bytes:&[u8],mode:SyncMode,through:u64,
+    append_verified:impl FnOnce(&VerifiedDatabaseConnection<'_>,&str,&str)->Result<bool>)->Result<Sync> {
+    begin_sync_bound(db,owner,domain,id,request,original_user_bytes,mode,through,append_verified)
+}
+
+fn begin_sync_bound(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,domain:&str,id:&str,
+    request:&V37Request,original_user_bytes:&[u8],mode:SyncMode,through:u64,
+    append_verified:impl FnOnce(&VerifiedDatabaseConnection<'_>,&str,&str)->Result<bool>)->Result<Sync> {
+    if original_user_bytes.is_empty() || original_user_bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+        return Err(SideError::Invalid("original user request bytes"));
+    }
+    let origin_digest=crate::store::digest::sha256_hex(original_user_bytes);
     transact(db,|db| {
         authority::check_owner_in_current_transaction(db,owner)?;
         let s=side(db,domain,id)?;check_history(db,&s)?;
@@ -31,8 +49,8 @@ pub(crate) fn begin_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssu
         if request.operation!=operation || request.payload.len()!=2 || field(request,"body")?.is_empty() {
             return Err(SideError::Invalid("sync request"));
         }
-        if let Some((prior,raw))=load_sync(db,domain,&request.request_id)? {
-            if raw!=crate::store::digest::sha256_hex(&request.raw_bytes) || prior.side_id!=id || prior.mode!=mode.name() || prior.through!=through || prior.session_id!=request.target_id || prior.generation!=field(request,"generation")? {return Err(SideError::Conflict);}
+        if let Some((prior,raw,origin))=load_sync(db,domain,&request.request_id)? {
+            if origin!=origin_digest || raw!=crate::store::digest::sha256_hex(&request.raw_bytes) || prior.side_id!=id || prior.mode!=mode.name() || prior.through!=through || prior.session_id!=request.target_id || prior.generation!=field(request,"generation")? {return Err(SideError::Conflict);}
             return Ok(prior); // Even PREPARED after restart never grants a resend.
         }
         if unresolved(db,domain,id)? {return Err(SideError::Unknown);}
@@ -58,8 +76,8 @@ pub(crate) fn begin_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssu
         let held=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND state='COMMITTED'")?;
         held.bind_text(1,domain)?;held.bind_text(2,&s.session_id)?;held.bind_text(3,&generation)?;
         if !held.step_row()? {return Err(SideError::Denied);}drop(held);
-        let row=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_side_sync(domain_id,sync_id,side_id,request_digest,mode,generation,epoch,after_cursor,through_cursor,state,native_receipt_id,session_id,process_operation_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'PREPARED','',?10,?11)")?;
-        for (i,v) in [domain,&request.request_id,id,&crate::store::digest::sha256_hex(&request.raw_bytes),mode.name(),&generation,&s.epoch,&s.synced_cursor.to_string(),&through.to_string(),&s.session_id,&live.process_operation_id].iter().enumerate() {row.bind_text((i+1) as i32,v)?;}
+        let row=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_side_sync(domain_id,sync_id,side_id,request_digest,mode,generation,epoch,after_cursor,through_cursor,state,native_receipt_id,session_id,process_operation_id,origin_request_digest) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'PREPARED','',?10,?11,?12)")?;
+        for (i,v) in [domain,&request.request_id,id,&crate::store::digest::sha256_hex(&request.raw_bytes),mode.name(),&generation,&s.epoch,&s.synced_cursor.to_string(),&through.to_string(),&s.session_id,&live.process_operation_id,&origin_digest].iter().enumerate() {row.bind_text((i+1) as i32,v)?;}
         row.step_done()?;
         Ok(Sync {sync_id:request.request_id.clone(),side_id:id.into(),mode:mode.name().into(),generation,session_id:s.session_id,process_operation_id:live.process_operation_id,epoch:s.epoch,after:s.synced_cursor,through,
             state:"PREPARED".into(),native_receipt_id:String::new(),may_submit:true})
@@ -71,7 +89,7 @@ pub(crate) fn begin_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssu
 pub(crate) fn settle_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,domain:&str,sync_id:&str)->Result<Sync> {
     transact(db,|db| {
         authority::check_owner_in_current_transaction(db,owner)?;
-        let (mut sync,raw)=load_sync(db,domain,sync_id)?.ok_or(SideError::Conflict)?;
+        let (mut sync,raw,_origin)=load_sync(db,domain,sync_id)?.ok_or(SideError::Conflict)?;
         let s=side(db,domain,&sync.side_id)?;check_history(db,&s)?;
         if matches!(sync.state.as_str(),"DELIVERED"|"FAILED") {return Ok(sync);}
         // Obtain the original ticket from H, then use H's own custody read.

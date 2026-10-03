@@ -183,7 +183,7 @@ impl<'root> ProductDatabase<'root> {
         Ok((seat.instance_id, home_id))
     }
 
-    pub(super) fn dispatch_user_session(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+    pub(super) fn user_session_request_identity_matches(&mut self, request: &V37Request) -> Result<bool> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         // One K-SESSION request identity covers both operation and stdin
         // journals. Check it before any home/process/provider side effect.
@@ -194,11 +194,18 @@ impl<'root> ProductDatabase<'root> {
         let original: String = request.raw_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         while prior.step_row()? {
             if prior.column_text(0)? != original {
-                return Ok(encode_receipt(request, V37Status::Conflict,
-                    request.expected_revision, request.expected_revision, Default::default()));
+                return Ok(false);
             }
         }
         drop(prior);
+        Ok(true)
+    }
+
+    pub(super) fn dispatch_user_session(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if !self.user_session_request_identity_matches(request)? {
+            return Ok(encode_receipt(request, V37Status::Conflict,
+                request.expected_revision, request.expected_revision, Default::default()));
+        }
         if request.operation == "open" { return self.dispatch_native_open(request); }
         if request.operation == "resume" { return self.dispatch_native_resume(request); }
         if request.operation == "reconnect" { return self.dispatch_native_reconnect(request); }
