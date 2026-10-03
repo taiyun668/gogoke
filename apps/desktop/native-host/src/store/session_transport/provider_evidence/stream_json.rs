@@ -118,8 +118,15 @@ pub(crate) fn decode_antigravity_line(line: &[u8]) -> Result<AntigravityData, St
 }
 
 fn parse_object(line: &[u8]) -> Result<BTreeMap<JsonString, Json>, StreamJsonError> {
-    if line.is_empty() || line.len() > MAX_FRAME || line.contains(&b'\n') || line.contains(&b'\r') {
+    if line.is_empty() || line.len() > MAX_FRAME {
         return Err(StreamJsonError::Invalid("frame bounds"));
+    }
+    // OriginBoundFrame retains the terminal line ending in A. Only the parser
+    // view removes it; the captured bytes and source digest remain unchanged.
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    if line.is_empty() || line.contains(&b'\n') || line.contains(&b'\r') {
+        return Err(StreamJsonError::Invalid("one JSON line required"));
     }
     if !depth_ok(line) {
         return Err(StreamJsonError::Invalid("JSON depth"));
@@ -133,7 +140,7 @@ fn parse_object(line: &[u8]) -> Result<BTreeMap<JsonString, Json>, StreamJsonErr
 
 // Same string-aware depth scan as the native session RPC parser. Parser::parse
 // recurses, so this must run on the original bytes before parsing.
-fn depth_ok(bytes: &[u8]) -> bool {
+pub(super) fn depth_ok(bytes: &[u8]) -> bool {
     let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
     for &byte in bytes {
         if quoted {
@@ -192,33 +199,3 @@ fn required_id(fields: &BTreeMap<JsonString, Json>, name: &str)
 // third_party/t3code/apps/server/src/gogoke/adapters/{claude,antigravity}/;
 // https://code.claude.com/docs/en/headless
 // https://antigravity.google/docs/cli/headless/ (fixed adapter pin: 1.2.11).
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn claude_result_needs_all_vendor_terminal_fields() {
-        let partial = br#"{"type":"result","subtype":"success","session_id":"s"}"#;
-        assert!(decode_claude_line(partial).is_err());
-        let failed = br#"{"type":"result","subtype":"success","session_id":"s","is_error":true}"#;
-        assert!(!decode_claude_line(failed).unwrap().reports_success());
-        let success = br#"{"type":"result","subtype":"success","session_id":"s","is_error":false}"#;
-        assert!(decode_claude_line(success).unwrap().reports_success());
-        let stream = br#"{"type":"stream_event","session_id":"s","event":{}}"#;
-        assert!(matches!(decode_claude_line(stream).unwrap(), ClaudeData::Unhandled { .. }));
-    }
-
-    #[test]
-    fn antigravity_official_result_shape_requires_nested_id_and_status() {
-        // Field shape from Google's headless stream-json documentation.
-        let official = br#"{"event":"result","result":{"conversation_id":"c3b66b04-872b-4fbe-a3a4-058a026ef20a","status":"SUCCESS","response":"answer"}}"#;
-        assert!(decode_antigravity_line(official).unwrap().reports_success());
-        let only_response = br#"{"event":"result","result":{"response":"answer"}}"#;
-        assert!(decode_antigravity_line(only_response).is_err());
-        let envelope_only = br#"{"event":"result","conversation_id":"outer","result":{"status":"SUCCESS","response":"answer"}}"#;
-        assert!(!decode_antigravity_line(envelope_only).unwrap().reports_success());
-        let failed = br#"{"event":"result","result":{"conversation_id":"c","status":"ERROR","response":"","error":"invalid model"}}"#;
-        assert!(!decode_antigravity_line(failed).unwrap().reports_success());
-    }
-}

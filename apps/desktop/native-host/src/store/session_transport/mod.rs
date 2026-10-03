@@ -11,6 +11,7 @@ pub(crate) mod codex_rpc;
 pub(crate) mod codex_output;
 pub(crate) mod rpc_journal;
 pub(crate) mod runtime;
+pub(crate) mod provider_evidence;
 
 pub(crate) use wire::{decode_receipt, decode_request, encode_receipt, V37Receipt, V37Request,
     V37Status, V37WireError};

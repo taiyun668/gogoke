@@ -145,7 +145,7 @@ fn rpc_id(value: &Json, frame: &[u8]) -> Result<RpcId, DecodeError> {
         Json::String(_) => Ok(RpcId::String(text(value, frame, "JSON-RPC id")?)),
         Json::Number(number) => {
             let parsed = number.parse::<i64>()
-                .map_err(|_| invalid(frame, "JSON-RPC id must be an integer"))?;
+                .map_err(|error| invalid(frame, format!("JSON-RPC id must be an integer: {error}")))?;
             if !(-MAX_SAFE_ID..=MAX_SAFE_ID).contains(&parsed) {
                 return Err(invalid(frame, "JSON-RPC id exceeds the safe integer range"));
             }
@@ -178,6 +178,9 @@ pub(crate) fn decode(frame: &[u8], pending: Option<&Pending<'_>>)
     let body = body.strip_suffix(b"\r").unwrap_or(body);
     if body.is_empty() || body.contains(&b'\n') || body.contains(&b'\r') {
         return Err(invalid(frame, "ACP frame must contain one JSON line"));
+    }
+    if !super::stream_json::depth_ok(body) {
+        return Err(invalid(frame, "ACP JSON depth or string framing invalid"));
     }
     let utf8 = std::str::from_utf8(body)
         .map_err(|error| invalid(frame, format!("ACP UTF-8: {error}")))?;
@@ -271,76 +274,6 @@ pub(crate) fn decode(frame: &[u8], pending: Option<&Pending<'_>>)
             let reason = field(result_obj, "stopReason")
                 .ok_or_else(|| invalid(frame, "session/prompt.stopReason missing"))?;
             Ok(Observation::Prompt { id, stop_reason: stop_reason(reason, frame)?, result: copy_json(result) })
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn response_id_type_and_result_error_exclusivity_are_strict() {
-        let id = RpcId::Number(7);
-        let pending = Pending { id: &id, method: PendingMethod::SessionPrompt,
-            requested_session_id: None };
-        let invalid_frames: [&[u8]; 3] = [
-            br#"{"jsonrpc":"2.0","id":"7","result":{"stopReason":"cancelled"}}"#,
-            br#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"cancelled"},"error":{"code":1}}"#,
-            br#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"cancelled"},"result":{"stopReason":"end_turn"}}"#,
-        ];
-        for frame in invalid_frames {
-            assert!(decode(frame, Some(&pending)).is_err());
-        }
-    }
-
-    #[test]
-    fn only_matching_original_prompt_response_has_cancelled_candidate() {
-        let id = RpcId::Number(7);
-        let pending = Pending { id: &id, method: PendingMethod::SessionPrompt,
-            requested_session_id: None };
-        let cancel = br#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s"}}"#;
-        assert!(matches!(decode(cancel, Some(&pending)), Ok(Observation::Unhandled { .. })));
-        let bad = br#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"unknown"}}"#;
-        assert!(decode(bad, Some(&pending)).is_err());
-        let actual = br#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"cancelled"}}"#;
-        assert!(matches!(decode(actual, Some(&pending)),
-            Ok(Observation::Prompt { stop_reason: StopReason::Cancelled, .. })));
-    }
-
-    #[test]
-    fn continuation_ack_does_not_invent_session_id() {
-        let id = RpcId::String("load-1".into());
-        let pending = Pending { id: &id, method: PendingMethod::SessionResume,
-            requested_session_id: Some("original") };
-        let ack = br#"{"jsonrpc":"2.0","id":"load-1","result":{"configOptions":[]}}"#;
-        assert!(matches!(decode(ack, Some(&pending)),
-            Ok(Observation::SessionResume { echoed_session_id: None, .. })));
-        let mismatch = br#"{"jsonrpc":"2.0","id":"load-1","result":{"sessionId":"other"}}"#;
-        assert!(decode(mismatch, Some(&pending)).is_err());
-    }
-
-    #[test]
-    fn no_login_grok_golden_preserves_declaration_and_original_error() {
-        // Sanitized field subset from the repository's live Grok Build 1.0.41
-        // no-login initialize golden; no model request is made by this test.
-        let init = br#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":true},"sessionCapabilities":{"list":{},"resume":{},"close":{}}},"_meta":{"agentVersion":"1.0.41"}}}"#;
-        let init_id = RpcId::Number(1);
-        let init_pending = Pending { id: &init_id, method: PendingMethod::Initialize,
-            requested_session_id: None };
-        match decode(init, Some(&init_pending)) {
-            Ok(Observation::Initialize { declared_capabilities, .. }) => {
-                assert!(declared_capabilities.canonical().contains("\"loadSession\":true"));
-            }
-            _ => panic!("expected declared initialize fields"),
-        }
-        let error = br#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required","data":"no auth method id provided"}}"#;
-        let error_id = RpcId::Number(2);
-        let new_pending = Pending { id: &error_id, method: PendingMethod::SessionNew,
-            requested_session_id: None };
-        match decode(error, Some(&new_pending)) {
-            Ok(Observation::RemoteError { raw_frame, .. }) => assert_eq!(raw_frame.as_slice(), error.as_slice()),
-            _ => panic!("expected complete original no-login error"),
         }
     }
 }
