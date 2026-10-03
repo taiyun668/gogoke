@@ -4,6 +4,7 @@
 use super::*;
 use crate::store::atomic::Parser;
 use crate::store::seat;
+use crate::store::ledger;
 use crate::store::session_transport::{codex_rpc, model_call, rpc_journal as rpc};
 
 fn key(name:&str)->JsonString {JsonString::from_str(name)}

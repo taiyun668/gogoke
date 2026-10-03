@@ -211,7 +211,9 @@ impl<'root> ProductDatabase<'root> {
                     &self.connection,caller).map_err(|error|OrchestrationError::V37StoreFailure(
                         format!("native state card caller: {error:?}")))?;
                 if request.target_id!=caller.seat_id() {
-                    seat::current_child_dispatch_context(&self.connection,caller,&request.target_id)
+                    let child=seat::get(&self.connection,&request.domain_id,&request.target_id)?
+                        .ok_or(OrchestrationError::AccessDenied)?;
+                    seat::current_child_dispatch_context(&self.connection,caller,&child)
                         .map_err(|error|OrchestrationError::V37StoreFailure(
                             format!("native state card scope: {error:?}")))?;
                 }

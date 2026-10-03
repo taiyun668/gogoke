@@ -234,6 +234,26 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request, V37Status::Conflict,
                 request.expected_revision, request.expected_revision, Default::default()));
         }
+        if request.family=="K-WORKTREE" && request.operation=="create" {
+            let child=seat::get(&self.connection,&request.domain_id,&request.target_id)?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            seat::authorize_child_dispatch(&self.connection,caller,&child)?;
+            let repository=user_payload_string(request,"repositoryId")?;
+            let outcome=(|| {
+                let pin=f::resolve_registered_git(&mut self.connection,self.root,
+                    &self.owner,&repository,&mut self.process_custodian)?;
+                f::create_and_register_native_child_worktree(&mut self.connection,self.root,
+                    &self.owner,&pin,&mut self.process_custodian,caller,&child,request)
+            })();
+            return Ok(match outcome {
+                Ok(binding)=>encode_receipt(request,V37Status::Applied,0,binding.revision as u64,
+                    BTreeMap::from([
+                        (JsonString::from_str("worktreeId"),text(&binding.worktree_id)),
+                        (JsonString::from_str("state"),text("REGISTERED")),
+                    ])),
+                Err(error)=>worktree_failure(request,error),
+            });
+        }
         if request.family != "K-WORKTREE" || request.operation != "merge" {
             return Ok(encode_receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, Default::default()));
@@ -243,8 +263,8 @@ impl<'root> ProductDatabase<'root> {
                 &request.domain_id, &request.target_id)?;
             let pin = f::resolve_registered_git(&mut self.connection, self.root,
                 &self.owner, &repository, &mut self.process_custodian)?;
-            f::merge_worktree(&mut self.connection, self.root, &pin,
-                &mut self.process_custodian, &request.raw_bytes,
+            f::merge_worktree_request(&mut self.connection, self.root, &pin,
+                &mut self.process_custodian, request,
                 |db, domain, writer_seat, target| {
                     if target != request.target_id { return Err(f::WorktreeError::Denied); }
                     seat::authorize_merge_for_f2(db, caller, domain, writer_seat)

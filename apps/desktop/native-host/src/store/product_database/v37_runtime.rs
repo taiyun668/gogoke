@@ -1449,13 +1449,17 @@ impl<'root> ProductDatabase<'root> {
             let driver=run.evidence.driver_id().to_owned();
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
+            let host_tools=run.evidence.host_tools_enabled();
             let thread_id=match driver.as_str() {
                 "codex" => {
-                    self.native_rpc(&key,"initialize",Some(1),&Command::Initialize {client_version:"0.1.0".into()})?;
+                    let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
+                        else {Command::Initialize {client_version:"0.1.0".into()}};
+                    self.native_rpc(&key,"initialize",Some(1),&initialize)?;
                     self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
                     self.native_rpc(&key,"config-read",Some(2),&Command::ConfigRead {cwd:cwd.clone()})?;
-                    let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),
-                        &Command::ThreadStart {cwd,model})? else {
+                    let start=if host_tools {Command::ThreadStartHostTools {cwd,model}}
+                        else {Command::ThreadStart {cwd,model}};
+                    let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
                         return Err(OrchestrationError::Invalid("native open thread response"));
                     };
                     Some(thread_id)

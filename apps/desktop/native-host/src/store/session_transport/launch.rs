@@ -82,6 +82,9 @@ impl LaunchEvidence {
     // A vendor protocol setting, never an OS grant. The same sealed tier has
     // already selected and verified the LPAC capability set and directory ACLs.
     pub(crate) fn network_access(&self) -> bool { self.tier == PermissionTier::NetworkedWrite }
+    pub(crate) fn host_tools_enabled(&self) -> bool {
+        seat::orchestration_scope(&self.seat).is_ok()
+    }
 
     pub(crate) fn observe(
         db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
