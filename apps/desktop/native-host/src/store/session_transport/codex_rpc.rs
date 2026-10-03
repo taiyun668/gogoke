@@ -424,6 +424,56 @@ pub(crate) enum Reply {
     },
 }
 
+/// The fixed CLI's actual server request, distinct from an item lifecycle
+/// notification. Its arguments are selections; they never identify a caller.
+#[derive(Debug)]
+pub(crate) struct DynamicToolCall {
+    pub(crate) request_id: RpcId,
+    pub(crate) call_id: String,
+    pub(crate) thread_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) tool: String,
+    pub(crate) namespace: Option<String>,
+    pub(crate) arguments: Json,
+}
+
+pub(crate) fn decode_dynamic_tool_call(frame: &[u8]) -> Result<Option<DynamicToolCall>, RpcError> {
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(frame_body(frame)?)?)? else {
+        return Err(RpcError::Invalid("dynamic tool request object"));
+    };
+    let Some(method)=fields.get(&k("method")) else {return Ok(None);};
+    if string(method,"method")?!="item/tool/call" {return Ok(None);}
+    if fields.contains_key(&k("result")) || fields.contains_key(&k("error"))
+        || fields.keys().any(|key| ![k("id"),k("method"),k("params"),k("jsonrpc")].contains(key)) {
+        return Err(RpcError::Invalid("dynamic tool request fields"));
+    }
+    if let Some(version)=fields.get(&k("jsonrpc")) {
+        if string(version,"jsonrpc")?!="2.0" {return Err(RpcError::Invalid("jsonrpc"));}
+    }
+    let request_id=parse_id(fields.get(&k("id")).ok_or(RpcError::Invalid("dynamic tool id"))?)?;
+    let Some(Json::Object(params))=fields.get(&k("params")) else {
+        return Err(RpcError::Invalid("dynamic tool params"));
+    };
+    if params.keys().any(|key| ![k("arguments"),k("callId"),k("threadId"),k("turnId"),k("tool"),k("namespace")].contains(key)) {
+        return Err(RpcError::Invalid("dynamic tool params fields"));
+    }
+    let value=|name| params.get(&k(name)).ok_or(RpcError::Invalid("dynamic tool field"));
+    let required_string=|name| -> Result<String,RpcError> {
+        let value=string(value(name)?,"dynamic tool string")?;
+        required(&value,"dynamic tool string")?;
+        Ok(value)
+    };
+    let namespace=match params.get(&k("namespace")) {
+        None|Some(Json::Null)=>None,
+        Some(value)=>Some(string(value,"dynamic tool namespace")?),
+    };
+    Ok(Some(DynamicToolCall {request_id,
+        call_id:required_string("callId")?,thread_id:required_string("threadId")?,
+        turn_id:required_string("turnId")?,tool:required_string("tool")?,namespace,
+        arguments:Parser::parse(&value("arguments")?.canonical())?,
+    }))
+}
+
 pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Result<Reply, RpcError> {
     let body = frame_body(frame)?;
     let Json::Object(fields) = Parser::parse(std::str::from_utf8(body)?)? else {
