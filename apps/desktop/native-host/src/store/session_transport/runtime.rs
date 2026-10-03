@@ -473,7 +473,7 @@ mod tests {
         let limits = persisted_limits(&db, "projectA", "instanceA").unwrap();
         let fact = seat::read_host_parallel_fact(&db).unwrap();
         assert_eq!(fact.observed_parallelism,
-            std::thread::available_parallelism().unwrap().get() as i64);
+            i64::try_from(std::thread::available_parallelism().unwrap().get()).unwrap());
         assert_eq!(fact.machine_limit, fact.observed_parallelism);
         assert_eq!((limits.project_parallel, limits.instance_concurrency),
             (4_i64.min(fact.machine_limit), 4));
@@ -481,7 +481,7 @@ mod tests {
         db.execute("COMMIT").unwrap();
         db.close_checked().unwrap();
 
-        let reopened = open_existing(&root, &path).unwrap();
+        let mut reopened = open_existing(&root, &path).unwrap();
         reopened.execute("BEGIN IMMEDIATE").unwrap();
         let limits = persisted_limits(&reopened, "projectA", "instanceA").unwrap();
         let fact = seat::read_host_parallel_fact(&reopened).unwrap();

@@ -13,8 +13,13 @@ pub(crate) struct HostParallelFact {
 }
 
 fn observed_parallelism() -> Result<i64, SeatError> {
-    let count = std::thread::available_parallelism().map_err(|_|SeatError::Denied)?.get();
-    i64::try_from(count).map_err(|_|SeatError::Denied)
+    let count = std::thread::available_parallelism().map_err(|error|
+        SeatError::HostResourceObservation(format!(
+            "available_parallelism: {error}; raw_os_error={:?}", error.raw_os_error()
+        )))?.get();
+    i64::try_from(count).map_err(|error| SeatError::HostResourceObservation(format!(
+        "available_parallelism count {count} cannot fit i64: {error}"
+    )))
 }
 
 /// H calls this inside its existing BEGIN IMMEDIATE admission transaction.
