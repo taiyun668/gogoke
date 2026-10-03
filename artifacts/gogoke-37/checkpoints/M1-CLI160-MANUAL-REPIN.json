@@ -2,6 +2,7 @@
   "schema": "gogoke.37.checkpoint.v1",
   "state": "CLI160_SOURCE_PREPARED_CLOUD_PENDING_M1_NOT_COMPLETE",
   "changed": [
+    "下一冻结候选标识为 0.1.19，避免把不同资源字节复用已安装 0.1.18 的版本号。CLI 兼容问题阻塞全部 M1 真实模型测试，故待云端稳定后先做这一次阻塞项装机验证；不将其称为 M1 稳定或公开发布。",
     "Owner 已认可先升级官方 CLI 再复测 GPT-6.1-Sol/high；同步 native catalog、LPAC 固定 image、登录/启动/恢复、TS adapter 和云端 fixture 到 0.160.0。CLI 源码不改。",
     "实现计划已授权 F.2 的手动升级后重新绑定入口作为 M1 依赖；空 payload，宿主测量固定程序身份。同一实例、原 physical home、原 creation journal 和凭据不动；只换 program pin/version、revision+1、login UNKNOWN。",
     "当前活动登录/模型 custody、非 RELEASED H claim 和未完成换代拒绝换绑；同一请求精确回放不重复观察或推进 revision。历史 global/gen2 UNKNOWN 保持原样，不据 PID 缺席伪造停止事实，也不把它误当作 H 准入锁。",
