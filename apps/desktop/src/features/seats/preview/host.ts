@@ -14,6 +14,7 @@ export function createPreviewHost() {
   let counter = 0;
   let revision = 1;
   let login: Record<string, unknown> | undefined;
+  let showNewVersion = false;
   const caller: V37TrustedCaller = {
     principalId: "previewUser", seatId: "previewUser", domainId: "preview",
     role: "user", policyRevision: "1", revocationHead: "preview",
@@ -21,7 +22,9 @@ export function createPreviewHost() {
   const allowed = (_caller: V37TrustedCaller, request: V37Request) =>
     request.domainId === "preview" && request.targetId === DESIGN37_TEST_INSTANCE_ID;
   const page = () => ({ schema: DESIGN37_INSTANCES_SCHEMA, instances: present ? [{
-    instanceId: DESIGN37_TEST_INSTANCE_ID, driverId: "codex", version: "0.160.0",
+    instanceId: DESIGN37_TEST_INSTANCE_ID, driverId: "codex",
+    version: showNewVersion ? "0.149.0" : "0.160.0",
+    ...(showNewVersion ? { newVersion: "0.160.0" } : {}),
     revision: String(revision), state, ...(login ? { login } : {}),
   }] : [] });
   const port = new V37UiForwardingFakePort({
@@ -79,6 +82,7 @@ export function createPreviewHost() {
         state: "ERROR", output: "PREVIEW_CLI_FAILED: synthetic failure", error: "PREVIEW_CLI_FAILED: synthetic failure",
         browserState: "NOT_REQUESTED", startedAt: Date.now(), settled: true } : undefined;
     },
+    setNewVersion(visible: boolean) { showNewVersion = visible; },
     settle(success: boolean) {
       if (login?.state !== "PENDING") return;
       state = success ? "LOGGED_IN" : "ERROR";

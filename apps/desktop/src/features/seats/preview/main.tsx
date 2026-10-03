@@ -15,6 +15,7 @@ const { Design37InstanceSection } = await import("../Design37InstanceSection");
 function Preview() {
   const [mounted, setMounted] = useState(true);
   const [generation, setGeneration] = useState(0);
+  const [showNewVersion, setShowNewVersion] = useState(false);
   const refresh = () => setGeneration(value => value + 1);
   const choose: typeof host.setState = next => { host.setState(next); refresh(); };
   return <main style={{ margin: "0 auto", maxWidth: 980, padding: 24, minHeight: "100dvh" }}>
@@ -26,6 +27,11 @@ function Preview() {
       <button className="ghost" onClick={() => choose("NOT_LOGGED_IN")}>未登录</button>
       <button className="ghost" onClick={() => choose("LOGGED_IN")}>已登录</button>
       <button className="ghost" onClick={() => choose("ERROR")}>出错</button>
+      <button className="ghost" onClick={() => {
+        host.setNewVersion(!showNewVersion);
+        setShowNewVersion(!showNewVersion);
+        refresh();
+      }}>{showNewVersion ? "隐藏较新版本提示" : "显示较新版本提示"}</button>
       <button className="ghost" onClick={() => { host.settle(true); refresh(); }}>模拟授权成功</button>
       <button className="ghost" onClick={() => { host.settle(false); refresh(); }}>模拟授权失败</button>
       <button className="ghost" onClick={() => setMounted(value => !value)}>{mounted ? "关闭实例页" : "重开实例页"}</button>

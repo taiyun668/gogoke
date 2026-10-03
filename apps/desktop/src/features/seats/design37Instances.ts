@@ -31,6 +31,7 @@ export type Design37Instance = {
   instanceId: string;
   driverId: string;
   version: string;
+  newVersion?: string;
   revision: string;
   state: Design37InstanceState;
   login?: Design37LoginSnapshot;
@@ -104,6 +105,7 @@ export function readDesign37InstancesSnapshot(value: unknown): Design37Instances
         typeof item.instanceId !== "string" || item.instanceId.length === 0 ||
         typeof item.driverId !== "string" ||
         typeof item.version !== "string" ||
+        (item.newVersion !== undefined && (typeof item.newVersion !== "string" || item.newVersion.length === 0)) ||
         typeof item.revision !== "string" ||
         !isOneOf(item.state, INSTANCE_STATES) ||
         (item.login !== undefined && item.login !== null && !isRecord(item.login))) {
@@ -118,6 +120,7 @@ export function readDesign37InstancesSnapshot(value: unknown): Design37Instances
       instanceId: item.instanceId,
       driverId: item.driverId,
       version: item.version,
+      ...(item.newVersion === undefined ? {} : { newVersion: item.newVersion }),
       revision: item.revision,
       state: item.state,
       ...(item.login == null ? {} : { login: readLogin(item.login, item.instanceId) }),
