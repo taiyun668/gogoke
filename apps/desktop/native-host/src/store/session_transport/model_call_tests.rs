@@ -242,6 +242,7 @@ fn sealed_call_rechecks_current_h_claim_source_and_actual_native_stop() {
         let sealed = caller(db, custody, &frames[3], &keys[3]);
         for (sql, boundary) in [
             ("UPDATE gogoke_v37_h_claim SET state='UNKNOWN'", "uncertain current claim carries no write authority"),
+            ("UPDATE gogoke_v37_h_process_episode SET stop_request_id='stopA'", "the original committed stop intent ends model write authority before tail capture"),
             ("UPDATE gogoke_v37_h_claim SET generation='2'", "replacement generation cannot inherit the old seal"),
             ("UPDATE gogoke_v37_h_owner_binding SET state='REVOKED'", "revoked Owner binding cannot authorize model output"),
             ("UPDATE gogoke_v37_seats SET state='IDLE'", "inactive seat cannot spend an old seal"),

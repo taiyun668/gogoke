@@ -35,6 +35,21 @@ model from issuing later stop/control calls. State-card/control receipts do
 not copy a child's private SESSION ledger. Body reporting still requires the
 existing MESSAGE permission and a source-bound communication path; Dispatch
 does not grant private transcript access or automatically create MESSAGE rights.
+The private dispatch ACK includes the real registered logical worktree ID and
+bound seat/generation so the parent can select a later graph/merge operation.
+The original H send receipt bytes remain unchanged in their native journal;
+the model response retains its identity/status/revisions and adds selectors.
+This follows the historical seat-runtime separation of delivery identity and
+terminal status, with F's existing registration supplying the worktree ID.
+The authority pump also rechecks its snapshot of held sessions before each
+drain: a parent's successful stop can remove its child within the same pass.
+No missing session is treated as a permission error or recreated, while actual
+drain errors on a still-held session remain failures.
+Model caller recovery and every transaction revalidation require the existing
+H episode to have no committed stop request. The physical stop routine still
+captures its original tail before committing STOPPED, but those captured model
+calls cannot create effects after the stop intent. This reuses the same H
+fence and does not make fact capture depend on a live model authorization.
 
 F's BUSY readback is only for the composite seat dispatch's exact original
 reservation. Standalone worktree create retains its existing Idle-only check:

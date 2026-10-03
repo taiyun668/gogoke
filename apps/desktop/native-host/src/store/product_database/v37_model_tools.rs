@@ -282,7 +282,19 @@ impl<'root> ProductDatabase<'root> {
         if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {return Ok(opened)};
         let send=session_request(caller,"send","-send",&session,receipt.revision,
             BTreeMap::from([(key("generation"),string(&generation)),(key("body"),string(&body))]))?;
-        self.dispatch_native_send(&send)
+        let bytes=self.dispatch_native_send(&send)?;
+        let sent=crate::store::session_transport::decode_receipt(&bytes).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native child send receipt: {error:?}")))?;
+        if !matches!(sent.status,V37Status::Applied|V37Status::Replayed) {return Ok(bytes)};
+        let status=sent.status;let previous_revision=sent.previous_revision;let revision=sent.revision;
+        let mut result=sent.into_result();
+        // These are the existing F/H logical identities, not completion or
+        // transcript evidence. The parent needs the real worktree selector
+        // for a later independently authorized graph/merge operation.
+        result.insert(key("worktreeId"),string(&tree.worktree_id));
+        result.insert(key("seatId"),string(&child.seat_id));
+        result.insert(key("generation"),string(&generation));
+        Ok(crate::store::session_transport::encode_receipt(&send,status,previous_revision,revision,result))
     }
 
     pub(super) fn dispatch_captured_model_tool(&mut self,key_pair:&(String,String),

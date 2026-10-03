@@ -1035,7 +1035,7 @@ pub(super) fn current_codex_model_binding(
              AND a.process_operation_id=e.process_operation_id
              AND a.state='COMMITTED'
           WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
-            AND e.phase='ACTIVE'")?;
+            AND e.phase='ACTIVE' AND e.stop_request_id IS NULL")?;
     q.bind_text(1,domain)?;q.bind_text(2,session)?;
     q.bind_text(3,&custody.binding.generation)?;
     if !q.step_row()? {return Err(RpcJournalError::Denied);}

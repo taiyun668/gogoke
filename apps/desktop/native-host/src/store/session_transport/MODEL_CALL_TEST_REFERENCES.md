@@ -7,6 +7,11 @@ References: historical gogo-party `experiments/process-supervisor/README.md` sep
 Adopted: production schemas, actual `ProcessCustodian` stdout frames, `ledger::capture_raw_source`, production command encoding and original user receipt completion. Difference: system CMD relays synthetic JSON lines from a temporary text file so shell quoting cannot change the bytes. Synthetic H admission rows and OBSERVED RPC controls isolate the permissions predicate; they do not demonstrate fixed-CLI authentication, LPAC admission, model delivery or installed-product behavior.
 
 Four Windows tests cover original H identity despite Owner claims; stable request identity under repeated raw cursors and distinct numeric/string RPC IDs; missing or foreign sources and wrong turns; conflicting raw bytes, completed turns, current claim/binding/incarnation changes, missing original user/start evidence and a real native stop proof. Each rejection has a valid positive control. Temporary rows changed in controls are rolled back or removed within the fixture only.
+The current-claim control also uses H's original committed `stop_request_id`:
+capturing a stopped process's tail remains required, but the stop intent already
+ends that process's ability to mint or spend a model caller. This rejects new
+effects before the later physical proof and durable STOPPED commit; ordinary
+historical output capture and original RPC receipt observation remain separate.
 
 The appended test module is included by the existing Windows full library command in `.github/workflows/gogoke-native-host.yml`: `cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture`. Per `docs/governance/gogoke-build-and-release.md`, no native compilation or execution is performed locally. Native tests and production mutation remain **NOT_RUN** until Controller runs the cloud checks on the integrated bytes; this delivery is not acceptance.
 

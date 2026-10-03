@@ -160,7 +160,12 @@ impl<'root> ProductDatabase<'root> {
     /// stdin. Complete bytes still enter the original A capture before use.
     pub fn pump_native_output(&mut self) -> Result<()> {
         let keys = self.native_sessions.keys().cloned().collect::<Vec<_>>();
-        for key in keys { self.drain_native_output(&key)?; }
+        for key in keys {
+            // A prior parent's control call can durably stop and remove its
+            // child during this same authority-thread pass. Only remaining
+            // held sessions have a pipe to drain; their errors still surface.
+            if self.native_sessions.contains_key(&key) { self.drain_native_output(&key)?; }
+        }
         Ok(())
     }
 
