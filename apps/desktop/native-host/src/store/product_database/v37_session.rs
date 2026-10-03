@@ -136,38 +136,82 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, Default::default()));
         }
-        if request.expected_revision != 0 || request.payload.len() != 2 {
+        if request.expected_revision != 0 || !matches!(request.payload.len(), 2 | 3) {
             return Ok(encode_receipt(request, V37Status::Denied, 0, 0, Default::default()));
         }
         let repository = user_payload_string(request, "repositoryId")?;
         let seat_id = user_payload_string(request, "seatId")?;
-        let readback = f::readback_create(&self.connection, self.root,
-            &request.request_id, &request.raw_bytes);
+        let layout = if request.payload.len() == 2 { None } else {
+            match request.payload.get(&JsonString::from_str("layout")) {
+                Some(Json::String(value)) => match value.to_well_formed_string().as_deref() {
+                    Some("single") => Some("single"),
+                    Some("mixed") => Some("mixed"),
+                    _ => return Ok(encode_receipt(request, V37Status::Denied,
+                        0, 0, Default::default())),
+                },
+                _ => return Ok(encode_receipt(request, V37Status::Denied,
+                    0, 0, Default::default())),
+            }
+        };
+        let readback = f::readback_create_receipt(&self.connection,
+            &request.request_id, &request.raw_bytes, &request.target_id,
+            &repository, &request.domain_id, &seat_id);
         let mut replayed = false;
         let result = match readback {
-            Ok(Some(binding)) => { replayed = true; Ok(binding) }
+            Ok(Some(history)) => { replayed = true; Ok(history) }
             Ok(None) => (|| {
                 let pin = f::resolve_registered_git(&mut self.connection, self.root,
                     &self.owner, &repository, &mut self.process_custodian)?;
-                f::create_worktree(&mut self.connection, self.root, &self.owner, &pin,
-                    &mut self.process_custodian, f::CreateWorktree {
-                        request_id: &request.request_id, request_bytes: &request.raw_bytes,
-                        target_id: &request.target_id, repository_id: &repository,
-                        domain_id: &request.domain_id, seat_id: &seat_id,
-                    })
+                let input = f::CreateWorktree {
+                    request_id: &request.request_id, request_bytes: &request.raw_bytes,
+                    target_id: &request.target_id, repository_id: &repository,
+                    domain_id: &request.domain_id, seat_id: &seat_id,
+                };
+                let binding = match layout {
+                    None => f::create_worktree(&mut self.connection, self.root, &self.owner,
+                        &pin, &mut self.process_custodian, input),
+                    Some("single") => f::create_m2_single_worktree(&mut self.connection,
+                        self.root, &self.owner, &pin, &mut self.process_custodian, input),
+                    Some("mixed") => f::create_mixed_worktree(&mut self.connection,
+                        self.root, &self.owner, &pin, &mut self.process_custodian, input),
+                    _ => Err(WorktreeError::Denied),
+                }?;
+                let graph = f::graph_query(&self.connection, &binding.worktree_id)?
+                    .ok_or(WorktreeError::Unknown)?;
+                if !graph.members.iter().any(|member|
+                    member.worktree_id == binding.worktree_id
+                        && member.domain_id == request.domain_id
+                        && member.repository_id == repository
+                        && member.seat_id == seat_id)
+                    || graph.state != (if layout.is_some() { "CREATED" } else { "REGISTERED" }) {
+                    return Err(WorktreeError::Unknown);
+                }
+                Ok(f::CreateHistory { worktree_id: binding.worktree_id,
+                    baseline_commit: binding.baseline_commit,
+                    classification: graph.classification, space_id: graph.space_id })
             })(),
             Err(error) => Err(error),
         };
         match result {
-            Ok(binding) => Ok(encode_receipt(request,
-                if replayed { V37Status::Replayed } else { V37Status::Applied }, 0, 1,
-                BTreeMap::from([
-                    (JsonString::from_str("worktreeId"), text(&binding.worktree_id)),
+            Ok(history) => {
+                if history.classification != (if layout == Some("mixed") { "MIXED" } else { "SINGLE" }) {
+                    return Ok(worktree_failure(request, WorktreeError::Unknown));
+                }
+                let mut result = BTreeMap::from([
+                    (JsonString::from_str("worktreeId"), text(&history.worktree_id)),
                     (JsonString::from_str("repositoryId"), text(&repository)),
                     (JsonString::from_str("seatId"), text(&seat_id)),
-                    (JsonString::from_str("classification"), text("SINGLE")),
-                    (JsonString::from_str("baselineCommit"), text(&binding.baseline_commit)),
-                ]))),
+                    (JsonString::from_str("classification"), text(&history.classification)),
+                    (JsonString::from_str("baselineCommit"), text(&history.baseline_commit)),
+                ]);
+                if layout.is_some() {
+                    result.insert(JsonString::from_str("state"), text("CREATED"));
+                    result.insert(JsonString::from_str("spaceId"), text(&history.space_id));
+                }
+                Ok(encode_receipt(request,
+                    if replayed { V37Status::Replayed } else { V37Status::Applied },
+                    0, 1, result))
+            }
             Err(error) => {
                 let status = match &error {
                     WorktreeError::Denied | WorktreeError::Invalid(_) => V37Status::Denied,

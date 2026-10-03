@@ -27,7 +27,8 @@ const SOURCE_REMOTE_SSH: &str = "git@github.com:taiyun668/gogoke-seat-testbed.gi
 
 mod f2;
 pub(crate) use f2::{cleanup_stop_gate, cleanup_worktree, graph_query, merge_worktree,
-    register_created_worktree, repository_for_worktree, CleanupReceipt, ExactStopFact, GraphMember,
+    readback_create_receipt, register_created_worktree, repository_for_worktree,
+    resolve_group_for_launch, CleanupReceipt, CreateHistory, ExactStopFact, GraphMember,
     MergeReceipt, RegisterReceipt, WorktreeGraph};
 
 fn remote_kind(remote: &str) -> Option<&'static str> {
@@ -1540,7 +1541,7 @@ pub(crate) fn create_worktree(
     custodian: &mut ProcessCustodian,
     input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
-    create_worktree_in_space(db, root, owner, pin, custodian, None, false, input)
+    create_worktree_in_space(db, root, owner, pin, custodian, None, None, false, input)
 }
 
 /// M2's separate create/register contract uses this entry. The original M1
@@ -1549,24 +1550,57 @@ pub(crate) fn create_m2_single_worktree(
     db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
     pin: &GitProgramPin, custodian: &mut ProcessCustodian, input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
-    create_worktree_in_space(db, root, owner, pin, custodian, None, true, input)
+    create_worktree_in_space(db, root, owner, pin, custodian, None, None, true, input)
 }
 
 /// A mixed space has one host-generated physical parent and separate linked
-/// trees for every repository/project edge. The caller names only an opaque
-/// graph identity; it never chooses a directory or Git branch.
+/// trees for every repository edge of one native seat incarnation. No wire
+/// field chooses its space, directory, or Git branch.
 pub(crate) fn create_mixed_worktree(
     db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
-    pin: &GitProgramPin, custodian: &mut ProcessCustodian, space_id: &str,
-    input: CreateWorktree<'_>,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian, input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
-    if !atom(space_id) { return Err(WorktreeError::Invalid("space id")); }
-    create_worktree_in_space(db, root, owner, pin, custodian, Some(space_id), true, input)
+    let seat = crate::store::seat::get(db, input.domain_id, input.seat_id)?
+        .ok_or(WorktreeError::Denied)?;
+    if seat.state == crate::store::seat::State::Reclaimed || seat.instance_id.is_empty()
+        || !atom(&seat.incarnation) { return Err(WorktreeError::Denied); }
+    let space_id = mixed_seat_space_id(input.domain_id, input.seat_id, &seat.incarnation)?;
+    create_worktree_in_space(db, root, owner, pin, custodian, Some(&space_id),
+        Some(&seat.incarnation), true, input)
+}
+
+fn mixed_seat_space_id(domain: &str, seat: &str, incarnation: &str) -> Result<String> {
+    if !atom(domain) || !atom(seat) || !atom(incarnation) {
+        return Err(WorktreeError::Denied);
+    }
+    let identity = format!("gogoke.37.mixed-seat.v1\0{domain}\0{seat}\0{incarnation}");
+    Ok(format!("space-{}", &sha256_hex(identity.as_bytes())[..40]))
+}
+
+fn verify_mixed_members(db: &VerifiedDatabaseConnection<'_>, space_id: &str,
+    domain: &str, seat: &str, incarnation: &str) -> Result<()> {
+    let members = Statement::prepare(db.as_ptr(),
+        "SELECT m.domain_id,m.seat_id,w.domain_id,w.seat_id,w.seat_incarnation,o.domain_id,o.seat_id,o.seat_incarnation,o.phase FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktrees w ON w.worktree_id=m.worktree_id LEFT JOIN main.gogoke_v37_worktree_operations o ON o.worktree_id=m.worktree_id WHERE m.space_id=?1")?;
+    members.bind_text(1, space_id)?;
+    while members.step_row()? {
+        for index in [0, 2, 5] {
+            if members.column_text(index)? != domain { return Err(WorktreeError::Denied); }
+        }
+        for index in [1, 3, 6] {
+            if members.column_text(index)? != seat { return Err(WorktreeError::Denied); }
+        }
+        for index in [4, 7] {
+            if members.column_text(index)? != incarnation { return Err(WorktreeError::Denied); }
+        }
+        if members.column_text(8)? != "REGISTERED" { return Err(WorktreeError::Unknown); }
+    }
+    Ok(())
 }
 
 fn create_worktree_in_space(
     db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
     pin: &GitProgramPin, custodian: &mut ProcessCustodian, space_id: Option<&str>,
+    expected_incarnation: Option<&str>,
     requires_registration: bool,
     input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
@@ -1645,6 +1679,10 @@ fn create_worktree_in_space(
                     ?
                 ),
             );
+            if expected_incarnation.is_some_and(|expected| expected != snapshot.0.as_str())
+                || (space_id.is_some() != expected_incarnation.is_some()) {
+                return Err(WorktreeError::Denied);
+            }
             // The full typed seat and tier are checked again at final registration.
             let insert = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_worktree_operations(request_id,request_hash,repository_id,domain_id,seat_id,worktree_id,path_id,seat_incarnation,seat_generation,seat_revision,instance_id,permission_tier,phase) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'INTENT')")?;
             insert.bind_text(1, input.request_id)?;
@@ -1668,6 +1706,8 @@ fn create_worktree_in_space(
                     let path = space.column_text(0)?;
                     if space.column_text(1)? != "MIXED" || space.column_text(2)? != "ACTIVE" ||
                         space.step_row()? { return Err(WorktreeError::Denied); }
+                    verify_mixed_members(db, space_id, input.domain_id, input.seat_id,
+                        &snapshot.0)?;
                     Some(path)
                 } else {
                     let add = Statement::prepare(db.as_ptr(),

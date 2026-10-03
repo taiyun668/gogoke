@@ -32,6 +32,53 @@ pub(crate) struct RegisterReceipt {
     pub(crate) replayed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CreateHistory {
+    pub(crate) worktree_id: String,
+    pub(crate) baseline_commit: String,
+    pub(crate) classification: String,
+    pub(crate) space_id: String,
+}
+
+/// Read only the original completed create fact. The physical directory may
+/// have been removed by later authorized cleanup; replay never runs Git.
+pub(crate) fn readback_create_receipt(db: &VerifiedDatabaseConnection<'_>,
+    request_id: &str, raw_request: &[u8], target_id: &str, repository_id: &str,
+    domain_id: &str, seat_id: &str) -> Result<Option<CreateHistory>> {
+    if ![request_id, target_id, repository_id, domain_id, seat_id].iter().all(|s| atom(s))
+        || raw_request.is_empty() || raw_request.len() > 65_536 {
+        return Err(WorktreeError::Invalid("create request"));
+    }
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT o.request_hash,o.phase,o.worktree_id,o.repository_id,o.domain_id,o.seat_id,COALESCE(w.baseline_commit,''),COALESCE(w.repository_id,''),COALESCE(w.domain_id,''),COALESCE(w.seat_id,''),COALESCE(w.state,''),COALESCE(m.space_id,''),COALESCE(s.classification,''),COALESCE(w.seat_incarnation,''),o.seat_incarnation FROM main.gogoke_v37_worktree_operations o LEFT JOIN main.gogoke_v37_worktrees w ON w.worktree_id=o.worktree_id LEFT JOIN main.gogoke_v37_worktree_members m ON m.worktree_id=w.worktree_id LEFT JOIN main.gogoke_v37_worktree_spaces s ON s.space_id=m.space_id WHERE o.request_id=?1")?;
+    row.bind_text(1, request_id)?;
+    if !row.step_row()? { return Ok(None); }
+    if row.column_text(0)? != sha256_hex(raw_request) || row.column_text(2)? != target_id
+        || row.column_text(3)? != repository_id || row.column_text(4)? != domain_id
+        || row.column_text(5)? != seat_id { return Err(WorktreeError::Conflict); }
+    if row.column_text(1)? != "REGISTERED" { return Err(WorktreeError::Unknown); }
+    if row.column_text(7)? != repository_id || row.column_text(8)? != domain_id
+        || row.column_text(9)? != seat_id || row.column_text(10)? != "REGISTERED"
+        || row.column_text(13)? != row.column_text(14)? {
+        return Err(WorktreeError::Unknown);
+    }
+    let member_space = row.column_text(11)?;
+    let member_classification = row.column_text(12)?;
+    let (classification, space_id) = if member_space.is_empty() {
+        if !member_classification.is_empty() { return Err(WorktreeError::Unknown); }
+        ("SINGLE".to_owned(), target_id.to_owned())
+    } else if member_classification == "MIXED"
+        && member_space == mixed_seat_space_id(domain_id, seat_id, &row.column_text(13)?)? {
+        (member_classification, member_space)
+    } else { return Err(WorktreeError::Unknown); };
+    let baseline = row.column_text(6)?;
+    if !hex_commit(&baseline) { return Err(WorktreeError::Unknown); }
+    let history = CreateHistory { worktree_id: target_id.to_owned(),
+        baseline_commit: baseline, classification, space_id };
+    if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    Ok(Some(history))
+}
+
 /// F.2 registers an already created physical tree; it never repeats `git
 /// worktree add`. The old M1 create entry is intentionally still immediate.
 pub(crate) fn register_created_worktree(db: &mut VerifiedDatabaseConnection<'_>,
@@ -165,6 +212,67 @@ pub(crate) fn repository_for_worktree(db: &VerifiedDatabaseConnection<'_>,
     let repository = row.column_text(0)?;
     if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
     Ok(repository)
+}
+
+/// H starts with its already resolved primary binding. This returns held
+/// physical witnesses for every active member of the same native seat group;
+/// neither an IPC space name nor a model-provided path can enlarge the roots.
+pub(crate) fn resolve_group_for_launch(db: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock, primary: &ResolvedBinding) -> Result<Vec<ResolvedBinding>> {
+    launch_allowed(db, &primary.worktree_id)?;
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT domain_id,seat_id,seat_incarnation FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
+    row.bind_text(1, &primary.worktree_id)?;
+    if !row.step_row()? { return Err(WorktreeError::Denied); }
+    let domain = row.column_text(0)?;
+    let seat = row.column_text(1)?;
+    let incarnation = row.column_text(2)?;
+    if row.step_row()? || incarnation != primary.seat_incarnation {
+        return Err(WorktreeError::Denied);
+    }
+    drop(row);
+    let member = Statement::prepare(db.as_ptr(),
+        "SELECT m.space_id,s.classification,s.state FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktree_spaces s ON s.space_id=m.space_id WHERE m.worktree_id=?1")?;
+    member.bind_text(1, &primary.worktree_id)?;
+    let ids = if member.step_row()? {
+        let space_id = member.column_text(0)?;
+        if member.column_text(1)? != "MIXED" || member.column_text(2)? != "ACTIVE"
+            || member.step_row()?
+            || space_id != mixed_seat_space_id(&domain, &seat, &incarnation)? {
+            return Err(WorktreeError::Denied);
+        }
+        drop(member);
+        verify_mixed_members(db, &space_id, &domain, &seat, &incarnation)?;
+        let members = Statement::prepare(db.as_ptr(),
+            "SELECT m.worktree_id,COALESCE(l.state,'REGISTERED') FROM main.gogoke_v37_worktree_members m LEFT JOIN main.gogoke_v37_worktree_lifecycle l ON l.worktree_id=m.worktree_id WHERE m.space_id=?1 ORDER BY m.worktree_id")?;
+        members.bind_text(1, &space_id)?;
+        let mut ids = Vec::new();
+        while members.step_row()? {
+            let id = members.column_text(0)?;
+            match members.column_text(1)?.as_str() {
+                "REGISTERED" => ids.push(id),
+                "CLEANED" => {},
+                _ => return Err(WorktreeError::Denied),
+            }
+        }
+        ids
+    } else {
+        vec![primary.worktree_id.clone()]
+    };
+    if !ids.iter().any(|id| id == &primary.worktree_id) { return Err(WorktreeError::Denied); }
+    let mut bindings = Vec::with_capacity(ids.len());
+    for id in ids {
+        let binding = resolve_id(db, root, &id)?;
+        if binding.seat_incarnation != incarnation { return Err(WorktreeError::Denied); }
+        if id == primary.worktree_id && (binding.path != primary.path
+            || binding.identity != primary.identity
+            || binding.pointer_identity != primary.pointer_identity
+            || binding.pointer_hash != primary.pointer_hash) {
+            return Err(WorktreeError::Denied);
+        }
+        bindings.push(binding);
+    }
+    Ok(bindings)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
