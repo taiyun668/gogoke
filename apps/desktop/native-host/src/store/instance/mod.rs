@@ -5,6 +5,7 @@ mod catalog;
 mod cap;
 mod registry;
 mod resolver;
+mod reprobe;
 mod temporary;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
@@ -18,6 +19,7 @@ pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
 pub(crate) use resolver::{resolve_codex_instance_home,
     resolve_codex_session_launch_homes, InstanceLaunchHomes, LaunchHomeError,
     ResolvedDirectory};
+pub(crate) use reprobe::{read_current_capability_reprobe, CapabilityReprobeEvidence};
 pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_temporary_home,
     CreateTemporaryHome, TemporaryHomeError, TemporaryHomeReceipt, TemporaryKind,
     TransitionTemporaryHome};

@@ -782,6 +782,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn f2_schema_extends_exact_m1_rows_without_recreating_them() {
+        let _guard = route_b_test_guard();
+        let path = scratch("f2-schema-upgrade");
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut db = create_new(&root, &path.join("state.sqlite")).unwrap();
+        for (_, sql) in &SCHEMA[..4] { db.execute(sql).unwrap(); }
+        db.execute("INSERT INTO main.gogoke_v37_worktree_sources VALUES('repoA','sourceA','sourceId','commonA','commonId','HTTPS','baseline','digest','git version fixture',1)").unwrap();
+        let before = family(&db).unwrap();
+        assert_eq!(before.len(), 4);
+        initialize_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        assert_eq!(family(&db).unwrap().len(), SCHEMA.len());
+        let q = Statement::prepare(db.as_ptr(),
+            "SELECT source_path,source_identity FROM main.gogoke_v37_worktree_sources WHERE repository_id='repoA'").unwrap();
+        assert!(q.step_row().unwrap());
+        assert_eq!((q.column_text(0).unwrap(),q.column_text(1).unwrap()),
+            ("sourceA".into(),"sourceId".into()));
+        drop(q);
+        db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn schema_rejects_trigger_and_temp_shadow() {
         let _guard = route_b_test_guard();
         let path = scratch("schema");

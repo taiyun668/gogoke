@@ -439,3 +439,46 @@ pub(crate) fn merge_worktree(
         }
     }
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::store::{authority, instance, seat, session_transport};
+    use crate::store::same_open::{create_new, route_b_test_guard};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn cleanup_needs_released_reservation_and_the_same_native_stop_fact() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-f2-stop-gate-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut db = create_new(&root,&path.join("state.sqlite")).unwrap();
+        authority::initialize_profile(&mut db,&root).unwrap();
+        authority::initialize_process_custody_schema(&mut db).unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        seat::initialize_schema(&mut db).unwrap();
+        session_transport::initialize_admission_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incarnationA','USER','LONG','instanceA','IDLE',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_worktree_sources VALUES('repoA','sourceA','sourceIdentity','commonA','commonIdentity','HTTPS','baseline','gitDigest','gitVersion',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','wtA','repoA','projectA','seatA','incarnationA',1,1,'NetworkedWrite','instanceA',1,'pathA','pathIdentity','pointerHash',10,'pointerIdentity','commonIdentity','baseline','REGISTERED',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','projectA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('projectA','sessionA','instanceA','homeA','bindingA','1','STOPPED',3)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('projectA','sessionA','seatA','incarnationA','1')").unwrap();
+        assert!(matches!(cleanup_stop_gate(&db,"treeA"),Err(WorktreeError::Denied)));
+        db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED'").unwrap();
+        assert!(matches!(cleanup_stop_gate(&db,"treeA"),Err(WorktreeError::Denied)),
+            "released without exact StopFact is insufficient");
+        db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1','00',1,'processA','instanceA','homeA','bindingA','seatA','incarnationA','STOPPED','proofA')").unwrap();
+        assert!(matches!(cleanup_stop_gate(&db,"treeA"),Err(WorktreeError::Denied)));
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','projectA','1','STOPPED','proofA')").unwrap();
+        assert_eq!(cleanup_stop_gate(&db,"treeA").unwrap(),vec![ExactStopFact {
+            process_operation_id:"processA".into(),stop_fact_id:"proofA".into() }]);
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='otherProof'").unwrap();
+        assert!(matches!(cleanup_stop_gate(&db,"treeA"),Err(WorktreeError::Denied)));
+        db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
+    }
+}
