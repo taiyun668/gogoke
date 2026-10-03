@@ -1,11 +1,52 @@
 # Provider login recipe references
 
-This file and `provider_login.rs` define data-only login intent for the fixed
-M2 CLI pins. H owns the ordinary same-user login process, its complete raw
+`provider_login.rs` defines fixed login intent. `provider_login_preparation.rs`
+now turns that intent into native process requests from the same verified
+database, RootLock, and OwnerIssuer used by F. H owns the ordinary same-user login process, its complete raw
 stdout/stderr, cancellation and custody. Model sessions remain under the
 existing LPAC admission boundary. These recipes neither read credential data
 nor start a process, open a browser, change a CLI installation, or modify user
 environment configuration.
+
+## Native preparation and H handoff
+
+`provider_login::prepare_registered_provider_login(db, root, owner, instance_id)`
+returns `LoginPreparation::Ready(PreparedProviderLogin)` or an explicit
+`Unsupported` result. It first verifies the Owner product identity, F's
+applied registration journal and physical receipt, the registered driver and
+home marker/identity, and the exact fixed executable through the native
+catalog. Neither the path, driver, version, hash, nor home comes from a login
+request. The returned `login` is an actual `PrepareRequest` with an absolute
+application path, registered SHA-256 `NativeBinding`, instance revision, and a
+complete finite environment. There is no `PATH` or inherited provider secret
+environment. The host's original `APPDATA`/`LOCALAPPDATA` stay in the ordinary
+user login child; `HOME`/`USERPROFILE` and provider selectors target the
+registered instance root. `TEMP`/`TMP` also target that root. The host must
+re-resolve F and let ProcessCustodian recheck program/image bytes at actual
+dispatch; this preparation is only a snapshot, not process custody.
+
+`status` is a separate `StatusObservation`. Claude provides a distinct
+`auth status` `PrepareRequest` with documented exits 0=logged in, 1=logged out;
+all other exits are Unknown. OpenCode and Grok return `Unknown` because no
+fixed-version, unambiguous independent status result contract has been
+established. ACP `initialize.authMethods`/`terminal-auth` gives OpenCode a
+login command descriptor, not a post-login status; `auth/login` exit zero does
+not close the account-state question. Grok's fixed help has a login command
+but no status option. The host can show progress and original errors while
+keeping account state Unknown; it must not mark either driver logged in from
+login exit or output text. Antigravity remains Unsupported because the shared
+Windows keyring cannot identify one instance. Codex remains on its existing
+`v37_login` implementation.
+
+The caller must have established a private User-origin action. Preparation
+does not open a browser, read credentials, start a process, persist a result,
+or perform a model turn. Root's integration owns custody, UI progress,
+cancellation, status polling, physical revalidation, and the final durable
+observation. OpenCode's terminal selection behavior and all three providers'
+actual Win11 browser/Smart App Control outcomes remain unverified until the
+installed product runs the fixed bytes. These fixed CLI children are new
+processes under Smart App Control; the installed main process being allowed
+does not establish their launch result.
 
 ## Fixed recipes and limits
 

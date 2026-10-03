@@ -7,6 +7,12 @@
 
 use std::path::Path;
 
+#[path = "provider_login_preparation.rs"]
+mod preparation;
+pub(crate) use preparation::{prepare_registered_provider_login, LoginPreparation,
+    PreparedProviderLogin, PreparedStatusObservation, ProviderLoginPreparationError,
+    StatusObservation};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LoginProvider {
     Claude,
