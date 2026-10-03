@@ -6,6 +6,7 @@ use crate::store::atomic::Parser;
 use crate::store::seat;
 use crate::store::ledger;
 use crate::store::session_transport::{codex_rpc, model_call, rpc_journal as rpc};
+use crate::store::session_transport::{runtime,AdmissionRequest,AdmissionResult};
 
 fn key(name:&str)->JsonString {JsonString::from_str(name)}
 fn field(fields:&BTreeMap<JsonString,Json>,name:&str)->Result<String> {
@@ -59,7 +60,113 @@ fn native_request(caller:&seat::NativeSeatCall)->Result<V37Request> {
     })
 }
 
+fn session_request(caller:&seat::NativeSeatCall,operation:&str,suffix:&str,
+    session:&str,revision:u64,payload:BTreeMap<JsonString,Json>)->Result<V37Request> {
+    let id=caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?;
+    let frame=Json::Object(BTreeMap::from([
+        (key("schema"),Json::String(JsonString::from_str("gogoke.37.operations.v1"))),
+        (key("family"),Json::String(JsonString::from_str("K-SESSION"))),
+        (key("operation"),Json::String(JsonString::from_str(operation))),
+        (key("requestId"),Json::String(JsonString::from_str(&format!("{id}{suffix}")))),
+        (key("targetId"),Json::String(JsonString::from_str(session))),
+        (key("domainId"),Json::String(JsonString::from_str(caller.domain_id()))),
+        (key("expectedRevision"),Json::String(JsonString::from_str(&revision.to_string()))),
+        (key("payload"),Json::Object(payload)),
+    ])).canonical().into_bytes();
+    crate::store::session_transport::decode_request(&frame).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("native child stage request: {error:?}")))
+}
+fn string(value:&str)->Json {Json::String(JsonString::from_str(value))}
+fn applied_revision(result:AdmissionResult)->Result<u64> {
+    match result {
+        AdmissionResult::Applied(revision)|AdmissionResult::Replayed(revision)=>
+            u64::try_from(revision).map_err(|error|OrchestrationError::V37StoreFailure(
+                format!("native child admission revision: {error}"))),
+        value=>Err(OrchestrationError::V37StoreFailure(format!("native child admission: {value:?}"))),
+    }
+}
+
 impl<'root> ProductDatabase<'root> {
+    /// A local adapter operation composes only the existing E/F/H effects.
+    /// Every stage retains a deterministic ID; uncertainty never starts a
+    /// second child or uses a new ID to repeat an external operation.
+    fn dispatch_model_child(&mut self,request:&V37Request,caller:&seat::NativeSeatCall)
+        ->Result<Vec<u8>> {
+        if request.payload.len()!=3 {return Err(OrchestrationError::Invalid("native dispatch payload"))}
+        let repository=user_payload_string(request,"repositoryId")?;
+        let layout=user_payload_string(request,"layout")?;
+        let body=user_payload_string(request,"body")?;
+        if !matches!(layout.as_str(),"SINGLE"|"MIXED") {return Err(OrchestrationError::Invalid("native dispatch layout"))}
+        let child=seat::get(&self.connection,&request.domain_id,&request.target_id)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        seat::current_child_dispatch_context(&self.connection,caller,&child)?;
+        let host_id=caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?;
+        let session=format!("native-session-{}",&crate::store::digest::sha256_hex(
+            format!("{host_id}\n{}\n{}",request.domain_id,child.seat_id).as_bytes())[..40]);
+        let previous=Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2 AND operation='admission-reserve'")?;
+        previous.bind_text(1,&request.domain_id)?;previous.bind_text(2,host_id)?;
+        let reserve=if previous.step_row()? {
+            let raw=previous.column_text(0)?;
+            if previous.step_row()? {return Err(OrchestrationError::OperationConflict)};
+            let bytes=unhex_model(&raw)?;
+            let stored=crate::store::session_transport::decode_request(&bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native child original reserve: {error:?}")))?;
+            if stored.request_id!=host_id || stored.domain_id!=request.domain_id || stored.target_id!=session
+                || user_payload_string(&stored,"seatId")?!=child.seat_id {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            stored
+        } else {
+            if child.state!=seat::State::Idle || u64::try_from(child.revision).ok()!=Some(request.expected_revision) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let generation=child.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?;
+            session_request(caller,"admission-reserve","",&session,0,
+                BTreeMap::from([(key("seatId"),string(&child.seat_id)),
+                    (key("generation"),string(&generation.to_string()))]))?
+        };
+        drop(previous);
+        let generation=user_payload_string(&reserve,"generation")?;
+        let tree_request=V37Request {raw_bytes:request.raw_bytes.clone(),family:"K-WORKTREE".into(),
+            operation:"create".into(),request_id:format!("{host_id}-worktree"),
+            target_id:child.seat_id.clone(),domain_id:request.domain_id.clone(),expected_revision:0,
+            payload:BTreeMap::from([(key("repositoryId"),string(&repository)),(key("layout"),string(&layout))])};
+        let pin=crate::store::worktree::resolve_registered_git(&mut self.connection,self.root,&self.owner,
+            &repository,&mut self.process_custodian).map_err(|error|OrchestrationError::V37StoreFailure(
+                format!("native child Git pin: {error:?}")))?;
+        let tree=crate::store::worktree::create_and_register_native_child_worktree(&mut self.connection,
+            self.root,&self.owner,&pin,&mut self.process_custodian,caller,&child,&tree_request)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("native child worktree: {error:?}")))?;
+        let (instance,home)=self.prepare_native_child_session_home(&reserve,&child.seat_id,&generation,caller)?;
+        let admission=seat::NativeLeadAdmission::from_model_call(caller)?;
+        let origin=seat::NativeOrigin::lead(&admission);
+        let input=AdmissionRequest {domain_id:&request.domain_id,session_id:&session,request_id:host_id,
+            raw_bytes:&reserve.raw_bytes,instance_id:&instance,home_id:&home,generation:&generation,
+            expected_revision:0};
+        let revision=applied_revision(runtime::reserve_native_with_origin(&mut self.connection,&self.owner,
+            &origin,&child.seat_id,&input).map_err(|error|OrchestrationError::V37StoreFailure(
+                format!("native child reserve: {error:?}")))?)?;
+        let commit=session_request(caller,"admission-commit","-commit",&session,revision,
+            BTreeMap::from([(key("seatId"),string(&child.seat_id)),(key("generation"),string(&generation))]))?;
+        let input=AdmissionRequest {request_id:&commit.request_id,raw_bytes:&commit.raw_bytes,
+            expected_revision:i64::try_from(revision).map_err(|error|OrchestrationError::V37StoreFailure(
+                format!("native child commit revision: {error}")))?,..input};
+        let revision=applied_revision(runtime::commit_native_with_origin(&mut self.connection,&self.owner,
+            &origin,&child.seat_id,&input).map_err(|error|OrchestrationError::V37StoreFailure(
+                format!("native child commit: {error:?}")))?)?;
+        let open=session_request(caller,"open","-open",&session,revision,BTreeMap::from([
+            (key("seatId"),string(&child.seat_id)),(key("generation"),string(&generation)),
+            (key("repositoryId"),string(&repository)),(key("worktreeId"),string(&tree.worktree_id))]))?;
+        let opened=self.dispatch_native_child_open(&open,caller)?;
+        let receipt=crate::store::session_transport::decode_receipt(&opened).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native child open receipt: {error:?}")))?;
+        if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {return Ok(opened)};
+        let send=session_request(caller,"send","-send",&session,receipt.revision,
+            BTreeMap::from([(key("generation"),string(&generation)),(key("body"),string(&body))]))?;
+        self.dispatch_native_send(&send)
+    }
+
     pub(super) fn dispatch_captured_model_tool(&mut self,key_pair:&(String,String),
         raw:&ledger::RawSourceRecord)->Result<bool> {
         let Some(call)=codex_rpc::decode_dynamic_tool_call(&raw.raw_bytes).map_err(|error|
@@ -70,9 +177,16 @@ impl<'root> ProductDatabase<'root> {
         let custody=run.custody.clone();
         let open_id=run.open_request_id.clone();
         let open_bytes=run.open_request_bytes.clone();
-        let caller=model_call::recover_model_call_from_source(&self.connection,&custody,
-            &raw.key,thread,turn).map_err(|error|OrchestrationError::V37StoreFailure(
-                format!("native tool original source: {error:?}")))?;
+        let caller=match model_call::recover_model_call_from_source(&self.connection,&custody,
+            &raw.key,thread,turn) {
+            Ok(caller)=>caller,
+            // A server call can precede its turn/start ACK. The captured
+            // source grants no effect until the existing H turn proof is
+            // complete. Leave these exact bytes in A, without another write.
+            Err(model_call::ModelCallError::Denied)=>return Ok(false),
+            Err(error)=>return Err(OrchestrationError::V37StoreFailure(
+                format!("native tool original source: {error:?}"))),
+        };
         let step_id=caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?;
         // A written response is final delivery. Read it before invoking an
         // effect again: its APPLIED receipt must not be replaced by REPLAYED.
@@ -99,6 +213,7 @@ impl<'root> ProductDatabase<'root> {
         let outcome=(||->Result<Vec<u8>> {
             let request=native_request(&caller)?;
             match caller.tool() {
+                Some("gogoke_seat") if request.operation=="dispatch"=>self.dispatch_model_child(&request,&caller),
                 Some("gogoke_seat")=>self.dispatch_native_seat(&request,&caller),
                 Some("gogoke_policy")=>self.dispatch_native_policy(&request,&caller),
                 Some("gogoke_worktree")=>self.dispatch_native_worktree(&request,&caller),
@@ -136,4 +251,14 @@ impl<'root> ProductDatabase<'root> {
             &raw.key.source_epoch,&raw.key.source_cursor,"NATIVE_HOST_TOOL_REPLY_WRITTEN")?;
         Ok(true)
     }
+}
+
+fn unhex_model(value:&str)->Result<Vec<u8>> {
+    if value.len()%2!=0 {return Err(OrchestrationError::Invalid("native original reserve hex"))}
+    value.as_bytes().chunks_exact(2).map(|pair| {
+        let value=std::str::from_utf8(pair).map_err(|error|OrchestrationError::V37StoreFailure(
+            format!("native original reserve hex UTF-8: {error}")))?;
+        u8::from_str_radix(value,16).map_err(|error|OrchestrationError::V37StoreFailure(
+            format!("native original reserve hex: {error}")))
+    }).collect()
 }
