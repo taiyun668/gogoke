@@ -7,7 +7,7 @@
 //! `OriginBoundFrame` read from the exact native process custody.
 
 use super::{codex_rpc, decode_receipt, decode_request, encode_receipt, V37Receipt, V37Status};
-use super::provider_evidence::{acp, commands};
+use super::provider_evidence::{acp, commands, stream_json};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::OwnerIssuer;
@@ -69,6 +69,32 @@ pub(crate) struct AcpSendInput<'a> {
     pub(crate) custody: &'a PreparedCustody,
     pub(crate) open_request_id: &'a str,
     pub(crate) open_request_bytes: &'a [u8],
+}
+
+pub(crate) struct ClaudeSendInput<'a> {
+    pub(crate) user: StdinRequest<'a>,
+    pub(crate) custody: &'a PreparedCustody,
+    pub(crate) open_request_id: &'a str,
+    pub(crate) open_request_bytes: &'a [u8],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ClaudeSendIdentity {
+    pub(crate) step_id: String,
+    pub(crate) uuid: String,
+}
+
+pub(crate) struct ClaudeSendPrepared {
+    pub(crate) user: JournalDecision,
+    pub(crate) identity: ClaudeSendIdentity,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) write_permitted: bool,
+}
+
+pub(crate) struct ClaudeSendCompleted {
+    pub(crate) user: JournalDecision,
+    pub(crate) terminal: stream_json::ClaudeData,
+    pub(crate) vendor_session_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -707,6 +733,97 @@ fn acp_send_request(input: &StdinRequest<'_>)
     Ok((request, text, identity))
 }
 
+fn claude_send_request(input: &StdinRequest<'_>)
+    -> Result<(super::V37Request, String, ClaudeSendIdentity), JournalError> {
+    let request = parse_operation(input, false)?;
+    if request.operation != "send" || request.payload.len() != 2 {
+        return Err(JournalError::Invalid("Claude User requires original send"));
+    }
+    let text = payload_string(&request, "body")?;
+    let digest = crate::store::digest::sha256_hex(input.request_bytes);
+    let identity = ClaudeSendIdentity {
+        step_id: format!("claude-send-{}", &digest[..40]),
+        // Stable UUIDv5-shaped identifier from this exact original User frame.
+        // The CLI may echo it; an altered or absent echo cannot prove delivery.
+        uuid: format!("{}-{}-5{}-8{}-{}", &digest[..8], &digest[8..12],
+            &digest[13..16], &digest[17..20], &digest[20..32]),
+    };
+    Ok((request, text, identity))
+}
+
+/// The published SDK's initialize control ACK is a process handshake, not a
+/// native session ID. A User input is admitted only after this exact H/A ACK.
+fn claude_initialize_observed_in_transaction(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &ClaudeSendInput<'_>,
+) -> Result<(), JournalError> {
+    let (step_id, request_id) = super::rpc_journal::claude_initialize_identity(
+        input.open_request_bytes);
+    let command = commands::ClaudeCommand::Initialize { request_id: &request_id };
+    let step = super::rpc_journal::ClaudeStep {
+        domain_id: input.user.domain_id, session_id: input.user.session_id,
+        open_request_id: input.open_request_id,
+        open_request_bytes: input.open_request_bytes, step_id: &step_id,
+        custody: input.custody, command: &command,
+    };
+    match super::rpc_journal::read_observed_claude_ack_in_transaction(
+        connection, owner, &step)? {
+        Some((stream_json::ClaudeData::ControlResponse { success: true, .. }, _)) => Ok(()),
+        _ => Err(JournalError::Unknown),
+    }
+}
+
+/// Original User row and exact Claude stdin echo step are inserted atomically.
+/// PREPARED/UNKNOWN/RECEIPTED readback never grants a second physical write.
+pub(crate) fn prepare_claude_send_request(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &ClaudeSendInput<'_>,
+) -> Result<ClaudeSendPrepared, JournalError> {
+    let (request, text, identity) = claude_send_request(&input.user)?;
+    in_transaction(connection, |connection| {
+        claude_initialize_observed_in_transaction(connection, owner, input)?;
+        if read_row(connection, input.user.domain_id, &request.request_id)?.is_none() {
+            let current = h_binding(connection, input.user.domain_id,
+                input.user.session_id, input.user.ticket, input.user.generation,
+                BindingUse::Prepare)?;
+            let claim = Statement::prepare(connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_claim WHERE domain_id=?1
+                  AND session_id=?2 AND generation=?3 AND process_operation_id=?4
+                  AND state='COMMITTED' AND revision=?5")?;
+            for (index, value) in [input.user.domain_id, input.user.session_id,
+                input.user.generation, current.process_operation_id.as_str()].iter().enumerate() {
+                claim.bind_text((index + 1) as i32, value)?;
+            }
+            claim.bind_i64(5, i64::try_from(request.expected_revision)
+                .map_err(|_| JournalError::Invalid("request revision"))?)?;
+            if !claim.step_row()? || claim.step_row()? { return Err(JournalError::Conflict); }
+            drop(claim);
+        }
+        let user = prepare_decoded_in_transaction(connection, &input.user, &request)?;
+        if user.disposition != PrepareDisposition::Prepared {
+            return Ok(ClaudeSendPrepared { user, identity: identity.clone(),
+                bytes: Vec::new(), write_permitted: false });
+        }
+        let command = commands::ClaudeCommand::User {
+            uuid: &identity.uuid, text: &text,
+        };
+        let step = super::rpc_journal::ClaudeStep {
+            domain_id: input.user.domain_id, session_id: input.user.session_id,
+            open_request_id: input.open_request_id,
+            open_request_bytes: input.open_request_bytes,
+            step_id: &identity.step_id, custody: input.custody,
+            command: &command,
+        };
+        let rpc = super::rpc_journal::prepare_claude_in_transaction(
+            connection, owner, &step)?;
+        if rpc.disposition != super::rpc_journal::Disposition::NewWrite {
+            return Err(JournalError::Conflict);
+        }
+        Ok(ClaudeSendPrepared { user, identity: identity.clone(),
+            bytes: rpc.bytes, write_permitted: true })
+    })
+}
+
 /// One atomic H User intent plus ACP prompt intent. The caller writes the
 /// returned bytes only when write_permitted; replay never changes the RPC ID.
 pub(crate) fn prepare_acp_send_request(
@@ -1033,6 +1150,287 @@ pub(crate) fn mark_acp_send_write_unknown(
                 step, original_error)?;
             mark_decoded_unknown_in_transaction(connection, &input.user, &request)
         }))
+}
+
+fn with_claude_send_step<T>(connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &ClaudeSendInput<'_>,
+    action: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,
+        &super::rpc_journal::ClaudeStep<'_>) -> Result<T, JournalError>,
+) -> Result<T, JournalError> {
+    let (request, text, identity) = claude_send_request(&input.user)?;
+    let record = read_row(connection, input.user.domain_id, &request.request_id)?
+        .ok_or(JournalError::Unknown)?;
+    input_matches(&input.user, &request, &record)?;
+    let command = commands::ClaudeCommand::User { uuid: &identity.uuid, text: &text };
+    let step = super::rpc_journal::ClaudeStep {
+        domain_id: input.user.domain_id, session_id: input.user.session_id,
+        open_request_id: input.open_request_id,
+        open_request_bytes: input.open_request_bytes,
+        step_id: &identity.step_id, custody: input.custody,
+        command: &command,
+    };
+    action(connection, &step)
+}
+
+/// Exact OS writer success marks only the Claude stdin step WRITTEN. A User
+/// remains PREPARED until replay ACK and terminal result are both captured.
+pub(crate) fn mark_claude_send_written(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &ClaudeSendInput<'_>,
+) -> Result<(), JournalError> {
+    in_transaction(connection, |connection| with_claude_send_step(
+        connection, input, |connection, step|
+            super::rpc_journal::mark_claude_written_in_transaction(
+                connection, owner, step).map_err(JournalError::from)))
+}
+
+pub(crate) fn mark_claude_send_write_unknown(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &ClaudeSendInput<'_>, original_error: &str,
+) -> Result<JournalDecision, JournalError> {
+    let (request, _, _) = claude_send_request(&input.user)?;
+    in_transaction(connection, |connection| with_claude_send_step(
+        connection, input, |connection, step| {
+            super::rpc_journal::mark_claude_unknown_in_transaction(
+                connection, owner, step, original_error)?;
+            mark_decoded_unknown_in_transaction(connection, &input.user, &request)
+        }))
+}
+
+/// A has already captured the exact User echo. It advances the H stdin step
+/// only; terminal delivery still needs the original result in a later source.
+pub(crate) fn observe_claude_send_echo_from_source(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &ClaudeSendInput<'_>, key: &RawSourceKey,
+) -> Result<stream_json::ClaudeData, JournalError> {
+    in_transaction(connection, |connection| with_claude_send_step(
+        connection, input, |connection, step| {
+            let (observation, _) =
+                super::rpc_journal::observe_claude_captured_ack_in_transaction(
+                    connection, owner, step, key)?;
+            Ok(observation)
+        }))
+}
+
+const CLAUDE_RESULT_NO_EVENT: &str = "CLAUDE_RESULT_RESPONSE";
+
+/// The first real system/init in this exact A process stream supplies native
+/// session identity. A caller label or control initialize ACK cannot do so.
+fn claude_init_before_result(connection: &VerifiedDatabaseConnection<'_>,
+    record: &StdinJournalRecord, epoch: &str, result_cursor: u64,
+    wanted_session: &str) -> Result<(), JournalError> {
+    let q = Statement::prepare(connection.as_ptr(),
+        "SELECT hex(raw_bytes) FROM main.v37_ledger_raw_source
+          WHERE operation_id=?1 AND source_epoch=?2
+            AND process_ticket=?3 AND custodian_nonce=?4
+            AND domain_id=?5 AND session_id=?6 AND generation=?7
+            AND CAST(source_cursor AS INTEGER) < ?8
+          ORDER BY CAST(source_cursor AS INTEGER)")?;
+    for (index, value) in [record.process_operation_id.as_str(), epoch,
+        record.ticket.as_str(), record.custodian_nonce.as_str(),
+        record.domain_id.as_str(), record.session_id.as_str(),
+        record.generation.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value)?;
+    }
+    q.bind_i64(8, i64::try_from(result_cursor).map_err(|_| JournalError::Conflict)?)?;
+    let mut found = false;
+    while q.step_row()? {
+        let raw = unhex(&q.column_text(0)?)?;
+        match stream_json::decode_claude_line(&raw) {
+            Ok(stream_json::ClaudeData::Init { session_id, .. }) => {
+                if session_id != wanted_session || found { return Err(JournalError::Conflict); }
+                found = true;
+            }
+            Ok(_) => {},
+            Err(_) => return Err(JournalError::Conflict),
+        }
+    }
+    if found { Ok(()) } else { Err(JournalError::Unknown) }
+}
+
+fn claude_result_is_first_after_echo(connection: &VerifiedDatabaseConnection<'_>,
+    record: &StdinJournalRecord, epoch: &str, echo_cursor: u64,
+    result_cursor: u64) -> Result<(), JournalError> {
+    let q = Statement::prepare(connection.as_ptr(),
+        "SELECT hex(raw_bytes) FROM main.v37_ledger_raw_source
+          WHERE operation_id=?1 AND source_epoch=?2
+            AND process_ticket=?3 AND custodian_nonce=?4
+            AND domain_id=?5 AND session_id=?6 AND generation=?7
+            AND CAST(source_cursor AS INTEGER) > ?8
+            AND CAST(source_cursor AS INTEGER) < ?9
+          ORDER BY CAST(source_cursor AS INTEGER)")?;
+    for (index, value) in [record.process_operation_id.as_str(), epoch,
+        record.ticket.as_str(), record.custodian_nonce.as_str(),
+        record.domain_id.as_str(), record.session_id.as_str(),
+        record.generation.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value)?;
+    }
+    q.bind_i64(8, i64::try_from(echo_cursor).map_err(|_| JournalError::Conflict)?)?;
+    q.bind_i64(9, i64::try_from(result_cursor).map_err(|_| JournalError::Conflict)?)?;
+    while q.step_row()? {
+        let raw = unhex(&q.column_text(0)?)?;
+        match stream_json::decode_claude_line(&raw) {
+            Ok(stream_json::ClaudeData::Result { .. }
+                | stream_json::ClaudeData::UserReplay { .. }) =>
+                    return Err(JournalError::Conflict),
+            Ok(_) => {},
+            Err(_) => return Err(JournalError::Conflict),
+        }
+    }
+    Ok(())
+}
+
+/// Complete the original User request only after its exact UUID/text replay
+/// and a later real result from the same A process stream and vendor session.
+/// The receipt, claim CAS, and A terminalization share this transaction.
+pub(crate) fn complete_claude_send_from_source(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &ClaudeSendInput<'_>, key: &RawSourceKey,
+) -> Result<ClaudeSendCompleted, JournalError> {
+    let (request, text, identity) = claude_send_request(&input.user)?;
+    in_transaction(connection, |connection| {
+        let prior = read_row(connection, input.user.domain_id, &request.request_id)?
+            .ok_or(JournalError::Unknown)?;
+        input_matches(&input.user, &request, &prior)?;
+        let binding = h_binding(connection, input.user.domain_id,
+            input.user.session_id, input.user.ticket, input.user.generation,
+            if prior.state == JournalState::Receipted {
+                BindingUse::Read
+            } else { BindingUse::Complete })?;
+        binding_matches(&prior, &binding)?;
+        if input.custody.ticket.opaque() != binding.ticket
+            || input.custody.custodian_nonce != binding.custodian_nonce
+            || input.custody.binding.domain_id != binding.domain_id
+            || input.custody.binding.generation != binding.generation {
+            return Err(JournalError::Conflict);
+        }
+        let command = commands::ClaudeCommand::User {
+            uuid: &identity.uuid, text: &text,
+        };
+        let step = super::rpc_journal::ClaudeStep {
+            domain_id: input.user.domain_id, session_id: input.user.session_id,
+            open_request_id: input.open_request_id,
+            open_request_bytes: input.open_request_bytes,
+            step_id: &identity.step_id, custody: input.custody,
+            command: &command,
+        };
+        let Some((stream_json::ClaudeData::UserReplay {
+            session_id: vendor_session_id, .. }, raw_echo)) =
+            super::rpc_journal::read_observed_claude_ack_in_transaction(
+                connection, owner, &step)? else {
+            return Err(JournalError::Unknown);
+        };
+        let echo = Statement::prepare(connection.as_ptr(),
+            "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+              WHERE domain_id=?1 AND session_id=?2 AND step_id=?3
+                AND process_operation_id=?4 AND ticket=?5 AND custodian_nonce=?6
+                AND generation=?7 AND phase='OBSERVED' AND requires_response=1")?;
+        for (index, value) in [input.user.domain_id, input.user.session_id,
+            identity.step_id.as_str(), binding.process_operation_id.as_str(),
+            binding.ticket.as_str(), binding.custodian_nonce.as_str(),
+            input.user.generation].iter().enumerate() {
+            echo.bind_text((index + 1) as i32, value)?;
+        }
+        if !echo.step_row()? { return Err(JournalError::Unknown); }
+        let echo_epoch = echo.column_text(0)?;
+        let echo_cursor_raw = echo.column_text(1)?;
+        let echo_cursor = echo_cursor_raw.parse::<u64>()
+            .map_err(|_| JournalError::Conflict)?;
+        if echo_cursor == 0 || echo_cursor > i64::MAX as u64
+            || echo_cursor.to_string() != echo_cursor_raw {
+            return Err(JournalError::Conflict);
+        }
+        if echo.step_row()? { return Err(JournalError::Conflict); }
+        drop(echo);
+        let result_cursor = key.source_cursor.parse::<u64>().ok()
+            .filter(|cursor| *cursor > echo_cursor && *cursor <= i64::MAX as u64
+                && cursor.to_string() == key.source_cursor)
+            .ok_or(JournalError::Denied)?;
+        if key.operation_id != binding.process_operation_id
+            || key.source_epoch != echo_epoch
+        {
+            return Err(JournalError::Denied);
+        }
+        claude_init_before_result(connection, &prior, &echo_epoch,
+            result_cursor, &vendor_session_id)?;
+        claude_result_is_first_after_echo(connection, &prior, &echo_epoch,
+            echo_cursor, result_cursor)?;
+        let source = ledger::read_captured_raw_source(connection, &key.operation_id,
+            &key.source_epoch, &key.source_cursor)?.ok_or(JournalError::Denied)?;
+        if source.process_ticket != binding.ticket
+            || source.custodian_nonce != binding.custodian_nonce
+            || source.domain_id != input.user.domain_id
+            || source.session_id != input.user.session_id
+            || source.generation != input.user.generation {
+            return Err(JournalError::Denied);
+        }
+        let terminal = stream_json::decode_claude_line(&source.raw_bytes)
+            .map_err(|_| JournalError::Denied)?;
+        let (status, subtype) = match &terminal {
+            stream_json::ClaudeData::Result { session_id, subtype, is_error }
+                if session_id == &vendor_session_id =>
+                (if !is_error && subtype == "success" { V37Status::Applied }
+                    else { V37Status::Failed }, subtype.as_str()),
+            _ => return Err(JournalError::Denied),
+        };
+        match source.state {
+            RawSourceState::Pending => ledger::resolve_raw_source_no_event(connection,
+                &key.operation_id, &key.source_epoch, &key.source_cursor,
+                CLAUDE_RESULT_NO_EVENT)?,
+            RawSourceState::NoEvent if prior.state == JournalState::Receipted
+                && source.no_event_reason.as_deref() == Some(CLAUDE_RESULT_NO_EVENT) => {},
+            _ => return Err(JournalError::Conflict),
+        }
+        let revision = request.expected_revision.checked_add(1)
+            .ok_or(JournalError::Invalid("revision overflow"))?;
+        let receipt_identity = format!("{}\n{}\n{}\n{}\n{}",
+            crate::store::digest::sha256_hex(input.user.request_bytes),
+            crate::store::digest::sha256_hex(&raw_echo),
+            crate::store::digest::sha256_hex(&source.raw_bytes),
+            binding.process_operation_id, binding.custodian_nonce);
+        let string = |value: &str| Json::String(JsonString::from_str(value));
+        let mut result = std::collections::BTreeMap::from([
+            (JsonString::from_str("generation"), string(input.user.generation)),
+            (JsonString::from_str("receiptId"), string(&format!("claude-{}",
+                &crate::store::digest::sha256_hex(receipt_identity.as_bytes())[..40]))),
+            (JsonString::from_str("deliveryBasis"), string("CLAUDE_USER_REPLAY_AND_RESULT")),
+            (JsonString::from_str("vendorSessionId"), string(&vendor_session_id)),
+            (JsonString::from_str("userUuid"), string(&identity.uuid)),
+            (JsonString::from_str("resultSubtype"), string(subtype)),
+            (JsonString::from_str("sourceEpoch"), string(&key.source_epoch)),
+            (JsonString::from_str("sourceCursor"), string(&key.source_cursor)),
+            (JsonString::from_str("rawResultSha256"),
+                string(&crate::store::digest::sha256_hex(&source.raw_bytes))),
+        ]);
+        if status == V37Status::Applied {
+            result.insert(JsonString::from_str("createdTurn"), Json::Bool(true));
+        }
+        let mut receipt_bytes = encode_receipt(&request, status,
+            request.expected_revision, revision, result);
+        receipt_bytes.push(b'\n');
+        frame_bytes(&receipt_bytes, "native Claude receipt")?;
+        let receipt = decode_receipt(&receipt_bytes)
+            .map_err(|_| JournalError::Invalid("native Claude receipt"))?;
+        if prior.state != JournalState::Receipted {
+            current_native_seat(connection, &input.user)?;
+            let update = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_claim SET revision=?1
+                  WHERE domain_id=?2 AND session_id=?3 AND generation=?4
+                    AND state='COMMITTED' AND revision=?5")?;
+            update.bind_i64(1, i64::try_from(revision)
+                .map_err(|_| JournalError::Invalid("receipt revision"))?)?;
+            update.bind_text(2, input.user.domain_id)?;
+            update.bind_text(3, input.user.session_id)?;
+            update.bind_text(4, input.user.generation)?;
+            update.bind_i64(5, i64::try_from(request.expected_revision)
+                .map_err(|_| JournalError::Invalid("request revision"))?)?;
+            update.step_done()?;
+            if changes(connection)? != 1 { return Err(JournalError::Conflict); }
+        }
+        let user = complete_decoded(connection, &input.user, &request,
+            None, &receipt_bytes, &receipt)?;
+        Ok(ClaudeSendCompleted { user, terminal, vendor_session_id })
+    })
 }
 
 fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,

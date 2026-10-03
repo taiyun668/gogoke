@@ -62,6 +62,14 @@ pub(crate) enum AcpCommand<'a> {
     Steer,
 }
 
+pub(crate) enum ClaudeCommand<'a> {
+    /// Published Agent SDK control handshake. It performs no model turn and
+    /// its response does not claim a vendor session ID.
+    Initialize { request_id: &'a str },
+    /// UUID is derived once from original H User request bytes by journal.rs.
+    User { uuid: &'a str, text: &'a str },
+}
+
 fn string(value: &str) -> Json {
     Json::String(JsonString::from_str(value))
 }
@@ -310,6 +318,34 @@ pub(crate) fn encode_user_input(vendor: Vendor, text: &str) -> Result<Vec<u8>, E
     }
 }
 
+pub(crate) fn encode_claude(command: ClaudeCommand<'_>) -> Result<Vec<u8>, EncodeError> {
+    match command {
+        ClaudeCommand::Initialize { request_id } => {
+            nonempty(request_id, "Claude initialize request id")?;
+            jsonl(object([
+                ("type", string("control_request")),
+                ("request_id", string(request_id)),
+                ("request", object([("subtype", string("initialize"))])),
+            ]))
+        }
+        ClaudeCommand::User { uuid, text } => {
+            nonempty(uuid, "Claude User UUID")?;
+            nonempty(text, "Claude User text")?;
+            jsonl(object([
+                ("type", string("user")),
+                ("uuid", string(uuid)),
+                ("parent_tool_use_id", Json::Null),
+                ("message", object([
+                    ("role", string("user")),
+                    ("content", Json::Array(vec![object([
+                        ("type", string("text")), ("text", string(text)),
+                    ])])),
+                ])),
+            ]))
+        }
+    }
+}
+
 /// Argument templates only; H supplies the pinned executable, environment,
 /// sandbox, cwd, process custody and admission. No login command is launched.
 pub(crate) fn launch_args(
@@ -317,29 +353,8 @@ pub(crate) fn launch_args(
     resume_id: Option<&str>,
 ) -> Result<Vec<String>, EncodeError> {
     match vendor {
-        Vendor::Claude => {
-            let mut args = vec![
-                "--print",
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-            if let Some(id) = resume_id {
-                nonempty(id, "Claude session id")?;
-                if id.contains('/') || id.contains('\\') {
-                    return Err(EncodeError::Invalid("Claude session id contains separator"));
-                }
-                // Keep the opaque ID in the option's value, even if it begins
-                // with '-'. It cannot become another CLI option.
-                args.push(format!("--resume={id}"));
-            }
-            Ok(args)
-        }
+        Vendor::Claude => Err(EncodeError::Unsupported(
+            "Claude launch requires bound model and effort")),
         Vendor::OpenCode if resume_id.is_none() => Ok(vec!["--pure".to_owned(), "acp".to_owned()]),
         Vendor::Grok if resume_id.is_none() => Err(EncodeError::Unsupported(
             "Grok model and effort must come from bound seat settings")),
@@ -370,6 +385,35 @@ pub(crate) fn launch_args(
             "resume is an ACP request after launch",
         )),
     }
+}
+
+/// Fixed 2.1.196 help lists --model and --effort, plus --replay-user-messages
+/// for streaming JSON and --safe-mode for disabling customizations. H alone
+/// must supply these values from the current bound E seat at actual launch.
+pub(crate) fn claude_launch_args(model: &str, effort: &str,
+    resume_id: Option<&str>) -> Result<Vec<String>, EncodeError> {
+    nonempty(model, "Claude model")?;
+    if model.trim() != model || model.starts_with('-') {
+        return Err(EncodeError::Invalid("Claude model is not a CLI value"));
+    }
+    if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+        return Err(EncodeError::Unsupported("effort absent from fixed Claude help"));
+    }
+    let mut args = vec![
+        "--print".to_owned(), "--input-format".to_owned(), "stream-json".to_owned(),
+        "--output-format".to_owned(), "stream-json".to_owned(),
+        "--verbose".to_owned(), "--replay-user-messages".to_owned(),
+        "--safe-mode".to_owned(), "--model".to_owned(), model.to_owned(),
+        "--effort".to_owned(), effort.to_owned(),
+    ];
+    if let Some(id) = resume_id {
+        nonempty(id, "Claude session id")?;
+        if id.contains('/') || id.contains('\\') {
+            return Err(EncodeError::Invalid("Claude session id contains separator"));
+        }
+        args.push(format!("--resume={id}"));
+    }
+    Ok(args)
 }
 
 /// Fixed 1.0.41 `agent --help` places model and effort on the parent agent

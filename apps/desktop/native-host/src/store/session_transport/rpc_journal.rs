@@ -6,7 +6,7 @@
 //! original command and source key; it does not copy provider output.
 
 use super::codex_rpc::{self, Command, Reply, RpcId};
-use super::provider_evidence::{acp, commands};
+use super::provider_evidence::{acp, commands, stream_json};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -57,6 +57,7 @@ impl From<codex_rpc::RpcError> for RpcJournalError {
 type Result<T> = std::result::Result<T, RpcJournalError>;
 const RPC_RESPONSE_NO_EVENT: &str = "CODEX_RPC_RESPONSE";
 const ACP_RESPONSE_NO_EVENT: &str = "ACP_RPC_RESPONSE";
+const CLAUDE_ACK_NO_EVENT: &str = "CLAUDE_STDIN_ACK";
 
 fn atom(value: &str) -> bool {
     !value.is_empty()
@@ -187,6 +188,24 @@ pub(crate) struct AcpStep<'a> {
     pub(crate) command: &'a commands::AcpCommand<'a>,
 }
 
+/// One original Claude control request or User input. The actual provider is
+/// derived from H's current instance, never from this caller's label.
+pub(crate) struct ClaudeStep<'a> {
+    pub(crate) domain_id: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) open_request_id: &'a str,
+    pub(crate) open_request_bytes: &'a [u8],
+    pub(crate) step_id: &'a str,
+    pub(crate) custody: &'a PreparedCustody,
+    pub(crate) command: &'a commands::ClaudeCommand<'a>,
+}
+
+pub(crate) fn claude_initialize_identity(open_request_bytes: &[u8]) -> (String, String) {
+    let digest = crate::store::digest::sha256_hex(open_request_bytes);
+    (format!("claude-init-{}", &digest[..40]),
+        format!("gogoke-claude-init-{}", &digest[..40]))
+}
+
 #[derive(Clone, Copy)]
 struct StepFields<'a> {
     domain_id: &'a str,
@@ -204,6 +223,13 @@ impl<'a> Step<'a> {
     }
 }
 impl<'a> AcpStep<'a> {
+    fn fields(&self) -> StepFields<'a> {
+        StepFields { domain_id: self.domain_id, session_id: self.session_id,
+            open_request_id: self.open_request_id, open_request_bytes: self.open_request_bytes,
+            step_id: self.step_id, custody: self.custody }
+    }
+}
+impl<'a> ClaudeStep<'a> {
     fn fields(&self) -> StepFields<'a> {
         StepFields { domain_id: self.domain_id, session_id: self.session_id,
             open_request_id: self.open_request_id, open_request_bytes: self.open_request_bytes,
@@ -703,7 +729,8 @@ fn assert_current_binding(
         || login_state != "LOGGED_IN"
         || program_digest != c.binding.binary_digest_sha256
         || !matches!((driver.as_str(), version.as_str()),
-            ("codex", "0.160.0") | ("opencode", "1.18.32") | ("grok", "1.0.41"))
+            ("codex", "0.160.0") | ("opencode", "1.18.32") | ("grok", "1.0.41")
+            | ("claude", "2.1.196"))
         || q.step_row()?
     {
         return Err(RpcJournalError::Denied);
@@ -1541,6 +1568,177 @@ pub(crate) fn read_observed_acp_response(
         drop(q);
         observe_acp_captured_response_in_transaction(db, owner, step, &key).map(Some)
     })
+}
+
+fn claude_bytes(step: &ClaudeStep<'_>, driver: &str) -> Result<Vec<u8>> {
+    if driver != "claude" { return Err(RpcJournalError::Denied); }
+    let command = match step.command {
+        commands::ClaudeCommand::Initialize { request_id } =>
+            commands::ClaudeCommand::Initialize { request_id },
+        commands::ClaudeCommand::User { uuid, text } =>
+            commands::ClaudeCommand::User { uuid, text },
+    };
+    commands::encode_claude(command).map_err(RpcJournalError::AcpEncode)
+}
+
+/// Persist original Claude stdin intent before the physical writer. An
+/// existing row is readback only; neither replay nor UNKNOWN permits resend.
+pub(crate) fn prepare_claude(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<PreparedStep> {
+    let (expected_step, expected_id) = claude_initialize_identity(step.open_request_bytes);
+    if !matches!(step.command, commands::ClaudeCommand::Initialize { request_id }
+        if *request_id == expected_id.as_str())
+        || step.step_id != expected_step.as_str() {
+        return Err(RpcJournalError::Invalid("Claude initialize identity"));
+    }
+    transact(db, |db| prepare_claude_in_transaction(db, owner, step))
+}
+
+pub(super) fn prepare_claude_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<PreparedStep> {
+    for (value, name) in [(step.domain_id, "domain"), (step.session_id, "session"),
+        (step.open_request_id, "open request"), (step.step_id, "step")] {
+        if !atom(value) { return Err(RpcJournalError::Invalid(name)); }
+    }
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let (operation, driver) = assert_current_binding(db, &step.fields(),
+        &["PREPARED", "ACTIVE"], false)?;
+    let encoded = claude_bytes(step, &driver)?;
+    if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
+        return Ok(PreparedStep { bytes: encoded,
+            disposition: Disposition::Existing(phase) });
+    }
+    if has_unresolved(db, step.domain_id, step.session_id, &operation)? {
+        return Err(RpcJournalError::Unknown);
+    }
+    insert_intent(db, &step.fields(), &operation, &encoded, true)?;
+    Ok(PreparedStep { bytes: encoded, disposition: Disposition::NewWrite })
+}
+
+fn transition_claude_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, next: Phase,
+    error: Option<&str>) -> Result<()> {
+    if next == Phase::Unknown && error.map_or(true, |value| value.is_empty()
+        || value.len() > 4096) { return Err(RpcJournalError::Invalid("original error")); }
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let states = if next == Phase::Unknown { &["ACTIVE", "UNKNOWN"][..] }
+        else { &["ACTIVE"][..] };
+    let (operation, driver) = assert_current_binding(db, &step.fields(), states,
+        next == Phase::Unknown)?;
+    let encoded = claude_bytes(step, &driver)?;
+    transition_row(db, &step.fields(), &operation, &encoded, next, error)
+}
+
+pub(crate) fn mark_claude_written(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<()> {
+    transact(db, |db| transition_claude_in_transaction(db, owner, step, Phase::Written, None))
+}
+
+pub(super) fn mark_claude_written_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<()> {
+    transition_claude_in_transaction(db, owner, step, Phase::Written, None)
+}
+
+pub(crate) fn mark_claude_unknown(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, original_error: &str) -> Result<()> {
+    transact(db, |db| transition_claude_in_transaction(db, owner, step,
+        Phase::Unknown, Some(original_error)))
+}
+
+pub(super) fn mark_claude_unknown_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, original_error: &str) -> Result<()> {
+    transition_claude_in_transaction(db, owner, step, Phase::Unknown, Some(original_error))
+}
+
+/// An ACK is only the matching control response or exact echoed User UUID and
+/// text. Assistant/result frames cannot advance this stdin step.
+pub(super) fn observe_claude_captured_ack_in_transaction(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &ClaudeStep<'_>, key: &RawSourceKey,
+) -> Result<(stream_json::ClaudeData, Vec<u8>)> {
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let (operation, driver) = assert_current_binding(db, &step.fields(),
+        &["ACTIVE", "UNKNOWN"], false)?;
+    let encoded = claude_bytes(step, &driver)?;
+    if key.operation_id != operation { return Err(RpcJournalError::Denied); }
+    let source = ledger::read_captured_raw_source(db, &key.operation_id,
+        &key.source_epoch, &key.source_cursor)?.ok_or(RpcJournalError::Denied)?;
+    if source.process_ticket != step.custody.ticket.opaque()
+        || source.custodian_nonce != step.custody.custodian_nonce
+        || source.domain_id != step.domain_id || source.session_id != step.session_id
+        || source.generation != step.custody.binding.generation {
+        return Err(RpcJournalError::Denied);
+    }
+    let observation = stream_json::decode_claude_line(&source.raw_bytes)
+        .map_err(|_| RpcJournalError::Denied)?;
+    let matching = match (&observation, step.command) {
+        (stream_json::ClaudeData::ControlResponse { request_id: found, .. },
+            commands::ClaudeCommand::Initialize { request_id }) => found.as_str() == *request_id,
+        (stream_json::ClaudeData::UserReplay { uuid: found, text: echoed, .. },
+            commands::ClaudeCommand::User { uuid, text }) =>
+                found.as_str() == *uuid && echoed.as_str() == *text,
+        _ => false,
+    };
+    if !matching { return Err(RpcJournalError::Denied); }
+    match (same_row(db, &step.fields(), &operation, &encoded)?, source.state) {
+        (Some(Phase::Written), RawSourceState::Pending) =>
+            persist_observation_and_no_event_with_reason(db, step.domain_id,
+                step.session_id, step.step_id, &operation, key, CLAUDE_ACK_NO_EVENT)?,
+        (Some(Phase::Observed), RawSourceState::NoEvent)
+            if source.no_event_reason.as_deref() == Some(CLAUDE_ACK_NO_EVENT)
+                && observed_source_is_exact(db, &step.fields(), &operation, key)? => {},
+        _ => return Err(RpcJournalError::Conflict),
+    }
+    Ok((observation, source.raw_bytes))
+}
+
+pub(crate) fn observe_claude_ack(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, frame: &OriginBoundFrame,
+    key: &RawSourceKey) -> Result<stream_json::ClaudeData> {
+    transact(db, |db| {
+        source_matches(db, frame, key, &key.operation_id, &step.fields())?;
+        observe_claude_captured_ack_in_transaction(db, owner, step, key)
+            .map(|(observation, _)| observation)
+    })
+}
+
+pub(super) fn read_observed_claude_ack_in_transaction(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &ClaudeStep<'_>,
+) -> Result<Option<(stream_json::ClaudeData, Vec<u8>)>> {
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let (operation, driver) = assert_current_binding(db, &step.fields(),
+        &["ACTIVE", "UNKNOWN"], false)?;
+    let encoded = claude_bytes(step, &driver)?;
+    if same_row(db, &step.fields(), &operation, &encoded)? != Some(Phase::Observed) {
+        return Ok(None);
+    }
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND step_id=?3
+            AND open_request_id=?4 AND process_operation_id=?5
+            AND phase='OBSERVED' AND requires_response=1")?;
+    for (index, value) in [step.domain_id, step.session_id, step.step_id,
+        step.open_request_id, operation.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value)?;
+    }
+    if !q.step_row()? { return Err(RpcJournalError::Conflict); }
+    let key = RawSourceKey { operation_id: operation,
+        source_epoch: q.column_text(0)?, source_cursor: q.column_text(1)? };
+    if q.step_row()? { return Err(RpcJournalError::Conflict); }
+    drop(q);
+    observe_claude_captured_ack_in_transaction(db, owner, step, &key).map(Some)
+}
+
+pub(crate) fn read_observed_claude_ack(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &ClaudeStep<'_>,
+) -> Result<Option<(stream_json::ClaudeData, Vec<u8>)>> {
+    transact(db, |db| read_observed_claude_ack_in_transaction(db, owner, step))
 }
 
 #[derive(Debug, Eq, PartialEq)]
