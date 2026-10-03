@@ -362,3 +362,7 @@ pub(crate) fn revalidate_model_call_in_transaction(db:&VerifiedDatabaseConnectio
     }
     Ok(seat)
 }
+
+#[cfg(all(test, windows))]
+#[path = "model_call_tests.rs"]
+mod tests;
