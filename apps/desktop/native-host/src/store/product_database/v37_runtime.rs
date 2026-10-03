@@ -280,6 +280,20 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request,V37Status::Unknown,effective_revision,
                 effective_revision,Default::default()));
         }
+        // A declared unsupported provider must not acquire a candidate home,
+        // episode or process while trying the Codex/ACP recovery path.
+        let driver=Statement::prepare(self.connection.as_ptr(),
+            "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+        driver.bind_text(1,&old.instance_id)?;
+        if !driver.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let driver_id=driver.column_text(0)?;
+        if driver.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(driver);
+        if !matches!(driver_id.as_str(),"codex"|"opencode"|"grok") {
+            return Ok(encode_receipt(request,V37Status::Unsupported,effective_revision,
+                effective_revision,BTreeMap::from([(JsonString::from_str("reason"),
+                    text("This fixed provider has no integrated native metadata resume"))])));
+        }
         let old_number=old_generation.parse::<i64>().map_err(|_|
             OrchestrationError::Invalid("native resume old generation"))?;
         let new_generation=old_number.checked_add(1).ok_or(
@@ -452,14 +466,19 @@ impl<'root> ProductDatabase<'root> {
 
     fn resume_source_receipt(&self,domain:&str,session:&str,operation:&str,
         generation:&str,request_id:&str)->Result<String> {
-        let step_id=format!("{operation}-thread-resume");
+        // Verify the typed original ACK and custody before projecting its A
+        // source locator; ACP and Codex own distinct recovery step names.
+        self.observed_resume_thread(domain,session,operation,generation,request_id)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let codex_step=format!("{operation}-thread-resume");
+        let acp_step=format!("{operation}-session-resume");
         let q=Statement::prepare(self.connection.as_ptr(),
             "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
               WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
-                AND generation=?4 AND open_request_id=?5 AND step_id=?6
+                AND generation=?4 AND open_request_id=?5 AND step_id IN (?6,?7)
                 AND phase='OBSERVED'")?;
         for (index,value) in [domain,session,operation,generation,request_id,
-            step_id.as_str()].iter().enumerate() {
+            codex_step.as_str(),acp_step.as_str()].iter().enumerate() {
             q.bind_text((index+1) as i32,value)?;
         }
         if !q.step_row()? {return Err(OrchestrationError::OperationConflict);}
@@ -1517,10 +1536,18 @@ impl<'root> ProductDatabase<'root> {
         })();
         self.finish_native_transaction(applied)?;
         let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+        let result=if run.evidence.driver_id()=="claude" {
+            BTreeMap::from([
+                (JsonString::from_str("threadId"),run.thread_id.as_deref().map(text).unwrap_or(Json::Null)),
+                (JsonString::from_str("readinessBasis"),text("ORIGINAL_CLAUDE_INITIALIZE_ACK")),
+            ])
+        } else {
+            BTreeMap::from([(JsonString::from_str("threadId"),text(
+                run.thread_id.as_deref().ok_or(OrchestrationError::Invalid("native thread absent"))?))])
+        };
         Ok(encode_receipt(request, V37Status::Applied, request.expected_revision,
             request.expected_revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open receipt revision overflow"))?,
-            BTreeMap::from([(JsonString::from_str("threadId"), Json::String(JsonString::from_str(
-                run.thread_id.as_deref().ok_or(OrchestrationError::Invalid("native thread absent"))?)))])))
+            result))
     }
 
     fn finish_native_transaction(&mut self, result: Result<()>) -> Result<()> {
@@ -2261,11 +2288,12 @@ impl<'root> ProductDatabase<'root> {
                  AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
               WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
                 AND s.ticket=?4 AND s.custodian_nonce=?5 AND s.generation=?6
-                AND s.step_id='initialize' AND s.phase='OBSERVED'
+                AND s.step_id IN ('initialize',?7) AND s.phase='OBSERVED'
                 AND r.state='NO_EVENT' AND r.no_event_reason='ACP_RPC_RESPONSE'")?;
         for (index,value) in [key.0.as_str(),key.1.as_str(),run.operation_id.as_str(),
             run.custody.ticket.opaque(),run.custody.custodian_nonce.as_str(),
             run.custody.binding.generation.as_str()].iter().enumerate() {query.bind_text((index+1) as i32,value)?;}
+        query.bind_text(7,&format!("{}-initialize",run.operation_id))?;
         if !query.step_row()? {return Err(OrchestrationError::OperationConflict);}
         let command=unhex(&query.column_text(0)?)?;let response=unhex(&query.column_text(1)?)?;
         let source_epoch=query.column_text(2)?;let source_cursor=query.column_text(3)?;
