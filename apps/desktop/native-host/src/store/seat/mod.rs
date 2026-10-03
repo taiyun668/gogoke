@@ -165,6 +165,7 @@ pub(crate) fn permission_tier(seat: &Seat) -> Result<PermissionTier, SeatError> 
 /// A native lead admission. No string or wire token constructor is exposed.
 /// H must call the constructor only after authenticating the live session and
 /// matching its seat, domain and generation to its admission reservation.
+#[derive(Clone)]
 pub(crate) struct NativeLeadAdmission {
     domain_id: String,
     seat_id: String,
