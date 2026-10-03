@@ -1,7 +1,7 @@
 //! Read only H's original process and A's original vendor response. A new H
 //! generation is not itself evidence that the vendor cache changed or survived.
 use super::*;
-use crate::store::session_transport::{self, provider_evidence::acp, rpc_journal};
+use crate::store::session_transport::{self, rpc_journal};
 
 struct ObservedCache { id:String, receipt:String }
 
@@ -11,40 +11,6 @@ fn unhex(value:&str)->Result<Vec<u8>> {
         let text=std::str::from_utf8(pair).map_err(|error|SideError::Corrupt(format!("original hex UTF-8: {error}")))?;
         u8::from_str_radix(text,16).map_err(|error|SideError::Corrupt(format!("original hex digit: {error}")))
     }).collect()
-}
-
-fn acp_cache(command:&[u8],response:&[u8],resumed:bool)->Result<String> {
-    let text=std::str::from_utf8(command).map_err(|error|SideError::Corrupt(format!("ACP command UTF-8: {error}")))?;
-    let Json::Object(fields)=super::super::atomic::Parser::parse(text.trim_end_matches('\n'))?
-        else {return Err(SideError::Conflict)};
-    let field=|name|fields.get(&JsonString::from_str(name));
-    if !matches!(field("jsonrpc"),Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("2.0")) {
-        return Err(SideError::Conflict);
-    }
-    let method=match field("method") {Some(Json::String(value))=>value.to_well_formed_string().ok_or(SideError::Conflict)?,_=>return Err(SideError::Conflict)};
-    let id=match field("id") {
-        Some(Json::Number(value))=>acp::RpcId::Number(value.parse().map_err(|_|SideError::Conflict)?),
-        Some(Json::String(value))=>acp::RpcId::String(value.to_well_formed_string().ok_or(SideError::Conflict)?),
-        _=>return Err(SideError::Conflict),
-    };
-    let (kind,requested)=match method.as_str() {
-        "session/new" if !resumed=>(acp::PendingMethod::SessionNew,None),
-        "session/load"|"session/resume" if resumed=>{
-            let Some(Json::Object(params))=field("params") else {return Err(SideError::Conflict)};
-            let Some(Json::String(value))=params.get(&JsonString::from_str("sessionId")) else {return Err(SideError::Conflict)};
-            let requested=value.to_well_formed_string().filter(|v|!v.is_empty()).ok_or(SideError::Conflict)?;
-            (if method=="session/load" {acp::PendingMethod::SessionLoad} else {acp::PendingMethod::SessionResume},Some(requested))
-        },
-        _=>return Err(SideError::Conflict),
-    };
-    let pending=acp::Pending {id:&id,method:kind,requested_session_id:requested.as_deref()};
-    let observation=acp::decode(response,Some(&pending)).map_err(|error|
-        SideError::Corrupt(format!("original ACP response: {}; raw: {}",error.reason,String::from_utf8_lossy(&error.raw_frame))))?;
-    match observation {
-        acp::Observation::SessionNew {session_id,..} if !resumed=>Ok(session_id),
-        acp::Observation::SessionLoad {..}|acp::Observation::SessionResume {..} if resumed=>requested.ok_or(SideError::Conflict),
-        _=>Err(SideError::Conflict),
-    }
 }
 
 fn observed(db:&VerifiedDatabaseConnection<'_>,s:&Side,session:&str,generation:&str,
@@ -98,7 +64,9 @@ fn observed(db:&VerifiedDatabaseConnection<'_>,s:&Side,session:&str,generation:&
         }
         if !operation_row.step_row()? || operation_row.step_row()? {return Ok(None);}
     }
-    let step=if prior.is_empty() {"thread-start".to_owned()} else {format!("{operation}-thread-resume")};
+    let step=if prior.is_empty() {"thread-start".to_owned()}
+        else if driver=="codex" {format!("{operation}-thread-resume")}
+        else {format!("{operation}-session-resume")};
     let source=Statement::prepare(db.as_ptr(),"SELECT r.source_epoch,r.source_cursor,s.command_hex,hex(r.raw_bytes)
         FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r
           ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch
@@ -115,12 +83,9 @@ fn observed(db:&VerifiedDatabaseConnection<'_>,s:&Side,session:&str,generation:&
     if !source.step_row()? {return Ok(None);}
     let observed=(0..4).map(|index|source.column_text(index)).collect::<std::result::Result<Vec<_>,_>>()?;
     if source.step_row()? {return Err(SideError::Conflict);}
-    let cache=match driver.as_str() {
-        "codex"=>rpc_journal::observed_thread_id(db,&s.domain_id,session,operation,generation,
-            open_id,ticket,nonce).map_err(|error|SideError::Corrupt(format!("original Codex thread: {error:?}")))?,
-        "opencode"|"grok"=>acp_cache(&unhex(&observed[2])?,&unhex(&observed[3])?,!prior.is_empty())?,
-        _=>return Ok(None),
-    };
+    if !matches!(driver.as_str(),"codex"|"opencode"|"grok") {return Ok(None);}
+    let cache=rpc_journal::observed_thread_id(db,&s.domain_id,session,operation,generation,
+        open_id,ticket,nonce).map_err(|error|SideError::Corrupt(format!("original provider session: {error:?}")))?;
     if cache.is_empty() {return Err(SideError::Conflict);}
     Ok(Some(ObservedCache {id:format!("{driver}:{instance}:{cache}"),
         receipt:format!("{operation}:{}:{}",observed[0],observed[1])}))
