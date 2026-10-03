@@ -1,0 +1,111 @@
+"""Read existing candidate ledger after normal product close; never credentials.
+
+Usage: signed Python m1-readback.py STATE_ROOT OUTPUT [E2E_JOURNAL]
+Without a journal, supply the real ledger epoch/cursor bootstrap to the E2E.
+With a journal, export only its actual sessions and check recorded CLI evidence.
+All outputs stay in the private ordinary-view evidence directory.
+"""
+import hashlib
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve(strict=True)
+output = Path(sys.argv[2])
+if output.exists():
+    raise RuntimeError("Evidence output already exists")
+database = root / "state.sqlite"
+
+def files():
+    return {p.name: {"length": p.stat().st_size,
+                     "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+            for p in (database, Path(str(database) + "-wal")) if p.exists()}
+
+wal, shm = Path(str(database) + "-wal"), Path(str(database) + "-shm")
+if wal.exists() and wal.stat().st_size and not shm.exists():
+    raise RuntimeError("No existing SHM; refuse a read that would create one")
+result = {"schema": "gogoke.37.private-e2e-ledger.v1", "databaseWrites": False,
+          "credentialReads": False, "rootIdentity": [root.stat().st_dev, root.stat().st_ino],
+          "filesBefore": files(), "frames": [], "commands": [], "sessions": []}
+
+with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+    connection.execute("PRAGMA query_only=ON")
+    result["epoch"] = connection.execute("SELECT epoch FROM v37_ledger_meta WHERE singleton=1").fetchone()[0]
+    result["cursor"] = str(connection.execute("SELECT COALESCE(MAX(cursor),0) FROM v37_ledger_index").fetchone()[0])
+    if len(sys.argv) == 4:
+        journal = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8-sig"))
+        domain = journal["domainId"]
+        for session in journal["sessions"]:
+            session_id = session["id"]
+            episodes = connection.execute(
+                "SELECT generation,process_operation_id,phase,stop_fact_id FROM gogoke_v37_h_process_episode "
+                "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, session_id)).fetchall()
+            incoming = connection.execute(
+                "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state FROM v37_ledger_raw_source "
+                "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, session_id)).fetchall()
+            outgoing = connection.execute(
+                "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor "
+                "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? ORDER BY rowid",
+                (domain, session_id)).fetchall()
+            by_episode = {}
+            parsed_in = []
+            for generation, operation, epoch, cursor, raw, state in incoming:
+                text = bytes(raw).decode("utf-8")
+                frame = json.loads(text)
+                result["frames"].append({"direction": "in", "sessionId": session_id,
+                    "generation": generation, "operationId": operation, "sourceEpoch": epoch,
+                    "sourceCursor": cursor, "state": state, "originalFrame": text})
+                by_episode.setdefault((operation, epoch), []).append(int(cursor))
+                parsed_in.append(frame)
+            for generation, operation, step, command, phase, epoch, cursor in outgoing:
+                # INTENT/UNKNOWN is evidence of intent/uncertainty, never a sent frame.
+                result["commands"].append({"direction": "out", "sessionId": session_id,
+                    "generation": generation, "operationId": operation, "stepId": step,
+                    "phase": phase, "sourceEpoch": epoch, "sourceCursor": cursor,
+                    "originalFrame": bytes.fromhex(command).decode("utf-8"),
+                    "confirmedWrite": phase in ("WRITTEN", "OBSERVED")})
+            normalized = connection.execute(
+                "SELECT cursor,source_epoch,source_cursor,update_json FROM v37_ledger_index "
+                "WHERE source_kind='v37' AND domain_id=? AND session_id=? ORDER BY cursor",
+                (domain, session_id)).fetchall()
+            completed = [frame for frame in parsed_in if frame.get("method") == "turn/completed"
+                         and frame.get("params", {}).get("turn", {}).get("status") == "completed"]
+            compactions = [frame for frame in parsed_in if frame.get("method") == "item/completed"
+                           and frame.get("params", {}).get("item", {}).get("type") == "contextCompaction"]
+            summary = {"sessionId": session_id, "episodes": episodes,
+                "normalized": [{"cursor": str(cursor), "sourceEpoch": epoch,
+                    "ledgerSourceCursor": source, "update": json.loads(update)}
+                    for cursor, epoch, source, update in normalized],
+                "successfulTurns": len(completed), "contextCompactionCompletions": len(compactions),
+                "sourceCursorsContinuous": all(values == list(range(1, max(values) + 1))
+                    for values in by_episode.values()),
+                "allEpisodesStopped": bool(episodes) and all(row[2] == "STOPPED" and row[3] for row in episodes),
+                "unresolvedRawFrames": sum(row[5] == "PENDING" for row in incoming)}
+            summary["unresolvedRawMethods"] = [json.loads(bytes(row[4]).decode("utf-8")).get("method")
+                for row in incoming if row[5] == "PENDING"]
+            summary["everyObservedTurnDurable"] = bool(session.get("turns")) and all(
+                any(frame.get("params", {}).get("threadId") == turn["threadId"]
+                    and frame.get("params", {}).get("turn", {}).get("id") == turn["turnId"]
+                    for frame in completed)
+                and any(row["update"].get("_meta", {}).get("codexMethod") == "turn/completed"
+                    and row["update"].get("_meta", {}).get("threadId") == turn["threadId"]
+                    and row["update"].get("_meta", {}).get("turnId") == turn["turnId"]
+                    and row["update"].get("_meta", {}).get("turnStatus") == "completed"
+                    for row in summary["normalized"])
+                for turn in session.get("turns", []))
+            result["sessions"].append(summary)
+        # This observer checks direct protocol/stop evidence, not Owner acceptance.
+        result["actualFlowReportedComplete"] = journal["state"] == "ACTUAL_FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED"
+        result["directReadbackComplete"] = result["actualFlowReportedComplete"] and len(result["sessions"]) == 2 and all(
+            row["successfulTurns"] >= (2 if index == 0 else 1) and row["everyObservedTurnDurable"]
+            and row["sourceCursorsContinuous"] and row["allEpisodesStopped"]
+            for index, row in enumerate(result["sessions"])) and result["sessions"][0]["contextCompactionCompletions"] > 0
+
+result["filesAfter"] = files()
+result["measurementPreservedDatabaseBytes"] = result["filesBefore"] == result["filesAfter"]
+output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+if not result["measurementPreservedDatabaseBytes"]:
+    raise RuntimeError("Readonly measurement changed database bytes")
+if len(sys.argv) == 4 and not result["directReadbackComplete"]:
+    raise RuntimeError("Real E2E direct readback incomplete; preserve original frames, do not claim PASS")
