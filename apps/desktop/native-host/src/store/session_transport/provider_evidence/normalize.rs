@@ -70,6 +70,94 @@ fn content_text(fields: &BTreeMap<JsonString, Json>, frame: &[u8], name: &str)
     value.to_well_formed_string().filter(|value| !value.contains('\0'))
         .ok_or_else(|| invalid(frame, format!("{name} is invalid")))
 }
+fn copy_json(value: &Json) -> Json {
+    match value {
+        Json::Null => Json::Null,
+        Json::Bool(value) => Json::Bool(*value),
+        Json::Number(value) => Json::Number(value.clone()),
+        Json::String(value) => Json::String(value.clone()),
+        Json::Array(values) => Json::Array(values.iter().map(copy_json).collect()),
+        Json::Object(fields) => Json::Object(fields.iter().map(|(name, value)|
+            (name.clone(), copy_json(value))).collect()),
+    }
+}
+fn nonnegative_integer(value: &Json, frame: &[u8], name: &str) -> Result<Json, NormalizeError> {
+    let Json::Number(number) = value else {
+        return Err(invalid(frame, format!("{name} must be a nonnegative integer")));
+    };
+    number.parse::<u64>()
+        .map_err(|_| invalid(frame, format!("{name} must be a nonnegative integer")))?;
+    Ok(Json::Number(number.clone()))
+}
+fn acp_tool_kind(value: &str) -> bool {
+    matches!(value, "read" | "edit" | "delete" | "move" | "search" |
+        "execute" | "think" | "fetch" | "switch_mode" | "other")
+}
+fn acp_tool_status(value: &str) -> bool {
+    matches!(value, "pending" | "in_progress" | "completed" | "failed")
+}
+fn acp_tool_update(frame: &[u8], provider: Provider, session: &str, thread: &str,
+    kind: &str, fields: &BTreeMap<JsonString, Json>) -> Result<Output, NormalizeError> {
+    let tool_id = required_text(fields, frame, "toolCallId")?;
+    let mut extra = vec![("toolCallId", text(&tool_id))];
+    if kind == "tool_call" {
+        extra.push(("title", text(&required_text(fields, frame, "title")?)));
+    } else if let Some(value) = field(fields, "title") {
+        if matches!(value, Json::Null) { extra.push(("title", Json::Null)); }
+        else { extra.push(("title", text(&content_text(fields, frame, "title")?))); }
+    }
+    if let Some(value) = field(fields, "kind") {
+        if kind == "tool_call_update" && matches!(value, Json::Null) {
+            extra.push(("kind", Json::Null));
+        } else {
+            let found = required_text(fields, frame, "kind")?;
+            if !acp_tool_kind(&found) { return Err(invalid(frame, "unknown ACP tool kind")); }
+            extra.push(("kind", text(&found)));
+        }
+    }
+    if let Some(value) = field(fields, "status") {
+        if kind == "tool_call_update" && matches!(value, Json::Null) {
+            extra.push(("status", Json::Null));
+        } else {
+            let found = required_text(fields, frame, "status")?;
+            if !acp_tool_status(&found) { return Err(invalid(frame, "unknown ACP tool status")); }
+            extra.push(("status", text(&found)));
+        }
+    }
+    for name in ["rawInput", "rawOutput"] {
+        if let Some(value) = field(fields, name) {
+            extra.push((if name == "rawInput" { "rawInput" } else { "rawOutput" }, copy_json(value)));
+        }
+    }
+    if let Some(value) = field(fields, "content") {
+        match value {
+            Json::Null if kind == "tool_call_update" => extra.push(("content", Json::Null)),
+            Json::Array(items) => {
+                for item in items {
+                    let content = object(item, frame, "ACP tool content")?;
+                    let content_type = required_text(content, frame, "type")?;
+                    if !matches!(content_type.as_str(), "content" | "diff") {
+                        return Err(invalid(frame, "unknown ACP tool content type"));
+                    }
+                }
+                extra.push(("content", copy_json(value)));
+            }
+            _ => return Err(invalid(frame, "ACP tool content must be an array")),
+        }
+    }
+    // This is the provider's tool observation, not H's execution or grant proof.
+    Ok(Output::Update(update(provider, "session/update", session, thread, kind, extra)))
+}
+fn acp_usage_update(frame: &[u8], provider: Provider, session: &str, thread: &str,
+    fields: &BTreeMap<JsonString, Json>) -> Result<Output, NormalizeError> {
+    let size = nonnegative_integer(field(fields, "size")
+        .ok_or_else(|| invalid(frame, "usage_update.size missing"))?, frame, "usage_update.size")?;
+    let used = nonnegative_integer(field(fields, "used")
+        .ok_or_else(|| invalid(frame, "usage_update.used missing"))?, frame, "usage_update.used")?;
+    // ACP `used` is context occupancy, not total billable/session tokens.
+    Ok(Output::Update(update(provider, "session/update", session, thread,
+        "usage_update", [("size", size), ("used", used)])))
+}
 fn check_binding(frame: &[u8], found: &str, expected: &str) -> Result<(), NormalizeError> {
     if expected.is_empty() || expected.contains('\0') || found != expected {
         return Err(invalid(frame, "native session does not match H binding"));
@@ -146,6 +234,10 @@ pub(crate) fn claude(frame: &[u8], bound_session: &str, bound_thread: &str)
                     v.to_well_formed_string()
                 } else { None }).as_deref() == Some("text") {
                     chunks.push(content_text(block, frame, "text")?);
+                } else {
+                    // One frame can contain text and tool blocks. Do not emit
+                    // its text while silently discarding an unqualified tool.
+                    return Ok(Output::Unhandled { method: kind, raw_frame: frame.to_vec() });
                 }
             }
             if chunks.is_empty() {
@@ -189,8 +281,13 @@ pub(crate) fn acp(frame: &[u8], provider: Provider, bound_session: &str, bound_t
             check_binding(frame, &session_id, bound_session)?;
             let fields = object(&vendor, frame, "session/update.update")?;
             let kind = required_text(fields, frame, "sessionUpdate")?;
-            // Only text is projected without an authenticated tool or question
-            // contract. Other ACP updates stay as exact source rows in A.
+            if matches!(kind.as_str(), "tool_call" | "tool_call_update") {
+                return acp_tool_update(frame, provider, bound_session, bound_thread, &kind, fields);
+            }
+            if kind == "usage_update" {
+                return acp_usage_update(frame, provider, bound_session, bound_thread, fields);
+            }
+            // Other update types stay as exact source rows in A.
             if !matches!(kind.as_str(), "agent_message_chunk" | "agent_thought_chunk") {
                 return Ok(Output::Unhandled { method: format!("session/update/{kind}"), raw_frame: frame.to_vec() });
             }
