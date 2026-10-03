@@ -573,7 +573,6 @@ fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
              ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
              AND c.generation=e.generation
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
-             AND i.program_digest=c.binary_digest_sha256
           WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3
             AND e.generation=?4 AND e.request_id=?5
             AND ((g.request_id IS NOT NULL AND e.phase='STOPPED' AND c.state='STOPPED'
