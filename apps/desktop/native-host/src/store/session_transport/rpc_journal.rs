@@ -89,6 +89,7 @@ fn requires_response(command: &Command) -> bool {
     !matches!(
         command,
         Command::Initialized | Command::QuestionAnswer { .. }
+            | Command::DynamicToolResponse { .. }
     )
 }
 
@@ -387,7 +388,8 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
     let Some((operation,driver))=candidate_binding_fields(db,&step.fields(),required_state)?
         else {return Ok(None)};
     if driver!="codex" {return Err(RpcJournalError::Denied);}
-    if !matches!(step.command,Command::Initialize { .. }|Command::Initialized
+    if !matches!(step.command,Command::Initialize { .. }
+        |Command::InitializeHostTools { .. }|Command::Initialized
         |Command::ConfigRead { .. }|Command::ThreadResume { .. }) {
         return Err(RpcJournalError::Denied);
     }
@@ -1097,6 +1099,20 @@ pub(crate) fn prepare(
     owner: &OwnerIssuer,
     step: &Step<'_>,
 ) -> Result<PreparedStep> {
+    prepare_with_model_caller(db,owner,step,None)
+}
+
+pub(crate) fn prepare_model_tool_response(
+    db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    caller:&crate::store::seat::NativeSeatCall,step:&Step<'_>,
+) -> Result<PreparedStep> {
+    prepare_with_model_caller(db,owner,step,Some(caller))
+}
+
+fn prepare_with_model_caller(
+    db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    step:&Step<'_>,caller:Option<&crate::store::seat::NativeSeatCall>,
+) -> Result<PreparedStep> {
     for (value, name) in [
         (step.domain_id, "domain"),
         (step.session_id, "session"),
@@ -1110,6 +1126,19 @@ pub(crate) fn prepare(
     let encoded = step.command.encode(step.rpc_id)?;
     transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
+        if let Command::DynamicToolResponse {request_id,..}=step.command {
+            let caller=caller.ok_or(RpcJournalError::Denied)?;
+            super::model_call::revalidate_model_call_in_transaction(db,caller)
+                .map_err(|_|RpcJournalError::Denied)?;
+            let proof=caller.model_proof().ok_or(RpcJournalError::Denied)?;
+            if step.step_id!=proof.host_request_id() || step.rpc_id.is_some()
+                || step.custody!=proof.custody()
+                || step.domain_id!=proof.domain_id()
+                || step.session_id!=proof.session_id()
+                || request_id!=proof.typed_rpc_id() {
+                return Err(RpcJournalError::Denied);
+            }
+        } else if caller.is_some() {return Err(RpcJournalError::Denied);}
         original_open(db, &step.fields())?;
         let operation = assert_native_binding(db, step, &["PREPARED", "ACTIVE"], false)?;
         if let Some(change)=super::generation_change::active_for_session(db,
@@ -1124,7 +1153,8 @@ pub(crate) fn prepare(
                     if thread_id==&change.thread_id);
             let candidate_handshake=change.stage=="OLD_STOPPED"
                 && step.open_request_id==change.request_id && operation!=change.old_operation
-                && matches!(step.command,Command::Initialize {..}|Command::Initialized
+                && matches!(step.command,Command::Initialize {..}
+                    |Command::InitializeHostTools {..}|Command::Initialized
                     |Command::ConfigRead {..}|Command::ThreadResume {..});
             if !original_compact && !candidate_handshake {return Err(RpcJournalError::Denied);}
         }

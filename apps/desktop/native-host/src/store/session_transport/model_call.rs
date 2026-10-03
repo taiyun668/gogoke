@@ -50,6 +50,7 @@ pub(crate) struct ModelCallProof {
     arguments_json:String,
 }
 impl ModelCallProof {
+    pub(crate) fn custody(&self)->&PreparedCustody {&self.custody}
     pub(crate) fn domain_id(&self)->&str {&self.domain}
     pub(crate) fn seat_id(&self)->&str {&self.seat}
     pub(crate) fn incarnation(&self)->&str {&self.incarnation}
