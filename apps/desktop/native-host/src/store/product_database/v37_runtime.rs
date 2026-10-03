@@ -1258,6 +1258,17 @@ impl<'root> ProductDatabase<'root> {
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_native_open_registered(request, SessionPurpose::Work, None)
+    }
+
+    /// Only the native User side-open composition chooses this registration.
+    pub(super) fn dispatch_native_side_open(&mut self, request: &V37Request,
+        side_id: &str) -> Result<Vec<u8>> {
+        self.dispatch_native_open_registered(request, SessionPurpose::SideChat, Some(side_id))
+    }
+
+    fn dispatch_native_open_registered(&mut self, request: &V37Request,
+        purpose: SessionPurpose, side_id: Option<&str>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if request.payload.len() != 4 {
             return Ok(encode_receipt(request, V37Status::Denied,
@@ -1267,6 +1278,14 @@ impl<'root> ProductDatabase<'root> {
         let generation = user_payload_string(request, "generation")?;
         let repository_id = user_payload_string(request, "repositoryId")?;
         let worktree_id = user_payload_string(request, "worktreeId")?;
+        let registration = SessionRegistration {
+            domain_id: request.domain_id.clone(), seat_id: seat_id.clone(), session_id: request.target_id.clone(),
+            purpose, side_id: side_id.map(str::to_owned),
+        };
+        if ledger::read_registered_session(&self.connection, &request.target_id)?
+            .is_some_and(|existing| existing != registration) {
+            return Err(OrchestrationError::OperationConflict);
+        }
         let prior = Statement::prepare(self.connection.as_ptr(),
             "SELECT raw_hex,operation,session_id,status,previous_revision,revision FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2")?;
         prior.bind_text(1, &request.domain_id)?;
@@ -1376,10 +1395,7 @@ impl<'root> ProductDatabase<'root> {
                 &request.domain_id, &request.target_id, &operation_id))?;
             failure(h::record_initial(&self.connection,&request.domain_id,
                 &request.target_id,&request.request_id,&operation_id))?;
-            ledger::register_session(&mut self.connection, &SessionRegistration {
-                domain_id: request.domain_id.clone(), seat_id: seat_id.clone(), session_id: request.target_id.clone(),
-                purpose: SessionPurpose::Work, side_id: None,
-            })?;
+            ledger::register_session(&mut self.connection, &registration)?;
             Ok(())
         })();
         if let Err(error) = self.finish_native_transaction(bind) {

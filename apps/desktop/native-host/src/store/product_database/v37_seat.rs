@@ -6,7 +6,7 @@ use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, Seat, SeatChange,
 
 fn key(name: &str) -> JsonString { JsonString::from_str(name) }
 
-fn configuration_depth_ok(frame: &[u8]) -> bool {
+pub(super) fn configuration_depth_ok(frame: &[u8]) -> bool {
     let mut depth = 0usize;
     let mut quoted = false;
     let mut escaped = false;

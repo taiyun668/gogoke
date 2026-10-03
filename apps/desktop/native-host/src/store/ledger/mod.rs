@@ -645,6 +645,12 @@ fn registered(
     Ok(Some(result))
 }
 
+/// Native composition reads the existing registration; this lookup grants no authority.
+pub(crate) fn read_registered_session(connection: &VerifiedDatabaseConnection<'_>,
+    session_id: &str) -> Result<Option<SessionRegistration>, AtomicError> {
+    registered(connection, session_id)
+}
+
 /// Called by native H only after a fresh session has been admitted. Replaying
 /// an identical registration is safe; changing purpose or binding is refused.
 pub(crate) fn register_session(

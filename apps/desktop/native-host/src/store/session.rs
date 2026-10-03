@@ -94,6 +94,8 @@ pub fn open_product_database<'root>(
         .map_err(|error| OrchestrationError::V37StoreFailure(format!("{error:?}")))?;
     super::inbox::initialize_schema(&mut connection)
         .map_err(|error| OrchestrationError::V37StoreFailure(format!("{error:?}")))?;
+    super::sidechat::initialize_schema(&mut connection)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!("side schema: {error:?}")))?;
     if !marker_exists && database_exists {
         // An established DB without a marker predates this custody signal.
         // Only a successfully validated authority profile can migrate it.

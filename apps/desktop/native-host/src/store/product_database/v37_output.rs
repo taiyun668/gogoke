@@ -314,6 +314,13 @@ impl<'root> ProductDatabase<'root> {
         let ticket=run.custody.ticket.opaque().to_owned();
         let generation=run.custody.binding.generation.clone();
         let seat_id=run.evidence.seat_id().to_owned();
+        let registration=ledger::read_registered_session(&self.connection,&key.1)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if registration.domain_id!=key.0 || registration.seat_id!=seat_id {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let tier=if registration.purpose==ledger::SessionPurpose::SideChat {Tier::Side} else {Tier::Session};
+        let side_id=registration.side_id;
         let replies=Statement::prepare(self.connection.as_ptr(),
             "SELECT s.step_id FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3 AND s.ticket=?4 AND s.custodian_nonce=?5 AND s.phase='OBSERVED' AND s.requires_response=1 AND r.state='PENDING'")?;
         for (index,value) in [key.0.as_str(),key.1.as_str(),operation.as_str(),ticket.as_str(),nonce.as_str()].iter().enumerate() {
@@ -412,7 +419,7 @@ impl<'root> ProductDatabase<'root> {
                 ledger::record(&mut self.connection,&EventInput {
                     event_id:event_id.clone(),source_epoch:nonce.clone(),source_cursor:ordinal.to_string(),
                     domain_id:raw.domain_id,seat_id:seat_id.clone(),session_id:raw.session_id,
-                    tier:Tier::Session,side_id:None,occurred_at:observed_at,
+                    tier,side_id:side_id.clone(),occurred_at:observed_at,
                     update_json:Json::Object(fields).canonical(),
                 })?;
                 ledger::resolve_raw_source(&mut self.connection,&operation,&nonce,&raw_cursor,&event_id)?;
