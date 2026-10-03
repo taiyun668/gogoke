@@ -6,6 +6,7 @@
 //! original command and source key; it does not copy provider output.
 
 use super::codex_rpc::{self, Command, Reply, RpcId};
+use super::provider_evidence::{acp, commands};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -25,6 +26,8 @@ pub(crate) enum RpcJournalError {
     Open(SameOpenError),
     Authority(crate::store::orchestration::OrchestrationError),
     Codec(codex_rpc::RpcError),
+    AcpEncode(commands::EncodeError),
+    AcpDecode { reason: String, raw_frame: Vec<u8> },
     CommitUnknown(SameOpenError),
     RollbackUnknown {
         primary: Box<RpcJournalError>,
@@ -53,6 +56,7 @@ impl From<codex_rpc::RpcError> for RpcJournalError {
 }
 type Result<T> = std::result::Result<T, RpcJournalError>;
 const RPC_RESPONSE_NO_EVENT: &str = "CODEX_RPC_RESPONSE";
+const ACP_RESPONSE_NO_EVENT: &str = "ACP_RPC_RESPONSE";
 
 fn atom(value: &str) -> bool {
     !value.is_empty()
@@ -170,6 +174,43 @@ pub(crate) struct Step<'a> {
     pub(crate) command: &'a Command,
 }
 
+/// Native H supplies the same open and prepared custody as a Codex step.
+/// The vendor is intentionally absent: it is read from the current H instance.
+pub(crate) struct AcpStep<'a> {
+    pub(crate) domain_id: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) open_request_id: &'a str,
+    pub(crate) open_request_bytes: &'a [u8],
+    pub(crate) step_id: &'a str,
+    pub(crate) custody: &'a PreparedCustody,
+    pub(crate) rpc_id: Option<&'a acp::RpcId>,
+    pub(crate) command: &'a commands::AcpCommand<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct StepFields<'a> {
+    domain_id: &'a str,
+    session_id: &'a str,
+    open_request_id: &'a str,
+    open_request_bytes: &'a [u8],
+    step_id: &'a str,
+    custody: &'a PreparedCustody,
+}
+impl<'a> Step<'a> {
+    fn fields(&self) -> StepFields<'a> {
+        StepFields { domain_id: self.domain_id, session_id: self.session_id,
+            open_request_id: self.open_request_id, open_request_bytes: self.open_request_bytes,
+            step_id: self.step_id, custody: self.custody }
+    }
+}
+impl<'a> AcpStep<'a> {
+    fn fields(&self) -> StepFields<'a> {
+        StepFields { domain_id: self.domain_id, session_id: self.session_id,
+            open_request_id: self.open_request_id, open_request_bytes: self.open_request_bytes,
+            step_id: self.step_id, custody: self.custody }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Phase {
     Intent,
@@ -203,7 +244,7 @@ pub(crate) struct PreparedStep {
 
 fn same_row(
     db: &VerifiedDatabaseConnection<'_>,
-    step: &Step<'_>,
+    step: &StepFields<'_>,
     operation: &str,
     encoded: &[u8],
 ) -> Result<Option<Phase>> {
@@ -566,6 +607,20 @@ fn assert_native_binding(
     if let Some(operation)=candidate_binding(db,step,required_state)? {
         return Ok(operation);
     }
+    let (operation, vendor) = assert_current_binding(db, &step.fields(), required_state,
+        allow_unknown_claim)?;
+    if vendor != "codex" { return Err(RpcJournalError::Denied); }
+    Ok(operation)
+}
+
+/// All providers use this same current H/seat/instance/home/custody binding.
+/// The driver is returned from the joined instance, never accepted from input.
+fn assert_current_binding(
+    db: &VerifiedDatabaseConnection<'_>,
+    step: &StepFields<'_>,
+    required_state: &[&str],
+    allow_unknown_claim: bool,
+) -> Result<(String, String)> {
     let c = step.custody;
     if c.binding.domain_id != step.domain_id
         || !atom(&c.binding.generation)
@@ -579,7 +634,8 @@ fn assert_native_binding(
         "SELECT c.operation_id,c.state,a.state,b.state,s.state,s.incarnation,s.generation,
                 c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,
                 c.profile_id,c.domain_id,c.generation,c.ticket,c.custodian_nonce,
-                a.generation,b.instance_id,s.instance_id
+                a.generation,b.instance_id,s.instance_id,
+                i.driver_id,i.version,i.login_state,i.program_digest
            FROM main.gogoke_v37_h_claim a
            JOIN main.gogoke_coordination_process_custody c
              ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id
@@ -594,6 +650,11 @@ fn assert_native_binding(
            JOIN main.gogoke_v37_seats s
              ON s.domain_id=sb.domain_id AND s.seat_id=sb.seat_id
             AND s.incarnation=sb.seat_incarnation
+           JOIN main.gogoke_v37_instance_homes h ON h.home_id=a.home_id
+            AND h.instance_id=a.instance_id AND h.domain_id=a.domain_id
+            AND h.owner_id=a.session_id AND h.generation=a.generation
+            AND h.kind='SESSION' AND h.state='ACTIVE'
+           JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id
           WHERE a.domain_id=?1 AND a.session_id=?2",
     )?;
     q.bind_text(1, step.domain_id)?;
@@ -627,6 +688,10 @@ fn assert_native_binding(
     let claim_generation = q.column_text(16)?;
     let owner_instance = q.column_text(17)?;
     let seat_instance = q.column_text(18)?;
+    let driver = q.column_text(19)?;
+    let version = q.column_text(20)?;
+    let login_state = q.column_text(21)?;
+    let program_digest = q.column_text(22)?;
     if !(claim_state == "COMMITTED" || (allow_unknown_claim && claim_state == "UNKNOWN"))
         || owner_state != "ACTIVE"
         || seat_state != "BUSY"
@@ -635,14 +700,18 @@ fn assert_native_binding(
         || seat_generation != claim_generation
         || claim_generation != c.binding.generation
         || owner_instance != seat_instance
+        || login_state != "LOGGED_IN"
+        || program_digest != c.binding.binary_digest_sha256
+        || !matches!((driver.as_str(), version.as_str()),
+            ("codex", "0.160.0") | ("opencode", "1.18.32") | ("grok", "1.0.41"))
         || q.step_row()?
     {
         return Err(RpcJournalError::Denied);
     }
-    Ok(operation)
+    Ok((operation, driver))
 }
 
-fn original_open(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>) -> Result<()> {
+fn original_open(db: &VerifiedDatabaseConnection<'_>, step: &StepFields<'_>) -> Result<()> {
     if !raw(step.open_request_bytes) {
         return Err(RpcJournalError::Invalid("open request bytes"));
     }
@@ -698,7 +767,7 @@ pub(crate) fn prepare(
     let encoded = step.command.encode(step.rpc_id)?;
     transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
-        original_open(db, step)?;
+        original_open(db, &step.fields())?;
         let operation = assert_native_binding(db, step, &["PREPARED", "ACTIVE"], false)?;
         if let Some(change)=super::generation_change::active_for_session(db,
             step.domain_id,step.session_id)? {
@@ -716,7 +785,7 @@ pub(crate) fn prepare(
                     |Command::ConfigRead {..}|Command::ThreadResume {..});
             if !original_compact && !candidate_handshake {return Err(RpcJournalError::Denied);}
         }
-        if let Some(phase) = same_row(db, step, &operation, &encoded)? {
+        if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
             return Ok(PreparedStep {
                 bytes: encoded,
                 disposition: Disposition::Existing(phase),
@@ -725,6 +794,17 @@ pub(crate) fn prepare(
         if has_unresolved(db, step.domain_id, step.session_id, &operation)? {
             return Err(RpcJournalError::Unknown);
         }
+        insert_intent(db, &step.fields(), &operation, &encoded,
+            requires_response(step.command))?;
+        Ok(PreparedStep {
+            bytes: encoded,
+            disposition: Disposition::NewWrite,
+        })
+    })
+}
+
+fn insert_intent(db: &VerifiedDatabaseConnection<'_>, step: &StepFields<'_>,
+    operation: &str, encoded: &[u8], needs_response: bool) -> Result<()> {
         let q=Statement::prepare(db.as_ptr(),
             "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'INTENT')")?;
         let c = step.custody;
@@ -737,7 +817,7 @@ pub(crate) fn prepare(
             step.session_id,
             step.open_request_id,
             step.step_id,
-            operation.as_str(),
+            operation,
             c.ticket.opaque(),
             c.custodian_nonce.as_str(),
             pid.as_str(),
@@ -755,18 +835,14 @@ pub(crate) fn prepare(
         }
         q.bind_i64(
             15,
-            if requires_response(step.command) {
+            if needs_response {
                 1
             } else {
                 0
             },
         )?;
         q.step_done()?;
-        Ok(PreparedStep {
-            bytes: encoded,
-            disposition: Disposition::NewWrite,
-        })
-    })
+        Ok(())
 }
 
 fn transition(
@@ -783,13 +859,19 @@ fn transition(
     }
     transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
-        original_open(db, step)?;
+        original_open(db, &step.fields())?;
         let operation = if next == Phase::Unknown {
             assert_native_binding(db, step, &["ACTIVE", "UNKNOWN"], true)?
         } else {
             assert_native_binding(db, step, &["ACTIVE"], false)?
         };
-        let prior = same_row(db, step, &operation, &encoded)?;
+        transition_row(db, &step.fields(), &operation, &encoded, next, error)
+    })
+}
+
+fn transition_row(db: &VerifiedDatabaseConnection<'_>, step: &StepFields<'_>,
+    operation: &str, encoded: &[u8], next: Phase, error: Option<&str>) -> Result<()> {
+        let prior = same_row(db, step, operation, encoded)?;
         if !(next == Phase::Written && prior == Some(Phase::Intent)
             || next == Phase::Unknown && matches!(prior, Some(Phase::Intent | Phase::Written)))
         {
@@ -802,7 +884,7 @@ fn transition(
                 step.domain_id,
                 step.session_id,
                 step.step_id,
-                operation.as_str(),
+                operation,
             ]
             .iter()
             .enumerate()
@@ -818,7 +900,7 @@ fn transition(
                 step.domain_id,
                 step.session_id,
                 step.step_id,
-                operation.as_str(),
+                operation,
             ]
             .iter()
             .enumerate()
@@ -831,7 +913,6 @@ fn transition(
             return Err(RpcJournalError::Conflict);
         }
         Ok(())
-    })
 }
 
 /// Call only after the exact native persistent writer returned success.
@@ -870,7 +951,7 @@ fn source_matches(
     frame: &OriginBoundFrame,
     key: &RawSourceKey,
     operation: &str,
-    step: &Step<'_>,
+    step: &StepFields<'_>,
 ) -> Result<()> {
     if key.operation_id != operation
         || key.source_epoch.is_empty()
@@ -920,6 +1001,15 @@ fn persist_observation_and_no_event(
     operation: &str,
     key: &RawSourceKey,
 ) -> Result<()> {
+    persist_observation_and_no_event_with_reason(db, domain_id, session_id,
+        step_id, operation, key, RPC_RESPONSE_NO_EVENT)
+}
+
+fn persist_observation_and_no_event_with_reason(
+    db: &mut VerifiedDatabaseConnection<'_>, domain_id: &str,
+    session_id: &str, step_id: &str, operation: &str,
+    key: &RawSourceKey, reason: &str,
+) -> Result<()> {
     let q=Statement::prepare(db.as_ptr(),
         "UPDATE main.gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch=?1,source_cursor=?2 WHERE domain_id=?3 AND session_id=?4 AND step_id=?5 AND process_operation_id=?6 AND phase='WRITTEN' AND requires_response=1")?;
     for (index, value) in [
@@ -932,7 +1022,7 @@ fn persist_observation_and_no_event(
     // This ledger API owns no transaction. If its exact-source terminalization
     // fails, the caller's BEGIN IMMEDIATE rolls this OBSERVED update back too.
     ledger::resolve_raw_source_no_event(db,&key.operation_id,&key.source_epoch,
-        &key.source_cursor,RPC_RESPONSE_NO_EVENT)?;
+        &key.source_cursor,reason)?;
     Ok(())
 }
 
@@ -963,11 +1053,11 @@ pub(crate) fn complete_response(
     let encoded = step.command.encode(step.rpc_id)?;
     transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
-        original_open(db, step)?;
+        original_open(db, &step.fields())?;
         let operation = assert_native_binding(db, step, &["ACTIVE","UNKNOWN"], false)?;
-        source_matches(db, frame, key, &operation, step)?;
+        source_matches(db, frame, key, &operation, &step.fields())?;
         if !matches!(
-            same_row(db, step, &operation, &encoded)?,
+            same_row(db, &step.fields(), &operation, &encoded)?,
             Some(Phase::Written)
         ) || !requires_response(step.command)
         {
@@ -977,6 +1067,184 @@ pub(crate) fn complete_response(
             &operation,key)
     })?;
     Ok(reply)
+}
+
+fn acp_vendor(driver: &str) -> Result<commands::Vendor> {
+    match driver {
+        "opencode" => Ok(commands::Vendor::OpenCode),
+        "grok" => Ok(commands::Vendor::Grok),
+        _ => Err(RpcJournalError::Denied),
+    }
+}
+
+fn acp_command_copy<'a>(command: &commands::AcpCommand<'a>)
+    -> commands::AcpCommand<'a> {
+    use commands::AcpCommand as C;
+    match command {
+        C::Initialize { client_version } => C::Initialize { client_version },
+        C::SessionNew { cwd } => C::SessionNew { cwd },
+        C::SessionLoad { session_id, cwd, advertised } =>
+            C::SessionLoad { session_id, cwd, advertised: *advertised },
+        C::SessionResume { session_id, cwd, advertised } =>
+            C::SessionResume { session_id, cwd, advertised: *advertised },
+        C::Prompt { session_id, text } => C::Prompt { session_id, text },
+        C::Cancel { session_id } => C::Cancel { session_id },
+        C::PermissionResponse => C::PermissionResponse,
+        C::Steer => C::Steer,
+    }
+}
+
+fn encode_acp_step(step: &AcpStep<'_>, driver: &str) -> Result<Vec<u8>> {
+    commands::encode_acp(acp_vendor(driver)?, step.rpc_id,
+        acp_command_copy(step.command)).map_err(RpcJournalError::AcpEncode)
+}
+
+fn acp_pending<'a>(step: &'a AcpStep<'_>) -> Result<Option<acp::Pending<'a>>> {
+    use commands::AcpCommand as C;
+    let (method, requested_session_id) = match step.command {
+        C::Initialize { .. } => (acp::PendingMethod::Initialize, None),
+        C::SessionNew { .. } => (acp::PendingMethod::SessionNew, None),
+        C::SessionLoad { session_id, .. } =>
+            (acp::PendingMethod::SessionLoad, Some(*session_id)),
+        C::SessionResume { session_id, .. } =>
+            (acp::PendingMethod::SessionResume, Some(*session_id)),
+        C::Prompt { .. } => (acp::PendingMethod::SessionPrompt, None),
+        C::Cancel { .. } => return Ok(None),
+        C::PermissionResponse | C::Steer =>
+            return Err(RpcJournalError::AcpEncode(commands::EncodeError::Unsupported(
+                "no frozen ACP command capability"))),
+    };
+    let id = step.rpc_id.ok_or(RpcJournalError::Invalid("ACP request id"))?;
+    Ok(Some(acp::Pending { id, method, requested_session_id }))
+}
+
+fn stored_prompt_for_session(encoded: &[u8], session_id: &str) -> bool {
+    let Ok(text) = std::str::from_utf8(encoded) else { return false };
+    let Ok(Json::Object(fields)) = Parser::parse(text.trim_end_matches('\n')) else {
+        return false;
+    };
+    let key = |name| JsonString::from_str(name);
+    if !matches!(fields.get(&key("method")), Some(Json::String(value))
+        if value.to_well_formed_string().as_deref() == Some("session/prompt")) {
+        return false;
+    }
+    let Some(Json::Object(params)) = fields.get(&key("params")) else { return false };
+    matches!(params.get(&key("sessionId")), Some(Json::String(value))
+        if value.to_well_formed_string().as_deref() == Some(session_id))
+}
+
+/// Cancellation can follow exactly a WRITTEN matching prompt. An INTENT,
+/// UNKNOWN, or unrelated response waiter still prevents another stdin write.
+fn cancel_follows_prompt(db: &VerifiedDatabaseConnection<'_>, fields: &StepFields<'_>,
+    operation: &str, session_id: &str) -> Result<bool> {
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT phase,command_hex FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+            AND (phase IN ('INTENT','UNKNOWN') OR
+                 (phase='WRITTEN' AND requires_response=1))")?;
+    q.bind_text(1, fields.domain_id)?;
+    q.bind_text(2, fields.session_id)?;
+    q.bind_text(3, operation)?;
+    let mut found = false;
+    while q.step_row()? {
+        if q.column_text(0)? != "WRITTEN"
+            || !stored_prompt_for_session(&unhex(&q.column_text(1)?)?, session_id)
+            || found { return Ok(false); }
+        found = true;
+    }
+    Ok(found)
+}
+
+/// Persist INTENT before H writes ACP stdin. The returned bytes are a send
+/// permit only when disposition is NewWrite; all readbacks prohibit resend.
+pub(crate) fn prepare_acp(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>) -> Result<PreparedStep> {
+    for (value, name) in [(step.domain_id, "domain"), (step.session_id, "session"),
+        (step.open_request_id, "open request"), (step.step_id, "step")] {
+        if !atom(value) { return Err(RpcJournalError::Invalid(name)); }
+    }
+    transact(db, |db| {
+        check_owner_in_current_transaction(db, owner)?;
+        original_open(db, &step.fields())?;
+        let (operation, driver) = assert_current_binding(db, &step.fields(),
+            &["PREPARED", "ACTIVE"], false)?;
+        let encoded = encode_acp_step(step, &driver)?;
+        let pending = acp_pending(step)?;
+        if super::generation_change::active_for_session(db,
+            step.domain_id, step.session_id)?.is_some() {
+            return Err(RpcJournalError::Denied);
+        }
+        if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
+            return Ok(PreparedStep { bytes: encoded,
+                disposition: Disposition::Existing(phase) });
+        }
+        let allowed = match step.command {
+            commands::AcpCommand::Cancel { session_id } =>
+                cancel_follows_prompt(db, &step.fields(), &operation, session_id)?,
+            _ => !has_unresolved(db, step.domain_id, step.session_id, &operation)?,
+        };
+        if !allowed { return Err(RpcJournalError::Unknown); }
+        insert_intent(db, &step.fields(), &operation, &encoded, pending.is_some())?;
+        Ok(PreparedStep { bytes: encoded, disposition: Disposition::NewWrite })
+    })
+}
+
+fn transition_acp(db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &AcpStep<'_>, next: Phase, error: Option<&str>) -> Result<()> {
+    if next == Phase::Unknown && error.map_or(true, |value| value.is_empty()
+        || value.len() > 4096) { return Err(RpcJournalError::Invalid("original error")); }
+    transact(db, |db| {
+        check_owner_in_current_transaction(db, owner)?;
+        original_open(db, &step.fields())?;
+        let states = if next == Phase::Unknown { &["ACTIVE", "UNKNOWN"][..] }
+            else { &["ACTIVE"][..] };
+        let (operation, driver) = assert_current_binding(db, &step.fields(), states,
+            next == Phase::Unknown)?;
+        let encoded = encode_acp_step(step, &driver)?;
+        transition_row(db, &step.fields(), &operation, &encoded, next, error)
+    })
+}
+
+/// Call only after the exact native persistent writer returned success.
+pub(crate) fn mark_acp_written(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>) -> Result<()> {
+    transition_acp(db, owner, step, Phase::Written, None)
+}
+
+/// Preserve the original OS/pipe error; this step must never be resent.
+pub(crate) fn mark_acp_unknown(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>, original_error: &str) -> Result<()> {
+    transition_acp(db, owner, step, Phase::Unknown, Some(original_error))
+}
+
+/// A first captures this exact source. Only its correlated raw response can
+/// advance WRITTEN to OBSERVED; vendor data grants no K-SESSION authority.
+pub(crate) fn observe_acp_response(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>, frame: &OriginBoundFrame,
+    key: &RawSourceKey) -> Result<acp::Observation> {
+    let pending = acp_pending(step)?.ok_or(RpcJournalError::Invalid("ACP notification has no ACK"))?;
+    let observation = acp::decode(frame.bytes(), Some(&pending)).map_err(|error|
+        RpcJournalError::AcpDecode { reason: error.reason, raw_frame: error.raw_frame })?;
+    if !matches!(&observation, acp::Observation::Initialize { .. }
+        | acp::Observation::SessionNew { .. } | acp::Observation::SessionLoad { .. }
+        | acp::Observation::SessionResume { .. } | acp::Observation::Prompt { .. }
+        | acp::Observation::RemoteError { .. }) {
+        return Err(RpcJournalError::Invalid("not an ACP response"));
+    }
+    transact(db, |db| {
+        check_owner_in_current_transaction(db, owner)?;
+        original_open(db, &step.fields())?;
+        let (operation, driver) = assert_current_binding(db, &step.fields(),
+            &["ACTIVE", "UNKNOWN"], false)?;
+        let encoded = encode_acp_step(step, &driver)?;
+        source_matches(db, frame, key, &operation, &step.fields())?;
+        if same_row(db, &step.fields(), &operation, &encoded)? != Some(Phase::Written) {
+            return Err(RpcJournalError::Conflict);
+        }
+        persist_observation_and_no_event_with_reason(db, step.domain_id,
+            step.session_id, step.step_id, &operation, key, ACP_RESPONSE_NO_EVENT)
+    })?;
+    Ok(observation)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1186,7 +1454,7 @@ pub(crate) fn observe_event(
     step: &Step<'_>,
 ) -> Result<Reply> {
     let operation = assert_native_binding(db, step, &["ACTIVE"], false)?;
-    source_matches(db, frame, key, &operation, step)?;
+    source_matches(db, frame, key, &operation, &step.fields())?;
     let reply = codex_rpc::decode(frame.bytes(), None)?;
     if matches!(
         reply,
