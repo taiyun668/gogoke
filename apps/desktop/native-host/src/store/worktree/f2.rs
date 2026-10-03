@@ -728,17 +728,18 @@ mod tests {
     #[test]
     fn physical_overlap_includes_mixed_parent_and_child_but_not_sibling() {
         let identity = |id| RootIdentity { volume_serial: 1, file_id: [id; 16] };
-        let mixed = Path::new("C:/fixture/mixed/space");
-        let single = Path::new("C:/fixture/mixed/space/member");
-        let sibling = Path::new("C:/fixture/mixed/other/member");
-        assert!(physical_roots_overlap(mixed, &identity(1), &identity(2),
-            single, &identity(3), &identity(4)));
-        assert!(physical_roots_overlap(single, &identity(3), &identity(4),
-            mixed, &identity(1), &identity(2)));
-        assert!(!physical_roots_overlap(mixed, &identity(1), &identity(2),
-            sibling, &identity(5), &identity(6)));
-        assert!(physical_roots_overlap(mixed, &identity(1), &identity(2),
-            sibling, &identity(1), &identity(6)), "path aliases share physical identity");
+        let base = std::env::temp_dir().join("gogoke-f2-overlap-fixture");
+        let mixed = base.join("mixed/space");
+        let single = mixed.join("member");
+        let sibling = base.join("mixed/other/member");
+        assert!(physical_roots_overlap(&mixed, &identity(1), &identity(2),
+            &single, &identity(3), &identity(4)));
+        assert!(physical_roots_overlap(&single, &identity(3), &identity(4),
+            &mixed, &identity(1), &identity(2)));
+        assert!(!physical_roots_overlap(&mixed, &identity(1), &identity(2),
+            &sibling, &identity(5), &identity(6)));
+        assert!(physical_roots_overlap(&mixed, &identity(1), &identity(2),
+            &sibling, &identity(1), &identity(6)), "path aliases share physical identity");
     }
 
     fn fixture_gate(db: &VerifiedDatabaseConnection<'_>, other_overlaps: bool)
