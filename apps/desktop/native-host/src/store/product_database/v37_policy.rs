@@ -9,11 +9,6 @@ fn text(value:&str)->Json {Json::String(JsonString::from_str(value))}
 fn field(request:&V37Request,name:&'static str)->Result<String> {
     super::v37_seat::string_field(&request.payload,name)
 }
-fn policy_revision(request:&V37Request)->Result<i64> {
-    let value=field(request,"policyRevision")?;
-    value.parse::<i64>().ok().filter(|value|*value>0)
-        .ok_or(OrchestrationError::Invalid("policyRevision"))
-}
 fn gate_revision(request:&V37Request)->Result<i64> {
     i64::try_from(request.expected_revision).map_err(|error|
         OrchestrationError::V37StoreFailure(format!("gate revision: {error}")))
@@ -51,11 +46,26 @@ impl<'root> ProductDatabase<'root> {
             // Payload assertions about caller or grants have no authority.
             return self.read_native_policy_table(request,caller);
         }
+        if !matches!(request.operation.as_str(),"gate-submit"|"gate-decide"|"stage-transition") {
+            return Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        let policy_revision=match seat::policy_revision_for_native_request(&self.connection,caller,
+            &request.operation,&request.request_id) {
+            Ok(value)=>value,
+            Err(error)=>{
+                let status=error_status(&error);
+                let mut result=BTreeMap::new();
+                if status==V37Status::Unknown {result.insert(key("reason"),text(&format!("native policy revision: {error:?}")));}
+                return Ok(encode_receipt(request,status,request.expected_revision,
+                    request.expected_revision,result));
+            }
+        };
         let event=match request.operation.as_str() {
-            "gate-submit" if request.payload.len()==1 =>
-                seat::gate_submit(&mut self.connection,caller,&request.target_id,policy_revision(request)?,
+            "gate-submit" if request.payload.is_empty() =>
+                seat::gate_submit(&mut self.connection,caller,&request.target_id,policy_revision,
                     gate_revision(request)?,&request.request_id,&request.raw_bytes),
-            "gate-decide" if matches!(request.payload.len(),2|3) => {
+            "gate-decide" if matches!(request.payload.len(),1|2) => {
                 let decision=match field(request,"decision")?.as_str() {
                     "PASS"=>GateDecision::Pass,"REJECT"=>GateDecision::Reject,
                     _=>return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
@@ -63,16 +73,16 @@ impl<'root> ProductDatabase<'root> {
                 };
                 let reason=if decision==GateDecision::Reject {field(request,"reason")?}
                     else {String::new()};
-                if (decision==GateDecision::Pass&&request.payload.len()!=2)||
-                    (decision==GateDecision::Reject&&request.payload.len()!=3) {
+                if (decision==GateDecision::Pass&&request.payload.len()!=1)||
+                    (decision==GateDecision::Reject&&request.payload.len()!=2) {
                     return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                         request.expected_revision,Default::default()));
                 }
                 seat::gate_decide(&mut self.connection,caller,&request.target_id,decision,&reason,
-                    policy_revision(request)?,gate_revision(request)?,&request.request_id,&request.raw_bytes)
+                    policy_revision,gate_revision(request)?,&request.request_id,&request.raw_bytes)
             }
-            "stage-transition" if request.payload.len()==1 =>
-                seat::stage_transition(&mut self.connection,caller,&request.target_id,policy_revision(request)?,
+            "stage-transition" if request.payload.is_empty() =>
+                seat::stage_transition(&mut self.connection,caller,&request.target_id,policy_revision,
                     gate_revision(request)?,&request.request_id,&request.raw_bytes),
             // M3 trigger and external delivery require the existing coordinator
             // and C/H exact receipt. An intent alone cannot be exposed as done.

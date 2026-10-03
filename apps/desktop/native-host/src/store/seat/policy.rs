@@ -59,6 +59,29 @@ fn head_revision(db:&VerifiedDatabaseConnection<'_>,domain:&str)->Result<i64,Sea
     Ok(rev)
 }
 
+pub(crate) fn current_policy_revision(db:&VerifiedDatabaseConnection<'_>,
+    caller:&NativeSeatCall)->Result<i64,SeatError> {
+    current_caller(db,caller)?;
+    head_revision(db,caller.domain_id())
+}
+
+pub(crate) fn policy_revision_for_native_request(db:&VerifiedDatabaseConnection<'_>,
+    caller:&NativeSeatCall,operation:&str,request_id:&str)->Result<i64,SeatError> {
+    current_caller(db,caller)?;
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT operation,policy_revision FROM main.gogoke_v37_seat_policy_events WHERE domain_id=?1 AND event_id=?2")?;
+    q.bind_text(1,caller.domain_id())?;q.bind_text(2,request_id)?;
+    if q.step_row()? {
+        let recorded=q.column_text(0)?;
+        let revision=q.column_text(1)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+        if q.step_row()? {return Err(SeatError::SchemaDrift);}
+        if recorded!=operation {return Err(SeatError::Conflict);}
+        return if operation=="stage-transition" {revision.checked_sub(1).ok_or(SeatError::SchemaDrift)}
+            else {Ok(revision)};
+    }
+    head_revision(db,caller.domain_id())
+}
+
 pub(crate) fn initialize_policy(db:&mut VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer,
     domain:&str,initial_stage:&str)->Result<i64,SeatError> {
     if !valid_id(domain)||!valid_id(initial_stage) { return Err(SeatError::Invalid("policy stage")); }
@@ -128,6 +151,29 @@ pub(crate) fn authorize_current_call(db:&VerifiedDatabaseConnection<'_>,caller:&
     if q.step_row()? { return Err(SeatError::SchemaDrift); }
     if expiry<0 || (expiry>0 && now_ms()? >= expiry) { return Err(SeatError::Denied); }
     Ok(revision)
+}
+
+/// Called only inside first-create's transaction after the new child exists.
+/// The Owner's copied parent scope authorizes this one direct DISPATCH edge;
+/// it never grants MAIN, OWNER, a peer, or an arbitrary existing seat.
+pub(super) fn derive_new_child_dispatch_grant(db:&VerifiedDatabaseConnection<'_>,
+    caller:&NativeSeatCall,child:&Seat)->Result<i64,SeatError> {
+    let parent=current_caller(db,caller)?;
+    if parent.layer!=Layer::User || child.layer!=Layer::Lead || child.state!=State::Idle ||
+        child.domain_id!=parent.domain_id ||
+        child.parent_seat_id.as_deref()!=Some(parent.seat_id.as_str()) ||
+        child.seat_id==parent.seat_id || !super::continuity::takeover_ready(db,&parent)? {
+        return Err(SeatError::Denied);
+    }
+    super::orchestration::child_within_scope(&parent,
+        child.settings_json.as_deref().ok_or(SeatError::Denied)?,&child.instance_id)?;
+    let revision=head_revision(db,&parent.domain_id)?;
+    let next=revision.checked_add(1).ok_or(SeatError::Conflict)?;
+    let q=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_seat_policy_grants(domain_id,caller_seat_id,target_id,action,expires_at_ms,revision) VALUES(?1,?2,?3,'DISPATCH',0,?4)")?;
+    q.bind_text(1,&parent.domain_id)?;q.bind_text(2,&parent.seat_id)?;
+    q.bind_text(3,&child.seat_id)?;q.bind_i64(4,next)?;q.step_done()?;
+    advance_head(db,&parent.domain_id,revision)
 }
 
 /// F.2 supplies the original writer's stored seat. H supplies the distinct
@@ -263,10 +309,11 @@ pub(crate) fn apply_owner_policy_configuration(db:&mut VerifiedDatabaseConnectio
                 validate_template_settings(settings_json)?;
                 let settings=std::str::from_utf8(settings_json)
                     .map_err(|_|SeatError::Invalid("template_settings"))?;
+                let settings=super::orchestration::normalized_effort_json(settings)?;
                 let q=Statement::prepare(db.as_ptr(),
                     "INSERT INTO main.gogoke_v37_seat_templates(domain_id,template_id,settings_json,revision) VALUES(?1,?2,?3,1)")?;
                 q.bind_text(1,domain)?;q.bind_text(2,template_id)?;
-                q.bind_text(3,settings)?;q.step_done()?;
+                q.bind_text(3,&settings)?;q.step_done()?;
                 1
             }
             OwnerPolicyCommand::Initialize{stage}=>{

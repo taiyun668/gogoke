@@ -18,7 +18,8 @@ pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
     apply_owner_policy_configuration,
     begin_escalation,begin_trigger_cancel,begin_trigger_register,configure_call_grant,
     configure_escalation_route,configure_gate,
-    current_call_permission_table,gate_decide,gate_submit,initialize_policy,
+    current_call_permission_table,current_policy_revision,gate_decide,gate_submit,initialize_policy,
+    policy_revision_for_native_request,
     mark_escalation_unknown,mark_trigger_unknown,recover_trigger,settle_escalation,
     settle_trigger,stage_transition,CallAction,
     CallPermissionRow,EscalationCause,EscalationIntent,GateDecision,NativeDeliveryEvidence,
@@ -28,7 +29,7 @@ pub(crate) use continuity::{answer_takeover,answer_takeover_at_seat_revision,mar
     update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
     TakeoverQuestion};
 pub(crate) use orchestration::{authorize_child_dispatch,orchestration_scope,
-    render_codex_instruction,OrchestrationScope,RenderedInstruction};
+    render_codex_instruction,seat_effort,OrchestrationScope,RenderedInstruction};
 
 const LEGACY_SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT NOT NULL REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
 const SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
@@ -647,6 +648,9 @@ pub(crate) fn store_template(
         return Err(SeatError::Invalid("template_id"));
     }
     validate_template_settings(input.settings_json)?;
+    let settings=std::str::from_utf8(input.settings_json)
+        .map_err(|_|SeatError::Invalid("template_settings"))?;
+    let settings=orchestration::normalized_effort_json(settings)?;
     transact(db, |db| {
         check_current_owner(db, issuer)?;
         let existing = Statement::prepare(
@@ -664,9 +668,7 @@ pub(crate) fn store_template(
         )?;
         insert.bind_text(1, input.domain_id)?;
         insert.bind_text(2, input.template_id)?;
-        let settings = std::str::from_utf8(input.settings_json)
-            .map_err(|_| SeatError::Invalid("template_settings"))?;
-        insert.bind_text(3, settings)?;
+        insert.bind_text(3, &settings)?;
         insert.step_done()?;
         Ok(())
     })
@@ -848,6 +850,23 @@ pub(crate) fn create(
     origin: NativeOrigin<'_>,
     input: CreateSeat<'_>,
 ) -> Result<SeatReceipt, SeatError> {
+    create_inner(db,origin,input,None)
+}
+
+/// Root/H passes only a caller authenticated from its original live turn.
+/// A copied seat snapshot alone can still create an E.1 child, but cannot
+/// derive a policy grant. The new grant is part of this first-create commit.
+pub(crate) fn create_native_child(db:&mut VerifiedDatabaseConnection<'_>,
+    caller:&policy::NativeSeatCall,input:CreateSeat<'_>)->Result<SeatReceipt,SeatError> {
+    let parent=policy::current_caller(db,caller)?;
+    let admission=NativeLeadAdmission::from_native_runtime_snapshot(&parent)?;
+    create_inner(db,NativeOrigin::lead(&admission),input,Some(caller))
+}
+
+fn create_inner(
+    db:&mut VerifiedDatabaseConnection<'_>,origin:NativeOrigin<'_>,input:CreateSeat<'_>,
+    caller:Option<&policy::NativeSeatCall>,
+)->Result<SeatReceipt,SeatError> {
     validate(
         input.domain_id,
         input.seat_id,
@@ -891,6 +910,16 @@ pub(crate) fn create(
         // first seat write. This covers both fresh writes and replay/conflict
         // paths in the same write group.
         check_origin(db, &origin, input.domain_id, None)?;
+        if let Some(caller)=caller {
+            let verified=policy::current_caller(db,caller)?;
+            if verified.layer!=Layer::User || verified.domain_id!=input.domain_id ||
+                !matches!(&origin,NativeOrigin::Lead(admission) if
+                    admission.seat_id==verified.seat_id &&
+                    admission.incarnation==verified.incarnation &&
+                    admission.generation==verified.generation) {
+                return Err(SeatError::Denied);
+            }
+        }
         if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
             authorize_replay(db, &origin, &receipt)?;
             return Ok(receipt);
@@ -901,6 +930,7 @@ pub(crate) fn create(
         }
         let settings_json =
             template(db, input.domain_id, input.template_id)?.ok_or(SeatError::Unknown)?;
+        let settings_json=orchestration::normalized_effort_json(&settings_json)?;
         if let NativeOrigin::Lead(admission)=&origin {
             let parent=read(db,input.domain_id,&admission.seat_id)?.ok_or(SeatError::Denied)?;
             let instance=input.instance_id.ok_or(SeatError::Denied)?;
@@ -943,6 +973,9 @@ pub(crate) fn create(
         settings.bind_text(4, &settings_json)?;
         settings.step_done()?;
         let seat = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::SchemaDrift)?;
+        if let Some(caller)=caller {
+            policy::derive_new_child_dispatch_grant(db,caller,&seat)?;
+        }
         record_operation(db, input.request_id, &fp, &seat)?;
         Ok(SeatReceipt {
             seat,
@@ -1162,8 +1195,13 @@ pub(crate) fn tune(
         let reset_takeover_answers=setting=="takeoverQuestions" &&
             settings.get(&JsonString::from_str("takeoverQuestions")).map(Json::canonical)
                 != Some(value.canonical());
+        if setting=="reasoningEffort" {
+            settings.remove(&JsonString::from_str("effort"));
+        } else if setting=="effort" {
+            settings.remove(&JsonString::from_str("reasoningEffort"));
+        }
         settings.insert(JsonString::from_str(setting), value);
-        let updated_settings = Json::Object(settings).canonical();
+        let updated_settings = orchestration::normalized_effort_json(&Json::Object(settings).canonical())?;
         validate_template_settings(updated_settings.as_bytes())?;
         if let NativeOrigin::Lead(admission)=&origin {
             let parent=read(db,input.domain_id,&admission.seat_id)?.ok_or(SeatError::Denied)?;
