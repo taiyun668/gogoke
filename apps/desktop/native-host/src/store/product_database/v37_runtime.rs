@@ -142,6 +142,9 @@ impl<'root> ProductDatabase<'root> {
     fn dispatch_native_resume_at(&mut self, request:&V37Request,
         effective_revision:u64) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
+        if let Some(refusal)=self.formal_review_continuation_refusal(request)? {
+            return Ok(refusal);
+        }
         if request.payload.len()!=1 {
             return Ok(encode_receipt(request,V37Status::Denied,effective_revision,
                 effective_revision,Default::default()));
@@ -881,6 +884,9 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn dispatch_native_generation_change(&mut self,request:&V37Request)
         ->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
+        if let Some(refusal)=self.formal_review_continuation_refusal(request)? {
+            return Ok(refusal);
+        }
         if !matches!(request.operation.as_str(),"compact"|"renew-session")
             || request.payload.len()!=1 {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
@@ -1087,6 +1093,9 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn dispatch_native_reconnect(&mut self,request:&V37Request)
         ->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
+        if let Some(refusal)=self.formal_review_continuation_refusal(request)? {
+            return Ok(refusal);
+        }
         if request.payload.len()!=1 {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                 request.expected_revision,Default::default()));
@@ -1314,7 +1323,27 @@ impl<'root> ProductDatabase<'root> {
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
-        self.dispatch_native_open_registered(request, SessionPurpose::Work, None, None)
+        let purpose=match request.payload.get(&JsonString::from_str("purpose")) {
+            None=>SessionPurpose::Work,
+            Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("FORMAL_REVIEW")=>
+                SessionPurpose::FormalReview,
+            _=>return Ok(encode_receipt(request,V37Status::Denied,
+                request.expected_revision,request.expected_revision,Default::default())),
+        };
+        self.dispatch_native_open_registered(request, purpose, None, None)
+    }
+
+    /// A formal review is a fresh native session, never a recovered or forked
+    /// context. Check the persisted purpose before any continuation side effect.
+    fn formal_review_continuation_refusal(&self,request:&V37Request)->Result<Option<Vec<u8>>> {
+        if ledger::read_registered_session(&self.connection,&request.target_id)?
+            .is_some_and(|session|session.purpose==SessionPurpose::FormalReview) {
+            return Ok(Some(encode_receipt(request,V37Status::Denied,
+                request.expected_revision,request.expected_revision,BTreeMap::from([
+                    (JsonString::from_str("reason"),text("formal review requires a fresh native session; context inheritance is refused")),
+                ]))));
+        }
+        Ok(None)
     }
 
     pub(super) fn dispatch_native_child_open(&mut self,request:&V37Request,
@@ -1336,7 +1365,8 @@ impl<'root> ProductDatabase<'root> {
     fn dispatch_native_open_registered(&mut self, request: &V37Request,
         purpose: SessionPurpose, side_id: Option<&str>,admission:Option<&seat::NativeLeadAdmission>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
-        if request.payload.len() != 4 {
+        let expected_fields=if purpose==SessionPurpose::FormalReview {5} else {4};
+        if request.payload.len() != expected_fields {
             return Ok(encode_receipt(request, V37Status::Denied,
                 request.expected_revision, request.expected_revision, Default::default()));
         }

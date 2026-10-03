@@ -476,6 +476,54 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert_eq!(replay.status,V37Status::Replayed,"stopped/released historical original append needs no new process");
     assert_eq!(Json::Object(replay.into_result()).canonical(),original_append_result);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
+    // The same real fixed CLI starts a separate, zero-lineage review thread.
+    // Only login presence/setup is synthetic; no model or credentials are used.
+    let seat_generation=Statement::prepare(product.connection.as_ptr(),
+        "SELECT generation FROM main.gogoke_v37_seats WHERE domain_id='projectA' AND seat_id='seatA'").unwrap();
+    assert!(seat_generation.step_row().unwrap());
+    let review_generation=seat_generation.column_text(0).unwrap().parse::<u64>().unwrap()+1;
+    drop(seat_generation);
+    for (verb,id,revision) in [("admission-reserve","reserve-review",0),("admission-commit","commit-review",1)] {
+        let request=operation("K-SESSION",verb,id,"reviewA",revision,
+            &format!(r#"{{"seatId":"seatA","generation":"{review_generation}"}}"#));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&request).unwrap()).unwrap().status,V37Status::Applied);
+    }
+    let review_open=operation("K-SESSION","open","open-review","reviewA",2,
+        &format!(r#"{{"seatId":"seatA","generation":"{review_generation}","repositoryId":"fixtureRepo","worktreeId":"treeA","purpose":"FORMAL_REVIEW"}}"#));
+    let opened_review=h::decode_receipt(&product.dispatch_user_request(&review_open).unwrap()).unwrap();
+    assert_eq!(opened_review.status,V37Status::Applied,"original review receipt: {}",String::from_utf8_lossy(&opened_review.raw_bytes));
+    let Some(Json::String(review_thread))=opened_review.into_result().get(&JsonString::from_str("threadId")).cloned() else {
+        panic!("original native review thread absent");
+    };
+    assert_ne!(review_thread.to_well_formed_string().unwrap(),thread,"actual fresh review thread");
+    assert_eq!(ledger::read_registered_session(&product.connection,"reviewA").unwrap().unwrap().purpose,SessionPurpose::FormalReview);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&review_open).unwrap()).unwrap().status,V37Status::Replayed);
+    let before_review_custody=product.native_sessions.len();
+    let review_process_count=|product:&ProductDatabase<'_>| {
+        let rows=Statement::prepare(product.connection.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_h_process_episode WHERE domain_id='projectA' AND session_id='reviewA'").unwrap();
+        assert!(rows.step_row().unwrap());rows.column_text(0).unwrap()
+    };
+    let before_review_process_count=review_process_count(&product);
+    for verb in ["resume","reconnect","compact","renew-session"] {
+        let refused=operation("K-SESSION",verb,&format!("review-{verb}"),"reviewA",3,
+            &format!(r#"{{"generation":"{review_generation}"}}"#));
+        let receipt=h::decode_receipt(&product.dispatch_user_request(&refused).unwrap()).unwrap();
+        assert_eq!(receipt.status,V37Status::Denied,"formal review continuation: {verb}");
+        assert_eq!((receipt.previous_revision,receipt.revision),(3,3));
+        assert_eq!(product.native_sessions.len(),before_review_custody);
+        assert_eq!(review_process_count(&product),before_review_process_count);
+    }
+    let inherited_open=operation("K-SESSION","open","fork-into-review","reviewA",3,
+        &format!(r#"{{"seatId":"seatA","generation":"{review_generation}","repositoryId":"fixtureRepo","worktreeId":"treeA","purpose":"FORMAL_REVIEW","sourceSessionId":"sessionA"}}"#));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&inherited_open).unwrap()).unwrap().status,V37Status::Denied);
+    assert_eq!(review_process_count(&product),before_review_process_count);
+    let review_stop=operation("K-SESSION","stop","stop-review","reviewA",3,
+        &format!(r#"{{"seatId":"seatA","generation":"{review_generation}"}}"#));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&review_stop).unwrap()).unwrap().status,V37Status::Applied);
+    let review_release=operation("K-SESSION","admission-release","release-review","reviewA",4,
+        &format!(r#"{{"seatId":"seatA","generation":"{review_generation}"}}"#));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&review_release).unwrap()).unwrap().status,V37Status::Applied);
     product.close_checked().unwrap();
     drop(root);
     std::fs::remove_dir_all(path).unwrap();
