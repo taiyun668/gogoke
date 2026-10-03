@@ -1190,6 +1190,10 @@ fn e2_gate_rejection_stops_stage_and_reserves_one_escalation() {
             "decideB",b"original decision B").unwrap().state,"PASSED");
         assert_eq!(stage_transition(db,&submitter,"gateB",5,3,"stageB",
             b"original stage B").unwrap().state,"ADVANCED");
+        assert_eq!(current_policy_revision(db,&submitter).unwrap(),6);
+        assert_eq!(policy_revision_for_native_request(db,&submitter,"gate-submit","submitB").unwrap(),5);
+        assert_eq!(policy_revision_for_native_request(db,&submitter,"stage-transition","stageB").unwrap(),5,
+            "native replay must use the historical CAS revision after stage advances");
     });
 }
 
