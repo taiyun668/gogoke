@@ -189,6 +189,16 @@ fn create_user(
     .seat
 }
 
+const E2_SETTINGS: &[u8] = br#"{"instruction":"default","model":"modelA","orchestrationScope":{"instanceIds":["instanceA","instanceB"],"maxPermissionTier":"NETWORKED_WRITE","models":["modelA"],"reasoningEfforts":["high"]},"permissionTier":"NETWORKED_WRITE","reasoningEffort":"high","takeoverQuestions":[{"id":"q","prompt":"What is the project scope?"}]}"#;
+
+fn create_e2_lead(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer)->Seat {
+    store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"projectA",
+        template_id:"templateE2",settings_json:E2_SETTINGS}).unwrap();
+    create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"projectA",seat_id:"lead",
+        template_id:"templateE2",instance_id:Some("instanceA"),kind:Kind::Long,
+        request_id:"createLead",request_bytes:wire("createLead")}).unwrap().seat
+}
+
 #[test]
 fn exact_schema_reopens_and_drift_refuses_repair() {
     fixture(|db, _| {
@@ -798,7 +808,7 @@ fn change_instance_rejects_unbound_seat() {
 #[test]
 fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
     fixture(|db, owner| {
-        let lead = create_user(db, owner, "lead", "createLead");
+        let lead = create_e2_lead(db, owner);
         let another = create_user(db, owner, "another", "createAnother");
         let active = set_dispatch_state(db, &lead, true).unwrap();
         let admission = NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
@@ -808,7 +818,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
             CreateSeat {
                 domain_id: "projectA",
                 seat_id: "worker",
-                template_id: "templateA",
+                template_id: "templateE2",
                 instance_id: Some("instanceA"),
                 kind: Kind::Short,
                 request_id: "createWorker",
@@ -842,7 +852,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectB",
                     seat_id: "otherProject",
-                    template_id: "templateA",
+                    template_id: "templateE2",
                     instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "otherProjectCreate",
@@ -889,7 +899,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "worker",
-                    template_id: "templateA",
+                    template_id: "templateE2",
                     instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "reuseWorker",
@@ -906,7 +916,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "worker",
-                    template_id: "templateA",
+                    template_id: "templateE2",
                     instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "createWorker",
@@ -942,7 +952,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
 #[test]
 fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
     fixture(|db, owner| {
-        let lead = create_user(db, owner, "lead", "createLead");
+        let lead = create_e2_lead(db, owner);
         let active = set_dispatch_state(db, &lead, true).unwrap();
         let admission = NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
         let worker = create(
@@ -951,7 +961,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
             CreateSeat {
                 domain_id: "projectA",
                 seat_id: "worker",
-                template_id: "templateA",
+                template_id: "templateE2",
                 instance_id: Some("instanceA"),
                 kind: Kind::Short,
                 request_id: "createWorker",
