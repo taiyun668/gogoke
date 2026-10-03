@@ -107,6 +107,20 @@ impl<'root> ProductDatabase<'root> {
                         return Err(OrchestrationError::OperationConflict);
                     }
                     drop(known);
+                    if !self.user_session_request_identity_matches(&open)? {
+                        return Err(OrchestrationError::OperationConflict);
+                    }
+                    // The existing side belongs to its original H open, not
+                    // merely to the same logical session selector. A new or
+                    // differently encoded nested request cannot claim replay.
+                    let original=Statement::prepare(self.connection.as_ptr(),
+                        "SELECT request_id,raw_hex,status FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open'")?;
+                    original.bind_text(1,&open.domain_id)?;original.bind_text(2,&open.target_id)?;
+                    let raw_hex:String=open.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+                    if !original.step_row()? || original.column_text(0)?!=open.request_id
+                        || original.column_text(1)?!=raw_hex || original.column_text(2)?!="APPLIED"
+                        || original.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                    drop(original);
                     return self.dispatch_user_side(&create);
                 }
                 drop(known);
