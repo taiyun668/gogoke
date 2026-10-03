@@ -1561,17 +1561,10 @@ pub(crate) fn create_m2_single_worktree(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeWorktreeLayout { Single, Mixed }
 
-/// A sealed H/A tool call supplies only its original bytes and the selected
-/// existing repository and direct child seat. F derives the logical ID and
-/// every physical path/space/branch. The same request may finish REGISTER
-/// after a completed CREATE without reissuing `git worktree add`.
-pub(crate) fn create_and_register_native_child_worktree(
-    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
-    pin: &GitProgramPin, custodian: &mut ProcessCustodian,
-    caller: &crate::store::seat::NativeSeatCall,
+fn native_child_worktree_identity(
     child: &crate::store::seat::Seat,
     request: &crate::store::session_transport::V37Request,
-) -> Result<ResolvedBinding> {
+) -> Result<(String, NativeWorktreeLayout, String, String)> {
     if request.family != "K-WORKTREE" || request.operation != "create"
         || request.expected_revision != 0 || request.payload.len() != 2
         || request.domain_id != child.domain_id || request.target_id != child.seat_id
@@ -1596,15 +1589,77 @@ pub(crate) fn create_and_register_native_child_worktree(
         request.request_id, repository_id, child.seat_id,
         sha256_hex(&request.raw_bytes));
     let id = sha256_hex(identity.as_bytes());
-    let worktree_id = format!("native-wt-{}", &id[..40]);
-    let register_id = format!("native-register-{}", &id[..40]);
+    Ok((repository_id, layout, format!("native-wt-{}", &id[..40]),
+        format!("native-register-{}", &id[..40])))
+}
+
+/// A sealed H/A tool call supplies only its original bytes and the selected
+/// existing repository and direct child seat. F derives the logical ID and
+/// every physical path/space/branch. The same request may finish REGISTER
+/// after a completed CREATE without reissuing `git worktree add`.
+pub(crate) fn create_and_register_native_child_worktree(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian,
+    caller: &crate::store::seat::NativeSeatCall,
+    child: &crate::store::seat::Seat,
+    request: &crate::store::session_transport::V37Request,
+) -> Result<ResolvedBinding> {
+    if child.state == crate::store::seat::State::Busy {
+        return recover_registered_native_child_worktree(db, root, caller, child, request);
+    }
+    let (repository_id, layout, worktree_id, register_id) =
+        native_child_worktree_identity(child, request)?;
     let input = CreateWorktree {
         request_id: &request.request_id, request_bytes: &request.raw_bytes,
         repository_id: &repository_id, target_id: &worktree_id, domain_id: &request.domain_id,
         seat_id: &child.seat_id,
     };
-    if child.state == crate::store::seat::State::Busy {
-        return transaction(db, |db| {
+    if child.state != crate::store::seat::State::Idle { return Err(WorktreeError::Denied); }
+    let mut authorize = |db: &VerifiedDatabaseConnection<'_>| {
+        crate::store::seat::authorize_child_dispatch(db, caller, child)
+            .map_err(WorktreeError::Seat)
+    };
+    authorize(db)?;
+    let history = readback_create_receipt(db, &request.request_id, &request.raw_bytes,
+        &worktree_id, &repository_id, &request.domain_id, &child.seat_id)?;
+    if history.as_ref().is_some_and(|history| history.classification != match layout {
+        NativeWorktreeLayout::Single => "SINGLE",
+        NativeWorktreeLayout::Mixed => "MIXED",
+    }) { return Err(WorktreeError::Conflict); }
+    let binding = if history.is_some() {
+        resolve_id(db, root, &worktree_id)?
+    } else {
+        let (space_id, incarnation) = match layout {
+            NativeWorktreeLayout::Single => (None, None),
+            NativeWorktreeLayout::Mixed => (Some(mixed_seat_space_id(&request.domain_id,
+                &child.seat_id, &child.incarnation)?), Some(child.incarnation.as_str())),
+        };
+        create_worktree_in_space(db, root, owner, pin, custodian, space_id.as_deref(),
+            incarnation, true, input, &mut authorize)?
+    };
+    let register = crate::store::session_transport::V37Request {
+        raw_bytes: request.raw_bytes.clone(), family: "K-WORKTREE".into(),
+        operation: "register".into(), request_id: register_id,
+        target_id: worktree_id, domain_id: request.domain_id.clone(),
+        expected_revision: 1, payload: Default::default(),
+    };
+    register_created_worktree_request(db, root, owner, &register, &mut authorize)?;
+    Ok(binding)
+}
+
+/// Recover only a completed native child CREATE/REGISTER after the original H
+/// reservation advanced that exact child to BUSY. This entry has no Git pin,
+/// ProcessCustodian, create, register, or write path.
+pub(crate) fn recover_registered_native_child_worktree(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+    caller: &crate::store::seat::NativeSeatCall,
+    child: &crate::store::seat::Seat,
+    request: &crate::store::session_transport::V37Request,
+) -> Result<ResolvedBinding> {
+    let (repository_id, layout, worktree_id, register_id) =
+        native_child_worktree_identity(child, request)?;
+    if child.state != crate::store::seat::State::Busy { return Err(WorktreeError::Denied); }
+    transaction(db, |db| {
         let host_id = caller.host_request_id().ok_or(WorktreeError::Denied)?;
         if !atom(host_id) || request.request_id != format!("{host_id}-worktree") {
             return Err(WorktreeError::Denied);
@@ -1658,39 +1713,7 @@ pub(crate) fn create_and_register_native_child_worktree(
             return Err(WorktreeError::Denied);
         }
         Ok(binding)
-        });
-    }
-    if child.state != crate::store::seat::State::Idle { return Err(WorktreeError::Denied); }
-    let mut authorize = |db: &VerifiedDatabaseConnection<'_>| {
-        crate::store::seat::authorize_child_dispatch(db, caller, child)
-            .map_err(WorktreeError::Seat)
-    };
-    authorize(db)?;
-    let history = readback_create_receipt(db, &request.request_id, &request.raw_bytes,
-        &worktree_id, &repository_id, &request.domain_id, &child.seat_id)?;
-    if history.as_ref().is_some_and(|history| history.classification != match layout {
-        NativeWorktreeLayout::Single => "SINGLE",
-        NativeWorktreeLayout::Mixed => "MIXED",
-    }) { return Err(WorktreeError::Conflict); }
-    let binding = if history.is_some() {
-        resolve_id(db, root, &worktree_id)?
-    } else {
-        let (space_id, incarnation) = match layout {
-            NativeWorktreeLayout::Single => (None, None),
-            NativeWorktreeLayout::Mixed => (Some(mixed_seat_space_id(&request.domain_id,
-                &child.seat_id, &child.incarnation)?), Some(child.incarnation.as_str())),
-        };
-        create_worktree_in_space(db, root, owner, pin, custodian, space_id.as_deref(),
-            incarnation, true, input, &mut authorize)?
-    };
-    let register = crate::store::session_transport::V37Request {
-        raw_bytes: request.raw_bytes.clone(), family: "K-WORKTREE".into(),
-        operation: "register".into(), request_id: register_id,
-        target_id: worktree_id, domain_id: request.domain_id.clone(),
-        expected_revision: 1, payload: Default::default(),
-    };
-    register_created_worktree_request(db, root, owner, &register, &mut authorize)?;
-    Ok(binding)
+    })
 }
 
 /// A mixed space has one host-generated physical parent and separate linked

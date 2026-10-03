@@ -42,6 +42,11 @@ binding, the one-generation transition, and its APPLIED register journal.
 It returns the old binding without calling create, register or Git. A merely
 BUSY child or a different model call cannot use this path; ordinary Idle
 creation retains all three in-transaction E rechecks above.
+The same checks are exposed as `recover_registered_native_child_worktree` so
+Root can perform this completed-history read before resolving a Git pin.
+The helper takes no program pin or ProcessCustodian and cannot start even a
+Git version probe. The create/register entry delegates BUSY to this helper;
+Root's native dispatcher must choose the helper before its own Git lookup.
 
 Sources: existing `store/worktree/{mod,f2}.rs` create/register/merge journals,
 `store/seat/orchestration.rs::authorize_child_dispatch`, and
