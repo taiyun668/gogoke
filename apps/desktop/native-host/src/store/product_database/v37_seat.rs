@@ -147,7 +147,7 @@ impl<'root> ProductDatabase<'root> {
             return Ok(receipt(request,V37Status::Stale,seat_revision,seat_revision,BTreeMap::new()));
         }
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,o.native_receipt_id FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
+            "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,o.native_receipt_id,c.vendor_thread_id FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
         q.bind_text(1,&request.domain_id)?;q.bind_text(2,&card_id)?;
         q.bind_text(3,&answer_request)?;
         if !q.step_row()? {
@@ -156,10 +156,12 @@ impl<'root> ProductDatabase<'root> {
         let question_id=q.column_text(0)?;let answer_wire=q.column_text(1)?;
         let source_seat=q.column_text(2)?;let source_turn=q.column_text(3)?;
         let source_generation=q.column_text(4)?;let source_receipt=q.column_text(5)?;
+        let source_thread=q.column_text(6)?;
         if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
         drop(q);
         if source_seat!=caller.seat_id() || source_turn!=caller.turn_id() ||
-            source_generation!=present.generation.to_string() || source_receipt.is_empty() {
+            source_generation!=present.generation.to_string() || source_receipt.is_empty()
+            || caller.thread_id()!=Some(source_thread.as_str()) {
             return Ok(receipt(request,V37Status::Denied,seat_revision,seat_revision,BTreeMap::new()));
         }
         let Json::Object(wire)=Parser::parse(&answer_wire)? else {return Err(OrchestrationError::Invalid("C answer wire"));};
@@ -177,9 +179,38 @@ impl<'root> ProductDatabase<'root> {
         let replayed=prior.step_row()?;
         if replayed && prior.step_row()? {return Err(OrchestrationError::OperationConflict);}
         drop(prior);
-        let outcome=seat::answer_takeover_at_seat_revision(&mut self.connection,caller,
+        let outcome=seat::answer_takeover_from_written_source(&mut self.connection,caller,
             &question_id,&text,seat::AnswerBasis::Cited {source_ref},present.revision,
-            answer_revision,&request.request_id,&request.raw_bytes);
+            answer_revision,&request.request_id,&request.raw_bytes,|db| {
+                let session=caller.session_id().ok_or(SeatError::Denied)?;
+                let q=Statement::prepare(db.as_ptr(),
+                    "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,c.vendor_thread_id,o.native_receipt_id,o.request_hex FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
+                q.bind_text(1,&request.domain_id)?;q.bind_text(2,&card_id)?;q.bind_text(3,&answer_request)?;
+                if !q.step_row()? || q.column_text(0)?!=question_id || q.column_text(1)?!=answer_wire
+                    || q.column_text(2)?!=caller.seat_id() || q.column_text(3)?!=caller.turn_id()
+                    || q.column_text(4)?!=caller.generation().to_string()
+                    || q.column_text(5)?!=source_thread || q.column_text(6)?!=source_receipt {
+                    return Err(SeatError::Denied);
+                }
+                let original_request=q.column_text(7)?;
+                if q.step_row()? {return Err(SeatError::SchemaDrift)};
+                drop(q);
+                let mut answer_bytes=answer_wire.as_bytes().to_vec();answer_bytes.push(b'\n');
+                let expected_hex=hex(&answer_bytes);
+                let written=Statement::prepare(db.as_ptr(),
+                    "SELECT step_id,process_operation_id,custodian_nonce,command_hex FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND phase='WRITTEN' AND requires_response=0 AND command_hex=?4")?;
+                for (index,value) in [request.domain_id.as_str(),session,source_generation.as_str(),expected_hex.as_str()]
+                    .iter().enumerate() {written.bind_text((index+1) as i32,value)?;}
+                let mut matches=0;
+                while written.step_row()? {
+                    let basis=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",request.domain_id,session,
+                        written.column_text(0)?,written.column_text(1)?,written.column_text(2)?,
+                        written.column_text(3)?,original_request);
+                    if source_receipt==format!("h-qanswer-{}",crate::store::digest::sha256_hex(basis.as_bytes())) {matches+=1;}
+                }
+                if matches!=1 {return Err(SeatError::Denied)};
+                Ok(())
+            });
         match outcome {
             Ok(revision)=>Ok(receipt(request,if replayed {V37Status::Replayed} else {V37Status::Applied},seat_revision,seat_revision,
                 BTreeMap::from([

@@ -24,7 +24,7 @@ pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
     settle_trigger,stage_transition,CallAction,
     CallPermissionRow,EscalationCause,EscalationIntent,GateDecision,NativeDeliveryEvidence,
     NativeCoordinatorTriggerEvidence,NativeSeatCall,OwnerPolicyCommand,PolicyEvent,TriggerTransition};
-pub(crate) use continuity::{answer_takeover,answer_takeover_at_seat_revision,mark_health_requested,observe_health,
+pub(crate) use continuity::{answer_takeover,answer_takeover_at_seat_revision,answer_takeover_from_written_source,mark_health_requested,observe_health,
     read_state_card,settle_health_receipt,takeover_questions,takeover_ready,
     update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
     TakeoverQuestion};
