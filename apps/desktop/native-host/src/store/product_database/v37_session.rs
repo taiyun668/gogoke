@@ -8,6 +8,35 @@ use crate::store::session_transport::{self as h, runtime, AdmissionError,
 
 fn text(value: &str) -> Json { Json::String(JsonString::from_str(value)) }
 
+fn worktree_failure(request: &V37Request, error: crate::store::worktree::WorktreeError)
+    -> Vec<u8> {
+    use crate::store::worktree::WorktreeError;
+    let status = match &error {
+        WorktreeError::Denied | WorktreeError::Invalid(_) => V37Status::Denied,
+        WorktreeError::Conflict => V37Status::Conflict,
+        _ => V37Status::Unknown,
+    };
+    encode_receipt(request, status, request.expected_revision, request.expected_revision,
+        BTreeMap::from([(JsonString::from_str("reason"),
+            text(&format!("native worktree: {error:?}")))]))
+}
+
+/// M1 create and F.2 lifecycle effects use separate native journals. A
+/// request ID cannot cross that boundary with a different operation or bytes.
+fn worktree_request_identity_matches(db: &VerifiedDatabaseConnection<'_>,
+    request: &V37Request) -> Result<bool> {
+    let prior = Statement::prepare(db.as_ptr(),
+        "SELECT request_hash,'create' FROM main.gogoke_v37_worktree_operations WHERE request_id=?1 UNION ALL SELECT request_hash,lower(operation) FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
+    prior.bind_text(1, &request.request_id)?;
+    let hash = crate::store::digest::sha256_hex(&request.raw_bytes);
+    while prior.step_row()? {
+        if prior.column_text(0)? != hash || prior.column_text(1)? != request.operation {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn admission_status(error: &AdmissionError) -> V37Status {
     match error {
         AdmissionError::Invalid(_) | AdmissionError::Denied
@@ -27,6 +56,82 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn dispatch_user_worktree(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         use crate::store::worktree::{self as f, WorktreeError};
         authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if !worktree_request_identity_matches(&self.connection, request)? {
+            return Ok(encode_receipt(request, V37Status::Conflict,
+                request.expected_revision, request.expected_revision, Default::default()));
+        }
+        if request.operation == "register" {
+            return Ok(match f::register_created_worktree(&mut self.connection, self.root,
+                &self.owner, &request.raw_bytes) {
+                Ok(receipt) => encode_receipt(request,
+                    if receipt.replayed { V37Status::Replayed } else { V37Status::Applied },
+                    1, receipt.revision as u64,
+                    BTreeMap::from([(JsonString::from_str("worktreeId"),
+                        text(&receipt.worktree_id))])),
+                Err(error) => worktree_failure(request, error),
+            });
+        }
+        if matches!(request.operation.as_str(), "classify-single-or-mixed" | "graph-query") {
+            if !request.payload.is_empty() {
+                return Ok(encode_receipt(request, V37Status::Denied,
+                    request.expected_revision, request.expected_revision, Default::default()));
+            }
+            return Ok(match f::graph_query(&self.connection, &request.target_id) {
+                Ok(Some(graph)) if graph.members.iter().any(|member|
+                    member.worktree_id == request.target_id && member.domain_id == request.domain_id) => {
+                    let revision = graph.revision as u64;
+                    if request.expected_revision != revision {
+                        encode_receipt(request, V37Status::Stale, revision, revision,
+                            Default::default())
+                    } else {
+                        let mut result = BTreeMap::from([
+                            (JsonString::from_str("spaceId"), text(&graph.space_id)),
+                            (JsonString::from_str("classification"), text(&graph.classification)),
+                        ]);
+                        if request.operation == "graph-query" {
+                            result.insert(JsonString::from_str("state"), text(&graph.state));
+                            result.insert(JsonString::from_str("mergeReason"),
+                                graph.merge_reason.as_deref().map(text).unwrap_or(Json::Null));
+                            result.insert(JsonString::from_str("mergeTargetCommit"),
+                                graph.merge_target_commit.as_deref().map(text).unwrap_or(Json::Null));
+                            result.insert(JsonString::from_str("members"), Json::Array(
+                                graph.members.iter().map(|member| Json::Object(BTreeMap::from([
+                                    (JsonString::from_str("worktreeId"), text(&member.worktree_id)),
+                                    (JsonString::from_str("repositoryId"), text(&member.repository_id)),
+                                    (JsonString::from_str("domainId"), text(&member.domain_id)),
+                                    (JsonString::from_str("seatId"), text(&member.seat_id)),
+                                    (JsonString::from_str("instanceId"), text(&member.instance_id)),
+                                    (JsonString::from_str("baselineCommit"), text(&member.baseline_commit)),
+                                ]))).collect()));
+                        }
+                        encode_receipt(request, V37Status::Applied, revision, revision, result)
+                    }
+                }
+                Ok(_) => encode_receipt(request, V37Status::Denied,
+                    request.expected_revision, request.expected_revision, Default::default()),
+                Err(error) => worktree_failure(request, error),
+            });
+        }
+        if request.operation == "cleanup" {
+            let result = (|| {
+                let repository = f::repository_for_worktree(&self.connection,
+                    &request.domain_id, &request.target_id)?;
+                let pin = f::resolve_registered_git(&mut self.connection, self.root,
+                    &self.owner, &repository, &mut self.process_custodian)?;
+                f::cleanup_worktree(&mut self.connection, self.root, &self.owner,
+                    &pin, &mut self.process_custodian, &request.raw_bytes)
+            })();
+            return Ok(match result {
+                Ok(receipt) => encode_receipt(request,
+                    if receipt.replayed { V37Status::Replayed } else { V37Status::Applied },
+                    request.expected_revision, receipt.revision as u64,
+                    BTreeMap::from([
+                        (JsonString::from_str("worktreeId"), text(&receipt.worktree_id)),
+                        (JsonString::from_str("stopFactId"), text(&receipt.stop_fact_id)),
+                    ])),
+                Err(error) => worktree_failure(request, error),
+            });
+        }
         if request.operation != "create" {
             return Ok(encode_receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, Default::default()));
@@ -73,6 +178,45 @@ impl<'root> ProductDatabase<'root> {
                     (JsonString::from_str("reason"), text(&format!("native worktree: {error:?}")))])))
             }
         }
+    }
+
+    /// H will call this with its verified current seat and original turn. The
+    /// public User pipe cannot manufacture NativeSeatCall or a merge grant.
+    pub(super) fn dispatch_native_worktree(&mut self, request: &V37Request,
+        caller: &seat::NativeSeatCall) -> Result<Vec<u8>> {
+        use crate::store::worktree as f;
+        authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if !worktree_request_identity_matches(&self.connection, request)? {
+            return Ok(encode_receipt(request, V37Status::Conflict,
+                request.expected_revision, request.expected_revision, Default::default()));
+        }
+        if request.family != "K-WORKTREE" || request.operation != "merge" {
+            return Ok(encode_receipt(request, V37Status::Unsupported,
+                request.expected_revision, request.expected_revision, Default::default()));
+        }
+        let result = (|| {
+            let repository = f::repository_for_worktree(&self.connection,
+                &request.domain_id, &request.target_id)?;
+            let pin = f::resolve_registered_git(&mut self.connection, self.root,
+                &self.owner, &repository, &mut self.process_custodian)?;
+            f::merge_worktree(&mut self.connection, self.root, &pin,
+                &mut self.process_custodian, &request.raw_bytes,
+                |db, domain, writer_seat, target| {
+                    if target != request.target_id { return Err(f::WorktreeError::Denied); }
+                    seat::authorize_merge_for_f2(db, caller, domain, writer_seat)
+                        .map_err(f::WorktreeError::Seat)
+                })
+        })();
+        Ok(match result {
+            Ok(receipt) => encode_receipt(request,
+                if receipt.replayed { V37Status::Replayed } else { V37Status::Applied },
+                request.expected_revision, receipt.revision as u64,
+                BTreeMap::from([
+                    (JsonString::from_str("worktreeId"), text(&receipt.worktree_id)),
+                    (JsonString::from_str("targetCommit"), text(&receipt.target_commit)),
+                ])),
+            Err(error) => worktree_failure(request, error),
+        })
     }
 
     pub(super) fn read_user_instance_capacity(&mut self, request: &V37Request) -> Result<Vec<u8>> {

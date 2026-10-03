@@ -152,6 +152,21 @@ pub(crate) fn graph_query(db: &VerifiedDatabaseConnection<'_>, worktree_id: &str
         members: graph_members }))
 }
 
+/// Look up the repository pin through the native row, never through an IPC
+/// path or a caller-selected program. This is shared by public merge/cleanup.
+pub(crate) fn repository_for_worktree(db: &VerifiedDatabaseConnection<'_>,
+    domain_id: &str, worktree_id: &str) -> Result<String> {
+    if !atom(domain_id) || !atom(worktree_id) { return Err(WorktreeError::Denied); }
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT repository_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND domain_id=?2 AND state='REGISTERED'")?;
+    row.bind_text(1, worktree_id)?;
+    row.bind_text(2, domain_id)?;
+    if !row.step_row()? { return Err(WorktreeError::Denied); }
+    let repository = row.column_text(0)?;
+    if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    Ok(repository)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExactStopFact {
     pub(crate) process_operation_id: String,
