@@ -210,7 +210,16 @@ fn run_desktop(
     drop(sender);
     let mut service = None;
     let mut user = None;
-    for event in receiver {
+    loop {
+        // The native protocol reader is synchronous and nonblocking. Keep
+        // its capture/dispatch on this one DB authority thread, independently
+        // of whether the UI asks for output. No operation is retried here.
+        product.pump_native_output()?;
+        let event = match receiver.recv_timeout(std::time::Duration::from_millis(20)) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match event {
             DesktopEvent::ServiceConnected => {
                 service = Some(product.begin_shared_service_frames(capability)?);

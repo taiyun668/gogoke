@@ -155,6 +155,15 @@ impl NativeRawCapture {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Run on the existing authority thread even when no UI is subscribed.
+    /// This polls the already held pipe; it cannot create a process or write
+    /// stdin. Complete bytes still enter the original A capture before use.
+    pub fn pump_native_output(&mut self) -> Result<()> {
+        let keys = self.native_sessions.keys().cloned().collect::<Vec<_>>();
+        for key in keys { self.drain_native_output(&key)?; }
+        Ok(())
+    }
+
     pub(super) fn drain_native_output(&mut self, key: &(String,String)) -> Result<()> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         let custody=run.custody.clone();
