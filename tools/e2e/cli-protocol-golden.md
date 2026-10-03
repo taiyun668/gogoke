@@ -31,12 +31,22 @@ The current readback joins normalized rows to the unique original
 `raw.resolved_event_id = index.source_event_id` relation, carrying operation,
 generation and process custody. Raw ordinals can repeat after compact or renew
 inside one host epoch; they are disambiguated by the recorded physical scope.
-RPC pairing uses session, operation, generation, process ticket and custodian
+JSON-RPC pairing uses session, operation, generation, process ticket and custodian
 nonce when available. `WRITTEN` answers legitimately have no observed source
 epoch/cursor, so those nullable observation fields are not custody identifiers.
 Legacy captures without custody retain the stricter recorded-epoch association;
 missing or ambiguous associations remain explicit. These are measurement fixes
 on existing bytes, without replaying a product or CLI request.
+
+Claude associations use separate protocol namespaces: `control_request.request_id`
+matches `control_response.response.request_id`, and an outbound host `user.uuid`
+matches the inbound original human `user.uuid` echo. IDs retain their original
+string/number type and require the same complete physical scope as JSON-RPC.
+An inbound `type:user` tool result, synthetic message, or subagent message is
+not a human echo. A `result` without a user UUID is never inferred to be a
+reply to a host input; user echo association records only an observed echo,
+not a completed turn. Missing, duplicate, or ambiguous associations remain
+unresolved. The existing JSON-RPC association fields and behavior are retained.
 
 ```powershell
 & $SignedNode tools/e2e/cli-protocol-golden.mjs compare `
@@ -45,7 +55,7 @@ on existing bytes, without replaying a product or CLI request.
   --out $PrivateDiffReport
 ```
 
-The report compares direction and per-direction frame order, method and item-type counts, field additions/removals and type changes, normalized event order, selected semantic scalar changes (such as `status` and `sessionUpdate`), request/response associations, and direction/link coverage. Request/response pairs require an actual RPC id, opposite directions, and the same session, operation, generation, and source epoch. Missing scope, ambiguous pairs, and unmatched requests remain explicit. It reports changes; it does not decide compatibility. Every report has `acceptance: NOT_ASSESSED`, including an identical self-comparison. The Controller reviews the direct evidence and differences before choosing a regression capture; milestone acceptance remains with the Owner.
+The report compares direction and per-direction frame order, method and item-type counts, field additions/removals and type changes, normalized event order, selected semantic scalar changes (such as `status` and `sessionUpdate`), JSON-RPC and Claude associations, and direction/link coverage. Association pairs require an explicit typed ID, opposite directions, and the same complete physical scope. Missing scope, ambiguous pairs, and unmatched records remain explicit. It reports changes; it does not decide compatibility. Every report has `acceptance: NOT_ASSESSED`, including an identical self-comparison. The Controller reviews the direct evidence and differences before choosing a regression capture; milestone acceptance remains with the Owner.
 
 ## Privacy and baseline status
 
@@ -63,5 +73,8 @@ The controller-provided CLI 0.160.0 sample used for the first tool check contain
 - `docs/research/grok-app-reuse-audit.md` recommends reusing fixtures with negative cases rather than relying only on a happy path.
 - NaveHQ's `scripts/navehq_parse_codex_run.js` demonstrates deriving a structured report from an existing run; this utility deliberately does not retain source paths.
 - LoomOS's `03_specs_施工图/应答地基施工图-v0.2.md` separates ordinary golden behavior cases from high-risk expectations; this utility likewise keeps the failed diagnostic separate from any accepted baseline.
+- `packages/seat-runtime/src/claude-seat.ts` writes the host `user` envelope and returns control responses under `response.request_id`; frozen `third_party/t3code/apps/server/src/provider/Layers/ClaudeAdapter.ts` distinguishes human turns from tool-result `user` messages and supplies host UUIDs. The importer uses these structural distinctions but does not adopt their runtime or history storage.
+- Anthropic's pinned `@anthropic-ai/claude-agent-sdk@0.3.276` `sdk.d.ts` defines `SDKControlRequest.request_id`, `SDKControlResponse.response.request_id`, optional `SDKUserMessage.uuid`, and `SDKResultMessage` separately. The importer reads raw recorded frames under these shapes; a type declaration is not a capture.
 
 RPC alias keys preserve the original JSON ID type. Numeric `7` and string `"7"` remain different IDs, including in the same process custody. Each normalized protocol frame and correlation pair exposes `rpcIdType`, so a CLI upgrade that changes the ID type remains visible after redaction. This is an instrument rule; matching frames still do not accept a baseline or a product.
+Claude control and user UUID aliases are likewise typed and isolated from each other and from JSON-RPC IDs. No demonstration frame is described as a real provider golden; actual provider goldens remain `NOT_RUN` until separately recorded and reviewed.
