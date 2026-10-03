@@ -95,7 +95,7 @@ function validateAgentInfo(value: unknown): OpenCodeHostedLoginCommand {
 
 /**
  * ACP state machine only. The host owns executable pinning, login, home,
- * Content-Length framing, RPC correlation, session generation and process custody.
+ * NDJSON (one JSON object per line) framing, RPC correlation, session generation and process custody.
  */
 export class OpenCode11832Adapter {
   readonly #transport: OpenCodeAcpTransport;
@@ -306,8 +306,8 @@ export class OpenCode11832Adapter {
     try {
       this.#onEvent?.(Object.freeze({ provider: "opencode", nativeSessionId: expectedSessionId,
         method: notification.method, payload: notification.params }));
-    } catch {
-      this.#eventFailure = new OpenCodeProtocolError("EVENT_HANDLER_FAILED", "event consumer rejected ACP event");
+    } catch (error: unknown) {
+      this.#eventFailure = new OpenCodeProtocolError("EVENT_HANDLER_FAILED", "event consumer rejected ACP event", error);
     }
   }
 
