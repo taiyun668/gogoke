@@ -25,22 +25,48 @@ use std::time::{Duration, Instant};
 const SOURCE_REMOTE: &str = "https://github.com/taiyun668/gogoke-seat-testbed.git";
 const SOURCE_REMOTE_SSH: &str = "git@github.com:taiyun668/gogoke-seat-testbed.git";
 
-fn testbed_remote_kind(remote: &str) -> Option<&'static str> {
-    match remote {
-        SOURCE_REMOTE | "https://github.com/taiyun668/gogoke-seat-testbed" => Some("HTTPS"),
-        SOURCE_REMOTE_SSH
-        | "git@github.com:taiyun668/gogoke-seat-testbed"
-        | "ssh://git@github.com/taiyun668/gogoke-seat-testbed.git" => Some("SSH"),
-        _ => None,
+mod f2;
+pub(crate) use f2::{cleanup_stop_gate, cleanup_worktree, graph_query, merge_worktree,
+    CleanupReceipt, ExactStopFact, GraphMember, MergeReceipt, WorktreeGraph};
+
+fn remote_kind(remote: &str) -> Option<&'static str> {
+    // Classify only. Never store the remote text, contact it, invoke a
+    // credential helper, or allow inline URL credentials into native logs.
+    if remote.is_empty() || remote.len() > 2048 || remote.chars().any(char::is_control)
+        || remote.bytes().any(|byte| byte.is_ascii_whitespace()) { return None; }
+    if let Some(rest) = remote.strip_prefix("https://") {
+        let (authority, path) = rest.split_once('/')?;
+        if authority.is_empty() || authority.contains('@') || authority.contains(':') ||
+            path.is_empty() || path.contains('?') || path.contains('#') { return None; }
+        return Some("HTTPS");
     }
+    if let Some(rest) = remote.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        if host.is_empty() || host.contains('/') || path.is_empty() || path.contains('@') {
+            return None;
+        }
+        return Some("SSH");
+    }
+    if let Some(rest) = remote.strip_prefix("ssh://git@") {
+        let (host, path) = rest.split_once('/')?;
+        if host.is_empty() || host.contains(':') || path.is_empty() || path.contains('@') {
+            return None;
+        }
+        return Some("SSH");
+    }
+    None
 }
 const REPARSE_POINT: u32 = 0x400;
 const GIT_TIMEOUT: Duration = Duration::from_secs(25);
-const SCHEMA: [(&str, &str); 4] = [
+const SCHEMA: [(&str, &str); 8] = [
     ("gogoke_v37_worktree_sources", "CREATE TABLE gogoke_v37_worktree_sources(repository_id TEXT PRIMARY KEY,source_path TEXT NOT NULL UNIQUE,source_identity TEXT NOT NULL UNIQUE,common_path TEXT NOT NULL,common_identity TEXT NOT NULL,remote_kind TEXT NOT NULL CHECK(remote_kind IN ('HTTPS','SSH')),baseline_commit TEXT NOT NULL,git_digest TEXT NOT NULL,git_version TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision=1)) STRICT"),
     ("gogoke_v37_worktree_operations", "CREATE TABLE gogoke_v37_worktree_operations(request_id TEXT PRIMARY KEY,request_hash TEXT NOT NULL,repository_id TEXT NOT NULL,domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,worktree_id TEXT NOT NULL UNIQUE,path_id TEXT NOT NULL UNIQUE,seat_incarnation TEXT NOT NULL,seat_generation INTEGER NOT NULL,seat_revision INTEGER NOT NULL,instance_id TEXT NOT NULL,permission_tier TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('INTENT','UNKNOWN','REGISTERED')),cause TEXT NOT NULL DEFAULT '') STRICT"),
     ("gogoke_v37_worktrees", "CREATE TABLE gogoke_v37_worktrees(worktree_id TEXT PRIMARY KEY,path_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL REFERENCES gogoke_v37_worktree_sources(repository_id),domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,seat_generation INTEGER NOT NULL,seat_revision INTEGER NOT NULL,permission_tier TEXT NOT NULL,instance_id TEXT NOT NULL,source_revision INTEGER NOT NULL,worktree_path TEXT NOT NULL UNIQUE,worktree_identity TEXT NOT NULL UNIQUE,git_pointer_hash TEXT NOT NULL,git_pointer_len INTEGER NOT NULL,git_pointer_identity TEXT NOT NULL UNIQUE,common_identity TEXT NOT NULL,baseline_commit TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('REGISTERED','UNKNOWN')),revision INTEGER NOT NULL CHECK(revision=1)) STRICT"),
     ("gogoke_v37_worktree_programs", "CREATE TABLE gogoke_v37_worktree_programs(repository_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktree_sources(repository_id),git_path TEXT NOT NULL) STRICT"),
+    ("gogoke_v37_worktree_spaces", "CREATE TABLE gogoke_v37_worktree_spaces(space_id TEXT PRIMARY KEY,path_id TEXT NOT NULL UNIQUE,classification TEXT NOT NULL CHECK(classification IN ('SINGLE','MIXED')),state TEXT NOT NULL CHECK(state IN ('ACTIVE','UNKNOWN','CLEANED')),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
+    ("gogoke_v37_worktree_members", "CREATE TABLE gogoke_v37_worktree_members(worktree_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktrees(worktree_id),space_id TEXT NOT NULL REFERENCES gogoke_v37_worktree_spaces(space_id),repository_id TEXT NOT NULL,domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,UNIQUE(space_id,repository_id,domain_id,seat_id)) STRICT"),
+    ("gogoke_v37_worktree_lifecycle", "CREATE TABLE gogoke_v37_worktree_lifecycle(worktree_id TEXT PRIMARY KEY REFERENCES gogoke_v37_worktrees(worktree_id),state TEXT NOT NULL CHECK(state IN ('REGISTERED','MERGE_INTENT','MERGE_UNKNOWN','MERGED','CLEANUP_INTENT','CLEANUP_UNKNOWN','CLEANED')),revision INTEGER NOT NULL CHECK(revision>=1),merge_reason TEXT,merge_target_commit TEXT,stop_fact_id TEXT) STRICT"),
+    ("gogoke_v37_worktree_lifecycle_ops", "CREATE TABLE gogoke_v37_worktree_lifecycle_ops(request_id TEXT PRIMARY KEY,request_hash TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES gogoke_v37_worktrees(worktree_id),operation TEXT NOT NULL CHECK(operation IN ('MERGE','CLEANUP')),phase TEXT NOT NULL CHECK(phase IN ('INTENT','UNKNOWN','APPLIED','FAILED')),cause TEXT NOT NULL DEFAULT '',result_commit TEXT,UNIQUE(worktree_id,operation,request_id)) STRICT"),
 ];
 
 #[derive(Debug)]
@@ -139,7 +165,7 @@ fn append_error(primary: &mut Option<WorktreeError>, phase: &'static str, error:
     *primary = Some(next);
 }
 fn git_stdout_shape(tag: &str, output: bool, frames: usize) -> bool {
-    if tag == "source_attrs" {
+    if tag == "source_attrs" || tag == "f2_status" {
         output
     } else if !output {
         frames == 0
@@ -248,7 +274,10 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     let mut previous: Vec<_> = SCHEMA[..3].iter()
         .map(|(name, sql)| (name.to_string(), sql.to_string())).collect();
     previous.sort_by(|a, b| a.0.cmp(&b.0));
-    if !observed.is_empty() && observed != previous {
+    let mut current_m1: Vec<_> = SCHEMA[..4].iter()
+        .map(|(name, sql)| (name.to_string(), sql.to_string())).collect();
+    current_m1.sort_by(|a, b| a.0.cmp(&b.0));
+    if !observed.is_empty() && observed != previous && observed != current_m1 {
         return Err(WorktreeError::SchemaDrift);
     }
     transaction(db, |db| {
@@ -258,7 +287,8 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         }
         // Preserve the exact earlier tables and every record. A missing
         // native program registration is denied at restore, never inferred.
-        let added = if observed.is_empty() { &SCHEMA[..] } else { &SCHEMA[3..] };
+        let added = if observed.is_empty() { &SCHEMA[..] }
+            else if observed == previous { &SCHEMA[3..] } else { &SCHEMA[4..] };
         for (_, sql) in added {
             db.execute(sql)?;
         }
@@ -794,17 +824,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn testbed_remote_never_admits_credentials_or_lookalike() {
-        assert_eq!(testbed_remote_kind(SOURCE_REMOTE), Some("HTTPS"));
-        assert_eq!(testbed_remote_kind(SOURCE_REMOTE_SSH), Some("SSH"));
+    fn native_remote_classification_never_admits_inline_credentials() {
+        assert_eq!(remote_kind(SOURCE_REMOTE), Some("HTTPS"));
+        assert_eq!(remote_kind(SOURCE_REMOTE_SSH), Some("SSH"));
         let credential_url = format!(
             "https://user:{}@github.com/taiyun668/gogoke-seat-testbed.git",
             "placeholder"
         );
-        assert_eq!(testbed_remote_kind(&credential_url), None);
+        assert_eq!(remote_kind(&credential_url), None);
         assert_eq!(
-            testbed_remote_kind("https://github.com/taiyun668/gogoke-seat-testbed-copy.git"),
-            None
+            remote_kind("https://github.com/taiyun668/gogoke-seat-testbed-copy.git"),
+            Some("HTTPS")
         );
     }
 
@@ -1277,7 +1307,7 @@ pub(crate) fn register_source(
         ],
         true,
     )?;
-    let remote_kind = testbed_remote_kind(&remote).ok_or(WorktreeError::Denied)?;
+    let remote_kind = remote_kind(&remote).ok_or(WorktreeError::Denied)?;
     let baseline = git(
         db,
         root,
@@ -1438,9 +1468,11 @@ fn pointer(path: &Path, common: &Path) -> Result<(String, u64, RootIdentity, Fil
     Ok((content_hash(&bytes), bytes.len() as u64, identity, file))
 }
 
-fn ensure_worktree_parent(root: &RootLock) -> Result<PathBuf> {
+fn ensure_worktree_parent(root: &RootLock, mixed_path_id: Option<&str>) -> Result<PathBuf> {
     let mut parent = root.canonical_root().canonical_path.clone();
-    for component in ["v37-worktrees", "single"] {
+    let mut components = vec!["v37-worktrees", if mixed_path_id.is_some() { "mixed" } else { "single" }];
+    if let Some(path_id) = mixed_path_id { components.push(path_id); }
+    for component in components {
         parent = parent.join(component);
         match fs::create_dir(&parent) {
             Ok(()) => {}
@@ -1470,6 +1502,26 @@ pub(crate) fn create_worktree(
     custodian: &mut ProcessCustodian,
     input: CreateWorktree<'_>,
 ) -> Result<ResolvedBinding> {
+    create_worktree_in_space(db, root, owner, pin, custodian, None, input)
+}
+
+/// A mixed space has one host-generated physical parent and separate linked
+/// trees for every repository/project edge. The caller names only an opaque
+/// graph identity; it never chooses a directory or Git branch.
+pub(crate) fn create_mixed_worktree(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian, space_id: &str,
+    input: CreateWorktree<'_>,
+) -> Result<ResolvedBinding> {
+    if !atom(space_id) { return Err(WorktreeError::Invalid("space id")); }
+    create_worktree_in_space(db, root, owner, pin, custodian, Some(space_id), input)
+}
+
+fn create_worktree_in_space(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian, space_id: Option<&str>,
+    input: CreateWorktree<'_>,
+) -> Result<ResolvedBinding> {
     if ![
         input.request_id,
         input.repository_id,
@@ -1486,7 +1538,8 @@ pub(crate) fn create_worktree(
     }
     let fingerprint = sha256_hex(input.request_bytes);
     let path_id = random_id()?;
-    let (source, source_identity, common, common_identity, baseline, seat_snapshot) = transaction(
+    let proposed_space_path = random_id()?;
+    let (source, source_identity, common, common_identity, baseline, seat_snapshot, mixed_path) = transaction(
         db,
         |db| {
             check_owner_in_current_transaction(db, owner)?;
@@ -1559,19 +1612,37 @@ pub(crate) fn create_worktree(
             insert.bind_text(11, &snapshot.3)?;
             insert.bind_text(12, &snapshot.4)?;
             insert.step_done()?;
-            Ok((result.0, result.1, result.2, result.3, result.4, snapshot))
+            let mixed_path = if let Some(space_id) = space_id {
+                let space = Statement::prepare(db.as_ptr(),
+                    "SELECT path_id,classification,state FROM main.gogoke_v37_worktree_spaces WHERE space_id=?1")?;
+                space.bind_text(1, space_id)?;
+                if space.step_row()? {
+                    let path = space.column_text(0)?;
+                    if space.column_text(1)? != "MIXED" || space.column_text(2)? != "ACTIVE" ||
+                        space.step_row()? { return Err(WorktreeError::Denied); }
+                    Some(path)
+                } else {
+                    let add = Statement::prepare(db.as_ptr(),
+                        "INSERT INTO main.gogoke_v37_worktree_spaces(space_id,path_id,classification,state,revision) VALUES(?1,?2,'MIXED','ACTIVE',1)")?;
+                    add.bind_text(1, space_id)?;
+                    add.bind_text(2, &proposed_space_path)?;
+                    add.step_done()?;
+                    Some(proposed_space_path.clone())
+                }
+            } else { None };
+            Ok((result.0, result.1, result.2, result.3, result.4, snapshot, mixed_path))
         },
     ).map_err(|error| { if uncertain(&error) {
         RootLock::poison_identity(&root.canonical_root().identity);
     } error })?;
     let source = PathBuf::from(source);
     let common = PathBuf::from(common);
-    let target = root
-        .canonical_root()
-        .canonical_path
-        .join("v37-worktrees")
-        .join("single")
-        .join(&path_id);
+    let target = match &mixed_path {
+        Some(space_path) => root.canonical_root().canonical_path.join("v37-worktrees")
+            .join("mixed").join(space_path).join(&path_id),
+        None => root.canonical_root().canonical_path.join("v37-worktrees")
+            .join("single").join(&path_id),
+    };
     let effect = (|| -> Result<ResolvedBinding> {
         if inspect_root(&source)?.identity.opaque() != source_identity
             || inspect_root(&common)?.identity.opaque() != common_identity
@@ -1581,7 +1652,7 @@ pub(crate) fn create_worktree(
         source_checkout_has_no_external_drivers(
             db, root, custodian, pin, &source, &common, &baseline,
         )?;
-        ensure_worktree_parent(root)?;
+        ensure_worktree_parent(root, mixed_path.as_deref())?;
         match require_absent(&target) {
             Ok(()) => {}
             Err(WorktreeError::Denied) => return Err(WorktreeError::Unknown),
@@ -1712,6 +1783,13 @@ pub(crate) fn create_worktree(
             q.bind_text(16, &common_identity)?;
             q.bind_text(17, &baseline)?;
             q.step_done()?;
+            if let Some(space_id) = space_id {
+                let member = Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_worktree_members(worktree_id,space_id,repository_id,domain_id,seat_id) VALUES(?1,?2,?3,?4,?5)")?;
+                member.bind_text(1, input.target_id)?; member.bind_text(2, space_id)?;
+                member.bind_text(3, input.repository_id)?; member.bind_text(4, input.domain_id)?;
+                member.bind_text(5, input.seat_id)?; member.step_done()?;
+            }
             let update=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_worktree_operations SET phase='REGISTERED' WHERE request_id=?1 AND phase='INTENT'")?;
             update.bind_text(1, input.request_id)?;
             update.step_done()?;
@@ -1746,6 +1824,11 @@ pub(crate) fn create_worktree(
                 let changed = Statement::prepare(db.as_ptr(), "SELECT changes()")?;
                 if !changed.step_row()? || changed.column_text(0)? != "1" {
                     return Err(WorktreeError::Unknown);
+                }
+                if let Some(space_id) = space_id {
+                    let space = Statement::prepare(db.as_ptr(),
+                        "UPDATE main.gogoke_v37_worktree_spaces SET state='UNKNOWN' WHERE space_id=?1 AND state='ACTIVE'")?;
+                    space.bind_text(1, space_id)?; space.step_done()?;
                 }
                 Ok(())
             });
@@ -1798,6 +1881,7 @@ pub(crate) fn resolve_for_launch(
     expected_incarnation: &str,
     expected_generation: i64,
 ) -> Result<ResolvedBinding> {
+    f2::launch_allowed(db, worktree_id)?;
     if ![
         worktree_id,
         repository_id,
@@ -1871,12 +1955,19 @@ fn resolve_id(
     {
         return Err(WorktreeError::Denied);
     }
-    let exact = root
-        .canonical_root()
-        .canonical_path
-        .join("v37-worktrees")
-        .join("single")
-        .join(&path_id);
+    let member = Statement::prepare(db.as_ptr(),
+        "SELECT s.path_id,s.classification,s.state FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktree_spaces s ON s.space_id=m.space_id WHERE m.worktree_id=?1")?;
+    member.bind_text(1, id)?;
+    let exact = if member.step_row()? {
+        let space_path = member.column_text(0)?;
+        if !atom(&space_path) || member.column_text(1)? != "MIXED" ||
+            member.column_text(2)? != "ACTIVE" || member.step_row()? { return Err(WorktreeError::Denied); }
+        root.canonical_root().canonical_path.join("v37-worktrees")
+            .join("mixed").join(space_path).join(&path_id)
+    } else {
+        root.canonical_root().canonical_path.join("v37-worktrees")
+            .join("single").join(&path_id)
+    };
     if path != exact || fs::canonicalize(&path)? != path {
         return Err(WorktreeError::Denied);
     }

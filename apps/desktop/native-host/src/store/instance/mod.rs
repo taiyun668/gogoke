@@ -8,7 +8,7 @@ mod resolver;
 mod temporary;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
-pub(crate) use catalog::{discover_program, locate_pinned_program, CatalogError};
+pub(crate) use catalog::{discover_program, known_new_version, locate_pinned_program, CatalogError};
 pub(crate) use cap::{read_instance_concurrency_cap, set_instance_concurrency_cap};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation, repin_program, reconcile_program_repin,
