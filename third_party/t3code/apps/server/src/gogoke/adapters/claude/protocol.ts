@@ -1,8 +1,8 @@
-/** Claude Code CLI 2.1.286 stream-json adapter boundary.
+/** Claude Code CLI 2.1.196 stream-json adapter boundary.
  * Protocol facts are pinned to the public Claude Code CLI/Agent SDK docs.
  * Runtime support remains unverified until a real pinned CLI sample is captured.
  */
-export const CLAUDE_PINNED_VERSION = "2.1.286" as const;
+export const CLAUDE_PINNED_VERSION = "2.1.196" as const;
 
 export class ClaudeProtocolError extends Error {
   override readonly name = "ClaudeProtocolError";

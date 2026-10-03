@@ -1,5 +1,5 @@
 TASK RESULT: IMPLEMENTED_UNVERIFIED
-CURRENT_STATE: B2.1 adapter source is present on the isolated branch; shared host wiring is pending.
+CURRENT_STATE: B2.1 adapter source is present on the isolated branch; Controller aligned the fixed version to the actual installed 2.1.196 without changing that CLI. Shared native host wiring is pending.
 FILES_CHANGED: third_party/t3code/apps/server/src/gogoke/adapters/claude/{adapter.ts,index.ts,protocol.ts,session.ts,REFERENCES.md,SHARED_INTEGRATION.md}; artifacts/gogoke-37/parallel/B2/TASK-RESULT.md
 IMPORTANT_DIFF: Added the pinned Claude Code 2.1.286 stream-json boundary, session-ID resume arguments, stream event/result decoding, LPAC admission refusal, isolated instance environment with documented auto-memory-off flag, and explicit login/status command descriptors. In-turn stdin append reports UNKNOWN. Native QCard and manual compaction are not claimed.
 VALIDATION: Signed Node directly checked malformed original result fields, invalid-input state preservation, write-before-init, duplicate-turn refusal, real-frame session binding and explicit terminal decoding. These source checks passed; real pinned-CLI protocol goldens and end-to-end host wiring remain NOT_RUN. Exact revised-byte cloud CI pending.
