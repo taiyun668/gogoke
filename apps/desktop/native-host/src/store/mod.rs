@@ -59,6 +59,9 @@ pub(crate) mod ledger;
 pub(crate) mod inbox;
 
 #[cfg(windows)]
+pub(crate) mod sidechat;
+
+#[cfg(windows)]
 pub(crate) mod session_transport;
 
 pub mod protocol;

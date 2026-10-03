@@ -1,0 +1,8 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "changes": "Integrated the seven independent B2/B3/B4/B5/D/E2/F2 branches and reviewed repairs. Added the native sidechat module to the real store compilation surface; integrated the Owner-merged PR62 main.",
+  "result": "SOURCE_INTEGRATED_CLOUD_PENDING. Adapter/native focused source reviews passed their stated scope. D's native source is now selected for compilation; it has no product ingress yet. Four-provider execution, authenticated host bridging, actual goldens and installed-product E2E remain NOT_RUN. M1 candidate construction stays on its separate branch.",
+  "next": "Compile the actual combined native modules in cloud, align Claude to the measured fixed CLI, then connect the existing native custody/raw-frame/ledger extension points. A service capability never becomes a User or seat grant; UNKNOWN is never an instruction to resend.",
+  "references": "Reused each line's references and SHARED_INTEGRATION notes, the current main authorization readback, gogo-party runtime history, existing OriginBoundFrame/rpc_journal/A capture and the independent Native/TS bridge analysis. Existing TS transport definitions are not treated as a working product bridge.",
+  "acceptance": false
+}
