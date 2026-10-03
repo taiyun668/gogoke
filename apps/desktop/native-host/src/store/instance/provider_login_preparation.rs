@@ -46,6 +46,7 @@ pub(crate) struct PreparedProviderLogin {
 pub(crate) enum StatusObservation {
     Documented(PreparedStatusObservation),
     OpenCodeCredentialList(PrepareRequest),
+    GrokModelsAuthenticationHeading(PrepareRequest),
     Unknown(&'static str),
 }
 
@@ -280,6 +281,9 @@ pub(crate) fn prepare_registered_provider_login(db: &mut VerifiedDatabaseConnect
             }),
         (Some(argv), StatusContract::OpenCodeCredentialList) =>
             StatusObservation::OpenCodeCredentialList(launch(
+                &application, &home.path, &environment, argv, &binding)),
+        (Some(argv), StatusContract::GrokModelsAuthenticationHeading) =>
+            StatusObservation::GrokModelsAuthenticationHeading(launch(
                 &application, &home.path, &environment, argv, &binding)),
         _ => StatusObservation::Unknown("no fixed-version independent status result contract"),
     };

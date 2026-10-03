@@ -14,6 +14,38 @@ pub(crate) use preparation::{prepare_registered_provider_login, LoginPreparation
     StatusObservation};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GrokModelsAccountState {
+    CredentialPresent,
+    LoggedOut,
+    Unknown,
+}
+
+/// Classify only the CLI's independent authentication heading, never its
+/// model inventory or process exit alone. The positive fixed-binary output
+/// still requires Owner Windows qualification; this shape comes from the
+/// published source snapshot, which is not byte-equivalent to the binary.
+pub(crate) fn classify_grok_models_status(stdout: &[u8], exit: Option<u32>) -> GrokModelsAccountState {
+    if exit != Some(0) { return GrokModelsAccountState::Unknown; }
+    let Ok(output) = std::str::from_utf8(stdout) else { return GrokModelsAccountState::Unknown; };
+    let mut headings = output.lines().map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty());
+    let first = headings.next();
+    let state = match first {
+        Some("You are not authenticated.") => GrokModelsAccountState::LoggedOut,
+        Some(line) if line.starts_with("You are logged in with ")
+            && line.ends_with('.')
+            && line.len() > "You are logged in with .".len()
+            && !line.bytes().any(|byte| byte.is_ascii_control()) =>
+                GrokModelsAccountState::CredentialPresent,
+        _ => GrokModelsAccountState::Unknown,
+    };
+    if headings.any(|line| line == "You are not authenticated."
+        || line.starts_with("You are logged in with ")) {
+        GrokModelsAccountState::Unknown
+    } else { state }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LoginProvider {
     Claude,
     OpenCode,
@@ -75,6 +107,9 @@ pub(crate) enum StatusContract {
     /// OpenCode prints local credential inventory only; the host never reads
     /// the listed auth file or treats login exit zero as account evidence.
     OpenCodeCredentialList,
+    /// `grok models` prints an authentication heading independently of its
+    /// model inventory. An exit zero or listed models alone prove nothing.
+    GrokModelsAuthenticationHeading,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,13 +197,13 @@ const GROK: ProviderLoginRecipe = ProviderLoginRecipe {
     pinned_version: "1.0.41",
     executable: "grok",
     argv: &["login", "--oauth"],
-    instructions: "The exact fixed binary's help confirms this login command and OAuth selection. Browser launch and successful completion are not runtime-qualified; do not infer either from argv or process exit.",
+    instructions: "The fixed help confirms OAuth login. Browser launch and login completion remain unqualified; reconcile account state with the same pinned CLI's independent models authentication heading, never its model list or exit alone.",
     availability: RecipeAvailability::Supported,
     environment: GROK_ENV,
     browser: BrowserBehavior::Unknown,
-    completion: CompletionBehavior::Unsupported,
-    status_argv: None,
-    status_contract: StatusContract::Unsupported,
+    completion: CompletionBehavior::HostReconciliationRequired,
+    status_argv: Some(&["models"]),
+    status_contract: StatusContract::GrokModelsAuthenticationHeading,
 };
 
 const ANTI_GRAVITY: ProviderLoginRecipe = ProviderLoginRecipe {
@@ -243,4 +278,30 @@ pub(crate) fn https_url_candidate_for_manual_owner_display(output: &str) -> Opti
         return None;
     }
     Some(candidate.to_owned())
+}
+
+#[cfg(test)]
+mod grok_status_tests {
+    use super::{classify_grok_models_status, GrokModelsAccountState as State};
+
+    #[test]
+    fn grok_models_requires_an_unambiguous_cli_authentication_heading() {
+        assert_eq!(classify_grok_models_status(
+            b"You are not authenticated.\r\n\r\nDefault model: grok\r\nAvailable models:\r\n",
+            Some(0)), State::LoggedOut);
+        // This source-snapshot shape is a parser guard, not a fixed-binary
+        // positive login observation or Owner Windows qualification.
+        assert_eq!(classify_grok_models_status(
+            b"You are logged in with grok.com.\n\nAvailable models:\n", Some(0)),
+            State::CredentialPresent);
+        for (stdout, exit) in [
+            (&b"You are not authenticated.\nAvailable models:\n"[..], Some(1)),
+            (&b"Available models:\n"[..], Some(0)),
+            (&b"prefix You are logged in with grok.com.\n"[..], Some(0)),
+            (&b"You are logged in with .\n"[..], Some(0)),
+            (&b"You are not authenticated.\nYou are logged in with grok.com.\n"[..], Some(0)),
+        ] {
+            assert_eq!(classify_grok_models_status(stdout, exit), State::Unknown);
+        }
+    }
 }

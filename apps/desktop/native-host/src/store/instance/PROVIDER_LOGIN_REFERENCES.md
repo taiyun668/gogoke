@@ -58,8 +58,14 @@ that original custodied line together with durable STOPPED exit 0, no
 cancellation/capture failure, and the same F pin/home records
 `CREDENTIAL_PRESENT_NO_VALIDITY_CHECK`; exit zero alone never does. A later
 ambiguous inventory leaves that durable observation intact, while the exact
-empty `0 credentials` inventory records LOGGED_OUT. Grok has no evidenced
-independent status command and remains Unknown. Antigravity remains Unsupported
+empty `0 credentials` inventory records LOGGED_OUT. Grok's fixed `models`
+command prints an independent authentication heading: the exact complete
+`You are not authenticated.` heading classifies LOGGED_OUT on exit 0; a
+complete `You are logged in with ...` heading is a conservative positive
+contract from the non-equivalent published source snapshot and still needs
+fixed-binary Owner Windows golden qualification. Missing, conflicting or
+unrecognized headings and nonzero exits remain UNKNOWN; the model inventory
+and exit 0 alone never indicate account state. Antigravity remains Unsupported
 because its Windows keyring is shared. Codex retains its existing app-server path.
 The status CLI is separately custodied. Its final stderr tail is drained and
 captured before durable release, then included with the original exit code in
@@ -89,7 +95,7 @@ does not establish their launch result.
 | --- | --- | --- | --- |
 | Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status --json` is the independent read; only matching documented exit 0/`loggedIn:true` or 1/`loggedIn:false` is classified. Do not parse other account fields. |
 | OpenCode `1.18.32` | `opencode auth login --pure --provider openai --method "ChatGPT Pro/Plus (browser)"`. Fixed help and tagged source show both selectors skip terminal menus. `--pure` skips external plugins while retaining the built-in OpenAI auth plugin. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | The selected built-in method prints a complete `Go to:` authorization URL, waits on localhost:1455, and does not call a browser opener. The User host may open that exact printed URL once. The fixed callback stores the local OAuth entry before its exact complete success line. That original line plus durable successful stop proves local credential presence; `auth list --pure` independently proves the observed empty inventory. No remote token validity is claimed. |
-| Grok Build `1.0.41` | `grok login --oauth`. Exact fixed-binary `--help` evidence confirms this command and OAuth option. This is command-shape evidence only; the runtime flow is not qualified. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home, matching H's model launch selector; preserve original AppData for browser context. | Browser-opening behavior and completion remain unknown. The help exposes no `--no-browser` or status flag. H must not auto-open an output URL or infer login success from process exit; status detection is Unsupported. |
+| Grok Build `1.0.41` | `grok login --oauth`. Exact fixed-binary `--help` evidence confirms this command and OAuth option. `grok models` is the separate CLI-owned status observation. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home for login and status, matching H's model launch selector; preserve original AppData for browser context. | Browser-opening behavior and login completion remain unknown. The help exposes no `--no-browser` flag. H must not auto-open an output URL or infer login success from process exit or model listing. Reconcile only from the independent authentication heading, and retain UNKNOWN for unqualified output. |
 | Antigravity CLI `1.2.11` | The exact official tag says first launch of `agy` authenticates through system keyring and opens the browser if needed. **Unsupported as an instance login**: it exposes no documented login-only command, and the system keyring is shared across this Windows user. | Local home bindings cannot isolate the system keyring identity. | The CLI owns first-launch browser behavior; H must not open a duplicate URL. Account status stays `UNKNOWN`; do not turn a shared keyring session into per-instance readiness. |
 | Codex `0.160` | Out of scope; existing Codex login path stays unchanged. | This module makes no Codex launch or environment change. | Existing `v37_login` owns its Codex browser URL and callback flow. |
 
@@ -195,7 +201,13 @@ displayed but do not become process frames, status evidence, or durable facts.
   name does not identify the provider ID. Actual Owner Windows positive
   output and browser/SAC outcome remain NOT_RUN at the stable point.
 - Grok official source snapshot:
-  [authentication guide at source-audit commit](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+  [authentication guide](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
+  and [`models` implementation](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/src/models.rs)
+  at source-audit commit. The latter prints an authentication heading before
+  the model inventory. It has separate `LoggedIn`, `NotAuthenticated`, API-key,
+  deployment-key and model-credential branches; only the first two headings
+  are classified by the fixed recipe. The model inventory itself is never
+  an authentication result.
   B4 records the installed `1.0.41` version observation but states the source
   snapshot and installed executable are not byte-equivalent. The exact help
   observation below supersedes this source for command syntax only; the guide
@@ -213,10 +225,18 @@ displayed but do not become process frames, status evidence, or durable facts.
   does not prove URL printing, browser launching, or completion semantics.
   The published GitHub source snapshot and the current changelog are not
   proven byte-equivalent to this `1.0.41` executable. Its fixed `login --help`
-  exposes `--oauth` but no independent account-status result or exit contract.
-  Keep Grok state Unknown until an exact fixed-version CLI-owned status or
-  login-completion result is captured from an Owner-authorized isolated login;
-  a host read of `auth.json` or a model request is not a substitute.
+  exposes `--oauth` but no independent status flag or exit contract. A separate
+  Owner-provided ordinary-view observation used the same fixed SHA and version
+  with a fresh empty `HOME`, `USERPROFILE` and `GROK_HOME`, original AppData and
+  cleared API/key/token environment. `grok models` exited 0 and printed the
+  complete `You are not authenticated.` line, then a default and available
+  model inventory. This directly qualifies the negative heading and disproves
+  exit-0/model-list login inference; no login, model prompt or credential read
+  occurred. The positive `You are logged in with ...` heading is present in
+  the non-equivalent source snapshot, but its exact fixed-binary output and
+  browser/SAC behavior remain NOT_RUN until the Owner Windows stable-point
+  golden observation. Login completion stays HostReconciliationRequired; a
+  host read of `auth.json` or a model request is not a substitute.
 - Google official sources: [Antigravity CLI `1.2.11` README](https://github.com/google-antigravity/antigravity-cli/blob/1.2.11/README.md)
   and [current installation/authentication docs](https://www.antigravity.google/docs/cli/install/).
   The exact tag documents first-launch keyring sign-in, local automatic browser
