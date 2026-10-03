@@ -83,7 +83,9 @@ fn persisted_limits(
     domain_id: &str,
     instance_id: &str,
 ) -> Result<TrustedLimits, AdmissionError> {
-    let project_parallel = seat::read_project_parallel_cap(db, domain_id)
+    seat::refresh_host_parallel_fact_in_transaction(db)
+        .map_err(AdmissionError::ProjectCapacity)?;
+    let (project_parallel, _) = seat::read_effective_project_parallel_cap(db, domain_id)
         .map_err(AdmissionError::ProjectCapacity)?;
     let instance_concurrency = instance::read_instance_concurrency_cap(db, instance_id)
         .map_err(AdmissionError::InstanceCapacity)?;
@@ -435,7 +437,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn admission_reads_both_required_owner_caps_on_the_same_connection() {
+    fn admission_refreshes_os_cap_with_owner_and_instance_caps_in_one_transaction() {
         use crate::root::RootLock;
         use crate::store::same_open::{create_new, open_existing, route_b_test_guard};
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -454,22 +456,39 @@ mod tests {
         seat::initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
 
+        db.execute("BEGIN IMMEDIATE").unwrap();
         assert!(matches!(persisted_limits(&db, "projectA", "instanceA"),
             Err(AdmissionError::ProjectCapacity(seat::SeatError::Denied))));
+        db.execute("ROLLBACK").unwrap();
+        assert!(matches!(seat::read_host_parallel_fact(&db), Err(seat::SeatError::Denied)));
         seat::set_project_parallel_cap(&mut db, &owner, "projectA", 4).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
         assert!(matches!(persisted_limits(&db, "projectA", "instanceA"),
             Err(AdmissionError::InstanceCapacity(
                 crate::store::orchestration::OrchestrationError::AccessDenied))));
+        db.execute("ROLLBACK").unwrap();
         instance::set_instance_concurrency_cap(&mut db, &owner, "instanceA", 4).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seat_host_resources(singleton,source,observed_parallelism,machine_limit,revision) VALUES(1,'STD_AVAILABLE_PARALLELISM',9223372036854775807,9223372036854775807,1)").unwrap();
         db.execute("BEGIN IMMEDIATE").unwrap();
         let limits = persisted_limits(&db, "projectA", "instanceA").unwrap();
-        assert_eq!((limits.project_parallel, limits.instance_concurrency), (4, 4));
+        let fact = seat::read_host_parallel_fact(&db).unwrap();
+        assert_eq!(fact.observed_parallelism,
+            std::thread::available_parallelism().unwrap().get() as i64);
+        assert_eq!(fact.machine_limit, fact.observed_parallelism);
+        assert_eq!((limits.project_parallel, limits.instance_concurrency),
+            (4_i64.min(fact.machine_limit), 4));
+        assert_eq!(seat::read_project_parallel_cap(&db, "projectA").unwrap(), 4);
         db.execute("COMMIT").unwrap();
         db.close_checked().unwrap();
 
         let reopened = open_existing(&root, &path).unwrap();
+        reopened.execute("BEGIN IMMEDIATE").unwrap();
         let limits = persisted_limits(&reopened, "projectA", "instanceA").unwrap();
-        assert_eq!((limits.project_parallel, limits.instance_concurrency), (4, 4));
+        let fact = seat::read_host_parallel_fact(&reopened).unwrap();
+        assert_eq!((limits.project_parallel, limits.instance_concurrency),
+            (4_i64.min(fact.machine_limit), 4));
+        assert_eq!(seat::read_project_parallel_cap(&reopened, "projectA").unwrap(), 4);
+        reopened.execute("COMMIT").unwrap();
         reopened.close_checked().unwrap();
         drop(root);
         std::fs::remove_file(path).unwrap();
