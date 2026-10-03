@@ -318,12 +318,24 @@ impl<'root> ProductDatabase<'root> {
         } else { match &fresh.status {
             StatusObservation::Unknown(_) => NativeAccountState::Unknown,
             StatusObservation::Documented(status) => {
-                let (bytes, exit) = self.observe_provider_status(command, &status.request)?;
-                classify_status(&bytes, exit, status.logged_in_exit, status.logged_out_exit)
+                let (bytes, exit, stderr) = self.observe_provider_status(command, &status.request)?;
+                let state = classify_status(&bytes, exit, status.logged_in_exit, status.logged_out_exit);
+                if state == NativeAccountState::Unknown
+                    && (stderr.len() > 0 || (exit != u32::try_from(status.logged_in_exit).ok()
+                        && exit != u32::try_from(status.logged_out_exit).ok())) {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "provider status CLI exit={exit:?}; STDERR_TAIL: {stderr}")));
+                }
+                state
             }
             StatusObservation::OpenCodeCredentialList(request) => {
-                let (bytes, exit) = self.observe_provider_status(command, request)?;
-                classify_opencode_credential_list(&bytes, exit)
+                let (bytes, exit, stderr) = self.observe_provider_status(command, request)?;
+                let state = classify_opencode_credential_list(&bytes, exit);
+                if state == NativeAccountState::Unknown && (!stderr.is_empty() || exit != Some(0)) {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "provider status CLI exit={exit:?}; STDERR_TAIL: {stderr}")));
+                }
+                state
             }
         }};
         if state == NativeAccountState::Unknown && fresh.driver_id == "opencode" {
@@ -349,7 +361,7 @@ impl<'root> ProductDatabase<'root> {
         &mut self,
         command: &OwnerLoginCommand,
         request: &PrepareRequest,
-    ) -> Result<(Vec<u8>, Option<u32>)> {
+    ) -> Result<(Vec<u8>, Option<u32>, String)> {
         let operation_id = status_operation_id(command);
         let prepared = match self.process_custodian.prepare(request) {
             Ok(prepared) => prepared,
@@ -466,6 +478,12 @@ impl<'root> ProductDatabase<'root> {
             Ok(prefix) => self.collect_provider_stopped_stdout(&prepared, prefix).map(|(bytes, _)| bytes),
             Err(error) => Err(OrchestrationError::V37StoreFailure(error)),
         };
+        let process = self.process_custodian.active(&prepared.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        let stderr_drain = if proof.writer_fence_verified && proof.active_job_processes == Some(0) {
+            process.drain_stderr_after_writers_stopped()
+        } else { Err("provider status stderr writers not fenced".into()) };
+        let stderr = process.stderr_tail();
         let revision =
             match authority::mark_process_stopped(&mut self.connection, &operation_id, &proof) {
                 Ok(revision) => revision,
@@ -510,11 +528,19 @@ impl<'root> ProductDatabase<'root> {
             }));
             return Err(error.into());
         }
-        let bytes = stdout?;
-        if !exited.map_err(OrchestrationError::V37StoreFailure)? {
-            return Ok((bytes, None));
+        let bytes = stdout.map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "provider status stdout: {error:?}; CLI exit={:?}; STDERR_TAIL: {stderr}",
+            proof.exit_code)))?;
+        if let Err(error) = stderr_drain {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "provider status stderr drain: {error}; CLI exit={:?}; STDERR_TAIL: {stderr}",
+                proof.exit_code)));
         }
-        Ok((bytes, proof.exit_code))
+        if !exited.map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "{error}; CLI exit={:?}; STDERR_TAIL: {stderr}", proof.exit_code)))? {
+            return Ok((bytes, None, stderr));
+        }
+        Ok((bytes, proof.exit_code, stderr))
     }
 
     fn record_provider_state(
