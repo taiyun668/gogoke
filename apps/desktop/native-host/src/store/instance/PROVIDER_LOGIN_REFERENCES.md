@@ -31,6 +31,11 @@ custody. After the original STOPPED proof is durable, cleanup revalidates that
 same provider's F home before removing only `gogoke-login-runtime`. The Codex
 path keeps its existing Windows cache-junction handling. A changed home or
 runtime identity fails closed and does not broaden deletion.
+If that fixed runtime cannot be removed after the STOPPED confirmation, the
+original in-memory `PendingAccount` stays unsettled with the raw cleanup error.
+A later status action on the same request revalidates the same home/runtime and
+retries cleanup without preparing or launching another child. A new request
+cannot replace that custody while cleanup remains pending.
 
 `status` is a separate `StatusObservation`. Claude's fixed `auth status --json`
 requires both a documented exit code and matching boolean `loggedIn`; any
@@ -145,6 +150,12 @@ displayed but do not become process frames, status evidence, or durable facts.
   credentials` and no host credential read. This proves a negative local
   inventory only; no login, positive OAuth entry, model turn, or browser flow
   was exercised.
+  The fixed source's browser callback calls `Auth.set(openai, oauth)` before
+  printing `Login successful`. That is stronger than login exit zero, but the
+  current positive `auth list` bytes have not been measured and the list prints
+  a display name rather than the provider ID. A strict positive local-presence
+  parser needs the exact fixed CLI output after an Owner-authorized isolated
+  login at the stable point; it does not need a remote token-validity probe.
 - Grok official source snapshot:
   [authentication guide at source-audit commit](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
   B4 records the installed `1.0.41` version observation but states the source
@@ -162,6 +173,12 @@ displayed but do not become process frames, status evidence, or durable facts.
   observation proves only the parser's displayed command/option surface: no
   login, browser authorization, credentials, or model request occurred, and it
   does not prove URL printing, browser launching, or completion semantics.
+  The published GitHub source snapshot and the current changelog are not
+  proven byte-equivalent to this `1.0.41` executable. Its fixed `login --help`
+  exposes `--oauth` but no independent account-status result or exit contract.
+  Keep Grok state Unknown until an exact fixed-version CLI-owned status or
+  login-completion result is captured from an Owner-authorized isolated login;
+  a host read of `auth.json` or a model request is not a substitute.
 - Google official sources: [Antigravity CLI `1.2.11` README](https://github.com/google-antigravity/antigravity-cli/blob/1.2.11/README.md)
   and [current installation/authentication docs](https://www.antigravity.google/docs/cli/install/).
   The exact tag documents first-launch keyring sign-in, local automatic browser

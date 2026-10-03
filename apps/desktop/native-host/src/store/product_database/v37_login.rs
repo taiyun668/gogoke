@@ -122,6 +122,7 @@ struct PendingAccountCustody {
     proof: Option<NativeStopProof>,
     durable_revision: Option<u64>,
     abort_prepared: bool,
+    released: bool,
     frame: Option<OriginBoundFrame>,
     request: Option<V37Request>,
 }
@@ -162,7 +163,7 @@ fn account_prepare_failure(launch: &PreparedOwnerLogin, error: ProcessCustodyErr
             runtime_home: Some(launch.runtime_home.clone()), runtime_identity: Some(launch.runtime_identity.clone()),
             registered_driver: Some(launch.registered_driver.clone()),
             registered_home_identity: Some(launch.registered_home_identity.clone()),
-            proof: None, durable_revision: None, abort_prepared: false, frame: None, request: None,
+            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, request: None,
         }),
     }
 }
@@ -909,7 +910,7 @@ impl<'root> ProductDatabase<'root> {
             runtime_home:Some(launch.runtime_home.clone()),runtime_identity:Some(launch.runtime_identity.clone()),
             registered_driver:Some(launch.registered_driver.clone()),
             registered_home_identity:Some(launch.registered_home_identity.clone()),
-            proof,durable_revision:None,abort_prepared,frame:None,request:None,
+            proof,durable_revision:None,abort_prepared,released:false,frame:None,request:None,
         };
         if let Err(error) = authority::record_prepared_process(
             &mut self.connection, &operation_id, &prepared,
@@ -1229,9 +1230,11 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn release_pending_account_custody(&mut self, custody: &mut PendingAccountCustody) -> Result<bool> {
+        if custody.released { return Ok(true); }
         let Some(prepared) = custody.prepared.as_ref() else { return Ok(false); };
         if custody.abort_prepared {
             self.process_custodian.abort_prepared(prepared)?;
+            custody.released = true;
             return Ok(true);
         }
         let Some(operation_id) = custody.operation_id.as_deref() else { return Ok(false); };
@@ -1250,6 +1253,7 @@ impl<'root> ProductDatabase<'root> {
             identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
             durable_revision: revision,
         })?;
+        custody.released = true;
         Ok(true)
     }
 
@@ -1282,8 +1286,17 @@ impl<'root> ProductDatabase<'root> {
                 }
             } else { remove_owned_runtime(runtime, identity) };
             if let Err(error) = cleanup {
-                pending.output.push_str(&format!("\naccount/read runtime cleanup: {error:?}"));
+                pending.latest_error = Some(format!("account/read runtime cleanup: {error:?}"));
+                let output = format!("{}\n{}", pending.output,
+                    pending.latest_error.as_deref().unwrap());
+                let reply = owner_login_reply(command, "UNKNOWN", &output);
+                self.owner_login = Some(OwnerLoginSession::PendingAccount(pending));
+                return Ok(reply);
             }
+        }
+        if let Some(previous) = pending.latest_error.take() {
+            pending.output.push('\n');
+            pending.output.push_str(&previous);
         }
         let state = match (&pending.custody.request, &pending.custody.prepared,
             &pending.custody.frame) {
@@ -1499,6 +1512,13 @@ impl<'root> ProductDatabase<'root> {
                 .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                     "login cleanup registered home: {error:?}")))?;
             if runtime.parent() != Some(home.path.as_path()) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            checked_directory(runtime)?;
+            let current_runtime = inspect_root(runtime).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!(
+                    "login cleanup runtime identity: {error:?}")))?;
+            if &current_runtime.identity != identity {
                 return Err(OrchestrationError::AccessDenied);
             }
             // Preparation strictly verified the whole original home before
@@ -1841,7 +1861,7 @@ impl<'root> ProductDatabase<'root> {
                 runtime_home: Some(prepared_login.runtime_home.clone()),
                 runtime_identity: Some(prepared_login.runtime_identity.clone()),
                 registered_driver: None, registered_home_identity: None,
-                proof, durable_revision, abort_prepared, frame: None,
+                proof, durable_revision, abort_prepared, released: false, frame: None,
                 request: Some(V37Request {
                     raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
                     operation: request.operation.clone(), request_id: request.request_id.clone(),
@@ -2983,9 +3003,22 @@ exit 0
             |custodian, prepared| custodian.activate(prepared)).unwrap_err();
         product.connection.execute("DROP TRIGGER fail_provider_active").unwrap();
         assert!(format!("{error:?}").contains("controlled provider active record failure"));
+        let sentinel = runtime.join("held-cleanup-control.bin");
+        fs::write(&sentinel, b"owned cleanup control").unwrap();
+        let held = fs::OpenOptions::new().read(true).share_mode(0x1).open(&sentinel).unwrap();
         let result = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
-        assert!(result.contains("\"settled\":true"), "confirmed stop must settle original request");
+        assert!(result.contains("\"settled\":false"), "failed cleanup retains original request");
         assert!(result.contains("\"state\":\"UNKNOWN\""));
+        assert!(result.contains("raw_os_error"), "private result preserves original Windows failure");
+        assert!(runtime.exists(), "failed cleanup retains exact host-owned runtime");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        let new_request = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"providerNewRequest","expectedRevision":1}"#;
+        assert!(matches!(product.dispatch_owner_login_frame(new_request), Err(OrchestrationError::OperationConflict)),
+            "new User intent cannot replace retained cleanup custody");
+        drop(held);
+        let final_reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(final_reply.contains("\"settled\":true"), "same request reconciles cleanup after exact handle release");
+        assert!(final_reply.contains("raw_os_error"), "recovered result retains prior failure reason");
         assert!(!runtime.exists(), "confirmed provider runtime must be removed");
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
         let (next, next_identity) = runtime_home(&home.path).unwrap();
