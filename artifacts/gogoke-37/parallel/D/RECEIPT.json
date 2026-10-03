@@ -1,0 +1,68 @@
+{
+  "TASK": "Design 37 D.1 first native side-chat package",
+  "RESULT": "SOURCE_COMPLETE_REQUIRES_ROOT_INTEGRATION",
+  "CURRENT_STATE": "CI_PENDING_INTEGRATION",
+  "baseline": "546d4e9d573d90ecbfc5be6250aabbed6afbe45f",
+  "branch": "codex/gogoke-37-m2-d",
+  "FILES_CHANGED": [
+    "apps/desktop/native-host/src/store/sidechat/mod.rs",
+    "apps/desktop/native-host/src/store/sidechat/schema.sql",
+    "apps/desktop/native-host/src/store/sidechat/sync.rs",
+    "apps/desktop/native-host/src/store/sidechat/tests.rs",
+    "third_party/t3code/apps/server/src/gogoke/sidechat/sidechat.ts",
+    "third_party/t3code/apps/server/src/gogoke/sidechat/sidechat.test.ts",
+    "artifacts/gogoke-37/parallel/D/SHARED_INTEGRATION.md",
+    "artifacts/gogoke-37/parallel/D/RECEIPT.json"
+  ],
+  "IMPORTANT_DIFF": [
+    "Native D registry/lifecycle, raw-byte request replay and immutable receipts use the verified product connection and native Owner issuer.",
+    "Main context is referenced by A epoch/cursor; D persists pending ranges and original H request digests, not a second main transcript.",
+    "Source-seat reference pages preserve A page positions even when filtering yields no events; own transcript reads retain the SIDE tier.",
+    "Sync intent grants one original H send; PREPARED/UNKNOWN after restart cannot grant resend. Completion uses H's original custody journal, generation, createdTurn and receipt identity.",
+    "Unknown append capability stays UNKNOWN and queues references for the next explicit question; no generated placeholder turn.",
+    "Deletion requires H StopFact and removes only A's matching side tier in the same transaction. Side history does not issue main-control or transfer authority."
+  ],
+  "VALIDATION": {
+    "signed_node": "Authenticode Valid",
+    "focused_ts": "2 passed, 0 failed, 0 skipped; synthetic TS/native seam and reference framing only",
+    "scoped_tsc": "exit 0",
+    "schema_sql": "signed Node SQLite in-memory syntax and exact stored definition check passed; source only, not native persistence evidence or product fallback",
+    "diff_check": "exit 0",
+    "native_compile": "NOT_RUN: cloud only; Root-owned module export is not wired in this branch",
+    "native_storage_test": "NOT_RUN: committed Windows same-open integration test; synthetic H/E rows, not provider or custody evidence",
+    "native_k_side_conformance": "NOT_RUN",
+    "real_provider_e2e": "NOT_RUN",
+    "same_pin_append_without_turn": "UNKNOWN: no current-pin behavior evidence supplied"
+  },
+  "FAILURES": [],
+  "INVARIANTS_CHECKED": [
+    "All edits stay within the three D write roots.",
+    "No shared exports, database, H admission, K-SESSION entry, dependencies or workflows changed.",
+    "No model process, credential read, login, CLI install, native local build, signing, installation, release or merge executed.",
+    "TS safety tests reject GLOBAL/SIDE reference leakage and nested history-tag injection; empty filtered pages cannot hide the main tail.",
+    "The code does not create a local parallel-cap authority or ordinary-user model fallback."
+  ],
+  "RISKS": [
+    "Rust sources remain uncompiled until Root exports the module and executes cloud native checks.",
+    "Product user origin, H admission, A output tier registration and native-backed conformance remain integration work.",
+    "Large reference material fails the transport bound explicitly; no silent truncation or invented delivery is claimed."
+  ],
+  "DEVIATIONS_FROM_PLAN": [],
+  "OPEN_QUESTIONS": [],
+  "RECOMMENDED_NEXT_ACTION": "Root integrate the exact SHARED_INTEGRATION seams, run affected cloud checks and real native-backed K-SIDE/CLIgolden paths, then independent review. This receipt is not acceptance.",
+  "owner_touchpoints_added": 0,
+  "REFERENCE": {
+    "checked": [
+      "origin/main AGENTS.md and docs/model-routing.md",
+      "docs/design/gogoke-37-plan-v1/PLAN.json D.1, L0 CONTRACT.md, m2Fake.ts and m2Conformance.ts",
+      "gogo-party packages/room/src/server.ts side transfer and packages/seat-runtime/src/seat-runtime.ts / persistence.ts",
+      "NaveHQ docs/pitfall_library.md Phase 13 append-only queue and host-owned ordering",
+      "LoomOS 03_specs_施工图/应答地基施工图-v0.2.md business facts versus workflow ledger",
+      "docs/research/2026-09-25-substrate-source-teardown.md, 2026-09-25-parts-source-teardown.md, 2026-09-26-kernel-parts-harvest.md and reuse-blueprint.md",
+      "docs/research/2026-09-26-experiments-1-and-4.md and native H codex_rpc/journal protocol implementation",
+      "https://learn.chatgpt.com/docs/app-server#inject-items-into-a-thread"
+    ],
+    "adopted": "Existing same-open native persistence, A epoch/cursor/side scope, H origin-bound original delivery journal, host queueing and escaped reference framing.",
+    "difference_reason": "No legacy Node transcript/JSONL storage or implicit side-to-lead relay is copied. Frozen D registry uses A references and current native authority; vendor append optimization needs actual current-pin behavior proof. Official docs describe inject_items without a turn but do not prove the installed current pin under LPAC."
+  }
+}
