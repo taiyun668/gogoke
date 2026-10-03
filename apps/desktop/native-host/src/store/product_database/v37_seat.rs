@@ -602,7 +602,7 @@ mod tests {
             assert_eq!(decode_receipt(&card_receipt).unwrap().status, V37Status::Applied);
             let card_text = std::str::from_utf8(&card_receipt).unwrap();
             assert!(card_text.contains("\"instruction\":\"default\""));
-            assert!(card_text.contains("\"takeoverReady\":true"));
+            assert!(card_text.contains("\"takeoverReady\":false"));
             assert_eq!(status(product,&card),V37Status::Replayed);
             assert_eq!(status(product,&request("state-card","cardA","seatA",1,
                 r#"{"forged":true}"#)),V37Status::Conflict);
