@@ -250,7 +250,9 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
     const sessionAlias = frame.sessionId === undefined ? null : aliases.alias("session", frame.sessionId);
     const operationAlias = frame.operationId === undefined ? null : aliases.alias("operation", frame.operationId);
     const generationAlias = frame.generation === undefined ? null : aliases.alias("generation", frame.generation);
-    const epochAlias = frame.sourceEpoch === undefined ? null : aliases.alias("epoch", frame.sourceEpoch);
+    const epochAlias = frame.sourceEpoch == null ? null : aliases.alias("epoch", frame.sourceEpoch);
+    const ticketAlias = frame.processTicket == null ? null : aliases.alias("ticket", frame.processTicket);
+    const custodianNonceAlias = frame.custodianNonce == null ? null : aliases.alias("custodian", frame.custodianNonce);
     const cursorAlias = frame.sourceCursor === undefined ? null : aliases.alias("cursor", frame.sourceCursor);
     const reference = { lane, sequence };
     if (frame.sourceKind === "frame" && frame.sourceCursor !== undefined) {
@@ -269,6 +271,8 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
       operationAlias,
       generationAlias,
       sourceEpochAlias: epochAlias,
+      ticketAlias,
+      custodianNonceAlias,
       stepId: frame.stepId === undefined ? null : aliases.alias("step", frame.stepId),
       phase: frame.sourceKind === "command" ? String(frame.phase).toUpperCase() : null,
       rpcRole,
@@ -296,21 +300,25 @@ function correlateFrames(frames) {
   const unmatchedResponses = [];
   const usedResponses = new Set();
   for (const request of requests) {
-    const scope = [request.sessionAlias, request.operationAlias, request.generationAlias, request.sourceEpochAlias];
+    const custodyScope = request.ticketAlias != null && request.custodianNonceAlias != null;
+    const scope = [request.sessionAlias, request.operationAlias, request.generationAlias,
+      ...(custodyScope ? [request.ticketAlias, request.custodianNonceAlias] : [request.sourceEpochAlias])];
     if (scope.some(value => value === null)) {
       unmatchedRequests.push({ lane: request.lane, sequence: request.sequence, reason: "missing-physical-scope" });
       continue;
     }
     const candidates = responses.filter(candidate => candidate.rpcIdAlias === request.rpcIdAlias && candidate.lane !== request.lane
       && candidate.sessionAlias === request.sessionAlias && candidate.operationAlias === request.operationAlias
-      && candidate.generationAlias === request.generationAlias && candidate.sourceEpochAlias === request.sourceEpochAlias);
+      && candidate.generationAlias === request.generationAlias
+      && (custodyScope ? candidate.ticketAlias === request.ticketAlias && candidate.custodianNonceAlias === request.custodianNonceAlias
+        : candidate.sourceEpochAlias === request.sourceEpochAlias));
     if (candidates.length !== 1 || usedResponses.has(candidates[0] ?? null)) {
       unmatchedRequests.push({ lane: request.lane, sequence: request.sequence, reason: candidates.length > 1 ? "ambiguous-response" : candidates.length === 0 ? "no-opposite-response-in-scope" : "response-already-associated" });
       continue;
     }
     const response = candidates[0];
     usedResponses.add(response);
-    pairs.push({ request: { lane: request.lane, sequence: request.sequence }, response: { lane: response.lane, sequence: response.sequence }, rpcIdAlias: request.rpcIdAlias, scope: { session: request.sessionAlias, operation: request.operationAlias, generation: request.generationAlias, sourceEpoch: request.sourceEpochAlias } });
+    pairs.push({ request: { lane: request.lane, sequence: request.sequence }, response: { lane: response.lane, sequence: response.sequence }, rpcIdAlias: request.rpcIdAlias, scope: { session: request.sessionAlias, operation: request.operationAlias, generation: request.generationAlias, sourceEpoch: request.sourceEpochAlias, ticket: request.ticketAlias, custodianNonce: request.custodianNonceAlias }, basis: custodyScope ? "same-native-process-custody" : "recorded-source-epoch" });
   }
   for (const response of responses) if (!usedResponses.has(response)) unmatchedResponses.push({ lane: response.lane, sequence: response.sequence });
   return {
