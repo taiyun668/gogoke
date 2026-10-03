@@ -30,10 +30,10 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     name: Native host Windows real process axes
-    # Full real-process/library gates and eleven compiled mutation/restore pairs.
+    # Full real-process/library gates and twelve compiled mutation/restore pairs.
     # R10 adds three independent pairs to the measured eight-pair job workload.
     # A cold Windows run exhausted 75 minutes during the second R10 restore;
-    # retain all eleven pairs and their restore checks under a finite CI bound.
+    # Retain those pairs and the exact Code Mode component grant pair below.
     timeout-minutes: 105
     runs-on: windows-latest
     env:
@@ -219,6 +219,8 @@ jobs:
             @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
             @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
             @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
+            @{ id = 'code-mode-member-binding'; filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file' },
+            @{ id = 'code-mode-member-real-lpac'; filter = 'official_code_mode_member_runs_in_same_lpac_job_only_after_exact_grant' },
             @{ id = 'native-current-install-pin'; filter = 'pin_is_read_from_same_verified_store_and_requires_observed_login' },
             @{ id = 'manual-repin-product'; filter = 'user_manual_program_repin_observes_fixed_cli_and_preserves_original_instance' },
             @{ id = 'manual-repin-preservation'; filter = 'manual_repin_preserves_home_creation_credentials_and_legacy_unknown_exactly' },
@@ -368,6 +370,39 @@ jobs:
           }
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
+      - name: Verify fixed CLI component grant with a compiled behavioral mutation
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/store/session_transport/codex_component.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $path).Hash
+          $needle = '        profile.grant_bound_program(path, &identity)' + "`n" +
+            '            .map_err(|error| format!("native Codex component grant: {error:?}"))?;' + "`n"
+          if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) {
+            throw 'Exact component production grant must match once'
+          }
+          $filter = 'official_code_mode_member_runs_in_same_lpac_job_only_after_exact_grant'
+          try {
+            [IO.File]::WriteAllText($path,$source.Replace($needle,''),[Text.UTF8Encoding]::new($false))
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Out-Host
+            if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'Removed production helper grant must compile and fail its unchanged behavior test'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($path,$original)
+            if ((Get-FileHash -LiteralPath $path).Hash -cne $hash) { throw 'Exact component source restoration failed' }
+          }
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
+          $output | Out-Host
+          if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Unchanged helper behavior test must pass after exact production restoration'
+          }
       - name: Verify F.1 production fixes with compiled failing mutations
         if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
         shell: pwsh

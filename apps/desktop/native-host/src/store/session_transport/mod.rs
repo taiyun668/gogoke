@@ -6,6 +6,7 @@ pub(crate) mod generation_change;
 mod journal;
 mod seat_io;
 pub(crate) mod launch;
+mod codex_component;
 pub(crate) mod codex_rpc;
 pub(crate) mod codex_output;
 pub(crate) mod rpc_journal;

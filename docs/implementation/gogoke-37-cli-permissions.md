@@ -24,3 +24,7 @@ LPAC 路径的公网访问仍受已有 `internetClient` 与 permission tier 限�
 固定 CLI 0.149.0 的非登录 Doctor HTTPS 检查在原 profile 中报告 TLS handshake/cert validation failure；同一 CLI、SID、home 和显式环境仅添加 `lpacIdentityServices` 后，指定网络检查取得实际 HTTP 405。同一 SID 环境的 system curl 也从 `SEC_E_SECPKG_NOT_FOUND` 变为 TLS 成功与 HTTP 400。这些对照确认该 HTTPS 路径需要这项身份服务许可；Doctor 的其他诊断并未整体通过，且外部测量未加载产品的路径兼容模块，不能替代正式产品流程。修复仍须经过云端原生隔离测试和实际签名候选装机回读，之后由 Owner 完成真实登录；跳过的检查不算通过。
 
 目录 ACL 的授予及进程激活前核验保留严格的根和后代检查。进程激活后的操作核对当前 Owner、席位、实例、会话、版本和操作绑定，并核对同一物理根的身份与继承 ACE、固定程序和 Git 元数据绑定；CLI 在获准目录中正常创建、删除或改名的运行文件可以变化。根级证据只证明该根，动态后代没有整树实时合格声明。
+
+H 模型会话还需要固定 CLI 0.160.0 官方包自带的 `bin/codex-code-mode-host.exe`。宿主从已核主程序的同一目录解析该固定名称，核对官方包成员 SHA-256 `1d448bfde19e7a280d600d8d0bcddf77afbe9feaec1e804905becc5f39bc9db6` 和物理文件身份，保留禁止写入和删除共享的只读句柄直至会话停止，仅向同一 LPAC SID 授予该文件无继承的读/执行 ACE；每次现有启动及会话操作核验也复核它。包目录、相邻文件、其他实例和正式数据不获得权限，capability 和 Job 不变。这个辅助程序由固定 CLI 自己运行，继承原 LPAC token 和 Job，不能使用普通用户登录例外。
+
+真实 0.160.0 工具原文曾报告该成员启动 `Access is denied. (os error 5)`，当时文件 DACL 没有该 LPAC SID，且没有观察到对应 Code Integrity 事件；这不是智能应用控制通过或拦截的结论。该组件的智能应用控制处境仍以修正后的正式候选在 Owner Win11 上实际拉起为准，云端启动成功不能外推到本机；若出现对应拦截事件，按 CT3 交 Owner 决定，不修改系统安全设置。

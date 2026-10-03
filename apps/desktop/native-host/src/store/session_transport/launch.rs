@@ -29,6 +29,7 @@ pub(crate) struct LaunchEvidence {
     profile_name: String,
     program: PathBuf,
     program_identity: RootIdentity,
+    code_mode: super::codex_component::BoundCodexComponent,
     module: Arc<CompatModule>,
     tier: PermissionTier,
     resume_old: Option<ClaimObservation>,
@@ -151,13 +152,14 @@ impl LaunchEvidence {
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
         evidence(profile.grant_bound_tree(&worktree.path, &worktree.identity, writable))?;
         evidence(profile.grant_bound_program(&program, &program_identity))?;
+        let code_mode = super::codex_component::BoundCodexComponent::prepare(&program, &profile)?;
         let module = evidence(CompatModule::prepare_with_roots(root, &[
             (homes.instance.path.clone(), homes.instance.identity.clone()),
             (homes.session.path.clone(), homes.session.identity.clone()),
             (worktree.path.clone(), worktree.identity.clone()),
         ], &profile, &profile_name))?;
         let observed = Self { identity, seat, claim, pin, homes, repository_id: repository_id.into(),
-            worktree, profile, profile_name, program, program_identity, module, tier,
+            worktree, profile, profile_name, program, program_identity, code_mode, module, tier,
             resume_old,resume_request_id };
         observed.verify(db, root, owner, None)?;
         Ok(observed)
@@ -286,6 +288,7 @@ impl LaunchEvidence {
             };
         }
         evidence(self.profile.verify_bound_program_grant(&self.program, &self.program_identity))?;
+        self.code_mode.verify(&self.profile)?;
         let mut mapping = Vec::new();
         self.module.extend_environment(&mut mapping);
         evidence(self.module.validate_launch(Some(&self.profile_name), Some(&mapping)))
