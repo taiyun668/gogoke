@@ -11,6 +11,17 @@ use crate::store::worktree::{self, ResolvedBinding};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+// Model guidance only: LPAC and the bound native assets still enforce access.
+// Keep the official base instructions and the original tool failure evidence.
+const CODEX_WINDOWS_SHELL_ENVIRONMENT: &str =
+    "This gogoke session runs inside a Windows LPAC profile. For shell tools, \
+     explicitly use exec_command with shell=\"cmd.exe\" and login=false, and use CMD syntax. \
+     This host does not provision a PowerShell runtime for the session. \
+     Do not invoke PowerShell or add unprovisioned executable assets. \
+     Use the existing native file tools for file edits. If a tool fails, preserve and \
+     report its original error and exit code; do not automatically retry it. \
+     These instructions do not grant permissions; the native LPAC boundary remains authoritative.";
+
 fn evidence<T, E: std::fmt::Debug>(value: Result<T, E>) -> Result<T, String> {
     value.map_err(|error| format!("native session launch: {error:?}"))
 }
@@ -361,6 +372,8 @@ impl LaunchEvidence {
             "-c".into(), "features.multi_agent_v2=false".into(),
             "-c".into(), "features.default_mode_request_user_input=true".into(),
             "-c".into(), "tools.experimental_request_user_input.enabled=true".into(),
+            "-c".into(), format!("developer_instructions={}", crate::store::atomic::Json::String(
+                crate::store::atomic::JsonString::from_str(CODEX_WINDOWS_SHELL_ENVIRONMENT)).canonical()),
             "-c".into(), format!("sqlite_home={}", crate::store::atomic::Json::String(
                 crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
             "-c".into(), format!("log_dir={}", crate::store::atomic::Json::String(
