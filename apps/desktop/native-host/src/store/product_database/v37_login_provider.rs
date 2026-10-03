@@ -42,6 +42,63 @@ fn classify_status(
     }
 }
 
+fn strip_csi_colors(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            result.push(ch);
+            continue;
+        }
+        if chars.next()? != '[' {
+            return None;
+        }
+        let mut length = 0;
+        loop {
+            let next = chars.next()?;
+            if next == 'm' {
+                break;
+            }
+            if !next.is_ascii_digit() && next != ';' {
+                return None;
+            }
+            length += 1;
+            if length > 32 {
+                return None;
+            }
+        }
+    }
+    Some(result)
+}
+
+fn classify_opencode_credential_list(stdout: &[u8], exit: Option<u32>) -> NativeAccountState {
+    if exit != Some(0) {
+        return NativeAccountState::Unknown;
+    }
+    let Some(text) = strip_csi_colors(stdout) else {
+        return NativeAccountState::Unknown;
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect();
+    // The fixed 1.18.32 executable's empty-home output, after removing only
+    // CSI color escapes. A nonzero credential count does not identify the
+    // provider ID: the CLI prints its display name, so keep it UNKNOWN until
+    // a positive fixed-byte observation establishes an unambiguous shape.
+    if lines.len() == 3
+        && lines[0].starts_with("T  Credentials ")
+        && lines[1] == "|"
+        && lines[2] == "—  0 credentials"
+    {
+        NativeAccountState::LoggedOut
+    } else {
+        NativeAccountState::Unknown
+    }
+}
+
 fn partial_frame_end(error: &ProcessCustodyError) -> bool {
     match error {
         ProcessCustodyError::ProtocolPipe(source) => matches!(
@@ -54,6 +111,32 @@ fn partial_frame_end(error: &ProcessCustodyError) -> bool {
 }
 
 impl<'root> ProductDatabase<'root> {
+    pub(super) fn cleanup_confirmed_provider_login_runtime(
+        &mut self,
+        instance_id: &str,
+        driver: &str,
+        expected_home: &RootIdentity,
+        runtime: &Path,
+        runtime_identity: &RootIdentity,
+    ) -> Result<()> {
+        let home = instance::provider_login::resolve_registered_login_home(
+            &mut self.connection,
+            self.root,
+            &self.owner,
+            instance_id,
+            driver,
+        )
+        .map_err(|error| {
+            OrchestrationError::V37StoreFailure(format!(
+                "provider login cleanup registered home: {error:?}"
+            ))
+        })?;
+        if &home.identity != expected_home || runtime.parent() != Some(home.path.as_path()) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        remove_owned_runtime(runtime, runtime_identity)
+    }
+
     /// Add the current unfinished bytes only to this response snapshot. The
     /// reader still owns them and a later complete LF frame replaces them.
     pub(super) fn provider_display_output(&self, active: &ActiveOwnerLogin) -> String {
@@ -166,6 +249,8 @@ impl<'root> ProductDatabase<'root> {
             account_read: provider.login.clone(), // unused for this CLI
             runtime_home: runtime,
             runtime_identity,
+            registered_driver: provider.driver_id.clone(),
+            registered_home_identity: provider.home.identity.clone(),
         };
         let reply = self.start_owner_device_login(command, launch, |custodian, prepared| {
             custodian.activate(prepared)
@@ -202,13 +287,19 @@ impl<'root> ProductDatabase<'root> {
             || fresh.version != provider.version
             || fresh.program_digest != provider.program_digest
             || fresh.login.binding.generation != provider.login.binding.generation
+            || fresh.browser != provider.browser
         {
             return Err(OrchestrationError::AccessDenied);
         }
         let state = match &fresh.status {
             StatusObservation::Unknown(_) => NativeAccountState::Unknown,
             StatusObservation::Documented(status) => {
-                self.observe_provider_status(command, status)?
+                let (bytes, exit) = self.observe_provider_status(command, &status.request)?;
+                classify_status(&bytes, exit, status.logged_in_exit, status.logged_out_exit)
+            }
+            StatusObservation::OpenCodeCredentialList(request) => {
+                let (bytes, exit) = self.observe_provider_status(command, request)?;
+                classify_opencode_credential_list(&bytes, exit)
             }
         };
         self.record_provider_state(command, &fresh, state)
@@ -217,10 +308,10 @@ impl<'root> ProductDatabase<'root> {
     fn observe_provider_status(
         &mut self,
         command: &OwnerLoginCommand,
-        status: &instance::provider_login::PreparedStatusObservation,
-    ) -> Result<NativeAccountState> {
+        request: &PrepareRequest,
+    ) -> Result<(Vec<u8>, Option<u32>)> {
         let operation_id = status_operation_id(command);
-        let prepared = match self.process_custodian.prepare(&status.request) {
+        let prepared = match self.process_custodian.prepare(request) {
             Ok(prepared) => prepared,
             Err(error) => return Err(OrchestrationError::Process(error)),
         };
@@ -229,6 +320,8 @@ impl<'root> ProductDatabase<'root> {
             prepared: Some(prepared.clone()),
             runtime_home: None,
             runtime_identity: None,
+            registered_driver: None,
+            registered_home_identity: None,
             proof,
             durable_revision: None,
             abort_prepared,
@@ -378,14 +471,9 @@ impl<'root> ProductDatabase<'root> {
         }
         let bytes = stdout?;
         if !exited.map_err(OrchestrationError::V37StoreFailure)? {
-            return Ok(NativeAccountState::Unknown);
+            return Ok((bytes, None));
         }
-        Ok(classify_status(
-            &bytes,
-            proof.exit_code,
-            status.logged_in_exit,
-            status.logged_out_exit,
-        ))
+        Ok((bytes, proof.exit_code))
     }
 
     fn record_provider_state(
@@ -487,5 +575,29 @@ mod tests {
                 NativeAccountState::Unknown
             );
         }
+    }
+
+    #[test]
+    fn fixed_opencode_empty_inventory_is_logout_without_reading_auth_file() {
+        let original = b"\x1b[90mT\x1b[39m  Credentials \x1b[90m~\\.local\\share\\opencode\\auth.json\n\x1b[90m|\x1b[39m\n\x1b[90m\xe2\x80\x94\x1b[39m  0 credentials\n\n";
+        assert_eq!(
+            classify_opencode_credential_list(original, Some(0)),
+            NativeAccountState::LoggedOut
+        );
+        assert_eq!(
+            classify_opencode_credential_list(original, Some(1)),
+            NativeAccountState::Unknown
+        );
+        assert_eq!(
+            classify_opencode_credential_list(b"OpenAI oauth\n1 credentials\n", Some(0)),
+            NativeAccountState::Unknown
+        );
+        assert_eq!(
+            classify_opencode_credential_list(
+                b"T  Credentials isolated\n|\n|  OpenAI oauth\n\xe2\x80\x94  0 credentials\n",
+                Some(0)
+            ),
+            NativeAccountState::Unknown
+        );
     }
 }

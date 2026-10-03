@@ -2,7 +2,7 @@
 //! The caller proves User origin; this module verifies Owner and F identity,
 //! then returns process data. It never starts a child or reads credentials.
 
-use super::{recipe, EnvironmentValue, LoginProvider, RecipeAvailability, StatusContract};
+use super::{recipe, BrowserBehavior, EnvironmentValue, LoginProvider, RecipeAvailability, StatusContract};
 use crate::process::{NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::RootLock;
 use crate::store::atomic::{Json, JsonString, Statement};
@@ -40,10 +40,12 @@ pub(crate) struct PreparedProviderLogin {
     pub(crate) home: ResolvedDirectory,
     pub(crate) login: PrepareRequest,
     pub(crate) status: StatusObservation,
+    pub(crate) browser: BrowserBehavior,
 }
 
 pub(crate) enum StatusObservation {
     Documented(PreparedStatusObservation),
+    OpenCodeCredentialList(PrepareRequest),
     Unknown(&'static str),
 }
 
@@ -205,6 +207,24 @@ fn launch(application: &Path, home: &Path, environment: &[(String, String)],
     PrepareRequest { launch: child, binding: binding.clone() }
 }
 
+/// Revalidate the registered physical home for cleanup after a durable stop.
+/// This does not require the executable to remain installed and never opens
+/// or enumerates credential files in that home.
+pub(crate) fn resolve_registered_login_home(db: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, owner: &OwnerIssuer, instance_id: &str, expected_driver: &str)
+    -> Result<ResolvedDirectory, ProviderLoginPreparationError> {
+    read_product_identity(db, owner)
+        .map_err(|error| ProviderLoginPreparationError::source("Owner identity", error))?;
+    let pin = registered_pin(db, instance_id)?;
+    if pin.driver_id != expected_driver {
+        return Err(ProviderLoginPreparationError::denied("registered driver changed"));
+    }
+    verify_registration(db, root, instance_id, expected_driver)?;
+    let (path, identity) = resolve_registered_provider_home(db, root, instance_id, expected_driver)
+        .map_err(|error| ProviderLoginPreparationError::source("registered home", error))?;
+    Ok(ResolvedDirectory { path, identity })
+}
+
 /// Read F's original registration and current physical objects on the same
 /// verified DB/root/Owner identity. The caller owns process dispatch, raw
 /// output custody, cancellation, browser presentation and later re-observation.
@@ -258,11 +278,14 @@ pub(crate) fn prepare_registered_provider_login(db: &mut VerifiedDatabaseConnect
                 request: launch(&application, &home.path, &environment, argv, &binding),
                 logged_in_exit: logged_in, logged_out_exit: logged_out,
             }),
+        (Some(argv), StatusContract::OpenCodeCredentialList) =>
+            StatusObservation::OpenCodeCredentialList(launch(
+                &application, &home.path, &environment, argv, &binding)),
         _ => StatusObservation::Unknown("no fixed-version independent status result contract"),
     };
     // Preserve the physical identity in the returned evidence. A later launch
     // must re-resolve F and let ProcessCustodian check the exact image bytes.
     Ok(LoginPreparation::Ready(PreparedProviderLogin { instance_id: instance_id.to_owned(),
         driver_id: pin.driver_id, version: pin.version, program_digest: pin.digest,
-        application, home, login, status }))
+        application, home, login, status, browser: recipe.browser }))
 }

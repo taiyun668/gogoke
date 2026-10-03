@@ -25,25 +25,30 @@ registered instance root. `TEMP`/`TMP` also target that root. The host must
 re-resolve F and let ProcessCustodian recheck program/image bytes at actual
 dispatch; this preparation is only a snapshot, not process custody.
 
-`status` is a separate `StatusObservation`. Claude provides a distinct
-`auth status` `PrepareRequest` with documented exits 0=logged in, 1=logged out;
-all other exits are Unknown. OpenCode and Grok return `Unknown` because no
-fixed-version, unambiguous independent status result contract has been
-established. ACP `initialize.authMethods`/`terminal-auth` gives OpenCode a
-login command descriptor, not a post-login status; `auth/login` exit zero does
-not close the account-state question. Grok's fixed help has a login command
-but no status option. The host can show progress and original errors while
-keeping account state Unknown; it must not mark either driver logged in from
-login exit or output text. Antigravity remains Unsupported because the shared
-Windows keyring cannot identify one instance. Codex remains on its existing
-`v37_login` implementation.
+An exceptional PREPARED/activation/ACTIVE-record failure retains the original
+driver, registered home identity, host-owned runtime identity, and native
+custody. After the original STOPPED proof is durable, cleanup revalidates that
+same provider's F home before removing only `gogoke-login-runtime`. The Codex
+path keeps its existing Windows cache-junction handling. A changed home or
+runtime identity fails closed and does not broaden deletion.
+
+`status` is a separate `StatusObservation`. Claude's fixed `auth status --json`
+requires both a documented exit code and matching boolean `loggedIn`; any
+mismatch is Unknown. OpenCode's fixed `auth list --pure` lists local credentials.
+The observed empty-home output, exit 0 and `0 credentials`, establishes
+LOGGED_OUT without a host read of `auth.json`. Nonempty output stays Unknown
+until a positive fixed-byte observation unambiguously identifies the `openai`
+OAuth entry. Login exit zero never supplies that fact. Grok has no evidenced
+independent status command and remains Unknown. Antigravity remains Unsupported
+because its Windows keyring is shared. Codex retains its existing app-server path.
 
 The caller must have established a private User-origin action. Preparation
 does not open a browser, read credentials, start a process, persist a result,
-or perform a model turn. Root's integration owns custody, UI progress,
-cancellation, status polling, physical revalidation, and the final durable
-observation. OpenCode's terminal selection behavior and all three providers'
-actual Win11 browser/Smart App Control outcomes remain unverified until the
+or perform a model turn. The native User runtime owns custody, progress,
+cancellation, status polling, physical revalidation, and durable observation.
+Root owns the Tauri browser guard. OpenCode's fixed browser method skips the
+CLI menus. All providers' actual Win11 browser/Smart App Control outcomes
+remain unverified until the
 installed product runs the fixed bytes. These fixed CLI children are new
 processes under Smart App Control; the installed main process being allowed
 does not establish their launch result.
@@ -52,8 +57,8 @@ does not establish their launch result.
 
 | CLI pin | Recipe | Environment intent | Browser and completion |
 | --- | --- | --- | --- |
-| Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status` is the documented read; use only its documented exit contract (0 logged in, 1 not logged in; other codes unknown). Do not parse later-added `configDirectory` output fields on `2.1.196`. |
-| OpenCode `1.18.32` | `opencode auth login`, as recorded by B3's integration contract and the official CLI/ACP docs. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | No exact-version URL or browser suppression behavior is recorded. H must not auto-open output URLs. Exit status alone is not login proof; no fixed-version status parser is included. |
+| Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status --json` is the independent read; only matching documented exit 0/`loggedIn:true` or 1/`loggedIn:false` is classified. Do not parse other account fields. |
+| OpenCode `1.18.32` | `opencode auth login --pure --provider openai --method "ChatGPT Pro/Plus (browser)"`. Fixed help and tagged source show both selectors skip terminal menus. `--pure` skips external plugins while retaining the built-in OpenAI auth plugin. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | The selected built-in method prints a complete `Go to:` authorization URL, waits on localhost:1455, and does not call a browser opener. The User host may open that exact printed URL once. `auth list --pure` proves the observed empty inventory; positive OAuth identity remains Unknown pending fixed-byte evidence. Login exit never proves state. |
 | Grok Build `1.0.41` | `grok login --oauth`. Exact fixed-binary `--help` evidence confirms this command and OAuth option. This is command-shape evidence only; the runtime flow is not qualified. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home, matching H's model launch selector; preserve original AppData for browser context. | Browser-opening behavior and completion remain unknown. The help exposes no `--no-browser` or status flag. H must not auto-open an output URL or infer login success from process exit; status detection is Unsupported. |
 | Antigravity CLI `1.2.11` | The exact official tag says first launch of `agy` authenticates through system keyring and opens the browser if needed. **Unsupported as an instance login**: it exposes no documented login-only command, and the system keyring is shared across this Windows user. | Local home bindings cannot isolate the system keyring identity. | The CLI owns first-launch browser behavior; H must not open a duplicate URL. Account status stays `UNKNOWN`; do not turn a shared keyring session into per-instance readiness. |
 | Codex `0.160` | Out of scope; existing Codex login path stays unchanged. | This module makes no Codex launch or environment change. | Existing `v37_login` owns its Codex browser URL and callback flow. |
@@ -84,16 +89,18 @@ The provider-specific home selectors above control credential/config locations.
 
 `https_url_candidate_for_manual_owner_display` extracts one syntactically
 bounded `https://` candidate from already captured text. It does not prove the
-candidate is an authorization endpoint. It must stay in volatile host state,
-must not enter durable evidence or logs, and must never trigger an automatic
-browser launch. The Owner may use it only as a manual fallback after the host
-has not already caused the CLI's browser flow. The host owns the foreground
-browser handoff and must avoid opening the same request twice.
+candidate is an authorization endpoint. It must stay in volatile host state
+and must not enter durable evidence or logs. The OpenCode recipe separately
+declares `HostOpensPrintedAuthorization`; Root's Tauri guard must match the
+complete printed authorization URL and open it once. Claude may open its own
+browser, so its output URL remains a manual fallback only. Grok behavior is
+Unknown. These cases cannot share a generic output-URL auto-opener.
 
-No recipe treats a zero exit code, an output substring, or file presence as
-login completion. `status_argv` remains absent until a fixed-version status
-command and an unambiguous response contract are supported by evidence. Raw
-stdout/stderr stays with H and must retain the original failure reason.
+No recipe treats a zero login exit code, an output substring, or host-observed
+file presence as login completion. State comes only from a separately custodied
+fixed CLI status command. Raw stdout/stderr stays on the User-private path and
+must retain the original failure reason. Unfinished stdout fragments may be
+displayed but do not become process frames, status evidence, or durable facts.
 
 ## Sources read
 
@@ -122,8 +129,22 @@ stdout/stderr stays with H and must retain the original failure reason.
   browser suppression switch for account login.
 - OpenCode official docs: [CLI](https://dev.opencode.ai/docs/cli/) and
   [ACP authentication](https://opencode.ai/docs/cli/acp/). They document
-  `opencode auth login` and terminal-auth metadata. They do not establish the
-  fixed binary's output transcript or a browser-open suppression switch.
+  `opencode auth login` and terminal-auth metadata. More direct fixed-tag
+  sources are [providers.ts](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/cli/cmd/providers.ts),
+  [OpenAI browser plugin](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/openai/codex.ts),
+  [plugin loader](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/index.ts),
+  and [CLI flag parser](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/index.ts).
+  `providers.ts` skips provider/method prompts for exact selector labels,
+  prints `Go to:` and locally lists credential display names and types;
+  `codex.ts` uses localhost:1455 callback and contains no browser opener;
+  the fixed plugin loader retains the built-in OpenAI plugin under `--pure`.
+  Ordinary-view fixed executable SHA-256
+  `cf664aa1da32b788f9b2699b84a9bb9be30b7e025693b90f9b85829d5fe4e252`
+  independently showed `--provider`, `--method`, and `--pure` in `auth login
+  --help`. In a fresh isolated home, `auth list` exited 0 with exactly `0
+  credentials` and no host credential read. This proves a negative local
+  inventory only; no login, positive OAuth entry, model turn, or browser flow
+  was exercised.
 - Grok official source snapshot:
   [authentication guide at source-audit commit](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
   B4 records the installed `1.0.41` version observation but states the source
@@ -153,9 +174,7 @@ stdout/stderr stays with H and must retain the original failure reason.
 
 ## Build and validation boundary
 
-The native module is included by the integrator in the authorized Rust module
-tree. Per `docs/governance/gogoke-build-and-release.md`, native compilation and
-tests run in cloud CI only. This package added no mirror unit tests and did not
-run login, a model request, a browser, a local native build, or a credential
-probe. Until the module is exported and the cloud job runs against its exact
-commit, native validation is `NOT_RUN`.
+Per `docs/governance/gogoke-build-and-release.md`, native compilation and
+tests run in cloud CI only. The User runtime is integrated in the native module
+tree; the latest changed SHA still needs its own cloud result. No login, model
+request, browser, local native build, signing, or installation is included.
