@@ -3,7 +3,7 @@
 //! capture are real. These controls do not prove CLI login or LPAC admission.
 
 use super::*;
-use super::super::{admission, journal};
+use super::super::{admission, journal, runtime};
 use crate::process::{NativeBinding, PrepareRequest, ProcessCustodian, ProcessLaunch, StopBudgets};
 use crate::root::RootLock;
 use crate::store::{authority, instance};
@@ -86,13 +86,15 @@ fn observed(db: &mut VerifiedDatabaseConnection<'_>, custody: &PreparedCustody,
 }
 
 fn with_source(extra: &[&str], action: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,
-    &mut ProcessCustodian, &PreparedCustody, &[OriginBoundFrame], &[RawSourceKey], &Path)) {
+    &mut ProcessCustodian, &PreparedCustody, &[OriginBoundFrame], &[RawSourceKey], &Path,
+    &authority::OwnerIssuer)) {
     let _guard = route_b_test_guard();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let folder = std::env::temp_dir().join(format!("gogoke-model-call-{}-{stamp}", std::process::id()));
     fs::create_dir(&folder).unwrap();
     let root = RootLock::acquire(&folder).unwrap();
     let mut db = create_new(&root, &folder.join("state.sqlite")).unwrap();
+    let owner = authority::initialize_profile(&mut db, &root).unwrap();
     instance::initialize_schema(&mut db).unwrap();
     seat::initialize_schema(&mut db).unwrap();
     admission::initialize_admission_schema(&mut db).unwrap();
@@ -143,7 +145,7 @@ fn with_source(extra: &[&str], action: impl FnOnce(&mut VerifiedDatabaseConnecti
         &command, codex_rpc::RpcId::Number(4));
     journal::complete_codex_turn_request(&mut db, &input, &frames[1],
         &codex_rpc::RpcId::Number(4), &command, "threadA").unwrap();
-    action(&mut db, &mut custodian, &custody, &frames, &keys, &folder);
+    action(&mut db, &mut custodian, &custody, &frames, &keys, &folder, &owner);
     drop(custodian);
     db.close_checked().unwrap(); drop(root); fs::remove_dir_all(folder).unwrap();
 }
@@ -163,7 +165,7 @@ fn denied<T: std::fmt::Debug>(result: Result<T>, boundary: &str) {
 #[test]
 fn original_a_factory_seals_h_identity_and_stable_typed_rpc_id() {
     let string_id = CALL.replacen("\"id\":91", "\"id\":\"91\"", 1);
-    with_source(&[CALL, &string_id], |db, _, custody, frames, keys, _| {
+    with_source(&[CALL, &string_id], |db, _, custody, frames, keys, _, _| {
         let sealed = caller(db, custody, &frames[3], &keys[3]);
         assert_eq!((sealed.domain_id(), sealed.seat_id(), sealed.incarnation(),
             sealed.generation(), sealed.turn_id()), ("projectA", "seatA", "incarnationA", 1, "turnA"),
@@ -187,7 +189,7 @@ fn original_a_factory_seals_h_identity_and_stable_typed_rpc_id() {
 
 #[test]
 fn missing_source_wrong_turn_and_another_native_child_cannot_mint_caller() {
-    with_source(&[CALL], |db, _, custody, frames, keys, folder| {
+    with_source(&[CALL], |db, _, custody, frames, keys, folder, _| {
         let sealed = caller(db, custody, &frames[3], &keys[3]);
         let missing = RawSourceKey {source_cursor: "5".into(), ..keys[3].clone()};
         denied(observe_model_call(db, custody, &frames[4], &missing, "threadA", "turnA"), "uncaptured output cannot become authority");
@@ -213,7 +215,7 @@ fn missing_source_wrong_turn_and_another_native_child_cannot_mint_caller() {
 #[test]
 fn changed_bytes_under_same_typed_rpc_and_completed_turn_revoke_authority() {
     let changed = CALL.replace("self-authorize", "different-action");
-    with_source(&[&changed, ENDED], |db, _, custody, frames, keys, _| {
+    with_source(&[&changed, ENDED], |db, _, custody, frames, keys, _, _| {
         let sealed = caller(db, custody, &frames[3], &keys[3]);
         let changed_key = capture(db, &frames[4], 5);
         assert!(matches!(observe_model_call(db, custody, &frames[4], &changed_key, "threadA", "turnA"), Err(ModelCallError::Conflict)),
@@ -236,7 +238,7 @@ fn changed_bytes_under_same_typed_rpc_and_completed_turn_revoke_authority() {
 
 #[test]
 fn sealed_call_rechecks_current_h_claim_source_and_actual_native_stop() {
-    with_source(&[], |db, custodian, custody, frames, keys, _| {
+    with_source(&[], |db, custodian, custody, frames, keys, _, _| {
         let sealed = caller(db, custody, &frames[3], &keys[3]);
         for (sql, boundary) in [
             ("UPDATE gogoke_v37_h_claim SET state='UNKNOWN'", "uncertain current claim carries no write authority"),
@@ -268,5 +270,146 @@ fn sealed_call_rechecks_current_h_claim_source_and_actual_native_stop() {
         db.execute("BEGIN IMMEDIATE").unwrap();
         denied(revalidate_model_call_in_transaction(db, &sealed), "actual stopped process cannot authorize further model writes");
         db.execute("COMMIT").unwrap();
+    });
+}
+
+const PARENT_SCOPE: &str = r#"{"model":"m","effort":"high","permissionTier":"READ_ONLY","orchestrationScope":{"instanceIds":["instanceA"],"models":["m"],"reasoningEfforts":["high"],"maxPermissionTier":"READ_ONLY"},"takeoverQuestions":[{"id":"q","prompt":"What is the authorized scope?"}]}"#;
+const CHILD_SETTINGS: &str = r#"{"model":"m","effort":"high","permissionTier":"READ_ONLY"}"#;
+
+fn install_settings(db: &mut VerifiedDatabaseConnection<'_>, seat_id: &str, settings: &str) {
+    let insert = Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json)
+         VALUES('projectA',?1,'fixtureTemplate',?2) ON CONFLICT(domain_id,seat_id)
+         DO UPDATE SET settings_json=excluded.settings_json").unwrap();
+    insert.bind_text(1, seat_id).unwrap(); insert.bind_text(2, settings).unwrap();
+    insert.step_done().unwrap();
+}
+
+fn child_control_fixture(db: &mut VerifiedDatabaseConnection<'_>, owner: &authority::OwnerIssuer,
+    parent: &NativeSeatCall, folder: &Path) -> (ProcessCustodian, PreparedCustody) {
+    // Existing production scope/takeover/grant functions authenticate the
+    // factory seal. The child admission rows are synthetic H controls only.
+    install_settings(db, "seatA", PARENT_SCOPE);
+    db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','child','childIncarnation','LEAD','seatA','SHORT','instanceA','BUSY',1,1)").unwrap();
+    db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','otherParent','otherIncarnation','USER','LONG','instanceA','IDLE',1,1)").unwrap();
+    install_settings(db, "child", CHILD_SETTINGS);
+    seat::answer_takeover(db, parent, "q", "Only the configured direct child scope",
+        seat::AnswerBasis::Cited {source_ref: "fixture:copied-owner-scope".into()},
+        0, "fixtureAnswer", b"original fixture answer").unwrap();
+    seat::initialize_policy(db, owner, "projectA", "fixture-stage").unwrap();
+    seat::configure_call_grant(db, owner, "projectA", "seatA", "child",
+        seat::CallAction::Dispatch, None, 1).unwrap();
+    let (mut child, custody) = process(folder, &["child-ready"]);
+    authority::record_prepared_process(db, "childProcess", &custody).unwrap();
+    db.execute("INSERT INTO gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('childHome','instanceA','projectA','SESSION','childSession','1','ACTIVE',1)").unwrap();
+    db.execute("INSERT INTO gogoke_v37_h_owner_binding VALUES('childBinding','instanceA','projectA','SESSION','childSession','1','ACTIVE')").unwrap();
+    db.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA','childSession','instanceA','childHome','childBinding','1','COMMITTED',1,'childProcess')").unwrap();
+    db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','childSession','child','childIncarnation','1')").unwrap();
+    db.execute("INSERT INTO gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('projectA','childOpen','childSession','1','6368696c642d6f70656e',0,1,'childProcess','instanceA','childHome','childBinding','child','childIncarnation','ACTIVE')").unwrap();
+    db.execute("INSERT INTO gogoke_v37_h_generation VALUES('projectA','childSession','1','childOpen','childProcess')").unwrap();
+    child.activate(&custody).unwrap();
+    authority::mark_process_active(db, "childProcess", &custody).unwrap();
+    let frame = child.read_persistent_child_frame(&custody.ticket, Duration::from_secs(5)).unwrap();
+    assert_eq!(frame.bytes(), b"child-ready\n", "child must be the native fixture process");
+    (child, custody)
+}
+
+fn stop_child(db: &mut VerifiedDatabaseConnection<'_>, child: &mut ProcessCustodian,
+    custody: &PreparedCustody) {
+    let stop = child.stop(&custody.ticket, StopBudgets::production(), || Ok(())).unwrap();
+    authority::mark_process_stopped(db, "childProcess", &stop).expect("real child Job stop proof");
+    db.execute("BEGIN IMMEDIATE").unwrap();
+    let fact = admission::record_session_stop_in_transaction(db, "projectA", "childSession",
+        "childProcess").expect("production H binding of the physical stop");
+    assert_eq!(fact, stop.proof_hash(), "H must bind the exact native stop, never a model stopped label");
+    db.execute("COMMIT").unwrap();
+    assert!(runtime::observe_stop_fact(db, "projectA", "childSession").unwrap().is_some(),
+        "release positive control requires the production physical StopFact");
+}
+
+fn release_rows(db: &VerifiedDatabaseConnection<'_>) -> Vec<Vec<String>> {
+    // Read durable state directly. Release can change seats, claims and its
+    // existing journal; denial/replay must leave every row in those tables.
+    ["SELECT seat_id||':'||incarnation||':'||COALESCE(parent_seat_id,'')||':'||state||':'||generation||':'||revision FROM main.gogoke_v37_seats ORDER BY domain_id,seat_id",
+     "SELECT session_id||':'||state||':'||generation||':'||revision||':'||COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim ORDER BY domain_id,session_id",
+     "SELECT request_id||':'||raw_hex||':'||operation||':'||session_id||':'||status||':'||previous_revision||':'||revision FROM main.gogoke_v37_h_operation ORDER BY domain_id,request_id"]
+        .iter().map(|sql| {
+            let query = Statement::prepare(db.as_ptr(), sql).unwrap();
+            let mut rows = Vec::new();
+            while query.step_row().unwrap() {rows.push(query.column_text(0).unwrap());}
+            rows
+        }).collect()
+}
+
+fn refuse_release(db: &mut VerifiedDatabaseConnection<'_>, owner: &authority::OwnerIssuer,
+    origin: &seat::NativeOrigin<'_>, request: &admission::AdmissionRequest<'_>, boundary: &str) {
+    let before = release_rows(db);
+    let result = runtime::release_native_with_origin(db, owner, origin, "child", request);
+    assert!(matches!(result, Err(admission::AdmissionError::Denied)
+        | Err(admission::AdmissionError::Seat(seat::SeatError::Denied))),
+        "{boundary}: expected authority denial, got {result:?}");
+    assert_eq!(release_rows(db), before, "{boundary}: denial must not change durable release state");
+}
+
+#[test]
+fn sealed_parent_releases_stopped_child_and_replays_only_original_bytes() {
+    with_source(&[], |db, _, custody, frames, keys, folder, owner| {
+        let parent = caller(db, custody, &frames[3], &keys[3]);
+        let lead = seat::NativeLeadAdmission::from_model_call(&parent).unwrap();
+        let origin = seat::NativeOrigin::lead(&lead);
+        let (mut child, child_custody) = child_control_fixture(db, owner, &parent, folder);
+        stop_child(db, &mut child, &child_custody);
+        let request_id = format!("{}-release", parent.host_request_id().unwrap());
+        let request = admission::AdmissionRequest {domain_id: "projectA", session_id: "childSession",
+            request_id: &request_id, raw_bytes: b"original sealed child release bytes",
+            instance_id: "instanceA", home_id: "childHome", generation: "1", expected_revision: 2};
+        let busy = seat::get(db, "projectA", "child").unwrap().unwrap();
+        assert_eq!(busy.state, seat::State::Busy, "positive release control starts from the actual BUSY row");
+        assert_eq!(runtime::release_native_with_origin(db, owner, &origin, "child", &request).unwrap(),
+            admission::AdmissionResult::Applied(3), "current parent grant and real child stop permit release");
+        let idle = seat::get(db, "projectA", "child").unwrap().unwrap();
+        assert_eq!((idle.state, idle.generation), (seat::State::Idle, busy.generation.checked_add(1).unwrap()),
+            "release must revoke the old BUSY generation while making the child IDLE");
+        let after = release_rows(db);
+        assert_eq!(runtime::release_native_with_origin(db, owner, &origin, "child", &request).unwrap(),
+            admission::AdmissionResult::Replayed(3), "same original release must replay after generation advances");
+        assert_eq!(release_rows(db), after, "replay must not release twice or advance state again");
+        let changed = admission::AdmissionRequest {raw_bytes: b"changed release bytes", ..request};
+        refuse_release(db, owner, &origin, &changed, "changed bytes cannot reuse the released claim");
+        drop(child);
+    });
+}
+
+#[test]
+fn sealed_child_release_denials_preserve_durable_state() {
+    with_source(&[], |db, _, custody, frames, keys, folder, owner| {
+        let parent = caller(db, custody, &frames[3], &keys[3]);
+        let lead = seat::NativeLeadAdmission::from_model_call(&parent).unwrap();
+        let origin = seat::NativeOrigin::lead(&lead);
+        let (mut child, child_custody) = child_control_fixture(db, owner, &parent, folder);
+        let request_id = format!("{}-release", parent.host_request_id().unwrap());
+        let mut request = admission::AdmissionRequest {domain_id: "projectA", session_id: "childSession",
+            request_id: &request_id, raw_bytes: b"original sealed child release bytes",
+            instance_id: "instanceA", home_id: "childHome", generation: "1", expected_revision: 1};
+        assert!(runtime::observe_stop_fact(db, "projectA", "childSession").unwrap().is_none(),
+            "unproven-stop control must have no physical StopFact");
+        refuse_release(db, owner, &origin, &request, "a BUSY claim or exited child alone cannot authorize release");
+        stop_child(db, &mut child, &child_custody);
+        request.expected_revision = 2;
+        db.execute("UPDATE gogoke_v37_seats SET generation=2 WHERE seat_id='child'").unwrap();
+        refuse_release(db, owner, &origin, &request, "stale generation cannot spend another generation's stop proof");
+        db.execute("UPDATE gogoke_v37_seats SET generation=1 WHERE seat_id='child'").unwrap();
+        db.execute("UPDATE gogoke_v37_seats SET parent_seat_id='otherParent' WHERE seat_id='child'").unwrap();
+        refuse_release(db, owner, &origin, &request, "even a Dispatch grant cannot control another parent's child");
+        db.execute("UPDATE gogoke_v37_seats SET parent_seat_id='seatA' WHERE seat_id='child'").unwrap();
+        seat::configure_call_grant(db, owner, "projectA", "seatA", "child", seat::CallAction::Dispatch, Some(1), 2).unwrap();
+        refuse_release(db, owner, &origin, &request, "an expired Dispatch grant cannot release a child");
+        seat::configure_call_grant(db, owner, "projectA", "seatA", "child", seat::CallAction::Dispatch, None, 3).unwrap();
+        install_settings(db, "child", &CHILD_SETTINGS.replace("\"model\":\"m\"", "\"model\":\"outside-scope\""));
+        refuse_release(db, owner, &origin, &request, "Dispatch cannot exceed the copied Owner scope");
+        install_settings(db, "child", CHILD_SETTINGS);
+        assert_eq!(runtime::release_native_with_origin(db, owner, &origin, "child", &request).unwrap(),
+            admission::AdmissionResult::Applied(3), "restored authorized parent and real stop remain usable");
+        drop(child);
     });
 }
