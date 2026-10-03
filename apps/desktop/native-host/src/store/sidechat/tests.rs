@@ -131,6 +131,8 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     bind_current_fixture(&mut db,"mainB","leadA",ledger::SessionPurpose::Work);
     bind_current_fixture(&mut db,"sideSessionB","sideSeat",ledger::SessionPurpose::SideChat);
     let current=derive_current(&mut db,&owner,"projectA","sideA").unwrap();assert_eq!(current.source_session_id,"mainB");assert_eq!(current.session_id,"sideSessionB");
+    assert!(matches!(read_current_cache_continuity(&db,&s,&current),Ok(CacheContinuity::Unknown)),
+        "new H binding without original process and A responses proves no cache identity");
     assert!(matches!(rebind_current(&mut db,&owner,"projectA","sideA",|_,_,_|Ok(CacheContinuity::Unknown)),Err(SideError::Unknown)));
     assert_eq!(side(&db,"projectA","sideA").unwrap().session_id,"sideSession","a generation change alone proves no cache identity");
     db.execute("UPDATE gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='mainB'").unwrap();
@@ -141,6 +143,12 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     assert!(!begin_sync(&mut db,&owner,"projectA","sideA",&send,SyncMode::Question,4,|_,_,_|Ok(false)).unwrap().may_submit,"old retry remains read-only after rebind");
     let original=settle_sync(&mut db,&owner,"projectA","questionA").unwrap();assert_eq!(original.session_id,"sideSession");assert_eq!(original.process_operation_id,"processsideSession");assert_eq!(original.state,"UNKNOWN");
     old_ack_fixture(&mut db,&rebound,&send);
+    assert!(matches!(read_current_cache_continuity(&db,&s,&current),Err(SideError::Corrupt(_))),
+        "an H episode with invalid original open bytes cannot prove cache continuity");
+    db.execute("UPDATE gogoke_v37_instances SET driver_id='opencode' WHERE instance_id='instanceA'").unwrap();
+    assert!(settle_sync(&mut db,&owner,"projectA","questionA").is_err(),
+        "ACP delivery requires the original typed User/A response, not a generic H receipt");
+    db.execute("UPDATE gogoke_v37_instances SET driver_id='codex' WHERE instance_id='instanceA'").unwrap();
     assert_eq!(settle_sync(&mut db,&owner,"projectA","questionA").unwrap().state,"DELIVERED","late ACK resolves only its old H intent");
     assert_eq!(side(&db,"projectA","sideA").unwrap().synced_cursor,0,"old ACK cannot advance the new reader");
     assert_eq!(side(&db,"projectA","sideA").unwrap().session_id,"sideSessionB");

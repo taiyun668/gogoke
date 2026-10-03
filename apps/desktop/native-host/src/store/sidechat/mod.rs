@@ -23,6 +23,8 @@ impl From<super::orchestration::OrchestrationError> for SideError {
     fn from(e: super::orchestration::OrchestrationError) -> Self { Self::Authority(e) }
 }
 type Result<T> = std::result::Result<T, SideError>;
+mod continuity;
+pub(crate) use continuity::read_current_cache_continuity;
 
 /// Root derives these from current native H/E bindings, never from Node input.
 /// Initial cache identities are observed only at creation; seat incarnations
