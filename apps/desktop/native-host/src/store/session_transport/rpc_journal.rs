@@ -1118,14 +1118,14 @@ fn acp_pending<'a>(step: &'a AcpStep<'_>) -> Result<Option<acp::Pending<'a>>> {
     Ok(Some(acp::Pending { id, method, requested_session_id }))
 }
 
-fn stored_prompt_for_session(encoded: &[u8], session_id: &str) -> bool {
+fn stored_method_for_session(encoded: &[u8], session_id: &str, method: &str) -> bool {
     let Ok(text) = std::str::from_utf8(encoded) else { return false };
     let Ok(Json::Object(fields)) = Parser::parse(text.trim_end_matches('\n')) else {
         return false;
     };
     let key = |name| JsonString::from_str(name);
     if !matches!(fields.get(&key("method")), Some(Json::String(value))
-        if value.to_well_formed_string().as_deref() == Some("session/prompt")) {
+        if value.to_well_formed_string().as_deref() == Some(method)) {
         return false;
     }
     let Some(Json::Object(params)) = fields.get(&key("params")) else { return false };
@@ -1135,24 +1135,32 @@ fn stored_prompt_for_session(encoded: &[u8], session_id: &str) -> bool {
 
 /// Cancellation can follow exactly a WRITTEN matching prompt. An INTENT,
 /// UNKNOWN, or unrelated response waiter still prevents another stdin write.
-fn cancel_follows_prompt(db: &VerifiedDatabaseConnection<'_>, fields: &StepFields<'_>,
-    operation: &str, session_id: &str) -> Result<bool> {
+fn cancel_follows_prompt(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+    session: &str, operation: &str, session_id: &str) -> Result<Option<String>> {
     let q = Statement::prepare(db.as_ptr(),
-        "SELECT phase,command_hex FROM main.gogoke_v37_rpc_steps
+        "SELECT step_id,phase,command_hex FROM main.gogoke_v37_rpc_steps
           WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
             AND (phase IN ('INTENT','UNKNOWN') OR
                  (phase='WRITTEN' AND requires_response=1))")?;
-    q.bind_text(1, fields.domain_id)?;
-    q.bind_text(2, fields.session_id)?;
+    q.bind_text(1, domain)?;
+    q.bind_text(2, session)?;
     q.bind_text(3, operation)?;
-    let mut found = false;
+    let mut found = None;
     while q.step_row()? {
-        if q.column_text(0)? != "WRITTEN"
-            || !stored_prompt_for_session(&unhex(&q.column_text(1)?)?, session_id)
-            || found { return Ok(false); }
-        found = true;
+        if q.column_text(1)? != "WRITTEN"
+            || !stored_method_for_session(&unhex(&q.column_text(2)?)?,
+                session_id, "session/prompt") || found.is_some() { return Ok(None); }
+        found = Some(q.column_text(0)?);
     }
     Ok(found)
+}
+
+/// One stable cancel identity per original prompt; a retry reads the same
+/// journal row and cannot send again, while a later prompt may be cancelled.
+pub(crate) fn acp_cancel_step_id(prompt_step_id: &str) -> Result<String> {
+    if !atom(prompt_step_id) { return Err(RpcJournalError::Invalid("prompt step")); }
+    Ok(format!("cancel-{}", &crate::store::digest::sha256_hex(
+        prompt_step_id.as_bytes())[..40]))
 }
 
 fn stored_initialize_id(encoded: &[u8]) -> Option<acp::RpcId> {
@@ -1245,8 +1253,13 @@ pub(crate) fn prepare_acp(db: &mut VerifiedDatabaseConnection<'_>,
                 disposition: Disposition::Existing(phase) });
         }
         let allowed = match step.command {
-            commands::AcpCommand::Cancel { session_id } =>
-                cancel_follows_prompt(db, &step.fields(), &operation, session_id)?,
+            commands::AcpCommand::Cancel { session_id } => {
+                let prompt_step = cancel_follows_prompt(db, step.domain_id,
+                    step.session_id, &operation, session_id)?;
+                if let Some(prompt) = prompt_step {
+                    acp_cancel_step_id(&prompt)? == step.step_id
+                } else { false }
+            },
             _ => !has_unresolved(db, step.domain_id, step.session_id, &operation)?,
         };
         if !allowed { return Err(RpcJournalError::Unknown); }
@@ -1739,5 +1752,62 @@ mod tests {
         assert_eq!(Phase::parse("WRITTEN").unwrap(), Phase::Written);
         assert_eq!(Phase::parse("UNKNOWN").unwrap(), Phase::Unknown);
         assert!(Phase::parse("RECEIPTED").is_err());
+    }
+
+    #[test]
+    fn acp_cancel_binds_to_one_pending_prompt_and_stable_step_id() {
+        let _guard = route_b_test_guard();
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-acp-cancel-{}-{stamp}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut db = create_new(&root, &path.join("state.sqlite")).unwrap();
+        initialize_schema(&mut db).unwrap();
+        assert!(cancel_follows_prompt(&db, "domain", "session", "operation", "native-a").unwrap().is_none());
+        let prompt = b"{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"native-a\"}}\n";
+        let insert = Statement::prepare(db.as_ptr(),
+            "INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,
+             process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,
+             binary_digest,profile_id,generation,command_hex,requires_response,phase)
+             VALUES('domain','session','open',?1,'operation','ticket','nonce','1','2',
+             'image','digest','profile','1',?2,?3,'WRITTEN')").unwrap();
+        insert.bind_text(1, "prompt").unwrap();
+        insert.bind_text(2, &hex(prompt)).unwrap();
+        insert.bind_i64(3, 1).unwrap();
+        insert.step_done().unwrap();
+        assert_eq!(cancel_follows_prompt(&db, "domain", "session", "operation", "native-a").unwrap().as_deref(), Some("prompt"));
+        assert!(cancel_follows_prompt(&db, "domain", "session", "operation", "native-b").unwrap().is_none());
+        drop(insert);
+        let cancel = b"{\"jsonrpc\":\"2.0\",\"method\":\"session/cancel\",\"params\":{\"sessionId\":\"native-a\"}}\n";
+        let cancel_step = acp_cancel_step_id("prompt").unwrap();
+        assert_eq!(cancel_step, acp_cancel_step_id("prompt").unwrap());
+        assert_ne!(cancel_step, acp_cancel_step_id("later-prompt").unwrap());
+        let second = Statement::prepare(db.as_ptr(),
+            "INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,
+             process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,
+             binary_digest,profile_id,generation,command_hex,requires_response,phase)
+             VALUES('domain','session','open',?1,'operation','ticket','nonce','1','2',
+             'image','digest','profile','1',?2,0,'WRITTEN')").unwrap();
+        second.bind_text(1, &cancel_step).unwrap();
+        second.bind_text(2, &hex(cancel)).unwrap();
+        second.step_done().unwrap();
+        assert_eq!(cancel_follows_prompt(&db, "domain", "session", "operation", "native-a").unwrap().as_deref(), Some("prompt"));
+        drop(second);
+        db.execute("UPDATE gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch='epoch',
+            source_cursor='1' WHERE step_id='prompt'").unwrap();
+        let later = Statement::prepare(db.as_ptr(),
+            "INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,
+             process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,
+             binary_digest,profile_id,generation,command_hex,requires_response,phase)
+             VALUES('domain','session','open','later-prompt','operation','ticket','nonce','1','2',
+             'image','digest','profile','1',?1,1,'WRITTEN')").unwrap();
+        later.bind_text(1, &hex(prompt)).unwrap();
+        later.step_done().unwrap();
+        assert_eq!(cancel_follows_prompt(&db, "domain", "session", "operation", "native-a").unwrap().as_deref(), Some("later-prompt"));
+        drop(later);
+        db.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 }
