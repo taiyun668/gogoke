@@ -293,8 +293,13 @@ mod tests {
             let stderr = active.stderr_tail();
             assert_eq!(proof.exit_code, Some(0), "case={case}, proof={proof:?}, stderr={stderr}");
             assert_eq!(proof.active_job_processes, Some(0), "case={case}, proof={proof:?}, stderr={stderr}");
-            assert!(!proof.kill_attempted && proof.errors.is_empty(),
-                "case={case}, normal whole-Job stop: {proof:?}, stderr={stderr}");
+            assert!(proof.parent_exited && proof.writer_fence_verified && !proof.deadline_exceeded
+                && proof.errors.is_empty() && (!proof.kill_attempted || proof.kill_succeeded),
+                "case={case}, confirmed whole-Job stop: {proof:?}, stderr={stderr}");
+            if case == "positive" {
+                assert!(!proof.kill_attempted,
+                    "positive helper must finish normally: {proof:?}, stderr={stderr}");
+            }
         };
         run("negative");
         assert_eq!(std::fs::read_to_string(folder.join("negative-result.txt")).unwrap(), "OFFICIAL_HELPER_WIN32_5");
