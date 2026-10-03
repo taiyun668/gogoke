@@ -143,7 +143,7 @@ class AliasRegistry {
 
   alias(category, raw) {
     const value = String(raw);
-    const key = `${category}\u0000${value}`;
+    const key = `${category}\u0000${category === "rpc" ? `${typeof raw}:` : ""}${value}`;
     if (!this.#aliases.has(key)) {
       const ordinal = (this.#next.get(category) || 0) + 1;
       this.#next.set(category, ordinal);
@@ -277,6 +277,7 @@ function normalizeRawFrames(document, direction, aliases, redactions) {
       phase: frame.sourceKind === "command" ? String(frame.phase).toUpperCase() : null,
       rpcRole,
       rpcIdAlias,
+      rpcIdType: rpcIdAlias === null ? null : typeof parsed.id,
       message: protocolMessage,
     };
   });
@@ -318,7 +319,7 @@ function correlateFrames(frames) {
     }
     const response = candidates[0];
     usedResponses.add(response);
-    pairs.push({ request: { lane: request.lane, sequence: request.sequence }, response: { lane: response.lane, sequence: response.sequence }, rpcIdAlias: request.rpcIdAlias, scope: { session: request.sessionAlias, operation: request.operationAlias, generation: request.generationAlias, sourceEpoch: request.sourceEpochAlias, ticket: request.ticketAlias, custodianNonce: request.custodianNonceAlias }, basis: custodyScope ? "same-native-process-custody" : "recorded-source-epoch" });
+    pairs.push({ request: { lane: request.lane, sequence: request.sequence }, response: { lane: response.lane, sequence: response.sequence }, rpcIdAlias: request.rpcIdAlias, rpcIdType: request.rpcIdType, scope: { session: request.sessionAlias, operation: request.operationAlias, generation: request.generationAlias, sourceEpoch: request.sourceEpochAlias, ticket: request.ticketAlias, custodianNonce: request.custodianNonceAlias }, basis: custodyScope ? "same-native-process-custody" : "recorded-source-epoch" });
   }
   for (const response of responses) if (!usedResponses.has(response)) unmatchedResponses.push({ lane: response.lane, sequence: response.sequence });
   return {
