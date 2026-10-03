@@ -186,6 +186,7 @@ impl NativeLeadAdmission {
         (&self.domain_id,&self.seat_id,self.generation)
     }
     pub(crate) fn parent_incarnation(&self)->&str {&self.incarnation}
+    #[cfg(test)]
     pub(crate) fn from_native_runtime_snapshot(seat: &Seat) -> Result<Self, SeatError> {
         if seat.layer != Layer::User || seat.state != State::Busy {
             return Err(SeatError::Denied);
@@ -875,7 +876,13 @@ pub(crate) fn create(
 pub(crate) fn create_native_child(db:&mut VerifiedDatabaseConnection<'_>,
     caller:&policy::NativeSeatCall,input:CreateSeat<'_>)->Result<SeatReceipt,SeatError> {
     let parent=policy::current_caller(db,caller)?;
-    let admission=NativeLeadAdmission::from_native_runtime_snapshot(&parent)?;
+    let admission=if caller.model_proof().is_some() {NativeLeadAdmission::from_model_call(caller)?}
+        else {
+            #[cfg(test)]
+            {NativeLeadAdmission::from_native_runtime_snapshot(&parent)?}
+            #[cfg(not(test))]
+            {return Err(SeatError::Denied);}
+        };
     create_inner(db,NativeOrigin::lead(&admission),input,Some(caller))
 }
 

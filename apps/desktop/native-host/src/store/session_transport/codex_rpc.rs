@@ -458,7 +458,6 @@ pub(crate) enum Reply {
 
 /// The fixed CLI's actual server request, distinct from an item lifecycle
 /// notification. Its arguments are selections; they never identify a caller.
-#[derive(Debug)]
 pub(crate) struct DynamicToolCall {
     pub(crate) request_id: RpcId,
     pub(crate) call_id: String,
@@ -1024,8 +1023,8 @@ fn required(value: &str, field: &'static str) -> Result<(), RpcError> {
 }
 /// Fixed CLI function-tool shape. The native gateway derives the domain,
 /// request identity and caller; none is a model-supplied argument.
-fn host_tools() -> Json {
-    let schema = obj([
+fn host_tool_input_schema() -> Json {
+    obj([
         ("type", s("object")),
         ("additionalProperties", Json::Bool(false)),
         ("required", Json::Array(["operation", "targetId", "expectedRevision", "payload"]
@@ -1036,7 +1035,10 @@ fn host_tools() -> Json {
             ("expectedRevision", obj([("type", Json::Array(vec![s("string"), s("null")]))])),
             ("payload", obj([("type", s("object"))])),
         ])),
-    ]);
+    ])
+}
+
+fn host_tools() -> Json {
     Json::Array([
         ("gogoke_seat", "Create, dispatch, tune or read a subordinate seat within the native parent scope."),
         ("gogoke_policy", "Read native permission facts and submit or decide an authorized stage gate."),
@@ -1044,7 +1046,7 @@ fn host_tools() -> Json {
         ("gogoke_takeover", "Read a takeover card or consume its already written native answer."),
     ].into_iter().map(|(name, description)| obj([
         ("type", s("function")), ("name", s(name)),
-        ("description", s(description)), ("inputSchema", schema.clone()),
+        ("description", s(description)), ("inputSchema", host_tool_input_schema()),
     ])).collect())
 }
 

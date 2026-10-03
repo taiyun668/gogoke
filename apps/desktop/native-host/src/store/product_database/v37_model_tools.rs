@@ -23,7 +23,7 @@ fn native_request(caller:&seat::NativeSeatCall)->Result<V37Request> {
         _=>return Err(OrchestrationError::AccessDenied),
     };
     let Some(arguments)=caller.arguments_json() else {return Err(OrchestrationError::AccessDenied)};
-    let Json::Object(arguments)=Parser::parse(arguments)? else {
+    let Json::Object(mut arguments)=Parser::parse(arguments)? else {
         return Err(OrchestrationError::Invalid("native tool arguments"));
     };
     if arguments.len()!=4 || ["operation","targetId","expectedRevision","payload"]
@@ -47,7 +47,7 @@ fn native_request(caller:&seat::NativeSeatCall)->Result<V37Request> {
         }
         _=>return Err(OrchestrationError::Invalid("native tool revision")),
     };
-    let Some(Json::Object(payload))=arguments.get(&key("payload")) else {
+    let Some(Json::Object(payload))=arguments.remove(&key("payload")) else {
         return Err(OrchestrationError::Invalid("native tool payload"));
     };
     Ok(V37Request {
@@ -55,7 +55,7 @@ fn native_request(caller:&seat::NativeSeatCall)->Result<V37Request> {
         family:family.into(),operation,
         request_id:caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?.into(),
         target_id:field(&arguments,"targetId")?,domain_id:caller.domain_id().into(),
-        expected_revision,payload:payload.clone(),
+        expected_revision,payload,
     })
 }
 
