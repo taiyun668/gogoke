@@ -40,7 +40,7 @@ pub(crate) struct LaunchEvidence {
     profile_name: String,
     program: PathBuf,
     program_identity: RootIdentity,
-    code_mode: super::codex_component::BoundCodexComponent,
+    code_mode: Option<super::codex_component::BoundCodexComponent>,
     module: Arc<CompatModule>,
     tier: PermissionTier,
     resume_old: Option<ClaimObservation>,
@@ -50,8 +50,32 @@ pub(crate) struct LaunchEvidence {
 #[derive(Clone, Copy)]
 enum VerificationPhase { PreActivation, Active }
 
+// F's native pin, rather than a wire setting, selects the only launch recipes
+// supported here. Agy has no qualified binary observation yet.
+fn supported_driver_version(pin: &InstancePin) -> bool {
+    matches!((pin.driver_id.as_str(), pin.version.as_str()),
+        ("codex", "0.160.0") | ("claude", "2.1.196") |
+        ("opencode", "1.18.32") | ("grok", "1.0.41"))
+}
+
+fn launch_homes(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    profile: &AppContainerProfile, claim: &ClaimObservation, pin: &InstancePin)
+    -> Result<InstanceLaunchHomes, String> {
+    if pin.driver_id == "codex" {
+        evidence(instance::resolve_codex_session_launch_homes(db, root, profile,
+            &claim.instance_id, &claim.home_id, &claim.domain_id,
+            &claim.session_id, &claim.generation))
+    } else {
+        evidence(instance::resolve_provider_session_launch_homes(db, root, profile,
+            &claim.instance_id, &claim.home_id, &claim.domain_id,
+            &claim.session_id, &claim.generation, &pin.driver_id))
+    }
+}
+
 impl LaunchEvidence {
     pub(crate) fn instance_id(&self) -> &str { &self.claim.instance_id }
+    pub(crate) fn driver_id(&self) -> &str { &self.pin.driver_id }
+    pub(crate) fn driver_version(&self) -> &str { &self.pin.version }
     // A vendor protocol setting, never an OS grant. The same sealed tier has
     // already selected and verified the LPAC capability set and directory ACLs.
     pub(crate) fn network_access(&self) -> bool { self.tier == PermissionTier::NetworkedWrite }
@@ -106,7 +130,7 @@ impl LaunchEvidence {
             return Err("native resume: duplicate old custody".into());
         }
         let pin=evidence(runtime::current_instance_pin(db,&old.instance_id))?;
-        if pin.driver_id!="codex" || pin.version!="0.160.0" || pin.digest!=old_digest {
+        if !supported_driver_version(&pin) || pin.digest!=old_digest {
             return Err("native resume: trusted pinned binary changed".into());
         }
         let row=crate::store::atomic::Statement::prepare(db.as_ptr(),
@@ -141,7 +165,7 @@ impl LaunchEvidence {
         let seat_id=&seat.seat_id;
         let tier=evidence(seat::permission_tier(&seat))?;
         let pin = evidence(runtime::current_instance_pin(db, &claim.instance_id))?;
-        if pin.driver_id != "codex" || pin.version != "0.160.0" {
+        if !supported_driver_version(&pin) {
             return Err("native session launch: unsupported pinned driver/version".into());
         }
         let suffix = crate::store::digest::sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
@@ -150,8 +174,7 @@ impl LaunchEvidence {
         let profile_name = format!("Gogoke37.Session.{}", &suffix[..40]);
         let profile = evidence(AppContainerProfile::ensure_for_cli(&profile_name,
             tier == PermissionTier::NetworkedWrite))?;
-        let homes = evidence(instance::resolve_codex_session_launch_homes(db, root, &profile,
-            &claim.instance_id, &claim.home_id, domain_id, session_id, &claim.generation))?;
+        let homes = launch_homes(db, root, &profile, &claim, &pin)?;
         let worktree = evidence(worktree::resolve_for_launch(db, root, worktree_id,
             repository_id, domain_id, seat_id, &seat.incarnation, seat.generation))?;
         // F's stored instance/tier/generation describe creation provenance.
@@ -166,7 +189,9 @@ impl LaunchEvidence {
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
         evidence(profile.grant_bound_tree(&worktree.path, &worktree.identity, writable))?;
         evidence(profile.grant_bound_program(&program, &program_identity))?;
-        let code_mode = super::codex_component::BoundCodexComponent::prepare(&program, &profile)?;
+        let code_mode = if pin.driver_id == "codex" {
+            Some(super::codex_component::BoundCodexComponent::prepare(&program, &profile)?)
+        } else { None };
         let module = evidence(CompatModule::prepare_with_roots(root, &[
             (homes.instance.path.clone(), homes.instance.identity.clone()),
             (homes.session.path.clone(), homes.session.identity.clone()),
@@ -275,8 +300,7 @@ impl LaunchEvidence {
                 && claim.process_operation_id.as_deref() != expected_operation) {
             return Err("native session launch: current reservation changed".into());
         }
-        let homes = evidence(instance::resolve_codex_session_launch_homes(db, root, &self.profile,
-            &claim.instance_id, &claim.home_id, &claim.domain_id, &claim.session_id, &claim.generation))?;
+        let homes = launch_homes(db, root, &self.profile, &claim, &self.pin)?;
         if homes != self.homes { return Err("native session launch: physical homes changed".into()); }
         let worktree = evidence(worktree::resolve_for_launch(db, root, &self.worktree.worktree_id,
             &self.repository_id, &self.seat.domain_id, &self.seat.seat_id,
@@ -302,7 +326,7 @@ impl LaunchEvidence {
             };
         }
         evidence(self.profile.verify_bound_program_grant(&self.program, &self.program_identity))?;
-        self.code_mode.verify(&self.profile)?;
+        if let Some(code_mode) = &self.code_mode { code_mode.verify(&self.profile)?; }
         let mut mapping = Vec::new();
         self.module.extend_environment(&mut mapping);
         evidence(self.module.validate_launch(Some(&self.profile_name), Some(&mapping)))
@@ -359,13 +383,53 @@ impl LaunchEvidence {
         }
         let mut environment = vec![("SystemRoot".into(), system_root.clone()), ("WINDIR".into(), system_root)];
         let runtime = self.homes.session.path.to_string_lossy().into_owned();
-        for name in ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"] {
-            environment.push((name.into(), runtime.clone()));
+        let instance_home = self.homes.instance.path.to_string_lossy().into_owned();
+        if self.pin.driver_id == "codex" {
+            for name in ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"] {
+                environment.push((name.into(), runtime.clone()));
+            }
+            environment.push(("CODEX_HOME".into(), instance_home));
+        } else {
+            // The registered instance root owns vendor credentials/config; the
+            // ACTIVE generation's runtime home owns only temporary files.
+            for name in ["HOME", "USERPROFILE"] {
+                environment.push((name.into(), instance_home.clone()));
+            }
+            let app_data = self.homes.instance.path.join("AppData");
+            environment.push(("APPDATA".into(), app_data.join("Roaming").to_string_lossy().into_owned()));
+            environment.push(("LOCALAPPDATA".into(), app_data.join("Local").to_string_lossy().into_owned()));
+            for name in ["TEMP", "TMP"] { environment.push((name.into(), runtime.clone())); }
+            match self.pin.driver_id.as_str() {
+                "claude" => {
+                    environment.push(("CLAUDE_CONFIG_DIR".into(), instance_home));
+                    // This requests the documented setting; effective memory
+                    // behavior remains NOT_RUN until the pinned CLI is tested.
+                    environment.push(("CLAUDE_CODE_DISABLE_AUTO_MEMORY".into(), "1".into()));
+                }
+                "opencode" => {
+                    let home = &self.homes.instance.path;
+                    for (name, path) in [
+                        ("XDG_CONFIG_HOME", home.join(".config")),
+                        ("XDG_DATA_HOME", home.join(".local").join("share")),
+                        ("XDG_CACHE_HOME", home.join(".cache")),
+                        ("XDG_STATE_HOME", home.join(".local").join("state")),
+                        ("OPENCODE_CONFIG_DIR", home.join(".opencode")),
+                        ("OPENCODE_CONFIG", home.join(".opencode").join("opencode.json")),
+                    ] { environment.push((name.into(), path.to_string_lossy().into_owned())); }
+                    for (name, value) in [
+                        ("OPENCODE_CONFIG_CONTENT", "{}"),
+                        ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+                        ("OPENCODE_DISABLE_CLAUDE_CODE_PROMPT", "1"),
+                        ("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "1"),
+                    ] { environment.push((name.into(), value.into())); }
+                }
+                "grok" => environment.push(("GROK_HOME".into(), instance_home)),
+                _ => return Err("native session launch: unsupported pinned driver/version".into()),
+            }
         }
-        environment.push(("CODEX_HOME".into(), self.homes.instance.path.to_string_lossy().into_owned()));
         self.module.extend_environment(&mut environment);
         let mut launch = ProcessLaunch::new(self.program.clone());
-        launch.arguments = vec!["-c".into(), "features.memories=false".into(),
+        launch.arguments = if self.pin.driver_id == "codex" { vec!["-c".into(), "features.memories=false".into(),
             "-c".into(), "memories.generate_memories=false".into(),
             "-c".into(), "memories.use_memories=false".into(),
             "-c".into(), "agents.enabled=false".into(),
@@ -378,7 +442,13 @@ impl LaunchEvidence {
                 crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
             "-c".into(), format!("log_dir={}", crate::store::atomic::Json::String(
                 crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
-            "app-server".into()];
+            "app-server".into()] } else { match self.pin.driver_id.as_str() {
+                "claude" => ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+                    .into_iter().map(str::to_owned).collect(),
+                "opencode" => vec!["acp".into()],
+                "grok" => vec!["agent".into(), "--no-leader".into(), "stdio".into()],
+                _ => return Err("native session launch: unsupported pinned driver/version".into()),
+            }};
         launch.current_directory = Some(self.worktree.path.clone());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
