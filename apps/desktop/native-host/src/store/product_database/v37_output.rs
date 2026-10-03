@@ -324,6 +324,9 @@ impl<'root> ProductDatabase<'root> {
                 request_id:&id,session_id:&key.1,ticket,generation}).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native input fact: {error:?}")))?
                 .ok_or(OrchestrationError::OperationConflict)?;
+            if matches!(run.evidence.driver_id(),"opencode"|"grok") {
+                self.verify_acp_input_receipt(&record)?;
+            }
             let receipt=if let Some(bytes)=record.receipt_bytes {
                 Parser::parse(std::str::from_utf8(&bytes).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("native input receipt UTF-8: {error}")))?)?

@@ -1751,11 +1751,7 @@ impl<'root> ProductDatabase<'root> {
                 domain_id: &request.domain_id, request_id: &request.request_id,
                 session_id: &request.target_id, ticket: &ticket, generation: &generation,
             }))?.ok_or(OrchestrationError::Invalid("native send journal disappeared"))?;
-            if stored.state != h::JournalState::Receipted {
-                let input = h::StdinRequest { domain_id: &request.domain_id,
-                    session_id: &request.target_id, ticket: &ticket, generation: &generation,
-                    request_bytes: &request.raw_bytes };
-                let driver=Statement::prepare(self.connection.as_ptr(),
+            let driver=Statement::prepare(self.connection.as_ptr(),
                     "SELECT i.driver_id FROM main.gogoke_v37_h_process_episode e
                        JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
                       WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3 AND e.generation=?4")?;
@@ -1764,7 +1760,11 @@ impl<'root> ProductDatabase<'root> {
                 if !driver.step_row()? {return Err(OrchestrationError::AccessDenied);}
                 let driver_id=driver.column_text(0)?;
                 if driver.step_row()? {return Err(OrchestrationError::OperationConflict);}
-                drop(driver);
+            drop(driver);
+            if stored.state != h::JournalState::Receipted {
+                let input = h::StdinRequest { domain_id: &request.domain_id,
+                    session_id: &request.target_id, ticket: &ticket, generation: &generation,
+                    request_bytes: &request.raw_bytes };
                 if driver_id=="codex" {
                     if let Some(recovered)=failure(h::recover_codex_turn_request(&mut self.connection,&input))? {
                         stored=recovered.record;
@@ -1780,6 +1780,9 @@ impl<'root> ProductDatabase<'root> {
                             .ok_or(OrchestrationError::OperationConflict)?;
                     }
                 }
+            }
+            if matches!(driver_id.as_str(),"opencode"|"grok") {
+                self.verify_acp_input_receipt(&stored)?;
             }
             if let Some(bytes) = stored.receipt_bytes {
                 let receipt = failure(h::decode_receipt(&bytes))?;
@@ -2014,6 +2017,34 @@ impl<'root> ProductDatabase<'root> {
         };
         if completed.user.record.receipt_bytes.is_none() {return Err(OrchestrationError::OperationConflict);}
         self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.pending_acp=None;
+        Ok(())
+    }
+
+    // Public replay/output must use the same original User/A derivation as
+    // pending completion. Receipt source fields are lookup hints only: H checks
+    // the original command, typed ID, episode, revisions and receipt digest.
+    pub(super) fn verify_acp_input_receipt(&self,record:&h::StdinJournalRecord) -> Result<()> {
+        if record.state!=h::JournalState::Receipted {return Ok(());}
+        let receipt=failure(h::decode_receipt(record.receipt_bytes.as_ref()
+            .ok_or(OrchestrationError::OperationConflict)?))?;
+        let result=receipt.into_result();
+        let field=|name|->Result<String> {
+            match result.get(&JsonString::from_str(name)) {
+                Some(Json::String(value))=>value.to_well_formed_string()
+                    .filter(|value|!value.is_empty())
+                    .ok_or(OrchestrationError::OperationConflict),
+                _=>Err(OrchestrationError::OperationConflict),
+            }
+        };
+        let key=ledger::RawSourceKey {operation_id:record.process_operation_id.clone(),
+            source_epoch:field("sourceEpoch")?,source_cursor:field("sourceCursor")?};
+        let original=h::StdinRequest {domain_id:&record.domain_id,session_id:&record.session_id,
+            ticket:&record.ticket,generation:&record.generation,request_bytes:&record.request_bytes};
+        let verified=failure(h::read_acp_send_completed(&self.connection,&original,&key))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if verified.user.record.receipt_bytes!=record.receipt_bytes {
+            return Err(OrchestrationError::OperationConflict);
+        }
         Ok(())
     }
 
