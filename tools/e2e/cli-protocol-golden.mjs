@@ -10,6 +10,7 @@ const BUNDLE_SCHEMA = "gogoke.cli-protocol-capture.v1";
 const REPORT_SCHEMA = "gogoke.cli-protocol-diff.v1";
 const REDACTED = "[REDACTED]";
 const VALID_DIRECTIONS = new Set(["in", "out"]);
+const READBACK_SCHEMAS = new Set(["gogoke.37.private-e2e-ledger.v1", "gogoke.37.private-m2-readback.v1"]);
 const SEMANTIC_STRING_KEYS = new Set(["method", "type", "status", "sessionUpdate", "codexMethod", "role", "kind", "state", "phase", "approvalPolicy", "collaborationMode", "schema", "rpcRole"]);
 
 function fail(message) {
@@ -231,7 +232,7 @@ function claudeAssociation(parsed, direction) {
 }
 
 function normalizeRawFrames(document, direction, aliases, redactions) {
-  if (!["gogoke.37.private-direct-frames.v1", "gogoke.37.private-e2e-ledger.v1"].includes(document?.schema) || !Array.isArray(document.frames)) {
+  if (!(document?.schema === "gogoke.37.private-direct-frames.v1" || READBACK_SCHEMAS.has(document?.schema)) || !Array.isArray(document.frames)) {
     fail("raw frame input has an unsupported private-capture schema");
   }
   if (document.count !== undefined && document.count !== document.frames.length) fail("raw frame count does not match its payload");
@@ -376,7 +377,7 @@ function correlateFrames(frames, namespace = "rpc") {
 
 function normalizeLedgerOutput(document, cursorReferences, aliases, redactions) {
   const isLegacyBatch = document?.schema === "gogoke.37.actual-product-api-batch.v1" && Array.isArray(document.events);
-  const isDirectReadback = document?.schema === "gogoke.37.private-e2e-ledger.v1" && Array.isArray(document.sessions);
+  const isDirectReadback = READBACK_SCHEMAS.has(document?.schema) && Array.isArray(document.sessions);
   if (!isLegacyBatch && !isDirectReadback) {
     fail("normalized output has an unsupported product-ledger schema");
   }
@@ -510,6 +511,41 @@ function importCapture(options) {
   const captureId = requireOption(options, "capture-id");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(captureId)) fail("--capture-id must be a short identifier");
 
+  const binarySha256 = parseSha(requireOption(options, "binary-sha256"), "binary-sha256");
+  const m2 = rawInput.json.schema === "gogoke.37.private-m2-readback.v1";
+  const sessionId = options.get("session-id");
+  if (m2 && !sessionId) fail("M2 recordings require --session-id; providers cannot share one CLI identity");
+  let rawDocument = rawInput.json;
+  let normalizedDocument = normalizedInput.json;
+  let selectedSession = null;
+  if (sessionId) {
+    for (const document of [rawDocument, normalizedDocument]) {
+      if (!READBACK_SCHEMAS.has(document.schema) || !Array.isArray(document.sessions) ||
+          document.sessions.filter(row => row.sessionId === sessionId).length !== 1) {
+        fail("session selector must identify exactly one original direct-readback session");
+      }
+    }
+    selectedSession = rawDocument.sessions.find(row => row.sessionId === sessionId);
+    const normalizedSession = normalizedDocument.sessions.find(row => row.sessionId === sessionId);
+    if (m2 && (normalizedDocument.schema !== rawDocument.schema ||
+        normalizedDocument.sourceCommit !== rawDocument.sourceCommit ||
+        !["codex", "claude", "opencode", "grok"].includes(selectedSession.driverId) ||
+        selectedSession.version !== cliVersion || selectedSession.binarySha256 !== binarySha256 ||
+        normalizedSession.driverId !== selectedSession.driverId ||
+        normalizedSession.version !== selectedSession.version ||
+        normalizedSession.binarySha256 !== selectedSession.binarySha256)) {
+      fail("M2 CLI label differs from the original F/H session identity");
+    }
+    const frames = rawDocument.frames.filter(row => row.sessionId === sessionId);
+    const commands = (rawDocument.commands || []).filter(row => row.sessionId === sessionId);
+    rawDocument = { ...rawDocument, frames, commands, count: frames.length, sessions: [selectedSession] };
+    normalizedDocument = { ...normalizedDocument, sessions: [normalizedSession] };
+  }
+  const helper = options.get("helper-sha256");
+  const source = options.get("source-sha");
+  if ((!m2 || selectedSession.driverId === "codex") && !helper) fail("Codex recordings require the original helper SHA-256");
+  if (!m2 && !source) fail("legacy recordings require --source-sha");
+
   if (outcome === "failed" && !failureInput) fail("failed outcome requires --failure-evidence with the original CLI tool error payload");
   const failureClass = failureInput ? classifyFailureEvidence(failureInput.json) : { classification: "not-provided", matchedOutputFields: 0 };
   if (outcome === "success" && failureClass.classification === "code_mode_host_spawn_access_denied") {
@@ -521,12 +557,13 @@ function importCapture(options) {
 
   const aliases = new AliasRegistry();
   const redactions = [];
-  const normalizedRaw = normalizeRawFrames(rawInput.json, direction, aliases, redactions);
-  const outputEvents = normalizeLedgerOutput(normalizedInput.json, normalizedRaw.cursorReferences, aliases, redactions);
+  const normalizedRaw = normalizeRawFrames(rawDocument, direction, aliases, redactions);
+  const outputEvents = normalizeLedgerOutput(normalizedDocument, normalizedRaw.cursorReferences, aliases, redactions);
   const outCount = normalizedRaw.directionCounts.out;
   const inCount = normalizedRaw.directionCounts.in;
   const directionComplete = outCount > 0 && inCount > 0;
-  const baselineStatus = outcome === "failed" ? "NOT_READY_FAILED_CAPTURE" : !directionComplete ? "NOT_READY_MISSING_DIRECTION" : "REVIEW_REQUIRED";
+  const baselineStatus = outcome === "failed" ? "NOT_READY_FAILED_CAPTURE" : !directionComplete ? "NOT_READY_MISSING_DIRECTION" :
+    outputEvents.count === 0 ? "NOT_READY_MISSING_NORMALIZED_OUTPUT" : "REVIEW_REQUIRED";
   const correlation = correlateFrames(normalizedRaw.frames);
   const claudeControlCorrelation = correlateFrames(normalizedRaw.frames, "claude-control");
   const claudeUserEchoCorrelation = correlateFrames(normalizedRaw.frames, "claude-user");
@@ -537,9 +574,13 @@ function importCapture(options) {
     manifest: {
       captureId,
       cliVersion,
-      cliBinarySha256: parseSha(requireOption(options, "binary-sha256"), "binary-sha256"),
-      codeModeHostSha256: parseSha(requireOption(options, "helper-sha256"), "helper-sha256"),
-      officialSourceSha: parseSha(requireOption(options, "source-sha"), "source-sha", [40, 64]),
+      cliBinarySha256: binarySha256,
+      codeModeHostSha256: helper ? parseSha(helper, "helper-sha256") : null,
+      officialSourceSha: source ? parseSha(source, "source-sha", [40, 64]) : null,
+      ...(m2 ? { cliDriver: selectedSession.driverId,
+        sessionAlias: aliases.alias("session", sessionId),
+        productSourceCommit: parseSha(rawInput.json.sourceCommit, "product-source-commit", [40]),
+        upstreamSourceProvenance: source ? "CONTROLLER_SUPPLIED" : "NOT_ASSERTED" } : {}),
       outcome,
       failureClass: failureClass.classification,
       baselineStatus,

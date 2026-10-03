@@ -190,10 +190,11 @@ export class ActualProduct {
   async operation(family, operation, targetId, payload = {}, expectedRevision = '0', allowed = ['APPLIED']) {
     const request = { schema: 'gogoke.37.operations.v1', family, operation, requestId: id('e2e'),
       domainId: this.config.domainId, targetId, expectedRevision, payload };
-    const record = { request, startedAt: new Date().toISOString(), receipt: null };
+    const rawFrame = JSON.stringify(request);
+    const record = { request, rawFrame, startedAt: new Date().toISOString(), receipt: null };
     this.journal.operations.push(record); this.save();
     // Persist once before writing. UNKNOWN/disconnect/timeout stops; no implicit resend.
-    const raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(JSON.stringify(request))}})`);
+    const raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(rawFrame)}})`);
     record.receipt = JSON.parse(raw); record.finishedAt = new Date().toISOString(); this.save();
     if (record.receipt.requestId !== request.requestId || record.receipt.targetId !== targetId ||
         record.receipt.family !== family || record.receipt.operation !== operation || !allowed.includes(record.receipt.status)) {
@@ -203,13 +204,14 @@ export class ActualProduct {
   }
   async reconcile(record) {
     if (record.receipt?.status !== 'UNKNOWN' || record.request.family !== 'K-SESSION' ||
-        !['compact', 'renew-session', 'resume'].includes(record.request.operation)) {
+        !['compact', 'renew-session', 'resume'].includes(record.request.operation) ||
+        typeof record.rawFrame !== 'string' || record.rawFrame !== JSON.stringify(record.request)) {
       throw Error('Reconciliation requires the explicit original generation-change UNKNOWN receipt');
     }
-    const observation = { request: record.request,
+    const observation = { request: record.request, rawFrame: record.rawFrame,
       basis: 'EXACT_NATIVE_REQUEST_RECONCILIATION_NOT_NEW_VENDOR_COMMAND', receipt: null };
     this.journal.operations.push(observation); this.save();
-    const raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(JSON.stringify(record.request))}})`);
+    const raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(record.rawFrame)}})`);
     observation.receipt = JSON.parse(raw); this.save();
     if (observation.receipt.requestId !== record.request.requestId ||
         !['APPLIED', 'REPLAYED', 'UNKNOWN'].includes(observation.receipt.status)) {

@@ -313,7 +313,8 @@ impl<'root> ProductDatabase<'root> {
             // A server call can precede its turn/start ACK. The captured
             // source grants no effect until the existing H turn proof is
             // complete. Leave these exact bytes in A, without another write.
-            Err(model_call::ModelCallError::Denied)=>return Ok(false),
+            Err(model_call::ModelCallError::Denied
+                |model_call::ModelCallError::Rpc(rpc::RpcJournalError::Denied))=>return Ok(false),
             Err(error)=>return Err(OrchestrationError::V37StoreFailure(
                 format!("native tool original source: {error:?}"))),
         };

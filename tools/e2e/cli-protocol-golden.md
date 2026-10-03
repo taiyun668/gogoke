@@ -63,6 +63,20 @@ Dynamic session, thread, turn, item, request, cursor, and related identifiers re
 
 The importer records missing inbound or outbound directions, unmatched JSON-RPC requests, and raw-frame-to-ledger link coverage. A failed capture is always marked `NOT_READY_FAILED_CAPTURE`; an incomplete direction set is `NOT_READY_MISSING_DIRECTION`; a complete non-failed capture is only `REVIEW_REQUIRED`. These are readiness descriptions, not pass/fail compatibility verdicts.
 
+M2 imports the actual `gogoke.37.private-m2-readback.v1` output with mandatory
+`--session-id`. Frames, confirmed commands and normalized rows are selected only
+for that original session; its F instance and H custody driver/version/binary
+digest must agree with the requested CLI label. Never combine different
+providers under one version or binary hash. Use the same private readback file
+for `--frames` and `--normalized`; its original file hash remains recorded.
+Codex still requires `--helper-sha256`; providers without that helper leave it
+absent. For M2, `--source-sha` is optional and only supplies a known upstream
+source identity. An unknown upstream commit remains `NOT_ASSERTED`, separately
+from the actual candidate `productSourceCommit`; do not invent a vendor source
+hash from the product commit or CLI binary. Zero normalized rows are retained
+as `NOT_READY_MISSING_NORMALIZED_OUTPUT`. All imports still require review and
+never accept a golden baseline or milestone.
+
 The controller-provided CLI 0.160.0 sample used for the first tool check contains three inbound notifications and no outbound commands. Its associated model/tool result failed while starting `code-mode-host`; it is therefore a diagnostic failure capture, **not a golden success baseline**. This sample is intentionally not checked into the repository. A future success baseline needs a real successful capture with both directions, reviewed source/binary hashes, adequate raw-to-ledger correlation, and the Controller's evidence review outside this script. This adds no Owner step for test recordings and does not accept the product.
 
 ## Reuse references
