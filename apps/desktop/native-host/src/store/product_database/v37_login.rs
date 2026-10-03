@@ -14,6 +14,8 @@ use crate::root::{inspect_root, RootIdentity};
 mod directed_trace;
 #[path = "v37_login_cache.rs"]
 mod login_cache;
+#[path = "v37_login_provider.rs"]
+mod provider_runtime;
 use crate::store::atomic::Parser;
 use crate::store::instance::{InstanceObservation, ObservationRequest};
 use std::fs;
@@ -177,6 +179,7 @@ pub(super) struct ActiveOwnerLogin {
     stderr_seen: usize,
     halted: bool,
     rpc: Option<LoginRpc>,
+    provider: Option<instance::provider_login::PreparedProviderLogin>,
 }
 
 struct LoginRpc {
@@ -875,6 +878,11 @@ impl<'root> ProductDatabase<'root> {
             return Err(self.settle_owner_login_preflight_error(command,
                 OrchestrationError::OperationConflict));
         }
+        let row = self.read_registered_instance(&command.instance_id)?
+            .ok_or_else(|| self.settle_owner_login_preflight_error(command, OrchestrationError::AccessDenied))?;
+        if row.driver_id != "codex" {
+            return self.begin_registered_provider_login(command);
+        }
         let launch = self.prepare_owner_codex_login(&command.instance_id)
             .map_err(|error| self.settle_owner_login_preflight_error(command, error))?;
         self.start_owner_device_login(command, launch, |custodian, prepared| custodian.activate(prepared))
@@ -942,6 +950,7 @@ impl<'root> ProductDatabase<'root> {
             rpc: Some(LoginRpc { phase: LoginRpcPhase::SendInitialize,
                 login_id: None, early_completion: None, response_started: Instant::now(),
                 stdout_seen: 0, frames_seen: 0 }),
+            provider: None,
         }));
         Ok(owner_login_reply(command, "PENDING", ""))
     }
@@ -1470,10 +1479,17 @@ impl<'root> ProductDatabase<'root> {
 
     fn finish_confirmed_owner_login(&mut self, command: &OwnerLoginCommand,
         mut active: ActiveOwnerLogin, cancelled: bool, login_failure: Option<String>) -> Result<Vec<u8>> {
-        let cleanup = self.cleanup_confirmed_owner_login_runtime(&active.instance_id,
-            &active.runtime_home, &active.runtime_identity);
-        let state_result = if cleanup.is_ok() && login_failure.is_none() {
-            self.owner_login_account_state(command)
+        let cleanup = if active.provider.is_some() {
+            remove_owned_runtime(&active.runtime_home, &active.runtime_identity)
+        } else {
+            self.cleanup_confirmed_owner_login_runtime(&active.instance_id,
+                &active.runtime_home, &active.runtime_identity)
+        };
+        let state_result = if cleanup.is_ok() &&
+            (login_failure.is_none() || active.provider.is_some()) {
+            if let Some(provider) = active.provider.take() {
+                self.provider_login_account_state(command, provider)
+            } else { self.owner_login_account_state(command) }
         } else {
             Ok("UNKNOWN".to_owned())
         };
@@ -1517,6 +1533,19 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn owner_login_account_state(&mut self, command: &OwnerLoginCommand) -> Result<String> {
+        let row = self.read_registered_instance(&command.instance_id)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if row.driver_id != "codex" {
+            let provider = match instance::provider_login::prepare_registered_provider_login(
+                &mut self.connection, self.root, &self.owner, &command.instance_id)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+                    "registered provider status preparation: {error:?}")))? {
+                instance::provider_login::LoginPreparation::Ready(prepared) => prepared,
+                instance::provider_login::LoginPreparation::Unsupported { .. } =>
+                    return Ok("UNKNOWN".into()),
+            };
+            return self.provider_login_account_state(command, provider);
+        }
         let request_id = format!("{}-account-read", command.request_id);
         let raw_bytes = format!("owner-login-account-read:{}:{}",
             command.instance_id, command.request_id).into_bytes();
@@ -2191,7 +2220,7 @@ mod tests {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
-            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)),
+            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)), provider: None,
         }));
         let deadline = Instant::now() + Duration::from_secs(45);
         let mut settled = None;
@@ -2255,7 +2284,7 @@ mod tests {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
-            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)),
+            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)), provider: None,
         }));
         let _ = product.status_owner_device_login(&command);
         let reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
@@ -2579,7 +2608,7 @@ exit 0
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id,
             prepared, runtime_home: runtime_home.clone(), runtime_identity,
-            output: String::new(), stderr_seen: 0, halted: false, rpc: None,
+            output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
         }));
         let active = String::from_utf8(product.begin_owner_device_login(&command).unwrap()).unwrap();
         assert!(active.contains("\"state\":\"PENDING\""));
@@ -2644,7 +2673,7 @@ exit 0
         product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
-            runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None,
+            runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
         }));
         let reply = match product.cancel_owner_device_login(&command) {
             Ok(reply) => reply,
@@ -2948,7 +2977,7 @@ exit 0
         let active = ActiveOwnerLogin {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id,
-            prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None,
+            prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
         };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(format!("{error:?}").contains("controlled account stop record failure"));
@@ -2995,7 +3024,7 @@ exit 0
         assert!(product.process_custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(15)).unwrap());
         product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
         let active = ActiveOwnerLogin { instance_id:command.instance_id.clone(),request_id:command.request_id.clone(),
-            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false,rpc:None };
+            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false,rpc:None,provider:None };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(matches!(&error, OrchestrationError::AccessDenied));
         let final_readback = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();

@@ -133,7 +133,7 @@ const CLAUDE: ProviderLoginRecipe = ProviderLoginRecipe {
     environment: CLAUDE_ENV,
     browser: BrowserBehavior::CliMayOpenAutomatically,
     completion: CompletionBehavior::HostReconciliationRequired,
-    status_argv: Some(&["auth", "status"]),
+    status_argv: Some(&["auth", "status", "--json"]),
     status_contract: StatusContract::DocumentedExitCodes { logged_in: 0, logged_out: 1 },
 };
 
