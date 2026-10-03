@@ -1802,7 +1802,7 @@ impl<'root> ProductDatabase<'root> {
             if request.operation!="send" {
                 return Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
                     request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
-                        text("This fixed ACP transport has no append-without-turn operation"))])));
+                        Json::String(JsonString::from_str("This fixed ACP transport has no append-without-turn operation")))])));
             }
             return self.dispatch_native_acp_send(request,&key);
         }
