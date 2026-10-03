@@ -1435,6 +1435,146 @@ pub(crate) fn complete_claude_send_from_source(
     })
 }
 
+/// Strong historical readback after the physical process has a StopFact.
+/// It reconstructs the original H User, H echo, A init/result and receipt
+/// without a live PreparedCustody or a second provider read/write.
+pub(crate) fn read_stopped_claude_send_completed(
+    connection: &VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+) -> Result<Option<ClaudeSendCompleted>, JournalError> {
+    let (request, text, identity) = claude_send_request(input)?;
+    let Some(record) = read_row(connection, input.domain_id, &request.request_id)? else {
+        return Ok(None);
+    };
+    input_matches(input, &request, &record)?;
+    if record.state != JournalState::Receipted { return Ok(None); }
+    let stopped = Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+            AND c.generation=e.generation
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
+            AND e.process_operation_id=?4 AND e.phase='STOPPED'
+            AND e.stop_fact_id IS NOT NULL AND e.stop_fact_id=c.stop_proof_hash
+            AND c.state='STOPPED' AND c.ticket=?5 AND c.custodian_nonce=?6")?;
+    for (index, value) in [record.domain_id.as_str(), record.session_id.as_str(),
+        record.generation.as_str(), record.process_operation_id.as_str(),
+        record.ticket.as_str(), record.custodian_nonce.as_str()].iter().enumerate() {
+        stopped.bind_text((index + 1) as i32, value)?;
+    }
+    if !stopped.step_row()? || stopped.step_row()? { return Err(JournalError::Denied); }
+    drop(stopped);
+    let echo = Statement::prepare(connection.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes),s.source_epoch,s.source_cursor
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+             AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+             AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+             AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+             AND r.generation=s.generation
+          WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3
+            AND s.process_operation_id=?4 AND s.ticket=?5
+            AND s.custodian_nonce=?6 AND s.step_id=?7
+            AND s.phase='OBSERVED' AND s.requires_response=1
+            AND r.state='NO_EVENT' AND r.no_event_reason='CLAUDE_STDIN_ACK'")?;
+    for (index, value) in [record.domain_id.as_str(), record.session_id.as_str(),
+        record.generation.as_str(), record.process_operation_id.as_str(),
+        record.ticket.as_str(), record.custodian_nonce.as_str(),
+        identity.step_id.as_str()].iter().enumerate() {
+        echo.bind_text((index + 1) as i32, value)?;
+    }
+    if !echo.step_row()? { return Err(JournalError::Denied); }
+    let command = unhex(&echo.column_text(0)?)?;
+    let raw_echo = unhex(&echo.column_text(1)?)?;
+    let echo_epoch = echo.column_text(2)?;
+    let echo_cursor_raw = echo.column_text(3)?;
+    if echo.step_row()? { return Err(JournalError::Conflict); }
+    drop(echo);
+    let expected_command = commands::encode_claude(commands::ClaudeCommand::User {
+        uuid: &identity.uuid, text: &text,
+    }).map_err(|_| JournalError::Denied)?;
+    if command != expected_command { return Err(JournalError::Denied); }
+    let vendor_session_id = match stream_json::decode_claude_line(&raw_echo) {
+        Ok(stream_json::ClaudeData::UserReplay { session_id, uuid, text: echoed })
+            if uuid == identity.uuid && echoed == text => session_id,
+        _ => return Err(JournalError::Denied),
+    };
+    let echo_cursor = echo_cursor_raw.parse::<u64>().ok()
+        .filter(|cursor| *cursor > 0 && *cursor <= i64::MAX as u64
+            && cursor.to_string() == echo_cursor_raw)
+        .ok_or(JournalError::Denied)?;
+    let receipt_bytes = record.receipt_bytes.as_ref().ok_or(JournalError::Unknown)?;
+    let receipt = decode_receipt(receipt_bytes)
+        .map_err(|_| JournalError::Invalid("stored Claude receipt"))?;
+    if receipt.previous_revision != request.expected_revision
+        || receipt.revision != request.expected_revision.checked_add(1)
+            .ok_or(JournalError::Invalid("revision overflow"))? {
+        return Err(JournalError::Conflict);
+    }
+    let status = receipt.status;
+    let result = receipt.into_result();
+    let field = |name| -> Option<String> {
+        match result.get(&JsonString::from_str(name)) {
+            Some(Json::String(value)) => value.to_well_formed_string(),
+            _ => None,
+        }
+    };
+    let epoch = field("sourceEpoch").ok_or(JournalError::Denied)?;
+    let cursor = field("sourceCursor").ok_or(JournalError::Denied)?;
+    let result_cursor = cursor.parse::<u64>().ok()
+        .filter(|value| *value > echo_cursor && *value <= i64::MAX as u64
+            && value.to_string() == cursor)
+        .ok_or(JournalError::Denied)?;
+    if epoch != echo_epoch { return Err(JournalError::Denied); }
+    let source = ledger::read_captured_raw_source(connection,
+        &record.process_operation_id, &epoch, &cursor)?
+        .ok_or(JournalError::Denied)?;
+    if source.state != RawSourceState::NoEvent
+        || source.no_event_reason.as_deref() != Some(CLAUDE_RESULT_NO_EVENT)
+        || source.process_ticket != record.ticket
+        || source.custodian_nonce != record.custodian_nonce
+        || source.domain_id != record.domain_id
+        || source.session_id != record.session_id
+        || source.generation != record.generation {
+        return Err(JournalError::Denied);
+    }
+    claude_init_before_result(connection, &record, &epoch,
+        result_cursor, &vendor_session_id)?;
+    claude_result_is_first_after_echo(connection, &record, &epoch,
+        echo_cursor, result_cursor)?;
+    let terminal = stream_json::decode_claude_line(&source.raw_bytes)
+        .map_err(|_| JournalError::Denied)?;
+    let (expected_status, subtype) = match &terminal {
+        stream_json::ClaudeData::Result { session_id, subtype, is_error }
+            if session_id == &vendor_session_id =>
+            (if !is_error && subtype == "success" { V37Status::Applied }
+                else { V37Status::Failed }, subtype.as_str()),
+        _ => return Err(JournalError::Denied),
+    };
+    let receipt_identity = format!("{}\n{}\n{}\n{}\n{}",
+        crate::store::digest::sha256_hex(input.request_bytes),
+        crate::store::digest::sha256_hex(&raw_echo),
+        crate::store::digest::sha256_hex(&source.raw_bytes),
+        record.process_operation_id, record.custodian_nonce);
+    let expected_receipt_id = format!("claude-{}",
+        &crate::store::digest::sha256_hex(receipt_identity.as_bytes())[..40]);
+    if status != expected_status
+        || field("receiptId").as_deref() != Some(expected_receipt_id.as_str())
+        || field("deliveryBasis").as_deref() != Some("CLAUDE_USER_REPLAY_AND_RESULT")
+        || field("generation").as_deref() != Some(input.generation)
+        || field("vendorSessionId").as_deref() != Some(vendor_session_id.as_str())
+        || field("userUuid").as_deref() != Some(identity.uuid.as_str())
+        || field("resultSubtype").as_deref() != Some(subtype)
+        || field("rawResultSha256").as_deref()
+            != Some(crate::store::digest::sha256_hex(&source.raw_bytes).as_str())
+        || matches!(result.get(&JsonString::from_str("createdTurn")), Some(Json::Bool(true)))
+            != (status == V37Status::Applied) {
+        return Err(JournalError::Conflict);
+    }
+    Ok(Some(ClaudeSendCompleted {
+        user: existing_decision(record), terminal, vendor_session_id,
+    }))
+}
+
 fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
     request: &super::V37Request) -> Result<JournalDecision, JournalError> {
     in_transaction(connection, |connection| prepare_decoded_in_transaction(connection, input, request))
