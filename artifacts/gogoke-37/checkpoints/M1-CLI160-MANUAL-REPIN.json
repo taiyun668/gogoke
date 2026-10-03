@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.checkpoint.v1",
-  "state": "CLI160_SOURCE_PREPARED_CLOUD_PENDING_M1_NOT_COMPLETE",
+  "state": "CLI160_CLOUD_CORRECTIONS_PREPARED_M1_NOT_COMPLETE",
   "changed": [
     "下一冻结候选标识为 0.1.19，避免把不同资源字节复用已安装 0.1.18 的版本号。CLI 兼容问题阻塞全部 M1 真实模型测试，故待云端稳定后先做这一次阻塞项装机验证；不将其称为 M1 稳定或公开发布。",
     "Owner 已认可先升级官方 CLI 再复测 GPT-6.1-Sol/high；同步 native catalog、LPAC 固定 image、登录/启动/恢复、TS adapter 和云端 fixture 到 0.160.0。CLI 源码不改。",
@@ -14,8 +14,11 @@
     "local_signed_node": "Adapter 22, preview 2 and contract 12 focused tests passed; no native build/run",
     "source_hygiene": "24861 tracked files, 0 leaks; diff whitespace check passed",
     "independent_source_review": "三项聚焦修正静态到位，未发现本批新增产品阻塞；原生/cloud 行为结果未验证，不是验收。",
-    "native_cloud": "NOT_RUN_FOR_THIS_SOURCE; previous 25b081c1 run is not CLI160 evidence",
-    "actual_machine": "Official CLI is still 0.149.0; installed product is frozen 0.1.18. Original generation7 is STOPPED and must be released through that product before manual upgrade. No package, credential, registration or formal data change in this source stage."
+    "native_cloud": "28b16d3b run 37090420129: release/process axes compiled and passed; unit-test compilation failed E0425 because the new integration test lacked decode_receipt import. Import added; focused/full/mutation checks are not PASS and will rerun.",
+    "server_cloud": "28b16d3b run 37090420129: 640/642 passed, 2 failed, 0 skipped. Original cleanup errors EBUSY for product-entry-root and EPERM for SQL fixture. Production close has a directly reproduced premature completion defect; correction awaits real Windows rerun to determine whether it explains both failures.",
+    "close_correction": "Capture actual child close/error at construction, share the same closing result, preserve original early error; exitCode or accepted kill no longer signifies closed handles. Existing 2-second terminate-request deadline retained; no directory deletion retry or added waiting budget. Signed Node controlled lifecycle tests: 3 PASS; first defect reproduced as FAIL before correction.",
+    "actual_machine": "Through actual installed frozen 0.1.18, generation7 admission-release APPLIED H5 to H6; seat IDLE at revision8/generation8, GPT-6.1-Sol/high unchanged. Normal caption close and ordinary snapshot PASS: all five formal fields, physical root/home and instance metadata preserved. Official CLI is still 0.149.0; no package or credential operation performed.",
+    "g4": "Four exact ended scheduled-task definitions independently audited, deleted and each read back ABSENT; scripts/results retained. Evidence SHA256 f51f265b6fee2d75af7ad7bf449ae8837166a4f42e164de744a4ad1a8358b131. One original task never launched because its packaged-view alias working directory returned ERROR_DIRECTORY 267; fresh actual LocalCache task succeeded without resending a product request."
   },
   "参照": [
     "按顺序对照 gogo-party accounts.ts 和席位运行时的实例自有 home/手动 CLI 管理，再核仓库 upstream-reference-map、reuse-blueprint 与现有 K-INSTANCE/F.2 合同。沿用已有 native catalog、OwnerIssuer、RootLock、creation journal 和 CAS；不新增自动升级器或凭据迁移。",

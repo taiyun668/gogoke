@@ -7,6 +7,7 @@ use crate::store::atomic::Statement;
 use crate::store::context::{commit_context_version, PromotionEvidence};
 use crate::store::digest::content_hash;
 use crate::store::same_open::{create_new, route_b_test_guard};
+use crate::store::session_transport::decode_receipt;
 use std::io::Cursor;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

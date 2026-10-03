@@ -39,6 +39,75 @@ import {
 const assert: typeof NodeAssert = NodeAssert;
 const test: typeof NodeTest.test = NodeTest.test;
 
+test("owned client close waits for the process close event before fixture cleanup", async () => {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "gogoke-owned-close-"));
+  const pipe = NodeFS.openSync(NodePath.join(root, "transport.fixture"), "w+");
+  // Model the valid Node lifecycle where exit is known but stdio close has not
+  // arrived. Use the production client, not a second implementation of close.
+  const child = new NodeChildProcess.ChildProcess();
+  child.exitCode = 0;
+  const client = Reflect.construct(NativeHostClient, [child, pipe]) as NativeHostClient;
+  let settled = false;
+  const closing = client.close().then(() => { settled = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "exitCode/kill request cannot prove all owned handles closed");
+    child.emit("close", 0, null);
+    await closing;
+    assert.equal(settled, true);
+  } finally {
+    child.emit("close", 0, null);
+    await closing;
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("owned client termination request cannot settle close before the actual close event", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "gogoke-owned-stop-"));
+  const pipe = NodeFS.openSync(NodePath.join(root, "transport.fixture"), "w+");
+  const child = new NodeChildProcess.ChildProcess();
+  let killRequested = false;
+  child.kill = () => { killRequested = true; return true; };
+  const client = Reflect.construct(NativeHostClient, [child, pipe]) as NativeHostClient;
+  Object.defineProperty(client, "request", { value: () => ({ ok: true, body: "shutdown", elapsedMicros: 1 }) });
+  let settled = false;
+  const closing = client.close().then(() => { settled = true; });
+  const second = client.close();
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(2000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(killRequested, true);
+    assert.equal(settled, false, "accepted termination request is not observed closure");
+    child.emit("close", null, "SIGTERM");
+    await Promise.all([closing, second]);
+  } finally {
+    child.emit("close", null, "SIGTERM");
+    await Promise.all([closing, second]);
+    t.mock.timers.reset();
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("owned client preserves an error that arrives before close is requested", async () => {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "gogoke-owned-error-"));
+  const pipe = NodeFS.openSync(NodePath.join(root, "transport.fixture"), "w+");
+  const child = new NodeChildProcess.ChildProcess();
+  child.exitCode = 0;
+  const client = Reflect.construct(NativeHostClient, [child, pipe]) as NativeHostClient;
+  const original = new Error("original controlled child failure");
+  child.emit("error", original);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  try {
+    await assert.rejects(client.close(), (error: unknown) => error === original);
+    child.emit("close", 0, null);
+    await assert.rejects(client.close(), (error: unknown) => error === original);
+  } finally {
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("novel fixture registration and Action binding keep native identity exact", () => {
   const driverId = "mock_novel_0123456789abcdef";
   const runtimeInstanceId = "runtime-r2-03-0123456789abcdef-fedcba9876543210";

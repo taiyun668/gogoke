@@ -2162,11 +2162,18 @@ export function encodeActionOutcomeFrame(
  */
 export class NativeHostClient {
   readonly #child: NodeChildProcess.ChildProcess | null;
+  readonly #childClosed: Promise<Error | null> | null;
   readonly #pipe: number;
-  #closed = false;
+  #closing: Promise<void> | null = null;
 
   private constructor(child: NodeChildProcess.ChildProcess | null, pipe: number) {
     this.#child = child;
+    this.#childClosed = child === null ? null : new Promise<Error | null>((resolve) => {
+      child.once("close", () => resolve(null));
+      // Capture an early error as a fact immediately; close still propagates
+      // the original error, rather than leaving a rejected Promise unobserved.
+      child.once("error", resolve);
+    });
     this.#pipe = pipe;
   }
 
@@ -2867,9 +2874,12 @@ export class NativeHostClient {
     return this.request(frame);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
+  close(): Promise<void> {
+    this.#closing ??= this.closeOnce();
+    return this.#closing;
+  }
+
+  private async closeOnce(): Promise<void> {
     const child = this.#child;
     if (child === null) {
       NodeFS.closeSync(this.#pipe);
@@ -2879,21 +2889,26 @@ export class NativeHostClient {
       if (child.exitCode === null) {
         await this.request(JSON.stringify({ operation: "Shutdown" }));
       }
-    } catch {
+    } catch (error) {
+      console.warn(`Native host graceful shutdown failed: ${String(error)}`);
       child.kill();
     }
     NodeFS.closeSync(this.#pipe);
-    await new Promise<void>((resolve) => {
-      if (child.exitCode !== null) {
-        resolve();
-        return;
-      }
-      child.once("exit", () => resolve());
-      setTimeout(() => {
-        child.kill();
-        resolve();
-      }, 2000);
-    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const stopped = await Promise.race([this.#childClosed, new Promise<never>((_, reject) => {
+        // Preserve the existing termination deadline, but a kill request is
+        // not a close fact. Only the captured process close event can succeed.
+        timer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null && !child.kill()) {
+            reject(new NativeHostClientError("HOST_STOP_UNCONFIRMED", "owned child termination failed"));
+          }
+        }, 2000);
+      })]);
+      if (stopped !== null) throw stopped;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   private request(frame: string): NativeHostReply {
