@@ -3,6 +3,7 @@
 mod home;
 mod catalog;
 mod provider_catalog;
+pub(crate) mod provider_login;
 mod cap;
 mod registry;
 mod resolver;

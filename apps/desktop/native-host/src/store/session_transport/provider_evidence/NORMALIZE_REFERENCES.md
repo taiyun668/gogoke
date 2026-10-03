@@ -1,5 +1,11 @@
 # Native provider output projection references
 
+Focused source review found that the initial tool-content projection rejected
+the fixed schema's `terminal` branch but accepted incomplete `diff`/`content`
+objects. The correction checks the required fields of all three known branches,
+including nested content blocks, and retains future variants as `Unhandled`.
+A terminal ID remains vendor display data; no native terminal or grant is inferred.
+
 `normalize.rs` is a pure M2 handoff from A-captured stdout to `codex_output::NormalizedUpdate` shaped values. It has no caller in this branch: `provider_evidence/mod.rs` is integrator-owned. The Controller must register it, bind the exact H process/session/thread and pending ACP request, and keep the raw frame in A before calling it. No local native build or runtime test was run (`NOT_RUN`); the fixed candidate needs cloud compile and genuine pinned-binary evidence.
 
 ## Sources checked

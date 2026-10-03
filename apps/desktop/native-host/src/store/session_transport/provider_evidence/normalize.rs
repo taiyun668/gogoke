@@ -136,8 +136,37 @@ fn acp_tool_update(frame: &[u8], provider: Provider, session: &str, thread: &str
                 for item in items {
                     let content = object(item, frame, "ACP tool content")?;
                     let content_type = required_text(content, frame, "type")?;
-                    if !matches!(content_type.as_str(), "content" | "diff") {
-                        return Err(invalid(frame, "unknown ACP tool content type"));
+                    match content_type.as_str() {
+                        "content" => {
+                            let nested = object(field(content, "content")
+                                .ok_or_else(|| invalid(frame, "ACP tool content.content missing"))?, frame, "ACP content block")?;
+                            let block_type = required_text(nested, frame, "type")?;
+                            let required: &[&str] = match block_type.as_str() {
+                                "text" => &["text"],
+                                "image" | "audio" => &["data", "mimeType"],
+                                "resource_link" => &["name", "uri"],
+                                "resource" => {
+                                    let resource = object(field(nested, "resource")
+                                        .ok_or_else(|| invalid(frame, "ACP embedded resource missing"))?, frame, "ACP embedded resource")?;
+                                    content_text(resource, frame, "uri")?;
+                                    if field(resource, "text").is_some() { content_text(resource, frame, "text")?; }
+                                    else { content_text(resource, frame, "blob")?; }
+                                    &[]
+                                }
+                                _ => return Ok(Output::Unhandled { method: format!("session/update/{kind}/content/{block_type}"), raw_frame: frame.to_vec() }),
+                            };
+                            for name in required { content_text(nested, frame, name)?; }
+                        }
+                        "diff" => {
+                            content_text(content, frame, "path")?;
+                            content_text(content, frame, "newText")?;
+                            if let Some(old) = field(content, "oldText") {
+                                if !matches!(old, Json::Null) { content_text(content, frame, "oldText")?; }
+                            }
+                        }
+                        // Vendor display data: this ID grants no native access.
+                        "terminal" => { content_text(content, frame, "terminalId")?; }
+                        _ => return Ok(Output::Unhandled { method: format!("session/update/{kind}/content/{content_type}"), raw_frame: frame.to_vec() }),
                     }
                 }
                 extra.push(("content", copy_json(value)));
