@@ -1189,11 +1189,12 @@ fn observed_acp_load_capability(db: &VerifiedDatabaseConnection<'_>,
           WHERE s.domain_id=?1 AND s.session_id=?2
             AND s.process_operation_id=?3 AND s.ticket=?4
             AND s.custodian_nonce=?5 AND s.generation=?6
+            AND s.open_request_id=?7
             AND s.phase='OBSERVED' AND s.requires_response=1
             AND r.state='NO_EVENT' AND r.no_event_reason='ACP_RPC_RESPONSE'")?;
     for (index, value) in [fields.domain_id, fields.session_id, operation,
         fields.custody.ticket.opaque(), fields.custody.custodian_nonce.as_str(),
-        fields.custody.binding.generation.as_str()].iter().enumerate() {
+        fields.custody.binding.generation.as_str(), fields.open_request_id].iter().enumerate() {
         q.bind_text((index + 1) as i32, value)?;
     }
     let mut found = None;
