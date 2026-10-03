@@ -7,8 +7,11 @@
 //! `OriginBoundFrame` read from the exact native process custody.
 
 use super::{codex_rpc, decode_receipt, decode_request, encode_receipt, V37Receipt, V37Status};
-use crate::process::OriginBoundFrame;
-use crate::store::atomic::{AtomicError, Json, JsonString, Statement};
+use super::provider_evidence::{acp, commands};
+use crate::process::{OriginBoundFrame, PreparedCustody};
+use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
+use crate::store::authority::OwnerIssuer;
+use crate::store::ledger::{self, RawSourceKey, RawSourceState};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -57,6 +60,54 @@ pub(crate) struct StdinRequest<'a> {
     /// Exact original v37 request bytes. The legacy adapter writes these to
     /// stdin; native Codex commands have their own correlated RPC journal.
     pub(crate) request_bytes: &'a [u8],
+}
+
+/// The actual process/open binding stays with H. The pending callback needs
+/// only this input's original bytes, deterministic identity, and A source key.
+pub(crate) struct AcpSendInput<'a> {
+    pub(crate) user: StdinRequest<'a>,
+    pub(crate) custody: &'a PreparedCustody,
+    pub(crate) open_request_id: &'a str,
+    pub(crate) open_request_bytes: &'a [u8],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AcpSendIdentity {
+    pub(crate) step_id: String,
+    pub(crate) rpc_id: acp::RpcId,
+}
+
+#[derive(Debug)]
+pub(crate) struct AcpSendPrepared {
+    pub(crate) user: JournalDecision,
+    pub(crate) identity: AcpSendIdentity,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) write_permitted: bool,
+}
+
+pub(crate) struct AcpSendCompleted {
+    pub(crate) user: JournalDecision,
+    pub(crate) observation: acp::Observation,
+}
+
+fn acp_terminal_status(observation: &acp::Observation)
+    -> Result<(V37Status, &'static str), JournalError> {
+    match observation {
+        acp::Observation::Prompt { stop_reason: acp::StopReason::EndTurn, .. } =>
+            Ok((V37Status::Applied, "end_turn")),
+        acp::Observation::Prompt { stop_reason: acp::StopReason::MaxTokens, .. } =>
+            Ok((V37Status::Failed, "max_tokens")),
+        acp::Observation::Prompt { stop_reason: acp::StopReason::MaxTurnRequests, .. } =>
+            Ok((V37Status::Failed, "max_turn_requests")),
+        acp::Observation::Prompt { stop_reason: acp::StopReason::Refusal, .. } =>
+            Ok((V37Status::Failed, "refusal")),
+        acp::Observation::Prompt { stop_reason: acp::StopReason::Cancelled, .. } =>
+            Ok((V37Status::Failed, "cancelled")),
+        acp::Observation::Prompt { stop_reason: acp::StopReason::Error, .. } =>
+            Ok((V37Status::Failed, "error")),
+        acp::Observation::RemoteError { .. } => Ok((V37Status::Failed, "remote_error")),
+        _ => Err(JournalError::Invalid("not an ACP prompt response")),
+    }
 }
 
 pub(crate) struct StdinJournalKey<'a> {
@@ -641,9 +692,344 @@ pub(crate) fn prepare_codex_request(
     prepare_decoded(connection, input, &request)
 }
 
+fn acp_send_request(input: &StdinRequest<'_>)
+    -> Result<(super::V37Request, String, AcpSendIdentity), JournalError> {
+    let request = parse_operation(input, false)?;
+    if request.operation != "send" || request.payload.len() != 2 {
+        return Err(JournalError::Invalid("ACP prompt requires original send"));
+    }
+    let text = payload_string(&request, "body")?;
+    let digest = crate::store::digest::sha256_hex(input.request_bytes);
+    let identity = AcpSendIdentity {
+        step_id: format!("acp-send-{}", &digest[..40]),
+        rpc_id: acp::RpcId::String(format!("gogoke-acp-send-{}", &digest[..40])),
+    };
+    Ok((request, text, identity))
+}
+
+/// One atomic H User intent plus ACP prompt intent. The caller writes the
+/// returned bytes only when write_permitted; replay never changes the RPC ID.
+pub(crate) fn prepare_acp_send_request(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &AcpSendInput<'_>,
+) -> Result<AcpSendPrepared, JournalError> {
+    let (request, text, identity) = acp_send_request(&input.user)?;
+    in_transaction(connection, |connection| {
+      if read_row(connection, input.user.domain_id, &request.request_id)?.is_none() {
+        let current = h_binding(connection, input.user.domain_id,
+            input.user.session_id, input.user.ticket, input.user.generation,
+            BindingUse::Prepare)?;
+        let claim = Statement::prepare(connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_claim WHERE domain_id=?1
+              AND session_id=?2 AND generation=?3 AND process_operation_id=?4
+              AND state='COMMITTED' AND revision=?5")?;
+        for (index, value) in [input.user.domain_id, input.user.session_id,
+            input.user.generation, current.process_operation_id.as_str()].iter().enumerate() {
+            claim.bind_text((index + 1) as i32, value)?;
+        }
+        claim.bind_i64(5, i64::try_from(request.expected_revision)
+            .map_err(|_| JournalError::Invalid("request revision"))?)?;
+        if !claim.step_row()? || claim.step_row()? { return Err(JournalError::Conflict); }
+        drop(claim);
+      }
+        let user = prepare_decoded_in_transaction(connection, &input.user, &request)?;
+        if user.disposition != PrepareDisposition::Prepared {
+            return Ok(AcpSendPrepared { user, identity: identity.clone(),
+                bytes: Vec::new(), write_permitted: false });
+        }
+        let native_session = super::rpc_journal::observed_acp_session_id_in_transaction(
+            connection, input.user.domain_id, input.user.session_id,
+            input.open_request_id, input.open_request_bytes, input.custody, false)?;
+        let command = commands::AcpCommand::Prompt {
+            session_id: &native_session, text: &text,
+        };
+        let step = super::rpc_journal::AcpStep {
+            domain_id: input.user.domain_id, session_id: input.user.session_id,
+            open_request_id: input.open_request_id,
+            open_request_bytes: input.open_request_bytes,
+            step_id: &identity.step_id, custody: input.custody,
+            rpc_id: Some(&identity.rpc_id), command: &command,
+        };
+        let rpc = super::rpc_journal::prepare_acp_in_transaction(connection, owner, &step)?;
+        if rpc.disposition != super::rpc_journal::Disposition::NewWrite {
+            return Err(JournalError::Conflict);
+        }
+        Ok(AcpSendPrepared { user, identity: identity.clone(),
+            bytes: rpc.bytes, write_permitted: true })
+    })
+}
+
+/// A has already durably captured this source from the real child. Resolve
+/// its original prompt ACK, A source, and H User receipt in one transaction.
+/// No caller-supplied frame, vendor result, or second stdin write is needed.
+pub(crate) fn complete_acp_send_from_source(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &AcpSendInput<'_>, key: &RawSourceKey,
+) -> Result<AcpSendCompleted, JournalError> {
+    let (request, text, identity) = acp_send_request(&input.user)?;
+    in_transaction(connection, |connection| {
+        let prior = read_row(connection, input.user.domain_id, &request.request_id)?
+            .ok_or(JournalError::Unknown)?;
+        input_matches(&input.user, &request, &prior)?;
+        let binding = h_binding(connection, input.user.domain_id, input.user.session_id,
+            input.user.ticket, input.user.generation,
+            if prior.state == JournalState::Receipted {
+                BindingUse::Read
+            } else { BindingUse::Complete })?;
+        binding_matches(&prior, &binding)?;
+        if input.custody.ticket.opaque() != binding.ticket
+            || input.custody.custodian_nonce != binding.custodian_nonce
+            || input.custody.binding.domain_id != binding.domain_id
+            || input.custody.binding.generation != binding.generation {
+            return Err(JournalError::Conflict);
+        }
+        let native_session = super::rpc_journal::observed_acp_session_id_in_transaction(
+            connection, input.user.domain_id, input.user.session_id,
+            input.open_request_id, input.open_request_bytes, input.custody, false)?;
+        let command = commands::AcpCommand::Prompt {
+            session_id: &native_session, text: &text,
+        };
+        let step = super::rpc_journal::AcpStep {
+            domain_id: input.user.domain_id, session_id: input.user.session_id,
+            open_request_id: input.open_request_id,
+            open_request_bytes: input.open_request_bytes,
+            step_id: &identity.step_id, custody: input.custody,
+            rpc_id: Some(&identity.rpc_id), command: &command,
+        };
+        let (observation, raw_response) =
+            super::rpc_journal::observe_acp_captured_response_in_transaction(
+                connection, owner, &step, key)?;
+        let (status, stop_reason) = acp_terminal_status(&observation)?;
+        let revision = request.expected_revision.checked_add(1)
+            .ok_or(JournalError::Invalid("revision overflow"))?;
+        let receipt_identity = format!("{}\n{}\n{}\n{}",
+            crate::store::digest::sha256_hex(input.user.request_bytes),
+            crate::store::digest::sha256_hex(&raw_response),
+            binding.process_operation_id, binding.custodian_nonce);
+        let string = |value: &str| Json::String(JsonString::from_str(value));
+        let mut result = std::collections::BTreeMap::from([
+            (JsonString::from_str("generation"), string(input.user.generation)),
+            (JsonString::from_str("receiptId"), string(&format!("rpc-{}",
+                &crate::store::digest::sha256_hex(receipt_identity.as_bytes())[..40]))),
+            (JsonString::from_str("deliveryBasis"), string("ACP_PROMPT_RESPONSE")),
+            (JsonString::from_str("stopReason"), string(stop_reason)),
+            (JsonString::from_str("sourceEpoch"), string(&key.source_epoch)),
+            (JsonString::from_str("sourceCursor"), string(&key.source_cursor)),
+            (JsonString::from_str("rawResponseSha256"),
+                string(&crate::store::digest::sha256_hex(&raw_response))),
+        ]);
+        if status == V37Status::Applied {
+            // The original prompt response proves this User send created and
+            // ended a provider turn. It does not prove task success.
+            result.insert(JsonString::from_str("createdTurn"), Json::Bool(true));
+        }
+        let mut receipt_bytes = encode_receipt(&request, status,
+            request.expected_revision, revision, result);
+        receipt_bytes.push(b'\n');
+        frame_bytes(&receipt_bytes, "native ACP receipt")?;
+        let receipt = decode_receipt(&receipt_bytes)
+            .map_err(|_| JournalError::Invalid("native ACP receipt"))?;
+        if prior.state != JournalState::Receipted {
+            current_native_seat(connection, &input.user)?;
+            let update = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_claim SET revision=?1
+                  WHERE domain_id=?2 AND session_id=?3 AND generation=?4
+                    AND state='COMMITTED' AND revision=?5")?;
+            update.bind_i64(1, i64::try_from(revision)
+                .map_err(|_| JournalError::Invalid("receipt revision"))?)?;
+            update.bind_text(2, input.user.domain_id)?;
+            update.bind_text(3, input.user.session_id)?;
+            update.bind_text(4, input.user.generation)?;
+            update.bind_i64(5, i64::try_from(request.expected_revision)
+                .map_err(|_| JournalError::Invalid("request revision"))?)?;
+            update.step_done()?;
+            if changes(connection)? != 1 { return Err(JournalError::Conflict); }
+        }
+        let user = complete_decoded(connection, &input.user, &request,
+            None, &receipt_bytes, &receipt)?;
+        Ok(AcpSendCompleted { user, observation })
+    })
+}
+
+fn stored_acp_prompt_matches(encoded: &[u8], id: &acp::RpcId,
+    expected_text: &str) -> bool {
+    let Ok(text) = std::str::from_utf8(encoded) else { return false };
+    let Ok(Json::Object(fields)) = Parser::parse(text.trim_end_matches('\n')) else {
+        return false;
+    };
+    let key = |name| JsonString::from_str(name);
+    if !matches!(fields.get(&key("jsonrpc")), Some(Json::String(value))
+        if value.to_well_formed_string().as_deref() == Some("2.0"))
+        || !matches!(fields.get(&key("method")), Some(Json::String(value))
+            if value.to_well_formed_string().as_deref() == Some("session/prompt")) {
+        return false;
+    }
+    let id_matches = match (fields.get(&key("id")), id) {
+        (Some(Json::String(value)), acp::RpcId::String(expected)) =>
+            value.to_well_formed_string().as_deref() == Some(expected),
+        (Some(Json::Number(value)), acp::RpcId::Number(expected)) =>
+            value.parse::<i64>().ok() == Some(*expected),
+        _ => false,
+    };
+    if !id_matches { return false; }
+    let Some(Json::Object(params)) = fields.get(&key("params")) else { return false };
+    if !matches!(params.get(&key("sessionId")), Some(Json::String(value))
+        if value.to_well_formed_string().is_some_and(|value| !value.is_empty())) {
+        return false;
+    }
+    let Some(Json::Array(prompt)) = params.get(&key("prompt")) else { return false };
+    if prompt.len() != 1 { return false; }
+    let Json::Object(content) = &prompt[0] else { return false };
+    matches!(content.get(&key("type")), Some(Json::String(value))
+        if value.to_well_formed_string().as_deref() == Some("text"))
+        && matches!(content.get(&key("text")), Some(Json::String(value))
+            if value.to_well_formed_string().as_deref() == Some(expected_text))
+}
+
+/// Restart/readback uses only the original H User row, RPC row, and A source.
+/// It never reconstructs an OriginBoundFrame or contacts the provider.
+pub(crate) fn read_acp_send_completed(
+    connection: &VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+    key: &RawSourceKey,
+) -> Result<Option<AcpSendCompleted>, JournalError> {
+    let (request, text, identity) = acp_send_request(input)?;
+    let record = read_stdin_journal(connection, &StdinJournalKey {
+        domain_id: input.domain_id, request_id: &request.request_id,
+        session_id: input.session_id, ticket: input.ticket,
+        generation: input.generation,
+    })?.ok_or(JournalError::Unknown)?;
+    input_matches(input, &request, &record)?;
+    if record.state != JournalState::Receipted { return Ok(None); }
+    let source = ledger::read_captured_raw_source(connection, &key.operation_id,
+        &key.source_epoch, &key.source_cursor)?
+        .ok_or(JournalError::Denied)?;
+    if source.state != RawSourceState::NoEvent
+        || source.no_event_reason.as_deref() != Some("ACP_RPC_RESPONSE")
+        || key.operation_id != record.process_operation_id
+        || source.process_ticket != record.ticket
+        || source.custodian_nonce != record.custodian_nonce
+        || source.domain_id != record.domain_id
+        || source.session_id != record.session_id
+        || source.generation != record.generation {
+        return Err(JournalError::Denied);
+    }
+    let rpc = Statement::prepare(connection.as_ptr(),
+        "SELECT s.command_hex FROM main.gogoke_v37_rpc_steps s
+           JOIN main.gogoke_v37_h_process_episode e
+             ON e.domain_id=s.domain_id AND e.session_id=s.session_id
+            AND e.generation=s.generation AND e.process_operation_id=s.process_operation_id
+            AND e.request_id=s.open_request_id
+          WHERE s.domain_id=?1 AND s.session_id=?2
+            AND s.step_id=?3 AND s.process_operation_id=?4 AND s.ticket=?5
+            AND s.custodian_nonce=?6 AND s.generation=?7 AND s.phase='OBSERVED'
+            AND s.source_epoch=?8 AND s.source_cursor=?9")?;
+    for (index, value) in [record.domain_id.as_str(), record.session_id.as_str(),
+        identity.step_id.as_str(), record.process_operation_id.as_str(),
+        record.ticket.as_str(), record.custodian_nonce.as_str(),
+        record.generation.as_str(), key.source_epoch.as_str(),
+        key.source_cursor.as_str()].iter().enumerate() {
+        rpc.bind_text((index + 1) as i32, value)?;
+    }
+    if !rpc.step_row()? { return Err(JournalError::Denied); }
+    let command = unhex(&rpc.column_text(0)?)?;
+    if rpc.step_row()? || !stored_acp_prompt_matches(&command, &identity.rpc_id, &text) {
+        return Err(JournalError::Denied);
+    }
+    let receipt_bytes = record.receipt_bytes.as_ref().ok_or(JournalError::Unknown)?;
+    let receipt = decode_receipt(receipt_bytes)
+        .map_err(|_| JournalError::Invalid("stored ACP receipt"))?;
+    let status = receipt.status;
+    let result = receipt.into_result();
+    if status == V37Status::Applied
+        && !matches!(result.get(&JsonString::from_str("createdTurn")),
+            Some(Json::Bool(true))) {
+        return Err(JournalError::Conflict);
+    }
+    let field = |name| -> Option<String> {
+        match result.get(&JsonString::from_str(name)) {
+            Some(Json::String(value)) => value.to_well_formed_string(),
+            _ => None,
+        }
+    };
+    let pending = acp::Pending { id: &identity.rpc_id,
+        method: acp::PendingMethod::SessionPrompt, requested_session_id: None };
+    let observation = acp::decode(&source.raw_bytes, Some(&pending)).map_err(|error|
+        JournalError::Rpc(super::rpc_journal::RpcJournalError::AcpDecode {
+            reason: error.reason, raw_frame: error.raw_frame }))?;
+    let (expected_status, stop_reason) = acp_terminal_status(&observation)?;
+    if status != expected_status
+        || field("generation").as_deref() != Some(input.generation)
+        || field("deliveryBasis").as_deref() != Some("ACP_PROMPT_RESPONSE")
+        || field("stopReason").as_deref() != Some(stop_reason)
+        || field("sourceEpoch").as_deref() != Some(key.source_epoch.as_str())
+        || field("sourceCursor").as_deref() != Some(key.source_cursor.as_str())
+        || field("rawResponseSha256").as_deref()
+            != Some(crate::store::digest::sha256_hex(&source.raw_bytes).as_str()) {
+        return Err(JournalError::Conflict);
+    }
+    Ok(Some(AcpSendCompleted {
+        user: existing_decision(record), observation,
+    }))
+}
+
+fn with_acp_send_step<T>(connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &AcpSendInput<'_>, allow_unknown_claim: bool,
+    action: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,
+        &super::rpc_journal::AcpStep<'_>) -> Result<T, JournalError>,
+) -> Result<T, JournalError> {
+    let (request, text, identity) = acp_send_request(&input.user)?;
+    let record = read_row(connection, input.user.domain_id, &request.request_id)?
+        .ok_or(JournalError::Unknown)?;
+    input_matches(&input.user, &request, &record)?;
+    let native_session = super::rpc_journal::observed_acp_session_id_in_transaction(
+        connection, input.user.domain_id, input.user.session_id,
+        input.open_request_id, input.open_request_bytes, input.custody,
+        allow_unknown_claim)?;
+    let command = commands::AcpCommand::Prompt {
+        session_id: &native_session, text: &text,
+    };
+    let step = super::rpc_journal::AcpStep {
+        domain_id: input.user.domain_id, session_id: input.user.session_id,
+        open_request_id: input.open_request_id,
+        open_request_bytes: input.open_request_bytes,
+        step_id: &identity.step_id, custody: input.custody,
+        rpc_id: Some(&identity.rpc_id), command: &command,
+    };
+    action(connection, &step)
+}
+
+/// Exact persistent writer success advances only the ACP RPC row to WRITTEN.
+/// The User row remains PREPARED until its original prompt response appears.
+pub(crate) fn mark_acp_send_written(connection: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, input: &AcpSendInput<'_>) -> Result<(), JournalError> {
+    in_transaction(connection, |connection| with_acp_send_step(connection, input, false,
+        |connection, step| super::rpc_journal::mark_acp_written_in_transaction(
+            connection, owner, step).map_err(JournalError::from)))
+}
+
+/// An uncertain physical write is terminal for both intents. H must first
+/// record its original process UNKNOWN custody; waiting for a long prompt is
+/// never a reason to call this API.
+pub(crate) fn mark_acp_send_write_unknown(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &AcpSendInput<'_>, original_error: &str,
+) -> Result<JournalDecision, JournalError> {
+    let (request, _, _) = acp_send_request(&input.user)?;
+    in_transaction(connection, |connection| with_acp_send_step(connection, input, true,
+        |connection, step| {
+            super::rpc_journal::mark_acp_unknown_in_transaction(connection, owner,
+                step, original_error)?;
+            mark_decoded_unknown_in_transaction(connection, &input.user, &request)
+        }))
+}
+
 fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
     request: &super::V37Request) -> Result<JournalDecision, JournalError> {
-    in_transaction(connection, |connection| {
+    in_transaction(connection, |connection| prepare_decoded_in_transaction(connection, input, request))
+}
+
+fn prepare_decoded_in_transaction(connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &StdinRequest<'_>, request: &super::V37Request) -> Result<JournalDecision, JournalError> {
         if let Some(record) = read_row(connection, input.domain_id, &request.request_id)? {
             input_matches(input, &request, &record)?;
             let binding = h_binding(
@@ -717,7 +1103,6 @@ fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &Stdi
             disposition: PrepareDisposition::Prepared,
             record,
         })
-    })
 }
 
 /// Fence a request after the stdin write outcome is uncertain.  The custody
@@ -741,7 +1126,13 @@ pub(crate) fn mark_codex_write_unknown(
 
 fn mark_decoded_unknown(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
     request: &super::V37Request) -> Result<JournalDecision, JournalError> {
-    in_transaction(connection, |connection| {
+    in_transaction(connection, |connection| mark_decoded_unknown_in_transaction(
+        connection, input, request))
+}
+
+fn mark_decoded_unknown_in_transaction(connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &StdinRequest<'_>, request: &super::V37Request)
+    -> Result<JournalDecision, JournalError> {
         let record = read_row(connection, input.domain_id, &request.request_id)?
             .ok_or(JournalError::Unknown)?;
         input_matches(input, &request, &record)?;
@@ -778,7 +1169,6 @@ fn mark_decoded_unknown(connection: &mut VerifiedDatabaseConnection<'_>, input: 
             });
         }
         Ok(existing_decision(record))
-    })
 }
 
 fn receipt_for_frame(
@@ -1218,6 +1608,23 @@ mod tests {
         let inbox=String::from_utf8(raw.to_vec()).unwrap().replace("\"K-SESSION\",\"operation\":\"send\"",
             "\"K-INBOX\",\"operation\":\"steer\"");
         assert!(matches!(parse_request(&input(inbox.as_bytes())),Err(JournalError::Denied)));
+    }
+
+    #[test]
+    fn acp_prompt_id_and_stored_command_bind_original_user_bytes() {
+        let (_, text, identity) = acp_send_request(&input(REQUEST)).unwrap();
+        assert_eq!(text, "hello");
+        let encoded = commands::encode_acp(commands::Vendor::OpenCode,
+            Some(&identity.rpc_id), commands::AcpCommand::Prompt {
+                session_id: "observed-native-session", text: &text,
+            }).unwrap();
+        assert!(stored_acp_prompt_matches(&encoded, &identity.rpc_id, "hello"));
+        assert!(!stored_acp_prompt_matches(&encoded, &identity.rpc_id, "other"));
+        let changed = String::from_utf8(REQUEST.to_vec()).unwrap()
+            .replace("\"body\":\"hello\"", "\"body\":\"other\"");
+        let (_, _, other) = acp_send_request(&input(changed.as_bytes())).unwrap();
+        assert_ne!(identity, other);
+        assert!(!stored_acp_prompt_matches(&encoded, &other.rpc_id, "hello"));
     }
 
     fn input<'a>(bytes: &'a [u8]) -> StdinRequest<'a> {

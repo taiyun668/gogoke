@@ -10,7 +10,7 @@ use super::provider_evidence::{acp, commands};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
-use crate::store::ledger::{self, RawSourceKey};
+use crate::store::ledger::{self, RawSourceKey, RawSourceState};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 const SCHEMA: &str = "CREATE TABLE gogoke_v37_rpc_steps(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,open_request_id TEXT NOT NULL,step_id TEXT NOT NULL,process_operation_id TEXT NOT NULL,ticket TEXT NOT NULL,custodian_nonce TEXT NOT NULL,pid TEXT NOT NULL,creation_time TEXT NOT NULL,image_path TEXT NOT NULL,binary_digest TEXT NOT NULL,profile_id TEXT NOT NULL,generation TEXT NOT NULL,command_hex TEXT NOT NULL,requires_response INTEGER NOT NULL CHECK(requires_response IN (0,1)),phase TEXT NOT NULL CHECK(phase IN ('INTENT','WRITTEN','OBSERVED','UNKNOWN')),source_epoch TEXT,source_cursor TEXT,original_error TEXT,CHECK((phase IN ('INTENT','WRITTEN') AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NULL) OR (phase='UNKNOWN' AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NOT NULL AND length(original_error)>0) OR (phase='OBSERVED' AND source_epoch IS NOT NULL AND source_cursor IS NOT NULL AND original_error IS NULL)),PRIMARY KEY(domain_id,session_id,step_id)) STRICT";
@@ -1026,6 +1026,19 @@ fn persist_observation_and_no_event_with_reason(
     Ok(())
 }
 
+fn observed_source_is_exact(db: &VerifiedDatabaseConnection<'_>,
+    step: &StepFields<'_>, operation: &str, key: &RawSourceKey) -> Result<bool> {
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1
+          AND session_id=?2 AND step_id=?3 AND process_operation_id=?4
+          AND source_epoch=?5 AND source_cursor=?6 AND phase='OBSERVED'")?;
+    for (index, value) in [step.domain_id, step.session_id, step.step_id,
+        operation, key.source_epoch.as_str(), key.source_cursor.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value)?;
+    }
+    Ok(q.step_row()? && !q.step_row()?)
+}
+
 /// A must capture the exact OriginBoundFrame first. The response's RPC
 /// observation and A no-event terminalization commit as one native write.
 /// Notifications do not advance the waiting request.
@@ -1223,15 +1236,121 @@ fn observed_acp_load_capability(db: &VerifiedDatabaseConnection<'_>,
     Ok(found.unwrap_or(false))
 }
 
+fn stored_acp_pending(encoded: &[u8])
+    -> Option<(acp::RpcId, acp::PendingMethod, Option<String>)> {
+    let text = std::str::from_utf8(encoded).ok()?;
+    let Json::Object(fields) = Parser::parse(text.trim_end_matches('\n')).ok()? else {
+        return None;
+    };
+    let key = |name| JsonString::from_str(name);
+    let method = match fields.get(&key("method"))? {
+        Json::String(value) => value.to_well_formed_string()?,
+        _ => return None,
+    };
+    let kind = match method.as_str() {
+        "initialize" => acp::PendingMethod::Initialize,
+        "session/new" => acp::PendingMethod::SessionNew,
+        "session/load" => acp::PendingMethod::SessionLoad,
+        "session/resume" => acp::PendingMethod::SessionResume,
+        _ => return None,
+    };
+    let id = match fields.get(&key("id"))? {
+        Json::String(value) => acp::RpcId::String(value.to_well_formed_string()?),
+        Json::Number(value) => acp::RpcId::Number(value.parse().ok()?),
+        _ => return None,
+    };
+    let requested = if matches!(kind, acp::PendingMethod::SessionLoad
+        | acp::PendingMethod::SessionResume) {
+        let Json::Object(params) = fields.get(&key("params"))? else { return None };
+        let Json::String(value) = params.get(&key("sessionId"))? else { return None };
+        Some(value.to_well_formed_string()?)
+    } else { None };
+    Some((id, kind, requested))
+}
+
+/// One actual initialized ACP process and one native session acquisition
+/// establish the provider session for H. Neither a caller label nor a
+/// session/update notification can select the session sent to stdin.
+pub(super) fn observed_acp_session_id_in_transaction(
+    db: &VerifiedDatabaseConnection<'_>, domain_id: &str, session_id: &str,
+    open_request_id: &str, open_request_bytes: &[u8],
+    custody: &PreparedCustody, allow_unknown_claim: bool,
+) -> Result<String> {
+    let fields = StepFields { domain_id, session_id, open_request_id,
+        open_request_bytes, step_id: "acp-session-proof", custody };
+    original_open(db, &fields)?;
+    let (operation, driver) = assert_current_binding(db, &fields,
+        &["ACTIVE", "UNKNOWN"], allow_unknown_claim)?;
+    acp_vendor(&driver)?;
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,s.source_epoch,s.source_cursor
+           FROM main.gogoke_v37_rpc_steps s
+          WHERE s.domain_id=?1 AND s.session_id=?2
+            AND s.open_request_id=?3 AND s.process_operation_id=?4
+            AND s.ticket=?5 AND s.custodian_nonce=?6 AND s.generation=?7
+            AND s.phase='OBSERVED' AND s.requires_response=1")?;
+    for (index, value) in [domain_id, session_id,
+        open_request_id, operation.as_str(), custody.ticket.opaque(),
+        custody.custodian_nonce.as_str(),
+        custody.binding.generation.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value)?;
+    }
+    let mut initialized = false;
+    let mut session = None;
+    while q.step_row()? {
+        let command = unhex(&q.column_text(0)?)?;
+        let Some((id, method, requested)) = stored_acp_pending(&command) else { continue };
+        let epoch = q.column_text(1)?;
+        let cursor = q.column_text(2)?;
+        let source = ledger::read_captured_raw_source(db, &operation, &epoch, &cursor)?
+            .ok_or(RpcJournalError::Denied)?;
+        if source.state != RawSourceState::NoEvent
+            || source.no_event_reason.as_deref() != Some(ACP_RESPONSE_NO_EVENT)
+            || source.process_ticket != custody.ticket.opaque()
+            || source.custodian_nonce != custody.custodian_nonce
+            || source.domain_id != domain_id || source.session_id != session_id
+            || source.generation != custody.binding.generation {
+            return Err(RpcJournalError::Denied);
+        }
+        let pending = acp::Pending { id: &id, method,
+            requested_session_id: requested.as_deref() };
+        let observation = acp::decode(&source.raw_bytes, Some(&pending)).map_err(|error|
+            RpcJournalError::AcpDecode { reason: error.reason, raw_frame: error.raw_frame })?;
+        match observation {
+            acp::Observation::Initialize { .. } => {
+                if initialized { return Err(RpcJournalError::Conflict); }
+                initialized = true;
+            }
+            acp::Observation::SessionNew { session_id, .. } => {
+                if session.replace(session_id).is_some() { return Err(RpcJournalError::Conflict); }
+            }
+            acp::Observation::SessionLoad { .. }
+            | acp::Observation::SessionResume { .. } => {
+                let requested = requested.ok_or(RpcJournalError::Denied)?;
+                if session.replace(requested).is_some() { return Err(RpcJournalError::Conflict); }
+            }
+            _ => return Err(RpcJournalError::Denied),
+        }
+    }
+    if !initialized { return Err(RpcJournalError::Denied); }
+    session.ok_or(RpcJournalError::Denied)
+}
+
 /// Persist INTENT before H writes ACP stdin. The returned bytes are a send
 /// permit only when disposition is NewWrite; all readbacks prohibit resend.
 pub(crate) fn prepare_acp(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>) -> Result<PreparedStep> {
+    transact(db, |db| prepare_acp_in_transaction(db, owner, step))
+}
+
+/// For the H User intent composite transaction; the caller already holds
+/// BEGIN IMMEDIATE on this same verified connection.
+pub(super) fn prepare_acp_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer, step: &AcpStep<'_>) -> Result<PreparedStep> {
     for (value, name) in [(step.domain_id, "domain"), (step.session_id, "session"),
         (step.open_request_id, "open request"), (step.step_id, "step")] {
         if !atom(value) { return Err(RpcJournalError::Invalid(name)); }
     }
-    transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         original_open(db, &step.fields())?;
         let (operation, driver) = assert_current_binding(db, &step.fields(),
@@ -1265,14 +1384,18 @@ pub(crate) fn prepare_acp(db: &mut VerifiedDatabaseConnection<'_>,
         if !allowed { return Err(RpcJournalError::Unknown); }
         insert_intent(db, &step.fields(), &operation, &encoded, pending.is_some())?;
         Ok(PreparedStep { bytes: encoded, disposition: Disposition::NewWrite })
-    })
 }
 
 fn transition_acp(db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
     step: &AcpStep<'_>, next: Phase, error: Option<&str>) -> Result<()> {
+    transact(db, |db| transition_acp_in_transaction(db, owner, step, next, error))
+}
+
+fn transition_acp_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>, next: Phase,
+    error: Option<&str>) -> Result<()> {
     if next == Phase::Unknown && error.map_or(true, |value| value.is_empty()
         || value.len() > 4096) { return Err(RpcJournalError::Invalid("original error")); }
-    transact(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         original_open(db, &step.fields())?;
         let states = if next == Phase::Unknown { &["ACTIVE", "UNKNOWN"][..] }
@@ -1281,7 +1404,6 @@ fn transition_acp(db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
             next == Phase::Unknown)?;
         let encoded = encode_acp_step(step, &driver)?;
         transition_row(db, &step.fields(), &operation, &encoded, next, error)
-    })
 }
 
 /// Call only after the exact native persistent writer returned success.
@@ -1290,10 +1412,21 @@ pub(crate) fn mark_acp_written(db: &mut VerifiedDatabaseConnection<'_>,
     transition_acp(db, owner, step, Phase::Written, None)
 }
 
+pub(super) fn mark_acp_written_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>) -> Result<()> {
+    transition_acp_in_transaction(db, owner, step, Phase::Written, None)
+}
+
 /// Preserve the original OS/pipe error; this step must never be resent.
 pub(crate) fn mark_acp_unknown(db: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer, step: &AcpStep<'_>, original_error: &str) -> Result<()> {
     transition_acp(db, owner, step, Phase::Unknown, Some(original_error))
+}
+
+pub(super) fn mark_acp_unknown_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>, original_error: &str) -> Result<()> {
+    transition_acp_in_transaction(db, owner, step, Phase::Unknown,
+        Some(original_error))
 }
 
 /// A first captures this exact source. Only its correlated raw response can
@@ -1301,8 +1434,43 @@ pub(crate) fn mark_acp_unknown(db: &mut VerifiedDatabaseConnection<'_>,
 pub(crate) fn observe_acp_response(db: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer, step: &AcpStep<'_>, frame: &OriginBoundFrame,
     key: &RawSourceKey) -> Result<acp::Observation> {
+    transact(db, |db| observe_acp_response_in_transaction(db, owner, step, frame, key))
+}
+
+/// Decode once, then commit the exact RPC row and A no-event source in the
+/// caller's transaction. The H stdin receipt may join this same commit.
+pub(super) fn observe_acp_response_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &AcpStep<'_>, frame: &OriginBoundFrame,
+    key: &RawSourceKey) -> Result<acp::Observation> {
+    source_matches(db, frame, key, &key.operation_id, &step.fields())?;
+    observe_acp_captured_response_in_transaction(db, owner, step, key)
+        .map(|(observation, _)| observation)
+}
+
+/// Complete from A's durable original capture; the output loop need retain
+/// only RawSourceKey, never a second pipe read or a fabricated frame.
+pub(super) fn observe_acp_captured_response_in_transaction(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &AcpStep<'_>, key: &RawSourceKey,
+) -> Result<(acp::Observation, Vec<u8>)> {
+        check_owner_in_current_transaction(db, owner)?;
+        original_open(db, &step.fields())?;
+        let (operation, driver) = assert_current_binding(db, &step.fields(),
+            &["ACTIVE", "UNKNOWN"], false)?;
+        let encoded = encode_acp_step(step, &driver)?;
+        if key.operation_id != operation { return Err(RpcJournalError::Denied); }
+        let source = ledger::read_captured_raw_source(db, &key.operation_id,
+            &key.source_epoch, &key.source_cursor)?
+            .ok_or(RpcJournalError::Denied)?;
+        if source.process_ticket != step.custody.ticket.opaque()
+            || source.custodian_nonce != step.custody.custodian_nonce
+            || source.domain_id != step.domain_id
+            || source.session_id != step.session_id
+            || source.generation != step.custody.binding.generation {
+            return Err(RpcJournalError::Denied);
+        }
     let pending = acp_pending(step)?.ok_or(RpcJournalError::Invalid("ACP notification has no ACK"))?;
-    let observation = acp::decode(frame.bytes(), Some(&pending)).map_err(|error|
+    let observation = acp::decode(&source.raw_bytes, Some(&pending)).map_err(|error|
         RpcJournalError::AcpDecode { reason: error.reason, raw_frame: error.raw_frame })?;
     if !matches!(&observation, acp::Observation::Initialize { .. }
         | acp::Observation::SessionNew { .. } | acp::Observation::SessionLoad { .. }
@@ -1310,20 +1478,16 @@ pub(crate) fn observe_acp_response(db: &mut VerifiedDatabaseConnection<'_>,
         | acp::Observation::RemoteError { .. }) {
         return Err(RpcJournalError::Invalid("not an ACP response"));
     }
-    transact(db, |db| {
-        check_owner_in_current_transaction(db, owner)?;
-        original_open(db, &step.fields())?;
-        let (operation, driver) = assert_current_binding(db, &step.fields(),
-            &["ACTIVE", "UNKNOWN"], false)?;
-        let encoded = encode_acp_step(step, &driver)?;
-        source_matches(db, frame, key, &operation, &step.fields())?;
-        if same_row(db, &step.fields(), &operation, &encoded)? != Some(Phase::Written) {
-            return Err(RpcJournalError::Conflict);
+        match (same_row(db, &step.fields(), &operation, &encoded)?, source.state) {
+            (Some(Phase::Written), RawSourceState::Pending) =>
+                persist_observation_and_no_event_with_reason(db, step.domain_id,
+                    step.session_id, step.step_id, &operation, key, ACP_RESPONSE_NO_EVENT)?,
+            (Some(Phase::Observed), RawSourceState::NoEvent)
+                if source.no_event_reason.as_deref() == Some(ACP_RESPONSE_NO_EVENT)
+                    && observed_source_is_exact(db, &step.fields(), &operation, key)? => {},
+            _ => return Err(RpcJournalError::Conflict),
         }
-        persist_observation_and_no_event_with_reason(db, step.domain_id,
-            step.session_id, step.step_id, &operation, key, ACP_RESPONSE_NO_EVENT)
-    })?;
-    Ok(observation)
+    Ok((observation, source.raw_bytes))
 }
 
 #[derive(Debug, Eq, PartialEq)]
