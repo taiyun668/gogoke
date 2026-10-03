@@ -3178,6 +3178,13 @@ exit 0
         let new_request = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"providerAfterConfirmedFault","expectedRevision":1}"#;
         assert!(matches!(product.dispatch_owner_login_frame(new_request), Err(OrchestrationError::OperationConflict)));
         drop(held);
+        // This fixture's PowerShell image is not a registered OpenCode CLI.
+        // Confirmed cleanup therefore exposes the real catalog failure once,
+        // then preserves its final UNKNOWN result for ordinary UI readback.
+        let status_error=product.status_owner_device_login(&command).unwrap_err();
+        assert!(format!("{status_error:?}").contains("provider login pinned executable"));
+        assert!(matches!(&product.owner_login,Some(OwnerLoginSession::Final {state,output,..})
+            if state=="UNKNOWN" && output.contains("automatic account/read failed")));
         let final_reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(final_reply.contains("\"settled\":true") && final_reply.contains("raw_os_error"));
         assert!(final_reply.contains("\"state\":\"UNKNOWN\"")
