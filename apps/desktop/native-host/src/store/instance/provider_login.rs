@@ -51,6 +51,7 @@ pub(crate) enum CompletionBehavior {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RecipeAvailability {
+    /// The command form is evidenced; this does not qualify its runtime flow.
     Supported,
     Unsupported(&'static str),
     OutOfScope,
@@ -148,11 +149,11 @@ const GROK: ProviderLoginRecipe = ProviderLoginRecipe {
     provider: LoginProvider::Grok,
     pinned_version: "1.0.41",
     executable: "grok",
-    argv: &[],
-    instructions: "Unsupported until the login command and browser behavior are evidenced against the exact 1.0.41 executable. Do not substitute --oauth or device-auth flags.",
-    availability: RecipeAvailability::Unsupported("fixed-version login command and browser behavior are unverified"),
+    argv: &["login", "--oauth"],
+    instructions: "The exact fixed binary's help confirms this login command and OAuth selection. Browser launch and successful completion are not runtime-qualified; do not infer either from argv or process exit.",
+    availability: RecipeAvailability::Supported,
     environment: GROK_ENV,
-    browser: BrowserBehavior::Unsupported,
+    browser: BrowserBehavior::Unknown,
     completion: CompletionBehavior::Unsupported,
     status_argv: None,
     status_contract: StatusContract::Unsupported,

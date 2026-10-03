@@ -13,7 +13,7 @@ environment configuration.
 | --- | --- | --- | --- |
 | Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status` is the documented read; use only its documented exit contract (0 logged in, 1 not logged in; other codes unknown). Do not parse later-added `configDirectory` output fields on `2.1.196`. |
 | OpenCode `1.18.32` | `opencode auth login`, as recorded by B3's integration contract and the official CLI/ACP docs. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | No exact-version URL or browser suppression behavior is recorded. H must not auto-open output URLs. Exit status alone is not login proof; no fixed-version status parser is included. |
-| Grok Build `1.0.41` | **Unsupported.** The historical Room recipe and mutable official guide are not exact-version evidence for the installed executable. No `--oauth`, device-auth, or other login flag is emitted. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home, matching H's model launch selector; preserve original AppData for browser context. | **Unsupported** until the exact pinned executable's login command, browser behavior, and completion signal are evidenced. |
+| Grok Build `1.0.41` | `grok login --oauth`. Exact fixed-binary `--help` evidence confirms this command and OAuth option. This is command-shape evidence only; the runtime flow is not qualified. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home, matching H's model launch selector; preserve original AppData for browser context. | Browser-opening behavior and completion remain unknown. The help exposes no `--no-browser` or status flag. H must not auto-open an output URL or infer login success from process exit; status detection is Unsupported. |
 | Antigravity CLI `1.2.11` | The exact official tag says first launch of `agy` authenticates through system keyring and opens the browser if needed. **Unsupported as an instance login**: it exposes no documented login-only command, and the system keyring is shared across this Windows user. | Local home bindings cannot isolate the system keyring identity. | The CLI owns first-launch browser behavior; H must not open a duplicate URL. Account status stays `UNKNOWN`; do not turn a shared keyring session into per-instance readiness. |
 | Codex `0.160` | Out of scope; existing Codex login path stays unchanged. | This module makes no Codex launch or environment change. | Existing `v37_login` owns its Codex browser URL and callback flow. |
 
@@ -86,8 +86,20 @@ stdout/stderr stays with H and must retain the original failure reason.
 - Grok official source snapshot:
   [authentication guide at source-audit commit](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
   B4 records the installed `1.0.41` version observation but states the source
-  snapshot and installed executable are not byte-equivalent. The current main
-  guide is mutable, so this does not qualify a login recipe for the fixed CLI.
+  snapshot and installed executable are not byte-equivalent. The exact help
+  observation below supersedes this source for command syntax only; the guide
+  does not establish runtime browser or completion behavior for the fixed CLI.
+- Owner-provided ordinary-view help observation for the fixed Grok binary:
+  version `1.0.41`, SHA-256
+  `ab5d2a424f08281798acbdbb06076166fe000d7995ede94a673417b805210a25`, private
+  original evidence name `grok-login-help-original.json` (not committed); the
+  before/after executable hashes matched this pin.
+  Its short excerpt is `Usage: grok login [OPTIONS]`; `--oauth Use Grok OAuth
+  via auth.x.ai`; `--device-auth` selects device-code authentication. The same
+  help output exposed no `--no-browser` or status option. This read-only help
+  observation proves only the parser's displayed command/option surface: no
+  login, browser authorization, credentials, or model request occurred, and it
+  does not prove URL printing, browser launching, or completion semantics.
 - Google official sources: [Antigravity CLI `1.2.11` README](https://github.com/google-antigravity/antigravity-cli/blob/1.2.11/README.md)
   and [current installation/authentication docs](https://www.antigravity.google/docs/cli/install/).
   The exact tag documents first-launch keyring sign-in, local automatic browser
