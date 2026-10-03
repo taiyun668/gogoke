@@ -107,8 +107,9 @@ pub(crate) struct RenderedInstruction {
     pub(crate) template_id:String,
 }
 
-/// The caller writes these bytes only into F/H's already granted tree. This
-/// renderer does not edit the repository or assert that a vendor loaded them.
+/// The caller must prove a collision-free, project-scoped discovery location
+/// before writing these bytes. This renderer does not edit the repository or
+/// assert that the running vendor loaded them.
 pub(crate) fn render_codex_instruction(seat:&Seat)->Result<RenderedInstruction,SeatError> {
     let settings=seat.settings_json.as_deref().ok_or(SeatError::Denied)?;
     let Json::Object(fields)=Parser::parse(settings)? else {return Err(SeatError::SchemaDrift);};

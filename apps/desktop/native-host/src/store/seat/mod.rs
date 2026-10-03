@@ -321,7 +321,7 @@ fn f1_schema() -> Vec<(String, String)> {
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     entries
 }
-fn create_e2_tables(db: &VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {
+fn create_e2_tables(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {
     db.execute(resource::HOST_RESOURCES)?;
     for sql in [policy::POLICY_HEAD,policy::POLICY_GRANTS,policy::POLICY_GATES,
         policy::POLICY_ROUTES,policy::POLICY_ESCALATIONS,policy::POLICY_EVENTS,

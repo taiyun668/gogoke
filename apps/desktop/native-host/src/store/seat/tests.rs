@@ -9,6 +9,7 @@ fn wire(request_id: &str) -> &'static [u8] {
     match request_id {
         "createLead" => br#"{"op":"create-from-template","requestId":"createLead","domainId":"projectA","seatId":"lead","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "createAnother" => br#"{"op":"create-from-template","requestId":"createAnother","domainId":"projectA","seatId":"another","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
+        "reviewerCreate" => br#"{"op":"create-from-template","requestId":"reviewerCreate","domainId":"projectA","seatId":"reviewer","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "busyBind" => br#"{"op":"bind-instance","requestId":"busyBind","domainId":"projectA","seatId":"lead","expectedGeneration":2,"expectedRevision":2,"instanceId":"instanceB"}"#,
         "boundBind" => br#"{"op":"bind-instance","requestId":"boundBind","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":3,"instanceId":"instanceB"}"#,
         "changeOnce" => br#"{"op":"change-instance","requestId":"changeOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":3,"instanceId":"instanceB"}"#,
@@ -205,6 +206,22 @@ fn exact_schema_reopens_and_drift_refuses_repair() {
         initialize_schema(db).unwrap();
         db.execute("DROP TABLE gogoke_v37_seat_operations").unwrap();
         assert!(matches!(initialize_schema(db), Err(SeatError::SchemaDrift)));
+    });
+}
+
+#[test]
+fn measured_host_limit_never_writes_the_owner_project_cap() {
+    fixture(|db,owner| {
+        assert!(matches!(read_host_parallel_fact(db),Err(SeatError::Denied)));
+        set_project_parallel_cap(db,owner,"projectA",4).unwrap();
+        assert!(matches!(read_effective_project_parallel_cap(db,"projectA"),
+            Err(SeatError::Denied)));
+        let fact=transact(db,|db|refresh_host_parallel_fact_in_transaction(db)).unwrap();
+        assert!(fact.observed_parallelism>0);
+        assert_eq!(fact.machine_limit,fact.observed_parallelism);
+        let (effective,recorded)=read_effective_project_parallel_cap(db,"projectA").unwrap();
+        assert_eq!(effective,4_i64.min(recorded.machine_limit));
+        assert_eq!(read_project_parallel_cap(db,"projectA").unwrap(),4);
     });
 }
 
@@ -946,6 +963,66 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
             Err(SeatError::Denied)
         ));
         assert_eq!(stopped.state, State::Idle);
+    });
+}
+
+#[test]
+fn e2_takeover_and_current_policy_grant_are_required_for_child_dispatch() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let native=NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
+        let child=create(db,NativeOrigin::lead(&native),CreateSeat {domain_id:"projectA",
+            seat_id:"worker",template_id:"templateE2",instance_id:Some("instanceA"),
+            kind:Kind::Short,request_id:"createWorker",request_bytes:wire("createWorker")}).unwrap().seat;
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnA").unwrap();
+        assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)));
+        initialize_policy(db,owner,"projectA","draft").unwrap();
+        configure_call_grant(db,owner,"projectA","lead","worker",CallAction::Dispatch,None,1).unwrap();
+        assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)),
+            "a grant cannot replace configured takeover answers");
+        answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerA",b"original answer").unwrap();
+        assert!(takeover_ready(db,&active).unwrap());
+        authorize_child_dispatch(db,&caller,&child).unwrap();
+        assert!(matches!(authorize_current_call(db,&caller,"projectB","worker",
+            CallAction::Dispatch),Err(SeatError::Denied)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"worker"),Ok(None)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"lead"),Err(SeatError::Denied)));
+    });
+}
+
+#[test]
+fn e2_gate_rejection_stops_stage_and_reserves_one_escalation() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let reviewer=create_user(db,owner,"reviewer","reviewerCreate");
+        let lead=set_dispatch_state(db,&lead,true).unwrap();
+        let reviewer=set_dispatch_state(db,&reviewer,true).unwrap();
+        let submitter=NativeSeatCall::from_verified_h_turn(&lead,"turnLead").unwrap();
+        let auditor=NativeSeatCall::from_verified_h_turn(&reviewer,"turnReview").unwrap();
+        assert_eq!(initialize_policy(db,owner,"projectA","draft").unwrap(),1);
+        assert_eq!(configure_call_grant(db,owner,"projectA","lead","reviewer",
+            CallAction::Review,None,1).unwrap(),2);
+        assert_eq!(configure_gate(db,owner,"projectA","gateA","lead","reviewer",
+            "draft","done",1,2).unwrap(),3);
+        gate_submit(db,&submitter,"gateA",3,1,"submitA",b"original submit").unwrap();
+        let rejected=gate_decide(db,&auditor,"gateA",GateDecision::Reject,"needs source",
+            3,2,"decideA",b"original decision").unwrap();
+        assert_eq!(rejected.state,"ESCALATION_REQUIRED");
+        assert!(matches!(stage_transition(db,&submitter,"gateA",3,3,"stageA",
+            b"original stage"),Err(SeatError::Denied)));
+        configure_escalation_route(db,owner,"projectA","lead","REJECT_CAP","reviewer",3).unwrap();
+        let first=begin_escalation(db,&submitter,EscalationCause::RejectCap {
+            gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap();
+        assert_eq!(first.to_seat_id,"reviewer");
+        assert!(begin_escalation(db,&submitter,EscalationCause::RejectCap {
+            gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap().replayed);
+        mark_escalation_unknown(db,"projectA","triggerA").unwrap();
+        let evidence=NativeDeliveryEvidence::from_verified_c_delivery("projectA","triggerA",
+            "reviewer","receiptA").unwrap();
+        assert!(matches!(settle_escalation(db,&evidence),Err(SeatError::Unknown)),
+            "an unknown send never accepts a new delivery assertion");
     });
 }
 
