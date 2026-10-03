@@ -66,6 +66,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     use crate::store::atomic::{Json, JsonString, Parser};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -115,8 +116,10 @@ mod tests {
     fn code_mode_lpac_parent_fixture() {
         let Some(path) = std::env::var_os("GOGOKE_TEST_CODE_MODE_IMAGE") else { return; };
         let positive = std::env::var("GOGOKE_TEST_CODE_MODE_CASE").unwrap() == "positive";
-        let spawned = Command::new(&path).stdin(Stdio::piped()).stdout(Stdio::piped())
-            .stderr(Stdio::inherit()).spawn();
+        // Match the fixed official Connection::spawn Windows path, including
+        // its no-console flag and all three private stdio pipes.
+        let spawned = Command::new(&path).creation_flags(0x0800_0000)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         if !positive {
             let error = spawned.err().expect("ungranted official helper must not spawn");
             assert_eq!(error.raw_os_error(), Some(5), "original error: {error:?}");
@@ -124,6 +127,9 @@ mod tests {
             return;
         }
         let mut child = spawned.expect("actual official helper LPAC spawn original Windows error");
+        let mut child_stderr = child.stderr.take().unwrap();
+        let stderr_forwarder = std::thread::spawn(move ||
+            std::io::copy(&mut child_stderr, &mut std::io::stderr()));
         let mut input = child.stdin.take().unwrap();
         let mut output = child.stdout.take().unwrap();
         write_frame(&mut input, r#"{"type":"connection/hello","supportedVersions":[1],"requiredCapabilities":[],"optionalCapabilities":["session-cell-execution-resource-limits","yield-observation"]}"#);
@@ -155,7 +161,10 @@ mod tests {
         let closed = response(&mut output, 4, "operation/response");
         assert_eq!(text(member(member(member(&closed, "result"), "value"), "type")), "session/closed");
         drop(input); // Frame-boundary EOF shuts down the actual host.
-        assert!(child.wait().expect("official helper exit").success());
+        let status = child.wait().expect("official helper exit");
+        stderr_forwarder.join().expect("official helper stderr relay panicked")
+            .expect("official helper original stderr relay failed");
+        assert!(status.success(), "official helper exit: {status:?}");
         std::fs::write("positive-result.txt", "OFFICIAL_HELPER_LPAC_JOB_EXECUTE_PASS").unwrap();
     }
 

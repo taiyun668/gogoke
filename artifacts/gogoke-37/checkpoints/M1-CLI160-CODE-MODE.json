@@ -1,10 +1,11 @@
 {
   "schema": "gogoke.37.checkpoint.v1",
-  "state": "ACTUAL_CLI160_QUESTION_AND_STEER_PASS_CODE_MODE_GRANT_FIX_PENDING_CLOUD",
+  "state": "ACTUAL_CLI160_QUESTION_AND_STEER_PASS_CLOUD_FIXTURE_ALIGNMENT_PENDING",
   "changed": [
     "普通 Interactive/Limited 视图已安装冻结 0.1.19，手动安装官方 CLI 0.160.0，以原实例原 home 完成 User 入口重新绑定；凭据不迁移、不读取。",
     "真实 LPAC 模型工具执行发现官方 code-mode-host 缺少本会话 SID 的文件执行许可；H 使用已有精确单文件 RX、无继承机制补齐固定官方成员，保留只读防写/防删除共享句柄并纳入既有 launch/live/resume 核验。",
-    "增加固定成员 hash、物理对象与替换拒绝测试，以及真实官方辅助程序在同一 LPAC token/Job 内的无账号协议测试；云端撤销真实 grant 后须编译通过且行为失败，精确恢复后须通过。未改 CLI、目录许可或 capability。"
+    "增加固定成员 hash、物理对象与替换拒绝测试，以及真实官方辅助程序在同一 LPAC token/Job 内的无账号协议测试；云端撤销真实 grant 后须编译通过且行为失败，精确恢复后须通过。未改 CLI、目录许可或 capability。",
+    "第一轮夹具漏掉固定上游Connection::spawn的CREATE_NO_WINDOW，并未完全对齐三路私有管道；已按上游修正两种对照的共用spawn及stderr转发。新增现有工作流的定向fixture选项，默认全套门禁保留，定向运行明确全库/其他mutation/server为NOT_RUN。"
   ],
   "results": {
     "frozen_delivery": "沿用 M1-CLI160-MANUAL-REPIN.json 的冻结 source4b66a43e / 0.1.19 云端构建、签名及同字节装机烟测；本次已实际安装，不是公开发布或验收。",
@@ -16,6 +17,8 @@
     "custody": "generation9正常stop revision4→5 APPLIED并取得durable stopFact，admission-release5→6，seat IDLE generation10；通过原窗口标题栏正常关闭，无强制结束。",
     "scope": "受信 main5896e6d5的verify_plan.py重算scope摘要仍为274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656，与回执v2一致。",
     "independent_review": "fresh风险席位六轴静态初查完成：固定成员、精确ACL、生命周期、真实夹具/token/Job、协议、错误保留；最终component暂存blob81d0469bb2942e1c85c9feb79dfe4b5421a9c6f3无进入云端的新阻塞，行为门禁与Win11仍未执行。",
+    "first_cloud_attempt": "a35631e7 / controlled dispatch37106016332 attempt1：release/process实际通过；server645/645、fail0/skip0，artifact11267629233 SHA2568245ad96ed69ef5b68104aa06549e01738928d38efe201a3e733c684bda6b77f。focused32PASS/1FAIL/0skip，artifact11268520332 SHA2564f0b95136bcbc146313ae8082d9cb0c7cb4c0b625143fece2390a5958b60f035；唯一real-lpac夹具positive spawn报原Windows5，未进入hello。binding和real product open通过不能替代helper启动。full-lib与新grant mutation步骤失败，其他独立轴继续；不能把这个已有失败baseline上的mutation计为有效通过。desktop PR37106018790五job通过，hygiene PR37106018839通过。",
+    "fixture_review": "独立核上游NO_WINDOW和三路piped，原夹具不等价，positive Windows5不能用于否定或确认正式CLI精确grant方案。修正后全部原行为断言保留，产品grant/lifecycle实现不变；新定向模式不冒充全套PASS。",
     "g4": "独立审计本phase27份task custody，25个已结束定义精确符合action/hash/SID/Interactive/Limited/Ready及无未来运行，另2项已ABSENT。Controller逐项删除25个并各回读ABSENT，脚本/结果/失败原文/产物保留；清理证据SHA256 6b1542f6d0f6e5ed868d2c1a3aeba4595b96893f568be570f911a31a89263676。",
     "measurement": "第一次memory观察脚本使用PowerShell保留变量HOME，模型发送前即失败；保留原脚本并改用实例专用变量后得到真实baseline。活跃数据库外部只读打开失败，正常停止产品后同一普通路径只读成功；未改数据库。完整原工具错误改从CLI自己写下的rollout读取。"
   },
@@ -26,10 +29,10 @@
     "固定上游rust-v0.160.0 commit a956835d020762cb2b570053af06f643a11c0ecc的code-mode-host及code-mode-protocol stdio案例：u32LE长度前缀、hello、session/open、无工具跨cell存取、shutdown与EOF。thread/start仅检查is_file，不能当辅助程序启动通过。"
   ],
   "next": [
-    "完成独立源码复核并跑受影响云端正式门禁、真实helper协议及有效grant mutation。",
+    "先以临时ci-*源码标签定向验证修正夹具，不取消旧分支的其余独立轴；这是CI引用，不是产品版本或发布。收齐后清理该精确标签，并在施工分支跑新源全套。",
     "云端稳定后，用实际候选、同一CLI及原实例继续真实工具操作与其余M1测试；保持阶段内轻，不为外围测量问题新增版本。",
     "M1稳定后走一次完整更新链并汇报；未通过的产品行为和未执行的检查分别保留，不自行验收。"
   ],
-  "走法反思": "模型工具已经把失败原文写在CLI rollout中；先读原文、核实际路径与ACL，一次定位必要组件，避免继续叠加外围探针。源码静态签名错误在推送前修正；云端执行才证明行为，主程序可运行不能外推到辅助程序。",
+  "走法反思": "模型工具已经把失败原文写在CLI rollout中，优先取原文。新仪器应逐项照搬上游实际spawn参数，不能只抄协议；用既有工作流定向选项先校仪器，再走完整门禁，减少无效全套往返。主程序、静态grant或thread/start可运行均不能外推到helper。",
   "acceptance": false
 }

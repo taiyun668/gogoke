@@ -19,6 +19,10 @@ on:
         description: Verify ordinary OAuth callback and stderr repairs only; full library, mutation and server gates are NOT_RUN
         type: boolean
         default: false
+      code_mode_fixture_only:
+        description: Verify fixed official Code Mode member and its grant mutation only; full library, other mutations and server gates are NOT_RUN
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -108,6 +112,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.code_mode_fixture_only }}' -eq 'true' -and
+              @('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}') -contains 'true') {
+            throw 'Code Mode fixture scope cannot be combined with another directed scope'
+          }
           $manifest = 'apps/desktop/native-host/Cargo.toml'
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -190,7 +198,7 @@ jobs:
             run_attempt = '${{ github.run_attempt }}'
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
-            evidence_scope = if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
+            evidence_scope = if ('${{ inputs.code_mode_fixture_only }}' -eq 'true') { 'FOCUSED_CODE_MODE_MEMBER_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
             release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
@@ -201,6 +209,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.code_mode_fixture_only }}' -eq 'true' -and
+              @('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}') -contains 'true') {
+            throw 'Code Mode fixture scope cannot be combined with another directed scope'
+          }
           $PSNativeCommandUseErrorActionPreference = $false
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -256,6 +268,9 @@ jobs:
               @{ id = 'cancel-stderr'; filter = 'cancelled_pinned_cli_preserves_stderr_before_confirmed_release' }
             )
             Write-Host 'Focused ordinary OAuth repairs only; full library, compiled mutations and server suites NOT_RUN.'
+          } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -in @('code-mode-member-binding','code-mode-member-real-lpac') })
+            Write-Host 'Fixed Code Mode member and grant mutation only; full library, other mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
@@ -310,7 +325,7 @@ jobs:
           path: ${{ runner.temp }}/gogoke-native-host-evidence/focused-*
           if-no-files-found: error
       - name: Run all native-host library unit tests
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -404,7 +419,7 @@ jobs:
             throw 'Unchanged helper behavior test must pass after exact production restoration'
           }
       - name: Verify F.1 production fixes with compiled failing mutations
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -502,7 +517,7 @@ jobs:
             }
           }
       - name: Verify native installation facts with independent compiled mutations
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -547,7 +562,7 @@ jobs:
             }
           }
       - name: Verify confirmed forced Job stop with a compiled failing mutation
-        if: ${{ !cancelled() && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+        if: ${{ !cancelled() && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -602,7 +617,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+    if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
