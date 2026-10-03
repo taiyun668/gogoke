@@ -337,6 +337,20 @@ impl<'root> ProductDatabase<'root> {
                 }
                 state
             }
+            StatusObservation::GrokModelsAuthenticationHeading(request) => {
+                let (bytes,exit,stderr)=self.observe_provider_status(command,request)?;
+                use instance::provider_login::GrokModelsAccountState;
+                let state=match instance::provider_login::classify_grok_models_status(&bytes,exit) {
+                    GrokModelsAccountState::CredentialPresent=>NativeAccountState::CredentialPresent,
+                    GrokModelsAccountState::LoggedOut=>NativeAccountState::LoggedOut,
+                    GrokModelsAccountState::Unknown=>NativeAccountState::Unknown,
+                };
+                if state==NativeAccountState::Unknown && (!stderr.is_empty() || exit!=Some(0)) {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "provider status CLI exit={exit:?}; STDERR_TAIL: {stderr}")));
+                }
+                state
+            }
         }};
         if state == NativeAccountState::Unknown && fresh.driver_id == "opencode" {
             let row = self.read_registered_instance(&command.instance_id)?

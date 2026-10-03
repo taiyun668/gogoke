@@ -1040,7 +1040,7 @@ fn host_tool_input_schema() -> Json {
 
 fn host_tools() -> Json {
     Json::Array([
-        ("gogoke_seat", "Create, dispatch, tune or read a subordinate seat within the native parent scope."),
+        ("gogoke_seat", "Create, dispatch, stop and release, tune or read a subordinate seat within the native parent scope. Dispatch confirms submission only; state-card reads control facts, not private task output."),
         ("gogoke_policy", "Read native permission facts and submit or decide an authorized stage gate."),
         ("gogoke_worktree", "Read, register or merge a host-created worktree within native permission facts."),
         ("gogoke_takeover", "Read a takeover card or consume its already written native answer."),

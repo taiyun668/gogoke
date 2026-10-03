@@ -87,6 +87,111 @@ fn applied_revision(result:AdmissionResult)->Result<u64> {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn child_control_stage(&self,caller:&seat::NativeSeatCall,child:&seat::Seat,
+        operation:&str,suffix:&str)->Result<Option<V37Request>> {
+        let id=format!("{}{suffix}",caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?);
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex,operation FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2")?;
+        row.bind_text(1,&child.domain_id)?;row.bind_text(2,&id)?;
+        if !row.step_row()? {return Ok(None)};
+        let raw=unhex_model(&row.column_text(0)?)?;
+        if row.column_text(1)?!=operation || row.step_row()? {return Err(OrchestrationError::OperationConflict)};
+        let stored=crate::store::session_transport::decode_request(&raw).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native child control source: {error:?}")))?;
+        if stored.family!="K-SESSION" || stored.operation!=operation || stored.request_id!=id
+            || stored.domain_id!=child.domain_id || stored.payload.len()!=2
+            || user_payload_string(&stored,"seatId")?!=child.seat_id
+            || user_payload_string(&stored,"generation")?!=child.generation.to_string() {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        Ok(Some(stored))
+    }
+
+    /// Control facts only: no child transcript is read or copied. A new model
+    /// call stops its own bound child, then releases the proven stopped claim.
+    fn dispatch_model_child_stop(&mut self,request:&V37Request,caller:&seat::NativeSeatCall)
+        ->Result<Vec<u8>> {
+        if !request.payload.is_empty() {return Err(OrchestrationError::Invalid("native child stop payload"))}
+        let child=seat::get(&self.connection,&request.domain_id,&request.target_id)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        seat::current_child_dispatch_context(&self.connection,caller,&child)?;
+        let release=self.child_control_stage(caller,&child,"admission-release","-release")?;
+        if release.is_none() && u64::try_from(child.revision).ok()!=Some(request.expected_revision) {
+            return Ok(crate::store::session_transport::encode_receipt(request,V37Status::Stale,
+                request.expected_revision,u64::try_from(child.revision).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("native child seat revision: {error}")))?,Default::default()));
+        }
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT a.session_id,a.instance_id,a.home_id,a.generation,a.revision,a.state
+               FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_h_seat_binding s
+                 ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation
+              WHERE a.domain_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3
+                AND a.generation=?4 AND a.instance_id=?5")?;
+        let child_generation=child.generation.to_string();
+        for (index,value) in [child.domain_id.as_str(),child.seat_id.as_str(),child.incarnation.as_str(),
+            child_generation.as_str(),child.instance_id.as_str()].iter().enumerate() {
+            row.bind_text((index+1) as i32,value)?;
+        }
+        if !row.step_row()? {return Err(OrchestrationError::AccessDenied)};
+        let session=row.column_text(0)?;let instance=row.column_text(1)?;let home=row.column_text(2)?;
+        let generation=row.column_text(3)?;
+        let revision=row.column_text(4)?.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native child claim revision: {error}")))?;
+        let state=row.column_text(5)?;
+        if row.step_row()? {return Err(OrchestrationError::OperationConflict)};
+        drop(row);
+        let release=if let Some(release)=release {
+            if release.target_id!=session {return Err(OrchestrationError::OperationConflict)};
+            release
+        } else {
+            let stop=self.child_control_stage(caller,&child,"stop","-stop")?;
+            if state!="STOPPED" || stop.is_some() {
+                let stop=match stop {Some(stop)=>stop,None=>session_request(caller,"stop","-stop",&session,revision,
+                    BTreeMap::from([(key("seatId"),string(&child.seat_id)),(key("generation"),string(&generation))]))?};
+                if stop.target_id!=session {return Err(OrchestrationError::OperationConflict)};
+                let bytes=self.dispatch_native_child_stop(&stop,caller)?;
+                let receipt=crate::store::session_transport::decode_receipt(&bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("native child stop receipt: {error:?}")))?;
+                if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {
+                    return Ok(crate::store::session_transport::encode_receipt(request,receipt.status,
+                        request.expected_revision,request.expected_revision,receipt.into_result()));
+                }
+            }
+            let stopped=runtime::observe_stop_fact(&self.connection,&request.domain_id,&session)?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if stopped.generation!=generation {return Err(OrchestrationError::OperationConflict)};
+            let claim=runtime::observe_claim_bound(&self.connection,&request.domain_id,&child.seat_id,&session)?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if claim.phase!=runtime::SessionPhase::Stopped || claim.home_id!=home || claim.instance_id!=instance
+                || claim.generation!=generation || claim.process_operation_id.as_deref()!=Some(stopped.process_operation_id.as_str()) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let revision=u64::try_from(claim.revision).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native child stopped revision: {error}")))?;
+            session_request(caller,"admission-release","-release",&session,revision,BTreeMap::from([
+                (key("seatId"),string(&child.seat_id)),(key("generation"),string(&generation))]))?
+        };
+        let admission=seat::NativeLeadAdmission::from_model_call(caller)?;
+        let origin=seat::NativeOrigin::lead(&admission);
+        let input=AdmissionRequest {domain_id:&request.domain_id,session_id:&session,
+            request_id:&release.request_id,raw_bytes:&release.raw_bytes,instance_id:&instance,home_id:&home,
+            generation:&generation,expected_revision:i64::try_from(release.expected_revision).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native child release revision: {error}")))?};
+        let released=runtime::release_native_with_origin(&mut self.connection,&self.owner,&origin,
+            &child.seat_id,&input).map_err(|error|OrchestrationError::V37StoreFailure(
+                format!("native child release: {error:?}")))?;
+        let status=if matches!(released,AdmissionResult::Replayed(_)) {V37Status::Replayed} else {V37Status::Applied};
+        applied_revision(released)?;
+        let idle=seat::get(&self.connection,&child.domain_id,&child.seat_id)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if idle.state!=seat::State::Idle {return Err(OrchestrationError::OperationConflict)};
+        let revision=u64::try_from(idle.revision).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native child Idle revision: {error}")))?;
+        Ok(crate::store::session_transport::encode_receipt(request,status,request.expected_revision,revision,
+            BTreeMap::from([(key("state"),string("IDLE")),(key("sessionId"),string(&session)),
+                (key("generation"),string(&generation))])))
+    }
+
     /// A local adapter operation composes only the existing E/F/H effects.
     /// Every stage retains a deterministic ID; uncertainty never starts a
     /// second child or uses a new ID to repeat an external operation.
@@ -230,6 +335,7 @@ impl<'root> ProductDatabase<'root> {
             let request=native_request(&caller)?;
             match caller.tool() {
                 Some("gogoke_seat") if request.operation=="dispatch"=>self.dispatch_model_child(&request,&caller),
+                Some("gogoke_seat") if request.operation=="stop"=>self.dispatch_model_child_stop(&request,&caller),
                 Some("gogoke_seat")=>self.dispatch_native_seat(&request,&caller),
                 Some("gogoke_policy")=>self.dispatch_native_policy(&request,&caller),
                 Some("gogoke_worktree")=>self.dispatch_native_worktree(&request,&caller),

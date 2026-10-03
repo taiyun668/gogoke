@@ -1,0 +1,33 @@
+# Native child control
+
+References: design 37 sections 2a, 2b and its seat state table allow the lead
+to manage its own direct children. Historical gogo-party seat-runtime has
+separate delivery, terminal and close controls. The existing H stop intent,
+physical Job proof and admission-release transaction remain the implementation;
+no scheduler, permission or receipt store is added.
+
+A later sealed model call uses the same current Dispatch grant and copied
+Owner scope. It cannot impersonate the earlier reservation call. The existing
+stop-intent transaction rechecks that call, exact child/session/generation and
+held process custody before recording a new stop. An unresolved generation
+change is fenced instead of entering the User-only compound stop path.
+The host still records the actual stopped process tail and proof through the
+old journal after the stop; it does not require a continuing parent turn to
+record a physical fact. Release rechecks the current caller and exact stopped
+claim in its existing transaction; only then does the child become IDLE.
+Original release replay verifies its old bytes and matching released claim.
+
+Dispatch continues to return submission ACK. It does not block the parent
+model from issuing later stop/control calls. State-card/control receipts do
+not copy a child's private SESSION ledger. Body reporting still requires the
+existing MESSAGE permission and a source-bound communication path; Dispatch
+does not grant private transcript access or automatically create MESSAGE rights.
+
+F's BUSY readback is only for the composite seat dispatch's exact original
+reservation. Standalone worktree create retains its existing Idle-only check:
+its tool and request identity cannot match that original reservation.
+
+Cloud and installed Win11 behavior for these new bytes remain NOT_RUN until
+their exact runs complete. A source review or synthetic control is not product
+acceptance. Antigravity account isolation and memory-off remain unresolved;
+no change to its unsupported login, CLI bytes or LPAC boundary is made here.

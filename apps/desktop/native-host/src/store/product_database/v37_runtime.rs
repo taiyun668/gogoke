@@ -1576,6 +1576,18 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_native_stop(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_native_stop_with_caller(request,None)
+    }
+
+    pub(super) fn dispatch_native_child_stop(&mut self,request:&V37Request,
+        caller:&seat::NativeSeatCall)->Result<Vec<u8>> {
+        // A later control call must not impersonate the original reservation.
+        seat::NativeLeadAdmission::from_model_call(caller)?;
+        self.dispatch_native_stop_with_caller(request,Some(caller))
+    }
+
+    fn dispatch_native_stop_with_caller(&mut self,request:&V37Request,
+        caller:Option<&seat::NativeSeatCall>)->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if request.payload.len() != 2 {
             return Ok(encode_receipt(request, V37Status::Denied,
@@ -1583,6 +1595,16 @@ impl<'root> ProductDatabase<'root> {
         }
         let seat_id = user_payload_string(request, "seatId")?;
         let generation = user_payload_string(request, "generation")?;
+        if let Some(caller)=caller {
+            let host_id=caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?;
+            if request.request_id!=format!("{host_id}-stop") || request.domain_id!=caller.domain_id() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let child=seat::get(&self.connection,&request.domain_id,&seat_id)?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            seat::current_child_dispatch_context(&self.connection,caller,&child)?;
+            if child.generation.to_string()!=generation {return Err(OrchestrationError::OperationConflict);}
+        }
         let prior = Statement::prepare(self.connection.as_ptr(),
             "SELECT raw_hex,operation,session_id,status,revision FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2")?;
         prior.bind_text(1, &request.domain_id)?;
@@ -1630,6 +1652,12 @@ impl<'root> ProductDatabase<'root> {
         drop(prior);
         if let Some(compound)=failure(change::active_for_session(&self.connection,
             &request.domain_id,&request.target_id))? {
+            if caller.is_some() {
+                return Ok(encode_receipt(request,V37Status::Conflict,
+                    request.expected_revision,request.expected_revision,BTreeMap::from([
+                        (JsonString::from_str("reason"),Json::String(JsonString::from_str(
+                            "child generation change is unresolved")))])));
+            }
             return self.dispatch_owner_stop_generation_change(request,&compound,previously_intended);
         }
         let key = (request.domain_id.clone(), request.target_id.clone());
@@ -1698,6 +1726,28 @@ impl<'root> ProductDatabase<'root> {
             failure(self.connection.execute("BEGIN IMMEDIATE"))?;
             let intended = (|| -> Result<()> {
                 authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
+                if let Some(caller)=caller {
+                    let child=seat::get(&self.connection,&request.domain_id,&seat_id)?
+                        .ok_or(OrchestrationError::AccessDenied)?;
+                    seat::current_child_dispatch_context(&self.connection,caller,&child)?;
+                    let current=failure(runtime::observe_claim_bound(&self.connection,
+                        &request.domain_id,&seat_id,&request.target_id))?
+                        .ok_or(OrchestrationError::AccessDenied)?;
+                    if current.generation!=generation || child.generation.to_string()!=generation
+                        || current.instance_id!=child.instance_id
+                        || current.process_operation_id.as_deref()!=Some(operation.as_str())
+                        || u64::try_from(current.revision).ok()!=Some(request.expected_revision) {
+                        return Err(OrchestrationError::OperationConflict);
+                    }
+                    let held=Statement::prepare(self.connection.as_ptr(),
+                        "SELECT 1 FROM main.gogoke_coordination_process_custody
+                          WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3
+                            AND domain_id=?4 AND generation=?5 AND state='ACTIVE'")?;
+                    for (index,value) in [operation.as_str(),custody.ticket.opaque(),
+                        custody.custodian_nonce.as_str(),request.domain_id.as_str(),generation.as_str()]
+                        .iter().enumerate() {held.bind_text((index+1) as i32,value)?;}
+                    if !held.step_row()? || held.step_row()? {return Err(OrchestrationError::AccessDenied);}
+                }
                 let existing = Statement::prepare(self.connection.as_ptr(),
                     "SELECT 1 FROM main.gogoke_v37_h_process_episode
                       WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3

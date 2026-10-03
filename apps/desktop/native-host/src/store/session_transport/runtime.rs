@@ -218,6 +218,68 @@ pub(crate) fn release_native(
     admission::release_admission(db, request, |db| check_owner_current(db, &identity))
 }
 
+/// Later child control has a new sealed model call, not the old reserve call.
+/// Release only its exact stopped child; replay reads the same released claim
+/// and original journal without requiring the child to remain BUSY.
+pub(crate) fn release_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
+    host:&OwnerIssuer,origin:&NativeOrigin<'_>,seat_id:&str,
+    request:&AdmissionRequest<'_>)->Result<AdmissionResult,AdmissionError> {
+    if matches!(origin,NativeOrigin::User(_)) {return release_native(db,origin,request);}
+    let NativeOrigin::Lead(admission)=origin else {return Err(AdmissionError::Denied)};
+    let caller=admission.model_call().ok_or(AdmissionError::Denied)?;
+    let host_id=caller.host_request_id().ok_or(AdmissionError::Denied)?;
+    if request.request_id!=format!("{host_id}-release") {return Err(AdmissionError::Denied);}
+    let identity=authority::read_product_identity(db,host).map_err(AdmissionError::Identity)?;
+    admission::release_admission(db,request,|db| {
+        check_owner_current(db,&identity)?;
+        let child=seat::get(db,request.domain_id,seat_id).map_err(AdmissionError::Seat)?
+            .ok_or(AdmissionError::Denied)?;
+        seat::current_child_dispatch_context(db,caller,&child).map_err(AdmissionError::Seat)?;
+        if child.instance_id!=request.instance_id || child.generation.to_string()!=request.generation {
+            return Err(AdmissionError::Denied);
+        }
+        let fact=Statement::prepare(db.as_ptr(),
+            "SELECT a.state,a.revision FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id
+                 AND s.session_id=a.session_id AND s.generation=a.generation
+               JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id
+                 AND c.generation=a.generation AND c.state='STOPPED'
+                 AND c.stop_proof_hash=a.stop_fact_id
+              WHERE a.domain_id=?1 AND a.session_id=?2 AND s.seat_id=?3
+                AND s.seat_incarnation=?4 AND a.generation=?5
+                AND a.instance_id=?6 AND a.home_id=?7 AND a.stop_fact_id IS NOT NULL")?;
+        for (index,value) in [request.domain_id,request.session_id,seat_id,child.incarnation.as_str(),
+            request.generation,request.instance_id,request.home_id].iter().enumerate() {
+            fact.bind_text((index+1) as i32,value)?;
+        }
+        if !fact.step_row()? {return Err(AdmissionError::Denied);}
+        let state=fact.column_text(0)?;
+        let revision=fact.column_text(1)?.parse::<i64>().map_err(|_|AdmissionError::Denied)?;
+        if fact.step_row()? {return Err(AdmissionError::Denied);}
+        drop(fact);
+        if state=="STOPPED" && child.state==SeatState::Busy && revision==request.expected_revision {
+            return Ok(());
+        }
+        if state!="RELEASED" || child.state!=SeatState::Idle
+            || request.expected_revision.checked_add(1)!=Some(revision) {
+            return Err(AdmissionError::Denied);
+        }
+        let prior=Statement::prepare(db.as_ptr(),
+            "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1
+               AND session_id=?2 AND request_id=?3 AND operation='admission-release'
+               AND status='APPLIED' AND previous_revision=?4 AND revision=?5")?;
+        prior.bind_text(1,request.domain_id)?;prior.bind_text(2,request.session_id)?;
+        prior.bind_text(3,request.request_id)?;prior.bind_i64(4,request.expected_revision)?;
+        prior.bind_i64(5,revision)?;
+        let raw:String=request.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        if !prior.step_row()? || prior.column_text(0)?!=raw || prior.step_row()? {
+            return Err(AdmissionError::Denied);
+        }
+        Ok(())
+    })
+}
+
 /// This is the registered F pin, not a path or digest supplied by the request.
 /// The native catalog must provide the executable path and ProcessCustodian
 /// must compare the file and launched image against this digest again.
