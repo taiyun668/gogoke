@@ -1419,6 +1419,26 @@ impl<'root> ProductDatabase<'root> {
                         &key,"thread-start",Some(3),&vendor_commands::AcpCommand::SessionNew {cwd:&cwd})? else {
                         return Err(OrchestrationError::Invalid("native ACP session/new response"));
                     };
+                    if driver=="opencode" {
+                        // The original H session/new ACK establishes the vendor
+                        // session. Each setting is a separate original RPC ACK,
+                        // checked by H against its requested option and value.
+                        let effort=self.native_sessions.get(&key)
+                            .ok_or(OrchestrationError::AccessDenied)?.effort.clone();
+                        for (step,number,config_id,value) in [
+                            ("setting-model",4,"model",model.as_str()),
+                            ("setting-effort",5,"effort",effort.as_str()),
+                        ] {
+                            if !matches!(self.native_acp_rpc(&key,step,Some(number),
+                                &vendor_commands::AcpCommand::SetConfigOption {
+                                    session_id:&session_id,config_id,value})?,
+                                Some(acp::Observation::SessionConfigOption {..})) {
+                                return Err(OrchestrationError::Invalid("native ACP setting acknowledgement absent"));
+                            }
+                        }
+                        self.native_sessions.get_mut(&key)
+                            .ok_or(OrchestrationError::AccessDenied)?.next_rpc_id=6;
+                    }
                     session_id
                 },
                 _ => return Err(OrchestrationError::Invalid("native provider handshake not integrated")),
@@ -2111,8 +2131,10 @@ impl<'root> ProductDatabase<'root> {
             open_request_id:&open_id,open_request_bytes:&open_bytes,
             step_id,custody:&custody,rpc_id:id.as_ref(),command};
         let intention=failure(rpc::prepare_acp(&mut self.connection,&self.owner,&step))?;
-        if intention.disposition!=rpc::Disposition::NewWrite {
-            return Err(OrchestrationError::Invalid("native ACP replay cannot write"));
+        match intention.disposition {
+            rpc::Disposition::NewWrite=>{},
+            rpc::Disposition::Existing(rpc::Phase::Written|rpc::Phase::Observed)=>return Ok(()),
+            _=>return Err(OrchestrationError::Invalid("native ACP uncertain replay cannot write")),
         }
         let process=self.process_custodian.active(&custody.ticket)
             .ok_or(OrchestrationError::Invalid("native ACP process absent"))?;
@@ -2138,6 +2160,7 @@ impl<'root> ProductDatabase<'root> {
             vendor_commands::AcpCommand::SessionNew {..}=>(acp::PendingMethod::SessionNew,None),
             vendor_commands::AcpCommand::SessionLoad {session_id,..}=>(acp::PendingMethod::SessionLoad,Some(*session_id)),
             vendor_commands::AcpCommand::SessionResume {session_id,..}=>(acp::PendingMethod::SessionResume,Some(*session_id)),
+            vendor_commands::AcpCommand::SetConfigOption {session_id,..}=>(acp::PendingMethod::SessionSetConfigOption,Some(*session_id)),
             _=>return Err(OrchestrationError::Invalid("native ACP metadata method")),
         };
         let pending=acp::Pending {id:&id,method,requested_session_id:requested};
@@ -2146,6 +2169,14 @@ impl<'root> ProductDatabase<'root> {
         let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
         let step=rpc::AcpStep {domain_id:&key.0,session_id:&key.1,open_request_id:&open_id,
             open_request_bytes:&open_bytes,step_id,custody:&custody,rpc_id:Some(&id),command};
+        if let Some((observed,_raw))=failure(rpc::read_observed_acp_response(
+            &mut self.connection,&self.owner,&step))? {
+            if let acp::Observation::RemoteError {raw_frame,..}=&observed {
+                return Err(OrchestrationError::V37StoreFailure(format!("native ACP original remote error: {}",
+                    String::from_utf8_lossy(&raw_frame[raw_frame.len().saturating_sub(4096)..]))));
+            }
+            return Ok(Some(observed));
+        }
         let start=Instant::now();
         loop {
             let remaining=Duration::from_secs(30).saturating_sub(start.elapsed());
@@ -2159,7 +2190,8 @@ impl<'root> ProductDatabase<'root> {
                 OrchestrationError::V37StoreFailure(format!("native ACP metadata reply: {}; raw: {}",
                     error.reason,String::from_utf8_lossy(&error.raw_frame))))?;
             if matches!(&observed,acp::Observation::Initialize {..}|acp::Observation::SessionNew {..}
-                |acp::Observation::SessionLoad {..}|acp::Observation::SessionResume {..}|acp::Observation::RemoteError {..}) {
+                |acp::Observation::SessionLoad {..}|acp::Observation::SessionResume {..}
+                |acp::Observation::SessionConfigOption {..}|acp::Observation::RemoteError {..}) {
                 let observed=failure(rpc::observe_acp_response(&mut self.connection,&self.owner,&step,&frame,&raw.key))?;
                 if let acp::Observation::RemoteError {raw_frame,..}=&observed {
                     return Err(OrchestrationError::V37StoreFailure(format!("native ACP remote error: {}",

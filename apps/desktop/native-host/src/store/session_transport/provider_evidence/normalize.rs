@@ -361,6 +361,8 @@ pub(crate) fn acp(frame: &[u8], provider: Provider, bound_session: &str, bound_t
             if let Some(id) = echoed_session_id { check_binding(frame, &id, bound_session)?; }
             Ok(Output::SessionData { method: "session/resume", value_json: result.canonical() })
         }
+        acp::Observation::SessionConfigOption { result, .. } =>
+            Ok(Output::SessionData { method: "session/set_config_option", value_json: result.canonical() }),
         acp::Observation::Initialize { result, .. } =>
             Ok(Output::SessionData { method: "initialize", value_json: result.canonical() }),
         acp::Observation::Unhandled { raw_frame } => {
