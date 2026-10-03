@@ -2,7 +2,7 @@
 
 Controller-owned shared wiring remains required before this adapter can run in gogoke.
 
-- H must launch the pinned 2.1.286 executable in LPAC only, with a current native admission receipt proving the requested permission tier. If it cannot prove LPAC or the tier, it must refuse; no ordinary-user model-process fallback is allowed. The adapter's `ClaudeHostBoundary` is an input contract, not proof by itself.
+- H must launch the observed fixed 2.1.196 executable in LPAC only, with a current native admission receipt proving the requested permission tier. The Controller aligned this pin to the installed manifest and PE version; the newer headless guide is a protocol reference, not an upgrade requirement. If H cannot prove LPAC or the tier, it must refuse; no ordinary-user model-process fallback is allowed. The adapter's `ClaudeHostBoundary` is an input contract, not proof by itself.
 - F/H must provide the measured pinned executable/version and the instance-owned `HOME`, `USERPROFILE`, `CLAUDE_CONFIG_DIR`, temp and workspace paths. Do not read, copy or synthesize CLI credentials. The model-process environment must not inherit host Claude harness variables or secret environment entries.
 - The adapter requests `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`; the effective runtime behavior has not been observed. The host must report this as configured, not verified, until a real pinned CLI run confirms it.
 - C owns the K-QCARD fallback. B2.1 does not claim native question-card support from an undocumented CLI control message.
