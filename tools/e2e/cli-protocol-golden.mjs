@@ -530,7 +530,8 @@ function importCapture(options) {
     if (m2 && (normalizedDocument.schema !== rawDocument.schema ||
         normalizedDocument.sourceCommit !== rawDocument.sourceCommit ||
         !["codex", "claude", "opencode", "grok"].includes(selectedSession.driverId) ||
-        selectedSession.version !== cliVersion || selectedSession.binarySha256 !== binarySha256 ||
+        selectedSession.version !== cliVersion ||
+        (selectedSession.binarySha256 !== binarySha256 && selectedSession.binarySha256 !== `sha256:${binarySha256}`) ||
         normalizedSession.driverId !== selectedSession.driverId ||
         normalizedSession.version !== selectedSession.version ||
         normalizedSession.binarySha256 !== selectedSession.binarySha256)) {
