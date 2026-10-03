@@ -15,14 +15,15 @@ mod orchestration;
 pub(crate) use resource::{read_effective_project_parallel_cap,read_host_parallel_fact,
     refresh_host_parallel_fact_in_transaction,HostParallelFact};
 pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
+    apply_owner_policy_configuration,
     begin_escalation,begin_trigger_cancel,begin_trigger_register,configure_call_grant,
     configure_escalation_route,configure_gate,
     current_call_permission_table,gate_decide,gate_submit,initialize_policy,
     mark_escalation_unknown,mark_trigger_unknown,recover_trigger,settle_escalation,
     settle_trigger,stage_transition,CallAction,
     CallPermissionRow,EscalationCause,EscalationIntent,GateDecision,NativeDeliveryEvidence,
-    NativeCoordinatorTriggerEvidence,NativeSeatCall,PolicyEvent,TriggerTransition};
-pub(crate) use continuity::{answer_takeover,mark_health_requested,observe_health,
+    NativeCoordinatorTriggerEvidence,NativeSeatCall,OwnerPolicyCommand,PolicyEvent,TriggerTransition};
+pub(crate) use continuity::{answer_takeover,answer_takeover_at_seat_revision,mark_health_requested,observe_health,
     read_state_card,settle_health_receipt,takeover_questions,takeover_ready,
     update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
     TakeoverQuestion};
