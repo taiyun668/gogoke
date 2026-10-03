@@ -40,7 +40,11 @@ The ordinary confirmed STOPPED path retains that same released custody if
 runtime cleanup fails: same-request status/cancel only retries the original
 directory after checking its identity. Neither path reissues login or status
 while cleanup is pending. The original Windows error remains in the private
-output; Final is emitted only after cleanup succeeds.
+output. On successful cleanup, the retained typed provider preparation,
+complete-frame bit, cancellation and original failure continue through the
+same account-state function and its fresh F/catalog/home checks. An arbitrary
+display string or synthetic provider label cannot replace the fixed CLI pin.
+Final is emitted only after that continuation resolves.
 
 `status` is a separate `StatusObservation`. Claude's fixed `auth status --json`
 requires both a documented exit code and matching boolean `loggedIn`; any
@@ -60,6 +64,10 @@ because its Windows keyring is shared. Codex retains its existing app-server pat
 The status CLI is separately custodied. Its final stderr tail is drained and
 captured before durable release, then included with the original exit code in
 the User-private error when a status result is unclassified due to CLI failure.
+If recording STOPPED or confirming its durable proof fails, that already
+captured same-child tail, exit, stdout capture error and wait/drain result stay
+in the retained original request and immediate private error. Recovery only
+releases the original custody; it does not start another status process.
 Claude's documented exit 1 with `loggedIn:false` remains LOGGED_OUT, even
 though stdout may end at EOF without another LF frame. No status stderr or
 account fields enter the public instance journal.

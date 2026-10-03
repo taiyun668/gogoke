@@ -61,6 +61,9 @@ pub(crate) enum Command {
     Initialize {
         client_version: String,
     },
+    InitializeHostTools {
+        client_version: String,
+    },
     Initialized,
     ConfigRead {
         cwd: String,
@@ -70,6 +73,10 @@ pub(crate) enum Command {
         cursor: Option<String>,
     },
     ThreadStart {
+        cwd: String,
+        model: String,
+    },
+    ThreadStartHostTools {
         cwd: String,
         model: String,
     },
@@ -110,28 +117,44 @@ pub(crate) enum Command {
         request_id: RpcId,
         answers: BTreeMap<String, Vec<String>>,
     },
+    DynamicToolResponse {
+        request_id: RpcId,
+        text: String,
+        success: bool,
+    },
 }
 
 impl Command {
     fn method(&self) -> Option<&'static str> {
         match self {
-            Self::Initialize { .. } => Some("initialize"),
+            Self::Initialize { .. } | Self::InitializeHostTools { .. } => Some("initialize"),
             Self::Initialized => Some("initialized"),
             Self::ConfigRead { .. } => Some("config/read"),
             Self::FeatureList { .. } => Some("experimentalFeature/list"),
-            Self::ThreadStart { .. } => Some("thread/start"),
+            Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
             Self::TurnStart { .. } => Some("turn/start"),
             Self::TurnSteer { .. } => Some("turn/steer"),
             Self::TurnInterrupt { .. } => Some("turn/interrupt"),
             Self::AppendWithoutTurn { .. } => Some("thread/inject_items"),
             Self::ThreadCompactStart { .. } => Some("thread/compact/start"),
-            Self::QuestionAnswer { .. } => None,
+            Self::QuestionAnswer { .. } | Self::DynamicToolResponse { .. } => None,
         }
     }
 
     pub(crate) fn encode(&self, id: Option<&RpcId>) -> Result<Vec<u8>, RpcError> {
         let value = match self {
+            Self::DynamicToolResponse { request_id, text, success } => {
+                if id.is_some() || text.is_empty() {
+                    return Err(RpcError::Invalid("dynamic tool response"));
+                }
+                obj([("id", request_id.json()?), ("result", obj([
+                    ("contentItems", Json::Array(vec![obj([
+                        ("type", s("inputText")), ("text", s(text)),
+                    ])])),
+                    ("success", Json::Bool(*success)),
+                ]))])
+            }
             Self::QuestionAnswer {
                 request_id,
                 answers,
@@ -189,14 +212,16 @@ impl Command {
 
     fn params(&self) -> Result<Json, RpcError> {
         match self {
-            Self::Initialize { client_version } => {
+            Self::Initialize { client_version } | Self::InitializeHostTools { client_version } => {
                 required(client_version, "client version")?;
                 return Ok(obj([
                     (
                         "clientInfo",
                         obj([("name", s("gogoke")), ("version", s(client_version))]),
                     ),
-                    ("capabilities", obj([])),
+                    ("capabilities", if matches!(self, Self::InitializeHostTools { .. }) {
+                        obj([("experimentalApi", Json::Bool(true))])
+                    } else { obj([]) }),
                 ]));
             }
             Self::Initialized => return Ok(obj([])),
@@ -222,6 +247,13 @@ impl Command {
                     ("ephemeral", Json::Bool(false)),
                     ("config", memory_off()),
                 ]));
+            }
+            Self::ThreadStartHostTools { cwd, model } => {
+                let Json::Object(mut fields) = (Self::ThreadStart {
+                    cwd: cwd.clone(), model: model.clone(),
+                }).params()? else { return Err(RpcError::Invalid("host tool thread params")); };
+                fields.insert(k("dynamicTools"), host_tools());
+                return Ok(Json::Object(fields));
             }
             Self::ThreadResume {
                 thread_id,
@@ -309,7 +341,7 @@ impl Command {
                 required(thread_id, "thread id")?;
                 return Ok(obj([("threadId", s(thread_id))]));
             }
-            Self::QuestionAnswer { .. } => return Err(RpcError::Invalid("question answer params")),
+            Self::QuestionAnswer { .. } | Self::DynamicToolResponse { .. } => return Err(RpcError::Invalid("response params")),
         }
     }
 }
@@ -524,7 +556,7 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
     }
     let result = result.expect("exclusive result");
     match command {
-        Command::Initialize { .. } => {
+        Command::Initialize { .. } | Command::InitializeHostTools { .. } => {
             object(result, "initialize result")?;
             Ok(Reply::Initialized { id })
         }
@@ -549,7 +581,7 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
                 cwd: cwd.clone(),
             })
         }
-        Command::ThreadStart { .. } | Command::ThreadResume { .. } => {
+        Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } | Command::ThreadResume { .. } => {
             let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
             let found = string(field(thread, "id")?, "thread id")?;
             let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
@@ -623,7 +655,7 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
             };
             Ok(Reply::FeaturePage {id,features,next_cursor})
         }
-        Command::Initialized | Command::QuestionAnswer { .. } => {
+        Command::Initialized | Command::QuestionAnswer { .. } | Command::DynamicToolResponse { .. } => {
             Err(RpcError::Invalid("unexpected response"))
         }
     }
@@ -645,10 +677,11 @@ pub(crate) fn decode_stored_thread_start(
     }
     let id = parse_id(field(&fields, "id")?)?;
     let params = object(field(&fields, "params")?, "thread params")?;
-    let command = Command::ThreadStart {
-        cwd: string(field(params, "cwd")?, "thread cwd")?,
-        model: string(field(params, "model")?, "thread model")?,
-    };
+    let cwd = string(field(params, "cwd")?, "thread cwd")?;
+    let model = string(field(params, "model")?, "thread model")?;
+    let command = if params.contains_key(&k("dynamicTools")) {
+        Command::ThreadStartHostTools { cwd, model }
+    } else { Command::ThreadStart { cwd, model } };
     if !stored_thread_command_matches(&command,&id,command_frame)? {
         return Err(RpcError::Invalid("stored thread command mismatch"));
     }
@@ -989,6 +1022,32 @@ fn required(value: &str, field: &'static str) -> Result<(), RpcError> {
         Err(RpcError::Invalid(field))
     }
 }
+/// Fixed CLI function-tool shape. The native gateway derives the domain,
+/// request identity and caller; none is a model-supplied argument.
+fn host_tools() -> Json {
+    let schema = obj([
+        ("type", s("object")),
+        ("additionalProperties", Json::Bool(false)),
+        ("required", Json::Array(["operation", "targetId", "expectedRevision", "payload"]
+            .into_iter().map(s).collect())),
+        ("properties", obj([
+            ("operation", obj([("type", s("string"))])),
+            ("targetId", obj([("type", s("string"))])),
+            ("expectedRevision", obj([("type", Json::Array(vec![s("string"), s("null")]))])),
+            ("payload", obj([("type", s("object"))])),
+        ])),
+    ]);
+    Json::Array([
+        ("gogoke_seat", "Create, dispatch, tune or read a subordinate seat within the native parent scope."),
+        ("gogoke_policy", "Read native permission facts and submit or decide an authorized stage gate."),
+        ("gogoke_worktree", "Read, register or merge a host-created worktree within native permission facts."),
+        ("gogoke_takeover", "Read a takeover card or consume its already written native answer."),
+    ].into_iter().map(|(name, description)| obj([
+        ("type", s("function")), ("name", s(name)),
+        ("description", s(description)), ("inputSchema", schema.clone()),
+    ])).collect())
+}
+
 fn memory_off() -> Json {
     // ConfigManager appends these to the process CLI override list. Dotted
     // leaves retain unrelated flags; a whole features table replaces them.

@@ -134,6 +134,14 @@ struct PendingAccountRead {
     output: String,
     latest_error: Option<String>,
     custody: PendingAccountCustody,
+    continuation: Option<ConfirmedLoginContinuation>,
+}
+
+struct ConfirmedLoginContinuation {
+    provider: Option<instance::provider_login::PreparedProviderLogin>,
+    completion_frame: bool,
+    cancelled: bool,
+    login_failure: Option<String>,
 }
 
 struct AccountObservationFailure {
@@ -861,7 +869,7 @@ impl<'root> ProductDatabase<'root> {
             self.owner_login = Some(OwnerLoginSession::PendingAccount(PendingAccountRead {
                 instance_id:command.instance_id.clone(),request_id:command.request_id.clone(),
                 expected_revision:command.expected_revision,output:format!("{:?}",failure.error),
-                latest_error:None,custody,
+                latest_error:None,custody,continuation:None,
             }));
             failure.error
         } else { self.settle_owner_login_preflight_error(command, failure.error) }
@@ -1278,6 +1286,24 @@ impl<'root> ProductDatabase<'root> {
             self.owner_login = Some(OwnerLoginSession::PendingAccount(pending));
             return Ok(reply);
         }
+        if let Some(continuation) = pending.continuation.as_ref() {
+            let original = pending.custody.operation_id.as_deref()
+                == Some(owner_login_operation_id(command).as_str());
+            let provider_matches = match continuation.provider.as_ref() {
+                Some(provider) => pending.custody.registered_driver.as_deref()
+                    == Some(provider.driver_id.as_str())
+                    && pending.custody.registered_home_identity.as_ref()
+                        == Some(&provider.home.identity),
+                None => pending.custody.registered_driver.as_deref() == Some("codex"),
+            };
+            if !pending.custody.released || !original || !provider_matches
+                || pending.custody.runtime_home.is_none()
+                || pending.custody.runtime_identity.is_none() {
+                pending.latest_error = Some("confirmed login cleanup custody identity mismatch".into());
+                self.owner_login = Some(OwnerLoginSession::PendingAccount(pending));
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
         if let (Some(runtime), Some(identity)) = (&pending.custody.runtime_home,
             &pending.custody.runtime_identity) {
             let cleanup = if pending.custody.operation_id.as_deref()
@@ -1303,6 +1329,36 @@ impl<'root> ProductDatabase<'root> {
         if let Some(previous) = pending.latest_error.take() {
             pending.output.push('\n');
             pending.output.push_str(&previous);
+        }
+        if let Some(mut continuation) = pending.continuation.take() {
+            let state_result = if continuation.login_failure.is_none()
+                || continuation.provider.is_some() {
+                if let Some(provider) = continuation.provider.take() {
+                    self.provider_login_account_state(command, provider,
+                        continuation.completion_frame && !continuation.cancelled
+                            && continuation.login_failure.is_none())
+                } else { self.owner_login_account_state(command) }
+            } else { Ok("UNKNOWN".to_owned()) };
+            if let Some(OwnerLoginSession::PendingAccount(next)) = &mut self.owner_login {
+                if !pending.output.is_empty() {
+                    next.output = format!("{}\n{}", pending.output, next.output);
+                }
+                return Err(state_result.err().expect("pending account custody carries an error"));
+            }
+            let state = state_result.as_ref().cloned().unwrap_or_else(|_| "UNKNOWN".to_owned());
+            if let Err(error) = &state_result {
+                pending.output.push_str(&format!("\nautomatic account/read failed: {error:?}"));
+            }
+            let reply = owner_login_final_reply(command, &state, &pending.output);
+            self.owner_login = Some(OwnerLoginSession::Final {
+                instance_id: pending.instance_id, request_id: pending.request_id,
+                expected_revision: pending.expected_revision, state, output: pending.output,
+            });
+            if let Some(failure) = continuation.login_failure {
+                return Err(OrchestrationError::V37StoreFailure(failure));
+            }
+            if let Err(error) = state_result { return Err(error); }
+            return Ok(reply);
         }
         let state = match (&pending.custody.request, &pending.custody.prepared,
             &pending.custody.frame) {
@@ -1576,6 +1632,12 @@ impl<'root> ProductDatabase<'root> {
                     frame: None,
                     request: None,
                 },
+                continuation: Some(ConfirmedLoginContinuation {
+                    provider: active.provider,
+                    completion_frame: active.provider_completion_frame,
+                    cancelled,
+                    login_failure,
+                }),
             }));
             return Err(error);
         }
@@ -1658,6 +1720,7 @@ impl<'root> ProductDatabase<'root> {
                         output: format!("{:?}", failure.error),
                         latest_error: None,
                         custody,
+                        continuation: None,
                     }));
                 }
                 return Err(failure.error);
@@ -1859,6 +1922,7 @@ impl<'root> ProductDatabase<'root> {
                         output: format!("{:?}", failure.error),
                         latest_error: None,
                         custody,
+                        continuation: None,
                     }));
                 }
                 Err(failure.error)
@@ -3076,6 +3140,7 @@ exit 0
             .wait(Duration::from_secs(15)).unwrap());
         let proof = product.process_custodian.stop(&prepared.ticket,
             StopBudgets::production(), || Ok(())).unwrap();
+        assert_eq!(proof.exit_code, Some(0));
         let revision = authority::mark_process_stopped(&mut product.connection, &operation_id, &proof).unwrap();
         product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
             ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
@@ -3096,10 +3161,16 @@ exit 0
                 status: instance::provider_login::StatusObservation::Unknown("test status unused"),
                 browser: instance::provider_login::BrowserBehavior::HostOpensPrintedAuthorization,
             }),
-            provider_completion_frame: false,
+            provider_completion_frame: true,
         };
         let error = product.finish_confirmed_owner_login(&command, active, false, None).unwrap_err();
         assert!(format!("{error:?}").contains("raw_os_error"));
+        assert!(matches!(&product.owner_login,
+            Some(OwnerLoginSession::PendingAccount(pending)) if pending.continuation.as_ref()
+                .is_some_and(|continuation| continuation.completion_frame
+                    && continuation.provider.as_ref().is_some_and(|provider|
+                        provider.driver_id == "opencode"))),
+            "original typed OpenCode completion must survive cleanup failure");
         let pending = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(pending.contains("\"settled\":false"));
         assert!(pending.contains("original CLI completed") && pending.contains("raw_os_error"));
@@ -3109,6 +3180,9 @@ exit 0
         drop(held);
         let final_reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(final_reply.contains("\"settled\":true") && final_reply.contains("raw_os_error"));
+        assert!(final_reply.contains("\"state\":\"UNKNOWN\"")
+            && final_reply.contains("automatic account/read failed"),
+            "synthetic PowerShell metadata must not pass the fixed OpenCode catalog recheck");
         assert!(!runtime.exists());
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
         let (next, next_identity) = runtime_home(&home.path).unwrap();

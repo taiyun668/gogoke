@@ -393,6 +393,7 @@ impl<'root> ProductDatabase<'root> {
                     output: format!("provider status prepare record: {error:?}; abort: {abort:?}"),
                     latest_error: None,
                     custody: pending(None, true),
+                    continuation: None,
                 }));
             }
             return Err(OrchestrationError::V37StoreFailure(format!(
@@ -416,6 +417,7 @@ impl<'root> ProductDatabase<'root> {
                     ),
                     latest_error: None,
                     custody: pending(None, true),
+                    continuation: None,
                 }));
             }
             return Err(OrchestrationError::V37StoreFailure(format!(
@@ -435,6 +437,7 @@ impl<'root> ProductDatabase<'root> {
                 expected_revision: command.expected_revision, output: format!(
                     "provider status active record: {error:?}; stop: {stop:?}; unknown record: {unknown:?}"),
                 latest_error: None, custody: pending(stop.ok(), false),
+                continuation: None,
             }));
             return Err(OrchestrationError::V37StoreFailure(format!(
                 "provider status active record: {error:?}; unknown record: {unknown:?}"
@@ -470,6 +473,7 @@ impl<'root> ProductDatabase<'root> {
                     expected_revision: command.expected_revision, output: format!(
                         "provider status stop: {error:?}; output: {:?}; wait: {exited:?}; unknown record: {unknown:?}", output.as_ref().err()),
                     latest_error: None, custody: pending(None, false),
+                    continuation: None,
                 }));
                 return Err(OrchestrationError::Process(error));
             }
@@ -484,6 +488,9 @@ impl<'root> ProductDatabase<'root> {
             process.drain_stderr_after_writers_stopped()
         } else { Err("provider status stderr writers not fenced".into()) };
         let stderr = process.stderr_tail();
+        let status_diagnostic = format!(
+            "CLI exit={:?}; STDERR_TAIL: {stderr}; stderr drain={:?}; wait={exited:?}; stdout capture={:?}",
+            proof.exit_code, stderr_drain.as_ref().err(), stdout.as_ref().err());
         let revision =
             match authority::mark_process_stopped(&mut self.connection, &operation_id, &proof) {
                 Ok(revision) => revision,
@@ -493,17 +500,19 @@ impl<'root> ProductDatabase<'root> {
                         &operation_id,
                         &prepared,
                     );
+                    let cause = OrchestrationError::V37StoreFailure(format!(
+                        "provider status stop record: {error:?}; unknown record: {unknown:?}; {status_diagnostic}"));
                     self.owner_login =
                         Some(OwnerLoginSession::PendingAccount(PendingAccountRead {
                             instance_id: command.instance_id.clone(),
                             request_id: command.request_id.clone(),
                             expected_revision: command.expected_revision,
-                            output: format!(
-                        "provider status stop record: {error:?}; unknown record: {unknown:?}"),
+                            output: format!("{cause:?}"),
                             latest_error: None,
                             custody: pending(Some(proof), false),
+                            continuation: None,
                         }));
-                    return Err(error);
+                    return Err(cause);
                 }
             };
         if let Err(error) = self
@@ -516,17 +525,20 @@ impl<'root> ProductDatabase<'root> {
                 durable_revision: revision,
             })
         {
+            let cause = OrchestrationError::V37StoreFailure(format!(
+                "provider status stop confirmation: {error:?}; {status_diagnostic}"));
             let mut custody = pending(Some(proof), false);
             custody.durable_revision = Some(revision);
             self.owner_login = Some(OwnerLoginSession::PendingAccount(PendingAccountRead {
                 instance_id: command.instance_id.clone(),
                 request_id: command.request_id.clone(),
                 expected_revision: command.expected_revision,
-                output: format!("provider status stop confirmation: {error:?}"),
+                output: format!("{cause:?}"),
                 latest_error: None,
                 custody,
+                continuation: None,
             }));
-            return Err(error.into());
+            return Err(cause);
         }
         let bytes = stdout.map_err(|error| OrchestrationError::V37StoreFailure(format!(
             "provider status stdout: {error:?}; CLI exit={:?}; STDERR_TAIL: {stderr}",
