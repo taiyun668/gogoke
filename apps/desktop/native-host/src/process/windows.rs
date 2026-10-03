@@ -337,7 +337,7 @@ pub struct ProcessLaunch {
     pub(crate) directory_roots: Option<Arc<DirectoryRoots>>,
     /// The already verified F pointer file remains held through all custody,
     /// including an unconfirmed failed suspended-child cleanup.
-    pub(crate) worktree_guard: Option<Arc<File>>,
+    pub(crate) worktree_guard: Option<Arc<Vec<Arc<File>>>>,
 }
 
 impl ProcessLaunch {
@@ -813,7 +813,7 @@ struct LaunchFailureCustody {
     _job: OwnedHandle,
     _path_compat: Option<Arc<CompatModule>>,
     _directory_roots: Option<Arc<DirectoryRoots>>,
-    _worktree_guard: Option<Arc<File>>,
+    _worktree_guard: Option<Arc<Vec<Arc<File>>>>,
 }
 
 fn reject_suspended_child_with<T, W>(
@@ -899,7 +899,7 @@ struct PreparedProcess {
     persistent_protocol_stdio: bool,
     path_compat: Option<Arc<CompatModule>>,
     directory_roots: Option<Arc<DirectoryRoots>>,
-    worktree_guard: Option<Arc<File>>,
+    worktree_guard: Option<Arc<Vec<Arc<File>>>>,
 }
 
 impl PreparedProcess {
@@ -1454,7 +1454,7 @@ pub struct ManagedProcess {
     persistent_protocol_stdio: bool,
     _path_compat: Option<Arc<CompatModule>>,
     _directory_roots: Option<Arc<DirectoryRoots>>,
-    _worktree_guard: Option<Arc<File>>,
+    _worktree_guard: Option<Arc<Vec<Arc<File>>>>,
     persistent_writer: Mutex<bool>,
     persistent_reader: Mutex<PersistentReadState>,
     stop_attempted: AtomicBool,

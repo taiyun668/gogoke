@@ -37,6 +37,7 @@ pub(crate) struct LaunchEvidence {
     homes: InstanceLaunchHomes,
     repository_id: String,
     worktree: ResolvedBinding,
+    worktree_group: Vec<ResolvedBinding>,
     profile: AppContainerProfile,
     profile_name: String,
     program: PathBuf,
@@ -179,6 +180,7 @@ impl LaunchEvidence {
         let homes = launch_homes(db, root, &profile, &claim, &pin)?;
         let worktree = evidence(worktree::resolve_for_launch(db, root, worktree_id,
             repository_id, domain_id, seat_id, &seat.incarnation, seat.generation))?;
+        let worktree_group = evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
         // F's stored instance/tier/generation describe creation provenance.
         // Current execution authority comes from the E seat and H claim;
         // a legitimate idle instance rebind does not change the worktree.
@@ -189,23 +191,26 @@ impl LaunchEvidence {
         evidence(profile.grant_bound_tree(&homes.instance.path, &homes.instance.identity, true))?;
         evidence(profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
-        evidence(profile.grant_bound_tree(&worktree.path, &worktree.identity, writable))?;
+        for member in &worktree_group {
+            evidence(profile.grant_bound_tree(&member.path, &member.identity, writable))?;
+        }
         evidence(profile.grant_bound_program(&program, &program_identity))?;
         let code_mode = if pin.driver_id == "codex" {
             Some(super::codex_component::BoundCodexComponent::prepare(&program, &profile)?)
         } else { None };
-        let roots = [
+        let mut roots = vec![
             (homes.instance.path.clone(), homes.instance.identity.clone()),
             (homes.session.path.clone(), homes.session.identity.clone()),
-            (worktree.path.clone(), worktree.identity.clone()),
         ];
+        roots.extend(worktree_group.iter().map(|member|
+            (member.path.clone(), member.identity.clone())));
         let (module, directory_roots) = if pin.driver_id == "codex" {
             (Some(evidence(CompatModule::prepare_with_roots(root, &roots, &profile, &profile_name))?), None)
         } else {
             (None, Some(Arc::new(evidence(DirectoryRoots::prepare(root, &roots))?)))
         };
         let observed = Self { identity, seat, claim, pin, homes, repository_id: repository_id.into(),
-            worktree, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
+            worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id };
         observed.verify(db, root, owner, None)?;
         Ok(observed)
@@ -317,19 +322,35 @@ impl LaunchEvidence {
             || worktree.common_identity != self.worktree.common_identity {
             return Err("native session launch: physical worktree changed".into());
         }
+        let group = evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
+        if group.len() != self.worktree_group.len() || group.iter().zip(&self.worktree_group)
+            .any(|(current, original)| current.worktree_id != original.worktree_id
+                || current.identity != original.identity
+                || current.pointer_hash != original.pointer_hash
+                || current.pointer_identity != original.pointer_identity
+                || current.common_identity != original.common_identity) {
+            return Err("native session launch: physical worktree group changed".into());
+        }
         let program = evidence(instance::locate_pinned_program(&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
         if program != self.program { return Err("native session launch: program path changed".into()); }
         for (path, identity, writable) in [
             (&self.homes.instance.path, &self.homes.instance.identity, true),
             (&self.homes.session.path, &self.homes.session.identity, true),
-            (&self.worktree.path, &self.worktree.identity,
-                matches!(self.tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite)),
         ] {
             match phase {
                 VerificationPhase::PreActivation =>
                     evidence(self.profile.verify_bound_tree_grant(path, identity, writable))?,
                 VerificationPhase::Active =>
                     evidence(self.profile.verify_bound_directory_grant(path, identity, writable))?,
+            };
+        }
+        let writable = matches!(self.tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
+        for member in &self.worktree_group {
+            match phase {
+                VerificationPhase::PreActivation => evidence(self.profile.verify_bound_tree_grant(
+                    &member.path, &member.identity, writable))?,
+                VerificationPhase::Active => evidence(self.profile.verify_bound_directory_grant(
+                    &member.path, &member.identity, writable))?,
             };
         }
         evidence(self.profile.verify_bound_program_grant(&self.program, &self.program_identity))?;
@@ -385,7 +406,7 @@ impl LaunchEvidence {
                 _ => Err(format!("native session launch: missing {name}")),
             }
         };
-        Ok((field("model")?, field("effort")?))
+        Ok((field("model")?, evidence(seat::seat_effort(&self.seat))?))
     }
 
     pub(crate) fn request(&self) -> Result<PrepareRequest, String> {
@@ -477,7 +498,9 @@ impl LaunchEvidence {
         launch.app_container_cli_identity_services = true;
         launch.path_compat = self.module.clone();
         launch.directory_roots = self.directory_roots.clone();
-        launch.worktree_guard = Some(evidence(self.worktree.retained_pointer())?);
+        let guards = self.worktree_group.iter().map(|member| evidence(member.retained_pointer()))
+            .collect::<Result<Vec<_>, String>>()?;
+        launch.worktree_guard = Some(Arc::new(guards));
         Ok(PrepareRequest { launch, binding: NativeBinding {
             binary_digest_sha256: self.pin.digest.clone(), profile_id: self.claim.instance_id.clone(),
             domain_id: self.claim.domain_id.clone(), generation: self.claim.generation.clone(),
