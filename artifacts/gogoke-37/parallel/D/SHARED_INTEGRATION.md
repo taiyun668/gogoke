@@ -3,6 +3,12 @@
 Baseline: `546d4e9d573d90ecbfc5be6250aabbed6afbe45f`. Branch: `codex/gogoke-37-m2-d`.
 State: source package complete; product integration and native cloud execution pending.
 
+## M2 source follow-up
+
+- `sidechat::read_current_cache_continuity(db, old_side, live_binding)` is now a native read-only source for `rebind_current`'s observation closure. It requires the old physical H episode and custody to carry the same STOPPED proof, matches both episodes to H generation, original open/resume request bytes and exact seat incarnation, then uses the original ticket/nonce-bound RPC command and A `NO_EVENT` response. Codex uses H's stored thread-start/thread-resume decoder; ACP uses the existing typed ACP decoder for the original `session/new` (or load/resume when H later records one). Missing evidence returns `Unknown`; a malformed or mismatched original is refused. The returned cache ID is scoped by vendor and instance; equal ID in one instance preserves the cursor, while a proven different ID triggers D's existing fact-reference reconstruction. No generation number is treated as cache identity.
+- `settle_sync` now checks ACP applied question receipts through H's `read_acp_send_completed` original User/A proof before D marks delivery. The source epoch/cursor fields only locate the source; H compares the actual original request, RPC command, typed ID, A frame, custody and receipt digest. D's historical old-intent key and immutable original question digest remain unchanged.
+- Root should wire `rebind_current(..., read_current_cache_continuity)` at its current trusted entry and verify native-backed behavior. The helper itself does not grant H send authority or change any public request. The current public closure still returns `Unknown` until Root adopts this source. Native cloud and installed-product outcomes are recorded separately.
+
 Root owns the following edits. This package has not made them.
 
 | Root file/seam | Exact request |

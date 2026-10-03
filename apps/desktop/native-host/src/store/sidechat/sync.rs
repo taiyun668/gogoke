@@ -1,5 +1,6 @@
 use super::*;
-use crate::store::session_transport::{self, JournalState, StdinJournalKey};
+use crate::store::ledger::RawSourceKey;
+use crate::store::session_transport::{self, JournalState, StdinJournalKey, StdinRequest};
 
 pub(crate) enum SyncMode { Append, Question }
 impl SyncMode { fn name(&self)->&'static str { match self {Self::Append=>"APPEND",Self::Question=>"QUESTION"} } }
@@ -11,6 +12,23 @@ fn load_sync(db:&VerifiedDatabaseConnection<'_>,domain:&str,id:&str)->Result<Opt
     Ok(Some((Sync {sync_id:id.into(),side_id:row.column_text(0)?,mode:row.column_text(1)?,generation:row.column_text(2)?,epoch:row.column_text(3)?,
         after:number(row.column_text(4)?)?,through:number(row.column_text(5)?)?,state:row.column_text(6)?,native_receipt_id:row.column_text(7)?,
         session_id:row.column_text(9)?,process_operation_id:row.column_text(10)?,may_submit:false},row.column_text(8)?,row.column_text(11)?)))
+}
+
+fn original_driver(db:&VerifiedDatabaseConnection<'_>,s:&Side,sync:&Sync)->Result<String> {
+    let row=Statement::prepare(db.as_ptr(),"SELECT i.driver_id FROM main.gogoke_v37_h_process_episode e
+        JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id AND g.session_id=e.session_id
+          AND g.generation=e.generation AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id
+        JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+        WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3 AND e.process_operation_id=?4
+          AND e.seat_id=?5 AND e.seat_incarnation=?6")?;
+    for (index,value) in [s.domain_id.as_str(),sync.session_id.as_str(),sync.generation.as_str(),
+        sync.process_operation_id.as_str(),s.seat_id.as_str(),s.seat_incarnation.as_str()].iter().enumerate() {
+        row.bind_text((index+1) as i32,value)?;
+    }
+    if !row.step_row()? {return Err(SideError::Unknown);}
+    let driver=row.column_text(0)?;
+    if row.step_row()? {return Err(SideError::Conflict);}
+    Ok(driver)
 }
 
 /// The raw request is the exact H send/append that will carry the references.
@@ -129,6 +147,23 @@ pub(crate) fn settle_sync(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIss
                             return Err(SideError::Unknown);
                         }
                         let Some(Json::String(receipt_id))=body.get(&JsonString::from_str("receiptId")) else {return Err(SideError::Unknown);};
+                        let driver=original_driver(db,&s,&sync)?;
+                        if sync.mode=="QUESTION" && matches!(driver.as_str(),"opencode"|"grok") {
+                            let source_field=|name|->Result<String> {
+                                match body.get(&JsonString::from_str(name)) {
+                                    Some(Json::String(value))=>value.to_well_formed_string().filter(|v|!v.is_empty()).ok_or(SideError::Unknown),
+                                    _=>Err(SideError::Unknown),
+                                }
+                            };
+                            let key=RawSourceKey {operation_id:record.process_operation_id.clone(),
+                                source_epoch:source_field("sourceEpoch")?,source_cursor:source_field("sourceCursor")?};
+                            let input=StdinRequest {domain_id:domain,session_id:&sync.session_id,
+                                ticket:&record.ticket,generation:&sync.generation,request_bytes:&record.request_bytes};
+                            let verified=session_transport::read_acp_send_completed(db,&input,&key)
+                                .map_err(|error|SideError::Corrupt(format!("side original ACP receipt: {error:?}")))?
+                                .ok_or(SideError::Unknown)?;
+                            if verified.user.record.receipt_bytes!=record.receipt_bytes {return Err(SideError::Conflict);}
+                        }
                         sync.native_receipt_id=receipt_id.to_well_formed_string().ok_or(SideError::Unknown)?;
                         required(&sync.native_receipt_id)?;sync.state="DELIVERED".into();
                     },
