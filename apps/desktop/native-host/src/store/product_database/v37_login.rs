@@ -2160,6 +2160,8 @@ mod tests {
     use super::*;
     use crate::store::same_open::route_b_test_guard;
     use crate::store::session_transport::{decode_receipt, decode_request};
+    #[cfg(windows)]
+    use std::os::windows::fs::OpenOptionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_rpc_waiting(phase: LoginRpcPhase) -> LoginRpc {
