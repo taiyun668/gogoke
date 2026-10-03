@@ -1100,6 +1100,8 @@ fn acp_command_copy<'a>(command: &commands::AcpCommand<'a>)
             C::SessionLoad { session_id, cwd, advertised: *advertised },
         C::SessionResume { session_id, cwd, advertised } =>
             C::SessionResume { session_id, cwd, advertised: *advertised },
+        C::SetConfigOption { session_id, config_id, value } =>
+            C::SetConfigOption { session_id, config_id, value },
         C::Prompt { session_id, text } => C::Prompt { session_id, text },
         C::Cancel { session_id } => C::Cancel { session_id },
         C::PermissionResponse => C::PermissionResponse,
@@ -1121,6 +1123,8 @@ fn acp_pending<'a>(step: &'a AcpStep<'_>) -> Result<Option<acp::Pending<'a>>> {
             (acp::PendingMethod::SessionLoad, Some(*session_id)),
         C::SessionResume { session_id, .. } =>
             (acp::PendingMethod::SessionResume, Some(*session_id)),
+        C::SetConfigOption { session_id, .. } =>
+            (acp::PendingMethod::SessionSetConfigOption, Some(*session_id)),
         C::Prompt { .. } => (acp::PendingMethod::SessionPrompt, None),
         C::Cancel { .. } => return Ok(None),
         C::PermissionResponse | C::Steer =>
@@ -1357,6 +1361,13 @@ pub(super) fn prepare_acp_in_transaction(db: &mut VerifiedDatabaseConnection<'_>
             &["PREPARED", "ACTIVE"], false)?;
         let encoded = encode_acp_step(step, &driver)?;
         let pending = acp_pending(step)?;
+        if let commands::AcpCommand::SetConfigOption { session_id, .. } = step.command {
+            if observed_acp_session_id_in_transaction(db, step.domain_id,
+                step.session_id, step.open_request_id, step.open_request_bytes,
+                step.custody, false)? != *session_id {
+                return Err(RpcJournalError::Denied);
+            }
+        }
         if matches!(step.command, commands::AcpCommand::SessionLoad { .. }
             | commands::AcpCommand::SessionResume { .. })
             && !observed_acp_load_capability(db, &step.fields(), &operation)? {
@@ -1472,9 +1483,16 @@ pub(super) fn observe_acp_captured_response_in_transaction(
     let pending = acp_pending(step)?.ok_or(RpcJournalError::Invalid("ACP notification has no ACK"))?;
     let observation = acp::decode(&source.raw_bytes, Some(&pending)).map_err(|error|
         RpcJournalError::AcpDecode { reason: error.reason, raw_frame: error.raw_frame })?;
+    if let commands::AcpCommand::SetConfigOption { config_id, value, .. } = step.command {
+        if matches!(&observation, acp::Observation::SessionConfigOption { .. })
+            && !acp::confirms_config_value(&observation, config_id, value) {
+            return Err(RpcJournalError::Denied);
+        }
+    }
     if !matches!(&observation, acp::Observation::Initialize { .. }
         | acp::Observation::SessionNew { .. } | acp::Observation::SessionLoad { .. }
-        | acp::Observation::SessionResume { .. } | acp::Observation::Prompt { .. }
+        | acp::Observation::SessionResume { .. } | acp::Observation::SessionConfigOption { .. }
+        | acp::Observation::Prompt { .. }
         | acp::Observation::RemoteError { .. }) {
         return Err(RpcJournalError::Invalid("not an ACP response"));
     }
@@ -1488,6 +1506,41 @@ pub(super) fn observe_acp_captured_response_in_transaction(
             _ => return Err(RpcJournalError::Conflict),
         }
     Ok((observation, source.raw_bytes))
+}
+
+/// Read back one already committed ACP ACK from its original A source. This
+/// never reads stdout or writes stdin. The caller supplies the same original
+/// command and typed RPC ID; the ordinary observe path rechecks every current
+/// binding, original command byte, source identity, and config currentValue.
+pub(crate) fn read_observed_acp_response(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &AcpStep<'_>,
+) -> Result<Option<(acp::Observation, Vec<u8>)>> {
+    transact(db, |db| {
+        check_owner_in_current_transaction(db, owner)?;
+        original_open(db, &step.fields())?;
+        let (operation, driver) = assert_current_binding(db, &step.fields(),
+            &["ACTIVE", "UNKNOWN"], false)?;
+        let encoded = encode_acp_step(step, &driver)?;
+        if same_row(db, &step.fields(), &operation, &encoded)? != Some(Phase::Observed) {
+            return Ok(None);
+        }
+        let q = Statement::prepare(db.as_ptr(),
+            "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+              WHERE domain_id=?1 AND session_id=?2 AND step_id=?3
+                AND open_request_id=?4 AND process_operation_id=?5
+                AND phase='OBSERVED' AND requires_response=1")?;
+        for (index, value) in [step.domain_id, step.session_id, step.step_id,
+            step.open_request_id, operation.as_str()].iter().enumerate() {
+            q.bind_text((index + 1) as i32, value)?;
+        }
+        if !q.step_row()? { return Err(RpcJournalError::Conflict); }
+        let key = RawSourceKey { operation_id: operation,
+            source_epoch: q.column_text(0)?, source_cursor: q.column_text(1)? };
+        if q.step_row()? { return Err(RpcJournalError::Conflict); }
+        drop(q);
+        observe_acp_captured_response_in_transaction(db, owner, step, &key).map(Some)
+    })
 }
 
 #[derive(Debug, Eq, PartialEq)]

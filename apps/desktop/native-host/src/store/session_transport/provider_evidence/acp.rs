@@ -28,6 +28,7 @@ pub(crate) enum PendingMethod {
     SessionNew,
     SessionLoad,
     SessionResume,
+    SessionSetConfigOption,
     SessionPrompt,
 }
 
@@ -72,6 +73,11 @@ pub(crate) enum Observation {
         id: RpcId,
         /// OpenCode 1.18.32 can ACK without echoing the requested ID.
         echoed_session_id: Option<String>,
+        result: Json,
+    },
+    SessionConfigOption {
+        id: RpcId,
+        config_options: Json,
         result: Json,
     },
     Prompt {
@@ -275,5 +281,63 @@ pub(crate) fn decode(frame: &[u8], pending: Option<&Pending<'_>>)
                 .ok_or_else(|| invalid(frame, "session/prompt.stopReason missing"))?;
             Ok(Observation::Prompt { id, stop_reason: stop_reason(reason, frame)?, result: copy_json(result) })
         }
+        PendingMethod::SessionSetConfigOption => {
+            let options = field(result_obj, "configOptions")
+                .ok_or_else(|| invalid(frame, "session/set_config_option.configOptions missing"))?;
+            if !matches!(options, Json::Array(_)) {
+                return Err(invalid(frame, "session/set_config_option.configOptions must be an array"));
+            }
+            Ok(Observation::SessionConfigOption { id,
+                config_options: copy_json(options), result: copy_json(result) })
+        }
+    }
+}
+
+/// The success ACK must report the exact requested value as current for one
+/// select option, and include it among that option's values. Notifications
+/// and caller-supplied labels never establish this fact.
+pub(crate) fn confirms_config_value(observation: &Observation,
+    config_id: &str, value: &str) -> bool {
+    let Observation::SessionConfigOption { config_options: Json::Array(options), .. } = observation
+        else { return false };
+    let mut found = false;
+    for option in options {
+        let Json::Object(fields) = option else { return false };
+        let Some(Json::String(id)) = field(fields, "id") else { return false };
+        if id.to_well_formed_string().as_deref() != Some(config_id) { continue; }
+        if found { return false; }
+        found = true;
+        if !matches!(field(fields, "type"), Some(Json::String(kind))
+            if kind.to_well_formed_string().as_deref() == Some("select")) { return false; }
+        if !matches!(field(fields, "currentValue"), Some(Json::String(current))
+            if current.to_well_formed_string().as_deref() == Some(value)) { return false; }
+        let Some(Json::Array(choices)) = field(fields, "options") else { return false };
+        if !choices.iter().any(|choice| matches!(choice, Json::Object(fields)
+            if matches!(field(fields, "value"), Some(Json::String(candidate))
+                if candidate.to_well_formed_string().as_deref() == Some(value)))) {
+            return false;
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_ack_requires_original_typed_id_and_exact_offered_current_value() {
+        let id = RpcId::String("setting-model".to_owned());
+        let pending = Pending { id: &id, method: PendingMethod::SessionSetConfigOption,
+            requested_session_id: Some("vendor-session") };
+        let raw = br#"{"jsonrpc":"2.0","id":"setting-model","result":{"configOptions":[{"id":"model","type":"select","currentValue":"provider/model","options":[{"value":"provider/model"}]}]}}"#;
+        let observed = decode(raw, Some(&pending)).ok().expect("matching original response");
+        assert!(confirms_config_value(&observed, "model", "provider/model"));
+        assert!(!confirms_config_value(&observed, "model", "other/model"));
+        assert!(!confirms_config_value(&observed, "effort", "high"));
+        let numeric = RpcId::Number(1);
+        let wrong_type = Pending { id: &numeric, method: PendingMethod::SessionSetConfigOption,
+            requested_session_id: Some("vendor-session") };
+        assert!(decode(raw, Some(&wrong_type)).is_err());
     }
 }
