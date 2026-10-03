@@ -1,0 +1,43 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "M1_PARTIAL_OWNER_MODEL_COMPATIBILITY_DECISION_REQUIRED",
+  "installed_frozen_source": "d1d3af8916fee6c3a07295901abd543b0d86c546",
+  "installed_version": "0.1.18",
+  "owner_decision": "2026-10-02: change the M1 test model to GPT-6.1-Sol/high",
+  "changed": [
+    "通过真实产品释放原 generation4 的 STOPPED 准入；旧失败请求未重发。",
+    "通过 K-SEAT/tune 将 model 改为 gpt-6.1-sol；fresh state-card 确认 effort=high、permissionTier=NETWORKED_WRITE，未改变固定 CLI、登录、权限能力或安装字节。",
+    "按 fresh seat generation+1 打开 generation7 的新 LPAC 会话，发送一次新请求；失败后通过产品取得停止事实并正常关闭真实候选。"
+  ],
+  "results": {
+    "previous_checkpoint_cloud": "PASS: f72b7e71 hygiene 37067629798 and desktop 37067629724; automatic candidate signing skipped under the stage cadence",
+    "actual_model_configuration": "APPLIED; gpt-6.1-sol/high read back at seat revision6/generation6",
+    "actual_model_request": "FAILED; real CLI method:error and matching turn/completed failed both carry the same HTTP400 reason; willRetry=false; no native question or test file was produced",
+    "current_fixed_cli_catalog": {
+      "client_version": "0.149.0",
+      "fetched_at": "2026-10-03T00:55:04.720139800Z",
+      "model_ids": ["gpt-reserve", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "codex-auto-review"],
+      "gpt_6_1_sol_alias": "NOT_FOUND"
+    },
+    "formal_and_home_preservation": "PASS: actual ordinary Win11 snapshot matches all five protected fields; root, original physical home and instance metadata unchanged; no credential reads",
+    "stop": "APPLIED H4 to H5; stopped claim retained without release or replay; actual caption close observed, product processes absent",
+    "memory": "Across two failed model attempts only: memory directory absent, stage1 outputs and memory jobs zero, original database/WAL hashes unchanged. Not successful-model or two successful-session acceptance.",
+    "g4_current_tasks": "Independent exact-object audit PASS for 10 ended task definitions; Controller removed only those definitions and read each Absent; scripts, results and all original evidence retained",
+    "g4_current_inventory_sha256": "0b884cd9e4ee0c854cc94c351d7be665a678c35b52d54c248fd249a9c78b8f14"
+  },
+  "original_failure": "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+  "measurement_issue": "复用快照脚本因已有输出拒绝覆盖；保留该失败原文，改用新文件名回读后通过。未重发模型请求、未强制结束产品、未改变保护对象。Controller 打包视图无法读普通 HKCU 候选登记；改用既有 Interactive/Limited 启动器在正确视图核对，没有改变产品。",
+  "diagnostic_repair": "SOURCE_CHANGED_CLOUD_NOT_RUN: normalize only the recognized Codex error notification and preserve optional turn.error in existing ACP session_info_update._meta; keep RPC response errors and unknown frames separate. Three new tests cover original diagnostics, malformed/scope/RPC boundaries and terminal preservation. Fresh independent review in progress. The installed frozen candidate does not contain this repair.",
+  "参照": [
+    "采用已验证的原候选 Interactive/Limited 启动、精确进程/字节回读、产品 admission-release/tune/state-card/open/stop 和真实 caption 关闭；根据实际 revision/generation 计算后续值，不把 H revision 当 seat generation。",
+    "先查 gogo-party accounts.ts 与现有模型选择机制、仓库上游映射；本次直接读固定实例新鲜 models_cache 元数据，不读凭据，也未找到把 GPT-6.1-Sol 映射为其他模型的依据。",
+    "诊断实现依据同仓 CodexSessionRuntime/CodexAdapter 及 effect-codex-app-server 生成官方协议；ACP session_info_update 的 _meta 沿用现有扩展点，不新增通用错误事件，不把未知帧当成功解析。"
+  ],
+  "logic_and_path": "Owner 的模型变更已实际执行；真正阻塞是这个固定 CLI/账户路径对新模型的明确拒绝。未据此推断所有账户不支持或升级必能解决。下一步保留已装版本和原凭据，选定兼容模型后直接续测；产品诊断修正仅跑阶段云端，不为小修重签、重装或重复登录。",
+  "next": [
+    "Owner chooses an available test model or establishes an authorized compatible CLI/account path for GPT-6.1-Sol; no silent fallback.",
+    "Complete bounded error normalization and independent review with cloud checks; record exact results before any candidate claim.",
+    "After model compatibility is resolved, continue native question, inbox/steer, ledger, restart/resume and remaining M1 real cases."
+  ],
+  "acceptance": false
+}

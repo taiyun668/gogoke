@@ -200,6 +200,18 @@ fn token_usage(method: &str, params: &BTreeMap<JsonString, Json>, thread_id: &st
     let output=update(method,"session_info_update",thread_id,Some(&turn_id),None,[]);
     with_meta_field(output,"codexTokenUsage",copy_json(field(params,"tokenUsage")?))
 }
+fn error_notification(method: &str, params: &BTreeMap<JsonString, Json>, thread_id: &str)
+    -> Result<Output> {
+    let turn_id=string(params,"turnId")?;
+    let error=object(field(params,"error")?,"error")?;
+    string_allow_empty(error,"message")?;
+    let Json::Bool(will_retry)=field(params,"willRetry")? else {
+        return Err(OutputError::Invalid("willRetry"));
+    };
+    let output=update(method,"session_info_update",thread_id,Some(&turn_id),None,[]);
+    let output=with_meta_field(output,"codexError",copy_json(field(params,"error")?))?;
+    with_meta_field(output,"codexWillRetry",Json::Bool(*will_retry))
+}
 fn turn_event(method: &str, params: &BTreeMap<JsonString, Json>, thread_id: &str,
     reply: Reply) -> Result<Output> {
     let Reply::TurnNotification {turn_id,status,..}=reply else {
@@ -219,7 +231,18 @@ fn turn_event(method: &str, params: &BTreeMap<JsonString, Json>, thread_id: &str
         TurnStatus::Failed => "failed",
     };
     let output=update(method,"session_info_update",thread_id,Some(&turn_id),None,[]);
-    let Output::Update(update)=with_meta_field(output,"turnStatus",text(state))? else {
+    let output=with_meta_field(output,"turnStatus",text(state))?;
+    let output=if method=="turn/completed" {
+        match turn.get(&key("error")) {
+            Some(Json::Null)|None => output,
+            Some(error) => {
+                let error_fields=object(error,"turn error")?;
+                string_allow_empty(error_fields,"message")?;
+                with_meta_field(output,"codexError",copy_json(error))?
+            },
+        }
+    } else {output};
+    let Output::Update(update)=output else {
         return Err(OutputError::Invalid("turn update"));
     };
     if method=="turn/completed" {
@@ -252,7 +275,8 @@ pub(crate) fn normalize(frame: &[u8], expected_thread_id: &str) -> Result<Output
         "item/reasoning/textDelta" | "item/commandExecution/outputDelta" |
         "item/fileChange/outputDelta" | "item/mcpToolCall/progress" |
         "item/started" | "item/completed" | "turn/started" | "turn/completed" |
-        "thread/tokenUsage/updated" | "thread/status/changed" | "thread/started");
+        "thread/tokenUsage/updated" | "thread/status/changed" | "thread/started" |
+        "error");
     let params=match envelope.get(&key("params")) {
         Some(Json::Object(fields)) => fields,
         _ if !mapped => return Ok(Output::Unhandled {method}),
@@ -264,6 +288,7 @@ pub(crate) fn normalize(frame: &[u8], expected_thread_id: &str) -> Result<Output
         let Json::String(value)=value else {return Err(OutputError::Invalid("threadId"));};
         value.to_well_formed_string().ok_or(OutputError::Invalid("threadId"))?
     } else {
+        if method=="error" {return Err(OutputError::Invalid("threadId"));}
         return Ok(Output::Unhandled {method});
     };
     if thread_id != expected_thread_id {return Err(OutputError::WrongThread);}
@@ -278,6 +303,9 @@ pub(crate) fn normalize(frame: &[u8], expected_thread_id: &str) -> Result<Output
         "item/completed" => tool_item(&method,params,&thread_id,false),
         "turn/started" | "turn/completed" => turn_event(&method,params,&thread_id,reply),
         "thread/tokenUsage/updated" => token_usage(&method,params,&thread_id),
+        "error" if matches!(reply,Reply::Event {..}) =>
+            error_notification(&method,params,&thread_id),
+        "error" => Ok(Output::Unhandled {method}),
         "thread/status/changed" => {
             let status=object(field(params,"status")?,"thread status")?;
             let state=string(status,"type")?;
@@ -310,6 +338,69 @@ pub(crate) fn normalize(frame: &[u8], expected_thread_id: &str) -> Result<Output
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_error_notification_preserves_scoped_diagnostics() {
+        let frame=concat!(r#"{"method":"error","params":{"threadId":"t","turnId":"v","error":{"message":"{\"type\":\"error\",\"status\":400}","codexErrorInfo":"other","additionalDetails":null,"futureDetail":{"code":400}},"willRetry":false,"futureParam":1}}"#,"\n");
+        let Output::Update(update)=normalize(frame.as_bytes(),"t").unwrap() else {panic!("error notification");};
+        assert_eq!(update.method,"error");
+        let json=Parser::parse(&update.update_json).unwrap();
+        let update_fields=object(&json,"update").unwrap();
+        assert_eq!(field(update_fields,"sessionUpdate").unwrap().canonical(),text("session_info_update").canonical());
+        let meta=object(field(update_fields,"_meta").unwrap(),"meta").unwrap();
+        for (name,value) in [("provider","codex"),("codexMethod","error"),
+            ("threadId","t"),("turnId","v")] {
+            assert_eq!(field(meta,name).unwrap().canonical(),text(value).canonical());
+        }
+        assert_eq!(field(meta,"codexWillRetry").unwrap().canonical(),"false");
+        let original=Parser::parse(frame.trim_end()).unwrap();
+        let params=object(field(object(&original,"envelope").unwrap(),"params").unwrap(),"params").unwrap();
+        assert_eq!(field(meta,"codexError").unwrap().canonical(),field(params,"error").unwrap().canonical());
+        assert!(matches!(normalize(frame.as_bytes(),"other"),Err(OutputError::WrongThread)));
+    }
+    #[test]
+    fn malformed_error_notifications_and_rpc_responses_are_not_updates() {
+        let invalid_params=[
+            r#"{"turnId":"v","error":{"message":"x"},"willRetry":false}"#,
+            r#"{"threadId":7,"turnId":"v","error":{"message":"x"},"willRetry":false}"#,
+            r#"{"threadId":"t","error":{"message":"x"},"willRetry":false}"#,
+            r#"{"threadId":"t","turnId":7,"error":{"message":"x"},"willRetry":false}"#,
+            r#"{"threadId":"t","turnId":"v","willRetry":false}"#,
+            r#"{"threadId":"t","turnId":"v","error":"x","willRetry":false}"#,
+            r#"{"threadId":"t","turnId":"v","error":{},"willRetry":false}"#,
+            r#"{"threadId":"t","turnId":"v","error":{"message":7},"willRetry":false}"#,
+            r#"{"threadId":"t","turnId":"v","error":{"message":"x"}}"#,
+            r#"{"threadId":"t","turnId":"v","error":{"message":"x"},"willRetry":"false"}"#,
+        ];
+        for params in invalid_params {
+            let frame=format!("{{\"method\":\"error\",\"params\":{params}}}\n");
+            assert!(normalize(frame.as_bytes(),"t").is_err(),"accepted {params}");
+        }
+        let rpc=b"{\"id\":7,\"error\":{\"code\":-32000,\"message\":\"x\"}}\n";
+        assert!(normalize(rpc,"t").is_err());
+        let request=b"{\"id\":7,\"method\":\"error\",\"params\":{\"threadId\":\"t\",\"turnId\":\"v\",\"error\":{\"message\":\"x\"},\"willRetry\":false}}\n";
+        assert!(matches!(normalize(request,"t"),Ok(Output::Unhandled{method}) if method=="error"));
+        let future=b"{\"method\":\"future/new\",\"params\":{\"threadId\":\"t\"}}\n";
+        assert!(matches!(normalize(future,"t"),Ok(Output::Unhandled{method}) if method=="future/new"));
+    }
+    #[test]
+    fn failed_turn_keeps_original_error_without_inventing_other_diagnostics() {
+        let failed=concat!(r#"{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"v","status":"failed","error":{"message":"{\"type\":\"error\",\"status\":400}","codexErrorInfo":"other","additionalDetails":"detail","futureDetail":9}}}}"#,"\n");
+        let Output::TurnTerminal {update,turn_id,status}=normalize(failed.as_bytes(),"t").unwrap() else {panic!("failed terminal");};
+        assert_eq!(turn_id,"v");
+        assert_eq!(status,TurnStatus::Failed);
+        let json=Parser::parse(&update.update_json).unwrap();
+        let meta=object(field(object(&json,"update").unwrap(),"_meta").unwrap(),"meta").unwrap();
+        assert_eq!(field(meta,"turnStatus").unwrap().canonical(),text("failed").canonical());
+        let original=Parser::parse(failed.trim_end()).unwrap();
+        let params=object(field(object(&original,"envelope").unwrap(),"params").unwrap(),"params").unwrap();
+        let turn=object(field(params,"turn").unwrap(),"turn").unwrap();
+        assert_eq!(field(meta,"codexError").unwrap().canonical(),field(turn,"error").unwrap().canonical());
+        let completed=b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"t\",\"turn\":{\"id\":\"next\",\"status\":\"completed\"}}}\n";
+        let Output::TurnTerminal {update,status:TurnStatus::Completed,..}=normalize(completed,"t").unwrap() else {panic!("completed terminal");};
+        let json=Parser::parse(&update.update_json).unwrap();
+        let meta=object(field(object(&json,"update").unwrap(),"_meta").unwrap(),"meta").unwrap();
+        assert!(!meta.contains_key(&key("codexError")));
+    }
     #[test]
     fn fixed_message_thought_and_tool_updates_are_canonical() {
         let message=b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"t\",\"turnId\":\"v\",\"itemId\":\"i\",\"delta\":\"hello\"}}\n";
