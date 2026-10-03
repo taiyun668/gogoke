@@ -1,6 +1,7 @@
 //! Native launch evidence for the product's existing E/F/H composition.
 //! Logical IDs select stored facts; they never supply a path or permission.
 use super::runtime::{self, ClaimObservation, InstancePin, SessionPhase};
+use super::provider_evidence::commands;
 use crate::process::{AppContainerProfile, CompatModule, DirectoryRoots, NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::{RootIdentity, RootLock};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
@@ -454,10 +455,17 @@ impl LaunchEvidence {
             "-c".into(), format!("log_dir={}", crate::store::atomic::Json::String(
                 crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
             "app-server".into()] } else { match self.pin.driver_id.as_str() {
-                "claude" => ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
-                    .into_iter().map(str::to_owned).collect(),
-                "opencode" => vec!["acp".into()],
-                "grok" => vec!["agent".into(), "--no-leader".into(), "stdio".into()],
+                "claude" => {
+                    let (model,effort)=self.settings()?;
+                    evidence(commands::claude_launch_args(&model,&effort,None))?
+                },
+                // The pinned top-level --pure switch disables external plugins;
+                // it does not by itself prove memory isolation or model choice.
+                "opencode" => vec!["--pure".into(), "acp".into()],
+                "grok" => {
+                    let (model, effort) = self.settings()?;
+                    evidence(commands::grok_launch_args(&model, &effort))?
+                },
                 _ => return Err("native session launch: unsupported pinned driver/version".into()),
             }};
         launch.current_directory = Some(self.worktree.path.clone());

@@ -6,7 +6,7 @@
 //! original command and source key; it does not copy provider output.
 
 use super::codex_rpc::{self, Command, Reply, RpcId};
-use super::provider_evidence::{acp, commands};
+use super::provider_evidence::{acp, commands, stream_json};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -57,6 +57,7 @@ impl From<codex_rpc::RpcError> for RpcJournalError {
 type Result<T> = std::result::Result<T, RpcJournalError>;
 const RPC_RESPONSE_NO_EVENT: &str = "CODEX_RPC_RESPONSE";
 const ACP_RESPONSE_NO_EVENT: &str = "ACP_RPC_RESPONSE";
+const CLAUDE_ACK_NO_EVENT: &str = "CLAUDE_STDIN_ACK";
 
 fn atom(value: &str) -> bool {
     !value.is_empty()
@@ -187,6 +188,24 @@ pub(crate) struct AcpStep<'a> {
     pub(crate) command: &'a commands::AcpCommand<'a>,
 }
 
+/// One original Claude control request or User input. The actual provider is
+/// derived from H's current instance, never from this caller's label.
+pub(crate) struct ClaudeStep<'a> {
+    pub(crate) domain_id: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) open_request_id: &'a str,
+    pub(crate) open_request_bytes: &'a [u8],
+    pub(crate) step_id: &'a str,
+    pub(crate) custody: &'a PreparedCustody,
+    pub(crate) command: &'a commands::ClaudeCommand<'a>,
+}
+
+pub(crate) fn claude_initialize_identity(open_request_bytes: &[u8]) -> (String, String) {
+    let digest = crate::store::digest::sha256_hex(open_request_bytes);
+    (format!("claude-init-{}", &digest[..40]),
+        format!("gogoke-claude-init-{}", &digest[..40]))
+}
+
 #[derive(Clone, Copy)]
 struct StepFields<'a> {
     domain_id: &'a str,
@@ -204,6 +223,13 @@ impl<'a> Step<'a> {
     }
 }
 impl<'a> AcpStep<'a> {
+    fn fields(&self) -> StepFields<'a> {
+        StepFields { domain_id: self.domain_id, session_id: self.session_id,
+            open_request_id: self.open_request_id, open_request_bytes: self.open_request_bytes,
+            step_id: self.step_id, custody: self.custody }
+    }
+}
+impl<'a> ClaudeStep<'a> {
     fn fields(&self) -> StepFields<'a> {
         StepFields { domain_id: self.domain_id, session_id: self.session_id,
             open_request_id: self.open_request_id, open_request_bytes: self.open_request_bytes,
@@ -286,11 +312,11 @@ fn has_unresolved(
     Ok(q.step_row()?)
 }
 
-fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
-    required_state: &[&str]) -> Result<Option<String>> {
+fn candidate_binding_fields(db: &VerifiedDatabaseConnection<'_>,
+    fields: &StepFields<'_>, required_state: &[&str]) -> Result<Option<(String,String)>> {
     if !has_process_episode_schema(db)? {return Ok(None);}
     let q=Statement::prepare(db.as_ptr(),
-        "SELECT e.process_operation_id,c.state,e.phase
+        "SELECT e.process_operation_id,c.state,e.phase,i.driver_id,i.version
            FROM main.gogoke_v37_h_process_episode e
            JOIN main.gogoke_coordination_process_custody c
              ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
@@ -320,7 +346,6 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
              AND h.domain_id=e.domain_id AND h.owner_id=e.session_id
              AND h.generation=e.generation AND h.kind='SESSION' AND h.state='ACTIVE'
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
-             AND i.driver_id='codex' AND i.version='0.160.0'
              AND i.login_state='LOGGED_IN'
              AND i.program_digest=c.binary_digest_sha256
              AND i.program_digest=oldc.binary_digest_sha256
@@ -331,11 +356,11 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
             AND c.creation_time_100ns=?8 AND c.image_path=?9
             AND c.binary_digest_sha256=?10 AND c.profile_id=?11
             AND e.instance_id=a.instance_id")?;
-    let c=step.custody;
+    let c=fields.custody;
     let pid=c.identity.pid.to_string();
     let time=c.identity.creation_time_100ns.to_string();
     let image=c.identity.image_path.to_string_lossy().into_owned();
-    for (index,value) in [step.domain_id,step.session_id,step.open_request_id,
+    for (index,value) in [fields.domain_id,fields.session_id,fields.open_request_id,
         c.binding.generation.as_str(),c.ticket.opaque(),c.custodian_nonce.as_str(),
         pid.as_str(),time.as_str(),image.as_str(),c.binding.binary_digest_sha256.as_str(),
         c.binding.profile_id.as_str()].iter().enumerate() {
@@ -345,11 +370,23 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
     let operation=q.column_text(0)?;
     let state=q.column_text(1)?;
     let phase=q.column_text(2)?;
+    let driver=q.column_text(3)?;
+    let version=q.column_text(4)?;
     let observation_of_unknown=phase=="UNKNOWN" && required_state.contains(&"UNKNOWN");
     if q.step_row()? || !required_state.contains(&state.as_str())
-        || !(matches!(phase.as_str(),"PREPARED"|"ACTIVE") || observation_of_unknown) {
+        || !(matches!(phase.as_str(),"PREPARED"|"ACTIVE") || observation_of_unknown)
+        || !matches!((driver.as_str(),version.as_str()),
+            ("codex","0.160.0") | ("opencode","1.18.32") | ("grok","1.0.41")) {
         return Err(RpcJournalError::Denied);
     }
+    Ok(Some((operation,driver)))
+}
+
+fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
+    required_state: &[&str]) -> Result<Option<String>> {
+    let Some((operation,driver))=candidate_binding_fields(db,&step.fields(),required_state)?
+        else {return Ok(None)};
+    if driver!="codex" {return Err(RpcJournalError::Denied);}
     if !matches!(step.command,Command::Initialize { .. }|Command::Initialized
         |Command::ConfigRead { .. }|Command::ThreadResume { .. }) {
         return Err(RpcJournalError::Denied);
@@ -455,11 +492,14 @@ pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
         (custodian_nonce,"nonce")] {
         if !atom(value) {return Err(RpcJournalError::Invalid(name));}
     }
-    let step_id=if let Some(older)=generation_episode_old(db,domain,session,
+    let (older,driver)=if let Some(episode)=generation_episode_old(db,domain,session,
         process_operation_id,generation,open_request_id)? {
-        if older {format!("{process_operation_id}-thread-resume")}
-        else {"thread-start".to_owned()}
+        episode
     } else {return Err(RpcJournalError::Denied)};
+    let step_id=if older {
+        if driver=="codex" {format!("{process_operation_id}-thread-resume")}
+        else {format!("{process_operation_id}-session-resume")}
+    } else {"thread-start".to_owned()};
     let q=Statement::prepare(db.as_ptr(),
         "SELECT s.command_hex,hex(r.raw_bytes)
            FROM main.gogoke_v37_rpc_steps s
@@ -475,48 +515,132 @@ pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
           WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
             AND s.generation=?4 AND s.open_request_id=?5 AND s.ticket=?6
             AND s.custodian_nonce=?7 AND s.step_id=?8 AND s.phase='OBSERVED'
-            AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
+            AND r.state='NO_EVENT' AND r.no_event_reason=?9")?;
     for (index,value) in [domain,session,process_operation_id,generation,
         open_request_id,ticket,custodian_nonce,step_id.as_str()].iter().enumerate() {
         q.bind_text((index+1) as i32,value)?;
     }
+    q.bind_text(9,if driver=="codex" {"CODEX_RPC_RESPONSE"} else {ACP_RESPONSE_NO_EVENT})?;
     if !q.step_row()? {return Err(RpcJournalError::Denied);}
     let command=unhex(&q.column_text(0)?)?;
     let response=unhex(&q.column_text(1)?)?;
     if q.step_row()? {return Err(RpcJournalError::Conflict);}
-    let thread=if step_id=="thread-start" {
-        codex_rpc::decode_stored_thread_start(&command,&response)?
+    let thread=if driver=="codex" {
+        if !older {codex_rpc::decode_stored_thread_start(&command,&response)?}
+        else {codex_rpc::decode_stored_thread_resume(&command,&response)?}
     } else {
-        codex_rpc::decode_stored_thread_resume(&command,&response)?
+        let needed=if !older {AcpCapability::Initialize}
+            else if driver=="opencode" {AcpCapability::Resume}
+            else {AcpCapability::Load};
+        if !observed_acp_capability(db,domain,session,process_operation_id,
+            ticket,custodian_nonce,generation,open_request_id,needed)? {
+            return Err(RpcJournalError::Denied);
+        }
+        let (id,method,requested)=stored_acp_pending(&command)
+            .ok_or(RpcJournalError::Denied)?;
+        let expected_method=if !older {acp::PendingMethod::SessionNew}
+            else if driver=="opencode" {acp::PendingMethod::SessionResume}
+            else {acp::PendingMethod::SessionLoad};
+        if method!=expected_method {return Err(RpcJournalError::Denied);}
+        let pending=acp::Pending {id:&id,method,requested_session_id:requested.as_deref()};
+        match acp::decode(&response,Some(&pending)).map_err(|error|
+            RpcJournalError::AcpDecode {reason:error.reason,raw_frame:error.raw_frame})? {
+            acp::Observation::SessionNew {session_id,..} if !older => session_id,
+            acp::Observation::SessionResume {..} | acp::Observation::SessionLoad {..} if older => {
+                let requested=requested.ok_or(RpcJournalError::Denied)?;
+                let old=observed_old_acp_session_id(db,domain,session,
+                    process_operation_id,generation,open_request_id)?;
+                if requested!=old {return Err(RpcJournalError::Denied);}
+                old
+            }
+            _=>return Err(RpcJournalError::Denied),
+        }
     };
     Ok(thread)
 }
 
 fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
     session: &str, operation: &str, generation: &str,
-    request_id: &str) -> Result<Option<bool>> {
+    request_id: &str) -> Result<Option<(bool,String)>> {
     let q=Statement::prepare(db.as_ptr(),
-        "SELECT CASE WHEN e.old_generation IS NULL THEN '0' ELSE '1' END
-           FROM main.gogoke_v37_h_generation g
-           JOIN main.gogoke_v37_h_process_episode e
-             ON e.domain_id=g.domain_id AND e.request_id=g.request_id
-             AND e.session_id=g.session_id AND e.generation=g.generation
-             AND e.process_operation_id=g.process_operation_id
+        "SELECT CASE WHEN e.old_generation IS NULL THEN '0' ELSE '1' END,i.driver_id,i.version
+           FROM main.gogoke_v37_h_process_episode e
+           LEFT JOIN main.gogoke_v37_h_generation g
+             ON g.domain_id=e.domain_id AND g.request_id=e.request_id
+             AND g.session_id=e.session_id AND g.generation=e.generation
+             AND g.process_operation_id=e.process_operation_id
            JOIN main.gogoke_coordination_process_custody c
              ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
              AND c.generation=e.generation
-          WHERE g.domain_id=?1 AND g.session_id=?2 AND g.process_operation_id=?3
-            AND g.generation=?4 AND g.request_id=?5
-            AND ((e.phase='STOPPED' AND c.state='STOPPED'
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3
+            AND e.generation=?4 AND e.request_id=?5
+            AND ((g.request_id IS NOT NULL AND e.phase='STOPPED' AND c.state='STOPPED'
                    AND e.stop_fact_id=c.stop_proof_hash AND e.stop_fact_id IS NOT NULL)
-              OR (e.phase='ACTIVE' AND c.state IN ('ACTIVE','UNKNOWN')))")?;
+              OR (g.request_id IS NOT NULL AND e.phase='ACTIVE'
+                  AND c.state IN ('ACTIVE','UNKNOWN'))
+              OR (e.phase IN ('PREPARED','UNKNOWN') AND e.old_generation IS NOT NULL
+                  AND c.state IN ('ACTIVE','UNKNOWN')
+                  AND EXISTS(SELECT 1 FROM main.gogoke_v37_h_generation_change x
+                    WHERE x.domain_id=e.domain_id AND x.session_id=e.session_id
+                      AND x.request_id=e.request_id AND x.stage='OLD_STOPPED'
+                      AND x.owner_stop_request_id IS NULL AND x.raw_hex=e.raw_hex)
+                  AND EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim a
+                    JOIN main.gogoke_coordination_process_custody oldc
+                      ON oldc.operation_id=a.process_operation_id
+                     AND oldc.domain_id=a.domain_id AND oldc.generation=a.generation
+                    WHERE a.domain_id=e.domain_id AND a.session_id=e.session_id
+                      AND a.generation=e.old_generation AND a.state='STOPPED'
+                      AND a.stop_fact_id IS NOT NULL
+                      AND oldc.state='STOPPED'
+                      AND oldc.stop_proof_hash=a.stop_fact_id)))")?;
     for (index,value) in [domain,session,operation,generation,request_id].iter().enumerate() {
         q.bind_text((index+1) as i32,value)?;
     }
     if !q.step_row()? {return Ok(None);}
     let old=q.column_text(0)?=="1";
+    let driver=q.column_text(1)?;
+    let version=q.column_text(2)?;
+    if q.step_row()? || !matches!((driver.as_str(),version.as_str()),
+        ("codex","0.160.0")|("opencode","1.18.32")|("grok","1.0.41")) {
+        return Err(RpcJournalError::Conflict);
+    }
+    Ok(Some((old,driver)))
+}
+
+pub(super) fn observed_old_acp_session_id(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,generation:&str,
+    request_id:&str)->Result<String> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT olde.process_operation_id,olde.generation,olde.request_id,
+                oldc.ticket,oldc.custodian_nonce
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_process_episode olde
+             ON olde.domain_id=e.domain_id AND olde.session_id=e.session_id
+            AND olde.generation=e.old_generation AND olde.instance_id=e.instance_id
+            AND olde.phase='STOPPED' AND olde.stop_fact_id IS NOT NULL
+           JOIN main.gogoke_coordination_process_custody oldc
+             ON oldc.operation_id=olde.process_operation_id
+            AND oldc.domain_id=olde.domain_id AND oldc.generation=olde.generation
+            AND oldc.state='STOPPED' AND oldc.stop_proof_hash=olde.stop_fact_id
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3
+            AND e.generation=?4 AND e.request_id=?5 AND e.old_generation IS NOT NULL")?;
+    for (index,value) in [domain,session,operation,generation,request_id].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Err(RpcJournalError::Denied);}
+    let old_operation=q.column_text(0)?;
+    let old_generation=q.column_text(1)?;
+    let old_request=q.column_text(2)?;
+    let old_ticket=q.column_text(3)?;
+    let old_nonce=q.column_text(4)?;
     if q.step_row()? {return Err(RpcJournalError::Conflict);}
-    Ok(Some(old))
+    drop(q);
+    let Some((old,new))=old_generation.parse::<u64>().ok()
+        .zip(generation.parse::<u64>().ok()) else {return Err(RpcJournalError::Denied)};
+    if old>=new {return Err(RpcJournalError::Denied);}
+    observed_thread_id(db,domain,session,&old_operation,&old_generation,
+        &old_request,&old_ticket,&old_nonce)
 }
 
 /// Complete only a command already WRITTEN whose original process bytes A
@@ -530,9 +654,12 @@ pub(crate) fn reconcile_written_resume_from_a(
         (request_id,"request"),(operation,"operation"),(generation,"generation")] {
         if !atom(value) {return Err(RpcJournalError::Invalid(name));}
     }
-    let step_id=format!("{operation}-thread-resume");
     transact(db,|db| {
         check_owner_in_current_transaction(db,owner)?;
+        let Some((true,driver))=generation_episode_old(db,domain,session,
+            operation,generation,request_id)? else {return Err(RpcJournalError::Denied)};
+        let step_id=if driver=="codex" {format!("{operation}-thread-resume")}
+            else {format!("{operation}-session-resume")};
         let step=Statement::prepare(db.as_ptr(),
             "SELECT s.command_hex,s.ticket,s.custodian_nonce
                FROM main.gogoke_v37_rpc_steps s
@@ -581,10 +708,35 @@ pub(crate) fn reconcile_written_resume_from_a(
         let mut matched:Option<(String,String,Option<String>)>=None;
         while source.step_row()? {
             let bytes=unhex(&source.column_text(2)?)?;
-            let thread=match codex_rpc::decode_stored_thread_resume(&command,&bytes) {
-                Ok(thread)=>Some(thread),
-                Err(codex_rpc::RpcError::RemoteResponse(_))=>None,
-                Err(_)=>continue,
+            let thread=if driver=="codex" {
+                match codex_rpc::decode_stored_thread_resume(&command,&bytes) {
+                    Ok(thread)=>Some(thread),
+                    Err(codex_rpc::RpcError::RemoteResponse(_))=>None,
+                    Err(_)=>continue,
+                }
+            } else {
+                let Some((id,method,requested))=stored_acp_pending(&command) else {continue};
+                let expected=if driver=="opencode" {acp::PendingMethod::SessionResume}
+                    else {acp::PendingMethod::SessionLoad};
+                if method!=expected {continue;}
+                let requested=requested.ok_or(RpcJournalError::Denied)?;
+                if !observed_acp_capability(db,domain,session,operation,
+                    &ticket,&nonce,generation,request_id,
+                    if driver=="opencode" {AcpCapability::Resume}
+                    else {AcpCapability::Load})? {return Err(RpcJournalError::Denied);}
+                let pending=acp::Pending {id:&id,method,
+                    requested_session_id:Some(&requested)};
+                match acp::decode(&bytes,Some(&pending)) {
+                    Ok(acp::Observation::SessionResume {..})
+                    | Ok(acp::Observation::SessionLoad {..}) => {
+                        let old=observed_old_acp_session_id(db,domain,session,
+                            operation,generation,request_id)?;
+                        if requested!=old {return Err(RpcJournalError::Denied);}
+                        Some(old)
+                    },
+                    Ok(acp::Observation::RemoteError {..})=>None,
+                    _=>continue,
+                }
             };
             if matched.is_some() {return Err(RpcJournalError::Conflict);}
             matched=Some((source.column_text(0)?,source.column_text(1)?,thread));
@@ -593,7 +745,9 @@ pub(crate) fn reconcile_written_resume_from_a(
         let Some((epoch,cursor,thread))=matched else {return Ok(None)};
         let key=RawSourceKey {operation_id:operation.to_owned(),source_epoch:epoch,
             source_cursor:cursor};
-        persist_observation_and_no_event(db,domain,session,&step_id,operation,&key)?;
+        persist_observation_and_no_event_with_reason(db,domain,session,
+            &step_id,operation,&key,if driver=="codex" {RPC_RESPONSE_NO_EVENT}
+                else {ACP_RESPONSE_NO_EVENT})?;
         Ok(thread)
     })
 }
@@ -703,7 +857,8 @@ fn assert_current_binding(
         || login_state != "LOGGED_IN"
         || program_digest != c.binding.binary_digest_sha256
         || !matches!((driver.as_str(), version.as_str()),
-            ("codex", "0.160.0") | ("opencode", "1.18.32") | ("grok", "1.0.41"))
+            ("codex", "0.160.0") | ("opencode", "1.18.32") | ("grok", "1.0.41")
+            | ("claude", "2.1.196"))
         || q.step_row()?
     {
         return Err(RpcJournalError::Denied);
@@ -1090,6 +1245,67 @@ fn acp_vendor(driver: &str) -> Result<commands::Vendor> {
     }
 }
 
+fn assert_acp_binding(db: &VerifiedDatabaseConnection<'_>, step: &AcpStep<'_>,
+    states: &[&str], allow_unknown_claim: bool) -> Result<(String,String,bool)> {
+    if let Some((operation,driver))=candidate_binding_fields(db,&step.fields(),states)? {
+        if !matches!((driver.as_str(),step.command),
+            ("opencode", commands::AcpCommand::Initialize { .. })
+            | ("opencode", commands::AcpCommand::SessionResume { .. })
+            | ("opencode", commands::AcpCommand::SetConfigOption { .. })
+            | ("grok", commands::AcpCommand::Initialize { .. })
+            | ("grok", commands::AcpCommand::SessionLoad { .. })) {
+            return Err(RpcJournalError::Denied);
+        }
+        return Ok((operation,driver,true));
+    }
+    let (operation,driver)=assert_current_binding(db,&step.fields(),states,
+        allow_unknown_claim)?;
+    acp_vendor(&driver)?;
+    Ok((operation,driver,false))
+}
+
+pub(crate) fn acp_candidate_step_id(operation:&str,
+    command:&commands::AcpCommand<'_>)->Result<String> {
+    if !atom(operation) {return Err(RpcJournalError::Invalid("candidate operation"));}
+    let suffix=match command {
+        commands::AcpCommand::Initialize {..}=>"initialize",
+        commands::AcpCommand::SessionResume {..}
+        | commands::AcpCommand::SessionLoad {..}=>"session-resume",
+        commands::AcpCommand::SetConfigOption {config_id,..} if *config_id=="model"=>"setting-model",
+        commands::AcpCommand::SetConfigOption {config_id,..} if *config_id=="effort"=>"setting-effort",
+        _=>return Err(RpcJournalError::Denied),
+    };
+    Ok(format!("{operation}-{suffix}"))
+}
+
+fn candidate_acp_change_matches(db:&VerifiedDatabaseConnection<'_>,
+    step:&AcpStep<'_>,operation:&str,
+    change:&super::generation_change::Change)->Result<bool> {
+    if change.stage!="OLD_STOPPED" || change.owner_stop_request_id.is_some()
+        || change.request_id!=step.open_request_id
+        || change.raw_hex!=hex(step.open_request_bytes)
+        || acp_candidate_step_id(operation,step.command)?!=step.step_id {
+        return Ok(false);
+    }
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
+             AND a.session_id=e.session_id AND a.generation=e.old_generation
+             AND a.state='STOPPED' AND a.process_operation_id=?5
+           JOIN main.gogoke_coordination_process_custody oldc
+             ON oldc.operation_id=a.process_operation_id AND oldc.domain_id=a.domain_id
+             AND oldc.generation=a.generation AND oldc.state='STOPPED'
+             AND oldc.stop_proof_hash=a.stop_fact_id
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+            AND e.process_operation_id=?4 AND e.old_generation=?6
+            AND e.raw_hex=?7 AND oldc.ticket=?8 AND oldc.custodian_nonce=?9")?;
+    for (index,value) in [step.domain_id,step.session_id,step.open_request_id,
+        operation,change.old_operation.as_str(),change.old_generation.as_str(),
+        change.raw_hex.as_str(),change.old_ticket.as_str(),change.old_nonce.as_str()]
+        .iter().enumerate() {q.bind_text((index+1) as i32,value)?;}
+    Ok(q.step_row()? && !q.step_row()?)
+}
+
 fn acp_command_copy<'a>(command: &commands::AcpCommand<'a>)
     -> commands::AcpCommand<'a> {
     use commands::AcpCommand as C;
@@ -1100,6 +1316,8 @@ fn acp_command_copy<'a>(command: &commands::AcpCommand<'a>)
             C::SessionLoad { session_id, cwd, advertised: *advertised },
         C::SessionResume { session_id, cwd, advertised } =>
             C::SessionResume { session_id, cwd, advertised: *advertised },
+        C::SetConfigOption { session_id, config_id, value } =>
+            C::SetConfigOption { session_id, config_id, value },
         C::Prompt { session_id, text } => C::Prompt { session_id, text },
         C::Cancel { session_id } => C::Cancel { session_id },
         C::PermissionResponse => C::PermissionResponse,
@@ -1121,6 +1339,8 @@ fn acp_pending<'a>(step: &'a AcpStep<'_>) -> Result<Option<acp::Pending<'a>>> {
             (acp::PendingMethod::SessionLoad, Some(*session_id)),
         C::SessionResume { session_id, .. } =>
             (acp::PendingMethod::SessionResume, Some(*session_id)),
+        C::SetConfigOption { session_id, .. } =>
+            (acp::PendingMethod::SessionSetConfigOption, Some(*session_id)),
         C::Prompt { .. } => (acp::PendingMethod::SessionPrompt, None),
         C::Cancel { .. } => return Ok(None),
         C::PermissionResponse | C::Steer =>
@@ -1196,8 +1416,12 @@ fn stored_initialize_id(encoded: &[u8]) -> Option<acp::RpcId> {
 /// The caller's advertised flag is only a request to use the capability. Its
 /// authority comes from the original initialize ACK captured by A on this
 /// exact process, and from the journal's matching typed request ID.
-fn observed_acp_load_capability(db: &VerifiedDatabaseConnection<'_>,
-    fields: &StepFields<'_>, operation: &str) -> Result<bool> {
+#[derive(Clone,Copy)]
+enum AcpCapability { Initialize, Load, Resume }
+
+fn observed_acp_capability(db: &VerifiedDatabaseConnection<'_>,
+    domain:&str, session:&str, operation:&str, ticket:&str, nonce:&str,
+    generation:&str, open_request_id:&str, needed:AcpCapability) -> Result<bool> {
     let q = Statement::prepare(db.as_ptr(),
         "SELECT s.command_hex,hex(r.raw_bytes)
            FROM main.gogoke_v37_rpc_steps s
@@ -1213,9 +1437,8 @@ fn observed_acp_load_capability(db: &VerifiedDatabaseConnection<'_>,
             AND s.open_request_id=?7
             AND s.phase='OBSERVED' AND s.requires_response=1
             AND r.state='NO_EVENT' AND r.no_event_reason='ACP_RPC_RESPONSE'")?;
-    for (index, value) in [fields.domain_id, fields.session_id, operation,
-        fields.custody.ticket.opaque(), fields.custody.custodian_nonce.as_str(),
-        fields.custody.binding.generation.as_str(), fields.open_request_id].iter().enumerate() {
+    for (index, value) in [domain, session, operation, ticket, nonce,
+        generation, open_request_id].iter().enumerate() {
         q.bind_text((index + 1) as i32, value)?;
     }
     let mut found = None;
@@ -1230,8 +1453,14 @@ fn observed_acp_load_capability(db: &VerifiedDatabaseConnection<'_>,
             RpcJournalError::AcpDecode { reason: error.reason, raw_frame: error.raw_frame })?;
         let acp::Observation::Initialize { declared_capabilities: Json::Object(capabilities), .. }
             = observation else { return Err(RpcJournalError::Denied) };
-        found = Some(matches!(capabilities.get(&JsonString::from_str("loadSession")),
-            Some(Json::Bool(true))));
+        found = Some(match needed {
+            AcpCapability::Initialize => true,
+            AcpCapability::Load => matches!(capabilities.get(&JsonString::from_str("loadSession")),
+                Some(Json::Bool(true))),
+            AcpCapability::Resume => matches!(capabilities.get(&JsonString::from_str("sessionCapabilities")),
+                Some(Json::Object(session_caps)) if matches!(session_caps.get(&JsonString::from_str("resume")),
+                    Some(Json::Object(_)))),
+        });
     }
     Ok(found.unwrap_or(false))
 }
@@ -1266,6 +1495,108 @@ fn stored_acp_pending(encoded: &[u8])
         Some(value.to_well_formed_string()?)
     } else { None };
     Some((id, kind, requested))
+}
+
+fn stored_acp_config(encoded:&[u8])->Option<(acp::RpcId,String,String,String)> {
+    let text=std::str::from_utf8(encoded).ok()?;
+    let Json::Object(fields)=Parser::parse(text.trim_end_matches('\n')).ok()? else {return None};
+    let key=|name|JsonString::from_str(name);
+    if !matches!(fields.get(&key("method")),Some(Json::String(value))
+        if value.to_well_formed_string().as_deref()==Some("session/set_config_option")) {
+        return None;
+    }
+    let id=match fields.get(&key("id"))? {
+        Json::String(value)=>acp::RpcId::String(value.to_well_formed_string()?),
+        Json::Number(value)=>acp::RpcId::Number(value.parse().ok()?),
+        _=>return None,
+    };
+    let Json::Object(params)=fields.get(&key("params"))? else {return None};
+    let string=|name|match params.get(&key(name))? {
+        Json::String(value)=>value.to_well_formed_string(),_=>None,
+    };
+    Some((id,string("sessionId")?,string("configId")?,string("value")?))
+}
+
+/// Original candidate OpenCode model/effort ACKs, in that order, must report
+/// the bound E values for the same actual resumed native session. Grok has no
+/// verified ACP config method; its settings are checked at launch by H.
+pub(super) fn observed_acp_configuration_for_generation(
+    db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,operation:&str,
+    generation:&str,open_request_id:&str,ticket:&str,nonce:&str,
+    vendor_session:&str)->Result<()> {
+    let settings=Statement::prepare(db.as_ptr(),
+        "SELECT ss.settings_json FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_seats s ON s.domain_id=e.domain_id
+             AND s.seat_id=e.seat_id AND s.incarnation=e.seat_incarnation
+             AND s.instance_id=e.instance_id AND s.state='BUSY'
+           JOIN main.gogoke_v37_seat_settings ss ON ss.domain_id=s.domain_id
+             AND ss.seat_id=s.seat_id
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3
+            AND e.generation=?4 AND e.request_id=?5")?;
+    for (index,value) in [domain,session,operation,generation,open_request_id]
+        .iter().enumerate() {settings.bind_text((index+1) as i32,value)?;}
+    if !settings.step_row()? {return Err(RpcJournalError::Denied);}
+    let raw=settings.column_text(0)?;
+    if settings.step_row()? {return Err(RpcJournalError::Conflict);}
+    drop(settings);
+    let Json::Object(fields)=Parser::parse(&raw)? else {return Err(RpcJournalError::Denied)};
+    let field=|name|match fields.get(&JsonString::from_str(name)) {
+        Some(Json::String(value))=>value.to_well_formed_string()
+            .filter(|value|!value.is_empty()&&!value.contains('\0')),
+        _=>None,
+    };
+    let model=field("model").ok_or(RpcJournalError::Denied)?;
+    let effort=field("effort").ok_or(RpcJournalError::Denied)?;
+    let mut order=Vec::new();
+    for (config_id,value) in [("model",model.as_str()),("effort",effort.as_str())] {
+        let step_id=format!("{operation}-setting-{config_id}");
+        let q=Statement::prepare(db.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes),s.source_epoch,s.source_cursor
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+                 AND r.generation=s.generation
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+                AND s.generation=?4 AND s.open_request_id=?5 AND s.ticket=?6
+                AND s.custodian_nonce=?7 AND s.step_id=?8 AND s.phase='OBSERVED'
+                AND s.requires_response=1 AND r.state='NO_EVENT'
+                AND r.no_event_reason='ACP_RPC_RESPONSE'")?;
+        for (index,item) in [domain,session,operation,generation,open_request_id,
+            ticket,nonce,step_id.as_str()].iter().enumerate() {
+            q.bind_text((index+1) as i32,item)?;
+        }
+        if !q.step_row()? {return Err(RpcJournalError::Denied);}
+        let command=unhex(&q.column_text(0)?)?;
+        let response=unhex(&q.column_text(1)?)?;
+        let epoch=q.column_text(2)?;
+        let cursor_raw=q.column_text(3)?;
+        let cursor=cursor_raw.parse::<u64>()
+            .map_err(|_|RpcJournalError::Denied)?;
+        if cursor==0 || cursor>i64::MAX as u64 || cursor.to_string()!=cursor_raw {
+            return Err(RpcJournalError::Denied);
+        }
+        if q.step_row()? {return Err(RpcJournalError::Conflict);}
+        drop(q);
+        let (id,requested_session,requested_config,requested_value)=
+            stored_acp_config(&command).ok_or(RpcJournalError::Denied)?;
+        if requested_session!=vendor_session || requested_config!=config_id
+            || requested_value!=value {return Err(RpcJournalError::Denied);}
+        let pending=acp::Pending {id:&id,method:acp::PendingMethod::SessionSetConfigOption,
+            requested_session_id:Some(vendor_session)};
+        let observed=acp::decode(&response,Some(&pending)).map_err(|error|
+            RpcJournalError::AcpDecode {reason:error.reason,raw_frame:error.raw_frame})?;
+        if !acp::confirms_config_value(&observed,config_id,value)
+            || (config_id=="effort" && !acp::confirms_config_value(&observed,"model",&model)) {
+            return Err(RpcJournalError::Denied);
+        }
+        order.push((epoch,cursor));
+    }
+    if order.len()!=2 || order[0].0!=order[1].0 || order[0].1>=order[1].1 {
+        return Err(RpcJournalError::Denied);
+    }
+    Ok(())
 }
 
 /// One actual initialized ACP process and one native session acquisition
@@ -1353,18 +1684,51 @@ pub(super) fn prepare_acp_in_transaction(db: &mut VerifiedDatabaseConnection<'_>
     }
         check_owner_in_current_transaction(db, owner)?;
         original_open(db, &step.fields())?;
-        let (operation, driver) = assert_current_binding(db, &step.fields(),
+        let (operation, driver, candidate) = assert_acp_binding(db, step,
             &["PREPARED", "ACTIVE"], false)?;
         let encoded = encode_acp_step(step, &driver)?;
         let pending = acp_pending(step)?;
+        if candidate {
+            if let commands::AcpCommand::SessionResume {session_id,..}
+                | commands::AcpCommand::SessionLoad {session_id,..}=step.command {
+                if observed_old_acp_session_id(db,step.domain_id,step.session_id,
+                    &operation,&step.custody.binding.generation,
+                    step.open_request_id)?!=*session_id {
+                    return Err(RpcJournalError::Denied);
+                }
+            }
+        }
+        if let commands::AcpCommand::SetConfigOption { session_id, .. } = step.command {
+            let observed=if candidate {observed_thread_id(db,step.domain_id,
+                step.session_id,&operation,&step.custody.binding.generation,
+                step.open_request_id,step.custody.ticket.opaque(),
+                &step.custody.custodian_nonce)?} else {
+                observed_acp_session_id_in_transaction(db, step.domain_id,
+                step.session_id, step.open_request_id, step.open_request_bytes,
+                step.custody, false)?};
+            if observed != *session_id {
+                return Err(RpcJournalError::Denied);
+            }
+        }
         if matches!(step.command, commands::AcpCommand::SessionLoad { .. }
             | commands::AcpCommand::SessionResume { .. })
-            && !observed_acp_load_capability(db, &step.fields(), &operation)? {
+            && !observed_acp_capability(db, step.domain_id, step.session_id,
+                &operation, step.custody.ticket.opaque(), &step.custody.custodian_nonce,
+                &step.custody.binding.generation, step.open_request_id,
+                if matches!(step.command, commands::AcpCommand::SessionResume { .. }) {
+                    AcpCapability::Resume
+                } else { AcpCapability::Load })? {
             return Err(RpcJournalError::AcpEncode(commands::EncodeError::Unsupported(
                 "session load capability not observed on this process")));
         }
-        if super::generation_change::active_for_session(db,
-            step.domain_id, step.session_id)?.is_some() {
+        let change=super::generation_change::active_for_session(db,
+            step.domain_id, step.session_id)?;
+        if candidate {
+            let Some(change)=change.as_ref() else {return Err(RpcJournalError::Denied)};
+            if !candidate_acp_change_matches(db,step,&operation,change)? {
+                return Err(RpcJournalError::Denied);
+            }
+        } else if change.is_some() {
             return Err(RpcJournalError::Denied);
         }
         if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
@@ -1400,7 +1764,7 @@ fn transition_acp_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
         original_open(db, &step.fields())?;
         let states = if next == Phase::Unknown { &["ACTIVE", "UNKNOWN"][..] }
             else { &["ACTIVE"][..] };
-        let (operation, driver) = assert_current_binding(db, &step.fields(), states,
+        let (operation, driver, _) = assert_acp_binding(db, step, states,
             next == Phase::Unknown)?;
         let encoded = encode_acp_step(step, &driver)?;
         transition_row(db, &step.fields(), &operation, &encoded, next, error)
@@ -1455,7 +1819,7 @@ pub(super) fn observe_acp_captured_response_in_transaction(
 ) -> Result<(acp::Observation, Vec<u8>)> {
         check_owner_in_current_transaction(db, owner)?;
         original_open(db, &step.fields())?;
-        let (operation, driver) = assert_current_binding(db, &step.fields(),
+        let (operation, driver, _) = assert_acp_binding(db, step,
             &["ACTIVE", "UNKNOWN"], false)?;
         let encoded = encode_acp_step(step, &driver)?;
         if key.operation_id != operation { return Err(RpcJournalError::Denied); }
@@ -1472,9 +1836,16 @@ pub(super) fn observe_acp_captured_response_in_transaction(
     let pending = acp_pending(step)?.ok_or(RpcJournalError::Invalid("ACP notification has no ACK"))?;
     let observation = acp::decode(&source.raw_bytes, Some(&pending)).map_err(|error|
         RpcJournalError::AcpDecode { reason: error.reason, raw_frame: error.raw_frame })?;
+    if let commands::AcpCommand::SetConfigOption { config_id, value, .. } = step.command {
+        if matches!(&observation, acp::Observation::SessionConfigOption { .. })
+            && !acp::confirms_config_value(&observation, config_id, value) {
+            return Err(RpcJournalError::Denied);
+        }
+    }
     if !matches!(&observation, acp::Observation::Initialize { .. }
         | acp::Observation::SessionNew { .. } | acp::Observation::SessionLoad { .. }
-        | acp::Observation::SessionResume { .. } | acp::Observation::Prompt { .. }
+        | acp::Observation::SessionResume { .. } | acp::Observation::SessionConfigOption { .. }
+        | acp::Observation::Prompt { .. }
         | acp::Observation::RemoteError { .. }) {
         return Err(RpcJournalError::Invalid("not an ACP response"));
     }
@@ -1488,6 +1859,291 @@ pub(super) fn observe_acp_captured_response_in_transaction(
             _ => return Err(RpcJournalError::Conflict),
         }
     Ok((observation, source.raw_bytes))
+}
+
+/// Read back one already committed ACP ACK from its original A source. This
+/// never reads stdout or writes stdin. The caller supplies the same original
+/// command and typed RPC ID; the ordinary observe path rechecks every current
+/// binding, original command byte, source identity, and config currentValue.
+pub(crate) fn read_observed_acp_response(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &AcpStep<'_>,
+) -> Result<Option<(acp::Observation, Vec<u8>)>> {
+    transact(db, |db| {
+        check_owner_in_current_transaction(db, owner)?;
+        original_open(db, &step.fields())?;
+        let (operation, driver, _) = assert_acp_binding(db, step,
+            &["ACTIVE", "UNKNOWN"], false)?;
+        let encoded = encode_acp_step(step, &driver)?;
+        if same_row(db, &step.fields(), &operation, &encoded)? != Some(Phase::Observed) {
+            return Ok(None);
+        }
+        let q = Statement::prepare(db.as_ptr(),
+            "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+              WHERE domain_id=?1 AND session_id=?2 AND step_id=?3
+                AND open_request_id=?4 AND process_operation_id=?5
+                AND phase='OBSERVED' AND requires_response=1")?;
+        for (index, value) in [step.domain_id, step.session_id, step.step_id,
+            step.open_request_id, operation.as_str()].iter().enumerate() {
+            q.bind_text((index + 1) as i32, value)?;
+        }
+        if !q.step_row()? { return Err(RpcJournalError::Conflict); }
+        let key = RawSourceKey { operation_id: operation,
+            source_epoch: q.column_text(0)?, source_cursor: q.column_text(1)? };
+        if q.step_row()? { return Err(RpcJournalError::Conflict); }
+        drop(q);
+        observe_acp_captured_response_in_transaction(db, owner, step, &key).map(Some)
+    })
+}
+
+fn claude_bytes(step: &ClaudeStep<'_>, driver: &str) -> Result<Vec<u8>> {
+    if driver != "claude" { return Err(RpcJournalError::Denied); }
+    let command = match step.command {
+        commands::ClaudeCommand::Initialize { request_id } =>
+            commands::ClaudeCommand::Initialize { request_id },
+        commands::ClaudeCommand::User { uuid, text } =>
+            commands::ClaudeCommand::User { uuid, text },
+    };
+    commands::encode_claude(command).map_err(RpcJournalError::AcpEncode)
+}
+
+/// Persist original Claude stdin intent before the physical writer. An
+/// existing row is readback only; neither replay nor UNKNOWN permits resend.
+pub(crate) fn prepare_claude(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<PreparedStep> {
+    let (expected_step, expected_id) = claude_initialize_identity(step.open_request_bytes);
+    if !matches!(step.command, commands::ClaudeCommand::Initialize { request_id }
+        if *request_id == expected_id.as_str())
+        || step.step_id != expected_step.as_str() {
+        return Err(RpcJournalError::Invalid("Claude initialize identity"));
+    }
+    transact(db, |db| prepare_claude_in_transaction(db, owner, step))
+}
+
+pub(super) fn prepare_claude_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<PreparedStep> {
+    for (value, name) in [(step.domain_id, "domain"), (step.session_id, "session"),
+        (step.open_request_id, "open request"), (step.step_id, "step")] {
+        if !atom(value) { return Err(RpcJournalError::Invalid(name)); }
+    }
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let (operation, driver) = assert_current_binding(db, &step.fields(),
+        &["PREPARED", "ACTIVE"], false)?;
+    let encoded = claude_bytes(step, &driver)?;
+    if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
+        return Ok(PreparedStep { bytes: encoded,
+            disposition: Disposition::Existing(phase) });
+    }
+    if has_unresolved(db, step.domain_id, step.session_id, &operation)? {
+        return Err(RpcJournalError::Unknown);
+    }
+    insert_intent(db, &step.fields(), &operation, &encoded, true)?;
+    Ok(PreparedStep { bytes: encoded, disposition: Disposition::NewWrite })
+}
+
+fn transition_claude_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, next: Phase,
+    error: Option<&str>) -> Result<()> {
+    if next == Phase::Unknown && error.map_or(true, |value| value.is_empty()
+        || value.len() > 4096) { return Err(RpcJournalError::Invalid("original error")); }
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let states = if next == Phase::Unknown { &["ACTIVE", "UNKNOWN"][..] }
+        else { &["ACTIVE"][..] };
+    let (operation, driver) = assert_current_binding(db, &step.fields(), states,
+        next == Phase::Unknown)?;
+    let encoded = claude_bytes(step, &driver)?;
+    transition_row(db, &step.fields(), &operation, &encoded, next, error)
+}
+
+pub(crate) fn mark_claude_written(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<()> {
+    transact(db, |db| transition_claude_in_transaction(db, owner, step, Phase::Written, None))
+}
+
+pub(super) fn mark_claude_written_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<()> {
+    transition_claude_in_transaction(db, owner, step, Phase::Written, None)
+}
+
+pub(crate) fn mark_claude_unknown(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, original_error: &str) -> Result<()> {
+    transact(db, |db| transition_claude_in_transaction(db, owner, step,
+        Phase::Unknown, Some(original_error)))
+}
+
+pub(super) fn mark_claude_unknown_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, original_error: &str) -> Result<()> {
+    transition_claude_in_transaction(db, owner, step, Phase::Unknown, Some(original_error))
+}
+
+/// An ACK is only the matching control response or exact echoed User UUID and
+/// text. Assistant/result frames cannot advance this stdin step.
+pub(super) fn observe_claude_captured_ack_in_transaction(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &ClaudeStep<'_>, key: &RawSourceKey,
+) -> Result<(stream_json::ClaudeData, Vec<u8>)> {
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let (operation, driver) = assert_current_binding(db, &step.fields(),
+        &["ACTIVE", "UNKNOWN"], false)?;
+    let encoded = claude_bytes(step, &driver)?;
+    if key.operation_id != operation { return Err(RpcJournalError::Denied); }
+    let source = ledger::read_captured_raw_source(db, &key.operation_id,
+        &key.source_epoch, &key.source_cursor)?.ok_or(RpcJournalError::Denied)?;
+    if source.process_ticket != step.custody.ticket.opaque()
+        || source.custodian_nonce != step.custody.custodian_nonce
+        || source.domain_id != step.domain_id || source.session_id != step.session_id
+        || source.generation != step.custody.binding.generation {
+        return Err(RpcJournalError::Denied);
+    }
+    let observation = stream_json::decode_claude_line(&source.raw_bytes)
+        .map_err(|_| RpcJournalError::Denied)?;
+    let matching = match (&observation, step.command) {
+        (stream_json::ClaudeData::ControlResponse { request_id: found, .. },
+            commands::ClaudeCommand::Initialize { request_id }) => found.as_str() == *request_id,
+        (stream_json::ClaudeData::UserReplay { uuid: found, text: echoed, .. },
+            commands::ClaudeCommand::User { uuid, text }) =>
+                found.as_str() == *uuid && echoed.as_str() == *text,
+        _ => false,
+    };
+    if !matching { return Err(RpcJournalError::Denied); }
+    match (same_row(db, &step.fields(), &operation, &encoded)?, source.state) {
+        (Some(Phase::Written), RawSourceState::Pending) =>
+            persist_observation_and_no_event_with_reason(db, step.domain_id,
+                step.session_id, step.step_id, &operation, key, CLAUDE_ACK_NO_EVENT)?,
+        (Some(Phase::Observed), RawSourceState::NoEvent)
+            if source.no_event_reason.as_deref() == Some(CLAUDE_ACK_NO_EVENT)
+                && observed_source_is_exact(db, &step.fields(), &operation, key)? => {},
+        _ => return Err(RpcJournalError::Conflict),
+    }
+    Ok((observation, source.raw_bytes))
+}
+
+pub(crate) fn observe_claude_ack(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, step: &ClaudeStep<'_>, frame: &OriginBoundFrame,
+    key: &RawSourceKey) -> Result<stream_json::ClaudeData> {
+    transact(db, |db| {
+        source_matches(db, frame, key, &key.operation_id, &step.fields())?;
+        observe_claude_captured_ack_in_transaction(db, owner, step, key)
+            .map(|(observation, _)| observation)
+    })
+}
+
+pub(super) fn read_observed_claude_ack_in_transaction(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &ClaudeStep<'_>,
+) -> Result<Option<(stream_json::ClaudeData, Vec<u8>)>> {
+    check_owner_in_current_transaction(db, owner)?;
+    original_open(db, &step.fields())?;
+    let (operation, driver) = assert_current_binding(db, &step.fields(),
+        &["ACTIVE", "UNKNOWN"], false)?;
+    let encoded = claude_bytes(step, &driver)?;
+    if same_row(db, &step.fields(), &operation, &encoded)? != Some(Phase::Observed) {
+        return Ok(None);
+    }
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND step_id=?3
+            AND open_request_id=?4 AND process_operation_id=?5
+            AND phase='OBSERVED' AND requires_response=1")?;
+    for (index, value) in [step.domain_id, step.session_id, step.step_id,
+        step.open_request_id, operation.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value)?;
+    }
+    if !q.step_row()? { return Err(RpcJournalError::Conflict); }
+    let key = RawSourceKey { operation_id: operation,
+        source_epoch: q.column_text(0)?, source_cursor: q.column_text(1)? };
+    if q.step_row()? { return Err(RpcJournalError::Conflict); }
+    drop(q);
+    observe_claude_captured_ack_in_transaction(db, owner, step, &key).map(Some)
+}
+
+pub(crate) fn read_observed_claude_ack(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    step: &ClaudeStep<'_>,
+) -> Result<Option<(stream_json::ClaudeData, Vec<u8>)>> {
+    transact(db, |db| read_observed_claude_ack_in_transaction(db, owner, step))
+}
+
+/// Historical proof of the original Claude open handshake. This only reads
+/// the original open intent, episode, RPC step and captured A ACK. It does not
+/// grant live custody, infer a vendor session ID, or contact the process.
+pub(crate) fn read_original_claude_initialize_ack(
+    db: &VerifiedDatabaseConnection<'_>, domain_id: &str, session_id: &str,
+    open_request_id: &str, open_request_bytes: &[u8],
+    process_operation_id: &str, generation: &str,
+) -> Result<Option<stream_json::ClaudeData>> {
+    if !atom(domain_id) || !atom(session_id) || !atom(open_request_id)
+        || !atom(process_operation_id) || !atom(generation)
+        || !raw(open_request_bytes) {
+        return Err(RpcJournalError::Invalid("original Claude open identity"));
+    }
+    let open_hex = hex(open_request_bytes);
+    let original = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_operation
+          WHERE domain_id=?1 AND request_id=?2 AND session_id=?3
+            AND raw_hex=?4 AND operation='open' AND status IN ('APPLIED','UNKNOWN')")?;
+    for (index, value) in [domain_id, open_request_id, session_id,
+        open_hex.as_str()].iter().enumerate() {
+        original.bind_text((index + 1) as i32, value)?;
+    }
+    if !original.step_row()? || original.step_row()? {
+        return Err(RpcJournalError::Denied);
+    }
+    drop(original);
+    let (step_id, request_id) = claude_initialize_identity(open_request_bytes);
+    let expected = commands::encode_claude(commands::ClaudeCommand::Initialize {
+        request_id: &request_id,
+    }).map_err(RpcJournalError::AcpEncode)?;
+    let observed = Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes)
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+            AND c.generation=e.generation
+           JOIN main.gogoke_v37_rpc_steps s
+             ON s.domain_id=e.domain_id AND s.session_id=e.session_id
+            AND s.open_request_id=e.request_id
+            AND s.process_operation_id=e.process_operation_id
+            AND s.generation=e.generation
+            AND s.ticket=c.ticket AND s.custodian_nonce=c.custodian_nonce
+           JOIN main.v37_ledger_raw_source r
+             ON r.operation_id=s.process_operation_id
+            AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+            AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+            AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+            AND r.generation=s.generation
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+            AND e.raw_hex=?4 AND e.process_operation_id=?5
+            AND e.generation=?6 AND e.old_generation IS NULL
+            AND i.driver_id='claude' AND i.version='2.1.196'
+            AND ((e.phase='STOPPED' AND c.state='STOPPED'
+                  AND e.stop_fact_id IS NOT NULL
+                  AND e.stop_fact_id=c.stop_proof_hash)
+              OR (e.phase IN ('ACTIVE','UNKNOWN')
+                  AND c.state IN ('ACTIVE','UNKNOWN')))
+            AND s.step_id=?7 AND s.phase='OBSERVED' AND s.requires_response=1
+            AND r.state='NO_EVENT' AND r.no_event_reason=?8")?;
+    for (index, value) in [domain_id, session_id, open_request_id,
+        open_hex.as_str(), process_operation_id, generation, step_id.as_str(),
+        CLAUDE_ACK_NO_EVENT].iter().enumerate() {
+        observed.bind_text((index + 1) as i32, value)?;
+    }
+    if !observed.step_row()? { return Ok(None); }
+    let command = unhex(&observed.column_text(0)?)?;
+    let response = unhex(&observed.column_text(1)?)?;
+    if observed.step_row()? { return Err(RpcJournalError::Conflict); }
+    if command != expected { return Err(RpcJournalError::Denied); }
+    let observation = stream_json::decode_claude_line(&response)
+        .map_err(|_| RpcJournalError::Denied)?;
+    if !matches!(&observation, stream_json::ClaudeData::ControlResponse {
+        request_id: found, .. } if found == &request_id) {
+        return Err(RpcJournalError::Denied);
+    }
+    Ok(Some(observation))
 }
 
 #[derive(Debug, Eq, PartialEq)]

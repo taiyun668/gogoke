@@ -1,5 +1,5 @@
 //! Fixed non-Codex CLI login under the existing User action and process custody.
-//! Account state comes only from an independent command of that exact CLI.
+//! Account state comes from fixed CLI evidence under the original custody.
 
 use super::*;
 use crate::store::instance::provider_login::{
@@ -42,6 +42,79 @@ fn classify_status(
     }
 }
 
+fn strip_csi_colors(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            result.push(ch);
+            continue;
+        }
+        if chars.next()? != '[' {
+            return None;
+        }
+        let mut length = 0;
+        loop {
+            let next = chars.next()?;
+            if next == 'm' {
+                break;
+            }
+            if !next.is_ascii_digit() && next != ';' {
+                return None;
+            }
+            length += 1;
+            if length > 32 {
+                return None;
+            }
+        }
+    }
+    Some(result)
+}
+
+fn classify_opencode_credential_list(stdout: &[u8], exit: Option<u32>) -> NativeAccountState {
+    if exit != Some(0) {
+        return NativeAccountState::Unknown;
+    }
+    let Some(text) = strip_csi_colors(stdout) else {
+        return NativeAccountState::Unknown;
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect();
+    // The fixed 1.18.32 executable's empty-home output, after removing only
+    // CSI color escapes. A nonzero credential count does not identify the
+    // provider ID: the CLI prints its display name, so keep it UNKNOWN until
+    // a positive fixed-byte observation establishes an unambiguous shape.
+    if lines.len() == 3
+        && lines[0].starts_with("T  Credentials ")
+        && lines[1] == "|"
+        && lines[2] == "—  0 credentials"
+    {
+        NativeAccountState::LoggedOut
+    } else {
+        NativeAccountState::Unknown
+    }
+}
+
+/// The pinned OpenCode browser callback stores the OpenAI OAuth credential
+/// before Clack prints this complete, LF-terminated spinner stop line. The
+/// caller must separately prove the original prepared process stopped at zero
+/// without cancellation or capture failure. A fragment or generic exit zero
+/// never establishes account state.
+pub(super) fn opencode_login_success_frame(frame: &[u8]) -> bool {
+    [
+        b"o  Login successful\n".as_slice(),
+        "◇  Login successful\n".as_bytes(),
+        b"\x1b[32mo\x1b[39m  Login successful\n".as_slice(),
+        "\x1b[32m◇\x1b[39m  Login successful\n".as_bytes(),
+    ]
+    .iter()
+    .any(|suffix| frame.ends_with(suffix))
+}
+
 fn partial_frame_end(error: &ProcessCustodyError) -> bool {
     match error {
         ProcessCustodyError::ProtocolPipe(source) => matches!(
@@ -54,6 +127,32 @@ fn partial_frame_end(error: &ProcessCustodyError) -> bool {
 }
 
 impl<'root> ProductDatabase<'root> {
+    pub(super) fn cleanup_confirmed_provider_login_runtime(
+        &mut self,
+        instance_id: &str,
+        driver: &str,
+        expected_home: &RootIdentity,
+        runtime: &Path,
+        runtime_identity: &RootIdentity,
+    ) -> Result<()> {
+        let home = instance::provider_login::resolve_registered_login_home(
+            &mut self.connection,
+            self.root,
+            &self.owner,
+            instance_id,
+            driver,
+        )
+        .map_err(|error| {
+            OrchestrationError::V37StoreFailure(format!(
+                "provider login cleanup registered home: {error:?}"
+            ))
+        })?;
+        if &home.identity != expected_home || runtime.parent() != Some(home.path.as_path()) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        remove_owned_runtime(runtime, runtime_identity)
+    }
+
     /// Add the current unfinished bytes only to this response snapshot. The
     /// reader still owns them and a later complete LF frame replaces them.
     pub(super) fn provider_display_output(&self, active: &ActiveOwnerLogin) -> String {
@@ -78,8 +177,9 @@ impl<'root> ProductDatabase<'root> {
         &self,
         prepared: &PreparedCustody,
         mut output: Vec<u8>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(Vec<u8>, bool)> {
         let mut finished = false;
+        let mut opencode_completion = false;
         for _ in 0..1024 {
             match self
                 .process_custodian
@@ -92,6 +192,7 @@ impl<'root> ProductDatabase<'root> {
                     if output.len().saturating_add(frame.bytes().len()) > 65_536 {
                         return Err(OrchestrationError::Invalid("provider stdout limit"));
                     }
+                    opencode_completion |= opencode_login_success_frame(frame.bytes());
                     output.extend_from_slice(frame.bytes());
                 }
                 Ok(None) => {
@@ -115,13 +216,16 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("provider stdout limit"));
         }
         output.extend_from_slice(&fragment);
-        Ok(output)
+        Ok((output, opencode_completion))
     }
 
     pub(super) fn append_provider_final_stdout(&self, active: &mut ActiveOwnerLogin) -> Result<()> {
-        let bytes = self.collect_provider_stopped_stdout(&active.prepared, Vec::new())?;
+        let (bytes, completion) = self.collect_provider_stopped_stdout(&active.prepared, Vec::new())?;
         if active.output.len().saturating_add(bytes.len()) > 65_536 {
             return Err(OrchestrationError::Invalid("owner login output limit"));
+        }
+        if active.provider.as_ref().is_some_and(|provider| provider.driver_id == "opencode") {
+            active.provider_completion_frame |= completion;
         }
         active.output.push_str(&String::from_utf8_lossy(&bytes));
         Ok(())
@@ -166,6 +270,8 @@ impl<'root> ProductDatabase<'root> {
             account_read: provider.login.clone(), // unused for this CLI
             runtime_home: runtime,
             runtime_identity,
+            registered_driver: provider.driver_id.clone(),
+            registered_home_identity: provider.home.identity.clone(),
         };
         let reply = self.start_owner_device_login(command, launch, |custodian, prepared| {
             custodian.activate(prepared)
@@ -183,6 +289,7 @@ impl<'root> ProductDatabase<'root> {
         &mut self,
         command: &OwnerLoginCommand,
         provider: PreparedProviderLogin,
+        original_completion: bool,
     ) -> Result<String> {
         // Login may have spent minutes in a browser. Resolve F and the catalog
         // again before starting a second CLI process in that home.
@@ -202,25 +309,49 @@ impl<'root> ProductDatabase<'root> {
             || fresh.version != provider.version
             || fresh.program_digest != provider.program_digest
             || fresh.login.binding.generation != provider.login.binding.generation
+            || fresh.browser != provider.browser
         {
             return Err(OrchestrationError::AccessDenied);
         }
-        let state = match &fresh.status {
+        let state = if original_completion && fresh.driver_id == "opencode" {
+            NativeAccountState::CredentialPresent
+        } else { match &fresh.status {
             StatusObservation::Unknown(_) => NativeAccountState::Unknown,
             StatusObservation::Documented(status) => {
-                self.observe_provider_status(command, status)?
+                let (bytes, exit) = self.observe_provider_status(command, &status.request)?;
+                classify_status(&bytes, exit, status.logged_in_exit, status.logged_out_exit)
             }
-        };
-        self.record_provider_state(command, &fresh, state)
+            StatusObservation::OpenCodeCredentialList(request) => {
+                let (bytes, exit) = self.observe_provider_status(command, request)?;
+                classify_opencode_credential_list(&bytes, exit)
+            }
+        }};
+        if state == NativeAccountState::Unknown && fresh.driver_id == "opencode" {
+            let row = self.read_registered_instance(&command.instance_id)?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if row.revision == command.expected_revision
+                && row.driver_id == fresh.driver_id
+                && row.version == fresh.version
+                && row.program_digest == fresh.program_digest
+                && row.login_state == "LOGGED_IN"
+                && self.current_login_observation(&command.instance_id, row.revision,
+                    &row.login_state)? {
+                return Ok("LOGGED_IN".into());
+            }
+        }
+        let source = if original_completion && fresh.driver_id == "opencode" {
+            "owner-login-opencode-cli-completion"
+        } else { "owner-login-provider-status" };
+        self.record_provider_state(command, &fresh, state, source)
     }
 
     fn observe_provider_status(
         &mut self,
         command: &OwnerLoginCommand,
-        status: &instance::provider_login::PreparedStatusObservation,
-    ) -> Result<NativeAccountState> {
+        request: &PrepareRequest,
+    ) -> Result<(Vec<u8>, Option<u32>)> {
         let operation_id = status_operation_id(command);
-        let prepared = match self.process_custodian.prepare(&status.request) {
+        let prepared = match self.process_custodian.prepare(request) {
             Ok(prepared) => prepared,
             Err(error) => return Err(OrchestrationError::Process(error)),
         };
@@ -229,9 +360,12 @@ impl<'root> ProductDatabase<'root> {
             prepared: Some(prepared.clone()),
             runtime_home: None,
             runtime_identity: None,
+            registered_driver: None,
+            registered_home_identity: None,
             proof,
             durable_revision: None,
             abort_prepared,
+            released: false,
             frame: None,
             request: None,
         };
@@ -329,7 +463,7 @@ impl<'root> ProductDatabase<'root> {
             }
         };
         let stdout = match output {
-            Ok(prefix) => self.collect_provider_stopped_stdout(&prepared, prefix),
+            Ok(prefix) => self.collect_provider_stopped_stdout(&prepared, prefix).map(|(bytes, _)| bytes),
             Err(error) => Err(OrchestrationError::V37StoreFailure(error)),
         };
         let revision =
@@ -378,14 +512,9 @@ impl<'root> ProductDatabase<'root> {
         }
         let bytes = stdout?;
         if !exited.map_err(OrchestrationError::V37StoreFailure)? {
-            return Ok(NativeAccountState::Unknown);
+            return Ok((bytes, None));
         }
-        Ok(classify_status(
-            &bytes,
-            proof.exit_code,
-            status.logged_in_exit,
-            status.logged_out_exit,
-        ))
+        Ok((bytes, proof.exit_code))
     }
 
     fn record_provider_state(
@@ -393,6 +522,7 @@ impl<'root> ProductDatabase<'root> {
         command: &OwnerLoginCommand,
         provider: &PreparedProviderLogin,
         state: NativeAccountState,
+        source: &str,
     ) -> Result<String> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let current = self.user_instance_revision(&command.instance_id)?;
@@ -413,8 +543,7 @@ impl<'root> ProductDatabase<'root> {
         }
         let request = V37Request {
             raw_bytes: format!(
-                "owner-login-provider-status:{}:{}",
-                command.instance_id, command.request_id
+                "{source}:{}:{}", command.instance_id, command.request_id
             )
             .into_bytes(),
             family: "K-INSTANCE".into(),
@@ -466,6 +595,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opencode_completion_requires_the_fixed_complete_spinner_line() {
+        for line in [
+            b"o  Login successful\n".as_slice(),
+            "◇  Login successful\n".as_bytes(),
+            b"\x1b[32mo\x1b[39m  Login successful\n".as_slice(),
+            "\x1b[32m◇\x1b[39m  Login successful\n".as_bytes(),
+        ] {
+            assert!(opencode_login_success_frame(line));
+        }
+        for line in [
+            b"o  Login successful".as_slice(),
+            b"o  Login failed\n".as_slice(),
+            b"Login successful\n".as_slice(),
+            b"\x1b[32mo\x1b[39m  Login successful\r\n".as_slice(),
+        ] {
+            assert!(!opencode_login_success_frame(line));
+        }
+    }
+
+    #[test]
     fn status_needs_matching_fixed_exit_and_boolean() {
         assert_eq!(
             classify_status(br#"{"loggedIn":true,"account":"private"}"#, Some(0), 0, 1),
@@ -487,5 +636,29 @@ mod tests {
                 NativeAccountState::Unknown
             );
         }
+    }
+
+    #[test]
+    fn fixed_opencode_empty_inventory_is_logout_without_reading_auth_file() {
+        let original = b"\x1b[90mT\x1b[39m  Credentials \x1b[90m~\\.local\\share\\opencode\\auth.json\n\x1b[90m|\x1b[39m\n\x1b[90m\xe2\x80\x94\x1b[39m  0 credentials\n\n";
+        assert_eq!(
+            classify_opencode_credential_list(original, Some(0)),
+            NativeAccountState::LoggedOut
+        );
+        assert_eq!(
+            classify_opencode_credential_list(original, Some(1)),
+            NativeAccountState::Unknown
+        );
+        assert_eq!(
+            classify_opencode_credential_list(b"OpenAI oauth\n1 credentials\n", Some(0)),
+            NativeAccountState::Unknown
+        );
+        assert_eq!(
+            classify_opencode_credential_list(
+                b"T  Credentials isolated\n|\n|  OpenAI oauth\n\xe2\x80\x94  0 credentials\n",
+                Some(0)
+            ),
+            NativeAccountState::Unknown
+        );
     }
 }

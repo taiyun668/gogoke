@@ -324,6 +324,11 @@ impl<'root> ProductDatabase<'root> {
                 request_id:&id,session_id:&key.1,ticket,generation}).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native input fact: {error:?}")))?
                 .ok_or(OrchestrationError::OperationConflict)?;
+            if matches!(run.evidence.driver_id(),"opencode"|"grok") {
+                self.verify_acp_input_receipt(&record)?;
+            } else if run.evidence.driver_id()=="claude" {
+                self.verify_claude_input_receipt(&record)?;
+            }
             let receipt=if let Some(bytes)=record.receipt_bytes {
                 Parser::parse(std::str::from_utf8(&bytes).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("native input receipt UTF-8: {error}")))?)?
@@ -391,6 +396,10 @@ impl<'root> ProductDatabase<'root> {
         if matches!(driver.as_str(),"opencode"|"grok") {
             self.complete_pending_native_acp_send(key)?;
         }
+        if driver=="claude" {self.complete_pending_native_claude_send(key)?;}
+        let thread_id=if driver=="claude" {
+            self.native_sessions.get(key).and_then(|run|run.thread_id.clone())
+        } else {thread_id};
         let Some(thread_id)=thread_id else {return Ok(());};
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;

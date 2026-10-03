@@ -18,6 +18,8 @@ pub(crate) enum StreamJsonError {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ClaudeData {
     Init { session_id: String, model: Option<String> },
+    ControlResponse { request_id: String, success: bool },
+    UserReplay { session_id: String, uuid: String, text: String },
     Result { session_id: String, subtype: String, is_error: bool },
     ControlRequest { request_id: Option<String>, subtype: Option<String> },
     Unhandled { frame_type: Option<String> },
@@ -75,6 +77,49 @@ pub(crate) fn decode_claude_line(line: &[u8]) -> Result<ClaudeData, StreamJsonEr
             };
             Ok(ClaudeData::Result { session_id, subtype, is_error })
         }
+        Some("control_response") => {
+            let Some(Json::Object(response)) = root.get(&key("response")) else {
+                return Err(StreamJsonError::Invalid("control_response.response"));
+            };
+            let request_id = required_id(response, "request_id")?;
+            let subtype = required_id(response, "subtype")?;
+            Ok(ClaudeData::ControlResponse {
+                request_id, success: subtype == "success",
+            })
+        }
+        Some("user") => {
+            if !matches!(root.get(&key("parent_tool_use_id")), None | Some(Json::Null)) {
+                return Ok(ClaudeData::Unhandled { frame_type });
+            }
+            let Some(Json::Object(message)) = root.get(&key("message")) else {
+                return Ok(ClaudeData::Unhandled { frame_type });
+            };
+            if optional_string(message, "role").ok().flatten().as_deref() != Some("user") {
+                return Ok(ClaudeData::Unhandled { frame_type });
+            }
+            let text = match message.get(&key("content")) {
+                Some(Json::String(value)) => well_formed(value).ok(),
+                Some(Json::Array(parts)) if parts.len() == 1 => {
+                    let Json::Object(part) = &parts[0] else {
+                        return Ok(ClaudeData::Unhandled { frame_type });
+                    };
+                    if optional_string(part, "type").ok().flatten().as_deref() != Some("text") {
+                        return Ok(ClaudeData::Unhandled { frame_type });
+                    }
+                    required_id(part, "text").ok()
+                }
+                _ => return Ok(ClaudeData::Unhandled { frame_type }),
+            };
+            let Some(text)=text.filter(|text|!text.is_empty()&&!text.contains('\0'))
+                else {return Ok(ClaudeData::Unhandled {frame_type})};
+            let Ok(session_id) = required_id(&root, "session_id") else {
+                return Ok(ClaudeData::Unhandled { frame_type });
+            };
+            let Ok(uuid) = required_id(&root, "uuid") else {
+                return Ok(ClaudeData::Unhandled { frame_type });
+            };
+            Ok(ClaudeData::UserReplay { session_id, uuid, text })
+        }
         Some("control_request") => {
             let request_id = optional_string(&root, "request_id")?;
             let subtype = match root.get(&key("request")) {
@@ -85,6 +130,28 @@ pub(crate) fn decode_claude_line(line: &[u8]) -> Result<ClaudeData, StreamJsonEr
         }
         _ => Ok(ClaudeData::Unhandled { frame_type }),
     }
+}
+
+/// Recognize only the published SDK's pure tool-result User shape. The raw
+/// frame remains Unhandled output and can never acknowledge Host stdin.
+pub(crate) fn is_claude_tool_result_line(line: &[u8]) -> bool {
+    let Ok(root) = parse_object(line) else { return false; };
+    if optional_string(&root, "type").ok().flatten().as_deref() != Some("user")
+        || required_id(&root, "session_id").is_err()
+        || optional_id(&root, "parent_tool_use_id").is_err() {
+        return false;
+    }
+    let Some(Json::Object(message)) = root.get(&key("message")) else { return false; };
+    if optional_string(message, "role").ok().flatten().as_deref() != Some("user") {
+        return false;
+    }
+    let Some(Json::Array(parts)) = message.get(&key("content")) else { return false; };
+    !parts.is_empty() && parts.iter().all(|part| match part {
+        Json::Object(block) =>
+            optional_string(block, "type").ok().flatten().as_deref()
+                == Some("tool_result") && required_id(block, "tool_use_id").is_ok(),
+        _ => false,
+    })
 }
 
 pub(crate) fn decode_antigravity_line(line: &[u8]) -> Result<AntigravityData, StreamJsonError> {
@@ -199,3 +266,34 @@ fn required_id(fields: &BTreeMap<JsonString, Json>, name: &str)
 // third_party/t3code/apps/server/src/gogoke/adapters/{claude,antigravity}/;
 // https://code.claude.com/docs/en/headless
 // https://antigravity.google/docs/cli/headless/ (fixed adapter pin: 1.2.11).
+
+#[cfg(test)]
+mod claude_ack_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_original_user_echo_is_a_user_replay_candidate() {
+        let init = br#"{"type":"control_response","response":{"subtype":"success","request_id":"original-init","response":{}}}"#;
+        assert_eq!(decode_claude_line(init).ok(), Some(ClaudeData::ControlResponse {
+            request_id: "original-init".into(), success: true,
+        }));
+        let echo = br#"{"type":"user","session_id":"native-session","uuid":"user-uuid","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#;
+        assert_eq!(decode_claude_line(echo).ok(), Some(ClaudeData::UserReplay {
+            session_id: "native-session".into(), uuid: "user-uuid".into(), text: "hello".into(),
+        }));
+        let untagged = br#"{"type":"user","session_id":"native-session","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#;
+        assert!(matches!(decode_claude_line(untagged),
+            Ok(ClaudeData::Unhandled { frame_type: Some(kind) }) if kind=="user"));
+        let tool = br#"{"type":"user","session_id":"native-session","parent_tool_use_id":"tool-1","message":{"role":"user","content":[{"type":"tool_result","content":"done"}]}}"#;
+        assert!(matches!(decode_claude_line(tool), Ok(ClaudeData::Unhandled { .. })));
+        let tool_result = br#"{"type":"user","session_id":"native-session","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"done"}]}}"#;
+        assert!(is_claude_tool_result_line(tool_result));
+        assert!(matches!(decode_claude_line(tool_result), Ok(ClaudeData::Unhandled { .. })));
+        let mixed = br#"{"type":"user","session_id":"native-session","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1"},{"type":"text","text":"another user"}]}}"#;
+        assert!(matches!(decode_claude_line(mixed),
+            Ok(ClaudeData::Unhandled { frame_type: Some(kind) }) if kind=="user"));
+        assert!(!is_claude_tool_result_line(mixed));
+        let terminal = br#"{"type":"result","session_id":"native-session","subtype":"success","is_error":false}"#;
+        assert!(matches!(decode_claude_line(terminal), Ok(ClaudeData::Result { .. })));
+    }
+}

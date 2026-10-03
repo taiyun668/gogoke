@@ -16,6 +16,10 @@ pub(crate) mod provider_evidence;
 pub(crate) use wire::{decode_receipt, decode_request, encode_receipt, V37Receipt, V37Request,
     V37Status, V37WireError};
 pub(crate) use journal::{complete_stdin_request, mark_stdin_write_unknown,
+    ClaudeSendInput, ClaudeSendIdentity, prepare_claude_send_request,
+    mark_claude_send_written, mark_claude_send_write_unknown,
+    observe_claude_send_echo_from_source, complete_claude_send_from_source,
+    read_original_claude_send_completed,
     AcpSendInput, AcpSendIdentity, prepare_acp_send_request,
     complete_acp_send_from_source, read_acp_send_completed,
     mark_acp_send_written, mark_acp_send_write_unknown,

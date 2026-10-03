@@ -43,7 +43,7 @@ pub(crate) struct LoginView {
     settled: bool,
 }
 #[derive(Clone)]
-struct LoginRecord { view: LoginView, cancel_requested: bool, settled: bool }
+struct LoginRecord { view: LoginView, driver_id: String, cancel_requested: bool, settled: bool }
 type Sessions = Arc<Mutex<BTreeMap<String, LoginRecord>>>;
 fn sessions() -> &'static Sessions {
     static SESSIONS: OnceLock<Sessions> = OnceLock::new();
@@ -129,9 +129,16 @@ fn device_code(text: &str) -> Option<String> {
 // The fixed CLI prints its ordinary OAuth URL as a complete stderr line.
 // Follow Room's login pattern: use the URL from this login process. A partial
 // line must never open a syntactically valid but incomplete OAuth request.
-fn authorization_url(text: &str) -> Option<String> {
+fn authorization_url(text: &str, driver_id: &str) -> Option<String> {
+    // Browser ownership follows the original registered fixed CLI, never a
+    // URL in generic output. Claude/Grok own their browser launch. OpenCode's
+    // builtin OpenAI browser flow prints its URL but does not open a browser.
+    if !matches!(driver_id,"codex"|"opencode") { return None; }
     text.split_inclusive('\n').filter(|line| line.ends_with('\n')).find_map(|line| {
-        let candidate = line.trim();
+        let candidate = if driver_id=="opencode" {
+            line.trim().trim_start_matches(|ch:char|matches!(ch,'│'|' '| '\t'))
+                .strip_prefix("Go to: ")?.trim()
+        } else { line.trim() };
         let url = reqwest::Url::parse(candidate).ok()?;
         if url.scheme() != "https" || url.host_str() != Some("auth.openai.com")
             || !url.username().is_empty() || url.password().is_some()
@@ -139,7 +146,7 @@ fn authorization_url(text: &str) -> Option<String> {
         {
             return None;
         }
-        if url.path() == "/oauth/authorize" || candidate == AUTHORIZATION_URL {
+        if url.path() == "/oauth/authorize" || (driver_id=="codex" && candidate == AUTHORIZATION_URL) {
             Some(candidate.to_owned())
         } else {
             None
@@ -150,10 +157,12 @@ fn apply_reply(sessions: &Sessions, id: &str, request: &str, action: &str, reply
     let mut map = lock_sessions(sessions)?;
     let record = same_record(&mut map, id, request)?;
     record.view.output = display_text(&reply.output);
-    record.view.device_code = device_code(&record.view.output);
     if record.view.authorization_url.is_none() {
-        record.view.authorization_url = authorization_url(&record.view.output);
+        record.view.authorization_url = authorization_url(&record.view.output,&record.driver_id);
     }
+    record.view.device_code = if record.view.authorization_url.as_deref()==Some(AUTHORIZATION_URL) {
+        device_code(&record.view.output)
+    } else { None };
     record.settled = reply.settled;
     record.view.settled = reply.settled;
     record.view.state = if action == "cancel" && reply.settled && reply.state == "LOGGED_OUT" {
@@ -180,7 +189,7 @@ fn save_error(sessions: &Sessions, id: &str, request: &str, error: String) -> Re
     Ok(())
 }
 
-fn reserve_login(sessions: &Sessions, id: &str, revision: u64) -> Result<Option<LoginView>, String> {
+fn reserve_login(sessions: &Sessions, id: &str, revision: u64, driver_id: &str) -> Result<Option<LoginView>, String> {
     let mut map = lock_sessions(sessions)?;
     if let Some(record) = map.get(id) {
         if record.view.state == "PENDING" { return Ok(None); }
@@ -195,7 +204,7 @@ fn reserve_login(sessions: &Sessions, id: &str, revision: u64) -> Result<Option<
         started_at:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| format!("GOGOKE_INSTANCE_CLOCK_FAILED:{error}"))?.as_millis() as u64,
         settled:false };
-    map.insert(id.to_owned(), LoginRecord { view:view.clone(), cancel_requested:false, settled:false });
+    map.insert(id.to_owned(), LoginRecord { view:view.clone(), driver_id:driver_id.to_owned(), cancel_requested:false, settled:false });
     Ok(Some(view))
 }
 
@@ -222,7 +231,8 @@ async fn drive<E: LoginEnvironment>(environment: Arc<E>, sessions: Sessions, id:
         let should_open = {
             let mut map = lock_sessions(&sessions)?;
             let record = same_record(&mut map, &id, &original.request_id)?;
-            if pending && record.view.authorization_url.is_some() && record.view.browser_state == "NOT_REQUESTED" && !record.cancel_requested {
+            if pending && matches!(record.driver_id.as_str(),"codex"|"opencode") && record.view.authorization_url.is_some()
+                && record.view.browser_state == "NOT_REQUESTED" && !record.cancel_requested {
                 record.view.browser_state = "OPENED".into(); record.view.authorization_url.clone()
             } else { None }
         };
@@ -283,7 +293,7 @@ pub(crate) async fn gogoke_design37_instance_login(app: tauri::AppHandle, instan
     let current = gogoke_design37_instances(app.clone()).await?;
     let item = current.instances.iter().find(|i| i.instance_id == instance_id).ok_or("GOGOKE_INSTANCE_NOT_REGISTERED")?;
     let revision = item.revision.parse().map_err(|error| format!("GOGOKE_INSTANCE_REVISION_INVALID:{error}"))?;
-    let Some(view) = reserve_login(sessions(), &instance_id, revision)? else { return Ok(current) };
+    let Some(view) = reserve_login(sessions(), &instance_id, revision, &item.driver_id)? else { return Ok(current) };
     let environment = Arc::new(InstalledEnvironment(app.clone()));
     let records = Arc::clone(sessions());
     tauri::async_runtime::spawn(async move {
@@ -342,8 +352,8 @@ mod tests {
     fn host_drives_login_without_ui_then_same_session_result_survives_new_reads() {
         runtime().block_on(async {
             let sessions = broker();
-            let original = reserve_login(&sessions, "instanceA", 2).unwrap().unwrap();
-            assert!(reserve_login(&sessions, "instanceA", 2).unwrap().is_none());
+            let original = reserve_login(&sessions,"instanceA",2,"codex").unwrap().unwrap();
+            assert!(reserve_login(&sessions,"instanceA",2,"codex").unwrap().is_none());
             let url = "https://auth.openai.com/oauth/authorize?client_id=test-client&state=test-state&code_challenge=test-challenge&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
             let environment = fake(vec![Ok(("PENDING", "https://auth.openai.com/oauth/authorize?client_id=test-client&state=test-state&code_challenge=test-challenge&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback\n", false)),
                 Ok(("LOGGED_IN", "Successfully logged in", true))]);
@@ -365,7 +375,7 @@ mod tests {
     #[test]
     fn original_failure_is_kept_and_settled_readback_does_not_restart_login() {
         runtime().block_on(async {
-            let sessions = broker(); let original = reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+            let sessions = broker(); let original = reserve_login(&sessions,"instanceA",2,"codex").unwrap().unwrap();
             let reason = "original CLI exit2; STDERR_TAIL: unrecognized argument";
             let environment = fake(vec![Err(reason.into()), Ok(("UNKNOWN",reason,true))]);
             drive(Arc::clone(&environment),Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
@@ -376,26 +386,26 @@ mod tests {
                 assert_eq!(view.instances[0].login.as_ref().unwrap().request_id,original.request_id);
             }
             assert_eq!(environment.actions.lock().unwrap().len(),2);
-            assert!(reserve_login(&sessions,"instanceA",2).unwrap().is_some());
+            assert!(reserve_login(&sessions,"instanceA",2,"codex").unwrap().is_some());
         });
     }
     #[test]
     fn uncertain_original_failure_keeps_observing_the_same_request_until_settled() {
         runtime().block_on(async {
-            let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+            let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2,"codex").unwrap().unwrap();
             save_error(&sessions,"instanceA",&original.request_id,"pipe closed".into()).unwrap();
-            assert!(reserve_login(&sessions,"instanceA",2).err().unwrap().contains("UNCONFIRMED"));
+            assert!(reserve_login(&sessions,"instanceA",2,"codex").err().unwrap().contains("UNCONFIRMED"));
             let environment=fake(vec![Err("pipe closed".into()),Err("original status unavailable".into()),Ok(("UNKNOWN","original cause",true))]);
             drive(Arc::clone(&environment),Arc::clone(&sessions),"instanceA".into(),original.clone()).await.unwrap();
             assert_eq!(sessions.lock().unwrap()["instanceA"].view.request_id,original.request_id);
             assert_eq!(sessions.lock().unwrap()["instanceA"].view.error.as_deref(),Some("pipe closed"));
             assert_eq!(environment.actions.lock().unwrap().len(),3);
-            assert!(reserve_login(&sessions,"instanceA",2).unwrap().is_some());
+            assert!(reserve_login(&sessions,"instanceA",2,"codex").unwrap().is_some());
         });
     }
     #[test]
     fn cancellation_intent_cannot_overwrite_a_successful_original_result() {
-        let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+        let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2,"codex").unwrap().unwrap();
         sessions.lock().unwrap().get_mut("instanceA").unwrap().cancel_requested=true;
         for action in ["status","cancel"] {
             save_error(&sessions,"instanceA",&original.request_id,"earlier transport failure".into()).unwrap();
@@ -410,7 +420,7 @@ mod tests {
     #[test]
     fn cancel_uses_the_original_request_and_survives_a_new_page_read() {
         runtime().block_on(async {
-            let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2).unwrap().unwrap();
+            let sessions=broker(); let original=reserve_login(&sessions,"instanceA",2,"codex").unwrap().unwrap();
             sessions.lock().unwrap().get_mut("instanceA").unwrap().cancel_requested=true;
             save_error(&sessions,"instanceA",&original.request_id,"prior stop observation failed".into()).unwrap();
             let environment=fake(vec![Ok(("PENDING","",false)),Ok(("LOGGED_OUT","",true))]);
@@ -420,7 +430,7 @@ mod tests {
             drop(actions);
             assert_eq!(page(environment.as_ref(),&sessions).await.unwrap().instances[0].login.as_ref().unwrap().state,"CANCELLED");
             assert!(sessions.lock().unwrap()["instanceA"].view.error.is_none());
-            assert!(reserve_login(&sessions,"instanceA",2).unwrap().is_some(),
+            assert!(reserve_login(&sessions,"instanceA",2,"codex").unwrap().is_some(),
                 "confirmed cancellation must permit a new host-owned request");
         });
     }
@@ -428,7 +438,7 @@ mod tests {
     fn ordinary_oauth_waits_for_complete_url_and_opens_the_original_once() {
         runtime().block_on(async {
             let sessions = broker();
-            let original = reserve_login(&sessions, "instanceA", 2).unwrap().unwrap();
+            let original = reserve_login(&sessions,"instanceA",2,"codex").unwrap().unwrap();
             let url = "https://auth.openai.com/oauth/authorize?state=test-state&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
             let environment = fake(vec![
                 Ok(("PENDING", "Starting local login server on http://localhost:1455.\nhttps://auth.openai.com/oauth/authorize?state=test-", false)),
@@ -436,7 +446,7 @@ mod tests {
                 Ok(("PENDING", "https://auth.openai.com/oauth/authorize?state=test-state&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback\n", false)),
                 Ok(("LOGGED_IN", "Successfully logged in", true)),
             ]);
-            assert!(authorization_url("https://auth.openai.com/oauth/authorize?state=test-").is_none());
+            assert!(authorization_url("https://auth.openai.com/oauth/authorize?state=test-","codex").is_none());
             drive(Arc::clone(&environment), Arc::clone(&sessions), "instanceA".into(), original.clone()).await.unwrap();
             assert_eq!(environment.opened_urls.lock().unwrap().as_slice(), &[url.to_owned()]);
             let reopened = page(environment.as_ref(), &sessions).await.unwrap();
@@ -459,9 +469,17 @@ mod tests {
             "https://auth.openai.com/oauth/authorize?state=test#fragment\n",
             "https://auth.openai.com/docs\n",
         ] {
-            assert!(authorization_url(invalid).is_none(), "must not open: {invalid}");
+            assert!(authorization_url(invalid,"codex").is_none(), "must not open: {invalid}");
         }
-        assert_eq!(authorization_url(&format!("{AUTHORIZATION_URL}\n")).as_deref(), Some(AUTHORIZATION_URL));
+        assert_eq!(authorization_url(&format!("{AUTHORIZATION_URL}\n"),"codex").as_deref(), Some(AUTHORIZATION_URL));
+        let oauth="https://auth.openai.com/oauth/authorize?state=original-state";
+        assert_eq!(authorization_url(&format!("│  Go to: {oauth}\n"),"opencode").as_deref(),Some(oauth));
+        assert!(authorization_url(&format!("│  Go to: {oauth}"),"opencode").is_none());
+        assert!(authorization_url(&format!("{oauth}\n"),"opencode").is_none());
+        for driver in ["claude","grok","antigravity","unknown"] {
+            assert!(authorization_url(&format!("{oauth}\n"),driver).is_none());
+            assert!(authorization_url(&format!("│  Go to: {oauth}\n"),driver).is_none());
+        }
         assert!(decode_login(r#"{"schema":"gogoke.37.owner-login.v1","instanceId":"other","requestId":"r","state":"PENDING","output":"","settled":false}"#,"instanceA","r").is_err());
     }
 }

@@ -238,6 +238,12 @@ pub(crate) fn claude(frame: &[u8], bound_session: &str, bound_thread: &str)
             check_binding(frame, &session_id, bound_session)?;
             Ok(Output::Terminal { reason: subtype, reported_error: Some(is_error) })
         }
+        // These are original H input/control acknowledgements, not model
+        // messages. H consumes their captured A source before projection.
+        stream_json::ClaudeData::ControlResponse { .. } =>
+            Ok(Output::Unhandled { method:"control_response".into(),raw_frame:frame.to_vec() }),
+        stream_json::ClaudeData::UserReplay { .. } =>
+            Ok(Output::Unhandled { method:"user_replay".into(),raw_frame:frame.to_vec() }),
         stream_json::ClaudeData::ControlRequest { request_id, subtype } =>
             Ok(Output::Unhandled { method: format!("control_request/{:?}/{:?}", subtype, request_id),
                 raw_frame: frame.to_vec() }),
@@ -361,6 +367,8 @@ pub(crate) fn acp(frame: &[u8], provider: Provider, bound_session: &str, bound_t
             if let Some(id) = echoed_session_id { check_binding(frame, &id, bound_session)?; }
             Ok(Output::SessionData { method: "session/resume", value_json: result.canonical() })
         }
+        acp::Observation::SessionConfigOption { result, .. } =>
+            Ok(Output::SessionData { method: "session/set_config_option", value_json: result.canonical() }),
         acp::Observation::Initialize { result, .. } =>
             Ok(Output::SessionData { method: "initialize", value_json: result.canonical() }),
         acp::Observation::Unhandled { raw_frame } => {
