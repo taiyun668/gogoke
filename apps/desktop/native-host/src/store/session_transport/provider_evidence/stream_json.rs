@@ -132,6 +132,28 @@ pub(crate) fn decode_claude_line(line: &[u8]) -> Result<ClaudeData, StreamJsonEr
     }
 }
 
+/// Recognize only the published SDK's pure tool-result User shape. The raw
+/// frame remains Unhandled output and can never acknowledge Host stdin.
+pub(crate) fn is_claude_tool_result_line(line: &[u8]) -> bool {
+    let Ok(root) = parse_object(line) else { return false; };
+    if optional_string(&root, "type").ok().flatten().as_deref() != Some("user")
+        || required_id(&root, "session_id").is_err()
+        || optional_id(&root, "parent_tool_use_id").is_err() {
+        return false;
+    }
+    let Some(Json::Object(message)) = root.get(&key("message")) else { return false; };
+    if optional_string(message, "role").ok().flatten().as_deref() != Some("user") {
+        return false;
+    }
+    let Some(Json::Array(parts)) = message.get(&key("content")) else { return false; };
+    !parts.is_empty() && parts.iter().all(|part| match part {
+        Json::Object(block) =>
+            optional_string(block, "type").ok().flatten().as_deref()
+                == Some("tool_result") && required_id(block, "tool_use_id").is_ok(),
+        _ => false,
+    })
+}
+
 pub(crate) fn decode_antigravity_line(line: &[u8]) -> Result<AntigravityData, StreamJsonError> {
     let root = parse_object(line)?;
     let event = required_id(&root, "event")?;
@@ -264,6 +286,13 @@ mod claude_ack_tests {
             Ok(ClaudeData::Unhandled { frame_type: Some(kind) }) if kind=="user"));
         let tool = br#"{"type":"user","session_id":"native-session","parent_tool_use_id":"tool-1","message":{"role":"user","content":[{"type":"tool_result","content":"done"}]}}"#;
         assert!(matches!(decode_claude_line(tool), Ok(ClaudeData::Unhandled { .. })));
+        let tool_result = br#"{"type":"user","session_id":"native-session","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"done"}]}}"#;
+        assert!(is_claude_tool_result_line(tool_result));
+        assert!(matches!(decode_claude_line(tool_result), Ok(ClaudeData::Unhandled { .. })));
+        let mixed = br#"{"type":"user","session_id":"native-session","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1"},{"type":"text","text":"another user"}]}}"#;
+        assert!(matches!(decode_claude_line(mixed),
+            Ok(ClaudeData::Unhandled { frame_type: Some(kind) }) if kind=="user"));
+        assert!(!is_claude_tool_result_line(mixed));
         let terminal = br#"{"type":"result","session_id":"native-session","subtype":"success","is_error":false}"#;
         assert!(matches!(decode_claude_line(terminal), Ok(ClaudeData::Result { .. })));
     }

@@ -1274,7 +1274,8 @@ fn claude_result_is_first_after_echo(connection: &VerifiedDatabaseConnection<'_>
                 | stream_json::ClaudeData::UserReplay { .. }) =>
                     return Err(JournalError::Conflict),
             Ok(stream_json::ClaudeData::Unhandled {frame_type:Some(kind)})
-                if kind=="user" => return Err(JournalError::Conflict),
+                if kind=="user" && !stream_json::is_claude_tool_result_line(&raw) =>
+                    return Err(JournalError::Conflict),
             Ok(_) => {},
             Err(_) => return Err(JournalError::Conflict),
         }
