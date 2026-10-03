@@ -42,6 +42,92 @@ fn classify_status(
     }
 }
 
+fn partial_frame_end(error: &ProcessCustodyError) -> bool {
+    match error {
+        ProcessCustodyError::ProtocolPipe(source) => matches!(
+            source.kind(),
+            std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+        ),
+        ProcessCustodyError::ProtocolEvidence { cause, .. } => partial_frame_end(cause),
+        _ => false,
+    }
+}
+
+impl<'root> ProductDatabase<'root> {
+    /// Add the current unfinished bytes only to this response snapshot. The
+    /// reader still owns them and a later complete LF frame replaces them.
+    pub(super) fn provider_display_output(&self, active: &ActiveOwnerLogin) -> String {
+        let mut output = active.output.clone();
+        match self
+            .process_custodian
+            .persistent_stdout_fragment(&active.prepared.ticket)
+        {
+            Ok(fragment) if output.len().saturating_add(fragment.len()) <= 65_536 => {
+                output.push_str(&String::from_utf8_lossy(&fragment));
+            }
+            Ok(_) => output.push_str("\nprovider stdout display limit"),
+            Err(error) => output.push_str(&format!("\nprovider stdout fragment: {error:?}")),
+        }
+        output
+    }
+
+    /// Called after the exact Job/writer stop proof while custody is retained.
+    /// Complete frames are consumed once; the retained no-LF tail is cloned
+    /// once for final private display. Neither is account-state evidence.
+    fn collect_provider_stopped_stdout(
+        &self,
+        prepared: &PreparedCustody,
+        mut output: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let mut finished = false;
+        for _ in 0..1024 {
+            match self
+                .process_custodian
+                .poll_persistent_child_frame(&prepared.ticket)
+            {
+                Ok(Some(frame)) => {
+                    if frame.custody() != prepared {
+                        return Err(OrchestrationError::AccessDenied);
+                    }
+                    if output.len().saturating_add(frame.bytes().len()) > 65_536 {
+                        return Err(OrchestrationError::Invalid("provider stdout limit"));
+                    }
+                    output.extend_from_slice(frame.bytes());
+                }
+                Ok(None) => {
+                    finished = true;
+                    break;
+                }
+                Err(error) if partial_frame_end(&error) => {
+                    finished = true;
+                    break;
+                }
+                Err(error) => return Err(OrchestrationError::Process(error)),
+            }
+        }
+        if !finished {
+            return Err(OrchestrationError::Invalid("provider stdout frame limit"));
+        }
+        let fragment = self
+            .process_custodian
+            .persistent_stdout_fragment(&prepared.ticket)?;
+        if output.len().saturating_add(fragment.len()) > 65_536 {
+            return Err(OrchestrationError::Invalid("provider stdout limit"));
+        }
+        output.extend_from_slice(&fragment);
+        Ok(output)
+    }
+
+    pub(super) fn append_provider_final_stdout(&self, active: &mut ActiveOwnerLogin) -> Result<()> {
+        let bytes = self.collect_provider_stopped_stdout(&active.prepared, Vec::new())?;
+        if active.output.len().saturating_add(bytes.len()) > 65_536 {
+            return Err(OrchestrationError::Invalid("owner login output limit"));
+        }
+        active.output.push_str(&String::from_utf8_lossy(&bytes));
+        Ok(())
+    }
+}
+
 impl<'root> ProductDatabase<'root> {
     pub(super) fn begin_registered_provider_login(
         &mut self,
@@ -216,6 +302,7 @@ impl<'root> ProductDatabase<'root> {
                 Ok(frame.bytes().to_vec())
             }
             Ok(_) => Err("provider status output custody or size mismatch".to_owned()),
+            Err(error) if partial_frame_end(&error) => Ok(Vec::new()),
             Err(error) => Err(format!("provider status output: {error:?}")),
         };
         let exited = self
@@ -240,6 +327,10 @@ impl<'root> ProductDatabase<'root> {
                 }));
                 return Err(OrchestrationError::Process(error));
             }
+        };
+        let stdout = match output {
+            Ok(prefix) => self.collect_provider_stopped_stdout(&prepared, prefix),
+            Err(error) => Err(OrchestrationError::V37StoreFailure(error)),
         };
         let revision =
             match authority::mark_process_stopped(&mut self.connection, &operation_id, &proof) {
@@ -285,7 +376,7 @@ impl<'root> ProductDatabase<'root> {
             }));
             return Err(error.into());
         }
-        let bytes = output.map_err(OrchestrationError::V37StoreFailure)?;
+        let bytes = stdout?;
         if !exited.map_err(OrchestrationError::V37StoreFailure)? {
             return Ok(NativeAccountState::Unknown);
         }
