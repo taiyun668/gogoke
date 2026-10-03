@@ -210,6 +210,17 @@ impl<'root> ProductDatabase<'root> {
             // INTENT/UNKNOWN does not authorize another stdin write.
             return Ok(false);
         }
+        // Native duplex protocols may deliver a tool call while a preceding
+        // steer/append RPC is still waiting for its ACK. Capture the call in
+        // A now; complete that original RPC before admitting any tool effect.
+        let outstanding=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND ticket=?4 AND custodian_nonce=?5 AND (phase IN ('INTENT','UNKNOWN') OR (phase='WRITTEN' AND requires_response=1)) LIMIT 1")?;
+        for (index,value) in [key_pair.0.as_str(),key_pair.1.as_str(),raw.key.operation_id.as_str(),
+            custody.ticket.opaque(),custody.custodian_nonce.as_str()].iter().enumerate() {
+            outstanding.bind_text((index+1) as i32,value)?;
+        }
+        let wait=outstanding.step_row()?;drop(outstanding);
+        if wait {return Ok(false)};
         let outcome=(||->Result<Vec<u8>> {
             let request=native_request(&caller)?;
             match caller.tool() {
