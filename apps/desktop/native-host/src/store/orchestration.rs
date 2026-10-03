@@ -5,6 +5,7 @@ use super::atomic::{exec, AtomicError, Statement};
 use super::digest::content_hash;
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 use crate::process::ProcessCustodyError;
+use crate::ipc::PrivateIpcError;
 
 #[derive(Debug)]
 pub enum OrchestrationError {
@@ -15,8 +16,12 @@ pub enum OrchestrationError {
     ProjectorRejected(&'static str),
     Fault(FaultPoint),
     CommitUnknown,
+    CommitUnknownWithCause(SameOpenError),
     Atomic(AtomicError),
     Process(ProcessCustodyError),
+    Io(std::io::Error),
+    Ipc(PrivateIpcError),
+    V37StoreFailure(String),
 }
 
 impl std::fmt::Display for OrchestrationError {

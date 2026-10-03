@@ -2,6 +2,27 @@ name: gogoke native-host CI
 
 on:
   workflow_dispatch:
+    inputs:
+      trace_canonicalize:
+        description: Record actual pinned CLI Win32 return values with the existing cloud SDK debugger
+        type: boolean
+        default: false
+      job_descendant_fixture_only:
+        description: Verify the changed real Job descendant fixture only; full library and mutation gates are NOT_RUN
+        type: boolean
+        default: false
+      stop_124_fixture_only:
+        description: Verify the changed natural-exit fixture only; full library and mutation gates are NOT_RUN
+        type: boolean
+        default: false
+      ordinary_oauth_fixture_only:
+        description: Verify ordinary OAuth callback and stderr repairs only; full library, mutation and server gates are NOT_RUN
+        type: boolean
+        default: false
+      code_mode_fixture_only:
+        description: Verify fixed Code Mode file permission binding and its production grant mutation only; full library, other mutations and server gates are NOT_RUN
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,7 +34,11 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     name: Native host Windows real process axes
-    timeout-minutes: 30
+    # Full real-process/library gates and twelve compiled mutation/restore pairs.
+    # R10 adds three independent pairs to the measured eight-pair job workload.
+    # A cold Windows run exhausted 75 minutes during the second R10 restore;
+    # Retain those pairs and the exact Code Mode component grant pair below.
+    timeout-minutes: 105
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
@@ -28,7 +53,30 @@ jobs:
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
           if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
+      - name: Bind F tests to the installed Git backend image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $entry = Get-Command git.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $execPath = & $entry --exec-path
+          if ($LASTEXITCODE -ne 0 -or @($execPath).Count -ne 1) { throw 'Git backend discovery failed' }
+          $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+          $backend = Join-Path $mingw 'bin/git.exe'
+          if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_GIT_PATH=$backend"
+          Write-Output "Git backend SHA256=$((Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash)"
       - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Pin Codex CLI for native instance registration tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@openai/codex@0.160.0'
+          if ($LASTEXITCODE -ne 0) { throw "Codex CLI install failed: $LASTEXITCODE" }
+          $binary = Join-Path $prefix 'node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Pinned Codex CLI image missing' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
       - name: Build native-host release image and check test-hook exclusion
         id: release-build
         shell: pwsh
@@ -64,6 +112,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.code_mode_fixture_only }}' -eq 'true' -and
+              @('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}') -contains 'true') {
+            throw 'Code Mode fixture scope cannot be combined with another directed scope'
+          }
           $manifest = 'apps/desktop/native-host/Cargo.toml'
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -146,7 +198,7 @@ jobs:
             run_attempt = '${{ github.run_attempt }}'
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
-            evidence_scope = 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP'
+            evidence_scope = if ('${{ inputs.code_mode_fixture_only }}' -eq 'true') { 'FOCUSED_CODE_MODE_MEMBER_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
             release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
@@ -157,6 +209,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.code_mode_fixture_only }}' -eq 'true' -and
+              @('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}') -contains 'true') {
+            throw 'Code Mode fixture scope cannot be combined with another directed scope'
+          }
           $PSNativeCommandUseErrorActionPreference = $false
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -165,7 +221,28 @@ jobs:
             @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
             @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
+            @{ id = 'protocol-input-close'; filter = 'native_input_close_delivers_eof_and_preserves_graceful_stop_proof' },
+            @{ id = 'lpac-file-lifecycle'; filter = 'app_container_child_writes_only_granted_fresh_directory' },
+            @{ id = 'bound-instance-acl'; filter = 'bound_nonempty_tree_grants_only_its_recorded_instance_identity' },
+            @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
+            @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
+            @{ id = 'single-opener-real-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
+            @{ id = 'login-rpc-ordered-completion'; filter = 'owned_login_rpc_completion_closes_stdin_and_reads_real_lpac_account' },
+            @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
+            @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
+            @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
+            @{ id = 'code-mode-member-binding'; filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file' },
+            @{ id = 'native-current-install-pin'; filter = 'pin_is_read_from_same_verified_store_and_requires_observed_login' },
+            @{ id = 'manual-repin-product'; filter = 'user_manual_program_repin_observes_fixed_cli_and_preserves_original_instance' },
+            @{ id = 'manual-repin-preservation'; filter = 'manual_repin_preserves_home_creation_credentials_and_legacy_unknown_exactly' },
+            @{ id = 'manual-repin-conflicts'; filter = 'manual_repin_rejects_pending_claim_episode_and_generation_change_without_writes' },
+            @{ id = 'manual-repin-witness'; filter = 'manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness' },
+            @{ id = 'native-install-admission'; filter = 'product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial' },
+            @{ id = 'native-missing-program'; filter = 'rejects_root_or_platform_version_mismatch_and_missing_program' },
+            @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
+            @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
+            @{ id = 'cancel-stderr'; filter = 'cancelled_pinned_cli_preserves_stderr_before_confirmed_release' },
             @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
             @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
             @{ id = 'job-assign-cleanup'; filter = 'failed_launch_cleanup_retains_exact_handles_on_timeout_or_failed_wait' },
@@ -173,6 +250,37 @@ jobs:
             @{ id = 'record-before-activate'; filter = 'failed_production_prepared_record_does_not_activate_child' },
             @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
+          if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -eq 'job-descendant' })
+            Write-Host 'Focused changed Job fixture only; full library and mutation suites NOT_RUN.'
+          } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -eq 'stop-124-negative' })
+            Write-Host 'Focused changed natural-exit fixture only; full library and mutation suites NOT_RUN.'
+          } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') {
+            $probes = @(
+              @{ id = 'ordinary-cache-entry'; filter = 'generated_cache_junction_unlinks_only_entry_and_preserves_target' },
+              @{ id = 'first-cli-failure-cache'; filter = 'owner_first_cli_factory_failures_keep_original_results_and_custody' },
+              @{ id = 'ordinary-oauth-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
+              @{ id = 'final-stderr-drain'; filter = 'zero_exit_tail_stderr_settles_failure_without_cancellation_or_account_read' },
+              @{ id = 'mixed-output-budget'; filter = 'mixed_login_output_limit_is_failure_even_when_child_exits_zero' },
+              @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
+              @{ id = 'cancel-stderr'; filter = 'cancelled_pinned_cli_preserves_stderr_before_confirmed_release' }
+            )
+            Write-Host 'Focused ordinary OAuth repairs only; full library, compiled mutations and server suites NOT_RUN.'
+          } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -in @('code-mode-member-binding') })
+            Write-Host 'Fixed Code Mode file permission binding and grant mutation only; real CLI tool execution remains Win11 E2E NOT_RUN; full library, other mutations and server suites NOT_RUN.'
+          }
+          if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
+            $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+            if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) {
+              throw 'Existing SDK debugger unavailable; directed measurement did not run.'
+            }
+            $env:GOGOKE_CI_CDB = $debugger
+            $env:GOGOKE_CI_CDB_LOGROOT = $evidenceRoot
+            $probes = @($probes | Where-Object { $_.id -eq 'lpac-file-lifecycle' })
+            Write-Host "Directed trace only: debugger SHA256=$((Get-FileHash -LiteralPath $debugger -Algorithm SHA256).Hash); full library suite NOT_RUN."
+          }
           $results = @()
           foreach ($probe in $probes) {
             $log = Join-Path $evidenceRoot "focused-$($probe.id).log"
@@ -208,8 +316,15 @@ jobs:
           }
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
+      - name: Retain original focused logs before the full library run
+        if: ${{ !cancelled() && !inputs.trace_canonicalize }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-focused-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-native-host-evidence/focused-*
+          if-no-files-found: error
       - name: Run all native-host library unit tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -217,9 +332,9 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $log = Join-Path $evidenceRoot 'lib-tests.log'
-          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture 2>&1
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture 2>&1 |
+            Tee-Object -FilePath $log | ForEach-Object { Write-Host $_; $_ }
           $exitCode = $LASTEXITCODE
-          $output | Tee-Object -FilePath $log | Write-Host
           $text = $output -join "`n"
           $running = [regex]::Matches($text, '(?m)^running (\d+) tests?$')
           $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
@@ -269,6 +384,228 @@ jobs:
           }
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
+      - name: Verify fixed CLI component grant with a compiled behavioral mutation
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/store/session_transport/codex_component.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $path).Hash
+          $needle = '        profile.grant_bound_program(path, &identity)' + "`n" +
+            '            .map_err(|error| format!("native Codex component grant: {error:?}"))?;' + "`n"
+          if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) {
+            throw 'Exact component production grant must match once'
+          }
+          $filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file'
+          try {
+            [IO.File]::WriteAllText($path,$source.Replace($needle,''),[Text.UTF8Encoding]::new($false))
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Out-Host
+            if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'Removed production helper grant must compile and fail its unchanged behavior test'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($path,$original)
+            if ((Get-FileHash -LiteralPath $path).Hash -cne $hash) { throw 'Exact component source restoration failed' }
+          }
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
+          $output | Out-Host
+          if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Unchanged helper behavior test must pass after exact production restoration'
+          }
+      - name: Verify F.1 production fixes with compiled failing mutations
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/store/product_database/v37_login.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $baselineHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $cases = @(
+            @{ axis='R1'; filter='owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames' },
+            @{ axis='R2'; filter='owner_login_preflight_errors_settle_original_request_without_process_custody' },
+            @{ axis='R4'; filter='owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed' },
+            @{ axis='R5'; filter='owner_first_cli_factory_failures_keep_original_results_and_custody' },
+            @{ axis='R6'; filter='pinned_codex_owner_login_stop_failure_reconciles_same_proof_and_stderr' },
+            @{ axis='R7'; filter='owner_account_execution_and_cleanup_failures_preserve_both_original_causes' },
+            @{ axis='R9'; filter='cancelled_pinned_cli_preserves_stderr_before_confirmed_release' }
+          )
+          foreach ($case in $cases) {
+            try {
+              if ($case.axis -ceq 'R1') {
+                $start = $source.IndexOf('            let install_state = match source.as_ref() {')
+                $end = $source.IndexOf('            let login_state = match source.as_ref() {', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R1 production fix locator missing' }
+                $stale = '            let stale = Statement::prepare(self.connection.as_ptr(), "SELECT install_state FROM main.gogoke_v37_instances WHERE instance_id=?1")?;' + "`n" +
+                  '            stale.bind_text(1, &instance_id)?;' + "`n" +
+                  '            if !stale.step_row()? { return Err(OrchestrationError::AccessDenied); }' + "`n" +
+                  '            let install_state = stale.column_text(0)?;' + "`n"
+                $mutated = $source.Substring(0,$start) + $stale + $source.Substring($end)
+              } elseif ($case.axis -ceq 'R2') {
+                $helper = $source.IndexOf('    fn settle_owner_login_preflight_error(')
+                $start = $source.IndexOf('        self.owner_login = Some(OwnerLoginSession::Final {', $helper)
+                $end = $source.IndexOf('        });', $start) + '        });'.Length
+                if ($helper -lt 0 -or $start -lt $helper -or $end -le $start) { throw 'R2 production fix locator missing' }
+                $mutated = $source.Remove($start,$end-$start)
+              } elseif ($case.axis -ceq 'R4') {
+                $start = $source.IndexOf('        if let Some(OwnerLoginSession::PendingAccount(pending)) = &mut self.owner_login {')
+                $end = $source.IndexOf('        let state = state_result.as_ref().cloned()', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R4 production fix locator missing' }
+                $mutated = $source.Remove($start,$end-$start)
+              } elseif ($case.axis -ceq 'R5') {
+                $start = $source.IndexOf('    fn preserve_owner_login_failure(')
+                $end = $source.IndexOf('    fn begin_owner_device_login(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R5 production fix locator missing' }
+                $oldBehavior = '    fn preserve_owner_login_failure(&mut self, command: &OwnerLoginCommand, failure: AccountObservationFailure) -> OrchestrationError { failure.error }' + "`n"
+                $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
+              } elseif ($case.axis -ceq 'R6') {
+                $start = $source.IndexOf('    fn progress_pending_first_stop(')
+                $end = $source.IndexOf('    fn finish_owner_device_login(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R6 production fix locator missing' }
+                $oldBehavior = '    fn progress_pending_first_stop(&mut self, command: &OwnerLoginCommand, pending: PendingFirstStop) -> Result<Vec<u8>> {' + "`n" +
+                  '        let reply = owner_login_reply(command, "UNKNOWN", &pending_first_stop_output(&pending));' + "`n" +
+                  '        self.owner_login = Some(OwnerLoginSession::PendingFirstStop(pending)); Ok(reply)' + "`n" + '    }' + "`n"
+                $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
+              } elseif ($case.axis -ceq 'R9') {
+                $start = $source.IndexOf('    fn finish_owner_device_login(')
+                $end = $source.IndexOf('    fn append_owner_login_stderr(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R9 finish method locator missing' }
+                $method = $source.Substring($start,$end-$start)
+                $live = 'self.append_owner_login_stderr(&mut active)'
+                if ([regex]::Matches($method,[regex]::Escape($live)).Count -ne 1) { throw 'R9 final live stderr locator must match once' }
+                $method = $method.Replace($live,'Ok::<(), OrchestrationError>(())')
+                $cancelAnchor = '// Cancellation still owns the original CLI diagnostic.'
+                if ([regex]::Matches($method,[regex]::Escape($cancelAnchor)).Count -ne 1) { throw 'R9 final cancellation diagnostic anchor must match once' }
+                $cancelStart = $method.IndexOf('        if cancelled {', $method.IndexOf($cancelAnchor))
+                $cancelEnd = $method.IndexOf('        let login_failure =', $cancelStart)
+                if ($cancelStart -lt 0 -or $cancelEnd -le $cancelStart) { throw 'R9 cancellation stderr locator missing' }
+                $method = $method.Remove($cancelStart,$cancelEnd-$cancelStart)
+                $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
+              } else {
+                $start = $source.IndexOf('    fn finish_confirmed_account_observation(')
+                $end = $source.IndexOf('    fn observe_account_via_active_cli(', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'R7 production fix locator missing' }
+                $method = $source.Substring($start,$end-$start)
+                $fixedStart = $method.IndexOf('        let frame = match execution {')
+                $fixedEnd = $method.IndexOf('        self.record_trusted_account_read(', $fixedStart)
+                if ($fixedStart -lt 0 -or $fixedEnd -le $fixedStart) { throw 'R7 primary/cleanup fix locator missing' }
+                $method = $method.Substring(0,$fixedStart) + '        cleanup?; let frame = execution?;' + "`n" + $method.Substring($fixedEnd)
+                $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
+              }
+              [IO.File]::WriteAllText($path,$mutated,[Text.UTF8Encoding]::new($false))
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+              $exitCode = $LASTEXITCODE
+              $output | Out-Host
+              if ($exitCode -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) mutation must compile and fail its unchanged behavioral test"
+              }
+            } finally {
+              [IO.File]::WriteAllBytes($path,$original)
+              if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $baselineHash) { throw 'Native production source restoration hash mismatch' }
+            }
+            $restored = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+            $restored | Out-Host
+            if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+              throw "$($case.axis) unchanged test must pass after exact production restoration"
+            }
+          }
+      - name: Verify native installation facts with independent compiled mutations
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $cases = @(
+            @{ axis='R10-admission'; path='apps/desktop/native-host/src/store/session_transport/runtime.rs';
+               needle="WHERE instance_id=?1 AND login_state='LOGGED_IN'";
+               stale="WHERE instance_id=?1 AND install_state='INSTALLED' AND login_state='LOGGED_IN'";
+               filter='pin_is_read_from_same_verified_store_and_requires_observed_login' },
+            @{ axis='R10-rpc'; path='apps/desktop/native-host/src/store/session_transport/rpc_journal.rs';
+               needle="AND i.login_state='LOGGED_IN'";
+               stale="AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN'";
+               filter='actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
+            @{ axis='R10-resume'; path='apps/desktop/native-host/src/store/session_transport/episodes.rs';
+               needle="AND i.login_state='LOGGED_IN'";
+               stale="AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN'";
+               filter='actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' }
+          )
+          foreach ($case in $cases) {
+            $original = [IO.File]::ReadAllBytes($case.path)
+            $source = [Text.Encoding]::UTF8.GetString($original)
+            $hash = (Get-FileHash -LiteralPath $case.path).Hash
+            if ([regex]::Matches($source,[regex]::Escape($case.needle)).Count -ne 1) {
+              throw "$($case.axis) native fact predicate must match once"
+            }
+            try {
+              [IO.File]::WriteAllText($case.path,$source.Replace($case.needle,$case.stale),[Text.UTF8Encoding]::new($false))
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+              $code = $LASTEXITCODE
+              $output | Out-Host
+              if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) must compile and fail its unchanged native behavior test"
+              }
+            } finally {
+              [IO.File]::WriteAllBytes($case.path,$original)
+              if ((Get-FileHash -LiteralPath $case.path).Hash -cne $hash) { throw "$($case.axis) exact source restoration failed" }
+            }
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+            $output | Out-Host
+            if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+              throw "$($case.axis) unchanged test must pass after exact restoration"
+            }
+          }
+      - name: Verify confirmed forced Job stop with a compiled failing mutation
+        if: ${{ !cancelled() && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/process/windows.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $path).Hash
+          $fixed = 'if let Err(error) = terminate_job(self.job.raw(), STOP_FORCED_EXIT_CODE) {'
+          if ([regex]::Matches($source,[regex]::Escape($fixed)).Count -ne 1) { throw 'R8 stop proof fix must match once' }
+          try {
+            [IO.File]::WriteAllText($path,$source.Replace($fixed,'if let Err(error) = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE) {'),[Text.UTF8Encoding]::new($false))
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml prepared_process_identity_is_durable_before_activation --lib -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Out-Host
+            if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'R8 must compile and fail its unchanged actual forced-stop durable-confirmation test'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($path,$original)
+            if ((Get-FileHash -LiteralPath $path).Hash -cne $hash) { throw 'R8 exact source restoration failed' }
+          }
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml prepared_process_identity_is_durable_before_activation --lib -- --nocapture 2>&1
+          $output | Out-Host
+          if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'R8 unchanged test must pass after exact restoration'
+          }
+      - name: Test production LPAC path shim behavior in cloud
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml -p gogoke-lpac-path-compat --lib -- --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath (Join-Path $evidenceRoot 'lpac-path-shim.log') | Write-Host
+          $text = $output -join "`n"
+          $summary = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+          $valid = $summary.Success -and [int]$summary.Groups[2].Value -eq 2 -and [int]$summary.Groups[3].Value -eq 0 -and [int]$summary.Groups[4].Value -eq 0 -and [int]$summary.Groups[6].Value -eq 0
+          $state = if ($exitCode -eq 0 -and $valid) { 'PASS' } else { 'FAIL' }
+          [ordered]@{ axis = 'lpac_path_same_source_shim'; state = $state; exit_code = $exitCode; passed = if ($summary.Success) { [int]$summary.Groups[2].Value } else { 0 }; failed = if ($summary.Success) { [int]$summary.Groups[3].Value } else { 0 }; skipped = if ($summary.Success) { [int]$summary.Groups[4].Value } else { 0 } } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lpac-path-shim-result.json') -Encoding utf8NoBOM
+          if ($state -ne 'PASS') { throw "Production LPAC shim tests failed or did not execute: $exitCode" }
       - name: Upload native-host machine evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -279,7 +616,8 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    name: Gogoke server 51-file cloud tests
+    if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only }}
+    name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
     env:

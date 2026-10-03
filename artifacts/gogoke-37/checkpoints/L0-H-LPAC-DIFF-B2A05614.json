@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-LPAC-DIFF-B2A05614",
+  "recorded_utc": "2026-09-29T18:06:34Z",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "plan_revision": "PR #55 is open at 856480935cd999c9658b02993c166fbd3c29acc4. Focused read-only audit at https://github.com/taiyun668/gogoke/pull/55#issuecomment-5894355857 found two plan assertions requiring Claude revision. New plan authorization has not started."
+  },
+  "cloud_differential": {
+    "run_id": 36607748891,
+    "source_sha": "b2a05614a6f88d668480d3640b92070dbfde5751",
+    "runner": "Windows win25-vs2026; not a Windows 11 product acceptance run",
+    "server": "PASS",
+    "native_release_build": "PASS",
+    "native_library_tests": "490 passed, 1 failed, 0 skipped; exact failing test process::windows::tests::real_app_container_descendant_reaches_native_seat_pipe",
+    "test_only_registryRead_fresh_directory": "PASS",
+    "test_only_registryRead_seat_pipe": "FAIL; nested helper and signed controls launched; exact helper pipe open returned Win32 2",
+    "procmon_direct_observation": "Two exact descendant CreateFile events for the seat pipe returned NAME NOT FOUND. The parent launched those descendants successfully. This establishes the next failure boundary, not an approved product capability change.",
+    "machine_result_sha256": "43393691e0a1e751e6abb684faa3b6d08e3e067eba579d4c10c3bee72182c219",
+    "procmon_summary_sha256": "7b98fc15cb4dcd18dbb21152b09ed6a123778caf03c8ea443d88aa31cd7d8424",
+    "cdb_summary_sha256": "4b6a0d57fd28d0e4275dde2e52f8ddebdd016a39f8d29340720bc19a7f3ceef0"
+  },
+  "next_diagnostic": {
+    "source_sha": "54599808",
+    "cloud_run_id": 36609642428,
+    "purpose": "Test-only comparison of the same LPAC seat pipe using an unqualified name, and ProcMon path-prefix comparison between server and client. Release behavior remains unchanged.",
+    "state": "RUNNING_OR_QUEUED_AT_CHECKPOINT"
+  },
+  "threat_model": "The test-only registryRead capability grants HKLM read to the test LPAC token and does not grant writes to the Owner profile, another instance's credentials, the main tree or worktrees. Its production adoption remains undecided until direct evidence and the original isolation promises are checked. The pipe namespace comparison changes no release capability or ACL.",
+  "inbox": {
+    "branch": "control/gogoke-s1-r4-inbox",
+    "head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "unchanged at natural checkpoint boundary; no new Design 37 instruction"
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "next": "Read run 36609642428. Recheck revised PR #55 when its head changes; after Owner merges the plan, create a new authorization PR bound to the new origin/main MANIFEST blob and wait for Owner merge and exact readback. Then persist OT3 caps 4 and 4 and continue M1. This checkpoint is not a stop."
+}

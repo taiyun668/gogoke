@@ -385,8 +385,49 @@ jobs:
               @($poisonedModule | Where-Object { $_ -match '^test .*managed_product_launch_rejects_poisoned_generation_module \.\.\. ok$' }).Count -ne 1) {
             throw "Poisoned generation module test failed, skipped, or did not execute exactly once: $LASTEXITCODE"
           }
+          $design37 = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml design37_product_composition_reuses_one_tauri_owned_host --lib -- --nocapture 2>&1
+          $design37 | Out-Host
+          if ($LASTEXITCODE -ne 0 -or
+              @($design37 | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1 -or
+              @($design37 | Where-Object { $_ -match '^test .*design37_product_composition_reuses_one_tauri_owned_host \.\.\. ok$' }).Count -ne 1) {
+            throw "Design37 product composition test failed, skipped, or did not execute exactly once: $LASTEXITCODE"
+          }
+          $instanceLogin = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml public_runtime::design37_instances::tests --lib -- --nocapture 2>&1
+          $instanceLogin | Out-Host
+          if ($LASTEXITCODE -ne 0 -or
+              @($instanceLogin | Where-Object { $_ -match 'test result: ok\. 7 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw "Host-owned instance login tests failed, skipped, or did not execute all seven tests: $LASTEXITCODE"
+          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
+      - name: Verify login cancel result with a compiled failing mutation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'src-tauri/src/public_runtime/design37_instances.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $baselineHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $correct = 'action == "cancel" && reply.settled && reply.state == "LOGGED_OUT"'
+          if ([regex]::Matches($source,[regex]::Escape($correct)).Count -ne 1) { throw 'R3 production fix locator must match once' }
+          try {
+            [IO.File]::WriteAllText($path,$source.Replace($correct,'record.cancel_requested && reply.settled'),[Text.UTF8Encoding]::new($false))
+            $output = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancellation_intent_cannot_overwrite_a_successful_original_result --lib -- --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Out-Host
+            if ($exitCode -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'R3 mutation must compile and fail the unchanged successful-result assertion'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($path,$original)
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $baselineHash) { throw 'Host production source restoration hash mismatch' }
+          }
+          $restored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml public_runtime::design37_instances::tests --lib -- --nocapture 2>&1
+          $restored | Out-Host
+          if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 7 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'All seven unchanged host login tests must pass after exact production restoration'
+          }
       - name: Upload one-shot task deletion receipt
         uses: actions/upload-artifact@v4
         with:

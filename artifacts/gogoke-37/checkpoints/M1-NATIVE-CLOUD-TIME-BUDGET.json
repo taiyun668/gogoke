@@ -1,0 +1,20 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "recordedDate": "2026-10-02",
+  "state": "CI_TIME_BUDGET_EXHAUSTED_CORRECT_INSTRUMENT_CONTINUE_M1",
+  "changes": "Raised the existing native Windows job's finite timeout from 75 to 105 minutes. The positive prepared-identity/durable-forced-stop fixture now invokes the existing StopBudgets::production() instead of an unrelated 20 ms close-hook deadline. All identity, forced-exit, empty-Job, writer-fence, clean-proof and durable-release assertions remain. Explicit blocking-close deadline rejection cases remain unchanged. No production budget, product function, CLI, signing rule or authorization-scope change.",
+  "results": {
+    "independentReview": "Sol focused read-only review supports committing and rerunning: shared H files remain Integrator-owned, production methods/budgets and every stop-proof/deadline assertion remain intact. Cloud correction not yet proven.",
+    "source": "a226ebe069ba7474f6fad980b0114bf18d1d3446",
+    "desktop": "37038691027 SUCCESS: all five jobs, including both builds and designated component comparison",
+    "server": "37038697084 server job SUCCESS, 642 passed / 0 failed / 0 skipped",
+    "native": "37038697084 CANCELLED at the 75-minute job deadline, not PASS. Independently, the full library FAILED: 584 passed / 1 failed / 0 skipped. prepared_process_identity_is_durable_before_activation failed with CLOSE_BINDING_DEADLINE_EXCEEDED in its original stop proof; its earlier focused PASS does not replace this FAIL. F.1 mutations completed; R10 admission mutation and restore completed. R10 RPC mutation behavior failed as required, but its restore was STARTED_NO_RESULT/CANCELLED. R10 resume, forced Job mutation and LPAC shim are NOT_RUN.",
+    "originalFailure": "The job has exceeded the maximum execution time of 1h15m0s",
+    "actualWin11": "Protected ordinary baseline captured; original candidate gracefully closed; original instance home and data identities preserved. New signing and installation NOT_RUN."
+  },
+  "next": "Focused independent review, then cloud focused plus full-library/mutation rerun will verify the fixture hypothesis. If a production-budget stop proof still has errors, reopen product root-cause analysis rather than relax an assertion or add retries. The frozen a226ebe0 bytes remain retained historical inputs, not repackaged or relabelled as a later source. After the corrected stable source passes, walk one complete signed candidate chain and actual M1 tests.",
+  "reference": "参照：GitHub's job annotation and original log for job 110943377627, plus the earlier successful same-native-code run 37021355274. Current job lasted 75 minutes and 11 seconds; repeated cold compilations took roughly two minutes each. For the independent library failure, checked gogo-party crates and execution-layer/reuse research (no equivalent close-budget fixture found), then the existing native positive activation/identity/durable-release case that already uses production budgets. The failed proof has exact identity, successful forced kill, empty residual Job and verified writer fence, with CLOSE_BINDING_DEADLINE_EXCEEDED from the fixture's 20 ms callback-thread budget. Adopt the existing production-path fixture pattern; preserve blocking-close negative deadlines, every gate and all stop-proof assertions. Full-suite evidence must establish the correction.",
+  "decision": "This is a measurement-runtime issue inside the authorized cloud test work, so Controller fixes it without an Owner touchpoint. A later candidate retains exact source/run provenance even though the product trees are unchanged.",
+  "publicRelease": false,
+  "acceptance": false
+}

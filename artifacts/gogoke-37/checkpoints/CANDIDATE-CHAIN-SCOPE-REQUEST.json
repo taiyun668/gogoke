@@ -1,0 +1,53 @@
+{
+  "schema": "gogoke.37.construction-scope-request.v1",
+  "state": "PROPOSED_NOT_AUTHORIZED_NOT_IMPLEMENTED",
+  "repository": "taiyun668/gogoke",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "logic": "M1 requires the genuine installed candidate. Existing candidate signing is trusted-main-only, but current main has only a consumer. Restoring and adapting that lane needs five paths absent from the frozen PLAN.json write scopes. Calling these changes a support package would not grant authority.",
+  "scope_basis": [
+    "docs/design/gogoke-37-plan-v1/PLAN.md: PLAN.json is authoritative for write scopes",
+    "docs/design/gogoke-37-plan-v1/PLAN.json: shared_files and per-line write_scope",
+    "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json: authorization binds this MANIFEST and listed lines and milestones"
+  ],
+  "requested_changes": [
+    {
+      "path": ".github/workflows/gogoke-candidate-sign.yml",
+      "change": "Restore trusted-main signer from historical 5f7aa30d; consume only exact successful frozen desktop builds of the authorized design37 source. Keep source checks, bounded artifacts, main-only secret environment, timeout and cancellation. Preserve branch consumer behavior as needed."
+    },
+    {
+      "path": "tools/ci/gogoke-candidate-sign.ps1",
+      "change": "Replace old R2-only source admission with narrow authorized design37 source admission while retaining main-only execution, exact source/run/attempt/artifact binding, resource verifier and existing candidate key/purpose."
+    },
+    {
+      "path": "tools/ci/gogoke-candidate-installed-preflight.ps1",
+      "change": "Verify authorized design37 signing and source identities instead of the old R2-only branch; retain uploaded archive digest, member bounds, signatures and frozen executable hashes."
+    },
+    {
+      "path": "tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1",
+      "change": "Allow only the authorized design37 exact smoke revision and source binding; retain actual installed product tests and isolated installation/registration/data assertions."
+    },
+    {
+      "path": "tools/ci/gogoke-r206a-installer-negative.ps1",
+      "change": "Adapt the same old branch identity guard for design37 without changing production negative cases, assertions or their separation from the genuine frozen installer."
+    }
+  ],
+  "preserved_boundaries": [
+    "Existing compiled candidate public key and CI_CANDIDATE_RESOURCE purpose",
+    "Existing main-only candidate-secret environment; secret value is never read locally or logged",
+    "Exact successful source and immutable frozen bytes, no rebuilding during signing or installation",
+    "Separate candidate installation root, HKCU registration and app-data identity; no shortcuts",
+    "Formal product, registration, shortcuts and business data remain protected",
+    "No code signing, security setting changes, public release or self acceptance",
+    "No assumption that permission to edit these paths permits a main merge"
+  ],
+  "validation_to_prepare_after_authorization": [
+    "Parse workflows and PowerShell, verify positive/negative identity controls and public-source hygiene",
+    "Independent focused review of source authorization, trusted-main checkout, secret isolation and exact artifact binding",
+    "Cloud signing and installed smoke on one genuine frozen installer",
+    "Download identical signed sibling set, repeat ordinary-view baseline, install and compare protected formal snapshots"
+  ],
+  "independent_review_correction": "A read-only reviewer initially suggested an independently named support package; Controller checked the authorization premise and the reviewer withdrew that inference. No out-of-scope file was changed.",
+  "owner_action_needed": "Explicitly authorize this narrow five-path scope, or choose plan amendment and MANIFEST reauthorization. Any trusted-main integration remains subject to its actual merge authority.",
+  "not_done": "No requested file changed, no candidate signed or installed, no main merge and no public release. This proposal does not amend PLAN or MANIFEST."
+}

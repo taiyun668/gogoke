@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.37.l0.legacy-projection-decision.v1",
+  "source_plan_manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+  "status": "DECIDED_NOT_IMPLEMENTED",
+  "orchestration_events": {
+    "source": "apps/desktop/native-host/src/store/orchestration.rs",
+    "source_facts": [
+      "The existing orchestration_events table owns unique event_id and a global sequence; read_events returns ordered rows for a scoped aggregate stream.",
+      "Existing project and thread event proposals include MessageSent, ActivityAppended, SessionSet, TurnRequested and ApprovalRequested, plus project/thread creation, proposed plan and checkpoint events."
+    ],
+    "decision": [
+      "The native seat ledger projects existing orchestration event rows by their source event ID and sequence; it does not create a second authoritative copy of those events.",
+      "Project/thread origin is retained. A source event with no verified seat binding is never relabelled as a seat event or exposed through a seat-scoped query.",
+      "The ledger source cursor and host epoch make duplicates and gaps explicit; replay and subscription recheck current reader scope before delivery."
+    ],
+    "completion_claim": false
+  },
+  "legacy_worktree_commands": {
+    "source": "apps/desktop/src-tauri/src/workspaces/commands.rs",
+    "source_facts": [
+      "The existing Tauri add_worktree and remove_worktree commands call workspaces_core against legacy AppState workspaces and sessions.",
+      "Those commands do not carry a seat grant, native stop fact or admission reservation."
+    ],
+    "decision": [
+      "Existing Tauri worktree commands remain available only to legacy Codex-thread workspaces; no v37 seat route calls them.",
+      "F ports the Git worktree logic into the native host and binds its own create, register, graph, merge and cleanup operations to verified seat authority.",
+      "Seat cleanup requires the native stop fact and zero active reservations; a directory name or legacy workspace ID is never sufficient."
+    ],
+    "completion_claim": false
+  },
+  "required_real_checks": [
+    "A legacy event is observed once through the ledger with its original source ID and ordering, and an unbound legacy thread does not gain a seat label.",
+    "Restart and duplicate source delivery do not create a second ledger fact; a source cursor gap is reported.",
+    "A v37 seat request cannot reach legacy Tauri worktree commands; seat merge and cleanup use the native host and current grant, stop fact and reservation state.",
+    "Existing R2 legacy thread and worktree behavior remains intact."
+  ]
+}

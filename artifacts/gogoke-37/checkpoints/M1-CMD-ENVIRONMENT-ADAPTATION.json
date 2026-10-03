@@ -1,0 +1,9 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "changes": "The native model-session launch supplies fixed developer instructions describing the supported Windows CMD tool environment. Official base instructions, fixed CLI bytes, LPAC capabilities, ACLs and RPC ingress remain unchanged.",
+  "result": "Source repair implemented; exact-byte cloud checks and complete installed-product E2E remain pending. Earlier PowerShell tool failures remain FAIL. The instructions guide model selection; they do not change default-shell discovery, repair PowerShell, or enforce a new OS prohibition.",
+  "reason": "The same real LPAC session already executed CMD and produced two verified files; the second session selected unsupported PowerShell and failed during initialization. Introducing a dependency on a private controller runtime is unnecessary for this capability. Controller selects the existing successful tool path within the authorized H environment adaptation.",
+  "next": "Run affected cloud checks. At the M1 stable point, complete one frozen candidate chain and rerun the original real flow, asserting native tool calls, original errors/exit codes, files, and cold restart/resume. Do not claim success from a completed assistant response.",
+  "references": "Reused gogo-party packages/seat-runtime/src/seat-runtime.ts host instructions, the current native fixed-component binding and existing real CLI ledger. Checked repository runtime/adapter research and official openai/codex rust-v0.160.0 config developer_instructions, request_processors/thread_processor.rs and shell-command discovery. Launch configuration is used to preserve exact historical start/resume command encodings; no new generic RPC or unmanaged PowerShell assets.",
+  "acceptance": false
+}

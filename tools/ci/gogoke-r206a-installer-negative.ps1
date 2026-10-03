@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$SignedArtifactDirectory,
     [Parameter(Mandatory = $true)][string]$InstrumentArtifactDirectory,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSourceCommit,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSmokeCommit,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedRunId,
     [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedRunAttempt,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedSourceArtifactId,
@@ -28,6 +29,7 @@ $script:receipt = [ordered]@{
     state = 'FAIL'
     stage = $script:stage
     sourceCommit = $ExpectedSourceCommit
+    smokeCommit = $ExpectedSmokeCommit
     sourceRunId = $ExpectedRunId
     sourceRunAttempt = $ExpectedRunAttempt
     sourceArtifactId = $ExpectedSourceArtifactId
@@ -200,7 +202,7 @@ try {
         $env:GITHUB_SERVER_URL -cne 'https://github.com' -or
         $env:GITHUB_REPOSITORY -cne 'taiyun668/gogoke' -or
         $env:GITHUB_REF -cne 'refs/heads/codex/gogoke-37-l0' -or
-        $env:GITHUB_SHA -cne $ExpectedSourceCommit -or
+        $env:GITHUB_SHA -cne $ExpectedSmokeCommit -or
         $env:GITHUB_RUN_ID -cne [string]$ExpectedSmokeRunId -or
         $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSmokeRunAttempt) {
         throw 'Negative installer test requires the exact GitHub-hosted Windows smoke run'

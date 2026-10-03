@@ -86,6 +86,11 @@ def findings(text: str, source_path: str = "") -> list[tuple[int, str, str, str]
         for pattern in (DRIVE_PATH, UNIX_HOME_PATH, UNIX_LOCAL_PATH):
             for match in pattern.finditer(line):
                 classification, reason = _path_classification(match.group(0), source_path)
+                # A C printf pointer followed by an escaped newline is not
+                # a drive path. Preserve every other path/token rule.
+                if pattern is DRIVE_PATH and match.group(0) == r"p:\n" \
+                        and match.start() > 0 and line[match.start() - 1] == "%":
+                    classification, reason = "EXPLAINED", "source-pointer-format-newline"
                 if rust_test_region and classification == "LEAK" and reason not in {"current-user-profile-path", "user-profile-path", "current-user-home-path", "user-home-path", "project-local-path"}:
                     classification, reason = "EXPLAINED", "synthetic-rust-test-path"
                 found.add((line_number, "machine-path", classification, reason))

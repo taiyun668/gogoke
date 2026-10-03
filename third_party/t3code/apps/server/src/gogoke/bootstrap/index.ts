@@ -28,6 +28,28 @@ export function constructGogokeService(
   });
 }
 
+/** The product-owned Design 37 host is started and retained by Tauri. This
+ * connector has only the service channel; it cannot mint a User origin. */
+export function constructGogokeServiceOnExistingHost(
+  input: GogokeServiceInput & {
+    readonly servicePipe: string;
+    readonly serviceCapability: string;
+  },
+): Promise<GogokeNativeStoreService> {
+  return constructNativeStoreServiceForAdapter({
+    request: input.request,
+    root: input.root,
+    hostBinary: input.hostBinary,
+    ownership: input.ownership ?? new RootProfileOwnership(),
+    connector: {
+      attach: async () => NativeHostClient.connectExisting({
+        pipePath: input.servicePipe,
+        capability: input.serviceCapability,
+      }),
+    },
+  });
+}
+
 export type {
   GogokeNativeStoreConstructionRequest,
   GogokeNativeStoreService,

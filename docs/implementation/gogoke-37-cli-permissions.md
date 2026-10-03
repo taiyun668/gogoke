@@ -1,0 +1,34 @@
+# Gogoke 37 固定 Codex CLI 权限
+
+H 向固定 CLI 0.160.0 的每个新 `turn/start` 显式发送 `approvalPolicy: never` 和 `sandboxPolicy: externalSandbox`；`networkAccess` 仅由 H 已核验的权限档位决定，只有 `NETWORKED_WRITE` 为 `enabled`，其余为 `restricted`。这是 CLI 对外部隔离的协议声明，LPAC token、目录 ACL、固定程序和 Job 仍执行实际权限边界，不增加任何系统能力或路径授权。`thread/start`、`thread/resume` 的 `sandbox` 字段不能表达这个官方策略，因此不在那里拼造值。旧 RPC 记录恢复时保留其原字节，不能把已写出的命令换成新策略；新的发送不能走旧记录的缺省策略分支。
+
+模型会话的 Windows shell 环境由宿主通过固定 CLI 的 `-c developer_instructions` 说明：`exec_command` 显式使用 `shell="cmd.exe"`、`login=false` 和 CMD 语法，文件编辑使用既有原生文件工具。当前档位没有配置 PowerShell 运行依赖；已装候选的 PowerShell 初始化失败仍记为失败，未把控制席位的私有 PowerShell 7 当作产品依赖。这个说明只指导模型选择，不改变 CLI 默认 shell 发现，不修复 PowerShell，不构成新的 OS 禁止规则。LPAC、原目录范围和原执行资产继续决定实际权限；没有额外 capability、目录授权或普通用户模型执行回退。工具失败必须保留原文和退出码，不能以 assistant 已完成代替工具成功。冷恢复仍先停止原 CLI，随后启动新 generation；不能用存活线程的 resume 响应证明新说明生效。
+
+Owner 授权固定 Codex CLI 的 `account/read` 和 H 模型会话取得 Windows `lpacIdentityServices` capability。它允许 AppContainer 调用 Windows 身份及 SSPI 安全包服务，以初始化 Schannel；它本身不是网络许可，也不能据此推断未知 Windows 服务的完整可达范围只等于 TLS。
+
+Owner 于 2026-10-01 裁决：仅由 Owner 发起的固定 CLI 登录阶段使用与宿主同一用户的普通进程，不在 LPAC 内。原位普通 OAuth 的 localhost 回调曾在现有 LPAC 组合中连接超时；采用 gogo-party 已有的登录方式，不修改 CLI 或系统网络隔离设置。登录进程只运行固定登录命令，不接收或执行模型输出；宿主仍保管进程、会话、取消、原始错误和结果，并自己打开授权网址。凭据由 CLI 写入原注册实例：`HOME`、`USERPROFILE` 和 `CODEX_HOME` 指向该实例自己的 home；保留原 `LOCALAPPDATA`、`APPDATA`，使浏览器使用原有用户环境。宿主不读取、写入或复制凭据。
+
+登录阶段拥有普通当前用户的文件访问权限；实例 home 环境与 Job 保管不构成 LPAC 文件隔离，没有提权或跨用户授权。此例外只适用于已准入的固定 CLI 登录，不能用于模型会话、模型产生的命令或其他程序。登录后的自动 `account/read` 及所有模型会话继续在原 LPAC 内，`lpacIdentityServices` 的边界不变。
+
+宿主通过同一固定 CLI 的 `app-server` 管道发送 `initialize`、`initialized` 和一次 `account/login/start`（`type: chatgpt`）开始普通 OAuth。固定 0.149.0 的该官方分支设置 `open_browser: false`，仅返回 `loginId` 和 `authUrl`；授权网址由宿主现有 opener 打开一次。匹配同一 `loginId` 的完成通知和取消请求只用于推进该登录操作，不能证明账号已登录：仍先完成原 Job 停止、持久确认、清理，再由原 LPAC `account/read` 检测。登录进程不接受模型或任意 RPC 请求。此调整修复直接运行 `codex login` 与宿主各打开一次浏览器的问题，不修改 CLI、默认浏览器或系统环境。
+
+普通登录沿用 gogo-party 的系统临时环境：`TEMP`、`TMP` 保留宿主原值，与原 `APPDATA`、`LOCALAPPDATA` 一样只读取有限键，不继承其他任意环境。普通登录可能触发 Windows 或浏览器的临时工作；CLI 的 Job 已停止，不等于这些临时文件已可删除。它们不放入必须立即清空的登录运行目录，宿主不清理系统临时目录。凭据 home 仍是原注册实例；`account/read` 和模型会话的 `TEMP`、`TMP` 继续指向原 LPAC 运行目录。
+
+| 路径与档位 | `lpacIdentityServices` | `internetClient` | 文件目录范围 |
+| --- | --- | --- | --- |
+| Owner 固定 CLI 登录（普通用户进程） | 不适用，不在 LPAC 内 | 不适用，使用当前用户网络权限 | 普通当前用户文件权限；凭据 home 固定到原注册实例 |
+| 自动 `account/read`（LPAC） | 是 | 是，沿用原有授权 | 仅该实例已绑定 home、运行目录与固定 CLI 程序 |
+| H `READ_ONLY` | 是 | 否 | 实例及会话 home 可写；绑定工作树只读 |
+| H `NO_NETWORK` | 是 | 否 | 实例及会话 home 可写；绑定工作树只读 |
+| H `ISOLATED_WRITE` | 是 | 否 | 实例及会话 home、绑定工作树可写 |
+| H `NETWORKED_WRITE` | 是 | 是，沿用原有授权 | 实例及会话 home、绑定工作树可写 |
+
+LPAC 路径的公网访问仍受已有 `internetClient` 与 permission tier 限制。此次没有扩大 LPAC 文件目录授予范围、改变 Owner 默认 profile，或合并其他实例的 AppContainer SID。`registryRead` 保持原有行为。未标记 CLI 模式的独立宿主启动请求保持原能力；LPAC CLI 后代继承相同隔离 token 和 Job 约束，包括这项身份服务许可。LPAC 启动时从 host-owned 布尔模式重建固定 capability 列表，并在 suspended child 上核对 AppContainer SID、capability SID、数量和有效启用状态后才允许 admission。普通用户登录例外不使用这套 capability 列表，仍保留 Job 与原实例身份绑定。
+
+固定 CLI 0.149.0 的非登录 Doctor HTTPS 检查在原 profile 中报告 TLS handshake/cert validation failure；同一 CLI、SID、home 和显式环境仅添加 `lpacIdentityServices` 后，指定网络检查取得实际 HTTP 405。同一 SID 环境的 system curl 也从 `SEC_E_SECPKG_NOT_FOUND` 变为 TLS 成功与 HTTP 400。这些对照确认该 HTTPS 路径需要这项身份服务许可；Doctor 的其他诊断并未整体通过，且外部测量未加载产品的路径兼容模块，不能替代正式产品流程。修复仍须经过云端原生隔离测试和实际签名候选装机回读，之后由 Owner 完成真实登录；跳过的检查不算通过。
+
+目录 ACL 的授予及进程激活前核验保留严格的根和后代检查。进程激活后的操作核对当前 Owner、席位、实例、会话、版本和操作绑定，并核对同一物理根的身份与继承 ACE、固定程序和 Git 元数据绑定；CLI 在获准目录中正常创建、删除或改名的运行文件可以变化。根级证据只证明该根，动态后代没有整树实时合格声明。
+
+H 模型会话还需要固定 CLI 0.160.0 官方包自带的 `bin/codex-code-mode-host.exe`。宿主从已核主程序的同一目录解析该固定名称，核对官方包成员 SHA-256 `1d448bfde19e7a280d600d8d0bcddf77afbe9feaec1e804905becc5f39bc9db6` 和物理文件身份，保留禁止写入和删除共享的只读句柄直至会话停止，仅向同一 LPAC SID 授予该文件无继承的读/执行 ACE；每次现有启动及会话操作核验也复核它。包目录、相邻文件、其他实例和正式数据不获得权限，capability 和 Job 不变。这个辅助程序由固定 CLI 自己运行，继承原 LPAC token 和 Job，不能使用普通用户登录例外。
+
+真实 0.160.0 工具原文曾报告该成员启动 `Access is denied. (os error 5)`，当时文件 DACL 没有该 LPAC SID，且没有观察到对应 Code Integrity 事件；这不是智能应用控制通过或拦截的结论。该组件的智能应用控制处境仍以修正后的正式候选在 Owner Win11 上实际拉起为准，云端启动成功不能外推到本机；若出现对应拦截事件，按 CT3 交 Owner 决定，不修改系统安全设置。

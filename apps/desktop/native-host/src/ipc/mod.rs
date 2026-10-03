@@ -1,9 +1,11 @@
 //! Current-user local IPC for the native host.
 //!
 //! This module exposes only a Windows named pipe. It does not create a TCP or
-//! HTTP listener and cannot fall back to one. The pipe DACL contains one allow
-//! ACE for the current user SID, rejects remote clients, and authenticates the
-//! connected peer token before returning the connection.
+//! HTTP listener and cannot fall back to one. The legacy service pipe admits
+//! only the current user SID. A seat pipe additionally binds the exact
+//! AppContainer package SID. A separate User pipe binds the actual client
+//! process object to the desktop process pinned at native startup. All three
+//! reject remote clients and authenticate the connected token.
 
 use std::fmt;
 use std::io;
@@ -11,6 +13,11 @@ use std::io;
 #[derive(Debug)]
 pub enum PrivateIpcError {
     InvalidEndpoint,
+    InvalidPackageSid,
+    WrongListenerMode,
+    InvalidUserProcess,
+    UserProcessNotLive,
+    UserProcessObjectMismatch { source: io::Error },
     InvalidPreface,
     FrameTooLarge {
         length: usize,
@@ -30,6 +37,12 @@ impl fmt::Display for PrivateIpcError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidEndpoint => write!(formatter, "PRIVATE_IPC_INVALID_ENDPOINT"),
+            Self::InvalidPackageSid => write!(formatter, "PRIVATE_IPC_INVALID_PACKAGE_SID"),
+            Self::WrongListenerMode => write!(formatter, "PRIVATE_IPC_WRONG_LISTENER_MODE"),
+            Self::InvalidUserProcess => write!(formatter, "PRIVATE_IPC_INVALID_USER_PROCESS"),
+            Self::UserProcessNotLive => write!(formatter, "PRIVATE_IPC_USER_PROCESS_NOT_LIVE"),
+            Self::UserProcessObjectMismatch { source } => write!(formatter,
+                "PRIVATE_IPC_USER_PROCESS_OBJECT_MISMATCH: {source}"),
             Self::InvalidPreface => write!(formatter, "PRIVATE_IPC_INVALID_PREFACE"),
             Self::FrameTooLarge { length } => {
                 write!(formatter, "PRIVATE_IPC_FRAME_TOO_LARGE: {length}")
@@ -81,9 +94,18 @@ fn validate_endpoint(endpoint: &str) -> Result<(), PrivateIpcError> {
     Ok(())
 }
 
+fn validate_package_sid(value: &str) -> Result<(), PrivateIpcError> {
+    let suffix = value.strip_prefix("S-1-15-2-").unwrap_or("");
+    if value.len() > 180 || suffix.is_empty() ||
+        !suffix.split('-').all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())) {
+        return Err(PrivateIpcError::InvalidPackageSid);
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 mod platform {
-    use super::{validate_endpoint, PrivateIpcError};
+    use super::{validate_endpoint, validate_package_sid, PrivateIpcError};
     use std::ffi::{c_void, OsString};
     use std::io;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -106,6 +128,13 @@ mod platform {
     const PIPE_WAIT: Dword = 0x0000_0000;
     const TOKEN_QUERY: Dword = 0x0008;
     const TOKEN_USER_CLASS: Dword = 1;
+    const TOKEN_IS_APP_CONTAINER_CLASS: Dword = 29;
+    const TOKEN_APP_CONTAINER_SID_CLASS: Dword = 31;
+    const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+    const SYNCHRONIZE: Dword = 0x0010_0000;
+    const WAIT_OBJECT_0: Dword = 0;
+    const WAIT_TIMEOUT: Dword = 258;
+    const WAIT_FAILED: Dword = 0xffff_ffff;
     const SECURITY_DESCRIPTOR_REVISION: Dword = 1;
     const DACL_SECURITY_INFORMATION: Dword = 0x0000_0004;
     const SE_KERNEL_OBJECT: Dword = 6;
@@ -159,6 +188,8 @@ mod platform {
     extern "system" {
         fn GetCurrentProcess() -> Handle;
         fn GetCurrentThread() -> Handle;
+        fn GetModuleHandleW(name: *const u16) -> Handle;
+        fn GetProcAddress(module: Handle, name: *const u8) -> *const c_void;
         fn CloseHandle(handle: Handle) -> Bool;
         fn LocalFree(memory: LocalMem) -> LocalMem;
         fn CreateNamedPipeW(
@@ -172,6 +203,10 @@ mod platform {
             security_attributes: *mut SecurityAttributes,
         ) -> Handle;
         fn ConnectNamedPipe(pipe: Handle, overlapped: *mut c_void) -> Bool;
+        fn GetNamedPipeClientProcessId(pipe: Handle, client_process_id: *mut Dword) -> Bool;
+        fn OpenProcess(access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+        fn GetProcessId(process: Handle) -> Dword;
+        fn WaitForSingleObject(handle: Handle, milliseconds: Dword) -> Dword;
         fn ReadFile(
             file: Handle,
             buffer: *mut c_void,
@@ -186,7 +221,25 @@ mod platform {
             bytes_written: *mut Dword,
             overlapped: *mut c_void,
         ) -> Bool;
+        fn FlushFileBuffers(file: Handle) -> Bool;
         fn DisconnectNamedPipe(pipe: Handle) -> Bool;
+    }
+
+    fn compare_process_objects(first: Handle, second: Handle) -> Result<bool, PrivateIpcError> {
+        // The Windows SDK on the cloud runner does not include KernelBase.lib.
+        // Resolve the documented KernelBase.dll export at runtime and fail
+        // closed if it is unavailable; a PID comparison is not a substitute.
+        let module = unsafe { GetModuleHandleW(wide("KernelBase.dll").as_ptr()) };
+        if module.is_null() {
+            return Err(os_error("GetModuleHandleW(KernelBase.dll)"));
+        }
+        let address = unsafe { GetProcAddress(module, b"CompareObjectHandles\0".as_ptr()) };
+        if address.is_null() {
+            return Err(os_error("GetProcAddress(CompareObjectHandles)"));
+        }
+        let compare: unsafe extern "system" fn(Handle, Handle) -> Bool =
+            unsafe { std::mem::transmute(address) };
+        Ok(unsafe { compare(first, second) } != FALSE)
     }
 
     #[link(name = "advapi32")]
@@ -294,6 +347,30 @@ mod platform {
         }
     }
 
+    fn open_process(pid: Dword, operation: &'static str) -> Result<OwnedHandle, PrivateIpcError> {
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid) };
+        if raw.is_null() { return Err(os_error(operation)); }
+        let handle = OwnedHandle(raw);
+        let opened_pid = unsafe { GetProcessId(handle.raw()) };
+        if opened_pid == 0 { return Err(os_error("GetProcessId(user process)")); }
+        if opened_pid != pid {
+            return Err(PrivateIpcError::PeerIdentityMismatch {
+                expected: format!("opened process PID {pid}"),
+                observed: format!("opened process PID {opened_pid}"),
+            });
+        }
+        Ok(handle)
+    }
+
+    fn require_live_process(handle: Handle) -> Result<(), PrivateIpcError> {
+        match unsafe { WaitForSingleObject(handle, 0) } {
+            WAIT_TIMEOUT => Ok(()),
+            WAIT_OBJECT_0 => Err(PrivateIpcError::UserProcessNotLive),
+            WAIT_FAILED => Err(os_error("WaitForSingleObject(user process)")),
+            _ => Err(PrivateIpcError::UserProcessNotLive),
+        }
+    }
+
     fn wide(value: &str) -> Vec<u16> {
         std::ffi::OsStr::new(value)
             .encode_wide()
@@ -343,6 +420,44 @@ mod platform {
         Ok(sid)
     }
 
+    fn token_app_container_sid(token: Handle) -> Result<Option<String>, PrivateIpcError> {
+        let mut is_container = 0u32;
+        let mut returned = 0u32;
+        if unsafe { GetTokenInformation(token, TOKEN_IS_APP_CONTAINER_CLASS,
+            (&mut is_container as *mut u32).cast(), std::mem::size_of::<u32>() as u32,
+            &mut returned) } == FALSE {
+            return Err(os_error("GetTokenInformation(TokenIsAppContainer)"));
+        }
+        if returned != std::mem::size_of::<u32>() as u32 || is_container == 0 {
+            return Ok(None);
+        }
+        let mut size = 0u32;
+        unsafe { GetTokenInformation(token, TOKEN_APP_CONTAINER_SID_CLASS,
+            null_mut(), 0, &mut size); }
+        if size < std::mem::size_of::<Sid>() as u32 || size > 4096 {
+            return Err(PrivateIpcError::InvalidPackageSid);
+        }
+        let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        if unsafe { GetTokenInformation(token, TOKEN_APP_CONTAINER_SID_CLASS,
+            buffer.as_mut_ptr().cast(), size, &mut returned) } == FALSE {
+            return Err(os_error("GetTokenInformation(TokenAppContainerSid)"));
+        }
+        if returned < std::mem::size_of::<Sid>() as u32 {
+            return Err(PrivateIpcError::InvalidPackageSid);
+        }
+        let sid = buffer[0] as Sid;
+        if sid.is_null() { return Err(PrivateIpcError::InvalidPackageSid); }
+        let mut text = null_mut();
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == FALSE {
+            return Err(os_error("ConvertSidToStringSidW(package)"));
+        }
+        let allocation = OwnedLocal(text.cast());
+        let value = unsafe { wide_pointer_to_string(text) };
+        drop(allocation);
+        validate_package_sid(&value)?;
+        Ok(Some(value))
+    }
+
     pub fn current_user_sid() -> Result<String, PrivateIpcError> {
         let mut token = null_mut();
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == FALSE {
@@ -366,14 +481,49 @@ mod platform {
         handle: OwnedHandle,
         path: String,
         expected_sid: String,
+        expected_package_sid: Option<String>,
+        expected_user_process: Option<OwnedHandle>,
     }
 
     impl PrivatePipeListener {
         pub fn bind(endpoint: &str) -> Result<Self, PrivateIpcError> {
+            Self::bind_inner(endpoint, None, None)
+        }
+
+        /// Pin the desktop process object at native startup. The PID is an
+        /// input to OpenProcess, never an authorization claim from the wire.
+        pub fn bind_user(endpoint: &str, expected_pid: u32)
+            -> Result<Self, PrivateIpcError> {
+            validate_endpoint(endpoint)?;
+            if expected_pid == 0 { return Err(PrivateIpcError::InvalidUserProcess); }
+            let expected = open_process(expected_pid, "OpenProcess(expected user process)")?;
+            require_live_process(expected.raw())?;
+            Self::bind_inner(endpoint, None, Some(expected))
+        }
+
+        /// A seat pipe is still current-user local, but it additionally needs
+        /// the exact AppContainer package SID on the connected client token.
+        pub fn bind_app_container(endpoint: &str, package_sid: &str)
+            -> Result<Self, PrivateIpcError> {
+            validate_package_sid(package_sid)?;
+            Self::bind_inner(endpoint, Some(package_sid), None)
+        }
+
+        fn bind_inner(endpoint: &str, package_sid: Option<&str>, expected_user_process: Option<OwnedHandle>)
+            -> Result<Self, PrivateIpcError> {
             validate_endpoint(endpoint)?;
             let expected_sid = current_user_sid()?;
-            let path = format!(r"\\.\pipe\gogoke.current-user.v1.{endpoint}");
-            let descriptor_text = format!("D:P(A;;GA;;;{expected_sid})");
+            let path = if package_sid.is_some() {
+                format!(r"\\.\pipe\gogoke.seat.v1.{endpoint}")
+            } else if expected_user_process.is_some() {
+                format!(r"\\.\pipe\gogoke.user.v1.{endpoint}")
+            } else {
+                format!(r"\\.\pipe\gogoke.current-user.v1.{endpoint}")
+            };
+            let descriptor_text = match package_sid {
+                Some(package_sid) => format!("D:P(A;;GA;;;{expected_sid})(A;;GA;;;{package_sid})"),
+                None => format!("D:P(A;;GA;;;{expected_sid})"),
+            };
             let mut descriptor = null_mut();
             if unsafe {
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -417,6 +567,8 @@ mod platform {
                 handle: OwnedHandle(handle),
                 path,
                 expected_sid,
+                expected_package_sid: package_sid.map(str::to_owned),
+                expected_user_process,
             })
         }
 
@@ -426,6 +578,10 @@ mod platform {
 
         pub fn expected_sid(&self) -> &str {
             &self.expected_sid
+        }
+
+        pub fn expected_package_sid(&self) -> Option<&str> {
+            self.expected_package_sid.as_deref()
         }
 
         pub fn applied_dacl_sddl(&self) -> Result<String, PrivateIpcError> {
@@ -560,6 +716,27 @@ mod platform {
         }
 
         pub fn accept_current_user(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
+            if self.expected_package_sid.is_some() || self.expected_user_process.is_some() {
+                return Err(PrivateIpcError::WrongListenerMode);
+            }
+            self.accept_verified()
+        }
+
+        pub fn accept_app_container(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
+            if self.expected_package_sid.is_none() || self.expected_user_process.is_some() {
+                return Err(PrivateIpcError::WrongListenerMode);
+            }
+            self.accept_verified()
+        }
+
+        pub fn accept_user(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
+            if self.expected_user_process.is_none() || self.expected_package_sid.is_some() {
+                return Err(PrivateIpcError::WrongListenerMode);
+            }
+            self.accept_verified()
+        }
+
+        fn accept_verified(self) -> Result<PrivatePipeConnection, PrivateIpcError> {
             if unsafe { ConnectNamedPipe(self.handle.raw(), null_mut()) } == FALSE
                 && io::Error::last_os_error().raw_os_error() != Some(ERROR_PIPE_CONNECTED)
             {
@@ -603,22 +780,129 @@ mod platform {
                     observed,
                 });
             }
+            let observed_package_sid = if let Some(expected) = &self.expected_package_sid {
+                let package = token_app_container_sid(peer_token.raw())?;
+                if package.as_deref() != Some(expected.as_str()) {
+                    return Err(PrivateIpcError::PeerIdentityMismatch {
+                        expected: expected.clone(),
+                        observed: package.unwrap_or_else(|| "non-AppContainer".into()),
+                    });
+                }
+                package
+            } else { None };
             drop(_impersonation);
+            let peer_process = if observed_package_sid.is_some() {
+                let mut pid = 0;
+                if unsafe { GetNamedPipeClientProcessId(self.handle.raw(), &mut pid) } == FALSE {
+                    return Err(os_error("GetNamedPipeClientProcessId"));
+                }
+                if pid == 0 {
+                    return Err(PrivateIpcError::PeerIdentityMismatch {
+                        expected: "nonzero named-pipe client PID".into(),
+                        observed: "0".into(),
+                    });
+                }
+                // Keep the opened process object, rather than using a PID as
+                // later proof of origin. The handle is never inherited by a child.
+                let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+                if raw.is_null() {
+                    return Err(os_error("OpenProcess(named-pipe client)"));
+                }
+                let handle = OwnedHandle(raw);
+                let opened_pid = unsafe { GetProcessId(handle.raw()) };
+                if opened_pid == 0 {
+                    return Err(os_error("GetProcessId(named-pipe client)"));
+                }
+                if opened_pid != pid {
+                    return Err(PrivateIpcError::PeerIdentityMismatch {
+                        expected: format!("named-pipe client PID {pid}"),
+                        observed: format!("opened process PID {opened_pid}"),
+                    });
+                }
+                Some(PeerProcessHandle { handle, pid })
+            } else { None };
+            let user_origin_proof = if let Some(expected_process) = self.expected_user_process {
+                let mut pid = 0;
+                if unsafe { GetNamedPipeClientProcessId(self.handle.raw(), &mut pid) } == FALSE {
+                    return Err(os_error("GetNamedPipeClientProcessId(user)"));
+                }
+                if pid == 0 { return Err(PrivateIpcError::InvalidUserProcess); }
+                let peer_process = open_process(pid, "OpenProcess(named-pipe user client)")?;
+                let proof = UserOriginProof { expected_process, peer_process };
+                proof.verify_live_origin()?;
+                Some(proof)
+            } else { None };
             Ok(PrivatePipeConnection {
                 handle: self.handle,
                 peer_sid: observed,
+                peer_package_sid: observed_package_sid,
+                peer_process,
+                user_origin_proof,
             })
         }
+    }
+
+    /// Created only by acceptance of the dedicated User pipe. Its private
+    /// process handles are the kernel objects observed at startup and accept.
+    pub struct UserOriginProof {
+        expected_process: OwnedHandle,
+        peer_process: OwnedHandle,
+    }
+
+    impl UserOriginProof {
+        /// Recheck before every User operation; a PID or mode bit is not proof.
+        pub fn verify_live_origin(&self) -> Result<(), PrivateIpcError> {
+            require_live_process(self.expected_process.raw())?;
+            require_live_process(self.peer_process.raw())?;
+            if !compare_process_objects(self.expected_process.raw(), self.peer_process.raw())? {
+                return Err(PrivateIpcError::UserProcessObjectMismatch {
+                    source: io::Error::last_os_error(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// An owned process object obtained from the connected seat pipe. A PID is
+    /// diagnostic only; callers must check this handle against the active Job.
+    pub struct PeerProcessHandle {
+        handle: OwnedHandle,
+        pid: Dword,
+    }
+
+    impl PeerProcessHandle {
+        pub fn pid(&self) -> u32 { self.pid }
+
+        pub(crate) fn raw(&self) -> Handle { self.handle.raw() }
     }
 
     pub struct PrivatePipeConnection {
         handle: OwnedHandle,
         peer_sid: String,
+        peer_package_sid: Option<String>,
+        peer_process: Option<PeerProcessHandle>,
+        user_origin_proof: Option<UserOriginProof>,
     }
 
     impl PrivatePipeConnection {
         pub fn peer_sid(&self) -> &str {
             &self.peer_sid
+        }
+
+        pub fn peer_package_sid(&self) -> Option<&str> {
+            self.peer_package_sid.as_deref()
+        }
+
+        /// Move the verified seat peer to the host's authority thread once.
+        /// The pipe worker must wait for that thread's admission result before
+        /// accepting any seat frame.
+        pub fn take_peer_process(&mut self) -> Option<PeerProcessHandle> {
+            self.peer_process.take()
+        }
+
+        /// Yield the non-cloneable User origin once to the User dispatcher.
+        pub fn take_user_origin_proof(&mut self) -> Option<UserOriginProof> {
+            self.user_origin_proof.take()
         }
 
         pub fn read_frame(&self) -> Result<Vec<u8>, PrivateIpcError> {
@@ -635,6 +919,15 @@ mod platform {
             super::validate_frame_length(frame.len())?;
             self.write_all(&(frame.len() as u32).to_le_bytes())?;
             self.write_all(frame)
+        }
+
+        /// Windows may discard unread bytes when DisconnectNamedPipe closes a
+        /// byte pipe. On a final response, wait until the peer consumes it.
+        pub fn flush_for_disconnect(&self) -> Result<(), PrivateIpcError> {
+            if unsafe { FlushFileBuffers(self.handle.raw()) } == FALSE {
+                return Err(os_error("FlushFileBuffers(private IPC final reply)"));
+            }
+            Ok(())
         }
 
         fn read_exact(&self, buffer: &mut [u8]) -> Result<(), PrivateIpcError> {
@@ -705,6 +998,8 @@ mod platform {
         use super::*;
         use std::fs::OpenOptions;
         use std::io::{Read, Write};
+        use std::process::{Child, Command, Stdio};
+        use std::time::Duration;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         fn unique_endpoint(label: &str) -> String {
@@ -742,10 +1037,14 @@ mod platform {
             let path = listener.path().to_owned();
             let expected = listener.expected_sid().to_owned();
             let server = std::thread::spawn(move || {
-                let connection = listener
+                let mut connection = listener
                     .accept_current_user()
                     .expect("accept current-user client");
                 assert_eq!(connection.peer_sid(), expected);
+                assert!(connection.take_peer_process().is_none(),
+                    "legacy current-user pipe has no seat process binding");
+                assert!(connection.take_user_origin_proof().is_none(),
+                    "legacy current-user pipe cannot grant User origin");
                 assert_eq!(
                     connection.read_frame().expect("read bounded client frame"),
                     b"client"
@@ -784,11 +1083,108 @@ mod platform {
             server.join().expect("server thread");
             drop(client);
         }
+
+        #[test]
+        fn seat_pipe_rejects_a_same_user_non_app_container_client() {
+            let package_sid = crate::process::AppContainerProfile::derived_for_test(
+                "Gogoke37.SeatPipeTest").expect("derived test package")
+                .sid_identity().expect("test package SID");
+            let listener = PrivatePipeListener::bind_app_container(
+                &unique_endpoint("seat-peer"), &package_sid).expect("seat pipe");
+            assert!(listener.path().starts_with(r"\\.\pipe\gogoke.seat.v1."));
+            assert_eq!(listener.expected_package_sid(), Some(package_sid.as_str()));
+            let dacl = listener.applied_dacl_snapshot().expect("applied DACL");
+            assert!(dacl.0);
+            assert_eq!(dacl.1.len(), 2);
+            assert!(dacl.1.iter().any(|ace| ace.2 == package_sid));
+            assert!(dacl.1.iter().any(|ace| ace.2 == listener.expected_sid()));
+            let path = listener.path().to_owned();
+            let server = std::thread::spawn(move || listener.accept_app_container());
+            let mut client = OpenOptions::new().read(true).write(true).open(path).unwrap();
+            client.write_all(&[0x47]).unwrap();
+            assert!(matches!(server.join().unwrap(),
+                Err(PrivateIpcError::PeerIdentityMismatch { .. })));
+            drop(client);
+        }
+
+        #[test]
+        fn user_pipe_child_helper() {
+            let Ok(mode) = std::env::var("GOGOKE_IPC_USER_TEST_MODE") else { return; };
+            if mode == "connect" {
+                let path = std::env::var("GOGOKE_IPC_USER_TEST_PATH").expect("pipe path");
+                let mut client = (0..200)
+                    .find_map(|_| match OpenOptions::new().read(true).write(true).open(&path) {
+                        Ok(client) => Some(client),
+                        Err(_) => { std::thread::sleep(Duration::from_millis(10)); None }
+                    })
+                    .expect("connect test process to User pipe");
+                client.write_all(&[0x47]).expect("write transport preface");
+                let mut release = [0u8; 1];
+                std::io::stdin().read_exact(&mut release).expect("parent releases client");
+            } else {
+                assert_eq!(mode, "idle");
+                let mut release = [0u8; 1];
+                std::io::stdin().read_exact(&mut release).expect("parent releases process");
+            }
+        }
+
+        fn spawn_user_test_process(mode: &str, path: &str) -> Child {
+            Command::new(std::env::current_exe().expect("test executable"))
+                .args(["user_pipe_child_helper", "--nocapture"])
+                .env("GOGOKE_IPC_USER_TEST_MODE", mode)
+                .env("GOGOKE_IPC_USER_TEST_PATH", path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn distinct same-user test process")
+        }
+
+        fn release_user_test_process(child: &mut Child) {
+            child.stdin.take().expect("child stdin").write_all(&[1]).expect("release child");
+            assert!(child.wait().expect("child exit").success());
+        }
+
+        #[test]
+        fn user_pipe_binds_the_actual_client_process_object() {
+            assert!(matches!(
+                PrivatePipeListener::bind(&unique_endpoint("service-not-user"))
+                    .expect("service listener").accept_user(),
+                Err(PrivateIpcError::WrongListenerMode)
+            ));
+            assert!(matches!(
+                PrivatePipeListener::bind_user(&unique_endpoint("missing-user"), 0),
+                Err(PrivateIpcError::InvalidUserProcess)
+            ));
+            let endpoint = unique_endpoint("user-reject");
+            let path = format!(r"\\.\pipe\gogoke.user.v1.{endpoint}");
+            let mut expected = spawn_user_test_process("idle", &path);
+            let listener = PrivatePipeListener::bind_user(&endpoint, expected.id())
+                .expect("bind expected live process");
+            let mut other_same_user = spawn_user_test_process("connect", listener.path());
+            assert!(matches!(listener.accept_user(),
+                Err(PrivateIpcError::UserProcessObjectMismatch { .. })));
+            release_user_test_process(&mut other_same_user);
+            release_user_test_process(&mut expected);
+
+            let endpoint = unique_endpoint("user-admit");
+            let path = format!(r"\\.\pipe\gogoke.user.v1.{endpoint}");
+            let mut expected = spawn_user_test_process("connect", &path);
+            let listener = PrivatePipeListener::bind_user(&endpoint, expected.id())
+                .expect("bind expected live process");
+            let mut connection = listener.accept_user().expect("admit exact process object");
+            assert!(connection.take_peer_process().is_none());
+            let proof = connection.take_user_origin_proof().expect("User origin proof");
+            assert!(connection.take_user_origin_proof().is_none(), "proof moves once");
+            proof.verify_live_origin().expect("process remains live");
+            release_user_test_process(&mut expected);
+            assert!(matches!(proof.verify_live_origin(), Err(PrivateIpcError::UserProcessNotLive)));
+        }
     }
 }
 
 #[cfg(windows)]
-pub use platform::{current_user_sid, PrivatePipeConnection, PrivatePipeListener};
+pub use platform::{current_user_sid, PeerProcessHandle, PrivatePipeConnection, PrivatePipeListener, UserOriginProof};
 
 #[cfg(not(windows))]
 pub struct PrivatePipeListener;
@@ -797,6 +1193,19 @@ pub struct PrivatePipeListener;
 impl PrivatePipeListener {
     pub fn bind(endpoint: &str) -> Result<Self, PrivateIpcError> {
         validate_endpoint(endpoint)?;
+        Err(PrivateIpcError::UnsupportedPlatform)
+    }
+
+    pub fn bind_app_container(endpoint: &str, package_sid: &str)
+        -> Result<Self, PrivateIpcError> {
+        validate_endpoint(endpoint)?;
+        validate_package_sid(package_sid)?;
+        Err(PrivateIpcError::UnsupportedPlatform)
+    }
+
+    pub fn bind_user(endpoint: &str, expected_pid: u32) -> Result<Self, PrivateIpcError> {
+        validate_endpoint(endpoint)?;
+        if expected_pid == 0 { return Err(PrivateIpcError::InvalidUserProcess); }
         Err(PrivateIpcError::UnsupportedPlatform)
     }
 }
@@ -844,5 +1253,13 @@ mod portable_tests {
         assert!(peer_sid_is_admitted("S-1-5-21-100", "S-1-5-21-100"));
         assert!(!peer_sid_is_admitted("S-1-5-21-100", "S-1-5-21-101"));
         assert!(!peer_sid_is_admitted("S-1-5-21-100", ""));
+    }
+
+    #[test]
+    fn package_sid_validator_accepts_the_literal_sid_prefix() {
+        assert!(validate_package_sid("S-1-15-2-1-2-3-4-5-6-7-8").is_ok());
+        for invalid in ["S-1-15-3-1", "S-1-15-2-", "S-1-15-2-1--2", "S-1-15-2-1-", "S-1-15-2-1x"] {
+            assert!(matches!(validate_package_sid(invalid), Err(PrivateIpcError::InvalidPackageSid)));
+        }
     }
 }

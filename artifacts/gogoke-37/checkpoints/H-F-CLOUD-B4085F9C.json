@@ -1,0 +1,70 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "ACTIVE_AUTHORIZED_REPAIRS_REQUIRED",
+  "prior_stop_correction": "The missing-path inference was an unnecessary Owner touchpoint, not evidence that PR #56 lacked authority for necessary minimal L0/H/F composition. The scope request is withdrawn; preserve WIP, keep the bound contracts and security boundaries, and continue within existing authorization. This correction grants no public release, main merge or self-acceptance authority.",
+  "source_sha": "b4085f9ce175f78ce367db706a569b80bee3033a",
+  "inbox_observed": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "native_run": 36659293357,
+  "release_build": "PASS",
+  "server_tests": "PASS",
+  "lib_tests": {
+    "discovered": 523,
+    "passed": 519,
+    "failed": 4,
+    "skipped": 0
+  },
+  "focused": {
+    "passed": 17,
+    "failed": 1,
+    "skipped": 0
+  },
+  "direct_product_breakthrough": {
+    "pinned_cli_empty_home_account_read": "PASS",
+    "pinned_cli_credential_create_replace_account_read_and_durable_stop": "PASS",
+    "limit": "Actual pinned CLI in cloud LPAC, no local Win11/SAC or login-validity claim. The isolated SQLite initialization failures are resolved in these exact cases."
+  },
+  "remaining_four_failures": [
+    {
+      "test": "fixed_module_locks_bytes_identity_and_native_mapping",
+      "direct_error": "compatibility mapping lies outside locked root",
+      "next": "Compare actual fixture path spelling against RootLock canonical spelling; do not weaken root containment."
+    },
+    {
+      "test": "sealed_three_roots_are_distinct_and_reject_overlap_or_mapping_tamper",
+      "direct_error": "compatibility mapping lies outside locked root",
+      "next": "Same fixture/canonical path identity question; native multi-root caller NOT_WIRED."
+    },
+    {
+      "test": "app_container_child_writes_only_granted_fresh_directory",
+      "direct_error": "Actual LPAC cmd did not complete expected own-file rename/delete",
+      "next": "Recover cmd stderr/file outcomes before changing any permissions. Actual CLI SQLite deletion passed; this test alone does not establish another ACL defect."
+    },
+    {
+      "test": "real_custodied_git_creates_bound_linked_worktree_and_fences_unknown",
+      "direct_error": "Git worktree add returned128/Invalid argument while creating leading directories from verbatim namespace target argument",
+      "next": "Apply normal native local DOS spelling to this same trusted target path; retain all physical identity/byte pins. No retries or template workaround."
+    }
+  ],
+  "source_hygiene_run": 36659297818,
+  "source_hygiene": "PASS",
+  "desktop_run": 36659297822,
+  "desktop_at_checkpoint": "PASS_ALL_FIVE_JOBS_INCLUDING_FROZEN_REPRO_BYTE_COMPARE",
+  "evidence_hashes": {
+    "machine-result.json": "27a644a01d6aa383b4ffe03c856a9e9965950487d282fe5d986a2faf62b817d9",
+    "focused-native-worktree-core.log": "e2e950c3b8d940eb1570971d9cf408d9156c8afb11304d62035ce06f5a69a39b",
+    "focused-pinned-codex-account-read.log": "8cfb6a3632563cb956759c7f1bdd38a233a2162652fb2fb90186cc15b1bf9433",
+    "focused-pinned-codex-credential-files.log": "59e3c8863566e58b19021499a31791863d386107123e6aa6858c486fa00df52e",
+    "lib-tests.log": "212154c2def90231d051346c6043b5249b33ae62db2c1b97a3ba021eb196f0d7"
+  },
+  "scope_request": "artifacts/gogoke-37/checkpoints/NATIVE-COMPOSITION-SCOPE-REQUEST.json",
+  "preserved_wip": "Four Root-owned files unchanged in worktree plus private hashed patch; no blind commit or discard",
+  "formal_product_data": "NOT_ACCESSED_OR_CHANGED_BY_THIS_CLOUD_ONLY_SEGMENT",
+  "custody": "159 previously auto-cleanup-rejected Detours objects retained; no retry/bypass",
+  "ot4": "NOT_REQUESTED",
+  "m1_complete": false,
+  "acceptance": false,
+  "roundtrip_review": "Direct NT errors removed the SQLite failure without widening root scope. Full native suite exposed target-path and test-fixture gaps in one batch. The later path-list check incorrectly treated necessary integration as requiring another Owner authorization. Reconcile the full existing authorization and Scope Discipline before escalating; retain exact file ownership and fix the four measured failures under the current contracts.",
+  "same_production_source_cpp_shim_step": "PASS",
+  "multi_root_native_fixture": "FAIL_ROOT_CONTAINMENT_PATH_SPELLING_REQUIRES_INSTRUMENT_REVIEW"
+}

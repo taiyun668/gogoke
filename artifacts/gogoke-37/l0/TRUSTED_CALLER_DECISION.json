@@ -1,0 +1,25 @@
+{
+  "schema": "gogoke.37.l0.controller-architecture-decision.v1",
+  "decision": "NATIVE_ORIGIN_BOUND_CALLER_PER_OPERATION",
+  "source_plan_manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+  "status": "DECIDED_NOT_IMPLEMENTED",
+  "premise": "The existing authenticated Node service pipe identifies one service instance, while design 37 operations must distinguish user, lead, and seat authority across concurrent sessions.",
+  "logic_check": "A target ID or caller value selected by Node or model does not prove the request's originating seat. Native-owned I/O origin can be bound to a principal, seat, domain, generation, and current grant before the operation is accepted.",
+  "rule": [
+    "The v37 request wire does not contain caller or grant fields.",
+    "The host records the originating user or seat channel and derives caller for each operation from that native-owned binding.",
+    "A Node-forwarded invocation, if used, refers only to one host-observed call and is bound to the complete request bytes, source, generation, and host epoch; Node cannot choose a reusable seat identity.",
+    "Writes check current grant, revocation, scope, policy revision, target revision, mutation, and receipt within the existing verified database connection. Scoped reads, replay, and delivery recheck current authority.",
+    "The existing R2 service capability continues to authenticate the service only and is never promoted to a user, lead, or seat grant.",
+    "Until native origin binding exists, v37 ingress rejects without a success receipt, database write, or process launch."
+  ],
+  "existing_composition": "ProductDatabase already delegates the same verified connection, OwnerIssuer, and ProcessCustodian to store/session.rs. No change to product_database.rs is currently required.",
+  "falsifiable_checks": [
+    "Two simultaneous seat channels retain distinct native caller identity when their requests interleave.",
+    "Changing target ID or swapping a forwarded invocation does not change caller and is denied outside its grant.",
+    "A direct request on the old Node service pipe cannot perform user-only or seat-only v37 operations.",
+    "Revocation, generation change, and host restart invalidate old authority before a new write or delivery.",
+    "Legacy R2 frames and stop custody retain their prior behavior."
+  ],
+  "completion_claim": false
+}

@@ -1,0 +1,31 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "M1_IN_PROGRESS_ACTUAL_FLOW_FAILED_NOT_ACCEPTED",
+  "changed": [
+    "Every new native turn receives never approval and externalSandbox policy from H's sealed permission tier. Exact historical RPC commands retain their original bytes during recovery.",
+    "Win11 E2E candidate launch is detached from Node's kill-on-close Job, stderr goes to a unique private file, and FAIL retains the original product handle and task until normal settlement and close.",
+    "Closed-product SQLite readback refuses nonempty WAL and uses immutable reads, comparing database, WAL and SHM. Required steer consumption is checked in the exact original completed agentMessage for the matching thread and turn; optional text deltas are not a gate."
+  ],
+  "results": {
+    "frozen_source": "f52cc0a9080f0354b988af52e34c91f285dfca3d",
+    "native_run": "37110615512",
+    "independent_original_cloud_readback": "release exit0; full-lib 593/593; focused 32/32; process 1+2; shim 2/2; twelve compiled production behavior mutations failed then restored PASS; normal gates zero fail/skip",
+    "same_byte_candidate_chain": "desktop 37110617239, trusted-main signing 37113468630, installed smoke 37113551550 PASS; actual 0.1.20 installation retained original instance/home and all five formal protection fields",
+    "actual_flow": "Original codexTestM1 automatically LOGGED_IN; native question, answer receipt and same-turn steer delivery observed; original Code Mode helper launched; tool and full flow did not complete",
+    "direct_cli_policy": "Fixed CLI turn_context approval_policy=on-request, sandbox_policy=read-only; original commandExecution/requestApproval pending. H's configured NETWORKED_WRITE was absent from the outgoing turn policy",
+    "original_failure": "Real CLI observation deadline; original mutation retained, no resend",
+    "old_episode": "Generation 11 has no durable StopFact. App, host and model processes are absent. No stop request was dispatched through the expired endpoint. Original rows and capacity are preserved; no SQL reset, forged STOPPED or command replay",
+    "measurement": "Failed readonly sample left a zero-byte WAL and SHM; state.sqlite length and SHA-256 remained equal. This is a measurement side effect, not evidence of changed database contents",
+    "formal_protection": "All five fields equal after failed flow",
+    "new_source_cloud_and_actual": "0.1.21 queued source; independent focused static review has no remaining blocker; JS/Python syntax and trusted-main scope digest PASS; native/cloud/actual NOT_RUN"
+  },
+  "controller_decision": "Align CLI protocol with the already enforced LPAC tier; no new capability, directory grant, CLI modification, ordinary model process or authorization boundary. Keep the failed case as failed and verify the plan before using any separate workspace.",
+  "references": [
+    "gogo-party packages/seat-runtime/src/seat-runtime.ts: existing explicit approval policy, with its own workspace sandbox; our LPAC uses the fixed CLI's official externalSandbox turn policy instead",
+    "Existing ordinary held-product harness and repository CLI capability research; adopt retained process custody and original error capture",
+    "Official Codex 0.160.0 source a956835d020762cb2b570053af06f643a11c0ecc: TurnStart sandboxPolicy overrides current and subsequent turns; ThreadStart/Resume SandboxMode cannot express externalSandbox",
+    "Installed e2e 0.11.2 CDP disposal disconnects. Node 24.14.0/libuv 1.51.0 Windows source: non-detached child uses Node-owned kill-on-close Job. This identifies a causal mechanism, not an observed unique cause for the previous exit",
+    "SQLite official WAL guidance: mode=ro can create sidecars; immutable mode requires a closed, checkpointed database"
+  ],
+  "next": "Focused independent review and affected cloud checks; retain the original unresolved episode and capacity. V07 prohibits overlapping workspace dispatch, not all project work. Existing authorized private test operations may create a separate host worktree and User seat with the same original instance/settings if current admission permits; do not claim M2/K-WORKTREE acceptance or old-case completion. No M1 completion claim."
+}

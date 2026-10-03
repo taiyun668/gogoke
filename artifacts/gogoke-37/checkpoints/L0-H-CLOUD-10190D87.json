@@ -1,0 +1,48 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-CLOUD-10190D87",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "M1_IN_PROGRESS_NOT_ACCEPTED",
+  "source_commit": "10190d874def57ff5c2a7505a80af4ca3b14d227",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "readback": "MATCH"
+  },
+  "cloud": {
+    "run_id": 36634561919,
+    "source": "10190d874def57ff5c2a7505a80af4ca3b14d227",
+    "conclusion": "SUCCESS",
+    "native_library": { "passed": 510, "failed": 0, "ignored": 0 },
+    "release_build": "PASS",
+    "required_process_axes": "PASS",
+    "focused_probes": "PASS",
+    "server_tests": "PASS",
+    "real_pinned_codex_account_read_and_durable_stop": "PASS",
+    "native_eof_and_graceful_exit0": "PASS",
+    "bound_nonempty_directory_grant": "PASS"
+  },
+  "root_causes": [
+    "account/read completed but the no-op close hook left app-server stdin open. Closing the actual retained input gives EOF and durable stop succeeds without relaxing exit124 rejection.",
+    "The reconstructed EXPLICIT_ACCESS readback could not witness the actual ACE inheritance flag. Raw GetAce readback on the same unchanged bound-tree behavior now passes; grant scope, rights and object binding were not expanded."
+  ],
+  "owner_followup": {
+    "verbatim": "继续推进",
+    "context": "Directly follows the concrete five-file candidate-chain scope request; Controller applies this go-ahead to that narrow proposal while reserving main merge.",
+    "proposal_blob": "05e40d2664a0182e604f9734417da62bcd1d49ae",
+    "implementation": "Exclusive candidate-chain worktree based on current main; only the five requested CI files plus the supplemental scope receipt",
+    "main_merge": "NOT_AUTHORIZED_NOT_DONE"
+  },
+  "non_claims": {
+    "installed_design37_candidate": "NOT_RUN",
+    "owner_win11_product": "NOT_RUN",
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "main_or_formal_data_changed": false,
+    "self_acceptance": false
+  },
+  "next": "Finish and independently review the candidate-chain CI PR; continue H native open/authority wiring in scope. Candidate signing runs only trusted main after its merge; actual frozen-byte install and OT4 preparation follow that chain."
+}

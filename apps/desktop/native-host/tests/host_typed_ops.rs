@@ -16,11 +16,14 @@ fn write_frame(client: &mut std::fs::File, frame: &[u8]) {
     client.write_all(frame).expect("frame");
 }
 
+#[track_caller]
 fn read_frame(client: &mut std::fs::File) -> String {
     let mut length = [0u8; 4];
     client.read_exact(&mut length).expect("length");
     let mut body = vec![0u8; u32::from_le_bytes(length) as usize];
-    client.read_exact(&mut body).expect("body");
+    client.read_exact(&mut body).unwrap_or_else(|error| {
+        panic!("reply body length={}: {error}", body.len())
+    });
     String::from_utf8(body).expect("utf8")
 }
 
@@ -175,4 +178,94 @@ fn authenticated_service_uses_typed_host_without_sql_transport() {
             "second host acquired or served the verbatim spelling of the same root"
         );
     }
+}
+
+#[test]
+fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let root = std::env::temp_dir().join(format!("gogoke-desktop-host-{nonce}"));
+    std::fs::create_dir(&root).expect("root");
+    let mut child = Command::new(host())
+        .arg("--root").arg(&root)
+        .arg("--desktop-session").arg("--user-pid")
+        .arg(std::process::id().to_string())
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("desktop host");
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut locked = String::new();
+    let mut service_line = String::new();
+    let mut capability_line = String::new();
+    let mut user_line = String::new();
+    output.read_line(&mut locked).expect("locked");
+    output.read_line(&mut service_line).expect("service pipe");
+    output.read_line(&mut capability_line).expect("service capability");
+    output.read_line(&mut user_line).expect("user pipe");
+    assert!(locked.starts_with("LOCKED\t"), "{locked}");
+    assert!(service_line.starts_with("PIPE\t"), "{service_line}");
+    assert!(capability_line.starts_with("CAPABILITY\t"), "invalid capability line");
+    assert!(user_line.starts_with("USER_PIPE\t"), "{user_line}");
+    let service_path = service_line.trim_end().strip_prefix("PIPE\t").unwrap();
+    let capability = capability_line.trim_end().strip_prefix("CAPABILITY\t").unwrap();
+    let user_path = user_line.trim_end().strip_prefix("USER_PIPE\t").unwrap();
+    let mut user = OpenOptions::new().read(true).write(true).open(user_path).expect("User pipe");
+    user.write_all(&[0x47]).expect("User preface");
+    let user_request = r#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#;
+    let authenticate = format!("{{\"capability\":\"{capability}\",\"operation\":\"AuthenticateService\"}}");
+    let connect_service = || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Ok(mut service) = OpenOptions::new().read(true).write(true).open(service_path) {
+                service.write_all(&[0x47]).expect("service preface");
+                write_frame(&mut service, authenticate.as_bytes());
+                assert!(read_frame(&mut service).contains("\"authenticated\":true"));
+                return service;
+            }
+            assert!(Instant::now() < deadline, "service did not rebind");
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let mut first = connect_service();
+    write_frame(&mut first, user_request.as_bytes());
+    assert!(read_frame(&mut first).starts_with("ERR"), "service promoted User request");
+    drop(first);
+    // The same fresh request must still apply through User. A prior User
+    // commit would make an accidental service replay invisible here.
+    let caller_path = user_request.replace("\"driverId\":\"codex\"",
+        "\"driverId\":\"codex\",\"programPath\":\"C:/caller-selected.exe\"");
+    write_frame(&mut user, caller_path.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"DENIED\""),
+        "caller-selected executable was admitted");
+    write_frame(&mut user, user_request.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"APPLIED\""));
+    write_frame(&mut user, user_request.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"REPLAYED\""));
+    let changed_bytes = user_request.replace("\"driverId\":\"codex\"",
+        "\"driverId\":\"unknown\"");
+    write_frame(&mut user, changed_bytes.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"CONFLICT\""),
+        "changed bytes reused a committed request ID");
+    let stale = user_request.replace("\"requestId\":\"registerA\"",
+        "\"requestId\":\"registerStale\"")
+        .replace("\"expectedRevision\":\"0\"", "\"expectedRevision\":\"2\"");
+    write_frame(&mut user, stale.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"STALE\""),
+        "competing revision was accepted");
+    let mut second = connect_service();
+    write_frame(&mut second, br#"{"operation":"Shutdown"}"#);
+    assert!(read_frame(&mut second).starts_with("ERR"), "shared service stopped host");
+    drop(second);
+    assert!(child.try_wait().unwrap().is_none(), "service disconnect stopped host");
+    drop(user);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("host status") { break status; }
+        assert!(Instant::now() < deadline, "User disconnect did not stop host");
+        thread::sleep(Duration::from_millis(20));
+    };
+    if !status.success() {
+        let mut stderr = String::new();
+        child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+        panic!("desktop host exit: {status}; stderr={stderr}");
+    }
+    std::fs::remove_dir_all(&root).expect("owned root cleanup");
 }
