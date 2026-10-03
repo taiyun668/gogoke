@@ -63,6 +63,8 @@ fn same_record<'a>(map: &'a mut BTreeMap<String, LoginRecord>, id: &str, request
 struct NativeInstance {
     instance_id: String, driver_id: String, version: String, revision: String,
     install_state: String, login_state: String,
+    #[serde(default)]
+    new_version: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +73,8 @@ struct NativeInstances { schema: String, instances: Vec<NativeInstance> }
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InstanceView {
     instance_id: String, driver_id: String, version: String, revision: String, state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     login: Option<LoginView>,
 }
@@ -270,7 +274,8 @@ async fn page<E: LoginEnvironment>(environment: &E, sessions: &Sessions) -> Resu
             _ => "ERROR",
         };
         instances.push(InstanceView { instance_id:item.instance_id, driver_id:item.driver_id,
-            version:item.version, revision:item.revision, state:state.into(), login });
+            version:item.version, revision:item.revision, state:state.into(),
+            new_version:item.new_version, login });
     }
     Ok(InstancePage { schema:"gogoke.37.instance-page.v1", instances })
 }

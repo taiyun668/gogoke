@@ -137,6 +137,11 @@ export function Design37InstanceSection() {
                 <div className="settings-toggle-subtitle">
                   {instance.driverId} · {instance.version} · 修订 {instance.revision}
                 </div>
+                {instance.newVersion ? (
+                  <div className="settings-help">
+                    本产品固定目录已支持较新版本 {instance.newVersion}；当前实例仍使用 {instance.version}。升级需由用户手动完成，此页不会自动安装或更新实例。
+                  </div>
+                ) : null}
                 <div className="settings-help" role="status">
                   状态：{design37InstanceStateLabel(instance.state)}
                   {instance.login ? ` · 登录：${design37LoginStateLabel(instance.login.state)}` : ""}
