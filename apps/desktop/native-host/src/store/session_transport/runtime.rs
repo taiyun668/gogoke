@@ -128,6 +128,9 @@ fn lead_child_for_admission(db:&mut VerifiedDatabaseConnection<'_>,
         return Err(AdmissionError::Denied);
     }
     if child.state==SeatState::Idle && first_reserve {
+        if caller.host_request_id()!=Some(request.request_id) {
+            return Err(AdmissionError::Denied);
+        }
         seat::authorize_child_dispatch(db,caller,&child).map_err(AdmissionError::Seat)?;
         if child.generation.checked_add(1).map(|next|next.to_string()).as_deref()
             !=Some(request.generation) {return Err(AdmissionError::Denied);}
@@ -137,7 +140,7 @@ fn lead_child_for_admission(db:&mut VerifiedDatabaseConnection<'_>,
         seat::current_child_dispatch_context(db,caller,&child)
             .map_err(AdmissionError::Seat)?;
         exact_lead_reservation(db,&child,request,
-            if first_reserve {Some(request.request_id)} else {None})?;
+            Some(caller.host_request_id().ok_or(AdmissionError::Denied)?))?;
         Ok(child)
     }
 }
@@ -363,6 +366,14 @@ pub(crate) fn observe_claim(
             .map_err(|_|AtomicError::OperationConflict)?
             .ok_or(AtomicError::OperationConflict)?;
         seat::current_child_dispatch_context(db,caller,&child)
+            .map_err(|_|AtomicError::OperationConflict)?;
+        let claim=observe_claim_bound(db,domain_id,seat_id,session_id)?
+            .ok_or(AtomicError::OperationConflict)?;
+        let request=AdmissionRequest {domain_id,session_id,
+            request_id:caller.host_request_id().ok_or(AtomicError::OperationConflict)?,
+            raw_bytes:&[],instance_id:&claim.instance_id,home_id:&claim.home_id,
+            generation:&claim.generation,expected_revision:0};
+        exact_lead_reservation(db,&child,&request,Some(request.request_id))
             .map_err(|_|AtomicError::OperationConflict)?;
     }
     observe_claim_bound(db,domain_id,seat_id,session_id)
