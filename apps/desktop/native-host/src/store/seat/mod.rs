@@ -15,11 +15,13 @@ mod orchestration;
 pub(crate) use resource::{read_effective_project_parallel_cap,read_host_parallel_fact,
     refresh_host_parallel_fact_in_transaction,HostParallelFact};
 pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
-    begin_escalation,configure_call_grant,configure_escalation_route,configure_gate,
+    begin_escalation,begin_trigger_cancel,begin_trigger_register,configure_call_grant,
+    configure_escalation_route,configure_gate,
     current_call_permission_table,gate_decide,gate_submit,initialize_policy,
-    mark_escalation_unknown,settle_escalation,stage_transition,CallAction,
+    mark_escalation_unknown,mark_trigger_unknown,recover_trigger,settle_escalation,
+    settle_trigger,stage_transition,CallAction,
     CallPermissionRow,EscalationCause,EscalationIntent,GateDecision,NativeDeliveryEvidence,
-    NativeSeatCall,PolicyEvent};
+    NativeCoordinatorTriggerEvidence,NativeSeatCall,PolicyEvent,TriggerTransition};
 pub(crate) use continuity::{answer_takeover,mark_health_requested,observe_health,
     read_state_card,settle_health_receipt,takeover_questions,takeover_ready,
     update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
@@ -307,6 +309,7 @@ fn expected_schema() -> Vec<(String, String)> {
         ("gogoke_v37_seat_policy_routes".into(),policy::POLICY_ROUTES.into()),
         ("gogoke_v37_seat_policy_escalations".into(),policy::POLICY_ESCALATIONS.into()),
         ("gogoke_v37_seat_policy_events".into(),policy::POLICY_EVENTS.into()),
+        ("gogoke_v37_seat_policy_triggers".into(),policy::POLICY_TRIGGERS.into()),
         ("gogoke_v37_seat_cards".into(),continuity::CARDS.into()),
         ("gogoke_v37_seat_takeover_answers".into(),continuity::ANSWERS.into()),
         ("gogoke_v37_seat_continuity_operations".into(),continuity::OPERATIONS.into()),
@@ -325,6 +328,7 @@ fn create_e2_tables(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatE
     db.execute(resource::HOST_RESOURCES)?;
     for sql in [policy::POLICY_HEAD,policy::POLICY_GRANTS,policy::POLICY_GATES,
         policy::POLICY_ROUTES,policy::POLICY_ESCALATIONS,policy::POLICY_EVENTS,
+        policy::POLICY_TRIGGERS,
         continuity::CARDS,continuity::ANSWERS,continuity::OPERATIONS,continuity::HEALTH] {
         db.execute(sql)?;
     }

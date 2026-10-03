@@ -11,6 +11,7 @@ pub(super) const POLICY_GATES: &str = "CREATE TABLE gogoke_v37_seat_policy_gates
 pub(super) const POLICY_ROUTES: &str = "CREATE TABLE gogoke_v37_seat_policy_routes(domain_id TEXT NOT NULL,from_seat_id TEXT NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('REJECT_CAP','STALL')),to_seat_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,from_seat_id,reason)) STRICT";
 pub(super) const POLICY_ESCALATIONS: &str = "CREATE TABLE gogoke_v37_seat_policy_escalations(domain_id TEXT NOT NULL,trigger_id TEXT NOT NULL,request_id TEXT NOT NULL,from_seat_id TEXT NOT NULL,to_seat_id TEXT NOT NULL,reason TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('INTENT','UNKNOWN','DELIVERED')),delivery_receipt_id TEXT,revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,trigger_id),UNIQUE(domain_id,request_id)) STRICT";
 pub(super) const POLICY_EVENTS: &str = "CREATE TABLE gogoke_v37_seat_policy_events(domain_id TEXT NOT NULL,event_id TEXT NOT NULL,operation TEXT NOT NULL,fingerprint TEXT NOT NULL,target_id TEXT NOT NULL,policy_revision INTEGER NOT NULL,state TEXT NOT NULL,detail TEXT NOT NULL,PRIMARY KEY(domain_id,event_id)) STRICT";
+pub(super) const POLICY_TRIGGERS: &str = "CREATE TABLE gogoke_v37_seat_policy_triggers(domain_id TEXT NOT NULL,trigger_id TEXT NOT NULL,owner_seat_id TEXT NOT NULL,event_ref TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('REGISTER_INTENT','REGISTERED','CANCEL_INTENT','CANCELLED','UNKNOWN')),pending_operation TEXT NOT NULL CHECK(pending_operation IN ('REGISTER','CANCEL','NONE')),pending_request_id TEXT NOT NULL,coordinator_receipt_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,trigger_id)) STRICT";
 
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]
 pub(crate) enum CallAction { Dispatch, Review, Message, Merge }
@@ -80,6 +81,13 @@ pub(crate) fn configure_call_grant(db:&mut VerifiedDatabaseConnection<'_>,issuer
     transact(db,|db| {
         check_current_owner(db,issuer)?;
         if head_revision(db,domain)?!=expected_revision { return Err(SeatError::Conflict); }
+        let source=read(db,domain,caller)?.ok_or(SeatError::Denied)?;
+        if source.state==State::Reclaimed || (source.layer==Layer::Lead && target=="OWNER") ||
+            (action==CallAction::Dispatch && caller==target) {return Err(SeatError::Denied);}
+        if target!="MAIN" && target!="OWNER" {
+            let destination=read(db,domain,target)?.ok_or(SeatError::Denied)?;
+            if destination.state==State::Reclaimed {return Err(SeatError::Denied);}
+        }
         let next=expected_revision.checked_add(1).ok_or(SeatError::Conflict)?;
         let q=Statement::prepare(db.as_ptr(),
             "INSERT INTO main.gogoke_v37_seat_policy_grants(domain_id,caller_seat_id,target_id,action,expires_at_ms,revision) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(domain_id,caller_seat_id,target_id,action) DO UPDATE SET expires_at_ms=excluded.expires_at_ms,revision=excluded.revision")?;
@@ -101,6 +109,11 @@ pub(crate) fn authorize_current_call(db:&VerifiedDatabaseConnection<'_>,caller:&
     if caller.domain_id!=target_domain || !valid_id(target_id) { return Err(SeatError::Denied); }
     let seat=current_caller(db,caller)?;
     if seat.layer==Layer::Lead && target_id=="OWNER" { return Err(SeatError::Denied); }
+    if action==CallAction::Dispatch && target_id==caller.seat_id {return Err(SeatError::Denied);}
+    if target_id!="MAIN" && target_id!="OWNER" {
+        let target=read(db,target_domain,target_id)?.ok_or(SeatError::Denied)?;
+        if target.state==State::Reclaimed {return Err(SeatError::Denied);}
+    }
     if action==CallAction::Merge && (target_id!="MAIN" || seat.instance_id.is_empty()) {
         return Err(SeatError::Denied);
     }
@@ -356,6 +369,200 @@ pub(crate) fn stage_transition(db:&mut VerifiedDatabaseConnection<'_>,caller:&Na
 }
 
 #[derive(Clone,Debug,Eq,PartialEq)]
+pub(crate) struct TriggerTransition {
+    pub(crate) trigger_id:String,pub(crate) state:String,
+    pub(crate) revision:i64,pub(crate) external_action_authorized:bool,
+}
+
+fn trigger_row(db:&VerifiedDatabaseConnection<'_>,domain:&str,trigger_id:&str)
+    ->Result<Option<(String,String,String,String,String,String,i64)>,SeatError> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT owner_seat_id,event_ref,state,pending_operation,pending_request_id,coordinator_receipt_id,revision FROM main.gogoke_v37_seat_policy_triggers WHERE domain_id=?1 AND trigger_id=?2")?;
+    q.bind_text(1,domain)?;q.bind_text(2,trigger_id)?;
+    if !q.step_row()? {return Ok(None);}
+    let row=(q.column_text(0)?,q.column_text(1)?,q.column_text(2)?,q.column_text(3)?,
+        q.column_text(4)?,q.column_text(5)?,q.column_text(6)?.parse::<i64>()
+            .map_err(|_|SeatError::SchemaDrift)?);
+    if q.step_row()? {return Err(SeatError::SchemaDrift);}
+    Ok(Some(row))
+}
+
+/// The first transaction gives the coordinator one registration authority.
+/// The caller must never schedule again for a replayed or UNKNOWN result.
+pub(crate) fn begin_trigger_register(db:&mut VerifiedDatabaseConnection<'_>,caller:&NativeSeatCall,
+    trigger_id:&str,event_ref:&str,request_id:&str,original_raw:&[u8],
+    expected_policy_revision:i64)->Result<TriggerTransition,SeatError> {
+    validate(&caller.domain_id,trigger_id,request_id,original_raw)?;
+    if !valid_id(event_ref) {return Err(SeatError::Invalid("trigger event"));}
+    let fp=fingerprint(&["trigger-register",&caller.seat_id,trigger_id,event_ref,
+        &expected_policy_revision.to_string()],original_raw);
+    transact(db,|db| {
+        current_caller(db,caller)?;
+        if let Some(old)=prior_event(db,&caller.domain_id,request_id,"trigger-register",&fp)? {
+            let row=trigger_row(db,&caller.domain_id,trigger_id)?.ok_or(SeatError::SchemaDrift)?;
+            if old.target_id!=trigger_id||row.0!=caller.seat_id||row.1!=event_ref {
+                return Err(SeatError::Conflict);
+            }
+            return Ok(TriggerTransition {trigger_id:trigger_id.into(),state:row.2,
+                revision:row.6,external_action_authorized:false});
+        }
+        if head_revision(db,&caller.domain_id)?!=expected_policy_revision ||
+            trigger_row(db,&caller.domain_id,trigger_id)?.is_some() {return Err(SeatError::Conflict);}
+        let q=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_seat_policy_triggers(domain_id,trigger_id,owner_seat_id,event_ref,state,pending_operation,pending_request_id,coordinator_receipt_id,revision) VALUES(?1,?2,?3,?4,'REGISTER_INTENT','REGISTER',?5,'',1)")?;
+        q.bind_text(1,&caller.domain_id)?;q.bind_text(2,trigger_id)?;
+        q.bind_text(3,&caller.seat_id)?;q.bind_text(4,event_ref)?;
+        q.bind_text(5,request_id)?;q.step_done()?;
+        record_event(db,&caller.domain_id,PolicyEvent {event_id:request_id.into(),
+            operation:"trigger-register".into(),target_id:trigger_id.into(),
+            policy_revision:expected_policy_revision,state:"REGISTER_INTENT".into(),
+            detail:event_ref.into(),replayed:false},&fp)?;
+        Ok(TriggerTransition {trigger_id:trigger_id.into(),state:"REGISTER_INTENT".into(),
+            revision:1,external_action_authorized:true})
+    })
+}
+
+pub(crate) fn begin_trigger_cancel(db:&mut VerifiedDatabaseConnection<'_>,caller:&NativeSeatCall,
+    trigger_id:&str,request_id:&str,original_raw:&[u8],expected_revision:i64,
+    expected_policy_revision:i64)->Result<TriggerTransition,SeatError> {
+    validate(&caller.domain_id,trigger_id,request_id,original_raw)?;
+    let fp=fingerprint(&["trigger-cancel",&caller.seat_id,trigger_id,
+        &expected_revision.to_string(),&expected_policy_revision.to_string()],original_raw);
+    transact(db,|db| {
+        current_caller(db,caller)?;
+        if let Some(old)=prior_event(db,&caller.domain_id,request_id,"trigger-cancel",&fp)? {
+            let row=trigger_row(db,&caller.domain_id,trigger_id)?.ok_or(SeatError::SchemaDrift)?;
+            if old.target_id!=trigger_id||row.0!=caller.seat_id {return Err(SeatError::Conflict);}
+            return Ok(TriggerTransition {trigger_id:trigger_id.into(),state:row.2,
+                revision:row.6,external_action_authorized:false});
+        }
+        if head_revision(db,&caller.domain_id)?!=expected_policy_revision {return Err(SeatError::Conflict);}
+        let row=trigger_row(db,&caller.domain_id,trigger_id)?.ok_or(SeatError::Denied)?;
+        if row.0!=caller.seat_id||row.2!="REGISTERED"||row.6!=expected_revision {
+            return Err(SeatError::Denied);
+        }
+        let next=row.6.checked_add(1).ok_or(SeatError::Conflict)?;
+        let q=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seat_policy_triggers SET state='CANCEL_INTENT',pending_operation='CANCEL',pending_request_id=?1,revision=?2 WHERE domain_id=?3 AND trigger_id=?4 AND state='REGISTERED' AND revision=?5")?;
+        q.bind_text(1,request_id)?;q.bind_i64(2,next)?;
+        q.bind_text(3,&caller.domain_id)?;q.bind_text(4,trigger_id)?;
+        q.bind_i64(5,row.6)?;q.step_done()?;
+        if trigger_row(db,&caller.domain_id,trigger_id)?.ok_or(SeatError::SchemaDrift)?.6!=next {
+            return Err(SeatError::Conflict);
+        }
+        record_event(db,&caller.domain_id,PolicyEvent {event_id:request_id.into(),
+            operation:"trigger-cancel".into(),target_id:trigger_id.into(),
+            policy_revision:expected_policy_revision,state:"CANCEL_INTENT".into(),
+            detail:String::new(),replayed:false},&fp)?;
+        Ok(TriggerTransition {trigger_id:trigger_id.into(),state:"CANCEL_INTENT".into(),
+            revision:next,external_action_authorized:true})
+    })
+}
+
+/// A coordinator observation of the original trigger operation. The shared
+/// connector must verify its receipt before constructing this native value.
+pub(crate) struct NativeCoordinatorTriggerEvidence {
+    domain_id:String,trigger_id:String,request_id:String,receipt_id:String,
+    registered:bool,
+}
+impl NativeCoordinatorTriggerEvidence {
+    pub(crate) fn from_verified_coordinator(domain:&str,trigger:&str,request:&str,
+        receipt:&str,registered:bool)->Result<Self,SeatError> {
+        if [domain,trigger,request,receipt].iter().any(|value|!valid_id(value)) {
+            return Err(SeatError::Invalid("trigger receipt"));
+        }
+        Ok(Self {domain_id:domain.into(),trigger_id:trigger.into(),request_id:request.into(),
+            receipt_id:receipt.into(),registered})
+    }
+}
+
+pub(crate) fn settle_trigger(db:&mut VerifiedDatabaseConnection<'_>,
+    evidence:&NativeCoordinatorTriggerEvidence)->Result<TriggerTransition,SeatError> {
+    transact(db,|db| {
+        let row=trigger_row(db,&evidence.domain_id,&evidence.trigger_id)?
+            .ok_or(SeatError::Denied)?;
+        let expected=if evidence.registered {"REGISTER"}else{"CANCEL"};
+        let new_state=if evidence.registered {"REGISTERED"}else{"CANCELLED"};
+        if row.2==new_state && row.5==evidence.receipt_id {
+            return Ok(TriggerTransition {trigger_id:evidence.trigger_id.clone(),state:row.2,
+                revision:row.6,external_action_authorized:false});
+        }
+        if row.3!=expected||row.4!=evidence.request_id ||
+            !matches!(row.2.as_str(),"REGISTER_INTENT"|"CANCEL_INTENT"|"UNKNOWN") {
+            return Err(SeatError::Unknown);
+        }
+        let next=row.6.checked_add(1).ok_or(SeatError::Conflict)?;
+        let q=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seat_policy_triggers SET state=?1,pending_operation='NONE',coordinator_receipt_id=?2,revision=?3 WHERE domain_id=?4 AND trigger_id=?5 AND revision=?6")?;
+        q.bind_text(1,new_state)?;q.bind_text(2,&evidence.receipt_id)?;
+        q.bind_i64(3,next)?;q.bind_text(4,&evidence.domain_id)?;
+        q.bind_text(5,&evidence.trigger_id)?;q.bind_i64(6,row.6)?;q.step_done()?;
+        if trigger_row(db,&evidence.domain_id,&evidence.trigger_id)?
+            .ok_or(SeatError::SchemaDrift)?.2!=new_state {return Err(SeatError::Conflict);}
+        Ok(TriggerTransition {trigger_id:evidence.trigger_id.clone(),state:new_state.into(),
+            revision:next,external_action_authorized:false})
+    })
+}
+
+pub(crate) fn recover_trigger(db:&mut VerifiedDatabaseConnection<'_>,caller:&NativeSeatCall,
+    evidence:&NativeCoordinatorTriggerEvidence,expected_revision:i64,
+    event_id:&str,original_raw:&[u8])->Result<TriggerTransition,SeatError> {
+    validate(&caller.domain_id,&evidence.trigger_id,event_id,original_raw)?;
+    if evidence.domain_id!=caller.domain_id||!evidence.registered {
+        return Err(SeatError::Denied);
+    }
+    let fp=fingerprint(&["trigger-recover",&caller.seat_id,&evidence.trigger_id,
+        &evidence.receipt_id,&expected_revision.to_string()],original_raw);
+    transact(db,|db| {
+        current_caller(db,caller)?;
+        if let Some(old)=prior_event(db,&caller.domain_id,event_id,"trigger-recover",&fp)? {
+            let row=trigger_row(db,&caller.domain_id,&evidence.trigger_id)?
+                .ok_or(SeatError::SchemaDrift)?;
+            if old.target_id!=evidence.trigger_id||row.0!=caller.seat_id {
+                return Err(SeatError::Conflict);
+            }
+            return Ok(TriggerTransition {trigger_id:evidence.trigger_id.clone(),state:row.2,
+                revision:row.6,external_action_authorized:false});
+        }
+        let row=trigger_row(db,&caller.domain_id,&evidence.trigger_id)?
+            .ok_or(SeatError::Denied)?;
+        if row.0!=caller.seat_id||row.2!="REGISTERED"||row.6!=expected_revision||
+            row.5!=evidence.receipt_id {return Err(SeatError::Denied);}
+        let next=row.6.checked_add(1).ok_or(SeatError::Conflict)?;
+        let q=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seat_policy_triggers SET revision=?1 WHERE domain_id=?2 AND trigger_id=?3 AND state='REGISTERED' AND revision=?4")?;
+        q.bind_i64(1,next)?;q.bind_text(2,&caller.domain_id)?;
+        q.bind_text(3,&evidence.trigger_id)?;q.bind_i64(4,row.6)?;q.step_done()?;
+        if trigger_row(db,&caller.domain_id,&evidence.trigger_id)?
+            .ok_or(SeatError::SchemaDrift)?.6!=next {return Err(SeatError::Conflict);}
+        record_event(db,&caller.domain_id,PolicyEvent {event_id:event_id.into(),
+            operation:"trigger-recover".into(),target_id:evidence.trigger_id.clone(),
+            policy_revision:head_revision(db,&caller.domain_id)?,state:"REGISTERED".into(),
+            detail:evidence.receipt_id.clone(),replayed:false},&fp)?;
+        Ok(TriggerTransition {trigger_id:evidence.trigger_id.clone(),state:"REGISTERED".into(),
+            revision:next,external_action_authorized:false})
+    })
+}
+
+pub(crate) fn mark_trigger_unknown(db:&mut VerifiedDatabaseConnection<'_>,domain:&str,
+    trigger_id:&str)->Result<(),SeatError> {
+    if !valid_id(domain)||!valid_id(trigger_id) {return Err(SeatError::Invalid("trigger"));}
+    transact(db,|db| {
+        let row=trigger_row(db,domain,trigger_id)?.ok_or(SeatError::Denied)?;
+        if !matches!(row.2.as_str(),"REGISTER_INTENT"|"CANCEL_INTENT") {
+            return Err(SeatError::Unknown);
+        }
+        let q=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seat_policy_triggers SET state='UNKNOWN',revision=revision+1 WHERE domain_id=?1 AND trigger_id=?2 AND revision=?3")?;
+        q.bind_text(1,domain)?;q.bind_text(2,trigger_id)?;q.bind_i64(3,row.6)?;q.step_done()?;
+        if trigger_row(db,domain,trigger_id)?.ok_or(SeatError::SchemaDrift)?.2!="UNKNOWN" {
+            return Err(SeatError::Conflict);
+        }
+        Ok(())
+    })
+}
+
+#[derive(Clone,Debug,Eq,PartialEq)]
 pub(crate) enum EscalationCause {
     RejectCap {gate_id:String},
     Stall {health_event_id:String},
@@ -369,7 +576,7 @@ impl EscalationCause {
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub(crate) struct EscalationIntent {
     pub(crate) trigger_id:String,pub(crate) from_seat_id:String,
-    pub(crate) to_seat_id:String,pub(crate) reason:String,
+    pub(crate) to_seat_id:String,pub(crate) reason:String,pub(crate) state:String,
     pub(crate) revision:i64,pub(crate) replayed:bool,
 }
 
@@ -387,13 +594,16 @@ pub(crate) fn begin_escalation(db:&mut VerifiedDatabaseConnection<'_>,caller:&Na
     transact(db,|db| {
         let actor=current_caller(db,caller)?;
         if head_revision(db,&caller.domain_id)?!=expected_policy_revision {return Err(SeatError::Conflict);}
+        let trigger=trigger_row(db,&caller.domain_id,trigger_id)?.ok_or(SeatError::Denied)?;
+        if trigger.0!=caller.seat_id||trigger.1!=cause.evidence_id()||
+            trigger.2!="REGISTERED" {return Err(SeatError::Denied);}
         if let Some(old)=prior_event(db,&caller.domain_id,request_id,"escalate",&fp)? {
             let q=Statement::prepare(db.as_ptr(),
                 "SELECT from_seat_id,to_seat_id,reason,state,revision FROM main.gogoke_v37_seat_policy_escalations WHERE domain_id=?1 AND trigger_id=?2 AND request_id=?3")?;
             q.bind_text(1,&caller.domain_id)?;q.bind_text(2,trigger_id)?;q.bind_text(3,request_id)?;
             if !q.step_row()? || old.target_id!=trigger_id {return Err(SeatError::Conflict);}
             let intent=EscalationIntent {trigger_id:trigger_id.into(),from_seat_id:q.column_text(0)?,
-                to_seat_id:q.column_text(1)?,reason:q.column_text(2)?,
+                to_seat_id:q.column_text(1)?,reason:q.column_text(2)?,state:q.column_text(3)?,
                 revision:q.column_text(4)?.parse().map_err(|_|SeatError::SchemaDrift)?,replayed:true};
             if q.step_row()? {return Err(SeatError::SchemaDrift);}
             return Ok(intent);
@@ -431,7 +641,8 @@ pub(crate) fn begin_escalation(db:&mut VerifiedDatabaseConnection<'_>,caller:&Na
             operation:"escalate".into(),target_id:trigger_id.into(),policy_revision:expected_policy_revision,
             state:"INTENT".into(),detail:cause.evidence_id().into(),replayed:false},&fp)?;
         Ok(EscalationIntent {trigger_id:trigger_id.into(),from_seat_id:caller.seat_id.clone(),
-            to_seat_id:destination,reason:cause.reason().into(),revision:1,replayed:false})
+            to_seat_id:destination,reason:cause.reason().into(),state:"INTENT".into(),
+            revision:1,replayed:false})
     })
 }
 
@@ -467,7 +678,7 @@ pub(crate) fn settle_escalation(db:&mut VerifiedDatabaseConnection<'_>,
         if q.step_row()? || to!=evidence.to_seat_id {return Err(SeatError::Denied);}
         if state=="DELIVERED" && old_receipt==evidence.receipt_id {
             return Ok(EscalationIntent {trigger_id:evidence.trigger_id.clone(),from_seat_id:from,
-                to_seat_id:to,reason,revision,replayed:true});
+                to_seat_id:to,reason,state:"DELIVERED".into(),revision,replayed:true});
         }
         if state!="INTENT" || !old_receipt.is_empty() {return Err(SeatError::Unknown);}
         let next=revision.checked_add(1).ok_or(SeatError::Conflict)?;
@@ -477,7 +688,7 @@ pub(crate) fn settle_escalation(db:&mut VerifiedDatabaseConnection<'_>,
         update.bind_text(3,&evidence.domain_id)?;update.bind_text(4,&evidence.trigger_id)?;
         update.bind_i64(5,revision)?;update.step_done()?;
         Ok(EscalationIntent {trigger_id:evidence.trigger_id.clone(),from_seat_id:from,
-            to_seat_id:to,reason,revision:next,replayed:false})
+            to_seat_id:to,reason,state:"DELIVERED".into(),revision:next,replayed:false})
     })
 }
 

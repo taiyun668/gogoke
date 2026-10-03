@@ -1013,6 +1013,11 @@ fn e2_gate_rejection_stops_stage_and_reserves_one_escalation() {
         assert!(matches!(stage_transition(db,&submitter,"gateA",3,3,"stageA",
             b"original stage"),Err(SeatError::Denied)));
         configure_escalation_route(db,owner,"projectA","lead","REJECT_CAP","reviewer",3).unwrap();
+        assert!(begin_trigger_register(db,&submitter,"triggerA","gateA","triggerRegisterA",
+            b"original trigger register",4).unwrap().external_action_authorized);
+        let scheduled=NativeCoordinatorTriggerEvidence::from_verified_coordinator("projectA",
+            "triggerA","triggerRegisterA","scheduledA",true).unwrap();
+        assert_eq!(settle_trigger(db,&scheduled).unwrap().state,"REGISTERED");
         let first=begin_escalation(db,&submitter,EscalationCause::RejectCap {
             gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap();
         assert_eq!(first.to_seat_id,"reviewer");
@@ -1023,6 +1028,24 @@ fn e2_gate_rejection_stops_stage_and_reserves_one_escalation() {
             "reviewer","receiptA").unwrap();
         assert!(matches!(settle_escalation(db,&evidence),Err(SeatError::Unknown)),
             "an unknown send never accepts a new delivery assertion");
+        let recovered=recover_trigger(db,&submitter,&scheduled,2,"triggerRecoverA",
+            b"original trigger recover").unwrap();
+        assert_eq!(recovered.revision,3);
+        let cancel=begin_trigger_cancel(db,&submitter,"triggerA","triggerCancelA",
+            b"original trigger cancel",3,4).unwrap();
+        assert!(cancel.external_action_authorized);
+        let cancelled=NativeCoordinatorTriggerEvidence::from_verified_coordinator("projectA",
+            "triggerA","triggerCancelA","cancelledA",false).unwrap();
+        assert_eq!(settle_trigger(db,&cancelled).unwrap().state,"CANCELLED");
+        assert!(matches!(recover_trigger(db,&submitter,&scheduled,5,"lateRecover",
+            b"late recover"),Err(SeatError::Denied)));
+        configure_gate(db,owner,"projectA","gateB","lead","reviewer",
+            "draft","done",2,4).unwrap();
+        gate_submit(db,&submitter,"gateB",5,1,"submitB",b"original submit B").unwrap();
+        assert_eq!(gate_decide(db,&auditor,"gateB",GateDecision::Pass,"",5,2,
+            "decideB",b"original decision B").unwrap().state,"PASSED");
+        assert_eq!(stage_transition(db,&submitter,"gateB",5,3,"stageB",
+            b"original stage B").unwrap().state,"ADVANCED");
     });
 }
 

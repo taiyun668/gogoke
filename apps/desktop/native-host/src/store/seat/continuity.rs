@@ -280,10 +280,23 @@ pub(super) fn require_stalled_health(db:&VerifiedDatabaseConnection<'_>,domain:&
 }
 
 pub(crate) fn mark_health_requested(db:&mut VerifiedDatabaseConnection<'_>,
-    caller:&policy::NativeSeatCall,event_id:&str,session_request_id:&str)->Result<(),SeatError> {
+    caller:&policy::NativeSeatCall,event_id:&str,session_request_id:&str)->Result<bool,SeatError> {
     if !valid_id(event_id)||!valid_id(session_request_id) {return Err(SeatError::Invalid("health request"));}
     transact(db,|db| {
         let seat=policy::current_caller(db,caller)?;
+        let prior=Statement::prepare(db.as_ptr(),
+            "SELECT generation,action,state,COALESCE(session_request_id,'') FROM main.gogoke_v37_seat_health WHERE domain_id=?1 AND seat_id=?2 AND event_id=?3")?;
+        prior.bind_text(1,caller.domain_id())?;prior.bind_text(2,caller.seat_id())?;
+        prior.bind_text(3,event_id)?;
+        if !prior.step_row()? {return Err(SeatError::Denied);}
+        let generation=prior.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+        let action=prior.column_text(1)?;let state=prior.column_text(2)?;
+        let prior_request=prior.column_text(3)?;
+        if prior.step_row()?||generation!=seat.generation||!matches!(action.as_str(),"COMPACT"|"RENEW") {
+            return Err(SeatError::Denied);
+        }
+        if state=="REQUESTED" && prior_request==session_request_id {return Ok(false);}
+        if state!="OBSERVED" || !prior_request.is_empty() {return Err(SeatError::Unknown);}
         let q=Statement::prepare(db.as_ptr(),
             "UPDATE main.gogoke_v37_seat_health SET state='REQUESTED',session_request_id=?1 WHERE domain_id=?2 AND seat_id=?3 AND event_id=?4 AND generation=?5 AND action IN ('COMPACT','RENEW') AND state='OBSERVED'")?;
         q.bind_text(1,session_request_id)?;q.bind_text(2,caller.domain_id())?;
@@ -294,7 +307,7 @@ pub(crate) fn mark_health_requested(db:&mut VerifiedDatabaseConnection<'_>,
         verify.bind_text(1,caller.domain_id())?;verify.bind_text(2,event_id)?;
         if !verify.step_row()?||verify.column_text(0)?!="REQUESTED"||
             verify.column_text(1)?!=session_request_id||verify.step_row()? {return Err(SeatError::Conflict);}
-        Ok(())
+        Ok(true)
     })
 }
 
