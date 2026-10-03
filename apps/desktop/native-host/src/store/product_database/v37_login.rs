@@ -1284,7 +1284,7 @@ impl<'root> ProductDatabase<'root> {
                 == Some(owner_login_operation_id(command).as_str()) {
                 match (pending.custody.registered_driver.as_deref(),
                     pending.custody.registered_home_identity.as_ref()) {
-                    (Some("codex"), Some(_)) => self.cleanup_confirmed_owner_login_runtime(
+                    (Some("codex"), _) => self.cleanup_confirmed_owner_login_runtime(
                         &pending.instance_id, runtime, identity),
                     (Some(driver), Some(home_identity)) => self.cleanup_confirmed_provider_login_runtime(
                         &pending.instance_id, driver, home_identity, runtime, identity),
@@ -1537,14 +1537,49 @@ impl<'root> ProductDatabase<'root> {
 
     fn finish_confirmed_owner_login(&mut self, command: &OwnerLoginCommand,
         mut active: ActiveOwnerLogin, cancelled: bool, login_failure: Option<String>) -> Result<Vec<u8>> {
-        let cleanup = if active.provider.is_some() {
-            remove_owned_runtime(&active.runtime_home, &active.runtime_identity)
+        let cleanup = if let Some(provider) = active.provider.as_ref() {
+            self.cleanup_confirmed_provider_login_runtime(&active.instance_id,
+                &provider.driver_id, &provider.home.identity,
+                &active.runtime_home, &active.runtime_identity)
         } else {
             self.cleanup_confirmed_owner_login_runtime(&active.instance_id,
                 &active.runtime_home, &active.runtime_identity)
         };
-        let state_result = if cleanup.is_ok() &&
-            (login_failure.is_none() || active.provider.is_some()) {
+        if let Err(error) = cleanup {
+            let (driver, home_identity) = match active.provider.as_ref() {
+                Some(provider) => (provider.driver_id.clone(), Some(provider.home.identity.clone())),
+                None => ("codex".to_owned(), None),
+            };
+            if !active.output.is_empty() { active.output.push('\n'); }
+            active.output.push_str(&format!("owner login runtime cleanup: {error:?}"));
+            if let Some(failure) = &login_failure {
+                active.output.push('\n');
+                active.output.push_str(failure);
+            }
+            self.owner_login = Some(OwnerLoginSession::PendingAccount(PendingAccountRead {
+                instance_id: active.instance_id,
+                request_id: active.request_id,
+                expected_revision: active.expected_revision,
+                output: active.output,
+                latest_error: None,
+                custody: PendingAccountCustody {
+                    operation_id: Some(active.operation_id),
+                    prepared: Some(active.prepared),
+                    runtime_home: Some(active.runtime_home),
+                    runtime_identity: Some(active.runtime_identity),
+                    registered_driver: Some(driver),
+                    registered_home_identity: home_identity,
+                    proof: None,
+                    durable_revision: None,
+                    abort_prepared: false,
+                    released: true,
+                    frame: None,
+                    request: None,
+                },
+            }));
+            return Err(error);
+        }
+        let state_result = if login_failure.is_none() || active.provider.is_some() {
             if let Some(provider) = active.provider.take() {
                 self.provider_login_account_state(command, provider,
                     active.provider_completion_frame && !cancelled && login_failure.is_none())
@@ -1563,10 +1598,6 @@ impl<'root> ProductDatabase<'root> {
             if !active.output.is_empty() { active.output.push('\n'); }
             active.output.push_str(&format!("automatic account/read failed: {error:?}"));
         }
-        if let Err(error) = &cleanup {
-            if !active.output.is_empty() { active.output.push('\n'); }
-            active.output.push_str(&format!("owner login runtime cleanup: {error:?}"));
-        }
         if let Some(failure) = &login_failure {
             if !active.output.is_empty() { active.output.push('\n'); }
             active.output.push_str(failure);
@@ -1582,10 +1613,8 @@ impl<'root> ProductDatabase<'root> {
         if let Some(failure) = login_failure {
             // Owner-private only: neither this diagnostic nor device codes are
             // copied into the public ledger or the service response channel.
-            return Err(OrchestrationError::V37StoreFailure(format!(
-                "{failure}; runtime cleanup: {cleanup:?}")));
+            return Err(OrchestrationError::V37StoreFailure(failure));
         }
-        if let Err(error) = cleanup { return Err(error); }
         if let Err(error) = state_result { return Err(error); }
         if cancelled { return Ok(reply); }
         Ok(reply)
@@ -3006,7 +3035,7 @@ exit 0
                 crate::store::digest::content_hash(&fs::read(&powershell).unwrap()),
                 profile_id: "instanceA".into(), domain_id: "global".into(),
                 generation: "1".into() } };
-        let launch = PreparedOwnerLogin { login: login.clone(), account_read: login,
+        let launch = PreparedOwnerLogin { login: login.clone(), account_read: login.clone(),
             runtime_home: runtime.clone(), runtime_identity: runtime_identity.clone(),
             registered_driver: "opencode".into(),
             registered_home_identity: home.identity.clone() };
@@ -3034,6 +3063,54 @@ exit 0
         assert!(final_reply.contains("raw_os_error"), "recovered result retains prior failure reason");
         assert!(!runtime.exists(), "confirmed provider runtime must be removed");
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        // The ordinary confirmed-stop path has the same cleanup obligation:
+        // a Windows sharing error must retain the original released custody.
+        let (runtime, runtime_identity) = runtime_home(&home.path).unwrap();
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"providerConfirmedCleanup","expectedRevision":1}"#).unwrap();
+        let operation_id = owner_login_operation_id(&command);
+        let prepared = product.process_custodian.prepare(&login).unwrap();
+        authority::record_prepared_process(&mut product.connection, &operation_id, &prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
+        assert!(product.process_custodian.active(&prepared.ticket).unwrap()
+            .wait(Duration::from_secs(15)).unwrap());
+        let proof = product.process_custodian.stop(&prepared.ticket,
+            StopBudgets::production(), || Ok(())).unwrap();
+        let revision = authority::mark_process_stopped(&mut product.connection, &operation_id, &proof).unwrap();
+        product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+            identity: prepared.identity.clone(), proof_hash: proof.proof_hash(), durable_revision: revision,
+        }).unwrap();
+        let sentinel = runtime.join("held-confirmed-cleanup-control.bin");
+        fs::write(&sentinel, b"owned confirmed cleanup control").unwrap();
+        let held = fs::OpenOptions::new().read(true).share_mode(0x1).open(&sentinel).unwrap();
+        let active = ActiveOwnerLogin {
+            instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
+            expected_revision: command.expected_revision, operation_id, prepared,
+            runtime_home: runtime.clone(), runtime_identity,
+            output: "original CLI completed".into(), stderr_seen: 0, halted: false, rpc: None,
+            provider: Some(instance::provider_login::PreparedProviderLogin {
+                instance_id: "instanceA".into(), driver_id: "opencode".into(),
+                version: "1.18.32".into(), program_digest: login.binding.binary_digest_sha256.clone(),
+                application: powershell.clone(), home: home.clone(), login: login.clone(),
+                status: instance::provider_login::StatusObservation::Unknown("test status unused"),
+                browser: instance::provider_login::BrowserBehavior::HostOpensPrintedAuthorization,
+            }),
+            provider_completion_frame: false,
+        };
+        let error = product.finish_confirmed_owner_login(&command, active, false, None).unwrap_err();
+        assert!(format!("{error:?}").contains("raw_os_error"));
+        let pending = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(pending.contains("\"settled\":false"));
+        assert!(pending.contains("original CLI completed") && pending.contains("raw_os_error"));
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
+        let new_request = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"providerAfterConfirmedFault","expectedRevision":1}"#;
+        assert!(matches!(product.dispatch_owner_login_frame(new_request), Err(OrchestrationError::OperationConflict)));
+        drop(held);
+        let final_reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(final_reply.contains("\"settled\":true") && final_reply.contains("raw_os_error"));
+        assert!(!runtime.exists());
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
         let (next, next_identity) = runtime_home(&home.path).unwrap();
         remove_owned_runtime(&next, &next_identity).unwrap();
         product.close_checked().unwrap();

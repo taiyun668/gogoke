@@ -36,6 +36,11 @@ original in-memory `PendingAccount` stays unsettled with the raw cleanup error.
 A later status action on the same request revalidates the same home/runtime and
 retries cleanup without preparing or launching another child. A new request
 cannot replace that custody while cleanup remains pending.
+The ordinary confirmed STOPPED path retains that same released custody if
+runtime cleanup fails: same-request status/cancel only retries the original
+directory after checking its identity. Neither path reissues login or status
+while cleanup is pending. The original Windows error remains in the private
+output; Final is emitted only after cleanup succeeds.
 
 `status` is a separate `StatusObservation`. Claude's fixed `auth status --json`
 requires both a documented exit code and matching boolean `loggedIn`; any
@@ -52,6 +57,12 @@ ambiguous inventory leaves that durable observation intact, while the exact
 empty `0 credentials` inventory records LOGGED_OUT. Grok has no evidenced
 independent status command and remains Unknown. Antigravity remains Unsupported
 because its Windows keyring is shared. Codex retains its existing app-server path.
+The status CLI is separately custodied. Its final stderr tail is drained and
+captured before durable release, then included with the original exit code in
+the User-private error when a status result is unclassified due to CLI failure.
+Claude's documented exit 1 with `loggedIn:false` remains LOGGED_OUT, even
+though stdout may end at EOF without another LF frame. No status stderr or
+account fields enter the public instance journal.
 
 The caller must have established a private User-origin action. Preparation
 does not open a browser, read credentials, start a process, persist a result,
@@ -118,8 +129,11 @@ displayed but do not become process frames, status evidence, or durable facts.
 
 - Historical Room implementation: `gogo-party/packages/room/src/accounts.ts`
   (`PROVIDER_LOGIN`, `loginEnv`, `AccountStore.startLogin/probe`). It is a
-  precedent only; its Claude command spelling, Grok `--oauth`, and status
-  heuristics are not treated as proof for these fixed executables.
+  precedent for keeping a session's progress and failure output available
+  after the CLI exits. This native flow instead retains the original durable
+  STOPPED custody and runtime identity until cleanup succeeds; Room's
+  replacement/cancel behavior, Claude command spelling, Grok `--oauth`, and
+  status heuristics are not treated as proof for these fixed executables.
 - Project cross-repository research: `docs/research/2026-09-25-own-history-rework.md`,
   `docs/research/2026-09-25-parts-source-teardown.md`,
   `docs/research/2026-09-26-kernel-parts-harvest.md`,
