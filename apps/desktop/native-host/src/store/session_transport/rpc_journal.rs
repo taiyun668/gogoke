@@ -1155,6 +1155,65 @@ fn cancel_follows_prompt(db: &VerifiedDatabaseConnection<'_>, fields: &StepField
     Ok(found)
 }
 
+fn stored_initialize_id(encoded: &[u8]) -> Option<acp::RpcId> {
+    let text = std::str::from_utf8(encoded).ok()?;
+    let Json::Object(fields) = Parser::parse(text.trim_end_matches('\n')).ok()? else {
+        return None;
+    };
+    let key = |name| JsonString::from_str(name);
+    if !matches!(fields.get(&key("method")), Some(Json::String(value))
+        if value.to_well_formed_string().as_deref() == Some("initialize")) {
+        return None;
+    }
+    match fields.get(&key("id"))? {
+        Json::String(value) => Some(acp::RpcId::String(value.to_well_formed_string()?)),
+        Json::Number(value) => Some(acp::RpcId::Number(value.parse().ok()?)),
+        _ => None,
+    }
+}
+
+/// The caller's advertised flag is only a request to use the capability. Its
+/// authority comes from the original initialize ACK captured by A on this
+/// exact process, and from the journal's matching typed request ID.
+fn observed_acp_load_capability(db: &VerifiedDatabaseConnection<'_>,
+    fields: &StepFields<'_>, operation: &str) -> Result<bool> {
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes)
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.v37_ledger_raw_source r
+             ON r.operation_id=s.process_operation_id
+            AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+            AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+            AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+            AND r.generation=s.generation
+          WHERE s.domain_id=?1 AND s.session_id=?2
+            AND s.process_operation_id=?3 AND s.ticket=?4
+            AND s.custodian_nonce=?5 AND s.generation=?6
+            AND s.phase='OBSERVED' AND s.requires_response=1
+            AND r.state='NO_EVENT' AND r.no_event_reason='ACP_RPC_RESPONSE'")?;
+    for (index, value) in [fields.domain_id, fields.session_id, operation,
+        fields.custody.ticket.opaque(), fields.custody.custodian_nonce.as_str(),
+        fields.custody.binding.generation.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value)?;
+    }
+    let mut found = None;
+    while q.step_row()? {
+        let command = unhex(&q.column_text(0)?)?;
+        let Some(id) = stored_initialize_id(&command) else { continue };
+        if found.is_some() { return Err(RpcJournalError::Conflict); }
+        let response = unhex(&q.column_text(1)?)?;
+        let pending = acp::Pending { id: &id, method: acp::PendingMethod::Initialize,
+            requested_session_id: None };
+        let observation = acp::decode(&response, Some(&pending)).map_err(|error|
+            RpcJournalError::AcpDecode { reason: error.reason, raw_frame: error.raw_frame })?;
+        let acp::Observation::Initialize { declared_capabilities: Json::Object(capabilities), .. }
+            = observation else { return Err(RpcJournalError::Denied) };
+        found = Some(matches!(capabilities.get(&JsonString::from_str("loadSession")),
+            Some(Json::Bool(true))));
+    }
+    Ok(found.unwrap_or(false))
+}
+
 /// Persist INTENT before H writes ACP stdin. The returned bytes are a send
 /// permit only when disposition is NewWrite; all readbacks prohibit resend.
 pub(crate) fn prepare_acp(db: &mut VerifiedDatabaseConnection<'_>,
@@ -1170,6 +1229,12 @@ pub(crate) fn prepare_acp(db: &mut VerifiedDatabaseConnection<'_>,
             &["PREPARED", "ACTIVE"], false)?;
         let encoded = encode_acp_step(step, &driver)?;
         let pending = acp_pending(step)?;
+        if matches!(step.command, commands::AcpCommand::SessionLoad { .. }
+            | commands::AcpCommand::SessionResume { .. })
+            && !observed_acp_load_capability(db, &step.fields(), &operation)? {
+            return Err(RpcJournalError::AcpEncode(commands::EncodeError::Unsupported(
+                "session load capability not observed on this process")));
+        }
         if super::generation_change::active_for_session(db,
             step.domain_id, step.session_id)?.is_some() {
             return Err(RpcJournalError::Denied);
