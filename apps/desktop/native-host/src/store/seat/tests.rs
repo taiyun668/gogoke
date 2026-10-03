@@ -9,6 +9,7 @@ fn wire(request_id: &str) -> &'static [u8] {
     match request_id {
         "createLead" => br#"{"op":"create-from-template","requestId":"createLead","domainId":"projectA","seatId":"lead","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "createAnother" => br#"{"op":"create-from-template","requestId":"createAnother","domainId":"projectA","seatId":"another","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
+        "reviewerCreate" => br#"{"op":"create-from-template","requestId":"reviewerCreate","domainId":"projectA","seatId":"reviewer","templateId":"templateA","instanceId":"instanceA","kind":"LONG"}"#,
         "busyBind" => br#"{"op":"bind-instance","requestId":"busyBind","domainId":"projectA","seatId":"lead","expectedGeneration":2,"expectedRevision":2,"instanceId":"instanceB"}"#,
         "boundBind" => br#"{"op":"bind-instance","requestId":"boundBind","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":3,"instanceId":"instanceB"}"#,
         "changeOnce" => br#"{"op":"change-instance","requestId":"changeOnce","domainId":"projectA","seatId":"lead","expectedGeneration":3,"expectedRevision":3,"instanceId":"instanceB"}"#,
@@ -189,12 +190,38 @@ fn create_user(
     .seat
 }
 
+const E2_SETTINGS: &[u8] = br#"{"instruction":"default","model":"modelA","orchestrationScope":{"instanceIds":["instanceA","instanceB"],"maxPermissionTier":"NETWORKED_WRITE","models":["modelA"],"reasoningEfforts":["high"]},"permissionTier":"NETWORKED_WRITE","reasoningEffort":"high","takeoverQuestions":[{"id":"q","prompt":"What is the project scope?"}]}"#;
+
+fn create_e2_lead(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer)->Seat {
+    store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"projectA",
+        template_id:"templateE2",settings_json:E2_SETTINGS}).unwrap();
+    create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"projectA",seat_id:"lead",
+        template_id:"templateE2",instance_id:Some("instanceA"),kind:Kind::Long,
+        request_id:"createLead",request_bytes:wire("createLead")}).unwrap().seat
+}
+
 #[test]
 fn exact_schema_reopens_and_drift_refuses_repair() {
     fixture(|db, _| {
         initialize_schema(db).unwrap();
         db.execute("DROP TABLE gogoke_v37_seat_operations").unwrap();
         assert!(matches!(initialize_schema(db), Err(SeatError::SchemaDrift)));
+    });
+}
+
+#[test]
+fn measured_host_limit_never_writes_the_owner_project_cap() {
+    fixture(|db,owner| {
+        assert!(matches!(read_host_parallel_fact(db),Err(SeatError::Denied)));
+        set_project_parallel_cap(db,owner,"projectA",4).unwrap();
+        assert!(matches!(read_effective_project_parallel_cap(db,"projectA"),
+            Err(SeatError::Denied)));
+        let fact=transact(db,|db|refresh_host_parallel_fact_in_transaction(db)).unwrap();
+        assert!(fact.observed_parallelism>0);
+        assert_eq!(fact.machine_limit,fact.observed_parallelism);
+        let (effective,recorded)=read_effective_project_parallel_cap(db,"projectA").unwrap();
+        assert_eq!(effective,4_i64.min(recorded.machine_limit));
+        assert_eq!(read_project_parallel_cap(db,"projectA").unwrap(),4);
     });
 }
 
@@ -228,7 +255,14 @@ fn project_parallel_cap_requires_explicit_valid_owner_value() {
 fn previous_seat_schema_migrates_without_inventing_a_cap() {
     fixture(|db, owner| {
         let before = create_user(db, owner, "lead", "createLead");
-        db.execute("DROP TABLE gogoke_v37_seat_project_caps").unwrap();
+        // Build the actual old schema, including absence of later E.2 tables.
+        // Removing only the cap from the current schema creates schema drift.
+        let old_tables = previous_schema();
+        for (name, _) in expected_schema() {
+            if !old_tables.iter().any(|(old, _)| old == &name) {
+                db.execute(&format!("DROP TABLE {name}")).unwrap();
+            }
+        }
         assert_eq!(schema(db).unwrap(), previous_schema());
         initialize_schema(db).unwrap();
         assert_eq!(schema(db).unwrap(), expected_schema());
@@ -798,7 +832,7 @@ fn change_instance_rejects_unbound_seat() {
 #[test]
 fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
     fixture(|db, owner| {
-        let lead = create_user(db, owner, "lead", "createLead");
+        let lead = create_e2_lead(db, owner);
         let another = create_user(db, owner, "another", "createAnother");
         let active = set_dispatch_state(db, &lead, true).unwrap();
         let admission = NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
@@ -808,7 +842,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
             CreateSeat {
                 domain_id: "projectA",
                 seat_id: "worker",
-                template_id: "templateA",
+                template_id: "templateE2",
                 instance_id: Some("instanceA"),
                 kind: Kind::Short,
                 request_id: "createWorker",
@@ -842,7 +876,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectB",
                     seat_id: "otherProject",
-                    template_id: "templateA",
+                    template_id: "templateE2",
                     instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "otherProjectCreate",
@@ -889,7 +923,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "worker",
-                    template_id: "templateA",
+                    template_id: "templateE2",
                     instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "reuseWorker",
@@ -906,7 +940,7 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
                 CreateSeat {
                     domain_id: "projectA",
                     seat_id: "worker",
-                    template_id: "templateA",
+                    template_id: "templateE2",
                     instance_id: Some("instanceA"),
                     kind: Kind::Short,
                     request_id: "createWorker",
@@ -940,9 +974,141 @@ fn lead_only_controls_own_layer_and_reclaim_retains_identity() {
 }
 
 #[test]
+fn e2_takeover_and_current_policy_grant_are_required_for_child_dispatch() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let native=NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
+        let child=create(db,NativeOrigin::lead(&native),CreateSeat {domain_id:"projectA",
+            seat_id:"worker",template_id:"templateE2",instance_id:Some("instanceA"),
+            kind:Kind::Short,request_id:"createWorker",request_bytes:wire("createWorker")}).unwrap().seat;
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnA").unwrap();
+        assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)));
+        initialize_policy(db,owner,"projectA","draft").unwrap();
+        configure_call_grant(db,owner,"projectA","lead","worker",CallAction::Dispatch,None,1).unwrap();
+        assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)),
+            "a grant cannot replace configured takeover answers");
+        answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerA",b"original answer").unwrap();
+        assert!(takeover_ready(db,&active).unwrap());
+        authorize_child_dispatch(db,&caller,&child).unwrap();
+        assert!(matches!(authorize_current_call(db,&caller,"projectB","worker",
+            CallAction::Dispatch),Err(SeatError::Denied)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","worker"),Err(SeatError::Denied)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectB","lead"),Ok(None)));
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","lead"),Err(SeatError::Denied)));
+        configure_call_grant(db,owner,"projectA","lead","MAIN",CallAction::Merge,None,2).unwrap();
+        assert_eq!(authorize_merge_for_f2(db,&caller,"projectA","lead").unwrap(),
+            Some("turnA".into()));
+        assert_eq!(authorize_merge_for_f2(db,&caller,"projectA","worker").unwrap(),
+            Some("turnA".into()),"reviewer caller may merge another seat's stopped work");
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","missingSource"),
+            Err(SeatError::Denied)));
+        configure_call_grant(db,owner,"projectA","lead","MAIN",CallAction::Merge,Some(1),3).unwrap();
+        assert!(matches!(authorize_merge_for_f2(db,&caller,"projectA","lead"),
+            Err(SeatError::Denied)),"expired merge grant cannot be reused");
+    });
+}
+
+#[test]
+fn tuned_takeover_question_content_invalidates_old_answer_in_same_transaction() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnA").unwrap();
+        answer_takeover(db,&caller,"q","Original answer",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerA",b"original answer").unwrap();
+        assert!(takeover_ready(db,&active).unwrap());
+        let idle=set_dispatch_state(db,&active,false).unwrap();
+        let unrelated=tune(db,NativeOrigin::user(owner),SeatChange {
+            domain_id:"projectA",seat_id:"lead",expected_generation:idle.generation,
+            expected_revision:idle.revision,request_id:"tuneInstruction",
+            request_bytes:b"original instruction tune",
+        },"instruction","\"revised\"").unwrap().seat;
+        assert!(takeover_ready(db,&unrelated).unwrap(),
+            "unrelated copied-setting change preserves cited answers");
+        let changed=tune(db,NativeOrigin::user(owner),SeatChange {
+            domain_id:"projectA",seat_id:"lead",expected_generation:unrelated.generation,
+            expected_revision:unrelated.revision,request_id:"tuneQuestion",
+            request_bytes:b"original question tune",
+        },"takeoverQuestions",r#"[{"id":"q","prompt":"What changed?"}]"#).unwrap().seat;
+        assert!(!takeover_ready(db,&changed).unwrap());
+        assert!(read_state_card(db,&changed).unwrap().takeover_answers.is_empty(),
+            "same question ID with changed content has no inherited answer");
+    });
+}
+
+#[test]
+fn e2_gate_rejection_stops_stage_and_reserves_one_escalation() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let reviewer=create_user(db,owner,"reviewer","reviewerCreate");
+        let lead=set_dispatch_state(db,&lead,true).unwrap();
+        let reviewer=set_dispatch_state(db,&reviewer,true).unwrap();
+        let submitter=NativeSeatCall::from_verified_h_turn(&lead,"turnLead").unwrap();
+        let auditor=NativeSeatCall::from_verified_h_turn(&reviewer,"turnReview").unwrap();
+        assert_eq!(initialize_policy(db,owner,"projectA","draft").unwrap(),1);
+        assert_eq!(configure_call_grant(db,owner,"projectA","lead","reviewer",
+            CallAction::Review,None,1).unwrap(),2);
+        assert_eq!(configure_gate(db,owner,"projectA","gateA","lead","reviewer",
+            "draft","done",1,2).unwrap(),3);
+        gate_submit(db,&submitter,"gateA",3,1,"submitA",b"original submit").unwrap();
+        let rejected=gate_decide(db,&auditor,"gateA",GateDecision::Reject,"needs source",
+            3,2,"decideA",b"original decision").unwrap();
+        assert_eq!(rejected.state,"ESCALATION_REQUIRED");
+        assert!(matches!(stage_transition(db,&submitter,"gateA",3,3,"stageA",
+            b"original stage"),Err(SeatError::Denied)));
+        configure_escalation_route(db,owner,"projectA","lead","REJECT_CAP","reviewer",3).unwrap();
+        assert!(begin_trigger_register(db,&submitter,"triggerA","gateA","triggerRegisterA",
+            b"original trigger register",4).unwrap().external_action_authorized);
+        let scheduled=NativeCoordinatorTriggerEvidence::from_verified_coordinator("projectA",
+            "triggerA","triggerRegisterA","scheduledA",true).unwrap();
+        assert_eq!(settle_trigger(db,&scheduled).unwrap().state,"REGISTERED");
+        let first=begin_escalation(db,&submitter,EscalationCause::RejectCap {
+            gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap();
+        assert_eq!(first.to_seat_id,"reviewer");
+        assert!(begin_escalation(db,&submitter,EscalationCause::RejectCap {
+            gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap().replayed);
+        mark_escalation_unknown(db,"projectA","triggerA").unwrap();
+        let uncertain=begin_escalation(db,&submitter,EscalationCause::RejectCap {
+            gate_id:"gateA".into()},"triggerA","escalateA",b"original escalate",4).unwrap();
+        assert!(uncertain.replayed && uncertain.state=="UNKNOWN");
+        let wrong=NativeDeliveryEvidence::from_verified_c_delivery("projectA","triggerA",
+            "otherRequest","reviewer","receiptA").unwrap();
+        assert!(matches!(settle_escalation(db,&wrong),Err(SeatError::Denied)));
+        let evidence=NativeDeliveryEvidence::from_verified_c_delivery("projectA","triggerA",
+            "escalateA","reviewer","receiptA").unwrap();
+        assert_eq!(settle_escalation(db,&evidence).unwrap().state,"DELIVERED");
+        assert!(settle_escalation(db,&evidence).unwrap().replayed);
+        let conflicting=NativeDeliveryEvidence::from_verified_c_delivery("projectA","triggerA",
+            "escalateA","reviewer","differentReceipt").unwrap();
+        assert!(matches!(settle_escalation(db,&conflicting),Err(SeatError::Unknown)),
+            "a second different receipt cannot replace the original");
+        let recovered=recover_trigger(db,&submitter,&scheduled,2,"triggerRecoverA",
+            b"original trigger recover").unwrap();
+        assert_eq!(recovered.revision,3);
+        let cancel=begin_trigger_cancel(db,&submitter,"triggerA","triggerCancelA",
+            b"original trigger cancel",3,4).unwrap();
+        assert!(cancel.external_action_authorized);
+        let cancelled=NativeCoordinatorTriggerEvidence::from_verified_coordinator("projectA",
+            "triggerA","triggerCancelA","cancelledA",false).unwrap();
+        assert_eq!(settle_trigger(db,&cancelled).unwrap().state,"CANCELLED");
+        assert!(matches!(recover_trigger(db,&submitter,&scheduled,5,"lateRecover",
+            b"late recover"),Err(SeatError::Denied)));
+        configure_gate(db,owner,"projectA","gateB","lead","reviewer",
+            "draft","done",2,4).unwrap();
+        gate_submit(db,&submitter,"gateB",5,1,"submitB",b"original submit B").unwrap();
+        assert_eq!(gate_decide(db,&auditor,"gateB",GateDecision::Pass,"",5,2,
+            "decideB",b"original decision B").unwrap().state,"PASSED");
+        assert_eq!(stage_transition(db,&submitter,"gateB",5,3,"stageB",
+            b"original stage B").unwrap().state,"ADVANCED");
+    });
+}
+
+#[test]
 fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
     fixture(|db, owner| {
-        let lead = create_user(db, owner, "lead", "createLead");
+        let lead = create_e2_lead(db, owner);
         let active = set_dispatch_state(db, &lead, true).unwrap();
         let admission = NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
         let worker = create(
@@ -951,7 +1117,7 @@ fn old_lead_change_replay_is_denied_after_admission_generation_changes() {
             CreateSeat {
                 domain_id: "projectA",
                 seat_id: "worker",
-                template_id: "templateA",
+                template_id: "templateE2",
                 instance_id: Some("instanceA"),
                 kind: Kind::Short,
                 request_id: "createWorker",

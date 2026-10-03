@@ -14,6 +14,8 @@ use crate::root::{inspect_root, RootIdentity};
 mod directed_trace;
 #[path = "v37_login_cache.rs"]
 mod login_cache;
+#[path = "v37_login_provider.rs"]
+mod provider_runtime;
 use crate::store::atomic::Parser;
 use crate::store::instance::{InstanceObservation, ObservationRequest};
 use std::fs;
@@ -79,6 +81,8 @@ pub(super) struct PreparedOwnerLogin {
     pub(super) account_read: PrepareRequest,
     pub(super) runtime_home: PathBuf,
     pub(super) runtime_identity: RootIdentity,
+    pub(super) registered_driver: String,
+    pub(super) registered_home_identity: RootIdentity,
 }
 
 /// In-memory Owner action state. ProductDatabase owns one of these beside its
@@ -113,9 +117,12 @@ struct PendingAccountCustody {
     prepared: Option<PreparedCustody>,
     runtime_home: Option<PathBuf>,
     runtime_identity: Option<RootIdentity>,
+    registered_driver: Option<String>,
+    registered_home_identity: Option<RootIdentity>,
     proof: Option<NativeStopProof>,
     durable_revision: Option<u64>,
     abort_prepared: bool,
+    released: bool,
     frame: Option<OriginBoundFrame>,
     request: Option<V37Request>,
 }
@@ -154,7 +161,9 @@ fn account_prepare_failure(launch: &PreparedOwnerLogin, error: ProcessCustodyErr
         pending: unconfirmed.then(|| PendingAccountCustody {
             operation_id: None, prepared: None,
             runtime_home: Some(launch.runtime_home.clone()), runtime_identity: Some(launch.runtime_identity.clone()),
-            proof: None, durable_revision: None, abort_prepared: false, frame: None, request: None,
+            registered_driver: Some(launch.registered_driver.clone()),
+            registered_home_identity: Some(launch.registered_home_identity.clone()),
+            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, request: None,
         }),
     }
 }
@@ -177,6 +186,8 @@ pub(super) struct ActiveOwnerLogin {
     stderr_seen: usize,
     halted: bool,
     rpc: Option<LoginRpc>,
+    provider: Option<instance::provider_login::PreparedProviderLogin>,
+    provider_completion_frame: bool,
 }
 
 struct LoginRpc {
@@ -860,7 +871,9 @@ impl<'root> ProductDatabase<'root> {
         if let Some(session) = &self.owner_login {
             return Ok(match session {
                 OwnerLoginSession::Active(active) => owner_login_reply(command,
-                    if active.halted { "UNKNOWN" } else { "PENDING" }, &active.output),
+                    if active.halted { "UNKNOWN" } else { "PENDING" },
+                    &if active.provider.is_some() { self.provider_display_output(active) }
+                        else { active.output.clone() }),
                 OwnerLoginSession::PendingFirstStop(pending) => owner_login_reply(command,
                     "UNKNOWN", &pending_first_stop_output(pending)),
                 OwnerLoginSession::PendingAccount(pending) =>
@@ -874,6 +887,11 @@ impl<'root> ProductDatabase<'root> {
         if current != command.expected_revision {
             return Err(self.settle_owner_login_preflight_error(command,
                 OrchestrationError::OperationConflict));
+        }
+        let row = self.read_registered_instance(&command.instance_id)?
+            .ok_or_else(|| self.settle_owner_login_preflight_error(command, OrchestrationError::AccessDenied))?;
+        if row.driver_id != "codex" {
+            return self.begin_registered_provider_login(command);
         }
         let launch = self.prepare_owner_codex_login(&command.instance_id)
             .map_err(|error| self.settle_owner_login_preflight_error(command, error))?;
@@ -891,7 +909,9 @@ impl<'root> ProductDatabase<'root> {
         let custody = |proof: Option<NativeStopProof>, abort_prepared| PendingAccountCustody {
             operation_id:Some(operation_id.clone()),prepared:Some(prepared.clone()),
             runtime_home:Some(launch.runtime_home.clone()),runtime_identity:Some(launch.runtime_identity.clone()),
-            proof,durable_revision:None,abort_prepared,frame:None,request:None,
+            registered_driver:Some(launch.registered_driver.clone()),
+            registered_home_identity:Some(launch.registered_home_identity.clone()),
+            proof,durable_revision:None,abort_prepared,released:false,frame:None,request:None,
         };
         if let Err(error) = authority::record_prepared_process(
             &mut self.connection, &operation_id, &prepared,
@@ -942,6 +962,8 @@ impl<'root> ProductDatabase<'root> {
             rpc: Some(LoginRpc { phase: LoginRpcPhase::SendInitialize,
                 login_id: None, early_completion: None, response_started: Instant::now(),
                 stdout_seen: 0, frames_seen: 0 }),
+            provider: None,
+            provider_completion_frame: false,
         }));
         Ok(owner_login_reply(command, "PENDING", ""))
     }
@@ -964,7 +986,9 @@ impl<'root> ProductDatabase<'root> {
                 return self.progress_pending_account(command, pending),
         };
         if active.halted {
-            let reply = owner_login_reply(command, "UNKNOWN", &active.output);
+            let output = if active.provider.is_some() { self.provider_display_output(&active) }
+                else { active.output.clone() };
+            let reply = owner_login_reply(command, "UNKNOWN", &output);
             self.owner_login = Some(OwnerLoginSession::Active(active));
             return Ok(reply);
         }
@@ -1014,8 +1038,14 @@ impl<'root> ProductDatabase<'root> {
                         Err(error) => Err(error),
                     };
                 }
+                if active.provider.as_ref().is_some_and(|provider| provider.driver_id == "opencode")
+                    && provider_runtime::opencode_login_success_frame(output.bytes()) {
+                    active.provider_completion_frame = true;
+                }
                 active.output.push_str(&String::from_utf8_lossy(output.bytes()));
-                let reply = owner_login_reply(command, "PENDING", &active.output);
+                let visible = if active.provider.is_some() { self.provider_display_output(&active) }
+                    else { active.output.clone() };
+                let reply = owner_login_reply(command, "PENDING", &visible);
                 self.owner_login = Some(OwnerLoginSession::Active(active));
                 Ok(reply)
             }
@@ -1035,7 +1065,9 @@ impl<'root> ProductDatabase<'root> {
                 };
                 if exited { self.finish_owner_device_login(command, active, false, None) }
                 else {
-                    let reply = owner_login_reply(command, "PENDING", &active.output);
+                    let visible = if active.provider.is_some() { self.provider_display_output(&active) }
+                        else { active.output.clone() };
+                    let reply = owner_login_reply(command, "PENDING", &visible);
                     self.owner_login = Some(OwnerLoginSession::Active(active));
                     Ok(reply)
                 }
@@ -1188,7 +1220,9 @@ impl<'root> ProductDatabase<'root> {
                 Ok(reply)
             }
             OwnerLoginSession::Active(active) if active.halted => {
-                let reply = owner_login_reply(command, "UNKNOWN", &active.output);
+                let output = if active.provider.is_some() { self.provider_display_output(&active) }
+                    else { active.output.clone() };
+                let reply = owner_login_reply(command, "UNKNOWN", &output);
                 self.owner_login = Some(OwnerLoginSession::Active(active));
                 Ok(reply)
             }
@@ -1202,9 +1236,11 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn release_pending_account_custody(&mut self, custody: &mut PendingAccountCustody) -> Result<bool> {
+        if custody.released { return Ok(true); }
         let Some(prepared) = custody.prepared.as_ref() else { return Ok(false); };
         if custody.abort_prepared {
             self.process_custodian.abort_prepared(prepared)?;
+            custody.released = true;
             return Ok(true);
         }
         let Some(operation_id) = custody.operation_id.as_deref() else { return Ok(false); };
@@ -1223,6 +1259,7 @@ impl<'root> ProductDatabase<'root> {
             identity: prepared.identity.clone(), proof_hash: proof.proof_hash(),
             durable_revision: revision,
         })?;
+        custody.released = true;
         Ok(true)
     }
 
@@ -1245,11 +1282,27 @@ impl<'root> ProductDatabase<'root> {
             &pending.custody.runtime_identity) {
             let cleanup = if pending.custody.operation_id.as_deref()
                 == Some(owner_login_operation_id(command).as_str()) {
-                self.cleanup_confirmed_owner_login_runtime(&pending.instance_id, runtime, identity)
+                match (pending.custody.registered_driver.as_deref(),
+                    pending.custody.registered_home_identity.as_ref()) {
+                    (Some("codex"), Some(_)) => self.cleanup_confirmed_owner_login_runtime(
+                        &pending.instance_id, runtime, identity),
+                    (Some(driver), Some(home_identity)) => self.cleanup_confirmed_provider_login_runtime(
+                        &pending.instance_id, driver, home_identity, runtime, identity),
+                    _ => Err(OrchestrationError::AccessDenied),
+                }
             } else { remove_owned_runtime(runtime, identity) };
             if let Err(error) = cleanup {
-                pending.output.push_str(&format!("\naccount/read runtime cleanup: {error:?}"));
+                pending.latest_error = Some(format!("account/read runtime cleanup: {error:?}"));
+                let output = format!("{}\n{}", pending.output,
+                    pending.latest_error.as_deref().unwrap());
+                let reply = owner_login_reply(command, "UNKNOWN", &output);
+                self.owner_login = Some(OwnerLoginSession::PendingAccount(pending));
+                return Ok(reply);
             }
+        }
+        if let Some(previous) = pending.latest_error.take() {
+            pending.output.push('\n');
+            pending.output.push_str(&previous);
         }
         let state = match (&pending.custody.request, &pending.custody.prepared,
             &pending.custody.frame) {
@@ -1365,6 +1418,13 @@ impl<'root> ProductDatabase<'root> {
                     "owner login stop: {error:?}; protocol: {inflight_failure:?}; unknown record: {unknown:?}")));
             }
         };
+        let provider_stdout_failure = if active.provider.is_some()
+            && proof.writer_fence_verified && proof.active_job_processes == Some(0) {
+            self.append_provider_final_stdout(&mut active).err()
+                .map(|error| format!("provider login stdout drain: {error:?}"))
+        } else if active.provider.is_some() {
+            Some("provider login stdout not final before writer fence".into())
+        } else { None };
         let process = self.process_custodian.active(&active.prepared.ticket)
             .ok_or(OrchestrationError::AccessDenied)?;
         let drain_failure = if proof.writer_fence_verified && proof.active_job_processes == Some(0) {
@@ -1376,7 +1436,7 @@ impl<'root> ProductDatabase<'root> {
         let stderr = process.stderr_tail();
         let live_failure = self.append_owner_login_stderr(&mut active).err()
             .map(|error| format!("owner login stderr: {error:?}"));
-        let failures: Vec<String> = [inflight_failure, drain_failure, live_failure]
+        let failures: Vec<String> = [inflight_failure, provider_stdout_failure, drain_failure, live_failure]
             .into_iter().flatten().collect();
         let stderr_capture_failure = (!failures.is_empty()).then(|| failures.join("; "));
         if let Some(error) = &stderr_capture_failure {
@@ -1460,6 +1520,13 @@ impl<'root> ProductDatabase<'root> {
             if runtime.parent() != Some(home.path.as_path()) {
                 return Err(OrchestrationError::AccessDenied);
             }
+            checked_directory(runtime)?;
+            let current_runtime = inspect_root(runtime).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!(
+                    "login cleanup runtime identity: {error:?}")))?;
+            if &current_runtime.identity != identity {
+                return Err(OrchestrationError::AccessDenied);
+            }
             // Preparation strictly verified the whole original home before
             // this fixed ordinary login ran. Only this Windows-generated
             // cache entry is unlinked after durable Job/writer stop, before
@@ -1470,10 +1537,18 @@ impl<'root> ProductDatabase<'root> {
 
     fn finish_confirmed_owner_login(&mut self, command: &OwnerLoginCommand,
         mut active: ActiveOwnerLogin, cancelled: bool, login_failure: Option<String>) -> Result<Vec<u8>> {
-        let cleanup = self.cleanup_confirmed_owner_login_runtime(&active.instance_id,
-            &active.runtime_home, &active.runtime_identity);
-        let state_result = if cleanup.is_ok() && login_failure.is_none() {
-            self.owner_login_account_state(command)
+        let cleanup = if active.provider.is_some() {
+            remove_owned_runtime(&active.runtime_home, &active.runtime_identity)
+        } else {
+            self.cleanup_confirmed_owner_login_runtime(&active.instance_id,
+                &active.runtime_home, &active.runtime_identity)
+        };
+        let state_result = if cleanup.is_ok() &&
+            (login_failure.is_none() || active.provider.is_some()) {
+            if let Some(provider) = active.provider.take() {
+                self.provider_login_account_state(command, provider,
+                    active.provider_completion_frame && !cancelled && login_failure.is_none())
+            } else { self.owner_login_account_state(command) }
         } else {
             Ok("UNKNOWN".to_owned())
         };
@@ -1517,6 +1592,19 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn owner_login_account_state(&mut self, command: &OwnerLoginCommand) -> Result<String> {
+        let row = self.read_registered_instance(&command.instance_id)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if row.driver_id != "codex" {
+            let provider = match instance::provider_login::prepare_registered_provider_login(
+                &mut self.connection, self.root, &self.owner, &command.instance_id)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!(
+                    "registered provider status preparation: {error:?}")))? {
+                instance::provider_login::LoginPreparation::Ready(prepared) => prepared,
+                instance::provider_login::LoginPreparation::Unsupported { .. } =>
+                    return Ok("UNKNOWN".into()),
+            };
+            return self.provider_login_account_state(command, provider, false);
+        }
         let request_id = format!("{}-account-read", command.request_id);
         let raw_bytes = format!("owner-login-account-read:{}:{}",
             command.instance_id, command.request_id).into_bytes();
@@ -1642,6 +1730,8 @@ impl<'root> ProductDatabase<'root> {
             account_read: PrepareRequest { launch: account_read, binding },
             runtime_home: runtime,
             runtime_identity,
+            registered_driver: "codex".into(),
+            registered_home_identity: home.identity,
         })
     }
 
@@ -1777,7 +1867,8 @@ impl<'root> ProductDatabase<'root> {
                 operation_id: Some(operation_id.clone()), prepared: Some(prepared.clone()),
                 runtime_home: Some(prepared_login.runtime_home.clone()),
                 runtime_identity: Some(prepared_login.runtime_identity.clone()),
-                proof, durable_revision, abort_prepared, frame: None,
+                registered_driver: None, registered_home_identity: None,
+                proof, durable_revision, abort_prepared, released: false, frame: None,
                 request: Some(V37Request {
                     raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
                     operation: request.operation.clone(), request_id: request.request_id.clone(),
@@ -2160,7 +2251,7 @@ mod tests {
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         // A signed system runtime is a controlled native pipe fixture only;
         // the production login command and registered auth home stay intact.
@@ -2191,7 +2282,8 @@ mod tests {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
-            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)),
+            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)), provider: None,
+            provider_completion_frame: false,
         }));
         let deadline = Instant::now() + Duration::from_secs(45);
         let mut settled = None;
@@ -2225,7 +2317,7 @@ mod tests {
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -2255,7 +2347,8 @@ mod tests {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
             runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false,
-            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)),
+            rpc: Some(test_rpc_waiting(LoginRpcPhase::Initialize)), provider: None,
+            provider_completion_frame: false,
         }));
         let _ = product.status_owner_device_login(&command);
         let reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
@@ -2560,7 +2653,7 @@ exit 0
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         // The actual pinned CLI's parser emits stderr and exits 2 before any
         // device-auth request. No credentials, provider request or fake binary.
@@ -2579,7 +2672,8 @@ exit 0
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id,
             prepared, runtime_home: runtime_home.clone(), runtime_identity,
-            output: String::new(), stderr_seen: 0, halted: false, rpc: None,
+            output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
+            provider_completion_frame: false,
         }));
         let active = String::from_utf8(product.begin_owner_device_login(&command).unwrap()).unwrap();
         assert!(active.contains("\"state\":\"PENDING\""));
@@ -2628,7 +2722,7 @@ exit 0
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         login.launch.arguments = vec!["login".into(), "--gogoke-invalid-login-control".into()];
         let prepared = product.process_custodian.prepare(&login).unwrap();
@@ -2644,7 +2738,8 @@ exit 0
         product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id, prepared,
-            runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None,
+            runtime_home: runtime_home.clone(), runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
+            provider_completion_frame: false,
         }));
         let reply = match product.cancel_owner_device_login(&command) {
             Ok(reply) => reply,
@@ -2877,6 +2972,74 @@ exit 0
     }
 
     #[test]
+    fn provider_active_record_failure_releases_only_original_registered_runtime() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-provider-stop-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let program = instance::ProgramObservation::observe(&powershell, "1.18.32").unwrap();
+        let register = request("register", "registerProvider", 0,
+            r#"{"driverId":"opencode"}"#);
+        assert_eq!(instance::register_instance(&mut product.connection, &root,
+            &instance::Registration { request_id: &register.request_id,
+                request_bytes: &register.raw_bytes, instance_id: "instanceA",
+                driver_id: "opencode", program: &program }).unwrap(),
+            RegistrationDisposition::Applied);
+        let home = instance::provider_login::resolve_registered_login_home(
+            &mut product.connection, &root, &product.owner, "instanceA", "opencode").unwrap();
+        let (runtime, runtime_identity) = runtime_home(&home.path).unwrap();
+        let mut child = ProcessLaunch::new(powershell.clone());
+        child.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+            "-Command".into(), "exit 0".into()];
+        child.current_directory = Some(home.path.clone());
+        child.protocol_stdio = true;
+        child.persistent_protocol_stdio = true;
+        let login = PrepareRequest { launch: child,
+            binding: NativeBinding { binary_digest_sha256:
+                crate::store::digest::content_hash(&fs::read(&powershell).unwrap()),
+                profile_id: "instanceA".into(), domain_id: "global".into(),
+                generation: "1".into() } };
+        let launch = PreparedOwnerLogin { login: login.clone(), account_read: login,
+            runtime_home: runtime.clone(), runtime_identity: runtime_identity.clone(),
+            registered_driver: "opencode".into(),
+            registered_home_identity: home.identity.clone() };
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"providerActiveFault","expectedRevision":1}"#).unwrap();
+        product.connection.execute("CREATE TRIGGER fail_provider_active BEFORE UPDATE OF state ON gogoke_coordination_process_custody WHEN NEW.state='ACTIVE' AND NEW.operation_id LIKE 'owner-login-%' BEGIN SELECT RAISE(ABORT,'controlled provider active record failure'); END").unwrap();
+        let error = product.start_owner_device_login(&command, launch,
+            |custodian, prepared| custodian.activate(prepared)).unwrap_err();
+        product.connection.execute("DROP TRIGGER fail_provider_active").unwrap();
+        assert!(format!("{error:?}").contains("controlled provider active record failure"));
+        let sentinel = runtime.join("held-cleanup-control.bin");
+        fs::write(&sentinel, b"owned cleanup control").unwrap();
+        let held = fs::OpenOptions::new().read(true).share_mode(0x1).open(&sentinel).unwrap();
+        let result = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(result.contains("\"settled\":false"), "failed cleanup retains original request");
+        assert!(result.contains("\"state\":\"UNKNOWN\""));
+        assert!(result.contains("raw_os_error"), "private result preserves original Windows failure");
+        assert!(runtime.exists(), "failed cleanup retains exact host-owned runtime");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        let new_request = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"providerNewRequest","expectedRevision":1}"#;
+        assert!(matches!(product.dispatch_owner_login_frame(new_request), Err(OrchestrationError::OperationConflict)),
+            "new User intent cannot replace retained cleanup custody");
+        drop(held);
+        let final_reply = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(final_reply.contains("\"settled\":true"), "same request reconciles cleanup after exact handle release");
+        assert!(final_reply.contains("raw_os_error"), "recovered result retains prior failure reason");
+        assert!(!runtime.exists(), "confirmed provider runtime must be removed");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        let (next, next_identity) = runtime_home(&home.path).unwrap();
+        remove_owned_runtime(&next, &next_identity).unwrap();
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn owner_account_preparation_distinguishes_confirmed_abort_from_unconfirmed_custody() {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -2928,7 +3091,7 @@ exit 0
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         // This first child uses the real pinned CLI and exits successfully
         // without authenticating. The automatic second child remains the
@@ -2948,7 +3111,8 @@ exit 0
         let active = ActiveOwnerLogin {
             instance_id: command.instance_id.clone(), request_id: command.request_id.clone(),
             expected_revision: command.expected_revision, operation_id,
-            prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None,
+            prepared, runtime_home, runtime_identity, output: String::new(), stderr_seen: 0, halted: false, rpc: None, provider: None,
+            provider_completion_frame: false,
         };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(format!("{error:?}").contains("controlled account stop record failure"));
@@ -2982,7 +3146,7 @@ exit 0
         // A later login child can stop successfully while account/read fails
         // before preparation. Its retained Final must keep that raw cause.
         product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.160.0' WHERE instance_id='instanceA'").unwrap();
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         login.launch.arguments = vec!["--version".into()];
         let prepared = product.process_custodian.prepare(&login).unwrap();
@@ -2995,7 +3159,7 @@ exit 0
         assert!(product.process_custodian.active(&prepared.ticket).unwrap().wait(Duration::from_secs(15)).unwrap());
         product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
         let active = ActiveOwnerLogin { instance_id:command.instance_id.clone(),request_id:command.request_id.clone(),
-            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false,rpc:None };
+            expected_revision:2,operation_id,prepared,runtime_home,runtime_identity,output:String::new(),stderr_seen:0,halted:false,rpc:None,provider:None,provider_completion_frame:false };
         let error = product.finish_owner_device_login(&command, active, false, None).unwrap_err();
         assert!(matches!(&error, OrchestrationError::AccessDenied));
         let final_readback = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();

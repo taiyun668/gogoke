@@ -27,6 +27,17 @@ Inputs accept the earlier `gogoke.37.private-direct-frames.v1` plus `gogoke.37.a
 
 ## Compare captures
 
+The current readback joins normalized rows to the unique original
+`raw.resolved_event_id = index.source_event_id` relation, carrying operation,
+generation and process custody. Raw ordinals can repeat after compact or renew
+inside one host epoch; they are disambiguated by the recorded physical scope.
+RPC pairing uses session, operation, generation, process ticket and custodian
+nonce when available. `WRITTEN` answers legitimately have no observed source
+epoch/cursor, so those nullable observation fields are not custody identifiers.
+Legacy captures without custody retain the stricter recorded-epoch association;
+missing or ambiguous associations remain explicit. These are measurement fixes
+on existing bytes, without replaying a product or CLI request.
+
 ```powershell
 & $SignedNode tools/e2e/cli-protocol-golden.mjs compare `
   --baseline $PrivateBaselineBundle `
@@ -52,3 +63,5 @@ The controller-provided CLI 0.160.0 sample used for the first tool check contain
 - `docs/research/grok-app-reuse-audit.md` recommends reusing fixtures with negative cases rather than relying only on a happy path.
 - NaveHQ's `scripts/navehq_parse_codex_run.js` demonstrates deriving a structured report from an existing run; this utility deliberately does not retain source paths.
 - LoomOS's `03_specs_施工图/应答地基施工图-v0.2.md` separates ordinary golden behavior cases from high-risk expectations; this utility likewise keeps the failed diagnostic separate from any accepted baseline.
+
+RPC alias keys preserve the original JSON ID type. Numeric `7` and string `"7"` remain different IDs, including in the same process custody. Each normalized protocol frame and correlation pair exposes `rpcIdType`, so a CLI upgrade that changes the ID type remains visible after redaction. This is an instrument rule; matching frames still do not accept a baseline or a product.

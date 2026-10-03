@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
-use super::session::{AppContainerProfile, CompatModule, SecurityCapabilities};
+use super::session::{AppContainerProfile, CompatModule, DirectoryRoots, SecurityCapabilities};
 use crate::ipc::PeerProcessHandle;
 #[cfg(test)]
 #[path = "../store/product_database/v37_login_trace.rs"]
@@ -333,6 +333,8 @@ pub struct ProcessLaunch {
     pub(crate) app_container_cli_identity_services: bool,
     /// Sealed fixed-byte compatibility custody; never populated from IPC.
     pub(crate) path_compat: Option<Arc<CompatModule>>,
+    /// Same physical directory custody without the Codex-only shim.
+    pub(crate) directory_roots: Option<Arc<DirectoryRoots>>,
     /// The already verified F pointer file remains held through all custody,
     /// including an unconfirmed failed suspended-child cleanup.
     pub(crate) worktree_guard: Option<Arc<File>>,
@@ -352,6 +354,7 @@ impl ProcessLaunch {
             app_container_internet_client: false,
             app_container_cli_identity_services: false,
             path_compat: None,
+            directory_roots: None,
             worktree_guard: None,
         }
     }
@@ -809,6 +812,7 @@ struct LaunchFailureCustody {
     _initial_thread: OwnedHandle,
     _job: OwnedHandle,
     _path_compat: Option<Arc<CompatModule>>,
+    _directory_roots: Option<Arc<DirectoryRoots>>,
     _worktree_guard: Option<Arc<File>>,
 }
 
@@ -840,6 +844,7 @@ where
         _initial_thread: initial_thread,
         _job: job,
         _path_compat: None,
+        _directory_roots: None,
         _worktree_guard: None,
     });
     ProcessCustodyError::LaunchCleanup { cause: Box::new(cause), detail }
@@ -879,6 +884,7 @@ fn reject_created_child(
     if retained.len() > before {
         let failed = retained.last_mut().expect("retained exact failed child");
         failed._path_compat = launch.path_compat.clone();
+        failed._directory_roots = launch.directory_roots.clone();
         failed._worktree_guard = launch.worktree_guard.clone();
     }
     error
@@ -892,6 +898,7 @@ struct PreparedProcess {
     protocol: Option<ProtocolPipes>,
     persistent_protocol_stdio: bool,
     path_compat: Option<Arc<CompatModule>>,
+    directory_roots: Option<Arc<DirectoryRoots>>,
     worktree_guard: Option<Arc<File>>,
 }
 
@@ -933,17 +940,19 @@ impl PreparedProcess {
             protocol,
             persistent_protocol_stdio: launch.persistent_protocol_stdio,
             path_compat: launch.path_compat.clone(),
+            directory_roots: launch.directory_roots.clone(),
             worktree_guard: launch.worktree_guard.clone(),
         })
     }
 
     fn reject(self, cause: ProcessCustodyError,
         retained: &mut Vec<LaunchFailureCustody>) -> ProcessCustodyError {
-        let Self { process, initial_thread, job, path_compat, worktree_guard, .. } = self;
+        let Self { process, initial_thread, job, path_compat, directory_roots, worktree_guard, .. } = self;
         let before = retained.len();
         let error = reject_suspended_child(cause, process, initial_thread, job, retained);
         if retained.len() > before {
             retained.last_mut().expect("retained exact failed child")._path_compat = path_compat;
+            retained.last_mut().expect("retained exact failed child")._directory_roots = directory_roots;
             retained.last_mut().expect("retained exact failed child")._worktree_guard = worktree_guard;
         }
         error
@@ -976,6 +985,7 @@ impl PreparedProcess {
             protocol,
             persistent_protocol_stdio,
             path_compat,
+            directory_roots,
             worktree_guard,
         } = self;
         drop(initial_thread);
@@ -986,6 +996,7 @@ impl PreparedProcess {
             protocol,
             persistent_protocol_stdio,
             _path_compat: path_compat,
+            _directory_roots: directory_roots,
             _worktree_guard: worktree_guard,
             persistent_writer: Mutex::new(false),
             persistent_reader: Mutex::new(PersistentReadState::default()),
@@ -1071,6 +1082,7 @@ impl ProcessCustodian {
                 if self.failed_launches.len() > failures_before {
                     let retained = self.failed_launches.last_mut().expect("retained failed child");
                     retained._path_compat = request.launch.path_compat.clone();
+                    retained._directory_roots = request.launch.directory_roots.clone();
                     retained._worktree_guard = request.launch.worktree_guard.clone();
                 }
                 return Err(error);
@@ -1308,6 +1320,16 @@ impl ProcessCustodian {
         Ok(bytes.map(|bytes| OriginBoundFrame { custody: custody.clone(), bytes }))
     }
 
+    /// Display-only unfinished stdout from the exact retained reader. This
+    /// neither consumes bytes nor creates an OriginBoundFrame, ACK or StopFact.
+    pub(crate) fn persistent_stdout_fragment(&self,ticket:&ProcessTicket)
+        -> Result<Vec<u8>,ProcessCustodyError> {
+        let (_,process)=self.active.get(ticket).ok_or_else(||
+            ProcessCustodyError::TicketNotFound(ticket.opaque().to_owned()))?;
+        process.persistent_stdout_fragment().map_err(|error|
+            self.protocol_error_with_stderr(ticket,ProcessCustodyError::ProtocolPipe(error)))
+    }
+
     /// This is runtime evidence for the exact retained process. Do not persist
     /// it to a public artifact: provider errors can contain private account data.
     pub(crate) fn protocol_error_with_stderr(&self, ticket: &ProcessTicket,
@@ -1431,6 +1453,7 @@ pub struct ManagedProcess {
     protocol: Option<ProtocolPipes>,
     persistent_protocol_stdio: bool,
     _path_compat: Option<Arc<CompatModule>>,
+    _directory_roots: Option<Arc<DirectoryRoots>>,
     _worktree_guard: Option<Arc<File>>,
     persistent_writer: Mutex<bool>,
     persistent_reader: Mutex<PersistentReadState>,
@@ -1593,6 +1616,17 @@ impl ManagedProcess {
 
     pub(crate) fn poll_persistent_frame(&self) -> io::Result<Option<Vec<u8>>> {
         self.persistent_frame(None)
+    }
+
+    pub(crate) fn persistent_stdout_fragment(&self) -> io::Result<Vec<u8>> {
+        if !self.persistent_protocol_stdio {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,"persistent stdio was not admitted"));
+        }
+        let state=self.persistent_reader.try_lock().map_err(|error|match error {
+            TryLockError::WouldBlock=>io::Error::new(io::ErrorKind::WouldBlock,"persistent reader busy"),
+            TryLockError::Poisoned(_)=>io::Error::new(io::ErrorKind::Other,"persistent reader state unknown"),
+        })?;
+        Ok(state.partial.clone())
     }
 
     fn persistent_frame(&self, deadline: Option<Duration>) -> io::Result<Option<Vec<u8>>> {
@@ -1938,6 +1972,10 @@ pub fn may_target_pid(recorded: &ProcessIdentity, observed: Option<&ProcessIdent
 }
 
 fn validate_launch(launch: &ProcessLaunch) -> Result<(), ProcessCustodyError> {
+    if let Some(roots) = &launch.directory_roots {
+        roots.verify().map_err(|source| ProcessCustodyError::Isolation(
+            format!("native directory custody: {source}")))?;
+    }
     if let Some(module) = &launch.path_compat {
         module.validate_launch(launch.app_container_profile.as_deref(),
             launch.environment.as_deref()).map_err(|source|
@@ -2961,6 +2999,10 @@ mod tests {
             .expect_err("partial output must not become a successful empty result");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("7 bytes"));
+        assert_eq!(managed.persistent_stdout_fragment().unwrap(),b"partial",
+            "the exact unterminated bytes remain available for private display");
+        assert_eq!(managed.persistent_stdout_fragment().unwrap(),b"partial",
+            "display cannot consume or turn a fragment into a protocol frame");
         assert_eq!(managed.read_persistent_frame(Duration::from_secs(1)).unwrap_err().kind(),
             io::ErrorKind::InvalidData, "terminal stream preserves partial-frame uncertainty");
     }

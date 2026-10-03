@@ -1,4 +1,4 @@
-//! Actual native Codex sessions. The User channel selects logical identities;
+//! Actual native provider sessions. The User channel selects logical identities;
 //! E/F/H supply all paths, pins, permissions and custody on the same store.
 use super::*;
 use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets, NativeStopProof, OriginBoundFrame};
@@ -6,7 +6,7 @@ use crate::store::ledger::{self, SessionPurpose, SessionRegistration};
 use crate::store::seat::{self, NativeOrigin};
 use crate::store::session_transport::{self as h, runtime, launch::LaunchEvidence,
     codex_rpc::{self, Command, RpcId, Reply}, rpc_journal as rpc,
-    generation_change as change};
+    generation_change as change, provider_evidence::{acp, stream_json, commands as vendor_commands}};
 use crate::store::atomic::Parser;
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,8 @@ pub(super) struct NativeSession {
     pub(super) raw_capture: super::v37_output::NativeRawCapture,
     stop_proof: Option<NativeStopProof>,
     next_rpc_id: u64,
+    pending_acp: Option<(Vec<u8>,h::AcpSendIdentity)>,
+    pending_claude: Option<(Vec<u8>,h::ClaudeSendIdentity)>,
 }
 
 struct RpcObservation {
@@ -87,7 +89,7 @@ impl<'root> ProductDatabase<'root> {
         let repository=user_payload_string(&original,"repositoryId")?;
         let worktree=user_payload_string(&original,"worktreeId")?;
         let observed=Statement::prepare(self.connection.as_ptr(),
-            "SELECT s.command_hex,hex(r.raw_bytes)
+            "SELECT s.ticket,s.custodian_nonce
                FROM main.gogoke_v37_rpc_steps s
                JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
                  AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
@@ -101,42 +103,33 @@ impl<'root> ProductDatabase<'root> {
             observed.bind_text((index+1) as i32,value)?;
         }
         if !observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
-        let command=unhex(&observed.column_text(0)?)?;
-        let response=unhex(&observed.column_text(1)?)?;
+        let ticket=observed.column_text(0)?;
+        let nonce=observed.column_text(1)?;
         if observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
-        let thread=failure(codex_rpc::decode_stored_thread_start(&command,&response))?;
+        let thread=failure(rpc::observed_thread_id(&self.connection,domain,session,&operation,
+            &generation,&original.request_id,&ticket,&nonce))?;
         Ok((repository,worktree,thread))
     }
 
     fn observed_resume_thread(&self,domain:&str,session:&str,operation:&str,
         generation:&str,request_id:&str)->Result<Option<String>> {
-        let step_id=format!("{operation}-thread-resume");
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT s.command_hex,hex(r.raw_bytes)
-               FROM main.gogoke_v37_rpc_steps s
-               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
-                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
-                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
-                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id
-                 AND r.generation=s.generation
-              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
-                AND s.generation=?4 AND s.open_request_id=?5 AND s.step_id=?6
-                AND s.phase='OBSERVED' AND r.state='NO_EVENT'
-                AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
-        for (index,value) in [domain,session,operation,generation,request_id,
-            step_id.as_str()].iter().enumerate() {
-            q.bind_text((index+1) as i32,value)?;
-        }
+            "SELECT c.ticket,c.custodian_nonce FROM main.gogoke_coordination_process_custody c
+              JOIN main.gogoke_v37_rpc_steps s ON s.process_operation_id=c.operation_id
+                AND s.domain_id=c.domain_id AND s.generation=c.generation
+                AND s.ticket=c.ticket AND s.custodian_nonce=c.custodian_nonce
+              WHERE c.operation_id=?1 AND c.domain_id=?2 AND c.generation=?3
+                AND s.session_id=?4 AND s.open_request_id=?5 AND s.phase='OBSERVED'
+                AND s.step_id IN (?6,?7)")?;
+        q.bind_text(1,operation)?;q.bind_text(2,domain)?;q.bind_text(3,generation)?;
+        q.bind_text(4,session)?;q.bind_text(5,request_id)?;
+        q.bind_text(6,&format!("{operation}-thread-resume"))?;
+        q.bind_text(7,&format!("{operation}-session-resume"))?;
         if !q.step_row()? {return Ok(None);}
-        let command=unhex(&q.column_text(0)?)?;
-        let response=unhex(&q.column_text(1)?)?;
-        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
-        match codex_rpc::decode_stored_thread_resume(&command,&response) {
-            Ok(thread)=>Ok(Some(thread)),
-            Err(codex_rpc::RpcError::RemoteResponse(_))=>Ok(None),
-            Err(error)=>Err(OrchestrationError::V37StoreFailure(format!(
-                "native resume stored response: {error:?}"))),
-        }
+        let ticket=q.column_text(0)?;let nonce=q.column_text(1)?;
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(q);
+        failure(rpc::observed_thread_id(&self.connection,domain,session,operation,generation,
+            request_id,&ticket,&nonce)).map(Some)
     }
 
     pub(super) fn dispatch_native_resume(&mut self, request: &V37Request) -> Result<Vec<u8>> {
@@ -287,6 +280,20 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request,V37Status::Unknown,effective_revision,
                 effective_revision,Default::default()));
         }
+        // A declared unsupported provider must not acquire a candidate home,
+        // episode or process while trying the Codex/ACP recovery path.
+        let driver=Statement::prepare(self.connection.as_ptr(),
+            "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+        driver.bind_text(1,&old.instance_id)?;
+        if !driver.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let driver_id=driver.column_text(0)?;
+        if driver.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(driver);
+        if !matches!(driver_id.as_str(),"codex"|"opencode"|"grok") {
+            return Ok(encode_receipt(request,V37Status::Unsupported,effective_revision,
+                effective_revision,BTreeMap::from([(JsonString::from_str("reason"),
+                    text("This fixed provider has no integrated native metadata resume"))])));
+        }
         let old_number=old_generation.parse::<i64>().map_err(|_|
             OrchestrationError::Invalid("native resume old generation"))?;
         let new_generation=old_number.checked_add(1).ok_or(
@@ -330,7 +337,7 @@ impl<'root> ProductDatabase<'root> {
             open_request_id:request.request_id.clone(),open_request_bytes:request.raw_bytes.clone(),
             domain_id:request.domain_id.clone(),session_id:request.target_id.clone(),
             model,effort,thread_id:None,turn_id:None,raw_capture:Default::default(),
-            stop_proof:None,next_rpc_id:4,
+            stop_proof:None,next_rpc_id:4,pending_acp:None,pending_claude:None,
         });
         authority::record_prepared_process(&mut self.connection,&operation_id,&custody)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
@@ -350,6 +357,41 @@ impl<'root> ProductDatabase<'root> {
                 Some(&operation_id)))?;
             self.process_custodian.activate(&custody)?;
             authority::mark_process_active(&mut self.connection,&operation_id,&custody)?;
+            let driver=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                .evidence.driver_id().to_owned();
+            if matches!(driver.as_str(),"opencode"|"grok") {
+                let init=vendor_commands::AcpCommand::Initialize {client_version:"0.1.0"};
+                let init_step=failure(rpc::acp_candidate_step_id(&operation_id,&init))?;
+                self.native_acp_rpc(&key,&init_step,Some(1),&init)?;
+                let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                let cwd=run.evidence.cwd().to_string_lossy().into_owned();
+                let model=run.model.clone();let effort=run.effort.clone();
+                let resume=if driver=="opencode" {
+                    vendor_commands::AcpCommand::SessionResume {session_id:&thread_id,cwd:&cwd,advertised:true}
+                } else {vendor_commands::AcpCommand::SessionLoad {session_id:&thread_id,cwd:&cwd,advertised:true}};
+                let resume_step=failure(rpc::acp_candidate_step_id(&operation_id,&resume))?;
+                if !matches!(self.native_acp_rpc(&key,&resume_step,Some(3),&resume)?,
+                    Some(acp::Observation::SessionLoad {..}|acp::Observation::SessionResume {..})) {
+                    return Err(OrchestrationError::Invalid("native ACP resume acknowledgement absent"));
+                }
+                if driver=="opencode" {
+                    for (number,config_id,value) in [(4,"model",model.as_str()),(5,"effort",effort.as_str())] {
+                        let setting=vendor_commands::AcpCommand::SetConfigOption {session_id:&thread_id,config_id,value};
+                        let step=failure(rpc::acp_candidate_step_id(&operation_id,&setting))?;
+                        if !matches!(self.native_acp_rpc(&key,&step,Some(number),&setting)?,
+                            Some(acp::Observation::SessionConfigOption {..})) {
+                            return Err(OrchestrationError::Invalid("native ACP resume setting acknowledgement absent"));
+                        }
+                    }
+                    self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.next_rpc_id=6;
+                }
+                let observed=self.observed_resume_thread(&key.0,&key.1,&operation_id,&new_generation,
+                    &request.request_id)?.ok_or(OrchestrationError::OperationConflict)?;
+                if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
+                self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id=Some(thread_id.clone());
+                return Ok(());
+            }
+            if driver!="codex" {return Err(OrchestrationError::Invalid("native provider metadata resume unsupported"));}
             self.native_rpc(&key,&format!("{operation_id}-initialize"),Some(1),
                 &Command::Initialize {client_version:"0.1.0".into()})?;
             self.native_rpc(&key,&format!("{operation_id}-initialized"),None,
@@ -424,14 +466,19 @@ impl<'root> ProductDatabase<'root> {
 
     fn resume_source_receipt(&self,domain:&str,session:&str,operation:&str,
         generation:&str,request_id:&str)->Result<String> {
-        let step_id=format!("{operation}-thread-resume");
+        // Verify the typed original ACK and custody before projecting its A
+        // source locator; ACP and Codex own distinct recovery step names.
+        self.observed_resume_thread(domain,session,operation,generation,request_id)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let codex_step=format!("{operation}-thread-resume");
+        let acp_step=format!("{operation}-session-resume");
         let q=Statement::prepare(self.connection.as_ptr(),
             "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
               WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
-                AND generation=?4 AND open_request_id=?5 AND step_id=?6
+                AND generation=?4 AND open_request_id=?5 AND step_id IN (?6,?7)
                 AND phase='OBSERVED'")?;
         for (index,value) in [domain,session,operation,generation,request_id,
-            step_id.as_str()].iter().enumerate() {
+            codex_step.as_str(),acp_step.as_str()].iter().enumerate() {
             q.bind_text((index+1) as i32,value)?;
         }
         if !q.step_row()? {return Err(OrchestrationError::OperationConflict);}
@@ -850,6 +897,11 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
                     request.expected_revision,Default::default()));
             };
+            if run.evidence.driver_id()!="codex" {
+                return Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
+                    request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
+                        text("This fixed provider's generation change is not integrated"))])));
+            }
             let thread=run.thread_id.clone().ok_or(OrchestrationError::AccessDenied)?;
             let original_thread=self.original_native_continuation(&request.domain_id,
                 &request.target_id)?.2;
@@ -1258,6 +1310,21 @@ impl<'root> ProductDatabase<'root> {
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_native_open_registered(request, SessionPurpose::Work, None)
+    }
+
+    /// Only the native User side-open composition chooses this registration.
+    pub(super) fn dispatch_native_side_open(&mut self, request: &V37Request,
+        side_id: &str) -> Result<Vec<u8>> {
+        if !self.user_session_request_identity_matches(request)? {
+            return Ok(encode_receipt(request,V37Status::Conflict,
+                request.expected_revision,request.expected_revision,Default::default()));
+        }
+        self.dispatch_native_open_registered(request, SessionPurpose::SideChat, Some(side_id))
+    }
+
+    fn dispatch_native_open_registered(&mut self, request: &V37Request,
+        purpose: SessionPurpose, side_id: Option<&str>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if request.payload.len() != 4 {
             return Ok(encode_receipt(request, V37Status::Denied,
@@ -1267,6 +1334,14 @@ impl<'root> ProductDatabase<'root> {
         let generation = user_payload_string(request, "generation")?;
         let repository_id = user_payload_string(request, "repositoryId")?;
         let worktree_id = user_payload_string(request, "worktreeId")?;
+        let registration = SessionRegistration {
+            domain_id: request.domain_id.clone(), seat_id: seat_id.clone(), session_id: request.target_id.clone(),
+            purpose, side_id: side_id.map(str::to_owned),
+        };
+        if ledger::read_registered_session(&self.connection, &request.target_id)?
+            .is_some_and(|existing| existing != registration) {
+            return Err(OrchestrationError::OperationConflict);
+        }
         let prior = Statement::prepare(self.connection.as_ptr(),
             "SELECT raw_hex,operation,session_id,status,previous_revision,revision FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2")?;
         prior.bind_text(1, &request.domain_id)?;
@@ -1282,32 +1357,14 @@ impl<'root> ProductDatabase<'root> {
             drop(prior);
             let mut result = BTreeMap::new();
             if status == V37Status::Replayed {
-                // A stop fact alone does not prove the earlier handshake
-                // succeeded. Only its actual observed thread response does.
-                let response = Statement::prepare(self.connection.as_ptr(),
-                    "SELECT r.raw_bytes FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.domain_id=?1 AND s.session_id=?2 AND s.open_request_id=?3 AND s.step_id='thread-start' AND s.phase='OBSERVED'")?;
-                response.bind_text(1, &request.domain_id)?;
-                response.bind_text(2, &request.target_id)?;
-                response.bind_text(3, &request.request_id)?;
-                if response.step_row()? {
-                    let Json::Object(fields) = Parser::parse(&response.column_text(0)?)? else {
-                        return Err(OrchestrationError::Invalid("native prior thread response"));
-                    };
-                    let thread_id = match fields.get(&JsonString::from_str("result")) {
-                        Some(Json::Object(result)) => match result.get(&JsonString::from_str("thread")) {
-                            Some(Json::Object(thread)) => match thread.get(&JsonString::from_str("id")) {
-                                Some(Json::String(id)) => id.to_well_formed_string(),
-                                _ => None,
-                            },
-                            _ => None,
-                        },
-                        _ => None,
-                    }.ok_or(OrchestrationError::Invalid("native prior thread identity"))?;
-                    if thread_id.is_empty() || thread_id.contains('\0') {
-                        return Err(OrchestrationError::Invalid("native prior thread identity shape"));
-                    }
-                    result.insert(JsonString::from_str("threadId"), Json::String(JsonString::from_str(&thread_id)));
-                } else { status = V37Status::Unknown; }
+                // Replay reads the original H command and its exact captured A
+                // reply. A process stop alone cannot establish a handshake.
+                if self.original_claude_open_ready(request)? {
+                    result.insert(JsonString::from_str("readinessBasis"),text("ORIGINAL_CLAUDE_INITIALIZE_ACK"));
+                } else if let Some(thread)=self.observed_native_open_thread(
+                    &request.domain_id,&request.target_id,&request.request_id)? {
+                    result.insert(JsonString::from_str("threadId"),text(&thread));
+                } else {status=V37Status::Unknown;}
             }
             return Ok(encode_receipt(request, status, request.expected_revision, revision, result));
         }
@@ -1361,7 +1418,7 @@ impl<'root> ProductDatabase<'root> {
             operation_id: operation_id.clone(), open_request_id: request.request_id.clone(),
             open_request_bytes: request.raw_bytes.clone(), domain_id: request.domain_id.clone(),
             session_id: request.target_id.clone(), model, effort, thread_id: None, turn_id: None, raw_capture: Default::default(), stop_proof: None,
-            next_rpc_id: 4 });
+            next_rpc_id: 4, pending_acp:None,pending_claude:None });
         if let Err(error) = authority::record_prepared_process(&mut self.connection, &operation_id, &custody) {
             let abort = self.process_custodian.abort_prepared(&custody);
             return Err(OrchestrationError::V37StoreFailure(format!(
@@ -1376,10 +1433,7 @@ impl<'root> ProductDatabase<'root> {
                 &request.domain_id, &request.target_id, &operation_id))?;
             failure(h::record_initial(&self.connection,&request.domain_id,
                 &request.target_id,&request.request_id,&operation_id))?;
-            ledger::register_session(&mut self.connection, &SessionRegistration {
-                domain_id: request.domain_id.clone(), seat_id: seat_id.clone(), session_id: request.target_id.clone(),
-                purpose: SessionPurpose::Work, side_id: None,
-            })?;
+            ledger::register_session(&mut self.connection, &registration)?;
             Ok(())
         })();
         if let Err(error) = self.finish_native_transaction(bind) {
@@ -1391,17 +1445,59 @@ impl<'root> ProductDatabase<'root> {
             failure(run.evidence.verify(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             self.process_custodian.activate(&custody)?;
             authority::mark_process_active(&mut self.connection, &operation_id, &custody)?;
-            self.native_rpc(&key, "initialize", Some(1), &Command::Initialize { client_version: "0.1.0".into() })?;
-            self.native_rpc(&key, "initialized", None, &Command::Initialized)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
-            let cwd = run.evidence.cwd().to_string_lossy().into_owned();
-            let model = run.model.clone();
-            self.native_rpc(&key, "config-read", Some(2), &Command::ConfigRead { cwd: cwd.clone() })?;
-            let thread = self.native_rpc(&key, "thread-start", Some(3), &Command::ThreadStart { cwd, model })?;
-            let Some(Reply::Thread { thread_id, .. }) = thread else {
-                return Err(OrchestrationError::Invalid("native open thread response"));
+            let driver=run.evidence.driver_id().to_owned();
+            let cwd=run.evidence.cwd().to_string_lossy().into_owned();
+            let model=run.model.clone();
+            let thread_id=match driver.as_str() {
+                "codex" => {
+                    self.native_rpc(&key,"initialize",Some(1),&Command::Initialize {client_version:"0.1.0".into()})?;
+                    self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
+                    self.native_rpc(&key,"config-read",Some(2),&Command::ConfigRead {cwd:cwd.clone()})?;
+                    let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),
+                        &Command::ThreadStart {cwd,model})? else {
+                        return Err(OrchestrationError::Invalid("native open thread response"));
+                    };
+                    Some(thread_id)
+                },
+                "claude" => {
+                    self.native_claude_initialize(&key)?;
+                    // A control ACK establishes readiness only. The actual
+                    // vendor session arrives with the first real user turn.
+                    self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id.clone()
+                },
+                "opencode" | "grok" => {
+                    self.native_acp_rpc(&key,"initialize",Some(1),
+                        &vendor_commands::AcpCommand::Initialize {client_version:"0.1.0"})?;
+                    let Some(acp::Observation::SessionNew {session_id,..})=self.native_acp_rpc(
+                        &key,"thread-start",Some(3),&vendor_commands::AcpCommand::SessionNew {cwd:&cwd})? else {
+                        return Err(OrchestrationError::Invalid("native ACP session/new response"));
+                    };
+                    if driver=="opencode" {
+                        // The original H session/new ACK establishes the vendor
+                        // session. Each setting is a separate original RPC ACK,
+                        // checked by H against its requested option and value.
+                        let effort=self.native_sessions.get(&key)
+                            .ok_or(OrchestrationError::AccessDenied)?.effort.clone();
+                        for (step,number,config_id,value) in [
+                            ("setting-model",4,"model",model.as_str()),
+                            ("setting-effort",5,"effort",effort.as_str()),
+                        ] {
+                            if !matches!(self.native_acp_rpc(&key,step,Some(number),
+                                &vendor_commands::AcpCommand::SetConfigOption {
+                                    session_id:&session_id,config_id,value})?,
+                                Some(acp::Observation::SessionConfigOption {..})) {
+                                return Err(OrchestrationError::Invalid("native ACP setting acknowledgement absent"));
+                            }
+                        }
+                        self.native_sessions.get_mut(&key)
+                            .ok_or(OrchestrationError::AccessDenied)?.next_rpc_id=6;
+                    }
+                    Some(session_id)
+                },
+                _ => return Err(OrchestrationError::Invalid("native provider handshake not integrated")),
             };
-            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id = Some(thread_id);
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id=thread_id;
             self.process_native_pending_output(&key)?;
             Ok(())
         })();
@@ -1440,10 +1536,18 @@ impl<'root> ProductDatabase<'root> {
         })();
         self.finish_native_transaction(applied)?;
         let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+        let result=if run.evidence.driver_id()=="claude" {
+            BTreeMap::from([
+                (JsonString::from_str("threadId"),run.thread_id.as_deref().map(text).unwrap_or(Json::Null)),
+                (JsonString::from_str("readinessBasis"),text("ORIGINAL_CLAUDE_INITIALIZE_ACK")),
+            ])
+        } else {
+            BTreeMap::from([(JsonString::from_str("threadId"),text(
+                run.thread_id.as_deref().ok_or(OrchestrationError::Invalid("native thread absent"))?))])
+        };
         Ok(encode_receipt(request, V37Status::Applied, request.expected_revision,
             request.expected_revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open receipt revision overflow"))?,
-            BTreeMap::from([(JsonString::from_str("threadId"), Json::String(JsonString::from_str(
-                run.thread_id.as_deref().ok_or(OrchestrationError::Invalid("native thread absent"))?)))])))
+            result))
     }
 
     fn finish_native_transaction(&mut self, result: Result<()>) -> Result<()> {
@@ -1560,8 +1664,10 @@ impl<'root> ProductDatabase<'root> {
         if !previously_intended {
             // Recover a trustworthy already-observed send before the stop
             // increments this claim. An old stop revision remains stale.
-            failure(h::reconcile_observed_codex_sends(&mut self.connection,
-                &request.domain_id,&request.target_id,&generation))?;
+            if run.evidence.driver_id()=="codex" {
+                failure(h::reconcile_observed_codex_sends(&mut self.connection,
+                    &request.domain_id,&request.target_id,&generation))?;
+            } else {self.drain_native_output(&key)?;}
             let claim = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
                 &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
             if claim.generation != generation || custody.binding.generation != generation
@@ -1707,20 +1813,48 @@ impl<'root> ProductDatabase<'root> {
                 domain_id: &request.domain_id, request_id: &request.request_id,
                 session_id: &request.target_id, ticket: &ticket, generation: &generation,
             }))?.ok_or(OrchestrationError::Invalid("native send journal disappeared"))?;
+            let driver=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT i.driver_id FROM main.gogoke_v37_h_process_episode e
+                       JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+                      WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3 AND e.generation=?4")?;
+                for (index,value) in [request.domain_id.as_str(),request.target_id.as_str(),
+                    stored.process_operation_id.as_str(),generation.as_str()].iter().enumerate() {driver.bind_text((index+1) as i32,value)?;}
+                if !driver.step_row()? {return Err(OrchestrationError::AccessDenied);}
+                let driver_id=driver.column_text(0)?;
+                if driver.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            drop(driver);
             if stored.state != h::JournalState::Receipted {
                 let input = h::StdinRequest { domain_id: &request.domain_id,
                     session_id: &request.target_id, ticket: &ticket, generation: &generation,
                     request_bytes: &request.raw_bytes };
-                match failure(h::recover_codex_turn_request(&mut self.connection,&input))? {
-                    Some(recovered) => stored = recovered.record,
-                    None => return Ok(encode_receipt(request, V37Status::Unknown,
-                        request.expected_revision, request.expected_revision, Default::default())),
+                if driver_id=="codex" {
+                    if let Some(recovered)=failure(h::recover_codex_turn_request(&mut self.connection,&input))? {
+                        stored=recovered.record;
+                    }
+                } else {
+                    let key=(request.domain_id.clone(),request.target_id.clone());
+                    if self.native_sessions.get(&key).is_some_and(|run|
+                        run.custody.ticket.opaque()==ticket && run.custody.binding.generation==generation) {
+                        self.drain_native_output(&key)?;
+                        stored=failure(h::read_stdin_journal(&self.connection,&h::StdinJournalKey {
+                            domain_id:&request.domain_id,request_id:&request.request_id,
+                            session_id:&request.target_id,ticket:&ticket,generation:&generation}))?
+                            .ok_or(OrchestrationError::OperationConflict)?;
+                    }
                 }
+            }
+            if matches!(driver_id.as_str(),"opencode"|"grok") {
+                self.verify_acp_input_receipt(&stored)?;
+            } else if driver_id=="claude" {
+                self.verify_claude_input_receipt(&stored)?;
             }
             if let Some(bytes) = stored.receipt_bytes {
                 let receipt = failure(h::decode_receipt(&bytes))?;
-                return Ok(encode_receipt(request, V37Status::Replayed,
-                    receipt.previous_revision, receipt.revision, receipt.into_result()));
+                let status=if matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {
+                    V37Status::Replayed
+                } else {receipt.status};
+                return Ok(encode_receipt(request,status,
+                    receipt.previous_revision,receipt.revision,receipt.into_result()));
             }
             return Ok(encode_receipt(request, V37Status::Unknown, request.expected_revision,
                 request.expected_revision, Default::default()));
@@ -1732,6 +1866,9 @@ impl<'root> ProductDatabase<'root> {
                 request.expected_revision,Default::default()));
         }
         let key = (request.domain_id.clone(), request.target_id.clone());
+        if self.native_sessions.get(&key).is_some_and(|run|(run.pending_acp.is_some() || run.pending_claude.is_some())) {
+            self.drain_native_output(&key)?;
+        }
         let run = self.native_sessions.get(&key).ok_or(OrchestrationError::Invalid("native send has no live custody"))?;
         let seat_id = run.evidence.seat_id().to_owned();
         let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
@@ -1748,6 +1885,22 @@ impl<'root> ProductDatabase<'root> {
         }
         failure(run.evidence.verify_live(&mut self.connection, self.root, &self.owner,
             &run.operation_id, current.revision))?;
+        if matches!(run.evidence.driver_id(),"opencode"|"grok") {
+            if request.operation!="send" {
+                return Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
+                    request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
+                        Json::String(JsonString::from_str("This fixed ACP transport has no append-without-turn operation")))])));
+            }
+            return self.dispatch_native_acp_send(request,&key);
+        }
+        if run.evidence.driver_id()=="claude" {
+            if request.operation!="send" {
+                return Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
+                    request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
+                        Json::String(JsonString::from_str("The fixed Claude transport has no verified append-without-turn operation")))])));
+            }
+            return self.dispatch_native_claude_send(request,&key);
+        }
         let thread_id = run.thread_id.clone().ok_or(OrchestrationError::Invalid("native send thread absent"))?;
         let command = if request.operation=="append-without-turn" {Command::AppendWithoutTurn {thread_id:thread_id.clone(),text}} else {Command::TurnStart { thread_id: thread_id.clone(),
             cwd: run.evidence.cwd().to_string_lossy().into_owned(), model: run.model.clone(),
@@ -1795,6 +1948,9 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn native_steer_rpc(&mut self,key:&(String,String),step_id:&str,
         expected_thread:&str,expected_turn:&str,text:String)->Result<Option<Reply>> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="codex" {
+            return Err(OrchestrationError::Invalid("fixed provider has no native in-turn/append operation"));
+        }
         if !run.allows_input() || run.thread_id.as_deref()!=Some(expected_thread)
             || run.turn_id.as_deref()!=Some(expected_turn)
             || self.process_custodian.active(&run.custody.ticket).is_none() {
@@ -1817,6 +1973,9 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn native_append_rpc(&mut self,key:&(String,String),step_id:&str,
         expected_thread:&str,text:String)->Result<Option<Reply>> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="codex" {
+            return Err(OrchestrationError::Invalid("fixed provider has no native in-turn/append operation"));
+        }
         if !run.allows_input() || run.thread_id.as_deref()!=Some(expected_thread)
             || self.process_custodian.active(&run.custody.ticket).is_none() {
             return Err(OrchestrationError::AccessDenied);
@@ -1854,6 +2013,458 @@ impl<'root> ProductDatabase<'root> {
 
     /// Actual process-owned JSONL, with durable native step intent before
     /// writing and A's original provider bytes before interpreting responses.
+    fn native_claude_initialize(&mut self,key:&(String,String)) -> Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let custody=run.custody.clone();let operation=run.operation_id.clone();
+        let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let (step_id,request_id)=rpc::claude_initialize_identity(&open_bytes);
+        let command=vendor_commands::ClaudeCommand::Initialize {request_id:&request_id};
+        let step=rpc::ClaudeStep {domain_id:&key.0,session_id:&key.1,
+            open_request_id:&open_id,open_request_bytes:&open_bytes,step_id:&step_id,
+            custody:&custody,command:&command};
+        let prepared=failure(rpc::prepare_claude(&mut self.connection,&self.owner,&step))?;
+        match prepared.disposition {
+            rpc::Disposition::NewWrite=>{
+                let process=self.process_custodian.active(&custody.ticket)
+                    .ok_or(OrchestrationError::OperationConflict)?;
+                if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
+                    let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                        crate::process::ProcessCustodyError::ProtocolPipe(error));
+                    let marked=rpc::mark_claude_unknown(&mut self.connection,&self.owner,&step,&original.to_string());
+                    return Err(OrchestrationError::V37StoreFailure(format!("Claude initialize write: {original}; UNKNOWN: {marked:?}")));
+                }
+                failure(rpc::mark_claude_written(&mut self.connection,&self.owner,&step))?;
+            },
+            rpc::Disposition::Existing(rpc::Phase::Written|rpc::Phase::Observed)=>{},
+            _=>return Err(OrchestrationError::OperationConflict),
+        }
+        if let Some((observed,raw))=failure(rpc::read_observed_claude_ack(&mut self.connection,&self.owner,&step))? {
+            return if matches!(observed,stream_json::ClaudeData::ControlResponse {success:true,..}) {
+                Ok(())
+            } else {Err(OrchestrationError::V37StoreFailure(format!("Claude original initialize failure: {}",String::from_utf8_lossy(&raw))))};
+        }
+        let start=Instant::now();
+        loop {
+            let remaining=Duration::from_secs(30).saturating_sub(start.elapsed());
+            if remaining.is_zero() {return Err(OrchestrationError::Invalid("Claude initialize response deadline"));}
+            let frame=self.process_custodian.read_persistent_child_frame(&custody.ticket,remaining)?;
+            let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+            run.raw_capture.retain(frame)?;
+            let (frame,raw)=run.raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            let decoded=stream_json::decode_claude_line(frame.bytes()).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("Claude initialize source: {error:?}; raw: {}",String::from_utf8_lossy(frame.bytes()))))?;
+            if let stream_json::ClaudeData::ControlResponse {request_id:actual,..}=&decoded {
+                if actual!=&request_id {return Err(OrchestrationError::OperationConflict);}
+                let observed=failure(rpc::observe_claude_ack(&mut self.connection,&self.owner,&step,&frame,&raw.key))?;
+                return if matches!(observed,stream_json::ClaudeData::ControlResponse {success:true,..}) {Ok(())}
+                    else {Err(OrchestrationError::V37StoreFailure(format!("Claude initialize rejected: {}",String::from_utf8_lossy(frame.bytes()))))};
+            }
+        }
+    }
+
+    fn dispatch_native_claude_send(&mut self,request:&V37Request,key:&(String,String)) -> Result<Vec<u8>> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input() || run.pending_claude.is_some() {return Err(OrchestrationError::OperationConflict);}
+        let custody=run.custody.clone();let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let input=h::ClaudeSendInput {user:h::StdinRequest {domain_id:&request.domain_id,
+            session_id:&request.target_id,ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
+            request_bytes:&request.raw_bytes},custody:&custody,open_request_id:&open_id,open_request_bytes:&open_bytes};
+        let prepared=failure(h::prepare_claude_send_request(&mut self.connection,&self.owner,&input))?;
+        if !prepared.write_permitted {return Ok(encode_receipt(request,V37Status::Unknown,
+            request.expected_revision,request.expected_revision,Default::default()));}
+        self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?
+            .pending_claude=Some((request.raw_bytes.clone(),prepared.identity));
+        let process=self.process_custodian.active(&custody.ticket).ok_or(OrchestrationError::OperationConflict)?;
+        if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
+            let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(error));
+            let custody_unknown=authority::mark_process_unknown(&mut self.connection,
+                &self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?.operation_id,&custody);
+            let marked=h::mark_claude_send_write_unknown(&mut self.connection,&self.owner,&input,&original.to_string());
+            return Err(OrchestrationError::V37StoreFailure(format!("Claude input write: {original}; custody: {custody_unknown:?}; UNKNOWN: {marked:?}")));
+        }
+        failure(h::mark_claude_send_written(&mut self.connection,&self.owner,&input))?;
+        Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,request.expected_revision,
+            BTreeMap::from([(JsonString::from_str("deliveryBasis"),text("CLAUDE_ORIGINAL_RESPONSE_PENDING"))])))
+    }
+
+    pub(super) fn complete_pending_native_claude_send(&mut self,key:&(String,String)) -> Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let Some((bytes,identity))=run.pending_claude.clone() else {return Ok(());};
+        let custody=run.custody.clone();let operation=run.operation_id.clone();
+        let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let input=h::ClaudeSendInput {user:h::StdinRequest {domain_id:&key.0,session_id:&key.1,
+            ticket:custody.ticket.opaque(),generation:&custody.binding.generation,request_bytes:&bytes},
+            custody:&custody,open_request_id:&open_id,open_request_bytes:&open_bytes};
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2
+               AND process_ticket=?3 AND custodian_nonce=?2 AND domain_id=?4 AND session_id=?5
+               AND generation=?6 ORDER BY CAST(source_cursor AS INTEGER)")?;
+        for (index,value) in [operation.as_str(),custody.custodian_nonce.as_str(),custody.ticket.opaque(),
+            key.0.as_str(),key.1.as_str(),custody.binding.generation.as_str()].iter().enumerate() {query.bind_text((index+1) as i32,value)?;}
+        let mut cursors=Vec::new();while query.step_row()? {cursors.push(query.column_text(0)?);}drop(query);
+        let mut echoed=false;
+        for cursor in cursors {
+            let raw=ledger::read_captured_raw_source(&self.connection,&operation,&custody.custodian_nonce,&cursor)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            let decoded=stream_json::decode_claude_line(&raw.raw_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("Claude pending source: {error:?}; raw: {}",String::from_utf8_lossy(&raw.raw_bytes))))?;
+            match decoded {
+                stream_json::ClaudeData::Init {session_id,..}=>{
+                    let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+                    if run.thread_id.as_ref().is_some_and(|id|id!=&session_id) {return Err(OrchestrationError::OperationConflict);}
+                    run.thread_id=Some(session_id);
+                },
+                stream_json::ClaudeData::UserReplay {uuid,session_id,..} if uuid==identity.uuid=>{
+                    failure(h::observe_claude_send_echo_from_source(&mut self.connection,&self.owner,&input,&raw.key))?;
+                    let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+                    if run.thread_id.as_ref().is_some_and(|id|id!=&session_id) {return Err(OrchestrationError::OperationConflict);}
+                    run.thread_id=Some(session_id);echoed=true;
+                },
+                stream_json::ClaudeData::Result {..} if echoed=>{
+                    let completed=failure(h::complete_claude_send_from_source(&mut self.connection,&self.owner,&input,&raw.key))?;
+                    if completed.user.record.receipt_bytes.is_none() {return Err(OrchestrationError::OperationConflict);}
+                    let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+                    run.thread_id=Some(completed.vendor_session_id);run.pending_claude=None;return Ok(());
+                },
+                _=>{},
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_native_acp_send(&mut self,request:&V37Request,key:&(String,String)) -> Result<Vec<u8>> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input() || run.pending_acp.is_some() {return Err(OrchestrationError::OperationConflict);}
+        let custody=run.custody.clone();let open_id=run.open_request_id.clone();
+        let open_bytes=run.open_request_bytes.clone();let operation=run.operation_id.clone();
+        let input=h::AcpSendInput {user:h::StdinRequest {domain_id:&key.0,session_id:&key.1,
+            ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
+            request_bytes:&request.raw_bytes},custody:&custody,
+            open_request_id:&open_id,open_request_bytes:&open_bytes};
+        let prepared=failure(h::prepare_acp_send_request(&mut self.connection,&self.owner,&input))?;
+        if !prepared.write_permitted {
+            return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        // Hold the exact original input before touching the physical pipe.
+        self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?
+            .pending_acp=Some((request.raw_bytes.clone(),prepared.identity));
+        let process=self.process_custodian.active(&custody.ticket)
+            .ok_or(OrchestrationError::Invalid("native ACP process absent"))?;
+        if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
+            let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(error));
+            let unknown=authority::mark_process_unknown(&mut self.connection,&operation,&custody);
+            let journal=h::mark_acp_send_write_unknown(&mut self.connection,&self.owner,&input,&original.to_string());
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "native ACP send write: {original}; custody UNKNOWN: {unknown:?}; request UNKNOWN: {journal:?}")));
+        }
+        failure(h::mark_acp_send_written(&mut self.connection,&self.owner,&input))?;
+        // Waiting is a pending original response, never an uncertain write.
+        Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,request.expected_revision,
+            BTreeMap::from([(JsonString::from_str("deliveryBasis"),text("ACP_PROMPT_RESPONSE_PENDING"))])))
+    }
+
+    pub(super) fn complete_pending_native_acp_send(&mut self,key:&(String,String)) -> Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let Some((request_bytes,identity))=run.pending_acp.clone() else {return Ok(());};
+        let custody=run.custody.clone();let operation=run.operation_id.clone();
+        let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let expected=match &identity.rpc_id {
+            acp::RpcId::Number(value)=>Json::Number(value.to_string()),
+            acp::RpcId::String(value)=>text(value),
+        }.canonical();
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT source_cursor FROM main.v37_ledger_raw_source
+              WHERE operation_id=?1 AND source_epoch=?2
+                AND (state='PENDING' OR (state='NO_EVENT' AND no_event_reason='ACP_RPC_RESPONSE'))
+              ORDER BY CAST(source_cursor AS INTEGER)")?;
+        query.bind_text(1,&operation)?;query.bind_text(2,&custody.custodian_nonce)?;
+        let mut cursors=Vec::new();while query.step_row()? {cursors.push(query.column_text(0)?);}drop(query);
+        let mut matching=None;
+        for cursor in cursors {
+            let raw=ledger::read_captured_raw_source(&self.connection,&operation,&custody.custodian_nonce,&cursor)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            let value=std::str::from_utf8(&raw.raw_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native ACP original source UTF-8: {error}")))?;
+            let Json::Object(fields)=Parser::parse(value)? else {continue;};
+            if !fields.contains_key(&JsonString::from_str("method"))
+                && fields.get(&JsonString::from_str("id")).map(Json::canonical)==Some(expected.clone())
+                && (fields.contains_key(&JsonString::from_str("result")) || fields.contains_key(&JsonString::from_str("error"))) {
+                if matching.is_some() {return Err(OrchestrationError::OperationConflict);}
+                matching=Some(raw);
+            }
+        }
+        let Some(raw)=matching else {return Ok(());};
+        let user=h::StdinRequest {domain_id:&key.0,session_id:&key.1,ticket:custody.ticket.opaque(),
+            generation:&custody.binding.generation,request_bytes:&request_bytes};
+        let completed=if raw.state==ledger::RawSourceState::NoEvent {
+            failure(h::read_acp_send_completed(&self.connection,&user,&raw.key))?
+                .ok_or(OrchestrationError::OperationConflict)?
+        } else {
+            failure(h::complete_acp_send_from_source(&mut self.connection,&self.owner,
+                &h::AcpSendInput {user,custody:&custody,open_request_id:&open_id,
+                    open_request_bytes:&open_bytes},&raw.key))?
+        };
+        if completed.user.record.receipt_bytes.is_none() {return Err(OrchestrationError::OperationConflict);}
+        self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.pending_acp=None;
+        Ok(())
+    }
+
+    pub(super) fn native_claude_readiness(&self,key:&(String,String)) -> Result<bool> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        Ok(matches!(failure(rpc::read_original_claude_initialize_ack(&self.connection,
+            &key.0,&key.1,&run.open_request_id,&run.open_request_bytes,
+            &run.operation_id,&run.custody.binding.generation))?,
+            Some(stream_json::ClaudeData::ControlResponse {success:true,..})))
+    }
+
+    fn original_claude_open_ready(&self,request:&V37Request) -> Result<bool> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.process_operation_id,e.generation,i.driver_id
+               FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+              WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+                AND e.raw_hex=?4 AND e.old_generation IS NULL")?;
+        for (index,value) in [request.domain_id.as_str(),request.target_id.as_str(),
+            request.request_id.as_str(),hex(&request.raw_bytes).as_str()].iter().enumerate() {q.bind_text((index+1) as i32,value)?;}
+        if !q.step_row()? {return Ok(false);}
+        let operation=q.column_text(0)?;let generation=q.column_text(1)?;let driver=q.column_text(2)?;
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(q);
+        if driver!="claude" {return Ok(false);}
+        Ok(matches!(failure(rpc::read_original_claude_initialize_ack(&self.connection,
+            &request.domain_id,&request.target_id,&request.request_id,&request.raw_bytes,
+            &operation,&generation))?,Some(stream_json::ClaudeData::ControlResponse {success:true,..})))
+    }
+
+    pub(super) fn verify_claude_input_receipt(&self,record:&h::StdinJournalRecord) -> Result<()> {
+        if record.state!=h::JournalState::Receipted {return Ok(());}
+        let original=h::StdinRequest {domain_id:&record.domain_id,session_id:&record.session_id,
+            ticket:&record.ticket,generation:&record.generation,request_bytes:&record.request_bytes};
+        let verified=failure(h::read_original_claude_send_completed(&self.connection,&original))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if verified.user.record.receipt_bytes!=record.receipt_bytes {return Err(OrchestrationError::OperationConflict);}
+        Ok(())
+    }
+
+    // Public replay/output must use the same original User/A derivation as
+    // pending completion. Receipt source fields are lookup hints only: H checks
+    // the original command, typed ID, episode, revisions and receipt digest.
+    pub(super) fn verify_acp_input_receipt(&self,record:&h::StdinJournalRecord) -> Result<()> {
+        if record.state!=h::JournalState::Receipted {return Ok(());}
+        let receipt=failure(h::decode_receipt(record.receipt_bytes.as_ref()
+            .ok_or(OrchestrationError::OperationConflict)?))?;
+        let result=receipt.into_result();
+        let field=|name|->Result<String> {
+            match result.get(&JsonString::from_str(name)) {
+                Some(Json::String(value))=>value.to_well_formed_string()
+                    .filter(|value|!value.is_empty())
+                    .ok_or(OrchestrationError::OperationConflict),
+                _=>Err(OrchestrationError::OperationConflict),
+            }
+        };
+        let key=ledger::RawSourceKey {operation_id:record.process_operation_id.clone(),
+            source_epoch:field("sourceEpoch")?,source_cursor:field("sourceCursor")?};
+        let original=h::StdinRequest {domain_id:&record.domain_id,session_id:&record.session_id,
+            ticket:&record.ticket,generation:&record.generation,request_bytes:&record.request_bytes};
+        let verified=failure(h::read_acp_send_completed(&self.connection,&original,&key))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if verified.user.record.receipt_bytes!=record.receipt_bytes {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        Ok(())
+    }
+
+    pub(super) fn native_acp_declaration(&self,key:&(String,String)) -> Result<(Json,Json)> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes),r.source_epoch,r.source_cursor
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
+                AND s.ticket=?4 AND s.custodian_nonce=?5 AND s.generation=?6
+                AND s.step_id IN ('initialize',?7) AND s.phase='OBSERVED'
+                AND r.state='NO_EVENT' AND r.no_event_reason='ACP_RPC_RESPONSE'")?;
+        for (index,value) in [key.0.as_str(),key.1.as_str(),run.operation_id.as_str(),
+            run.custody.ticket.opaque(),run.custody.custodian_nonce.as_str(),
+            run.custody.binding.generation.as_str()].iter().enumerate() {query.bind_text((index+1) as i32,value)?;}
+        query.bind_text(7,&format!("{}-initialize",run.operation_id))?;
+        if !query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let command=unhex(&query.column_text(0)?)?;let response=unhex(&query.column_text(1)?)?;
+        let source_epoch=query.column_text(2)?;let source_cursor=query.column_text(3)?;
+        if query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let Json::Object(fields)=Parser::parse(std::str::from_utf8(&command).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native ACP initialize command: {error}")))?)? else {
+            return Err(OrchestrationError::Invalid("native ACP initialize object"));
+        };
+        if fields.get(&JsonString::from_str("method")).map(Json::canonical)!=Some(text("initialize").canonical()) {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let id=match fields.get(&JsonString::from_str("id")) {
+            Some(Json::Number(value))=>acp::RpcId::Number(value.parse::<i64>().map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native ACP initialize ID: {error}")))?),
+            Some(Json::String(value))=>acp::RpcId::String(value.to_well_formed_string()
+                .ok_or(OrchestrationError::Invalid("native ACP initialize ID"))?),
+            _=>return Err(OrchestrationError::Invalid("native ACP initialize ID")),
+        };
+        let pending=acp::Pending {id:&id,method:acp::PendingMethod::Initialize,requested_session_id:None};
+        let acp::Observation::Initialize {declared_capabilities,..}=acp::decode(&response,Some(&pending))
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "native ACP initialize response: {}; raw: {}",error.reason,String::from_utf8_lossy(&error.raw_frame))))?
+            else {return Err(OrchestrationError::OperationConflict);};
+        let source=Json::Object(BTreeMap::from([
+            (JsonString::from_str("operationId"),text(&run.operation_id)),
+            (JsonString::from_str("sourceEpoch"),text(&source_epoch)),
+            (JsonString::from_str("sourceCursor"),text(&source_cursor)),
+            (JsonString::from_str("rawResponseSha256"),text(&crate::store::digest::sha256_hex(&response))),
+        ]));
+        Ok((declared_capabilities,source))
+    }
+
+    fn observed_native_open_thread(&self,domain:&str,session:&str,open_request:&str)
+        -> Result<Option<String>> {
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes),i.driver_id,r.no_event_reason
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+               JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=s.process_operation_id
+                 AND e.domain_id=s.domain_id AND e.session_id=s.session_id AND e.generation=s.generation
+               JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.open_request_id=?3
+                AND s.step_id='thread-start' AND s.phase='OBSERVED' AND r.state='NO_EVENT'")?;
+        query.bind_text(1,domain)?;query.bind_text(2,session)?;query.bind_text(3,open_request)?;
+        if !query.step_row()? {return Ok(None);}
+        let command=unhex(&query.column_text(0)?)?;
+        let response=unhex(&query.column_text(1)?)?;
+        let driver=query.column_text(2)?;let basis=query.column_text(3)?;
+        if query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        if driver=="codex" && basis=="CODEX_RPC_RESPONSE" {
+            return failure(codex_rpc::decode_stored_thread_start(&command,&response)).map(Some);
+        }
+        if !matches!(driver.as_str(),"opencode"|"grok") || basis!="ACP_RPC_RESPONSE" {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let Json::Object(fields)=Parser::parse(std::str::from_utf8(&command).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native ACP original command: {error}")))?)? else {
+            return Err(OrchestrationError::Invalid("native ACP command object"));
+        };
+        if fields.get(&JsonString::from_str("method")).map(Json::canonical)!=Some(text("session/new").canonical()) {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let id=match fields.get(&JsonString::from_str("id")) {
+            Some(Json::Number(value))=>acp::RpcId::Number(value.parse::<i64>().map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native ACP original ID: {error}")))?),
+            Some(Json::String(value))=>acp::RpcId::String(value.to_well_formed_string()
+                .ok_or(OrchestrationError::Invalid("native ACP original ID"))?),
+            _=>return Err(OrchestrationError::Invalid("native ACP original ID")),
+        };
+        let pending=acp::Pending {id:&id,method:acp::PendingMethod::SessionNew,requested_session_id:None};
+        match acp::decode(&response,Some(&pending)).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native ACP original reply: {}; raw: {}",
+                error.reason,String::from_utf8_lossy(&error.raw_frame))))? {
+            acp::Observation::SessionNew {session_id,..}=>Ok(Some(session_id)),
+            acp::Observation::RemoteError {..}=>Ok(None),
+            _=>Err(OrchestrationError::OperationConflict),
+        }
+    }
+
+    fn native_acp_write(&mut self,key:&(String,String),step_id:&str,
+        number:Option<u64>,command:&vendor_commands::AcpCommand<'_>) -> Result<()> {
+        let id=number.map(|number|i64::try_from(number).map(acp::RpcId::Number))
+            .transpose().map_err(|error|OrchestrationError::V37StoreFailure(format!("native ACP ID: {error}")))?;
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input() {return Err(OrchestrationError::OperationConflict);}
+        let claim=failure(runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,run.evidence.seat_id(),&key.1))?.ok_or(OrchestrationError::AccessDenied)?;
+        failure(run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision))?;
+        let custody=run.custody.clone();let open_id=run.open_request_id.clone();
+        let open_bytes=run.open_request_bytes.clone();
+        let step=rpc::AcpStep {domain_id:&key.0,session_id:&key.1,
+            open_request_id:&open_id,open_request_bytes:&open_bytes,
+            step_id,custody:&custody,rpc_id:id.as_ref(),command};
+        let intention=failure(rpc::prepare_acp(&mut self.connection,&self.owner,&step))?;
+        match intention.disposition {
+            rpc::Disposition::NewWrite=>{},
+            rpc::Disposition::Existing(rpc::Phase::Written|rpc::Phase::Observed)=>return Ok(()),
+            _=>return Err(OrchestrationError::Invalid("native ACP uncertain replay cannot write")),
+        }
+        let process=self.process_custodian.active(&custody.ticket)
+            .ok_or(OrchestrationError::Invalid("native ACP process absent"))?;
+        if let Err(error)=process.write_persistent_frame(&intention.bytes) {
+            let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(error));
+            let persisted=rpc::mark_acp_unknown(&mut self.connection,&self.owner,&step,&original.to_string());
+            return Err(OrchestrationError::V37StoreFailure(format!("native ACP write: {original}; UNKNOWN: {persisted:?}")));
+        }
+        failure(rpc::mark_acp_written(&mut self.connection,&self.owner,&step))
+    }
+
+    // Only finite metadata RPCs wait here. A model prompt is written once and
+    // completed later from A by output polling; it never uses this deadline.
+    fn native_acp_rpc(&mut self,key:&(String,String),step_id:&str,number:Option<u64>,
+        command:&vendor_commands::AcpCommand<'_>) -> Result<Option<acp::Observation>> {
+        self.native_acp_write(key,step_id,number,command)?;
+        let Some(number)=number else {return Ok(None);};
+        let id=acp::RpcId::Number(i64::try_from(number).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native ACP ID: {error}")))?);
+        let (method,requested)=match command {
+            vendor_commands::AcpCommand::Initialize {..}=>(acp::PendingMethod::Initialize,None),
+            vendor_commands::AcpCommand::SessionNew {..}=>(acp::PendingMethod::SessionNew,None),
+            vendor_commands::AcpCommand::SessionLoad {session_id,..}=>(acp::PendingMethod::SessionLoad,Some(*session_id)),
+            vendor_commands::AcpCommand::SessionResume {session_id,..}=>(acp::PendingMethod::SessionResume,Some(*session_id)),
+            vendor_commands::AcpCommand::SetConfigOption {session_id,..}=>(acp::PendingMethod::SessionSetConfigOption,Some(*session_id)),
+            _=>return Err(OrchestrationError::Invalid("native ACP metadata method")),
+        };
+        let pending=acp::Pending {id:&id,method,requested_session_id:requested};
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let custody=run.custody.clone();let operation=run.operation_id.clone();
+        let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let step=rpc::AcpStep {domain_id:&key.0,session_id:&key.1,open_request_id:&open_id,
+            open_request_bytes:&open_bytes,step_id,custody:&custody,rpc_id:Some(&id),command};
+        if let Some((observed,_raw))=failure(rpc::read_observed_acp_response(
+            &mut self.connection,&self.owner,&step))? {
+            if let acp::Observation::RemoteError {raw_frame,..}=&observed {
+                return Err(OrchestrationError::V37StoreFailure(format!("native ACP original remote error: {}",
+                    String::from_utf8_lossy(&raw_frame[raw_frame.len().saturating_sub(4096)..]))));
+            }
+            return Ok(Some(observed));
+        }
+        let start=Instant::now();
+        loop {
+            let remaining=Duration::from_secs(30).saturating_sub(start.elapsed());
+            if remaining.is_zero() {return Err(OrchestrationError::Invalid("native ACP metadata response deadline"));}
+            let frame=self.process_custodian.read_persistent_child_frame(&custody.ticket,remaining)?;
+            let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+            run.raw_capture.retain(frame)?;
+            let (frame,raw)=run.raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?
+                .ok_or(OrchestrationError::Invalid("native ACP source absent"))?;
+            let observed=acp::decode(frame.bytes(),Some(&pending)).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native ACP metadata reply: {}; raw: {}",
+                    error.reason,String::from_utf8_lossy(&error.raw_frame))))?;
+            if matches!(&observed,acp::Observation::Initialize {..}|acp::Observation::SessionNew {..}
+                |acp::Observation::SessionLoad {..}|acp::Observation::SessionResume {..}
+                |acp::Observation::SessionConfigOption {..}|acp::Observation::RemoteError {..}) {
+                let observed=failure(rpc::observe_acp_response(&mut self.connection,&self.owner,&step,&frame,&raw.key))?;
+                if let acp::Observation::RemoteError {raw_frame,..}=&observed {
+                    return Err(OrchestrationError::V37StoreFailure(format!("native ACP remote error: {}",
+                        String::from_utf8_lossy(&raw_frame[raw_frame.len().saturating_sub(4096)..]))));
+                }
+                return Ok(Some(observed));
+            }
+            // Source notifications remain in the same A stream. A session/new
+            // reply, not an early update, establishes the vendor binding.
+        }
+    }
+
     pub(super) fn native_rpc(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<Reply>> {
         self.native_rpc_observation(key, step_id, number, command).map(|result| result.map(|result| result.reply))

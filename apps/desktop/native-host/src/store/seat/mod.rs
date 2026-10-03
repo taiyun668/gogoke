@@ -8,6 +8,26 @@ use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 #[cfg(all(test, windows))]
 mod tests;
+mod resource;
+mod policy;
+mod continuity;
+mod orchestration;
+pub(crate) use resource::{read_effective_project_parallel_cap,read_host_parallel_fact,
+    refresh_host_parallel_fact_in_transaction,HostParallelFact};
+pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
+    begin_escalation,begin_trigger_cancel,begin_trigger_register,configure_call_grant,
+    configure_escalation_route,configure_gate,
+    current_call_permission_table,gate_decide,gate_submit,initialize_policy,
+    mark_escalation_unknown,mark_trigger_unknown,recover_trigger,settle_escalation,
+    settle_trigger,stage_transition,CallAction,
+    CallPermissionRow,EscalationCause,EscalationIntent,GateDecision,NativeDeliveryEvidence,
+    NativeCoordinatorTriggerEvidence,NativeSeatCall,PolicyEvent,TriggerTransition};
+pub(crate) use continuity::{answer_takeover,mark_health_requested,observe_health,
+    read_state_card,settle_health_receipt,takeover_questions,takeover_ready,
+    update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
+    TakeoverQuestion};
+pub(crate) use orchestration::{authorize_child_dispatch,orchestration_scope,
+    render_codex_instruction,OrchestrationScope,RenderedInstruction};
 
 const LEGACY_SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT NOT NULL REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
 const SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
@@ -20,6 +40,7 @@ const PROJECT_CAPS: &str = "CREATE TABLE gogoke_v37_seat_project_caps(domain_id 
 #[derive(Debug)]
 pub(crate) enum SeatError {
     Invalid(&'static str),
+    HostResourceObservation(String),
     Denied,
     Conflict,
     Busy,
@@ -280,10 +301,39 @@ fn reject_shadow_or_effect(db: &VerifiedDatabaseConnection<'_>) -> Result<(), Se
     Ok(())
 }
 fn expected_schema() -> Vec<(String, String)> {
+    let mut entries = f1_schema();
+    entries.push(("gogoke_v37_seat_host_resources".into(),resource::HOST_RESOURCES.into()));
+    entries.extend([
+        ("gogoke_v37_seat_policy_head".into(),policy::POLICY_HEAD.into()),
+        ("gogoke_v37_seat_policy_grants".into(),policy::POLICY_GRANTS.into()),
+        ("gogoke_v37_seat_policy_gates".into(),policy::POLICY_GATES.into()),
+        ("gogoke_v37_seat_policy_routes".into(),policy::POLICY_ROUTES.into()),
+        ("gogoke_v37_seat_policy_escalations".into(),policy::POLICY_ESCALATIONS.into()),
+        ("gogoke_v37_seat_policy_events".into(),policy::POLICY_EVENTS.into()),
+        ("gogoke_v37_seat_policy_triggers".into(),policy::POLICY_TRIGGERS.into()),
+        ("gogoke_v37_seat_cards".into(),continuity::CARDS.into()),
+        ("gogoke_v37_seat_takeover_answers".into(),continuity::ANSWERS.into()),
+        ("gogoke_v37_seat_continuity_operations".into(),continuity::OPERATIONS.into()),
+        ("gogoke_v37_seat_health".into(),continuity::HEALTH.into()),
+    ]);
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+fn f1_schema() -> Vec<(String, String)> {
     let mut entries = previous_schema();
     entries.push(("gogoke_v37_seat_project_caps".into(), PROJECT_CAPS.into()));
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     entries
+}
+fn create_e2_tables(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {
+    db.execute(resource::HOST_RESOURCES)?;
+    for sql in [policy::POLICY_HEAD,policy::POLICY_GRANTS,policy::POLICY_GATES,
+        policy::POLICY_ROUTES,policy::POLICY_ESCALATIONS,policy::POLICY_EVENTS,
+        policy::POLICY_TRIGGERS,
+        continuity::CARDS,continuity::ANSWERS,continuity::OPERATIONS,continuity::HEALTH] {
+        db.execute(sql)?;
+    }
+    Ok(())
 }
 fn previous_schema() -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = vec![
@@ -314,6 +364,9 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     if observed == expected_schema() {
         return Ok(());
     }
+    if observed == f1_schema() {
+        return migrate_f1_schema(db);
+    }
     if observed == legacy_schema() {
         return migrate_legacy_schema(db);
     }
@@ -334,9 +387,20 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         db.execute(SETTINGS)?;
         db.execute(OPERATION_SNAPSHOTS)?;
         db.execute(PROJECT_CAPS)?;
+        create_e2_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
+        Ok(())
+    })
+}
+
+fn migrate_f1_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {
+    transact(db, |db| {
+        reject_shadow_or_effect(db)?;
+        if schema(db)? != f1_schema() { return Err(SeatError::SchemaDrift); }
+        create_e2_tables(db)?;
+        if schema(db)? != expected_schema() { return Err(SeatError::SchemaDrift); }
         Ok(())
     })
 }
@@ -348,6 +412,7 @@ fn migrate_previous_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()
             return Err(SeatError::SchemaDrift);
         }
         db.execute(PROJECT_CAPS)?;
+        create_e2_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -375,6 +440,7 @@ fn migrate_legacy_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), 
         db.execute(SETTINGS)?;
         db.execute(OPERATION_SNAPSHOTS)?;
         db.execute(PROJECT_CAPS)?;
+        create_e2_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -388,12 +454,15 @@ fn validate_template_settings(raw: &[u8]) -> Result<(), SeatError> {
     }
     super::atomic::require_canonical_json(raw, "template.settings")?;
     let text = std::str::from_utf8(raw).map_err(|_| SeatError::Invalid("template_settings"))?;
-    let Json::Object(fields) = Parser::parse(text)? else {
+    let parsed=Parser::parse(text)?;
+    let Json::Object(fields) = &parsed else {
         return Err(SeatError::Invalid("template_settings"));
     };
     if let Some(value) = fields.get(&JsonString::from_str("permissionTier")) {
         PermissionTier::from_json(value)?;
     }
+    continuity::validate_takeover_template(&parsed)?;
+    orchestration::validate_template_scope(&parsed)?;
     Ok(())
 }
 
@@ -831,6 +900,11 @@ pub(crate) fn create(
         }
         let settings_json =
             template(db, input.domain_id, input.template_id)?.ok_or(SeatError::Unknown)?;
+        if let NativeOrigin::Lead(admission)=&origin {
+            let parent=read(db,input.domain_id,&admission.seat_id)?.ok_or(SeatError::Denied)?;
+            let instance=input.instance_id.ok_or(SeatError::Denied)?;
+            orchestration::child_within_scope(&parent,&settings_json,instance)?;
+        }
         if let Some(instance_id) = input.instance_id {
             if !instance_exists(db, instance_id)? {
                 return Err(SeatError::Unknown);
@@ -939,6 +1013,13 @@ fn change(
         if before.state == State::Busy {
             return Err(SeatError::Busy);
         }
+        if let NativeOrigin::Lead(admission)=&origin {
+            if matches!(action,"bind-instance"|"change-instance") {
+                let parent=read(db,input.domain_id,&admission.seat_id)?.ok_or(SeatError::Denied)?;
+                orchestration::child_within_scope(&parent,
+                    before.settings_json.as_deref().ok_or(SeatError::Denied)?,value)?;
+            }
+        }
         let next_generation = before
             .generation
             .checked_add(1)
@@ -978,6 +1059,12 @@ fn change(
         let seat = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::SchemaDrift)?;
         if seat.generation != next_generation || seat.revision != next_revision {
             return Err(SeatError::Conflict);
+        }
+        if matches!(action,"change-instance"|"reclaim") {
+            let clear=Statement::prepare(db.as_ptr(),
+                "DELETE FROM main.gogoke_v37_seat_takeover_answers WHERE domain_id=?1 AND seat_id=?2")?;
+            clear.bind_text(1,input.domain_id)?;clear.bind_text(2,input.seat_id)?;
+            clear.step_done()?;
         }
         record_operation(db, input.request_id, &fp, &seat)?;
         Ok(SeatReceipt {
@@ -1071,9 +1158,16 @@ pub(crate) fn tune(
         let Json::Object(mut settings) = Parser::parse(settings_json)? else {
             return Err(SeatError::SchemaDrift);
         };
+        let reset_takeover_answers=setting=="takeoverQuestions" &&
+            settings.get(&JsonString::from_str("takeoverQuestions")).map(Json::canonical)
+                != Some(value.canonical());
         settings.insert(JsonString::from_str(setting), value);
         let updated_settings = Json::Object(settings).canonical();
         validate_template_settings(updated_settings.as_bytes())?;
+        if let NativeOrigin::Lead(admission)=&origin {
+            let parent=read(db,input.domain_id,&admission.seat_id)?.ok_or(SeatError::Denied)?;
+            orchestration::child_within_scope(&parent,&updated_settings,&before.instance_id)?;
+        }
         let next_generation = before.generation.checked_add(1).ok_or(SeatError::Conflict)?;
         let next_revision = before.revision.checked_add(1).ok_or(SeatError::Conflict)?;
         let update_settings = Statement::prepare(db.as_ptr(),
@@ -1095,6 +1189,12 @@ pub(crate) fn tune(
         if seat.generation != next_generation || seat.revision != next_revision
             || seat.settings_json.as_deref() != Some(updated_settings.as_str()) {
             return Err(SeatError::Conflict);
+        }
+        if reset_takeover_answers {
+            let clear=Statement::prepare(db.as_ptr(),
+                "DELETE FROM main.gogoke_v37_seat_takeover_answers WHERE domain_id=?1 AND seat_id=?2")?;
+            clear.bind_text(1,input.domain_id)?;clear.bind_text(2,input.seat_id)?;
+            clear.step_done()?;
         }
         record_operation(db, input.request_id, &fp, &seat)?;
         Ok(SeatReceipt { seat, replayed: false })

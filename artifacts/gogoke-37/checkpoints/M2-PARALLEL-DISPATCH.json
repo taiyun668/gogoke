@@ -1,0 +1,26 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "M1_COMPLETION_AND_M2_PARALLEL_ACTIVE",
+  "owner_basis": "Owner's 2026-10-03 instruction: Controller finishes M1 while M2 lines build in separate branches and worktrees; shared files integrate through Controller; collect the four provider OT4 steps into one notification.",
+  "base": "546d4e9d573d90ecbfc5be6250aabbed6afbe45f",
+  "changed": "Prepared seven independent M2 branches/worktrees. B2 committed its first bounded package; B3 and F2 continue construction. A fresh independent PR62 signing-chain auditor uses the third subordinate slot. B4, B5, D and E2 are prepared for the next available worker slot.",
+  "results": {
+    "M1": "0.1.21 frozen build, trusted-main signing and same-byte installed cloud smoke PASS. Independent native original evidence: full 594, focused 32, server 645, release/process/shim and twelve compiled fail/restore checks PASS. Ordinary Win11 prior-candidate retirement and exact frozen replacement installation PASS; all five formal protection fields and original native root/home identities preserved. Exact G4 audit and cleanup PASS: 1114 directories read back ABSENT, zero files deleted. Original-instance actual M1 flow started; no flow PASS claim.",
+    "PR62": "Fresh read-only risk auditor pr62_signing_audit examines exact head cf16722b400b41b0bfef9491c28086579868f500; no main merge or pass claim.",
+    "B2": "First package ae51f657c2558b64f6bfd278f9f0d72587a87845 pushed; hygiene 37124009978 PASS, native/server 37124010032 pending. Full local workspace typecheck incomplete; real CLI/goldens/integration NOT_RUN. Ignored development dependencies retained after cleanup policy refusal; no bypass.",
+    "F2": "First package bc8d355c pushed on its own branch; native 37124133049 and desktop 37124132823 pending. Shared dispatch/integration and actual tests NOT_RUN.",
+    "worker_limit": "The current tool permits four concurrent agents including Controller, so three subordinate workers run at once. No extra Codex session bypass."
+  },
+  "lines": [
+    {"line":"B2","branch":"codex/gogoke-37-m2-b2","worktree":".controller-worktrees/m2-b2","seat":"m2_b2_claude","declared_route":"gpt-6-luna/high","state":"FIRST_PACKAGE_RETURNED_CI_AND_INTEGRATION_PENDING","write_scope":["third_party/t3code/apps/server/src/gogoke/adapters/claude/","artifacts/gogoke-37/parallel/B2/"]},
+    {"line":"B3","branch":"codex/gogoke-37-m2-b3","worktree":".controller-worktrees/m2-b3","seat":"m2_b3_opencode","declared_route":"gpt-6-luna/high","state":"DISPATCHED","write_scope":["third_party/t3code/apps/server/src/gogoke/adapters/opencode/","artifacts/gogoke-37/parallel/B3/"]},
+    {"line":"F2","branch":"codex/gogoke-37-m2-f2","worktree":".controller-worktrees/m2-f2","seat":"m1_e2e_driver_review","declared_route":"existing Sol/high seat reassigned to bounded native construction; no self acceptance","state":"DISPATCHED","write_scope":["apps/desktop/native-host/src/store/instance/","apps/desktop/native-host/src/store/worktree/","third_party/t3code/apps/server/src/gogoke/instances/","artifacts/gogoke-37/parallel/F2/"]},
+    {"line":"B4","branch":"codex/gogoke-37-m2-b4","worktree":".controller-worktrees/m2-b4","state":"PREPARED_QUEUED","write_scope":["third_party/t3code/apps/server/src/gogoke/adapters/grok/","artifacts/gogoke-37/parallel/B4/"]},
+    {"line":"B5","branch":"codex/gogoke-37-m2-b5","worktree":".controller-worktrees/m2-b5","state":"PREPARED_QUEUED","write_scope":["third_party/t3code/apps/server/src/gogoke/adapters/antigravity/","artifacts/gogoke-37/parallel/B5/"]},
+    {"line":"D","branch":"codex/gogoke-37-m2-d","worktree":".controller-worktrees/m2-d","state":"PREPARED_QUEUED","write_scope":["third_party/t3code/apps/server/src/gogoke/sidechat/","apps/desktop/native-host/src/store/sidechat/","artifacts/gogoke-37/parallel/D/"]},
+    {"line":"E2","branch":"codex/gogoke-37-m2-e2","worktree":".controller-worktrees/m2-e2","state":"PREPARED_QUEUED","write_scope":["third_party/t3code/apps/server/src/gogoke/seats/","apps/desktop/native-host/src/store/seat/","artifacts/gogoke-37/parallel/E2/"]}
+  ],
+  "next": "Continue original-instance ordinary Win11 M1 E2E. Workers commit/push and validate their own branches in cloud; shared changes are requests to Controller. Start each queued line when a worker slot frees. Integrate reviewed results into the construction branch; no main merge or public release.",
+  "references": "参照：effective origin/main AGENTS.md and docs/model-routing.md, Owner-merged Design37 PLAN.json line write_scope and frozen L0 contracts/fakes. Each worker must inspect gogo-party PROVIDER_LOGIN/runtime first, then repository research, then official pinned-version sources; report adoption and differences. No plan/scope/security change or new authorization receipt.",
+  "acceptance": false
+}

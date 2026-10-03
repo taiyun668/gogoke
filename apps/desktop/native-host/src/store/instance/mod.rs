@@ -2,6 +2,8 @@
 //! This schema shares the verified product connection but never changes R2 authority tables.
 mod home;
 mod catalog;
+mod provider_catalog;
+pub(crate) mod provider_login;
 mod cap;
 mod registry;
 mod resolver;
@@ -17,7 +19,7 @@ pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     RegistrationDisposition, RegistrationJournalPhase, RegistrationPreflight,
     RegistrationReplay, RegistryError, ProgramRepin, ProgramRepinReceipt};
 pub(crate) use resolver::{resolve_codex_instance_home,
-    resolve_codex_session_launch_homes, InstanceLaunchHomes, LaunchHomeError,
+    resolve_codex_session_launch_homes, resolve_provider_session_launch_homes, InstanceLaunchHomes, LaunchHomeError,
     ResolvedDirectory};
 pub(crate) use reprobe::{read_current_capability_reprobe, CapabilityReprobeEvidence};
 pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_temporary_home,

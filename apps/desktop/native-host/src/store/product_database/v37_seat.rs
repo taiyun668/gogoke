@@ -6,7 +6,7 @@ use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, Seat, SeatChange,
 
 fn key(name: &str) -> JsonString { JsonString::from_str(name) }
 
-fn configuration_depth_ok(frame: &[u8]) -> bool {
+pub(super) fn configuration_depth_ok(frame: &[u8]) -> bool {
     let mut depth = 0usize;
     let mut quoted = false;
     let mut escaped = false;
@@ -119,7 +119,8 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
         }
         SeatError::Unknown => V37Status::Conflict,
         SeatError::Store(_) | SeatError::Open(_) | SeatError::CommitUnknown(_)
-        | SeatError::RollbackUnknown(_) | SeatError::SchemaDrift => V37Status::Unknown,
+        | SeatError::RollbackUnknown(_) | SeatError::HostResourceObservation(_)
+        | SeatError::SchemaDrift => V37Status::Unknown,
     }
 }
 

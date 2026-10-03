@@ -225,44 +225,16 @@ struct HeldRoot {
     dos: String,
 }
 
-/// Sealed native value. Held file and ancestor handles block module replacement
-/// and path renaming. Kept by prepared/active/unknown process custody, not IPC.
+/// Native directory custody independent of the Codex-only import shim.
+/// Reuses the same shared physical handles for homes, worktree and ancestors.
 #[derive(Debug)]
-pub(crate) struct CompatModule {
-    path: PathBuf,
-    ansi: CString,
-    file: File,
-    file_identity: RootIdentity,
+pub(crate) struct DirectoryRoots {
     _directories: Vec<Arc<File>>,
     homes: Vec<HeldRoot>,
-    profile_name: String,
 }
 
-impl CompatModule {
-    pub(crate) fn prepare(
-        root: &RootLock,
-        home: &Path,
-        expected: &RootIdentity,
-        profile: &AppContainerProfile,
-        profile_name: &str,
-    ) -> io::Result<Arc<Self>> {
-        Self::prepare_with_roots(
-            root,
-            &[(home.to_path_buf(), expected.clone())],
-            profile,
-            profile_name,
-        )
-    }
-
-    /// Native-only finite map. Every directory and ancestor stays held without
-    /// FILE_SHARE_DELETE through the child lifetime. It changes path spelling,
-    /// never ACL rights or H's actual worktree admission decision.
-    pub(crate) fn prepare_with_roots(
-        root: &RootLock,
-        roots: &[(PathBuf, RootIdentity)],
-        profile: &AppContainerProfile,
-        profile_name: &str,
-    ) -> io::Result<Arc<Self>> {
+impl DirectoryRoots {
+    pub(crate) fn prepare(root: &RootLock, roots: &[(PathBuf, RootIdentity)]) -> io::Result<Self> {
         if roots.is_empty() || roots.len() > MAX_ROOTS {
             return Err(invalid("compatibility root count"));
         }
@@ -338,6 +310,67 @@ impl CompatModule {
                 }
             }
         }
+        Ok(Self { _directories: directories, homes })
+    }
+
+    pub(crate) fn verify(&self) -> io::Result<()> {
+        verify_held_roots(&self.homes)
+    }
+}
+
+fn verify_held_roots(homes: &[HeldRoot]) -> io::Result<()> {
+    for home in homes {
+        if identity(&home._directory)? != home.identity
+            || final_path(&home._directory, 0)? != home.dos
+            || final_path(&home._directory, 2)? != home.nt
+        {
+            return Err(invalid("compatibility held mapping identity changed"));
+        }
+    }
+    Ok(())
+}
+
+/// Sealed native value. Held file and ancestor handles block module replacement
+/// and path renaming. Kept by prepared/active/unknown process custody, not IPC.
+#[derive(Debug)]
+pub(crate) struct CompatModule {
+    path: PathBuf,
+    ansi: CString,
+    file: File,
+    file_identity: RootIdentity,
+    _directories: Vec<Arc<File>>,
+    homes: Vec<HeldRoot>,
+    profile_name: String,
+}
+
+impl CompatModule {
+    pub(crate) fn prepare(
+        root: &RootLock,
+        home: &Path,
+        expected: &RootIdentity,
+        profile: &AppContainerProfile,
+        profile_name: &str,
+    ) -> io::Result<Arc<Self>> {
+        Self::prepare_with_roots(
+            root,
+            &[(home.to_path_buf(), expected.clone())],
+            profile,
+            profile_name,
+        )
+    }
+
+    /// Native-only finite map. Every directory and ancestor stays held without
+    /// FILE_SHARE_DELETE through the child lifetime. It changes path spelling,
+    /// never ACL rights or H's actual worktree admission decision.
+    pub(crate) fn prepare_with_roots(
+        root: &RootLock,
+        roots: &[(PathBuf, RootIdentity)],
+        profile: &AppContainerProfile,
+        profile_name: &str,
+    ) -> io::Result<Arc<Self>> {
+        let DirectoryRoots { _directories: mut directories, homes } = DirectoryRoots::prepare(root, roots)?;
+        let base = root.canonical_root().canonical_path.join("v37-native-components");
+        let version = base.join(gogoke_lpac_path_compat::MODULE_SHA256);
         for directory in [&base, &version] {
             match fs::create_dir(directory) {
                 Ok(()) => (),
@@ -396,14 +429,7 @@ impl CompatModule {
     }
 
     fn verify(&self) -> io::Result<()> {
-        for home in &self.homes {
-            if identity(&home._directory)? != home.identity
-                || final_path(&home._directory, 0)? != home.dos
-                || final_path(&home._directory, 2)? != home.nt
-            {
-                return Err(invalid("compatibility held mapping identity changed"));
-            }
-        }
+        verify_held_roots(&self.homes)?;
         if identity(&self.file)? != self.file_identity
             || AppContainerProfile::capture_program_identity(&self.path)
                 .map_err(|error| invalid(&format!("compatibility DLL identity: {error}")))?

@@ -214,7 +214,8 @@ pub(crate) fn mark_resume_unknown(connection: &VerifiedDatabaseConnection<'_>,
 pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     domain: &str, session: &str, request_id: &str, operation_id: &str,
     expected_revision: i64) -> Result<i64, AtomicError> {
-    if let Some(change)=super::generation_change::active_for_session(connection,domain,session)? {
+    let active_change=super::generation_change::active_for_session(connection,domain,session)?;
+    if let Some(change)=&active_change {
         if change.request_id!=request_id || change.stage!="OLD_STOPPED"
             || change.owner_stop_request_id.is_some() {
             return Err(AtomicError::OperationConflict);
@@ -222,7 +223,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     }
     let candidate=Statement::prepare(connection.as_ptr(),
         "SELECT e.generation,e.old_generation,e.home_id,e.binding_id,e.seat_id,
-                e.seat_incarnation,e.instance_id
+                e.seat_incarnation,e.instance_id,i.driver_id,c.ticket,c.custodian_nonce
            FROM main.gogoke_v37_h_process_episode e
            JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
              AND a.session_id=e.session_id AND a.generation=e.old_generation
@@ -237,7 +238,9 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
              AND c.generation=e.generation AND c.state IN ('ACTIVE','UNKNOWN')
              AND c.binary_digest_sha256=oldc.binary_digest_sha256
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
-             AND i.driver_id='codex' AND i.version='0.160.0'
+             AND ((i.driver_id='codex' AND i.version='0.160.0')
+               OR (i.driver_id='opencode' AND i.version='1.18.32')
+               OR (i.driver_id='grok' AND i.version='1.0.41'))
              AND i.login_state='LOGGED_IN'
              AND i.program_digest=c.binary_digest_sha256
            JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id
@@ -255,7 +258,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     candidate.bind_i64(5,expected_revision)?;
     if !candidate.step_row()? {return Err(AtomicError::OperationConflict);}
     let mut row=Vec::new();
-    for index in 0..7 {row.push(candidate.column_text(index)?);}
+    for index in 0..10 {row.push(candidate.column_text(index)?);}
     if candidate.step_row()? {return Err(AtomicError::OperationConflict);}
     drop(candidate);
     let (new_generation,old_generation,home_id,binding_id,seat_id,incarnation,instance_id)=
@@ -264,7 +267,11 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
         .and_then(|value|value.checked_add(1))
         .ok_or(AtomicError::OperationConflict)?;
     if new_generation!=&expected_new.to_string() {return Err(AtomicError::OperationConflict);}
-    let step_id=format!("{operation_id}-thread-resume");
+    let driver=&row[7];
+    let ticket=&row[8];
+    let nonce=&row[9];
+    let step_id=if driver=="codex" {format!("{operation_id}-thread-resume")}
+        else {format!("{operation_id}-session-resume")};
     let observed=Statement::prepare(connection.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_rpc_steps s
            JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
@@ -274,13 +281,33 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
              AND r.generation=s.generation
           WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3
             AND s.open_request_id=?4 AND s.generation=?5 AND s.step_id=?6
-            AND s.phase='OBSERVED' AND r.state='NO_EVENT'")?;
+            AND s.phase='OBSERVED' AND r.state='NO_EVENT'
+            AND r.no_event_reason=?7")?;
     for (index,value) in [domain,session,operation_id,request_id,
         new_generation.as_str(),step_id.as_str()].iter().enumerate() {
         observed.bind_text((index+1) as i32,value)?;
     }
+    observed.bind_text(7,if driver=="codex" {"CODEX_RPC_RESPONSE"}
+        else {"ACP_RPC_RESPONSE"})?;
     if !observed.step_row()? || observed.step_row()? {return Err(AtomicError::OperationConflict);}
     drop(observed);
+    if driver!="codex" {
+        let change=active_change.as_ref().ok_or(AtomicError::OperationConflict)?;
+        let actual=super::rpc_journal::observed_thread_id(connection,domain,session,
+            operation_id,new_generation,request_id,ticket,nonce)
+            .map_err(|_|AtomicError::OperationConflict)?;
+        let old=super::rpc_journal::observed_old_acp_session_id(connection,domain,session,
+            operation_id,new_generation,request_id)
+            .map_err(|_|AtomicError::OperationConflict)?;
+        if actual!=old || change.thread_id!=old {
+            return Err(AtomicError::OperationConflict);
+        }
+        if driver=="opencode" {
+            super::rpc_journal::observed_acp_configuration_for_generation(connection,
+                domain,session,operation_id,new_generation,request_id,ticket,nonce,&actual)
+                .map_err(|_|AtomicError::OperationConflict)?;
+        }
+    }
     // The original A/RPC response settles only this already-held candidate.
     // A separate process start remains forbidden while the request was UNKNOWN.
     let settle=Statement::prepare(connection.as_ptr(),

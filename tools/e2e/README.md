@@ -78,6 +78,13 @@ read mode so it cannot create WAL/SHM sidecars; all three files are compared.
 
 ## Real CLI recordings
 
+Monitor a running case through its append-only stdout log. Read the JSON
+journal with `m1-progress.mjs` only after its task settles. Windows can refuse
+the atomic replacement of an open target, including readers that share DELETE.
+Snapshot inventories stay in their original files; the journal records hashes
+and references, and comparisons read those exact original files. Repeated
+assertions still check every value while recording each assertion name once.
+
 Use [cli-protocol-golden.md](cli-protocol-golden.md) to import the readonly
 readback and compare versions. Original private bytes remain local; sanitized
 observations retain per-direction order, scoped RPC associations, field shape

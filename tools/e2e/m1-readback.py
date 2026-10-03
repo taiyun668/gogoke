@@ -44,41 +44,50 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as co
                 "SELECT generation,process_operation_id,phase,stop_fact_id FROM gogoke_v37_h_process_episode "
                 "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, session_id)).fetchall()
             incoming = connection.execute(
-                "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state FROM v37_ledger_raw_source "
+                "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state,process_ticket,custodian_nonce FROM v37_ledger_raw_source "
                 "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, session_id)).fetchall()
             outgoing = connection.execute(
-                "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor "
+                "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor,ticket,custodian_nonce "
                 "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? ORDER BY rowid",
                 (domain, session_id)).fetchall()
             by_episode = {}
             parsed_in = []
-            for generation, operation, epoch, cursor, raw, state in incoming:
+            for generation, operation, epoch, cursor, raw, state, ticket, nonce in incoming:
                 text = bytes(raw).decode("utf-8")
                 frame = json.loads(text)
                 result["frames"].append({"direction": "in", "sessionId": session_id,
                     "generation": generation, "operationId": operation, "sourceEpoch": epoch,
-                    "sourceCursor": cursor, "state": state, "originalFrame": text})
+                    "sourceCursor": cursor, "processTicket": ticket, "custodianNonce": nonce,
+                    "state": state, "originalFrame": text})
                 by_episode.setdefault((operation, epoch), []).append(int(cursor))
                 parsed_in.append(frame)
-            for generation, operation, step, command, phase, epoch, cursor in outgoing:
+            for generation, operation, step, command, phase, epoch, cursor, ticket, nonce in outgoing:
                 # INTENT/UNKNOWN is evidence of intent/uncertainty, never a sent frame.
                 result["commands"].append({"direction": "out", "sessionId": session_id,
                     "generation": generation, "operationId": operation, "stepId": step,
                     "phase": phase, "sourceEpoch": epoch, "sourceCursor": cursor,
+                    "processTicket": ticket, "custodianNonce": nonce,
                     "originalFrame": bytes.fromhex(command).decode("utf-8"),
                     "confirmedWrite": phase in ("WRITTEN", "OBSERVED")})
             normalized = connection.execute(
-                "SELECT cursor,source_epoch,source_cursor,update_json FROM v37_ledger_index "
-                "WHERE source_kind='v37' AND domain_id=? AND session_id=? ORDER BY cursor",
+                "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,r.generation,r.process_ticket,r.custodian_nonce "
+                "FROM v37_ledger_index i LEFT JOIN v37_ledger_raw_source r "
+                "ON r.resolved_event_id=i.source_event_id AND r.domain_id=i.domain_id AND r.session_id=i.session_id "
+                "WHERE i.source_kind='v37' AND i.domain_id=? AND i.session_id=? ORDER BY i.cursor",
                 (domain, session_id)).fetchall()
             completed = [frame for frame in parsed_in if frame.get("method") == "turn/completed"
                          and frame.get("params", {}).get("turn", {}).get("status") == "completed"]
             compactions = [frame for frame in parsed_in if frame.get("method") == "item/completed"
                            and frame.get("params", {}).get("item", {}).get("type") == "contextCompaction"]
+            command_completions = [frame["params"]["item"] for frame in parsed_in
+                if frame.get("method") == "item/completed"
+                and frame.get("params", {}).get("item", {}).get("type") == "commandExecution"]
             summary = {"sessionId": session_id, "episodes": episodes,
                 "normalized": [{"cursor": str(cursor), "sourceEpoch": epoch,
+                    "operationId": operation, "generation": generation,
+                    "processTicket": ticket, "custodianNonce": nonce,
                     "ledgerSourceCursor": source, "update": json.loads(update)}
-                    for cursor, epoch, source, update in normalized],
+                    for cursor, epoch, source, update, operation, generation, ticket, nonce in normalized],
                 "successfulTurns": len(completed), "contextCompactionCompletions": len(compactions),
                 "sourceCursorsContinuous": all(values == list(range(1, max(values) + 1))
                     for values in by_episode.values()),
@@ -86,6 +95,10 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as co
                 "unresolvedRawFrames": sum(row[5] == "PENDING" for row in incoming)}
             summary["unresolvedRawMethods"] = [json.loads(bytes(row[4]).decode("utf-8")).get("method")
                 for row in incoming if row[5] == "PENDING"]
+            summary["commandCompletions"] = [{"id": item.get("id"), "status": item.get("status"),
+                "exitCode": item.get("exitCode")} for item in command_completions]
+            summary["allObservedCommandsSucceeded"] = all(item.get("status") == "completed"
+                and item.get("exitCode") == 0 for item in command_completions)
             summary["steerConsumptionRequired"] = bool(session.get("steerMarker"))
             original_turn = session.get("turns", [{}])[0] if session.get("turns") else {}
             summary["steerConsumedInOriginalCompletion"] = bool(session.get("steerMarker")) and any(
@@ -110,6 +123,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as co
         result["actualFlowReportedComplete"] = journal["state"] == "ACTUAL_FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED"
         result["directReadbackComplete"] = result["actualFlowReportedComplete"] and len(result["sessions"]) == 2 and all(
             row["successfulTurns"] >= (2 if index == 0 else 1) and row["everyObservedTurnDurable"]
+            and row["allObservedCommandsSucceeded"]
             and row["sourceCursorsContinuous"] and row["allEpisodesStopped"]
             and (not row["steerConsumptionRequired"] or row["steerConsumedInOriginalCompletion"])
             for index, row in enumerate(result["sessions"])) and result["sessions"][0]["contextCompactionCompletions"] > 0

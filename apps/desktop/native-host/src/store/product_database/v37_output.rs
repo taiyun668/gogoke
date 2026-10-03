@@ -4,6 +4,7 @@ use super::*;
 use crate::store::atomic::Parser;
 use crate::store::ledger::{self, EventInput, Tier};
 use crate::store::session_transport::codex_output::{self, Output};
+use crate::store::session_transport::provider_evidence::normalize as vendor_output;
 use crate::process::{OriginBoundFrame, PreparedCustody, ProcessCustodian};
 
 #[derive(Default)]
@@ -199,7 +200,18 @@ impl<'root> ProductDatabase<'root> {
         run.evidence.verify_live(&mut self.connection,self.root,&self.owner,&operation,claim.revision)
             .map_err(OrchestrationError::V37StoreFailure)?;
         self.drain_native_output(&key)?;
+        // A pending original send may have obtained its terminal RPC receipt
+        // while draining. The response reports the actual post-drain claim.
+        let claim=runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,&seat_id,&key.1).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native output current claim: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if claim.generation!=generation {return Err(OrchestrationError::OperationConflict);}
+        let revision=u64::try_from(claim.revision).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native output current revision: {error}")))?;
         let (card_refs,card_refs_incomplete)=self.native_card_refs(&key,&seat_id,&generation)?;
+        let input_receipts=self.native_input_receipts(&key,&operation,&nonce,&generation)?;
+        let input_signature=input_receipts.canonical();
         let card_refs_signature=card_refs.canonical();
         let source_error=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
             .raw_capture.source_error.as_ref().map(|text|Json::String(JsonString::from_str(text))).unwrap_or(Json::Null);
@@ -227,7 +239,8 @@ impl<'root> ProductDatabase<'root> {
                 && result.get(&JsonString::from_str("rawHighwater"))
                     .is_some_and(|value|matches!(value,Json::String(text) if text.to_well_formed_string().as_deref()==Some(raw_cursor.as_str())))
                 && result.get(&JsonString::from_str("sourceError")).is_some_and(|value|value.canonical()==source_error.canonical());
-            let unchanged=unchanged && result.get(&JsonString::from_str("nativeCardRefs")).is_some_and(|value|value.canonical()==card_refs_signature)
+            let unchanged=unchanged && result.get(&JsonString::from_str("nativeInputReceipts")).is_some_and(|value|value.canonical()==input_signature)
+                && result.get(&JsonString::from_str("nativeCardRefs")).is_some_and(|value|value.canonical()==card_refs_signature)
                 && result.get(&JsonString::from_str("nativeCardRefsIncomplete")).is_some_and(|value|matches!(value,Json::Bool(value) if *value==card_refs_incomplete));
             return Ok(encode_receipt(request,if unchanged {V37Status::Replayed} else {V37Status::Stale},revision,revision,
                 if unchanged {result} else {Default::default()}));
@@ -263,6 +276,7 @@ impl<'root> ProductDatabase<'root> {
                 (JsonString::from_str("rawHighwater"),Json::String(JsonString::from_str(&raw_cursor))),
                 (JsonString::from_str("unresolvedRawFrames"),Json::String(JsonString::from_str(&unresolved))),
                 (JsonString::from_str("sourceError"),source_error),
+                (JsonString::from_str("nativeInputReceipts"),input_receipts),
                 (JsonString::from_str("nativeCardRefs"),card_refs),
                 (JsonString::from_str("nativeCardRefsIncomplete"),Json::Bool(card_refs_incomplete)),
             ]);
@@ -283,6 +297,50 @@ impl<'root> ProductDatabase<'root> {
                 Err(primary)
             }
         }
+    }
+
+    // Read original H rows for this physical episode. This is a finite UI
+    // projection, not another input journal or a vendor-text success heuristic.
+    fn native_input_receipts(&self,key:&(String,String),operation:&str,nonce:&str,
+        generation:&str)->Result<Json> {
+        use crate::store::session_transport::{read_stdin_journal,StdinJournalKey};
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let ticket=run.custody.ticket.opaque();
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id,phase,expected_revision FROM main.gogoke_v37_h_stdin_journal
+              WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+                AND custodian_nonce=?4 AND ticket=?5 AND generation=?6
+              ORDER BY CAST(expected_revision AS INTEGER) DESC,request_id LIMIT 4")?;
+        for (index,value) in [key.0.as_str(),key.1.as_str(),operation,nonce,ticket,generation].iter().enumerate() {
+            query.bind_text((index+1) as i32,value)?;
+        }
+        let mut rows=Vec::new();while query.step_row()? {
+            rows.push((query.column_text(0)?,query.column_text(1)?,query.column_text(2)?));
+        }
+        drop(query);
+        let mut facts=Vec::new();
+        for (id,phase,expected) in rows {
+            let record=read_stdin_journal(&self.connection,&StdinJournalKey {domain_id:&key.0,
+                request_id:&id,session_id:&key.1,ticket,generation}).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native input fact: {error:?}")))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if matches!(run.evidence.driver_id(),"opencode"|"grok") {
+                self.verify_acp_input_receipt(&record)?;
+            } else if run.evidence.driver_id()=="claude" {
+                self.verify_claude_input_receipt(&record)?;
+            }
+            let receipt=if let Some(bytes)=record.receipt_bytes {
+                Parser::parse(std::str::from_utf8(&bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("native input receipt UTF-8: {error}")))?)?
+            } else {Json::Null};
+            facts.push(Json::Object(BTreeMap::from([
+                (JsonString::from_str("requestId"),Json::String(JsonString::from_str(&id))),
+                (JsonString::from_str("phase"),Json::String(JsonString::from_str(&phase))),
+                (JsonString::from_str("expectedRevision"),Json::String(JsonString::from_str(&expected))),
+                (JsonString::from_str("receipt"),receipt),
+            ])));
+        }
+        Ok(Json::Array(facts))
     }
 
     // Output carries references to C's current unresolved cards, not a
@@ -309,11 +367,19 @@ impl<'root> ProductDatabase<'root> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         let thread_id=run.thread_id.clone();
+        let driver=run.evidence.driver_id().to_owned();
         let operation=run.operation_id.clone();
         let nonce=run.custody.custodian_nonce.clone();
         let ticket=run.custody.ticket.opaque().to_owned();
         let generation=run.custody.binding.generation.clone();
         let seat_id=run.evidence.seat_id().to_owned();
+        let registration=ledger::read_registered_session(&self.connection,&key.1)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if registration.domain_id!=key.0 || registration.seat_id!=seat_id {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let tier=if registration.purpose==ledger::SessionPurpose::SideChat {Tier::Side} else {Tier::Session};
+        let side_id=registration.side_id;
         let replies=Statement::prepare(self.connection.as_ptr(),
             "SELECT s.step_id FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.domain_id=?1 AND s.session_id=?2 AND s.process_operation_id=?3 AND s.ticket=?4 AND s.custodian_nonce=?5 AND s.phase='OBSERVED' AND s.requires_response=1 AND r.state='PENDING'")?;
         for (index,value) in [key.0.as_str(),key.1.as_str(),operation.as_str(),ticket.as_str(),nonce.as_str()].iter().enumerate() {
@@ -327,6 +393,13 @@ impl<'root> ProductDatabase<'root> {
                 &mut self.connection,&self.owner,&key.0,&key.1,&step).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("native observed response recovery: {error:?}")))?;
         }
+        if matches!(driver.as_str(),"opencode"|"grok") {
+            self.complete_pending_native_acp_send(key)?;
+        }
+        if driver=="claude" {self.complete_pending_native_claude_send(key)?;}
+        let thread_id=if driver=="claude" {
+            self.native_sessions.get(key).and_then(|run|run.thread_id.clone())
+        } else {thread_id};
         let Some(thread_id)=thread_id else {return Ok(());};
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;
@@ -351,8 +424,28 @@ impl<'root> ProductDatabase<'root> {
                     continue;
                 }
             }
-            let output=codex_output::normalize(&raw.raw_bytes,&thread_id).map_err(|error|
-                OrchestrationError::V37StoreFailure(format!("native output: {error:?}")))?;
+            let output=if driver=="codex" {
+                codex_output::normalize(&raw.raw_bytes,&thread_id).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("native output: {error:?}")))?
+            } else {
+                let provider=match driver.as_str() {
+                    "opencode"=>vendor_output::Provider::OpenCode,
+                    "grok"=>vendor_output::Provider::GrokBuild,
+                    "claude"=>vendor_output::Provider::Claude,
+                    _=>return Err(OrchestrationError::Invalid("native output provider")),
+                };
+                let projected=if driver=="claude" {
+                    vendor_output::claude(&raw.raw_bytes,&thread_id,&thread_id)
+                } else {vendor_output::acp(&raw.raw_bytes,provider,&thread_id,&thread_id,None)}
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                        "native provider output: {}; raw: {}",error.reason,String::from_utf8_lossy(&error.raw_frame))))?;
+                match projected {
+                    vendor_output::Output::Update(update)=>Output::Update(update),
+                    // Permission/terminal/unknown data stay in original A until
+                    // their H/C protocol operation has an exact source binding.
+                    _=>continue,
+                }
+            };
             let (update,terminal_turn,started_turn)=match output {
                 Output::Update(update) | Output::CompactionCompleted {update,..} => (update,None,None),
                 Output::TurnStarted {update,turn_id} => (update,None,Some(turn_id)),
@@ -408,11 +501,11 @@ impl<'root> ProductDatabase<'root> {
                 meta.insert(JsonString::from_str("timeBasis"),Json::String(JsonString::from_str("NATIVE_NORMALIZATION_OBSERVATION")));
                 meta.insert(JsonString::from_str("rawSourceCursor"),Json::String(JsonString::from_str(&raw_cursor)));
                 let source_id=format!("{}\n{}\n{}",operation,nonce,raw_cursor);
-                let event_id=format!("codex-{}",crate::store::digest::sha256_hex(source_id.as_bytes()));
+                let event_id=format!("{driver}-{}",crate::store::digest::sha256_hex(source_id.as_bytes()));
                 ledger::record(&mut self.connection,&EventInput {
                     event_id:event_id.clone(),source_epoch:nonce.clone(),source_cursor:ordinal.to_string(),
                     domain_id:raw.domain_id,seat_id:seat_id.clone(),session_id:raw.session_id,
-                    tier:Tier::Session,side_id:None,occurred_at:observed_at,
+                    tier,side_id:side_id.clone(),occurred_at:observed_at,
                     update_json:Json::Object(fields).canonical(),
                 })?;
                 ledger::resolve_raw_source(&mut self.connection,&operation,&nonce,&raw_cursor,&event_id)?;

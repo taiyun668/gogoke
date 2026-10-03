@@ -4,4 +4,4 @@ mod isolation;
 mod compat_module;
 
 pub(crate) use isolation::{AppContainerProfile, IsolationError, SecurityCapabilities};
-pub(crate) use compat_module::CompatModule;
+pub(crate) use compat_module::{CompatModule, DirectoryRoots};

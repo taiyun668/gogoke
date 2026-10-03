@@ -44,6 +44,7 @@ mod v37_ledger_user;
 mod v37_inbox;
 mod v37_capability;
 mod v37_login;
+mod v37_side;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
     match request.payload.get(&JsonString::from_str(field)) {
@@ -207,6 +208,9 @@ impl<'root> ProductDatabase<'root> {
     /// native store; all other closed-envelope operations stay unsupported.
     pub fn dispatch_user_frame(&mut self, origin: &UserOriginProof, frame: &[u8]) -> Result<Vec<u8>> {
         origin.verify_live_origin().map_err(OrchestrationError::Ipc)?;
+        if v37_side::is_owner_side_frame(frame) {
+            return self.dispatch_owner_side_frame(frame);
+        }
         if v37_login::is_owner_instance_list_frame(frame) {
             return self.dispatch_owner_instance_list_frame(frame);
         }
@@ -227,6 +231,7 @@ impl<'root> ProductDatabase<'root> {
         if request.family == "K-QCARD" { return self.dispatch_user_qcard(request); }
         if request.family == "K-LEDGER" { return self.dispatch_user_ledger(request); }
         if request.family == "K-INBOX" { return self.dispatch_native_inbox(request); }
+        if request.family == "K-SIDE" { return self.dispatch_user_side(request); }
         if request.family == "K-WORKTREE" { return self.dispatch_user_worktree(request); }
         if request.family == "K-INSTANCE" {
             return match request.operation.as_str() {
