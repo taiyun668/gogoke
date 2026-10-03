@@ -81,6 +81,8 @@ pub(super) struct PreparedOwnerLogin {
     pub(super) account_read: PrepareRequest,
     pub(super) runtime_home: PathBuf,
     pub(super) runtime_identity: RootIdentity,
+    pub(super) registered_driver: String,
+    pub(super) registered_home_identity: RootIdentity,
 }
 
 /// In-memory Owner action state. ProductDatabase owns one of these beside its
@@ -115,6 +117,8 @@ struct PendingAccountCustody {
     prepared: Option<PreparedCustody>,
     runtime_home: Option<PathBuf>,
     runtime_identity: Option<RootIdentity>,
+    registered_driver: Option<String>,
+    registered_home_identity: Option<RootIdentity>,
     proof: Option<NativeStopProof>,
     durable_revision: Option<u64>,
     abort_prepared: bool,
@@ -156,6 +160,8 @@ fn account_prepare_failure(launch: &PreparedOwnerLogin, error: ProcessCustodyErr
         pending: unconfirmed.then(|| PendingAccountCustody {
             operation_id: None, prepared: None,
             runtime_home: Some(launch.runtime_home.clone()), runtime_identity: Some(launch.runtime_identity.clone()),
+            registered_driver: Some(launch.registered_driver.clone()),
+            registered_home_identity: Some(launch.registered_home_identity.clone()),
             proof: None, durable_revision: None, abort_prepared: false, frame: None, request: None,
         }),
     }
@@ -901,6 +907,8 @@ impl<'root> ProductDatabase<'root> {
         let custody = |proof: Option<NativeStopProof>, abort_prepared| PendingAccountCustody {
             operation_id:Some(operation_id.clone()),prepared:Some(prepared.clone()),
             runtime_home:Some(launch.runtime_home.clone()),runtime_identity:Some(launch.runtime_identity.clone()),
+            registered_driver:Some(launch.registered_driver.clone()),
+            registered_home_identity:Some(launch.registered_home_identity.clone()),
             proof,durable_revision:None,abort_prepared,frame:None,request:None,
         };
         if let Err(error) = authority::record_prepared_process(
@@ -1264,7 +1272,14 @@ impl<'root> ProductDatabase<'root> {
             &pending.custody.runtime_identity) {
             let cleanup = if pending.custody.operation_id.as_deref()
                 == Some(owner_login_operation_id(command).as_str()) {
-                self.cleanup_confirmed_owner_login_runtime(&pending.instance_id, runtime, identity)
+                match (pending.custody.registered_driver.as_deref(),
+                    pending.custody.registered_home_identity.as_ref()) {
+                    (Some("codex"), Some(_)) => self.cleanup_confirmed_owner_login_runtime(
+                        &pending.instance_id, runtime, identity),
+                    (Some(driver), Some(home_identity)) => self.cleanup_confirmed_provider_login_runtime(
+                        &pending.instance_id, driver, home_identity, runtime, identity),
+                    _ => Err(OrchestrationError::AccessDenied),
+                }
             } else { remove_owned_runtime(runtime, identity) };
             if let Err(error) = cleanup {
                 pending.output.push_str(&format!("\naccount/read runtime cleanup: {error:?}"));
@@ -1688,6 +1703,8 @@ impl<'root> ProductDatabase<'root> {
             account_read: PrepareRequest { launch: account_read, binding },
             runtime_home: runtime,
             runtime_identity,
+            registered_driver: "codex".into(),
+            registered_home_identity: home.identity,
         })
     }
 
@@ -1823,6 +1840,7 @@ impl<'root> ProductDatabase<'root> {
                 operation_id: Some(operation_id.clone()), prepared: Some(prepared.clone()),
                 runtime_home: Some(prepared_login.runtime_home.clone()),
                 runtime_identity: Some(prepared_login.runtime_identity.clone()),
+                registered_driver: None, registered_home_identity: None,
                 proof, durable_revision, abort_prepared, frame: None,
                 request: Some(V37Request {
                     raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
@@ -2206,7 +2224,7 @@ mod tests {
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         // A signed system runtime is a controlled native pipe fixture only;
         // the production login command and registered auth home stay intact.
@@ -2271,7 +2289,7 @@ mod tests {
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -2606,7 +2624,7 @@ exit 0
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         // The actual pinned CLI's parser emits stderr and exits 2 before any
         // device-auth request. No credentials, provider request or fake binary.
@@ -2674,7 +2692,7 @@ exit 0
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         login.launch.arguments = vec!["login".into(), "--gogoke-invalid-login-control".into()];
         let prepared = product.process_custodian.prepare(&login).unwrap();
@@ -2923,6 +2941,61 @@ exit 0
     }
 
     #[test]
+    fn provider_active_record_failure_releases_only_original_registered_runtime() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-provider-stop-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let program = instance::ProgramObservation::observe(&powershell, "1.18.32").unwrap();
+        let register = request("register", "registerProvider", 0,
+            r#"{"driverId":"opencode"}"#);
+        assert_eq!(instance::register_instance(&mut product.connection, &root,
+            &instance::Registration { request_id: &register.request_id,
+                request_bytes: &register.raw_bytes, instance_id: "instanceA",
+                driver_id: "opencode", program: &program }).unwrap(),
+            RegistrationDisposition::Applied);
+        let home = instance::provider_login::resolve_registered_login_home(
+            &mut product.connection, &root, &product.owner, "instanceA", "opencode").unwrap();
+        let (runtime, runtime_identity) = runtime_home(&home.path).unwrap();
+        let mut child = ProcessLaunch::new(powershell.clone());
+        child.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(),
+            "-Command".into(), "exit 0".into()];
+        child.current_directory = Some(home.path.clone());
+        child.protocol_stdio = true;
+        child.persistent_protocol_stdio = true;
+        let login = PrepareRequest { launch: child,
+            binding: NativeBinding { binary_digest_sha256:
+                crate::store::digest::content_hash(&fs::read(&powershell).unwrap()),
+                profile_id: "instanceA".into(), domain_id: "global".into(),
+                generation: "1".into() } };
+        let launch = PreparedOwnerLogin { login: login.clone(), account_read: login,
+            runtime_home: runtime.clone(), runtime_identity: runtime_identity.clone(),
+            registered_driver: "opencode".into(),
+            registered_home_identity: home.identity.clone() };
+        let command = owner_login_command(br#"{"schema":"gogoke.37.owner-login.v1","action":"status","instanceId":"instanceA","requestId":"providerActiveFault","expectedRevision":1}"#).unwrap();
+        product.connection.execute("CREATE TRIGGER fail_provider_active BEFORE UPDATE OF state ON gogoke_coordination_process_custody WHEN NEW.state='ACTIVE' AND NEW.operation_id LIKE 'owner-login-%' BEGIN SELECT RAISE(ABORT,'controlled provider active record failure'); END").unwrap();
+        let error = product.start_owner_device_login(&command, launch,
+            |custodian, prepared| custodian.activate(prepared)).unwrap_err();
+        product.connection.execute("DROP TRIGGER fail_provider_active").unwrap();
+        assert!(format!("{error:?}").contains("controlled provider active record failure"));
+        let result = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
+        assert!(result.contains("\"settled\":true"), "confirmed stop must settle original request");
+        assert!(result.contains("\"state\":\"UNKNOWN\""));
+        assert!(!runtime.exists(), "confirmed provider runtime must be removed");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        let (next, next_identity) = runtime_home(&home.path).unwrap();
+        remove_owned_runtime(&next, &next_identity).unwrap();
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn owner_account_preparation_distinguishes_confirmed_abort_from_unconfirmed_custody() {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -2974,7 +3047,7 @@ exit 0
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         // This first child uses the real pinned CLI and exits successfully
         // without authenticating. The automatic second child remains the
@@ -3028,7 +3101,7 @@ exit 0
         // A later login child can stop successfully while account/read fails
         // before preparation. Its retained Final must keep that raw cause.
         product.connection.execute("UPDATE main.gogoke_v37_instances SET version='0.160.0' WHERE instance_id='instanceA'").unwrap();
-        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity } =
+        let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
         login.launch.arguments = vec!["--version".into()];
         let prepared = product.process_custodian.prepare(&login).unwrap();

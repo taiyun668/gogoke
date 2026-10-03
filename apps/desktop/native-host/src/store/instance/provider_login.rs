@@ -1,16 +1,16 @@
 //! Fixed CLI login recipes for the Design 37 provider instances.
 //!
 //! This module is data-only. The native host owns process creation, raw output
-//! custody, visible progress, and reconciliation. In particular, a parsed URL
-//! is a manual fallback for the Owner; it is never an instruction to open a
-//! browser from this module.
+//! custody, visible progress, and reconciliation. This module never opens a
+//! browser. Its explicit browser behavior distinguishes the fixed OpenCode
+//! printed-URL handoff from CLI-owned and unknown browser flows.
 
 use std::path::Path;
 
 #[path = "provider_login_preparation.rs"]
 mod preparation;
 pub(crate) use preparation::{prepare_registered_provider_login, LoginPreparation,
-    PreparedProviderLogin, PreparedStatusObservation, ProviderLoginPreparationError,
+    resolve_registered_login_home, PreparedProviderLogin, PreparedStatusObservation, ProviderLoginPreparationError,
     StatusObservation};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +41,9 @@ pub(crate) enum BrowserBehavior {
     /// The CLI may open the default browser itself. The host must not open the
     /// parsed URL automatically; expose it only as an Owner-controlled fallback.
     CliMayOpenAutomatically,
+    /// The pinned CLI prints a complete authorization URL but does not open
+    /// it. The host may open that exact URL once on the User-visible path.
+    HostOpensPrintedAuthorization,
     /// No exact-version browser handoff behavior is evidenced.
     Unknown,
     /// This recipe cannot safely isolate the account from the Windows keyring.
@@ -69,6 +72,9 @@ pub(crate) enum StatusContract {
     /// Official CLI reference documents these values for `auth status`.
     /// Other exit codes remain unknown to the caller.
     DocumentedExitCodes { logged_in: i32, logged_out: i32 },
+    /// OpenCode prints local credential inventory only; the host never reads
+    /// the listed auth file or treats login exit zero as account evidence.
+    OpenCodeCredentialList,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,14 +147,14 @@ const OPENCODE: ProviderLoginRecipe = ProviderLoginRecipe {
     provider: LoginProvider::OpenCode,
     pinned_version: "1.18.32",
     executable: "opencode",
-    argv: &["auth", "login"],
-    instructions: "Complete the provider selection and authentication in the CLI-owned terminal flow. The host must not open URLs automatically.",
+    argv: &["auth", "login", "--pure", "--provider", "openai", "--method", "ChatGPT Pro/Plus (browser)"],
+    instructions: "The fixed OpenAI browser method prints a complete authorization URL and waits on localhost:1455. The host opens that exact printed URL once for the User; no CLI selection, device code, or API key entry is required.",
     availability: RecipeAvailability::Supported,
     environment: OPENCODE_ENV,
-    browser: BrowserBehavior::Unknown,
+    browser: BrowserBehavior::HostOpensPrintedAuthorization,
     completion: CompletionBehavior::HostReconciliationRequired,
-    status_argv: None,
-    status_contract: StatusContract::Unsupported,
+    status_argv: Some(&["auth", "list", "--pure"]),
+    status_contract: StatusContract::OpenCodeCredentialList,
 };
 
 const GROK: ProviderLoginRecipe = ProviderLoginRecipe {
