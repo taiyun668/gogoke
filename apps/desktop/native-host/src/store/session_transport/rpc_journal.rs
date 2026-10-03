@@ -2067,6 +2067,85 @@ pub(crate) fn read_observed_claude_ack(
     transact(db, |db| read_observed_claude_ack_in_transaction(db, owner, step))
 }
 
+/// Historical proof of the original Claude open handshake. This only reads
+/// the original open intent, episode, RPC step and captured A ACK. It does not
+/// grant live custody, infer a vendor session ID, or contact the process.
+pub(crate) fn read_original_claude_initialize_ack(
+    db: &VerifiedDatabaseConnection<'_>, domain_id: &str, session_id: &str,
+    open_request_id: &str, open_request_bytes: &[u8],
+    process_operation_id: &str, generation: &str,
+) -> Result<Option<stream_json::ClaudeData>> {
+    if !atom(domain_id) || !atom(session_id) || !atom(open_request_id)
+        || !atom(process_operation_id) || !atom(generation)
+        || !raw(open_request_bytes) {
+        return Err(RpcJournalError::Invalid("original Claude open identity"));
+    }
+    let open_hex = hex(open_request_bytes);
+    let original = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_operation
+          WHERE domain_id=?1 AND request_id=?2 AND session_id=?3
+            AND raw_hex=?4 AND operation='open' AND status IN ('APPLIED','UNKNOWN')")?;
+    for (index, value) in [domain_id, open_request_id, session_id,
+        open_hex.as_str()].iter().enumerate() {
+        original.bind_text((index + 1) as i32, value)?;
+    }
+    if !original.step_row()? || original.step_row()? {
+        return Err(RpcJournalError::Denied);
+    }
+    drop(original);
+    let (step_id, request_id) = claude_initialize_identity(open_request_bytes);
+    let expected = commands::encode_claude(commands::ClaudeCommand::Initialize {
+        request_id: &request_id,
+    }).map_err(RpcJournalError::AcpEncode)?;
+    let observed = Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes)
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+            AND c.generation=e.generation
+           JOIN main.gogoke_v37_rpc_steps s
+             ON s.domain_id=e.domain_id AND s.session_id=e.session_id
+            AND s.open_request_id=e.request_id
+            AND s.process_operation_id=e.process_operation_id
+            AND s.generation=e.generation
+            AND s.ticket=c.ticket AND s.custodian_nonce=c.custodian_nonce
+           JOIN main.v37_ledger_raw_source r
+             ON r.operation_id=s.process_operation_id
+            AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+            AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+            AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+            AND r.generation=s.generation
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+            AND e.raw_hex=?4 AND e.process_operation_id=?5
+            AND e.generation=?6 AND e.old_generation IS NULL
+            AND i.driver_id='claude' AND i.version='2.1.196'
+            AND ((e.phase='STOPPED' AND c.state='STOPPED'
+                  AND e.stop_fact_id IS NOT NULL
+                  AND e.stop_fact_id=c.stop_proof_hash)
+              OR (e.phase IN ('ACTIVE','UNKNOWN')
+                  AND c.state IN ('ACTIVE','UNKNOWN')))
+            AND s.step_id=?7 AND s.phase='OBSERVED' AND s.requires_response=1
+            AND r.state='NO_EVENT' AND r.no_event_reason=?8")?;
+    for (index, value) in [domain_id, session_id, open_request_id,
+        open_hex.as_str(), process_operation_id, generation, step_id.as_str(),
+        CLAUDE_ACK_NO_EVENT].iter().enumerate() {
+        observed.bind_text((index + 1) as i32, value)?;
+    }
+    if !observed.step_row()? { return Ok(None); }
+    let command = unhex(&observed.column_text(0)?)?;
+    let response = unhex(&observed.column_text(1)?)?;
+    if observed.step_row()? { return Err(RpcJournalError::Conflict); }
+    if command != expected { return Err(RpcJournalError::Denied); }
+    let observation = stream_json::decode_claude_line(&response)
+        .map_err(|_| RpcJournalError::Denied)?;
+    if !matches!(&observation, stream_json::ClaudeData::ControlResponse {
+        request_id: found, .. } if found == &request_id) {
+        return Err(RpcJournalError::Denied);
+    }
+    Ok(Some(observation))
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct ReconciledResponse {
     pub(crate) key: RawSourceKey,

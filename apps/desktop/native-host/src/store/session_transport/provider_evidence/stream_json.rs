@@ -92,29 +92,32 @@ pub(crate) fn decode_claude_line(line: &[u8]) -> Result<ClaudeData, StreamJsonEr
                 return Ok(ClaudeData::Unhandled { frame_type });
             }
             let Some(Json::Object(message)) = root.get(&key("message")) else {
-                return Err(StreamJsonError::Invalid("user.message"));
+                return Ok(ClaudeData::Unhandled { frame_type });
             };
-            if optional_string(message, "role")?.as_deref() != Some("user") {
+            if optional_string(message, "role").ok().flatten().as_deref() != Some("user") {
                 return Ok(ClaudeData::Unhandled { frame_type });
             }
             let text = match message.get(&key("content")) {
-                Some(Json::String(value)) => well_formed(value)?,
+                Some(Json::String(value)) => well_formed(value).ok(),
                 Some(Json::Array(parts)) if parts.len() == 1 => {
                     let Json::Object(part) = &parts[0] else {
                         return Ok(ClaudeData::Unhandled { frame_type });
                     };
-                    if optional_string(part, "type")?.as_deref() != Some("text") {
+                    if optional_string(part, "type").ok().flatten().as_deref() != Some("text") {
                         return Ok(ClaudeData::Unhandled { frame_type });
                     }
-                    required_id(part, "text")?
+                    required_id(part, "text").ok()
                 }
                 _ => return Ok(ClaudeData::Unhandled { frame_type }),
             };
-            let session_id = required_id(&root, "session_id")?;
-            let uuid = required_id(&root, "uuid")?;
-            if text.is_empty() || text.contains('\0') {
-                return Err(StreamJsonError::Invalid("user replay text"));
-            }
+            let Some(text)=text.filter(|text|!text.is_empty()&&!text.contains('\0'))
+                else {return Ok(ClaudeData::Unhandled {frame_type})};
+            let Ok(session_id) = required_id(&root, "session_id") else {
+                return Ok(ClaudeData::Unhandled { frame_type });
+            };
+            let Ok(uuid) = required_id(&root, "uuid") else {
+                return Ok(ClaudeData::Unhandled { frame_type });
+            };
             Ok(ClaudeData::UserReplay { session_id, uuid, text })
         }
         Some("control_request") => {
@@ -257,7 +260,8 @@ mod claude_ack_tests {
             session_id: "native-session".into(), uuid: "user-uuid".into(), text: "hello".into(),
         }));
         let untagged = br#"{"type":"user","session_id":"native-session","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#;
-        assert!(decode_claude_line(untagged).is_err());
+        assert!(matches!(decode_claude_line(untagged),
+            Ok(ClaudeData::Unhandled { frame_type: Some(kind) }) if kind=="user"));
         let tool = br#"{"type":"user","session_id":"native-session","parent_tool_use_id":"tool-1","message":{"role":"user","content":[{"type":"tool_result","content":"done"}]}}"#;
         assert!(matches!(decode_claude_line(tool), Ok(ClaudeData::Unhandled { .. })));
         let terminal = br#"{"type":"result","session_id":"native-session","subtype":"success","is_error":false}"#;
