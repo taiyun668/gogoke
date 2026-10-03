@@ -75,6 +75,9 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as co
                          and frame.get("params", {}).get("turn", {}).get("status") == "completed"]
             compactions = [frame for frame in parsed_in if frame.get("method") == "item/completed"
                            and frame.get("params", {}).get("item", {}).get("type") == "contextCompaction"]
+            command_completions = [frame["params"]["item"] for frame in parsed_in
+                if frame.get("method") == "item/completed"
+                and frame.get("params", {}).get("item", {}).get("type") == "commandExecution"]
             summary = {"sessionId": session_id, "episodes": episodes,
                 "normalized": [{"cursor": str(cursor), "sourceEpoch": epoch,
                     "ledgerSourceCursor": source, "update": json.loads(update)}
@@ -86,6 +89,10 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as co
                 "unresolvedRawFrames": sum(row[5] == "PENDING" for row in incoming)}
             summary["unresolvedRawMethods"] = [json.loads(bytes(row[4]).decode("utf-8")).get("method")
                 for row in incoming if row[5] == "PENDING"]
+            summary["commandCompletions"] = [{"id": item.get("id"), "status": item.get("status"),
+                "exitCode": item.get("exitCode")} for item in command_completions]
+            summary["allObservedCommandsSucceeded"] = all(item.get("status") == "completed"
+                and item.get("exitCode") == 0 for item in command_completions)
             summary["steerConsumptionRequired"] = bool(session.get("steerMarker"))
             original_turn = session.get("turns", [{}])[0] if session.get("turns") else {}
             summary["steerConsumedInOriginalCompletion"] = bool(session.get("steerMarker")) and any(
@@ -110,6 +117,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as co
         result["actualFlowReportedComplete"] = journal["state"] == "ACTUAL_FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED"
         result["directReadbackComplete"] = result["actualFlowReportedComplete"] and len(result["sessions"]) == 2 and all(
             row["successfulTurns"] >= (2 if index == 0 else 1) and row["everyObservedTurnDurable"]
+            and row["allObservedCommandsSucceeded"]
             and row["sourceCursorsContinuous"] and row["allEpisodesStopped"]
             and (not row["steerConsumptionRequired"] or row["steerConsumedInOriginalCompletion"])
             for index, row in enumerate(result["sessions"])) and result["sessions"][0]["contextCompactionCompletions"] > 0

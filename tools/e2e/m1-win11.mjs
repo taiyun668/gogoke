@@ -15,7 +15,11 @@ const journal = { schema: 'gogoke.37.win11-e2e.v1', sourceCommit: config.sourceC
   state: 'RUNNING', acceptance: false, authenticationActions: false,
   launches: [], closes: [], operations: [], sessions: [], subscriptions: [], snapshots: {}, assertions: [] };
 const product = new ActualProduct(config, journal);
-const check = (condition, name) => { if (!condition) throw Error(name); journal.assertions.push(name); product.save(); };
+const check = (condition, name) => {
+  if (!condition) throw Error(name);
+  // Check every value, but record the same assertion name only once.
+  if (!journal.assertions.includes(name)) { journal.assertions.push(name); product.save(); }
+};
 
 async function snapshot(phase) {
   for (const observer of config.observers) {
@@ -27,8 +31,22 @@ async function snapshot(phase) {
       let stderr = ''; child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
       child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(Error(`Readonly ${observer.name}: exit=${code}; ${stderr}`)));
     });
-    journal.snapshots[`${observer.name}-${phase}`] = readJson(output); product.save();
+    const value = readJson(output);
+    journal.snapshots[`${observer.name}-${phase}`] = {
+      file: path.basename(output), sha256: createHash('sha256').update(fs.readFileSync(output)).digest('hex'),
+      ...(observer.name === 'ledger' ? { epoch: value.epoch, cursor: value.cursor } : {}),
+    };
+    product.save();
   }
+}
+
+function observedSnapshot(name, phase) {
+  const reference = journal.snapshots[`${name}-${phase}`];
+  const file = path.join(config.evidenceDirectory, reference.file);
+  if (createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== reference.sha256) {
+    throw Error(`Original ${name}-${phase} snapshot bytes changed`);
+  }
+  return readJson(file);
 }
 
 async function sessionOperation(session, operation, payload = {}) {
@@ -251,7 +269,7 @@ try {
   await product.closeNormally();
   await snapshot('after');
   for (const observer of config.observers) {
-    const before = journal.snapshots[`${observer.name}-before`], after = journal.snapshots[`${observer.name}-after`];
+    const before = observedSnapshot(observer.name, 'before'), after = observedSnapshot(observer.name, 'after');
     check(observer.equalFields.length > 0, 'Snapshot has explicit compared fields');
     for (const field of observer.equalFields) {
       check(Object.hasOwn(before, field) && Object.hasOwn(after, field) &&
@@ -259,7 +277,7 @@ try {
     }
   }
   for (const phase of ['before', 'after']) {
-    const memory = journal.snapshots[`memory-${phase}`];
+    const memory = observedSnapshot('memory', phase);
     check(memory.memoryDataUnchangedByRead && memory.stage1OutputCount === 0 && memory.memoryJobCount === 0,
       'Actual memory store unchanged by measurement and no memory jobs');
   }
