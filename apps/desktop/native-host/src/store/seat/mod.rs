@@ -717,7 +717,14 @@ fn check_origin(
             if admission.domain_id != domain {
                 return Err(SeatError::Denied);
             }
-            let actor = read(db, domain, &admission.seat_id)?.ok_or(SeatError::Denied)?;
+            let actor = if let Some(caller)=admission.model_call() {
+                policy::current_caller(db,caller)?
+            } else {
+                #[cfg(test)]
+                {read(db,domain,&admission.seat_id)?.ok_or(SeatError::Denied)?}
+                #[cfg(not(test))]
+                {return Err(SeatError::Denied);}
+            };
             if actor.layer != Layer::User
                 || actor.state != State::Busy
                 || actor.incarnation != admission.incarnation
@@ -726,6 +733,9 @@ fn check_origin(
                 return Err(SeatError::Denied);
             }
             if let Some(target) = target {
+                if let Some(caller)=admission.model_call() {
+                    orchestration::current_child_dispatch_context(db,caller,target)?;
+                }
                 if target.layer != Layer::Lead
                     || target.parent_seat_id.as_deref() != Some(&admission.seat_id)
                     || target.seat_id == admission.seat_id

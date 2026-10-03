@@ -1,4 +1,4 @@
-//! Fixed Codex 0.149 app-server JSONL codec, not a v37 authority or receipt.
+//! Fixed Codex 0.160 app-server JSONL codec, not a v37 authority or receipt.
 //! H supplies a live ProcessCustodian frame and its native thread/cwd/model
 //! evidence. This module only encodes commands and correlates protocol bytes.
 

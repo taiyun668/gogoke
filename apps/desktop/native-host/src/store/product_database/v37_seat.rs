@@ -196,7 +196,7 @@ impl<'root> ProductDatabase<'root> {
                 if q.step_row()? {return Err(SeatError::SchemaDrift)};
                 drop(q);
                 let mut answer_bytes=answer_wire.as_bytes().to_vec();answer_bytes.push(b'\n');
-                let expected_hex=hex(&answer_bytes);
+                let expected_hex:String=answer_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
                 let written=Statement::prepare(db.as_ptr(),
                     "SELECT step_id,process_operation_id,custodian_nonce,command_hex FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND phase='WRITTEN' AND requires_response=0 AND command_hex=?4")?;
                 for (index,value) in [request.domain_id.as_str(),session,source_generation.as_str(),expected_hex.as_str()]
@@ -365,7 +365,9 @@ impl<'root> ProductDatabase<'root> {
                 if request.expected_revision != 0 {
                     return Ok(receipt(request, V37Status::Stale, prior_revision, prior_revision, BTreeMap::new()));
                 }
-                if !exact_payload(request, &["layer", "templateId"])
+                let expected_fields:&[&str]=if caller.is_some() {&["layer","templateId","instanceId"]}
+                    else {&["layer","templateId"]};
+                if !exact_payload(request, expected_fields)
                     || string_field(&request.payload, "layer").ok().as_deref()
                         != Some(if caller.is_some() {"LEAD"} else {"USER"}) {
                     return Ok(receipt(request, V37Status::Unsupported, 0, 0, BTreeMap::new()));
@@ -374,9 +376,13 @@ impl<'root> ProductDatabase<'root> {
                     Ok(value) => value,
                     Err(_) => return Ok(receipt(request, V37Status::Denied, 0, 0, BTreeMap::new())),
                 };
+                // The private model tool selects an existing logical instance.
+                // E checks it against the copied Owner scope in the create
+                // transaction. The User wire remains the frozen two fields.
+                let instance_id=if caller.is_some() {Some(string_field(&request.payload,"instanceId")?)} else {None};
                 let input=CreateSeat {
                     domain_id: &request.domain_id, seat_id: &request.target_id,
-                    template_id: &template_id, instance_id: None, kind: Kind::Long,
+                    template_id: &template_id, instance_id: instance_id.as_deref(), kind: Kind::Long,
                     request_id: &request.request_id, request_bytes: &request.raw_bytes,
                 };
                 match caller {
