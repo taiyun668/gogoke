@@ -16,6 +16,11 @@ old journal after the stop; it does not require a continuing parent turn to
 record a physical fact. Release rechecks the current caller and exact stopped
 claim in its existing transaction; only then does the child become IDLE.
 Original release replay verifies its old bytes and matching released claim.
+E increments the child generation again on BUSY-to-IDLE release. Replay
+therefore binds the original H generation to exactly the new Idle generation
+minus one, with unchanged incarnation and instance; it cannot follow a later
+child generation or a new dispatch. The control receipt labels the current
+generation separately from the stopped generation.
 
 Dispatch continues to return submission ACK. It does not block the parent
 model from issuing later stop/control calls. State-card/control receipts do

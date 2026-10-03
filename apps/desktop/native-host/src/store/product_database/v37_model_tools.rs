@@ -98,10 +98,14 @@ impl<'root> ProductDatabase<'root> {
         if row.column_text(1)?!=operation || row.step_row()? {return Err(OrchestrationError::OperationConflict)};
         let stored=crate::store::session_transport::decode_request(&raw).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native child control source: {error:?}")))?;
+        let generation=user_payload_string(&stored,"generation")?;
+        let same_generation=if operation=="admission-release" && child.state==seat::State::Idle {
+            generation.parse::<i64>().ok().and_then(|generation|generation.checked_add(1))==Some(child.generation)
+        } else {generation==child.generation.to_string()};
         if stored.family!="K-SESSION" || stored.operation!=operation || stored.request_id!=id
             || stored.domain_id!=child.domain_id || stored.payload.len()!=2
             || user_payload_string(&stored,"seatId")?!=child.seat_id
-            || user_payload_string(&stored,"generation")?!=child.generation.to_string() {
+            || !same_generation {
             return Err(OrchestrationError::OperationConflict);
         }
         Ok(Some(stored))
@@ -127,7 +131,9 @@ impl<'root> ProductDatabase<'root> {
                  ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation
               WHERE a.domain_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3
                 AND a.generation=?4 AND a.instance_id=?5")?;
-        let child_generation=child.generation.to_string();
+        let child_generation=match release.as_ref() {
+            Some(release)=>user_payload_string(release,"generation")?,None=>child.generation.to_string(),
+        };
         for (index,value) in [child.domain_id.as_str(),child.seat_id.as_str(),child.incarnation.as_str(),
             child_generation.as_str(),child.instance_id.as_str()].iter().enumerate() {
             row.bind_text((index+1) as i32,value)?;
@@ -159,11 +165,11 @@ impl<'root> ProductDatabase<'root> {
             }
             let stopped=runtime::observe_stop_fact(&self.connection,&request.domain_id,&session)?
                 .ok_or(OrchestrationError::AccessDenied)?;
-            if stopped.generation!=generation {return Err(OrchestrationError::OperationConflict)};
+            if stopped.generation()!=generation {return Err(OrchestrationError::OperationConflict)};
             let claim=runtime::observe_claim_bound(&self.connection,&request.domain_id,&child.seat_id,&session)?
                 .ok_or(OrchestrationError::AccessDenied)?;
             if claim.phase!=runtime::SessionPhase::Stopped || claim.home_id!=home || claim.instance_id!=instance
-                || claim.generation!=generation || claim.process_operation_id.as_deref()!=Some(stopped.process_operation_id.as_str()) {
+                || claim.generation!=generation || claim.process_operation_id.as_deref()!=Some(stopped.process_operation_id()) {
                 return Err(OrchestrationError::OperationConflict);
             }
             let revision=u64::try_from(claim.revision).map_err(|error|
@@ -189,7 +195,7 @@ impl<'root> ProductDatabase<'root> {
             OrchestrationError::V37StoreFailure(format!("native child Idle revision: {error}")))?;
         Ok(crate::store::session_transport::encode_receipt(request,status,request.expected_revision,revision,
             BTreeMap::from([(key("state"),string("IDLE")),(key("sessionId"),string(&session)),
-                (key("generation"),string(&generation))])))
+                (key("generation"),string(&idle.generation.to_string())),(key("stoppedGeneration"),string(&generation))])))
     }
 
     /// A local adapter operation composes only the existing E/F/H effects.

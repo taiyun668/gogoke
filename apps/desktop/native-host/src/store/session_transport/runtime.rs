@@ -235,7 +235,7 @@ pub(crate) fn release_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
         let child=seat::get(db,request.domain_id,seat_id).map_err(AdmissionError::Seat)?
             .ok_or(AdmissionError::Denied)?;
         seat::current_child_dispatch_context(db,caller,&child).map_err(AdmissionError::Seat)?;
-        if child.instance_id!=request.instance_id || child.generation.to_string()!=request.generation {
+        if child.instance_id!=request.instance_id {
             return Err(AdmissionError::Denied);
         }
         let fact=Statement::prepare(db.as_ptr(),
@@ -258,11 +258,14 @@ pub(crate) fn release_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
         let revision=fact.column_text(1)?.parse::<i64>().map_err(|_|AdmissionError::Denied)?;
         if fact.step_row()? {return Err(AdmissionError::Denied);}
         drop(fact);
-        if state=="STOPPED" && child.state==SeatState::Busy && revision==request.expected_revision {
+        if state=="STOPPED" && child.state==SeatState::Busy && revision==request.expected_revision
+            && child.generation.to_string()==request.generation {
             return Ok(());
         }
         if state!="RELEASED" || child.state!=SeatState::Idle
-            || request.expected_revision.checked_add(1)!=Some(revision) {
+            || request.expected_revision.checked_add(1)!=Some(revision)
+            || request.generation.parse::<i64>().ok().and_then(|generation|generation.checked_add(1))
+                !=Some(child.generation) {
             return Err(AdmissionError::Denied);
         }
         let prior=Statement::prepare(db.as_ptr(),
@@ -380,6 +383,11 @@ pub(crate) struct StopFact {
     generation: String,
     process_operation_id: String,
     proof_hash: String,
+}
+
+impl StopFact {
+    pub(crate) fn generation(&self)->&str {&self.generation}
+    pub(crate) fn process_operation_id(&self)->&str {&self.process_operation_id}
 }
 
 pub(crate) fn observe_stop_fact(
