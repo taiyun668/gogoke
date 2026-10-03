@@ -26,10 +26,18 @@ pub(crate) fn known_new_version(driver: &str, registered_version: &str) -> Optio
             || !value.bytes().all(|byte| byte.is_ascii_digit())) { return None; }
         Some([values[0].parse().ok()?, values[1].parse().ok()?, values[2].parse().ok()?])
     }
-    if driver != CODEX_DRIVER || parts(registered_version)? >= parts(CODEX_VERSION)? {
+    let current = match driver {
+        "codex" => CODEX_VERSION,
+        "claude" => "2.1.196",
+        "opencode" => "1.18.32",
+        "grok" => "1.0.41",
+        "antigravity" => "1.2.11",
+        _ => return None,
+    };
+    if parts(registered_version)? >= parts(current)? {
         return None;
     }
-    Some(CODEX_VERSION)
+    Some(current)
 }
 const ROOT_PACKAGE: &str = "@openai/codex";
 const PLATFORM_VERSION: &str = "0.160.0-win32-x64";
@@ -75,6 +83,8 @@ pub(crate) enum CatalogError {
     KnownFolder(i32),
     Io(io::Error),
     Json(AtomicError),
+    Utf8(std::str::Utf8Error),
+    Provider(super::provider_catalog::ProviderCatalogError),
     Program(RegistryError),
 }
 impl From<io::Error> for CatalogError {
@@ -90,6 +100,28 @@ impl From<AtomicError> for CatalogError {
 impl From<RegistryError> for CatalogError {
     fn from(error: RegistryError) -> Self {
         Self::Program(error)
+    }
+}
+
+// Preserve the existing registration and A4 install-state classifications.
+// Provider nesting must not turn a missing executable or invalid driver into
+// an unclassified failure; the original OS/parse error remains in the value.
+impl From<super::provider_catalog::ProviderCatalogError> for CatalogError {
+    fn from(error: super::provider_catalog::ProviderCatalogError) -> Self {
+        use super::provider_catalog::ProviderCatalogError as Provider;
+        match error {
+            Provider::UnknownDriver => Self::UnknownDriver,
+            Provider::NotInstalled(error) | Provider::Io(error) => Self::Io(error),
+            Provider::UnsupportedVersion => Self::UnsupportedVersion,
+            Provider::PackageIdentity => Self::PackageIdentity,
+            Provider::PackageFormat => Self::PackageFormat,
+            Provider::IdentityChanged => Self::IdentityChanged,
+            Provider::KnownFolder(code) => Self::KnownFolder(code),
+            Provider::Json(error) => Self::Json(error),
+            Provider::Utf8(error) => Self::Utf8(error),
+            Provider::Program(error) => Self::Program(error),
+            error @ Provider::UnsupportedObservation(_) => Self::Provider(error),
+        }
     }
 }
 
@@ -165,7 +197,7 @@ fn package_fact(path: &Path, expected_version: &str) -> Result<(), CatalogError>
     {
         return Err(CatalogError::IdentityChanged);
     }
-    let source = std::str::from_utf8(&bytes).map_err(|_| CatalogError::PackageFormat)?;
+    let source = std::str::from_utf8(&bytes).map_err(CatalogError::Utf8)?;
     let Json::Object(mut fields) = Parser::parse(source)? else {
         return Err(CatalogError::PackageFormat);
     };
@@ -228,7 +260,8 @@ fn discover_at(roaming: &Path, driver_id: &str) -> Result<LocatedProgram, Catalo
 /// comes from the wire. H must re-observe and compare these bytes at launch.
 pub(crate) fn discover_program(driver_id: &str) -> Result<ProgramObservation, CatalogError> {
     if driver_id != CODEX_DRIVER {
-        return Err(CatalogError::UnknownDriver);
+        return super::provider_catalog::discover_provider_program(driver_id)
+            .map(|(observation, _)| observation).map_err(CatalogError::from);
     }
     Ok(discover_at(&roaming_app_data()?, driver_id)?.observation)
 }
@@ -248,6 +281,14 @@ fn locate_pinned_at(roaming: &Path, driver_id: &str, digest: &str,
 
 pub(crate) fn locate_pinned_program(driver_id: &str, digest: &str,
     version: &str) -> Result<PathBuf, CatalogError> {
+    if driver_id != CODEX_DRIVER {
+        let (observation, application) = super::provider_catalog::discover_provider_program(driver_id)
+            .map_err(CatalogError::from)?;
+        if !observation.matches_pin(digest, version) {
+            return Err(CatalogError::IdentityChanged);
+        }
+        return Ok(application);
+    }
     locate_pinned_at(&roaming_app_data()?, driver_id, digest, version)
 }
 
@@ -261,7 +302,8 @@ mod tests {
         for version in ["0.160.0", "0.161.0", "0.16x.0", "00.149.0", "0.149.0-beta"] {
             assert_eq!(known_new_version("codex", version), None);
         }
-        assert_eq!(known_new_version("claude", "0.149.0"), None);
+        assert_eq!(known_new_version("claude", "0.149.0"), Some("2.1.196"));
+        assert_eq!(known_new_version("unknown-driver", "0.149.0"), None);
     }
     use std::time::{SystemTime, UNIX_EPOCH};
 

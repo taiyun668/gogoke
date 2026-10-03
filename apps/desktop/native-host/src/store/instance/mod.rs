@@ -2,6 +2,7 @@
 //! This schema shares the verified product connection but never changes R2 authority tables.
 mod home;
 mod catalog;
+mod provider_catalog;
 mod cap;
 mod registry;
 mod resolver;

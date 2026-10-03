@@ -53,6 +53,7 @@ pub(crate) enum ProviderCatalogError {
     KnownFolder(i32),
     Io(io::Error),
     Json(AtomicError),
+    Utf8(std::str::Utf8Error),
     Program(RegistryError),
 }
 
@@ -146,7 +147,7 @@ fn package_fact(path: &Path, expected_name: &str,
         || path_after.file_attributes() & REPARSE_POINT != 0 {
         return Err(ProviderCatalogError::IdentityChanged);
     }
-    let source = std::str::from_utf8(&bytes).map_err(|_| ProviderCatalogError::PackageFormat)?;
+    let source = std::str::from_utf8(&bytes).map_err(ProviderCatalogError::Utf8)?;
     let Json::Object(mut fields) = Parser::parse(source)? else {
         return Err(ProviderCatalogError::PackageFormat);
     };
@@ -190,8 +191,9 @@ fn npm_binary(root: &mut PathBuf, package_parts: &[&str],
 
 /// Native F.1 observation and exact H application path for one fixed driver.
 /// F stores the observation; H calls this again and compares the same pin.
-/// Grok's current standalone binary has no verifiable static version fact,
-/// and agy's fixed binary is absent on the observed Owner installation.
+/// Grok's fixed bytes are tied to the same ordinary-view binary's original
+/// `--version` output, not to its unrelated old npm package or absent PE version.
+/// Unknown replacement bytes are refused. Agy discovery remains unqualified.
 pub(crate) fn discover_provider_program(driver_id: &str)
     -> Result<(ProgramObservation, PathBuf), ProviderCatalogError> {
     match driver_id {
@@ -205,9 +207,17 @@ pub(crate) fn discover_provider_program(driver_id: &str)
             let mut path = known_folder(&PROFILE)?;
             plain_dir(&path)?;
             enter(&mut path, &[".grok", "bin"])?;
-            plain_file(&path.join("grok.exe"))?;
-            Err(ProviderCatalogError::UnsupportedObservation(
-                "Grok Build 1.0.41 has no verified static version metadata for this binary"))
+            let application = path.join("grok.exe");
+            plain_file(&application)?;
+            let observation = ProgramObservation::observe(&application, "1.0.41")?;
+            // Same-file hashes before/after the exact CLI's version command
+            // matched; stdout was `grok 1.0.41 (4220f3b224a6) [stable]`.
+            if !observation.matches_pin(
+                "sha256:ab5d2a424f08281798acbdbb06076166fe000d7995ede94a673417b805210a25",
+                "1.0.41") {
+                return Err(ProviderCatalogError::IdentityChanged);
+            }
+            Ok((observation, application))
         }
         "antigravity" => {
             let mut path = known_folder(&LOCAL)?;

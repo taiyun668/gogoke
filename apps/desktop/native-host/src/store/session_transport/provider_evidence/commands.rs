@@ -312,12 +312,16 @@ pub(crate) fn launch_args(
                 if id.contains('/') || id.contains('\\') {
                     return Err(EncodeError::Invalid("Claude session id contains separator"));
                 }
-                args.extend(["--resume".to_owned(), id.to_owned()]);
+                // Keep the opaque ID in the option's value, even if it begins
+                // with '-'. It cannot become another CLI option.
+                args.push(format!("--resume={id}"));
             }
             Ok(args)
         }
         Vendor::OpenCode if resume_id.is_none() => Ok(vec!["acp".to_owned()]),
-        Vendor::Grok if resume_id.is_none() => Ok(vec!["agent".to_owned(), "stdio".to_owned()]),
+        Vendor::Grok if resume_id.is_none() => Ok(vec![
+            "agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned(),
+        ]),
         Vendor::Antigravity => {
             let mut args = Vec::new();
             if let Some(id) = resume_id {
