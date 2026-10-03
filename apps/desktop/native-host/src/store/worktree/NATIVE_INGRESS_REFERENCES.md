@@ -30,6 +30,19 @@ authorization result nor an Owner-equivalent Boolean authorizes a later F
 effect. No new table, wire contract, model path choice or provider process is
 introduced.
 
+An original `gogoke_seat dispatch` may return after H has reserved the child,
+so an exact retry sees the same child as BUSY. That case is read-only: F takes
+`host_request_id` only from the sealed `NativeSeatCall`, requires the typed
+request ID to be exactly `{host_request_id}-worktree`, calls E's current child
+dispatch context, and reads H's original APPLIED `admission-reserve` session.
+H's existing lead `observe_claim` rechecks that same reserve against the
+child incarnation/generation, session, active home and owner binding. F then
+checks its exact create bytes/repository/seat/layout, the physical registered
+binding, the one-generation transition, and its APPLIED register journal.
+It returns the old binding without calling create, register or Git. A merely
+BUSY child or a different model call cannot use this path; ordinary Idle
+creation retains all three in-transaction E rechecks above.
+
 Sources: existing `store/worktree/{mod,f2}.rs` create/register/merge journals,
 `store/seat/orchestration.rs::authorize_child_dispatch`, and
 `store/product_database/v37_session.rs::dispatch_native_worktree`. Root owns

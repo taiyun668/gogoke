@@ -1603,6 +1603,64 @@ pub(crate) fn create_and_register_native_child_worktree(
         repository_id: &repository_id, target_id: &worktree_id, domain_id: &request.domain_id,
         seat_id: &child.seat_id,
     };
+    if child.state == crate::store::seat::State::Busy {
+        return transaction(db, |db| {
+        let host_id = caller.host_request_id().ok_or(WorktreeError::Denied)?;
+        if !atom(host_id) || request.request_id != format!("{host_id}-worktree") {
+            return Err(WorktreeError::Denied);
+        }
+        let current = crate::store::seat::current_child_dispatch_context(db, caller, child)?;
+        if current != *child { return Err(WorktreeError::Denied); }
+        let reservation = Statement::prepare(db.as_ptr(),
+            "SELECT session_id FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2 AND operation='admission-reserve' AND status='APPLIED'")?;
+        reservation.bind_text(1, &request.domain_id)?;
+        reservation.bind_text(2, host_id)?;
+        if !reservation.step_row()? { return Err(WorktreeError::Denied); }
+        let session = reservation.column_text(0)?;
+        if !atom(&session) || reservation.step_row()? { return Err(WorktreeError::Denied); }
+        drop(reservation);
+        let admission = crate::store::seat::NativeLeadAdmission::from_model_call(caller)?;
+        let origin = crate::store::seat::NativeOrigin::lead(&admission);
+        let claim = crate::store::session_transport::runtime::observe_claim(db, &origin,
+            &request.domain_id, &child.seat_id, &session)?
+            .ok_or(WorktreeError::Denied)?;
+        if claim.instance_id != child.instance_id
+            || claim.generation != child.generation.to_string()
+            || claim.home_id.is_empty() || claim.binding_id.is_empty() {
+            return Err(WorktreeError::Denied);
+        }
+        let history = readback_create_receipt(db, &request.request_id,
+            &request.raw_bytes, &worktree_id, &repository_id,
+            &request.domain_id, &child.seat_id)?.ok_or(WorktreeError::Denied)?;
+        if history.classification != match layout {
+            NativeWorktreeLayout::Single => "SINGLE",
+            NativeWorktreeLayout::Mixed => "MIXED",
+        } { return Err(WorktreeError::Conflict); }
+        let binding = resolve_id(db, root, &worktree_id)?;
+        if binding.seat_incarnation != child.incarnation
+            || binding.seat_generation.checked_add(1) != Some(child.generation)
+            || binding.instance_id != child.instance_id {
+            return Err(WorktreeError::Denied);
+        }
+        let state = Statement::prepare(db.as_ptr(),
+            "SELECT state,revision FROM main.gogoke_v37_worktree_lifecycle WHERE worktree_id=?1")?;
+        state.bind_text(1, &worktree_id)?;
+        if !state.step_row()? || state.column_text(0)? != "REGISTERED"
+            || state.column_text(1)? != "2" || state.step_row()? {
+            return Err(WorktreeError::Denied);
+        }
+        let register = Statement::prepare(db.as_ptr(),
+            "SELECT request_hash,worktree_id,operation,phase FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
+        register.bind_text(1, &register_id)?;
+        if !register.step_row()? || register.column_text(0)? != sha256_hex(&request.raw_bytes)
+            || register.column_text(1)? != worktree_id || register.column_text(2)? != "REGISTER"
+            || register.column_text(3)? != "APPLIED" || register.step_row()? {
+            return Err(WorktreeError::Denied);
+        }
+        Ok(binding)
+        });
+    }
+    if child.state != crate::store::seat::State::Idle { return Err(WorktreeError::Denied); }
     let mut authorize = |db: &VerifiedDatabaseConnection<'_>| {
         crate::store::seat::authorize_child_dispatch(db, caller, child)
             .map_err(WorktreeError::Seat)
