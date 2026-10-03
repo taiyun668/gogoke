@@ -1011,6 +1011,94 @@ fn e2_takeover_and_current_policy_grant_are_required_for_child_dispatch() {
 }
 
 #[test]
+fn native_child_create_derives_only_first_exact_dispatch_grant() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        assert_eq!(seat_effort(&lead).unwrap(),"high");
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnA").unwrap();
+        initialize_policy(db,owner,"projectA","draft").unwrap();
+        answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerNative",b"original answer").unwrap();
+        let input=||CreateSeat {domain_id:"projectA",seat_id:"workerNative",
+            template_id:"templateE2",instance_id:Some("instanceA"),kind:Kind::Short,
+            request_id:"createNative",request_bytes:b"original native create"};
+        let child=create_native_child(db,&caller,input()).unwrap().seat;
+        assert_eq!(child.layer,Layer::Lead);
+        authorize_child_dispatch(db,&caller,&child).unwrap();
+        assert!(matches!(authorize_current_call(db,&caller,"projectA","MAIN",
+            CallAction::Dispatch),Err(SeatError::Denied)));
+        configure_call_grant(db,owner,"projectA","lead","workerNative",
+            CallAction::Dispatch,Some(1),2).unwrap();
+        assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)));
+        assert!(create_native_child(db,&caller,input()).unwrap().replayed);
+        assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)),
+            "create replay must not restore an expired child grant");
+    });
+}
+
+#[test]
+fn native_child_scope_and_policy_head_fail_closed() {
+    fixture(|db,owner| {
+        let user=create_user(db,owner,"ordinary","createOrdinary");
+        let ordinary=set_dispatch_state(db,&user,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&ordinary,"turnOrdinary").unwrap();
+        let input=||CreateSeat {domain_id:"projectA",seat_id:"outside",
+            template_id:"templateA",instance_id:Some("instanceA"),kind:Kind::Short,
+            request_id:"outsideCreate",request_bytes:b"outside create"};
+        assert!(matches!(create_native_child(db,&caller,input()),Err(SeatError::Denied)));
+        initialize_policy(db,owner,"projectA","draft").unwrap();
+        assert!(matches!(create_native_child(db,&caller,input()),Err(SeatError::Denied)),
+            "an ordinary M1 User seat has no orchestration scope");
+        assert!(get(db,"projectA","outside").unwrap().is_none());
+        let grants=Statement::prepare(db.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA'").unwrap();
+        assert!(grants.step_row().unwrap());
+        assert_eq!(grants.column_text(0).unwrap(),"0",
+            "ordinary User create cannot grant MAIN or any child");
+    });
+}
+
+#[test]
+fn native_child_create_requires_existing_policy_head() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnA").unwrap();
+        answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerNoHead",b"original answer").unwrap();
+        let result=create_native_child(db,&caller,CreateSeat {domain_id:"projectA",
+            seat_id:"noPolicy",template_id:"templateE2",instance_id:Some("instanceA"),
+            kind:Kind::Short,request_id:"createNoHead",request_bytes:b"no policy head"});
+        assert!(matches!(result,Err(SeatError::Denied)));
+        assert!(get(db,"projectA","noPolicy").unwrap().is_none());
+    });
+}
+
+#[test]
+fn conflicting_effort_alias_and_child_model_outside_parent_scope_are_denied() {
+    fixture(|db,owner| {
+        let conflicting=br#"{"effort":"high","reasoningEffort":"low"}"#;
+        assert!(store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"projectA",
+            template_id:"badEffort",settings_json:conflicting}).is_err());
+        let lead=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnA").unwrap();
+        initialize_policy(db,owner,"projectA","draft").unwrap();
+        answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerScope",b"original answer").unwrap();
+        let child_settings=br#"{"effort":"high","model":"modelB","permissionTier":"NETWORKED_WRITE"}"#;
+        store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"projectA",
+            template_id:"outsideTemplate",settings_json:child_settings}).unwrap();
+        let result=create_native_child(db,&caller,CreateSeat {domain_id:"projectA",
+            seat_id:"outsideModel",template_id:"outsideTemplate",instance_id:Some("instanceA"),
+            kind:Kind::Short,request_id:"outsideModelCreate",request_bytes:b"outside model"});
+        assert!(matches!(result,Err(SeatError::Denied)));
+        assert!(get(db,"projectA","outsideModel").unwrap().is_none());
+    });
+}
+
+#[test]
 fn tuned_takeover_question_content_invalidates_old_answer_in_same_transaction() {
     fixture(|db,owner| {
         let lead=create_e2_lead(db,owner);
