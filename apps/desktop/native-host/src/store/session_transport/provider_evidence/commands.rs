@@ -43,6 +43,13 @@ pub(crate) enum AcpCommand<'a> {
         cwd: &'a str,
         advertised: bool,
     },
+    /// OpenCode 1.18.32 only. H verifies the original session and the
+    /// response's currentValue before treating the setting as applied.
+    SetConfigOption {
+        session_id: &'a str,
+        config_id: &'a str,
+        value: &'a str,
+    },
     Prompt {
         session_id: &'a str,
         text: &'a str,
@@ -224,6 +231,21 @@ pub(crate) fn encode_acp(
                 false,
             )
         }
+        AcpCommand::SetConfigOption { session_id, config_id, value } => {
+            if vendor != Vendor::OpenCode {
+                return Err(EncodeError::Unsupported("pinned vendor has no verified ACP config option"));
+            }
+            nonempty(session_id, "session id")?;
+            nonempty(value, "config value")?;
+            if !matches!(config_id, "model" | "effort") {
+                return Err(EncodeError::Unsupported("only model and effort are verified ACP options"));
+            }
+            ("session/set_config_option", object([
+                ("sessionId", string(session_id)),
+                ("configId", string(config_id)),
+                ("value", string(value)),
+            ]), false)
+        }
         AcpCommand::Cancel { session_id } => {
             nonempty(session_id, "session id")?;
             (
@@ -318,10 +340,9 @@ pub(crate) fn launch_args(
             }
             Ok(args)
         }
-        Vendor::OpenCode if resume_id.is_none() => Ok(vec!["acp".to_owned()]),
-        Vendor::Grok if resume_id.is_none() => Ok(vec![
-            "agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned(),
-        ]),
+        Vendor::OpenCode if resume_id.is_none() => Ok(vec!["--pure".to_owned(), "acp".to_owned()]),
+        Vendor::Grok if resume_id.is_none() => Err(EncodeError::Unsupported(
+            "Grok model and effort must come from bound seat settings")),
         Vendor::Antigravity => {
             let mut args = Vec::new();
             if let Some(id) = resume_id {
@@ -349,4 +370,21 @@ pub(crate) fn launch_args(
             "resume is an ACP request after launch",
         )),
     }
+}
+
+/// Fixed 1.0.41 `agent --help` places model and effort on the parent agent
+/// command, before its `stdio` child command. These argv values request the
+/// settings; only H's actual launch and provider readback can qualify them.
+pub(crate) fn grok_launch_args(model: &str, effort: &str) -> Result<Vec<String>, EncodeError> {
+    nonempty(model, "Grok model")?;
+    nonempty(effort, "Grok effort")?;
+    if model.trim() != model || effort.trim() != effort
+        || model.starts_with('-') || effort.starts_with('-') {
+        return Err(EncodeError::Invalid("Grok model or effort is not a CLI value"));
+    }
+    Ok(vec![
+        "agent".to_owned(), "--model".to_owned(), model.to_owned(),
+        "--reasoning-effort".to_owned(), effort.to_owned(),
+        "--no-leader".to_owned(), "stdio".to_owned(),
+    ])
 }
