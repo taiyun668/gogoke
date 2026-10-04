@@ -285,13 +285,9 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert_eq!((stored.column_text(0).unwrap(), stored.column_text(1).unwrap()),
         ("UNKNOWN".into(), "1".into()), "read must not manufacture INSTALLED");
     drop(stored);
-    // Only login presence is synthetic. The installed CLI fact above and the
-    // H launch below are the actual fixed catalog, not a database substitute.
-    instance::record_observation(&mut product.connection, &root, &instance::ObservationRequest {
-        request_id: "fixture-login-admission", request_bytes: b"fixture-login-admission",
-        instance_id: "instanceA", expected_revision: 1,
-        observation: instance::InstanceObservation::LoggedIn,
-    }).unwrap();
+    // The fixed CLI creates a File source from a public invalid marker; its
+    // original account/read observers establish presence before native open.
+    qualify_synthetic_file_backend(&mut product, &root);
     instance::set_instance_concurrency_cap(&mut product.connection, &product.owner, "instanceA", 1).unwrap();
     seat::set_project_parallel_cap(&mut product.connection, &product.owner, "projectA", 1).unwrap();
     seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
@@ -728,7 +724,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert_eq!(Json::Object(replay.into_result()).canonical(),original_append_result);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Replayed);
     // The same real fixed CLI starts a separate, zero-lineage review thread.
-    // Only login presence/setup is synthetic; no model or credentials are used.
+    // The same invalid public marker supplies File presence; no model is used.
     let seat_generation=Statement::prepare(product.connection.as_ptr(),
         "SELECT generation FROM main.gogoke_v37_seats WHERE domain_id='projectA' AND seat_id='seatA'").unwrap();
     assert!(seat_generation.step_row().unwrap());
