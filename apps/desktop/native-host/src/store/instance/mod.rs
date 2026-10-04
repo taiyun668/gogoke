@@ -35,6 +35,7 @@ pub(crate) use private_history::{create_initial_private_history, resume_private_
 pub(crate) use credential_registry::{initialize_credential_schema, record_credential_backend,
     read_configured_credential_backend, read_usable_credential_backend, bind_credential_object, read_credential_object,
     read_credential_aliases, begin_credential_alias, complete_credential_alias,
+    recover_pending_credential_remove,
     read_credential_profiles, begin_credential_profile, complete_credential_profile,
     CredentialRegistryError, CredentialBackend, CredentialStartupSelector, BackendSource,
     CredentialObjectInput, CredentialObjectRecord, CredentialIntentDisposition,

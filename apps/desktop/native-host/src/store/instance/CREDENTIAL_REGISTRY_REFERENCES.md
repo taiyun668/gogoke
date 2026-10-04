@@ -50,3 +50,14 @@ synthetic metadata receipts. They open no auth file and qualify no physical link
 credential refresh, real ACL or startup behavior. Native compilation/tests follow
 `docs/governance/gogoke-build-and-release.md` in Windows cloud CI. Actual source,
 alias, profile and installed Win11 qualification depend on Root/H integration.
+
+R5/R6 cleanup boundaries: whole-instance original H/global custody must be
+stopped before the no-source return. A later login can reconcile REMOVE_PENDING
+only by reading the alias's original journal key, decoding exactly eight canonical
+length-framed fields and checking its key, revision, registered source/home and
+history identities. The original input reselects the existing pending receipt;
+the later login request never replaces it. UNKNOWN remains retained. Physical
+completion uses H's read-only removed-name/link-count witness and never retries
+deletion. The two credential_launch cleanup tests exercise the actual SQL and an
+empty exclusively owned synthetic file; no credential contents are read and no
+real credential or native process qualification is claimed.

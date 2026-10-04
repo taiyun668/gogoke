@@ -505,6 +505,19 @@ impl AppContainerProfile {
         }
         protect_credential_source_acl(binding)?;
         self.grant_credential_alias(binding, alias)?;
+        self.grant_registered_credential_tree(path,expected,binding,alias,writable)
+    }
+
+    /// F has already issued or reconciled this exact profile's credential
+    /// grant. Tree setup must only verify the shared source, never replace its
+    /// baseline during cold recovery or change another profile's source ACE.
+    pub(crate) fn grant_registered_credential_tree(&self,path:&Path,expected:&RootIdentity,
+        binding:&CredentialBinding,alias:&CredentialAlias,writable:bool)
+        ->Result<AclWitness,CredentialError> {
+        if alias.root()!=path || alias.root_identity()!=expected || alias.file_identity()!=binding.identity() {
+            return Err(CredentialError::IdentityChanged);
+        }
+        self.verify_credential_alias(binding,alias)?;
         let root = open_bound_object(path, expected, true)?;
         let before = collect_tree_with_credential(path, binding, alias)?;
         let result = grant_exact_acl(root.0, self.sid, expected,
@@ -658,6 +671,7 @@ impl AppContainerProfile {
             return Err(CredentialError::IdentityChanged);
         }
         self.grant_held_fresh_directory(&fresh_runtime, true, true)?;
+        self.grant_owner_account_installation_file(home,home_identity)?;
         self.verify_bound_owner_account_observer(root, home, home_identity,
             runtime, runtime_identity, binding, registered_aliases)
     }
@@ -681,6 +695,7 @@ impl AppContainerProfile {
             return Err(IsolationError::AclWitnessMismatch.into());
         }
         self.verify_bound_tree_grant(runtime, runtime_identity, true)?;
+        self.verify_owner_account_installation_file(home,home_identity)?;
         let alias_paths: Vec<PathBuf> = registered_aliases.iter().map(|scope|
             binding.alias(scope, registered_aliases).map(|alias| alias.path()))
             .collect::<Result<_, _>>()?;
@@ -693,6 +708,7 @@ impl AppContainerProfile {
                 let child = entry.map_err(|error| CredentialError::Io {
                     operation: "read account observer entry", source: error })?.path();
                 if child == runtime { continue; }
+                if child==home.join("installation_id") {continue;}
                 let metadata = std::fs::symlink_metadata(&child).map_err(|error|
                     CredentialError::Io { operation: "read account observer object metadata", source: error })?;
                 if child == source || alias_paths.contains(&child) {
@@ -752,6 +768,7 @@ impl AppContainerProfile {
             return Err(CredentialError::IdentityChanged);
         }
         self.grant_held_fresh_directory(&fresh_runtime, true, true)?;
+        self.grant_owner_account_installation_file(home,home_identity)?;
         self.verify_bound_owner_account_empty(root, home, home_identity,
             runtime, runtime_identity)
     }
@@ -770,6 +787,7 @@ impl AppContainerProfile {
             return Err(IsolationError::AclWitnessMismatch.into());
         }
         self.verify_bound_tree_grant(runtime, runtime_identity, true)?;
+        self.verify_owner_account_installation_file(home,home_identity)?;
         let mut pending = vec![home.to_path_buf()];
         while let Some(parent) = pending.pop() {
             for entry in std::fs::read_dir(&parent).map_err(|error|
@@ -777,6 +795,7 @@ impl AppContainerProfile {
                 let child = entry.map_err(|error| CredentialError::Io {
                     operation: "read empty account entry", source: error })?.path();
                 if child == runtime { continue; }
+                if child==home.join("installation_id") {continue;}
                 let metadata = std::fs::symlink_metadata(&child).map_err(|error|
                     CredentialError::Io { operation: "read empty account object metadata", source: error })?;
                 let directory = metadata.is_dir();
@@ -889,6 +908,39 @@ impl AppContainerProfile {
         };
         require_bound_path(home, home_identity, true)?;
         Ok(answer)
+    }
+
+    /// The fixed app-server always opens this non-secret native installation
+    /// UUID read/write/create, even for account/read. Precreate only an empty
+    /// ordinary file; the CLI owns its value. No directory/history grant.
+    fn grant_owner_account_installation_file(&self,home:&Path,home_identity:&RootIdentity)
+        ->Result<(),CredentialError> {
+        require_bound_path(home,home_identity,true)?;
+        let path=home.join("installation_id");
+        match std::fs::symlink_metadata(&path) {
+            Ok(_)=>(),
+            Err(source) if source.raw_os_error()==Some(2)=>{
+                std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+                    .map_err(|source|CredentialError::Io {operation:"create empty CLI installation metadata",source})?;
+            },
+            Err(source)=>return Err(CredentialError::Io {operation:"CLI installation metadata",source}),
+        }
+        let object=open_physical_object(&path,false,READ_CONTROL|WRITE_DAC)?;
+        let identity=file_identity(object.0)?;
+        grant_exact_acl(object.0,self.sid,&identity,FILE_GENERIC_READ|FILE_GENERIC_WRITE,NO_INHERITANCE)?;
+        require_bound_path(home,home_identity,true)?;
+        self.verify_owner_account_installation_file(home,home_identity)
+    }
+
+    fn verify_owner_account_installation_file(&self,home:&Path,home_identity:&RootIdentity)
+        ->Result<(),CredentialError> {
+        require_bound_path(home,home_identity,true)?;
+        let object=open_physical_object(&home.join("installation_id"),false,READ_CONTROL)?;
+        if package_aces(object.0,self.sid)?.as_slice()!=
+            &[(GRANT_ACCESS,FILE_GENERIC_READ|FILE_GENERIC_WRITE,NO_INHERITANCE)] {
+            return Err(IsolationError::AclWitnessMismatch.into());
+        }
+        Ok(())
     }
 
     /// The program path must come from F's fixed native catalog. Its object

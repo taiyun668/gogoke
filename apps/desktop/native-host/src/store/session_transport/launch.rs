@@ -317,7 +317,7 @@ impl LaunchEvidence {
         verify_host_guard(db,owner,host_guard)?;
         let model_home=private_history.as_ref().map(|history|&history.directory).unwrap_or(&homes.instance);
         if let Some(credential)=&credential {
-            evidence(profile.grant_bound_credential_tree(&model_home.path,&model_home.identity,
+            evidence(profile.grant_registered_credential_tree(&model_home.path,&model_home.identity,
                 &credential.binding,&credential.alias,true))?;
         } else {
             evidence(profile.grant_bound_tree(&model_home.path, &model_home.identity, true))?;
