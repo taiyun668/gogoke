@@ -782,6 +782,78 @@ impl AppContainerProfile {
         require_absent_owner_auth(root, home, home_identity)
     }
 
+    /// F may use this only after every old OwnerLogin custody for this
+    /// instance is STOPPED and no intent is UNKNOWN. The known old grant was
+    /// one inheritable writable ACE on HOME. Remove that parent inheritance
+    /// first, then remove only residual inherited copies for this same SID.
+    /// A registered auth object is the sole multi-link exception.
+    pub(crate) fn migrate_legacy_owner_login_grant(&self, root: &RootLock,
+        home: &Path, home_identity: &RootIdentity,
+        credential: Option<(&CredentialBinding, &[CredentialAliasScope])>)
+        -> Result<(), CredentialError> {
+        require_bound_path(home, home_identity, true)?;
+        if let Some((binding, aliases)) = credential {
+            binding.verify_registered_aliases(aliases)?;
+            let (identity, _) = CredentialBinding::observe_source_metadata(root,
+                &home.join("auth.json"), home_identity)?;
+            if &identity != binding.identity() { return Err(CredentialError::IdentityChanged); }
+        } else {
+            require_absent_owner_auth(root, home, home_identity)?;
+        }
+        let home_object = open_bound_object(home, home_identity, true)?;
+        revoke_known_legacy_owner_ace(home_object.0, self.sid, home_identity, true)?;
+        let before = collect_legacy_owner_tree(home, credential)?;
+        let mut credential_processed = false;
+        for (path, identity, directory, registered_credential) in &before {
+            if *registered_credential && credential_processed { continue; }
+            if *registered_credential {
+                let (binding, _) = credential.ok_or(CredentialError::Invalid(
+                    "legacy credential witness missing"))?;
+                binding.with_source_metadata_acl(|handle| {
+                    if &file_identity(handle)? != identity {
+                        return Err(CredentialError::IdentityChanged);
+                    }
+                    revoke_known_legacy_owner_ace(handle, self.sid, identity, false)?;
+                    Ok(())
+                })?;
+                credential_processed = true;
+            } else {
+                let object = open_bound_object(path, identity, *directory)?;
+                revoke_known_legacy_owner_ace(object.0, self.sid, identity, false)?;
+            }
+        }
+        let after = collect_legacy_owner_tree(home, credential)?;
+        if before != after { return Err(IsolationError::AclWitnessMismatch.into()); }
+        for (path, identity, directory, registered_credential) in &after {
+            if *registered_credential {
+                let (binding, _) = credential.ok_or(CredentialError::Invalid(
+                    "legacy credential witness missing"))?;
+                binding.with_source_metadata_acl(|handle| {
+                    if &file_identity(handle)? != identity || !package_aces(handle, self.sid)?.is_empty() {
+                        return Err(IsolationError::AclWitnessMismatch.into());
+                    }
+                    Ok(())
+                })?;
+            } else {
+                let object = open_physical_object(path, *directory, READ_CONTROL)?;
+                if &file_identity(object.0)? != identity || !package_aces(object.0, self.sid)?.is_empty() {
+                    return Err(IsolationError::AclWitnessMismatch.into());
+                }
+            }
+        }
+        let home_readback = open_physical_object(home, true, READ_CONTROL)?;
+        if &file_identity(home_readback.0)? != home_identity
+            || !package_aces(home_readback.0, self.sid)?.is_empty() {
+            return Err(IsolationError::AclWitnessMismatch.into());
+        }
+        if let Some((binding, aliases)) = credential {
+            binding.verify_registered_aliases(aliases)?;
+        } else {
+            require_absent_owner_auth(root, home, home_identity)?;
+        }
+        Ok(())
+    }
+
     /// The program path must come from F's fixed native catalog. Its object
     /// identity is captured before the grant and rechecked by process custody
     /// at suspended creation; an arbitrary caller-supplied path is insufficient.
@@ -995,6 +1067,103 @@ fn collect_tree(root: &Path) -> Result<Vec<(PathBuf, RootIdentity, bool)>, Isola
     }
     objects.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(objects)
+}
+
+fn collect_legacy_owner_tree(home: &Path,
+    credential: Option<(&CredentialBinding, &[CredentialAliasScope])>)
+    -> Result<Vec<(PathBuf, RootIdentity, bool, bool)>, CredentialError> {
+    let mut registered_paths = Vec::new();
+    if let Some((binding, aliases)) = credential {
+        binding.verify_registered_aliases(aliases)?;
+        registered_paths.push(home.join("auth.json"));
+        for scope in aliases {
+            let alias = binding.alias(scope, aliases)?;
+            registered_paths.push(alias.path());
+        }
+        if registered_paths.iter().enumerate().any(|(index, path)|
+            !path.starts_with(home) || registered_paths[..index].contains(path)) {
+            return Err(CredentialError::Invalid("registered legacy alias escaped HOME or duplicates source"));
+        }
+    }
+    let mut found = vec![false; registered_paths.len()];
+    let mut pending = vec![home.to_path_buf()];
+    let mut objects = Vec::new();
+    while let Some(parent) = pending.pop() {
+        for child in std::fs::read_dir(&parent).map_err(|error| CredentialError::Io {
+            operation: "enumerate legacy owner HOME", source: error })? {
+            let path = child.map_err(|error| CredentialError::Io {
+                operation: "read legacy owner entry", source: error })?.path();
+            let metadata = std::fs::symlink_metadata(&path).map_err(|error| CredentialError::Io {
+                operation: "read legacy owner object metadata", source: error })?;
+            let directory = metadata.is_dir();
+            let registered = registered_paths.iter().position(|name| name == &path);
+            let identity = if registered.is_some() {
+                if directory || !metadata.is_file()
+                    || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(CredentialError::Invalid("registered legacy credential is not physical"));
+                }
+                let (binding, _) = credential.ok_or(CredentialError::Invalid(
+                    "legacy credential witness missing"))?;
+                binding.with_source_metadata_acl(|handle| {
+                    let identity = file_identity(handle)?;
+                    if &identity != binding.identity() { return Err(CredentialError::IdentityChanged); }
+                    Ok(identity)
+                })?
+            } else {
+                let object = open_physical_object(&path, directory, READ_CONTROL)?;
+                file_identity(object.0)?
+            };
+            if let Some(index) = registered { found[index] = true; }
+            if directory { pending.push(path.clone()); }
+            objects.push((path, identity, directory, registered.is_some()));
+        }
+    }
+    if found.iter().any(|seen| !seen) {
+        return Err(CredentialError::Invalid("registered legacy credential name absent from HOME"));
+    }
+    objects.sort_by(|left, right| left.0.cmp(&right.0));
+    if let Some((binding, aliases)) = credential { binding.verify_registered_aliases(aliases)?; }
+    Ok(objects)
+}
+
+fn revoke_known_legacy_owner_ace(handle: Handle, sid: *mut c_void,
+    expected: &RootIdentity, home: bool) -> Result<(), IsolationError> {
+    if &file_identity(handle)? != expected { return Err(IsolationError::AclWitnessMismatch); }
+    let observed = package_aces(handle, sid)?;
+    if observed.is_empty() { return Ok(()); }
+    let expected_rights = directory_rights(true);
+    let known = if home {
+        observed.as_slice() == &[(GRANT_ACCESS, expected_rights, OBJECT_AND_CONTAINER_INHERIT)]
+    } else {
+        observed.len() == 1 && observed[0].0 == GRANT_ACCESS
+            && observed[0].1 == expected_rights
+            && observed[0].2 & INHERITED_ACE != 0
+            && observed[0].2 & !(INHERITED_ACE | OBJECT_AND_CONTAINER_INHERIT) == 0
+    };
+    if !known { return Err(IsolationError::AclWitnessMismatch); }
+    let mut old_acl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe { GetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), &mut old_acl, ptr::null_mut(), &mut descriptor) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    let _descriptor = LocalAllocation(descriptor);
+    if old_acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let mut entry = ExplicitAccessW { permissions: 0, access_mode: REVOKE_ACCESS,
+        inheritance: NO_INHERITANCE, trustee: TrusteeW { multiple: ptr::null_mut(),
+            multiple_operation: 0, form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN,
+            name: sid.cast() } };
+    let mut new_acl = ptr::null_mut();
+    let status = unsafe { SetEntriesInAclW(1, &mut entry, old_acl, &mut new_acl) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    if new_acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let new_acl = LocalAllocation(new_acl);
+    let status = unsafe { SetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), new_acl.0, ptr::null_mut()) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    if &file_identity(handle)? != expected || !package_aces(handle, sid)?.is_empty() {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    Ok(())
 }
 
 fn collect_tree_with_credential(root: &Path, binding: &CredentialBinding,
