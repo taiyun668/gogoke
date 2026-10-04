@@ -499,7 +499,12 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn dispatch_user_session(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         if request.request_id.starts_with("hostrecipient-")
-            || request.target_id.starts_with("hostsession-") {
+            || (request.target_id.starts_with("hostsession-")
+                && !matches!(request.operation.as_str(),
+                    "stop" | "output-stream" | "admission-release")) {
+            // Host preparation and start are internal. A later User stop,
+            // read, or release still needs the original H claim and its
+            // ordinary Owner, generation, revision, and stop-fact checks.
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                 request.expected_revision,Default::default()));
         }
