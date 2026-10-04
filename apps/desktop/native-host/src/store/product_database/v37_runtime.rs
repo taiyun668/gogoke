@@ -1734,6 +1734,10 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
+    pub(super) fn host_cleanup_has_stop_proof(&self, key: &(String, String)) -> bool {
+        self.native_sessions.get(key).is_some_and(|run| run.stop_proof.is_some())
+    }
+
     pub(super) fn dispatch_native_stop(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         self.dispatch_native_stop_with_caller(request,None)
     }
