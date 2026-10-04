@@ -299,7 +299,7 @@ impl<'root> ProductDatabase<'root> {
                     .map_err(recipient_error)?
             },
         };
-        if self.check_host_recipient_choice(proof,&choice).is_err() {return Ok(None);}
+        self.check_host_recipient_choice(proof,&choice)?;
         let key=(proof.domain_id().to_owned(),choice.session_id.clone());
         if self.native_sessions.contains_key(&key) {return Ok(Some(key));}
         if choice.mode=="RESUME" {

@@ -13,6 +13,24 @@ use crate::store::seat::{self, Layer as SeatLayer, NativeOrigin, State as SeatSt
 use crate::store::seat::HostEscalationProof;
 use super::admission::{self, AdmissionError, AdmissionRequest, AdmissionResult, TrustedLimits};
 
+fn host_recipient_admission_error(error: crate::store::inbox::InboxError) -> AdmissionError {
+    use crate::store::inbox::InboxError;
+    match error {
+        InboxError::Invalid(name) => AdmissionError::Invalid(name),
+        InboxError::Denied => AdmissionError::Denied,
+        InboxError::Conflict => AdmissionError::Conflict,
+        InboxError::Stale => AdmissionError::Stale,
+        InboxError::Unknown => AdmissionError::Unknown,
+        InboxError::Sqlite(error) => AdmissionError::Store(error),
+        InboxError::Open(error) => AdmissionError::Sqlite(error),
+        InboxError::CommitUnknown(error) => AdmissionError::CommitUnknown(error),
+        InboxError::RollbackUnknown(error) => AdmissionError::RollbackUnknown(error),
+        InboxError::Authority(error) => AdmissionError::Identity(error),
+        original => AdmissionError::Identity(crate::store::orchestration::OrchestrationError::V37StoreFailure(
+            format!("host recipient admission: {original:?}"))),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionPhase {
     Reserved,
@@ -95,7 +113,7 @@ pub(crate) fn reserve_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
     admission::reserve_admission(db,request,|db| {
         check_owner_current(db,&identity)?;
         let seat=host_rule::revalidate_host_recipient_in_transaction(db,host,proof,choice)
-            .map_err(|_|AdmissionError::Denied)?;
+            .map_err(host_recipient_admission_error)?;
         let seat=if seat.state==SeatState::Idle {
             seat::set_dispatch_state_in_transaction(db,&seat,true).map_err(AdmissionError::Seat)?
         } else {seat};
@@ -120,7 +138,7 @@ pub(crate) fn commit_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
     admission::commit_admission(db,request,|db| {
         check_owner_current(db,&identity)?;
         let seat=host_rule::revalidate_host_recipient_in_transaction(db,host,proof,choice)
-            .map_err(|_|AdmissionError::Denied)?;
+            .map_err(host_recipient_admission_error)?;
         if seat.state!=SeatState::Busy || seat.generation.to_string()!=request.generation {
             return Err(AdmissionError::Denied);
         }
