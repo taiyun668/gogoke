@@ -305,6 +305,34 @@ pub(crate) fn observe_host_health_in_transaction(db:&mut VerifiedDatabaseConnect
 }
 
 /// Must commit with H generation_change INTENT, never as a separate request.
+pub(crate) fn observe_stalled_host_health_in_transaction(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&crate::store::authority::OwnerIssuer,
+    proof:&crate::store::session_transport::host_health::StalledHealthProof)->Result<(),SeatError> {
+    crate::store::session_transport::host_health::revalidate_stalled_host_health_in_transaction(db,owner,proof)
+        .map_err(|error|SeatError::HostHealthObservation(format!("original stalled H/A cause: {error:?}")))?;
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT seat_id,generation,signal,source_event_id,action,state FROM main.gogoke_v37_seat_health
+          WHERE domain_id=?1 AND event_id=?2")?;
+    q.bind_text(1,proof.domain_id())?;q.bind_text(2,proof.event_id())?;
+    if q.step_row()? {
+        if q.column_text(0)?!=proof.seat_id() || q.column_text(1)?!=proof.generation().to_string()
+            || q.column_text(2)?!="STALLED" || q.column_text(3)?!=proof.source_event_id()
+            || q.column_text(4)?!="ESCALATE" || q.column_text(5)?!="OBSERVED" || q.step_row()? {
+            return Err(SeatError::Conflict);
+        }
+        return Ok(());
+    }
+    drop(q);
+    let q=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_seat_health(domain_id,seat_id,event_id,generation,signal,source_event_id,action,state)
+          VALUES(?1,?2,?3,?4,'STALLED',?5,'ESCALATE','OBSERVED')")?;
+    q.bind_text(1,proof.domain_id())?;q.bind_text(2,proof.seat_id())?;
+    q.bind_text(3,proof.event_id())?;q.bind_i64(4,proof.generation())?;
+    q.bind_text(5,proof.source_event_id())?;q.step_done()?;
+    Ok(())
+}
+
+/// Must commit with H generation_change INTENT, never as a separate request.
 pub(crate) fn request_host_health_in_transaction(db:&mut VerifiedDatabaseConnection<'_>,
     owner:&crate::store::authority::OwnerIssuer,
     proof:&crate::store::session_transport::host_health::HostHealthProof,

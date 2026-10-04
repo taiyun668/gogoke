@@ -32,19 +32,41 @@ fn original_fields(encoded:&str)->Result<BTreeMap<JsonString,Json>> {
 }
 
 impl<'root> ProductDatabase<'root> {
-    pub(super) fn pump_host_rules(&mut self)->Result<()> {
-        self.settle_original_host_deliveries()?;
-        self.cleanup_host_rule_preparations()?;
+    pub(super) fn observe_current_host_rule_causes_in_transaction(&mut self,record:bool)
+        ->Result<Vec<HostEscalationProof>> {
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT domain_id,gate_id FROM main.gogoke_v37_seat_policy_gates WHERE state='ESCALATION_REQUIRED' ORDER BY domain_id,gate_id")?;
         let mut causes=Vec::new();while query.step_row()? {causes.push((query.column_text(0)?,query.column_text(1)?));}drop(query);
+        let mut proofs=Vec::new();
         for (domain,gate) in causes {
+            match seat::observe_host_reject_cap_in_transaction(&self.connection,&self.owner,&domain,&gate) {
+                Ok(Some(proof))=>proofs.push(proof),
+                Ok(None)|Err(seat::SeatError::Denied|seat::SeatError::Conflict)=>{},
+                Err(error)=>return Err(failure(error)),
+            }
+        }
+        for stalled in self.current_stalled_health_in_transaction(record)? {
+            match seat::observe_host_stalled_in_transaction(&self.connection,&self.owner,&stalled) {
+                Ok(Some(proof))=>proofs.push(proof),
+                Ok(None)|Err(seat::SeatError::Denied|seat::SeatError::Conflict)=>{},
+                Err(error)=>return Err(failure(error)),
+            }
+        }
+        Ok(proofs)
+    }
+
+    pub(super) fn pump_host_rules(&mut self)->Result<()> {
+        self.settle_original_host_deliveries()?;
+        self.cleanup_host_rule_preparations()?;
+        self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let observed=self.observe_current_host_rule_causes_in_transaction(true);
+        let proofs=match observed {
+            Ok(proofs)=>{self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;proofs},
+            Err(primary)=>{if let Err(rollback)=self.connection.execute("ROLLBACK") {return Err(failure((primary,rollback)));}return Err(primary);}
+        };
+        for proof in proofs {
             self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let selected=(||->Result<Option<HostEscalationProof>> {
-                let proof=match seat::observe_host_reject_cap_in_transaction(&self.connection,&self.owner,&domain,&gate) {
-                    Ok(Some(proof))=>proof,Ok(None)|Err(seat::SeatError::Denied|seat::SeatError::Conflict)=>return Ok(None),
-                    Err(error)=>return Err(failure(error)),
-                };
                 match seat::begin_host_escalation_in_transaction(&mut self.connection,&self.owner,&proof) {
                     Ok(_)=>{},Err(seat::SeatError::Denied|seat::SeatError::Conflict)=>return Ok(None),
                     Err(error)=>return Err(failure(error)),

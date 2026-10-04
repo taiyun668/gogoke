@@ -55,6 +55,7 @@ struct WorkTurn {
     receipt_sha256:String,
     command_sha256:String,
     ack_sha256:String,
+    revision:u64,
 }
 
 /// Only observe_codex_host_health constructs this seal. There is no wire
@@ -283,7 +284,7 @@ fn ordinary_work_turn(db:&VerifiedDatabaseConnection<'_>,custody:&PreparedCustod
             return Err(HostHealthError::Denied);
         }
         if found.is_some() {return Err(HostHealthError::Conflict)}
-        found=Some(WorkTurn {request_id,request_sha256,command_sha256,
+        found=Some(WorkTurn {revision:request.expected_revision+1,request_id,request_sha256,command_sha256,
             receipt_sha256:sha256_hex(&receipt_raw),ack_sha256:sha256_hex(&response_raw)});
     }
     found.ok_or(HostHealthError::Denied)
@@ -367,6 +368,182 @@ pub(crate) fn revalidate_host_health_in_transaction(db:&VerifiedDatabaseConnecti
         .ok_or(HostHealthError::Denied)?;
     if actual!=*proof {return Err(HostHealthError::Conflict)}
     seat::get(db,proof.domain_id(),proof.seat_id())?.ok_or(HostHealthError::Denied)
+}
+
+/// Composite, private H/A/E authority: an original typed failed ordinary work
+/// turn and its exact health repair's definite unsupported response. No caller
+/// can construct this from a status string or model output.
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub(crate) struct StalledHealthProof {
+    health:HostHealthProof,
+    repair_event:String,
+    repair_request:String,
+    receipt_sha256:String,
+    response_sha256:String,
+    event:String,
+}
+impl StalledHealthProof {
+    pub(crate) fn domain_id(&self)->&str {self.health.domain_id()}
+    pub(crate) fn seat_id(&self)->&str {self.health.seat_id()}
+    pub(crate) fn generation(&self)->i64 {self.health.generation()}
+    pub(crate) fn event_id(&self)->&str {&self.event}
+    pub(crate) fn source_event_id(&self)->&str {self.health.source_event_id()}
+    pub(crate) fn fingerprint(&self)->String {sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+        self.health.raw_sha256,self.health.work.request_sha256,self.repair_request,
+        self.receipt_sha256,self.response_sha256).as_bytes())}
+    pub(crate) fn notice_basis(&self)->String {format!(
+        "original failed work turn {}; health repair {} returned definite UNSUPPORTED",
+        self.health.turn_id(),self.repair_request)}
+}
+
+/// Revisions order H ordinary sends; A cursors order actual provider turns.
+/// Neither clocks nor the current idle/busy hint prove absence of later work.
+fn no_successor_work(db:&VerifiedDatabaseConnection<'_>,proof:&HostHealthProof)->Result<()> {
+    let active=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1
+          AND (session_id=?2 OR seat_id=?3) AND phase IN ('INTENT','PREPARED','ACTIVE','UNKNOWN')
+          AND (COALESCE(process_operation_id,'')<>?4 OR generation<>?5)")?;
+    for (i,v) in [proof.domain.as_str(),proof.session.as_str(),proof.seat.as_str(),
+        proof.operation.as_str(),proof.custody.binding.generation.as_str()].iter().enumerate() {
+        active.bind_text((i+1) as i32,v)?;
+    }
+    if active.step_row()? {return Err(HostHealthError::Denied);}
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT request_id,request_hex FROM main.gogoke_v37_h_stdin_journal
+          WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+            AND ticket=?4 AND custodian_nonce=?5 AND generation=?6 AND operation='send'")?;
+    for (i,v) in [proof.domain.as_str(),proof.session.as_str(),proof.operation.as_str(),
+        proof.custody.ticket.opaque(),proof.custody.custodian_nonce.as_str(),
+        proof.custody.binding.generation.as_str()].iter().enumerate() {q.bind_text((i+1) as i32,v)?;}
+    while q.step_row()? {
+        if q.column_text(0)?==proof.work.request_id {continue;}
+        let request=decode_request(&unhex(&q.column_text(1)?)?).map_err(|cause|
+            HostHealthError::Wire {field:"successor H send",cause})?;
+        if request.expected_revision>=proof.work.revision {return Err(HostHealthError::Denied);}
+    }
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT command_hex,COALESCE(source_cursor,'') FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+            AND ticket=?4 AND custodian_nonce=?5 AND generation=?6")?;
+    for (i,v) in [proof.domain.as_str(),proof.session.as_str(),proof.operation.as_str(),
+        proof.custody.ticket.opaque(),proof.custody.custodian_nonce.as_str(),
+        proof.custody.binding.generation.as_str()].iter().enumerate() {q.bind_text((i+1) as i32,v)?;}
+    let terminal=proof.source.source_cursor.parse::<u64>().map_err(|cause|
+        HostHealthError::Integer {field:"terminal cursor",cause})?;
+    while q.step_row()? {
+        let command=unhex(&q.column_text(0)?)?;
+        if sha256_hex(&command)==proof.work.command_sha256 {continue;}
+        if string(&object(&command)?,"method").as_deref()!=Some("turn/start") {continue;}
+        let cursor=q.column_text(1)?;
+        // An unresolved ordinary RPC cannot prove that no work followed.
+        if cursor.is_empty() || cursor.parse::<u64>().map_err(|cause|
+            HostHealthError::Integer {field:"successor RPC cursor",cause})?>terminal {
+            return Err(HostHealthError::Denied);
+        }
+    }
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT hex(raw_bytes) FROM main.v37_ledger_raw_source WHERE operation_id=?1
+          AND source_epoch=?2 AND domain_id=?3 AND session_id=?4
+          AND CAST(source_cursor AS INTEGER)>CAST(?5 AS INTEGER)")?;
+    for (i,v) in [proof.operation.as_str(),proof.source.source_epoch.as_str(),proof.domain.as_str(),
+        proof.session.as_str(),proof.source.source_cursor.as_str()].iter().enumerate() {q.bind_text((i+1) as i32,v)?;}
+    while q.step_row()? {
+        if let Ok(codex_rpc::Reply::TurnNotification {thread_id,turn_id,..})=
+            codex_rpc::decode(&unhex(&q.column_text(0)?)?,None) {
+            if thread_id==proof.thread && turn_id!=proof.turn {return Err(HostHealthError::Denied);}
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn observe_stalled_host_health_in_transaction(db:&VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,custody:&PreparedCustody,source:&RawSourceKey,repair_event:&str)
+    ->Result<Option<StalledHealthProof>> {
+    let Some(health)=observe_codex_host_health(db,owner,custody,source)? else {return Ok(None)};
+    no_successor_work(db,&health)?;
+    if repair_event!=format!("health-{}",sha256_hex(health.source_event_id().as_bytes())) {
+        return Err(HostHealthError::Denied);
+    }
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT session_request_id,receipt_id FROM main.gogoke_v37_seat_health
+          WHERE domain_id=?1 AND seat_id=?2 AND event_id=?3 AND generation=?4
+            AND source_event_id=?5 AND state='RECEIPTED' AND signal=?6 AND action=?7")?;
+    let (signal,action)=match health.cause {Cause::ContextCompact=>("CONTEXT_COMPACT","COMPACT"),
+        Cause::RepeatedFailure=>("REPEATED_FAILURE","RENEW")};
+    for (i,v) in [health.domain.as_str(),health.seat.as_str(),repair_event,
+        custody.binding.generation.as_str(),health.source_event_id(),signal,action]
+        .iter().enumerate() {q.bind_text((i+1) as i32,v)?;}
+    if !q.step_row()? {return Ok(None)}
+    let repair_request=q.column_text(0)?;let receipt_id=q.column_text(1)?;
+    if q.step_row()? {return Err(HostHealthError::Conflict)}
+    let c=generation_change::read(db,&health.domain,&repair_request)?.ok_or(HostHealthError::Denied)?;
+    if c.stage!="UNSUPPORTED" || c.owner_stop_request_id.is_some() || c.unknown_revision.is_some()
+        || c.session_id!=health.session || c.old_generation!=custody.binding.generation
+        || c.old_operation!=health.operation || c.old_ticket!=custody.ticket.opaque()
+        || c.old_nonce!=custody.custodian_nonce || c.thread_id!=health.thread || c.seat_id!=health.seat
+        || c.source_watermark<source.source_cursor.parse::<i64>().map_err(|cause|
+            HostHealthError::Integer {field:"repair source watermark",cause})? {
+        return Err(HostHealthError::Denied);
+    }
+    // Currently only compact method-not-found has a definite unsupported A
+    // fact. RENEW/other remote errors and diagnostic text remain UNKNOWN.
+    if health.cause!=Cause::ContextCompact || c.operation!="compact" {return Ok(None)}
+    let request_raw=unhex(&c.raw_hex)?;
+    let request=decode_request(&request_raw).map_err(|cause|HostHealthError::Wire {field:"repair request",cause})?;
+    let step=format!("compact-{}",&sha256_hex(&request_raw)[..40]);
+    if c.ack_step_id.as_deref()!=Some(step.as_str()) || request.request_id!=repair_request
+        || request.family!="K-SESSION" || request.operation!=c.operation || request.domain_id!=health.domain
+        || request.target_id!=health.session || request.payload.len()!=1
+        || string(&request.payload,"generation").as_deref()!=Some(c.old_generation.as_str())
+        || i64::try_from(request.expected_revision).ok()!=Some(c.previous_revision) {
+        return Err(HostHealthError::Denied);
+    }
+    let ack=Statement::prepare(db.as_ptr(),
+        "SELECT open_request_id,source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND step_id=?3 AND phase='OBSERVED'")?;
+    ack.bind_text(1,&health.domain)?;ack.bind_text(2,&health.session)?;ack.bind_text(3,&step)?;
+    if !ack.step_row()? || ack.column_text(0)?!=health.open_request_id
+        || ack.column_text(1)?!=source.source_epoch
+        || ack.column_text(2)?.parse::<i64>().map_err(|cause|
+            HostHealthError::Integer {field:"unsupported A cursor",cause})?<=c.source_watermark
+        || ack.step_row()? {return Err(HostHealthError::Denied);}
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT hex(request_bytes),hex(receipt_bytes) FROM main.v37_ledger_receipt
+          WHERE family='K-SESSION' AND domain_id=?1 AND request_id=?2")?;
+    q.bind_text(1,&health.domain)?;q.bind_text(2,&repair_request)?;
+    if !q.step_row()? || unhex(&q.column_text(0)?)?!=request_raw {return Err(HostHealthError::Denied)}
+    let receipt_raw=unhex(&q.column_text(1)?)?;
+    if q.step_row()? {return Err(HostHealthError::Conflict)}
+    let receipt=decode_receipt(&receipt_raw).map_err(|cause|HostHealthError::Wire {field:"repair receipt",cause})?;
+    if receipt.status!=V37Status::Unsupported || receipt.family!=request.family
+        || receipt.operation!=request.operation || receipt.request_id!=request.request_id
+        || receipt.target_id!=request.target_id || receipt.previous_revision!=request.expected_revision
+        || receipt.revision!=request.expected_revision || !receipt.into_result().is_empty()
+        || receipt_id!=format!("health-receipt-{}",sha256_hex(&receipt_raw)) {
+        return Err(HostHealthError::Denied);
+    }
+    let response=match rpc_journal::observed_compact_ack(db,&health.domain,&health.session,
+        &health.operation,&c.old_generation,&c.old_ticket,&c.old_nonce,&step,&health.thread) {
+        Err(rpc_journal::RpcJournalError::Codec(codex_rpc::RpcError::RemoteResponse(raw)))=>raw,
+        Ok(_)=>return Ok(None),Err(error)=>return Err(error.into()),
+    };
+    let root=object(&response)?;
+    if !matches!(fields(&root,"error").and_then(|error|error.get(&key("code"))),
+        Some(Json::Number(code)) if code=="-32601") {return Ok(None)}
+    let response_sha256=sha256_hex(&response);let receipt_sha256=sha256_hex(&receipt_raw);
+    // Identity belongs to the original failure/repair, not mutable route or
+    // response content. A changed source is a conflicting seal, never a new send.
+    let event=format!("stalled-health-{}",sha256_hex(format!("{repair_event}\n{repair_request}").as_bytes()));
+    Ok(Some(StalledHealthProof {health,repair_event:repair_event.into(),repair_request,
+        receipt_sha256,response_sha256,event}))
+}
+
+pub(crate) fn revalidate_stalled_host_health_in_transaction(db:&VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,proof:&StalledHealthProof)->Result<()> {
+    let actual=observe_stalled_host_health_in_transaction(db,owner,&proof.health.custody,
+        &proof.health.source,&proof.repair_event)?;
+    if actual.as_ref()!=Some(proof) {return Err(HostHealthError::Denied)}
+    Ok(())
 }
 
 #[cfg(test)]

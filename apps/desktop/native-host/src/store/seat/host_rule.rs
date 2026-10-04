@@ -19,7 +19,8 @@ pub(crate) struct HostEscalationProof {
     current_owner_revision: i64,
     policy_revision: i64,
     route_revision: i64,
-    gate_fact: (String, String, String, String, i64, i64, String, i64),
+    gate_fact: Option<(String, String, String, String, i64, i64, String, i64)>,
+    stalled: Option<crate::store::session_transport::host_health::StalledHealthProof>,
     trigger: String,
     request: String,
     notice: String,
@@ -35,6 +36,7 @@ impl HostEscalationProof {
     pub(crate) fn trigger_id(&self) -> &str { &self.trigger }
     pub(crate) fn request_id(&self) -> &str { &self.request }
     pub(crate) fn notice_body(&self) -> &str { &self.notice }
+    pub(crate) fn reason(&self)->&'static str {if self.stalled.is_some() {"STALL"} else {"REJECT_CAP"}}
 }
 
 /// Seat IDs cannot be recreated, and their incarnation/layer/parent never
@@ -149,7 +151,7 @@ pub(crate) fn observe_host_reject_cap_in_transaction(
         domain: domain.into(), gate: gate.into(), source: source.seat_id,
         source_incarnation: source.incarnation, destination, destination_incarnation,
         cause_event: cause, cause_fingerprint, cause_policy_revision: cause_revision,
-        current_owner_revision: revision, policy_revision: intent_revision, route_revision, gate_fact: fact,
+        current_owner_revision: revision, policy_revision: intent_revision, route_revision, gate_fact: Some(fact),stalled:None,
         trigger, request, notice,
     }))
 }
@@ -157,7 +159,10 @@ pub(crate) fn observe_host_reject_cap_in_transaction(
 pub(crate) fn revalidate_host_escalation_in_transaction(
     db: &VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer, proof: &HostEscalationProof,
 ) -> Result<(), SeatError> {
-    let current = observe_host_reject_cap_in_transaction(db, owner, &proof.domain, &proof.gate)?;
+    let current=match &proof.stalled {
+        Some(stalled)=>observe_host_stalled_in_transaction(db,owner,stalled)?,
+        None=>observe_host_reject_cap_in_transaction(db, owner, &proof.domain, &proof.gate)?,
+    };
     if current.as_ref() != Some(proof) { return Err(SeatError::Denied); }
     Ok(())
 }
@@ -189,7 +194,7 @@ pub(crate) fn read_host_escalation_intent_in_transaction(
         if !q.step_row()? || old.target_id != proof.trigger || old.detail != proof.cause_event
             || old.state != "INTENT" || old.policy_revision != proof.policy_revision
             || q.column_text(0)? != proof.source || q.column_text(1)? != proof.destination
-            || q.column_text(2)? != "REJECT_CAP" {
+            || q.column_text(2)? != proof.reason() {
             return Err(SeatError::Conflict);
         }
         let state = q.column_text(3)?;
@@ -198,7 +203,7 @@ pub(crate) fn read_host_escalation_intent_in_transaction(
             || revision < 1 || q.step_row()? { return Err(SeatError::Conflict); }
         return Ok(Some(EscalationIntent { trigger_id: proof.trigger.clone(),
             from_seat_id: proof.source.clone(), to_seat_id: proof.destination.clone(),
-            reason: "REJECT_CAP".into(), state, revision, replayed: true }));
+            reason: proof.reason().into(), state, revision, replayed: true }));
     }
     Ok(None)
 }
@@ -213,11 +218,12 @@ pub(crate) fn begin_host_escalation_in_transaction(
     let q = Statement::prepare(db.as_ptr(),
         "INSERT INTO main.gogoke_v37_seat_policy_escalations
          (domain_id,trigger_id,request_id,from_seat_id,to_seat_id,reason,state,revision)
-         VALUES(?1,?2,?3,?4,?5,'REJECT_CAP','INTENT',1)")?;
+         VALUES(?1,?2,?3,?4,?5,?6,'INTENT',1)")?;
     for (index, value) in [&proof.domain, &proof.trigger, &proof.request,
         &proof.source, &proof.destination].iter().enumerate() {
         q.bind_text((index + 1) as i32, value)?;
     }
+    q.bind_text(6,proof.reason())?;
     q.step_done()?;
     record_event(db, &proof.domain, PolicyEvent { event_id: proof.request.clone(),
         operation: "escalate".into(), target_id: proof.trigger.clone(),
@@ -227,7 +233,61 @@ pub(crate) fn begin_host_escalation_in_transaction(
     // owning transaction; UNKNOWN/DELIVERED replay never authorizes delivery.
     Ok(EscalationIntent { trigger_id: proof.trigger.clone(),
         from_seat_id: proof.source.clone(), to_seat_id: proof.destination.clone(),
-        reason: "REJECT_CAP".into(), state: "INTENT".into(), revision: 1, replayed: false })
+        reason: proof.reason().into(), state: "INTENT".into(), revision: 1, replayed: false })
+}
+
+pub(crate) fn observe_host_stalled_in_transaction(db:&VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,stalled:&crate::store::session_transport::host_health::StalledHealthProof)
+    ->Result<Option<HostEscalationProof>,SeatError> {
+    check_current_owner(db,owner)?;
+    crate::store::session_transport::host_health::revalidate_stalled_host_health_in_transaction(db,owner,stalled)
+        .map_err(|error|match error {
+            crate::store::session_transport::host_health::HostHealthError::Denied
+            |crate::store::session_transport::host_health::HostHealthError::Conflict
+            |crate::store::session_transport::host_health::HostHealthError::Rpc(
+                crate::store::session_transport::rpc_journal::RpcJournalError::Denied)=>SeatError::Denied,
+            error=>SeatError::HostHealthObservation(format!("original stalled H/A cause: {error:?}")),
+        })?;
+    super::super::continuity::require_stalled_health(db,stalled.domain_id(),stalled.seat_id(),stalled.event_id())?;
+    let source=read(db,stalled.domain_id(),stalled.seat_id())?.ok_or(SeatError::Denied)?;
+    original_logical_identity(db,&source)?;
+    let revision=head_revision(db,stalled.domain_id())?;
+    let route=Statement::prepare(db.as_ptr(),
+        "SELECT to_seat_id,revision FROM main.gogoke_v37_seat_policy_routes
+          WHERE domain_id=?1 AND from_seat_id=?2 AND reason='STALL'")?;
+    route.bind_text(1,stalled.domain_id())?;route.bind_text(2,stalled.seat_id())?;
+    if !route.step_row()? {return Ok(None)}
+    let destination=route.column_text(0)?;
+    let route_revision=route.column_text(1)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+    if !valid_id(&destination) || destination==source.seat_id
+        || (source.layer==Layer::Lead && destination=="OWNER")
+        || route_revision<1 || route_revision>revision || route.step_row()? {return Err(SeatError::Denied)}
+    let destination_incarnation=if destination=="OWNER" {None} else {
+        let target=read(db,stalled.domain_id(),&destination)?.ok_or(SeatError::Denied)?;
+        if target.state==State::Reclaimed {return Err(SeatError::Denied)}
+        original_logical_identity(db,&target)?;Some(target.incarnation)
+    };
+    let digest=sha256_hex(fingerprint(&["host-stall",stalled.domain_id(),stalled.event_id()],b"").as_bytes());
+    let trigger=format!("host-stall-{}",&digest[..40]);
+    let request=format!("host-escalate-{}",&digest[..40]);
+    let prior=Statement::prepare(db.as_ptr(),
+        "SELECT operation,target_id,policy_revision,state,detail FROM main.gogoke_v37_seat_policy_events
+          WHERE domain_id=?1 AND event_id=?2")?;
+    prior.bind_text(1,stalled.domain_id())?;prior.bind_text(2,&request)?;
+    let intent_revision=if prior.step_row()? {
+        let original=prior.column_text(2)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+        if prior.column_text(0)?!="escalate" || prior.column_text(1)?!=trigger
+            || prior.column_text(3)?!="INTENT" || prior.column_text(4)?!=stalled.event_id()
+            || original<route_revision || original>revision || prior.step_row()? {return Err(SeatError::Denied)}
+        original
+    } else {revision};
+    let notice=format!("Host rule STALL: {}. Source seat {}; destination {}; cause event {}. Original Owner policy revision {}. This notice carries no model instruction.",
+        stalled.notice_basis(),source.seat_id,destination,stalled.event_id(),intent_revision);
+    Ok(Some(HostEscalationProof {domain:stalled.domain_id().into(),gate:String::new(),
+        source:source.seat_id,source_incarnation:source.incarnation,destination,destination_incarnation,
+        cause_event:stalled.event_id().into(),cause_fingerprint:stalled.fingerprint(),
+        cause_policy_revision:intent_revision,current_owner_revision:revision,policy_revision:intent_revision,
+        route_revision,gate_fact:None,stalled:Some(stalled.clone()),trigger,request,notice}))
 }
 
 #[cfg(all(test, windows))]

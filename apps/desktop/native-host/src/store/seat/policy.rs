@@ -7,7 +7,7 @@ use std::time::{SystemTime,UNIX_EPOCH};
 
 #[path = "host_rule.rs"]
 mod host_rule;
-pub(crate) use host_rule::{HostEscalationProof,observe_host_reject_cap_in_transaction,
+pub(crate) use host_rule::{HostEscalationProof,observe_host_reject_cap_in_transaction,observe_host_stalled_in_transaction,
     revalidate_host_escalation_in_transaction,read_host_escalation_intent_in_transaction,
     begin_host_escalation_in_transaction};
 

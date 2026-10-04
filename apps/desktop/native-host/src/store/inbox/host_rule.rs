@@ -107,19 +107,22 @@ pub(crate) fn failed_host_preparations(db:&VerifiedDatabaseConnection<'_>)
         let trigger=get("triggerId")?;let route_revision=get("routeRevision")?;
         let escalation=get("escalationRequestId")?;
         let source=Statement::prepare(db.as_ptr(),
-            "SELECT from_seat_id,state FROM main.gogoke_v37_seat_policy_escalations
-              WHERE domain_id=?1 AND trigger_id=?2 AND request_id=?3 AND to_seat_id=?4 AND reason='REJECT_CAP'")?;
+            "SELECT from_seat_id,state,reason FROM main.gogoke_v37_seat_policy_escalations
+              WHERE domain_id=?1 AND trigger_id=?2 AND request_id=?3 AND to_seat_id=?4")?;
         source.bind_text(1,&domain)?;source.bind_text(2,&trigger)?;
         source.bind_text(3,&escalation)?;source.bind_text(4,&seat)?;
         if !source.step_row()? {return Err(InboxError::Denied);}
         let source_seat=source.column_text(0)?;let escalation_state=source.column_text(1)?;
+        let reason=source.column_text(2)?;
+        if !matches!(reason.as_str(),"REJECT_CAP"|"STALL") {return Err(InboxError::Denied);}
         if source.step_row()? {return Err(InboxError::Denied);}
         drop(source);
         if escalation_state=="DELIVERED" {continue;}
         let route=Statement::prepare(db.as_ptr(),
             "SELECT to_seat_id,revision FROM main.gogoke_v37_seat_policy_routes
-              WHERE domain_id=?1 AND from_seat_id=?2 AND reason='REJECT_CAP'")?;
+              WHERE domain_id=?1 AND from_seat_id=?2 AND reason=?3")?;
         route.bind_text(1,&domain)?;route.bind_text(2,&source_seat)?;
+        route.bind_text(3,&reason)?;
         let changed=if route.step_row()? {
             let changed=route.column_text(0)?!=seat ||route.column_text(1)?!=route_revision;
             let duplicate=route.step_row()?;
@@ -909,7 +912,7 @@ fn historical_host(db: &VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
     if !intent.step_row()? || intent.column_text(0)? != historical.escalation_request ||
         intent.column_text(1)? != historical.source ||
         intent.column_text(2)? != historical.destination ||
-        intent.column_text(3)? != "REJECT_CAP" ||
+        !matches!(intent.column_text(3)?.as_str(),"REJECT_CAP"|"STALL") ||
         !matches!(intent.column_text(4)?.as_str(), "INTENT" | "UNKNOWN" | "DELIVERED") ||
         intent.step_row()? { return Err(InboxError::Denied); }
     let event = Statement::prepare(db.as_ptr(),
