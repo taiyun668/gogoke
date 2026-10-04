@@ -1770,11 +1770,11 @@ impl<'root> ProductDatabase<'root> {
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             failure(run.evidence.bind_original_history_source(&self.connection,&custody,&operation_id))?;
-            let next=current.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
+            let next=credential_claim.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
             let advance=Statement::prepare(self.connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_claim SET revision=?1 WHERE domain_id=?2 AND session_id=?3 AND state='COMMITTED' AND revision=?4 AND process_operation_id=?5")?;
             advance.bind_i64(1,next)?;advance.bind_text(2,&request.domain_id)?;
-            advance.bind_text(3,&request.target_id)?;advance.bind_i64(4,current.revision)?;
+            advance.bind_text(3,&request.target_id)?;advance.bind_i64(4,credential_claim.revision)?;
             advance.bind_text(5,&operation_id)?;advance.step_done()?;
             let changed=Statement::prepare(self.connection.as_ptr(),"SELECT changes()")?;
             if !changed.step_row()? || changed.column_text(0)?!="1" {return Err(OrchestrationError::OperationConflict);}
