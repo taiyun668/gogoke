@@ -292,6 +292,8 @@ impl<'root> ProductDatabase<'root> {
                                 if let Some((proof,choice))=host {
                                     self.check_host_recipient_choice_in_transaction(proof,choice)?;
                                 }
+                                let run=self.native_sessions.get(&key)
+                                    .ok_or(OrchestrationError::AccessDenied)?;
                                 // The original A response and retained custody above
                                 // select this source. Commit F with H's original
                                 // PREPARED/UNKNOWN reconciliation, not launch-time
