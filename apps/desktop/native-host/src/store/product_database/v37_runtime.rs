@@ -292,11 +292,10 @@ impl<'root> ProductDatabase<'root> {
                                 if let Some((proof,choice))=host {
                                     self.check_host_recipient_choice_in_transaction(proof,choice)?;
                                 }
-                                // Reconcile the original retained launch exactly as
-                                // the normal promotion does. Its F continuation
-                                // source must commit with H, before advancing the claim.
-                                failure(run.evidence.verify_active_in_transaction(&mut self.connection,
-                                    self.root,&self.owner,Some(&operation)))?;
+                                // The original A response and retained custody above
+                                // select this source. Commit F with H's original
+                                // PREPARED/UNKNOWN reconciliation, not launch-time
+                                // verification against the pre-UNKNOWN revision.
                                 failure(run.evidence.bind_original_history_source(&self.connection,
                                     &run.custody,&operation))?;
                                 failure(h::promote_resume(&self.connection,&request.domain_id,
