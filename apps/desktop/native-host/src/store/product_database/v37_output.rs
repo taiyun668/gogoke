@@ -156,8 +156,9 @@ impl NativeRawCapture {
 
 impl<'root> ProductDatabase<'root> {
     /// Run on the existing authority thread even when no UI is subscribed.
-    /// This polls the already held pipe; it cannot create a process or write
-    /// stdin. Complete bytes still enter the original A capture before use.
+    /// Poll held pipes into A first, then run the Owner-authorized health and
+    /// rule effects through their original E/C/H reservations. These internal
+    /// safe points confer no new User or Model write authority.
     pub fn pump_native_output(&mut self) -> Result<()> {
         let keys = self.native_sessions.keys().cloned().collect::<Vec<_>>();
         for key in keys {
@@ -167,6 +168,7 @@ impl<'root> ProductDatabase<'root> {
             if self.native_sessions.contains_key(&key) { self.drain_native_output(&key)?; }
         }
         self.pump_host_health()?;
+        self.pump_host_rules()?;
         Ok(())
     }
 

@@ -1933,6 +1933,20 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_native_send(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.request_id.starts_with("hostsend-") {
+            return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        self.dispatch_native_send_inner(request)
+    }
+
+    pub(super) fn dispatch_host_rule_send(&mut self,request:&V37Request,
+        proof:&crate::store::seat::HostEscalationProof)->Result<Vec<u8>> {
+        self.check_host_rule_send(request,proof)?;
+        self.dispatch_native_send_inner(request)
+    }
+
+    fn dispatch_native_send_inner(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if request.payload.len() != 2 {
             return Ok(encode_receipt(request, V37Status::Denied, request.expected_revision,

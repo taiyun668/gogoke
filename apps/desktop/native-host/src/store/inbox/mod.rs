@@ -3,6 +3,8 @@
 use super::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
+pub(crate) mod host_rule;
+
 const SCHEMA: [(&str, &str); 8] = [
     ("gogoke_v37_inbox_messages", "CREATE TABLE gogoke_v37_inbox_messages(domain_id TEXT NOT NULL,message_id TEXT NOT NULL,revision TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('PENDING','PREPARED','UNKNOWN','DELIVERED','FAILED','CANCELLED')),sender_seat_id TEXT NOT NULL,seat_id TEXT NOT NULL,turn_id TEXT NOT NULL,generation TEXT NOT NULL,body TEXT NOT NULL,queued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),requeued_as TEXT,PRIMARY KEY(domain_id,message_id)) STRICT"),
     ("gogoke_v37_inbox_operations", "CREATE TABLE gogoke_v37_inbox_operations(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,request_hex TEXT NOT NULL,message_id TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARED','UNKNOWN','APPLIED','FAILED','DENIED','CONFLICT')),previous_revision TEXT NOT NULL,revision TEXT NOT NULL,result_state TEXT NOT NULL,reason TEXT NOT NULL,native_receipt_id TEXT NOT NULL,PRIMARY KEY(domain_id,request_id)) STRICT"),
@@ -382,9 +384,14 @@ pub(crate) fn edit_message(connection: &mut VerifiedDatabaseConnection<'_>,
         if current.as_ref().map_or(0, |message| message.revision) != envelope.expected_revision {
             return Err(InboxError::Stale);
         }
+        // Preserve the original Host actor/body and causal request. Owner
+        // cancellation stays available and is recorded as an actual User act.
+        if current.as_ref().is_some_and(|message|message.sender_seat_id==host_rule::HOST_RULE_ACTOR)
+            && !matches!(&edit,InboxEdit::Cancel) {return Err(InboxError::Denied);}
         let (state, next) = match edit {
             InboxEdit::Enqueue { sender_seat_id, seat_id, turn_id, generation, body } => {
                 if current.is_some() { return Err(InboxError::Conflict); }
+                if sender_seat_id==host_rule::HOST_RULE_ACTOR {return Err(InboxError::Denied);}
                 for (value,name) in [(sender_seat_id,"sender"),(seat_id,"seat"),(turn_id,"turn"),
                     (generation,"generation"),(body,"body")] {
                     required(value,name)?;
@@ -462,6 +469,7 @@ pub(crate) fn reserve_delivery(connection: &mut VerifiedDatabaseConnection<'_>,
             return Ok((prior,None));
         }
         let message = read_message(connection,envelope.domain_id,envelope.message_id)?.ok_or(InboxError::Conflict)?;
+        if message.sender_seat_id==host_rule::HOST_RULE_ACTOR {return Err(InboxError::Denied);}
         if message.revision != envelope.expected_revision { return Err(InboxError::Stale); }
         if message.state != "PENDING" || message.generation != generation ||
             turn_id.is_some_and(|turn| turn != message.turn_id) { return Err(InboxError::Conflict); }

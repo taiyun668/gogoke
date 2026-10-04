@@ -738,7 +738,8 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
         &format!(r#"{{"seatId":"seatA","generation":"{review_generation}","repositoryId":"fixtureRepo","worktreeId":"treeA","purpose":"FORMAL_REVIEW"}}"#));
     let opened_review=h::decode_receipt(&product.dispatch_user_request(&review_open).unwrap()).unwrap();
     assert_eq!(opened_review.status,V37Status::Applied,"original review receipt: {}",String::from_utf8_lossy(&opened_review.raw_bytes));
-    let Some(Json::String(review_thread))=opened_review.into_result().get(&JsonString::from_str("threadId")).cloned() else {
+    let review_result=opened_review.into_result();
+    let Some(Json::String(review_thread))=review_result.get(&JsonString::from_str("threadId")) else {
         panic!("original native review thread absent");
     };
     assert_ne!(review_thread.to_well_formed_string().unwrap(),thread,"actual fresh review thread");

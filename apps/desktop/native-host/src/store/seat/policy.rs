@@ -5,6 +5,11 @@
 use super::*;
 use std::time::{SystemTime,UNIX_EPOCH};
 
+#[path = "host_rule.rs"]
+mod host_rule;
+pub(crate) use host_rule::{HostEscalationProof,observe_host_reject_cap_in_transaction,
+    revalidate_host_escalation_in_transaction,begin_host_escalation_in_transaction};
+
 pub(super) const POLICY_HEAD: &str = "CREATE TABLE gogoke_v37_seat_policy_head(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT NOT NULL) STRICT";
 pub(super) const POLICY_GRANTS: &str = "CREATE TABLE gogoke_v37_seat_policy_grants(domain_id TEXT NOT NULL,caller_seat_id TEXT NOT NULL,target_id TEXT NOT NULL,action TEXT NOT NULL CHECK(action IN ('DISPATCH','REVIEW','MESSAGE','MERGE')),expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>=0),revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,caller_seat_id,target_id,action)) STRICT";
 pub(super) const POLICY_GATES: &str = "CREATE TABLE gogoke_v37_seat_policy_gates(domain_id TEXT NOT NULL,gate_id TEXT NOT NULL,submitter_seat_id TEXT NOT NULL,reviewer_seat_id TEXT NOT NULL,from_stage TEXT NOT NULL,to_stage TEXT NOT NULL,reject_cap INTEGER NOT NULL CHECK(reject_cap>0),reject_count INTEGER NOT NULL CHECK(reject_count>=0),state TEXT NOT NULL CHECK(state IN ('READY','SUBMITTED','PASSED','REJECTED','ESCALATION_REQUIRED','ADVANCED')),reason TEXT,revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,gate_id)) STRICT";
