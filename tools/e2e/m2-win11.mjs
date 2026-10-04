@@ -136,6 +136,69 @@ async function providerBoundaryReadback() {
   }
   return value;
 }
+async function historyBoundaryReadback(phase) {
+  const file = `m2-history-boundaries-${phase}.json`;
+  const output = path.join(config.evidenceDirectory, file);
+  if (fs.existsSync(output)) throw Error(`Original history ${phase} readback already exists`);
+  // Only after the exact candidate's normal close. The reader independently
+  // verifies the latest close, empty WAL and each session's original domain.
+  await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-history-boundaries-readback.py'),
+      config.stateRoot, output, config.result, phase],
+      { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = ''; child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() :
+      reject(Error(`Original history ${phase} readback exit=${code}: ${stderr}`)));
+  });
+  const value = readJson(output);
+  check(value.measurementPreservedDatabaseBytes === true && value.directFlowEvidence === true &&
+    value.acceptance === false && value.databaseWrites === false && value.credentialReads === false &&
+    (phase !== 'final' || value.directRefusalEvidence === true),
+    `History ${phase}: original H/A/D/F facts and immutable measurement`);
+  const reference = { file, sha256: sha256(output) };
+  journal.readbacks.push({ phase: `history-${phase}`, ...reference }); product.save();
+  return reference;
+}
+async function runHistoryBoundaries() {
+  if (!config.historyBoundary) {
+    journal.historyFlow = 'NOT_RUN_NOT_CONFIGURED'; product.save(); return;
+  }
+  const bindings = config.historyBoundary.cases?.flatMap(row =>
+    [row.projectA, row.projectB, row.sideBinding]);
+  const forbiddenSeats = [config.seatId, config.childSeatId,
+    config.sideChat?.sourceSeatId, config.sideChat?.sideSeatId,
+    ...config.providerCases.map(row => row.seatId),
+    config.rules?.submitter?.seatId, config.rules?.reviewer?.seatId,
+    config.rules?.host?.destination?.seatId, config.rules?.host?.alternateDestination?.seatId].filter(Boolean);
+  const forbiddenTrees = [config.worktreeId, journal.worktreeId,
+    config.sideChat?.sourceWorktreeId, config.sideChat?.sideWorktreeId,
+    ...config.providerCases.map(row => row.worktreeId),
+    config.rules?.submitter?.worktreeId, config.rules?.reviewer?.worktreeId,
+    config.rules?.host?.destination?.worktreeId, config.rules?.host?.alternateDestination?.worktreeId].filter(Boolean);
+  check(Array.isArray(bindings) && bindings.length > 0 && bindings.every(binding => binding &&
+    atom(binding.domainId) && binding.repositoryId === config.repositoryId && atom(binding.seatId) &&
+    atom(binding.worktreeId) && !forbiddenSeats.includes(binding.seatId) &&
+    !forbiddenTrees.includes(binding.worktreeId)),
+    'History cases require exclusive pre-registered original E/F test objects in their actual domains');
+  journal.driverBytes['m2-history-boundaries.mjs'] = sha256(path.join(here, 'm2-history-boundaries.mjs'));
+  journal.driverBytes['m2-history-boundaries-readback.py'] = sha256(path.join(here, 'm2-history-boundaries-readback.py'));
+  journal.historyFlow = 'RUNNING'; product.save();
+  await product.launch();
+  const { runHistoryBoundaryCases } = await import('./m2-history-boundaries.mjs');
+  const record = await runHistoryBoundaryCases(product, { ...config, historyBoundary: {
+    ...config.historyBoundary,
+    normalCloseReadbackRestart: async phase => {
+      await product.closeNormally();
+      const reference = await historyBoundaryReadback(phase);
+      await product.launch(); return reference;
+    },
+  } }, journal);
+  check(record.state === 'FLOW_COMPLETE_DIRECT_READBACK_REQUIRED', 'Actual history and formal-refusal flow completed');
+  await product.closeNormally();
+  await historyBoundaryReadback('final');
+  journal.historyFlow = 'DIRECT_FACTS_COMPLETE_ACCEPTANCE_FALSE'; product.save();
+}
 async function seatCard(seatId) {
   let reply = await product.operation('K-SEAT', 'state-card', seatId, {}, '0', ['APPLIED', 'STALE']);
   if (reply.status === 'STALE') reply = await product.operation('K-SEAT', 'state-card', seatId, {}, reply.revision);
@@ -534,8 +597,11 @@ try {
   const { runProviderBoundaryCases } = await import('./m2-provider-cases.mjs');
   await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows } }, journal);
   await product.closeNormally();
-  await snapshot('after');
   await providerBoundaryReadback();
+  // Complete the earlier readers before adding cross-domain history sessions;
+  // their case scopes must never be widened by later journal entries.
+  await runHistoryBoundaries();
+  await snapshot('after');
   for (const observer of config.observers) {
     const before = snapshotValue(observer.name, 'before'), after = snapshotValue(observer.name, 'after');
     check(Array.isArray(observer.equalFields) && observer.equalFields.length > 0,
@@ -552,6 +618,7 @@ try {
 } catch (error) {
   journal.state = 'FAIL'; journal.error = String(error.stack ?? error);
   if (journal.v12 === 'RUNNING') journal.v12 = 'FAIL_ORIGINAL_CASE_RETAINED';
+  if (journal.historyFlow === 'RUNNING') journal.historyFlow = 'FAIL_ORIGINAL_CASE_RETAINED';
   journal.currentEndpoint = product.endpoint ?? null; product.save(); process.exitCode = 1;
   // Keep the original product and request custody available for Controller.
   try { await product.preserveFailure(); }
