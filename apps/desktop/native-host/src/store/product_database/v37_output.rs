@@ -167,6 +167,10 @@ impl<'root> ProductDatabase<'root> {
             // held sessions have a pipe to drain; their errors still surface.
             if self.native_sessions.contains_key(&key) { self.drain_native_output(&key)?; }
         }
+        // H's original Result receipt and C's OPEN-card expiry commit are
+        // distinct durable transactions. This no-I/O readback also runs when
+        // an app restart left no in-memory native session to poll.
+        self.reconcile_durable_claude_open_cards()?;
         self.pump_host_health()?;
         self.pump_host_rules()?;
         Ok(())
