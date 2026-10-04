@@ -457,6 +457,8 @@ impl<'root> ProductDatabase<'root> {
             if let Some(version)=instance::known_new_version(&row.driver_id,&row.version) {
                 fields.insert(JsonString::from_str("newVersion"),string(version));
             }
+            let issues=self.read_user_instance_runtime_issues(&instance_id,&row.driver_id)?;
+            if !issues.is_empty() {fields.insert(JsonString::from_str("runtimeIssues"),Json::Array(issues));}
             instances.push(Json::Object(fields));
         }
         let response = Json::Object(BTreeMap::from([

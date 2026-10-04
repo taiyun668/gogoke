@@ -40,6 +40,7 @@ mod v37_session;
 mod v37_runtime;
 mod v37_output;
 mod v37_health;
+mod v37_runtime_status;
 mod v37_model_tools;
 mod v37_qcard;
 mod v37_qcard_user;
