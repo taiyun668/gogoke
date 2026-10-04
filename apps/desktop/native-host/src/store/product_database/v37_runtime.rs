@@ -1164,7 +1164,7 @@ impl<'root> ProductDatabase<'root> {
                 let original=match reason {
                     Json::String(value)=>value.to_well_formed_string().ok_or_else(||
                         OrchestrationError::V37StoreFailure(format!(
-                            "original continuation reason is not UTF-8: {}",value.canonical())))?,
+                            "original continuation reason is not UTF-8: {}",reason.canonical())))?,
                     value=>value.canonical(),
                 };
                 return self.generation_error(request,&original);
