@@ -1158,7 +1158,19 @@ impl<'root> ProductDatabase<'root> {
             self.finish_native_transaction(applied)?;
             return Ok(final_bytes);
         }
-        if receipt.status==V37Status::Unknown {return self.generation_unknown(request);}
+        if receipt.status==V37Status::Unknown {
+            let result=receipt.into_result();
+            if let Some(reason)=result.get(&JsonString::from_str("reason")) {
+                let original=match reason {
+                    Json::String(value)=>value.to_well_formed_string().ok_or_else(||
+                        OrchestrationError::V37StoreFailure(format!(
+                            "original continuation reason is not UTF-8: {}",value.canonical())))?,
+                    value=>value.canonical(),
+                };
+                return self.generation_error(request,&original);
+            }
+            return self.generation_unknown(request);
+        }
         Ok(bytes)
     }
 
