@@ -16,7 +16,7 @@ fn field(fields:&BTreeMap<JsonString,Json>,name:&str)->Result<String> {
         _=>Err(OrchestrationError::Invalid("original host rule field")),
     }
 }
-fn original_bytes(encoded:&str)->Result<Vec<u8>> {
+pub(super) fn original_bytes(encoded:&str)->Result<Vec<u8>> {
     if encoded.len()%2!=0 {return Err(OrchestrationError::Invalid("original host rule hex"));}
     encoded.as_bytes().chunks_exact(2).map(|pair| {
         let value=std::str::from_utf8(pair).map_err(failure)?;
@@ -64,10 +64,33 @@ impl<'root> ProductDatabase<'root> {
             // failed delivery. The original C pending survives without a turn.
             let candidate=self.native_sessions.iter().filter(|(key,run)|key.0==proof.domain_id()
                 &&run.evidence.seat_id()==proof.destination_seat_id()&&run.evidence.driver_id()=="codex"
-                &&run.turn_id.is_none()&&run.thread_id.is_some()&&run.allows_input())
+                &&run.thread_id.is_some()&&run.allows_input())
                 .map(|(key,run)|(key.clone(),run.custody.clone())).collect::<Vec<_>>();
-            let [(key,custody)]=candidate.as_slice() else {continue;};
-            let key=key.clone();let custody=custody.clone();
+            let key=match candidate.as_slice() {
+                [(key,_)]=>{
+                    if c::read_host_recipient(&self.connection,&proof).map_err(failure)?
+                        .is_some_and(|choice|choice.session_id!=key.1) {continue;}
+                    key.clone()
+                },
+                []=>match self.prepare_host_rule_recipient(&proof) {
+                    Ok(Some(key))=>key,
+                    Ok(None)=>continue,
+                    Err(original)=>{
+                        match c::record_host_recipient_error(&mut self.connection,
+                            &self.owner,&proof,&format!("{original:?}")) {
+                            Ok(())|Err(inbox::InboxError::Denied|inbox::InboxError::Conflict)=>{},
+                            Err(record)=>return Err(failure((original,record))),
+                        }
+                        continue;
+                    },
+                },
+                _=>continue,
+            };
+            if !self.native_sessions.contains_key(&key) {continue;}
+            self.drain_native_output(&key)?;
+            if !self.host_rule_recipient_idle(&key)? {continue;}
+            let custody=self.native_sessions.get(&key)
+                .ok_or(OrchestrationError::AccessDenied)?.custody.clone();
             let registration=crate::store::ledger::read_registered_session(&self.connection,&key.1)?
                 .ok_or(OrchestrationError::AccessDenied)?;
             if registration.purpose!=crate::store::ledger::SessionPurpose::Work {continue;}

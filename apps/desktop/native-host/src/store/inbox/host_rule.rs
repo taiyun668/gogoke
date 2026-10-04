@@ -9,6 +9,7 @@ use crate::store::atomic::{Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{revalidate_host_escalation_in_transaction, HostEscalationProof};
+use crate::store::seat::{self, State};
 use crate::store::session_transport::{codex_rpc, decode_receipt, decode_request, read_stdin_journal,
     JournalState, StdinJournalKey, V37Status};
 
@@ -29,6 +30,249 @@ pub(crate) struct HostDeliveryTarget<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) ticket: &'a str,
     pub(crate) generation: &'a str,
+}
+
+/// The original C operation fixes the physical recipient before F or H is
+/// allowed to create anything. These strings are native selections, never
+/// fields accepted from the User or model request surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HostRecipient {
+    pub(crate) mode: String,
+    pub(crate) session_id: String,
+    pub(crate) seat_incarnation: String,
+    pub(crate) instance_id: String,
+    pub(crate) permission_tier: String,
+    pub(crate) repository_id: String,
+    pub(crate) worktree_id: String,
+    pub(crate) generation: String,
+    pub(crate) reserve_request_id: String,
+    pub(crate) commit_request_id: String,
+    pub(crate) start_request_id: String,
+}
+
+fn recipient_id(ids: &HostMessageIds) -> String {
+    ids.enqueue_request_id.replacen("hostenqueue-", "hostrecipient-", 1)
+}
+fn stage_id(ids: &HostMessageIds, stage: &str) -> Result<String, InboxError> {
+    if !matches!(stage, "reserve" | "commit" | "start") {
+        return Err(InboxError::Invalid("host recipient stage"));
+    }
+    Ok(format!("{}-{stage}", recipient_id(ids)))
+}
+fn recipient_bytes(proof: &HostEscalationProof, ids: &HostMessageIds,
+    choice: &HostRecipient) -> Vec<u8> {
+    let fields = BTreeMap::from([
+        (JsonString::from_str("schema"), string("gogoke.37.host-recipient.v1")),
+        (JsonString::from_str("actor"), string(HOST_RULE_ACTOR)),
+        (JsonString::from_str("domainId"), string(proof.domain_id())),
+        (JsonString::from_str("messageId"), string(&ids.message_id)),
+        (JsonString::from_str("escalationRequestId"), string(proof.request_id())),
+        (JsonString::from_str("triggerId"), string(proof.trigger_id())),
+        (JsonString::from_str("causeEventId"), string(proof.cause_event_id())),
+        (JsonString::from_str("destinationSeatId"), string(proof.destination_seat_id())),
+        (JsonString::from_str("routeRevision"), string(&proof.route_revision().to_string())),
+        (JsonString::from_str("mode"), string(&choice.mode)),
+        (JsonString::from_str("sessionId"), string(&choice.session_id)),
+        (JsonString::from_str("seatIncarnation"), string(&choice.seat_incarnation)),
+        (JsonString::from_str("instanceId"), string(&choice.instance_id)),
+        (JsonString::from_str("permissionTier"), string(&choice.permission_tier)),
+        (JsonString::from_str("repositoryId"), string(&choice.repository_id)),
+        (JsonString::from_str("worktreeId"), string(&choice.worktree_id)),
+        (JsonString::from_str("generation"), string(&choice.generation)),
+        (JsonString::from_str("reserveRequestId"), string(&choice.reserve_request_id)),
+        (JsonString::from_str("commitRequestId"), string(&choice.commit_request_id)),
+        (JsonString::from_str("startRequestId"), string(&choice.start_request_id)),
+    ]);
+    let mut bytes = Json::Object(fields).canonical().into_bytes();
+    bytes.push(b'\n');
+    bytes
+}
+
+/// Read the frozen choice without turning historical readback into a fresh
+/// route grant. Callers must separately revalidate the current E proof before
+/// any new effect.
+pub(crate) fn read_host_recipient(db: &VerifiedDatabaseConnection<'_>,
+    proof: &HostEscalationProof) -> Result<Option<HostRecipient>, InboxError> {
+    let ids = identity(proof);
+    let Some(operation) = read_operation(db, proof.domain_id(), &recipient_id(&ids))? else {
+        return Ok(None);
+    };
+    if operation.message_id != ids.message_id || operation.phase != "PREPARED" ||
+        operation.result_state != "PENDING" { return Err(InboxError::Denied); }
+    let bytes = unhex_native(&operation.request_hex)?;
+    let Json::Object(fields) = Parser::parse(std::str::from_utf8(&bytes)
+        .map_err(|error| InboxError::InvalidEvidence(format!("host recipient UTF-8: {error}")))?)?
+        else { return Err(InboxError::Denied); };
+    let get = |name: &str| -> Result<String, InboxError> {
+        match fields.get(&JsonString::from_str(name)) {
+            Some(Json::String(value)) => value.to_well_formed_string().ok_or(InboxError::Denied),
+            _ => Err(InboxError::Denied),
+        }
+    };
+    let choice = HostRecipient {mode:get("mode")?, session_id:get("sessionId")?,
+        seat_incarnation:get("seatIncarnation")?, instance_id:get("instanceId")?,
+        permission_tier:get("permissionTier")?, repository_id:get("repositoryId")?,
+        worktree_id:get("worktreeId")?, generation:get("generation")?,
+        reserve_request_id:get("reserveRequestId")?, commit_request_id:get("commitRequestId")?,
+        start_request_id:get("startRequestId")?};
+    if get("schema")? != "gogoke.37.host-recipient.v1" || get("actor")? != HOST_RULE_ACTOR ||
+        get("domainId")? != proof.domain_id() || get("messageId")? != ids.message_id ||
+        get("escalationRequestId")? != proof.request_id() || get("triggerId")? != proof.trigger_id() ||
+        get("causeEventId")? != proof.cause_event_id() ||
+        get("destinationSeatId")? != proof.destination_seat_id() ||
+        get("routeRevision")? != proof.route_revision().to_string() ||
+        !matches!(choice.mode.as_str(), "FRESH" | "RESUME") ||
+        !valid_id(&choice.session_id) || !valid_id(&choice.seat_incarnation) ||
+        !valid_id(&choice.instance_id) || !valid_id(&choice.repository_id) ||
+        !valid_id(&choice.worktree_id) ||
+        choice.generation.is_empty() || !choice.generation.bytes().all(|b| b.is_ascii_digit()) ||
+        choice.reserve_request_id != format!("{}-reserve", recipient_id(&ids)) ||
+        choice.commit_request_id != format!("{}-commit", recipient_id(&ids)) ||
+        choice.start_request_id != format!("{}-start", recipient_id(&ids)) ||
+        recipient_bytes(proof, &ids, &choice) != bytes {
+        return Err(InboxError::Denied);
+    }
+    Ok(Some(choice))
+}
+
+pub(crate) fn reserve_host_recipient(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, proof: &HostEscalationProof,
+    choice: &HostRecipient) -> Result<HostRecipient, InboxError> {
+    let ids = identity(proof);
+    let bytes = recipient_bytes(proof, &ids, choice);
+    if !valid_id(&choice.session_id) || !valid_id(&choice.seat_incarnation) ||
+        !valid_id(&choice.instance_id) || !valid_id(&choice.repository_id) ||
+        !valid_id(&choice.worktree_id) ||
+        choice.generation.is_empty() || !choice.generation.bytes().all(|b| b.is_ascii_digit()) ||
+        choice.reserve_request_id != format!("{}-reserve", recipient_id(&ids)) ||
+        choice.commit_request_id != format!("{}-commit", recipient_id(&ids)) ||
+        choice.start_request_id != format!("{}-start", recipient_id(&ids)) ||
+        !matches!(choice.mode.as_str(), "FRESH" | "RESUME") {
+        return Err(InboxError::Denied);
+    }
+    transact(db, |db| {
+        revalidate(db, owner, proof)?;
+        let message = original_host_message(db, proof, &ids)?;
+        if message.state != "PENDING" { return Err(InboxError::Conflict); }
+        if let Some(prior) = read_host_recipient(db, proof)? {
+            if prior != *choice { return Err(InboxError::Conflict); }
+            revalidate_host_recipient_in_transaction(db,owner,proof,&prior)?;
+            return Ok(prior);
+        }
+        save_operation(db, proof.domain_id(), &recipient_id(&ids), &raw_hex(&bytes),
+            &ids.message_id, "PREPARED", 1, 1, "PENDING", "", "")?;
+        revalidate_host_recipient_in_transaction(db,owner,proof,choice)?;
+        Ok(choice.clone())
+    })
+}
+
+pub(crate) fn revalidate_host_recipient_in_transaction(db: &VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, proof: &HostEscalationProof, choice: &HostRecipient)
+    -> Result<seat::Seat, InboxError> {
+    revalidate(db,owner,proof)?;
+    if read_host_recipient(db,proof)?.as_ref()!=Some(choice) {
+        return Err(InboxError::Denied);
+    }
+    let seat=seat::get(db,proof.domain_id(),proof.destination_seat_id())
+        .map_err(|error|InboxError::InvalidEvidence(format!("E destination: {error:?}")))?
+        .ok_or(InboxError::Denied)?;
+    if seat.incarnation!=choice.seat_incarnation || seat.instance_id!=choice.instance_id
+        || seat.state==State::Reclaimed
+        || format!("{:?}",seat::permission_tier(&seat)
+            .map_err(|error|InboxError::InvalidEvidence(format!("E tier: {error:?}")))?)
+            !=choice.permission_tier {return Err(InboxError::Denied);}
+    let generation=if choice.mode=="FRESH" {
+        (seat.state==State::Idle && seat.generation.checked_add(1)
+            .is_some_and(|next|next.to_string()==choice.generation))
+            || (seat.state==State::Busy && seat.generation.to_string()==choice.generation)
+    } else {seat.state==State::Busy && seat.generation.to_string()==choice.generation};
+    if !generation {return Err(InboxError::Denied);}
+    let pin=crate::store::session_transport::runtime::current_instance_pin(db,&choice.instance_id)
+        .map_err(|error|InboxError::InvalidEvidence(format!("F pin/login: {error:?}")))?;
+    if pin.driver_id!="codex" {return Err(InboxError::Denied);}
+    let tree=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_worktrees WHERE worktree_id=?1
+          AND repository_id=?2 AND domain_id=?3 AND seat_id=?4
+          AND seat_incarnation=?5 AND state='REGISTERED'")?;
+    tree.bind_text(1,&choice.worktree_id)?;
+    tree.bind_text(2,&choice.repository_id)?;
+    tree.bind_text(3,proof.domain_id())?;
+    tree.bind_text(4,proof.destination_seat_id())?;
+    tree.bind_text(5,&choice.seat_incarnation)?;
+    if !tree.step_row()? || tree.step_row()? {return Err(InboxError::Denied);}
+    Ok(seat)
+}
+
+/// Preserve each K-SESSION request's exact raw bytes before its F/H effect.
+/// A retry always consumes the original bytes, including its old revision.
+pub(crate) fn freeze_host_stage(db: &mut VerifiedDatabaseConnection<'_>,
+    owner: &OwnerIssuer, proof: &HostEscalationProof, choice: &HostRecipient,
+    stage: &str, proposed: &[u8]) -> Result<Vec<u8>, InboxError> {
+    let ids = identity(proof);
+    let request_id = stage_id(&ids, stage)?;
+    transact(db, |db| {
+        revalidate_host_recipient_in_transaction(db,owner,proof,choice)?;
+        let prior=read_operation(db, proof.domain_id(), &request_id)?;
+        let had_prior=prior.is_some();
+        let bytes=if let Some(prior) = prior {
+            if prior.message_id != ids.message_id || prior.phase != "PREPARED" {
+                return Err(InboxError::Denied);
+            }
+            unhex_native(&prior.request_hex)?
+        } else {proposed.to_vec()};
+        let request = decode_request(&bytes)
+            .map_err(|error| InboxError::InvalidEvidence(format!("host recipient stage: {error:?}")))?;
+        let expected = match stage {"reserve" => &choice.reserve_request_id,
+            "commit" => &choice.commit_request_id, _ => &choice.start_request_id};
+        if request.family != "K-SESSION" || request.request_id.as_str() != expected.as_str() ||
+            request.domain_id != proof.domain_id() || request.target_id != choice.session_id ||
+            request.operation != (match stage {"reserve" => "admission-reserve",
+                "commit" => "admission-commit", _ => if choice.mode == "FRESH" {"open"} else {"resume"}}) {
+            return Err(InboxError::Denied);
+        }
+        let payload = |name:&str| -> Result<String,InboxError> {
+            match request.payload.get(&JsonString::from_str(name)) {
+                Some(Json::String(value))=>value.to_well_formed_string().ok_or(InboxError::Denied),
+                _=>Err(InboxError::Denied),
+            }
+        };
+        if stage=="start" && choice.mode=="RESUME" {
+            if request.payload.len()!=1 || payload("generation")?!=choice.generation {
+                return Err(InboxError::Denied);
+            }
+        } else if stage=="start" {
+            if request.payload.len()!=4 || payload("seatId")?!=proof.destination_seat_id()
+                || payload("generation")?!=choice.generation
+                || payload("repositoryId")?!=choice.repository_id
+                || payload("worktreeId")?!=choice.worktree_id {
+                return Err(InboxError::Denied);
+            }
+        } else if request.payload.len()!=2 || payload("seatId")?!=proof.destination_seat_id()
+            || payload("generation")?!=choice.generation {
+            return Err(InboxError::Denied);
+        }
+        if !had_prior {
+            save_operation(db, proof.domain_id(), &request_id, &raw_hex(&bytes),
+                &ids.message_id, "PREPARED", 1, 1, "PENDING", "", "")?;
+        }
+        Ok(bytes)
+    })
+}
+
+pub(crate) fn record_host_recipient_error(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,proof:&HostEscalationProof,original:&str)->Result<(),InboxError> {
+    let ids=identity(proof);
+    transact(db,|db| {
+        revalidate(db,owner,proof)?;
+        original_host_message(db,proof,&ids)?;
+        let q=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_inbox_operations SET reason=?1
+              WHERE domain_id=?2 AND request_id=?3 AND message_id=?4 AND phase='APPLIED'")?;
+        q.bind_text(1,original)?;q.bind_text(2,proof.domain_id())?;
+        q.bind_text(3,&ids.enqueue_request_id)?;q.bind_text(4,&ids.message_id)?;
+        q.step_done()?;
+        require_one_change(db)
+    })
 }
 
 struct HostFields<'a> {

@@ -307,19 +307,19 @@ impl<'root> ProductDatabase<'root> {
     /// as atomic with the subsequent admission or OS process creation.
     fn prepare_user_session_home(&mut self, request: &V37Request, seat_id: &str,
         generation: &str) -> Result<(String, String)> {
-        self.prepare_session_home(request, seat_id, generation, false, None)
+        self.prepare_session_home(request, seat_id, generation, false, None, None)
     }
 
     /// A stopped session keeps its admission. A resume candidate prepares a
     /// separate F home for the next process generation while E remains BUSY.
     pub(super) fn prepare_resume_session_home(&mut self, request: &V37Request,
         seat_id: &str, generation: &str) -> Result<(String, String)> {
-        self.prepare_session_home(request, seat_id, generation, true, None)
+        self.prepare_session_home(request, seat_id, generation, true, None, None)
     }
 
     pub(super) fn prepare_native_child_session_home(&mut self,request:&V37Request,
         seat_id:&str,generation:&str,caller:&seat::NativeSeatCall)->Result<(String,String)> {
-        self.prepare_session_home(request,seat_id,generation,false,Some(caller))
+        self.prepare_session_home(request,seat_id,generation,false,Some(caller),None)
     }
 
     fn check_native_child_home_caller(&self,request:&V37Request,child:&seat::Seat,
@@ -335,9 +335,19 @@ impl<'root> ProductDatabase<'root> {
         Ok(())
     }
 
+    pub(super) fn prepare_host_recipient_session_home(&mut self,request:&V37Request,
+        seat_id:&str,generation:&str,resume:bool,
+        proof:&seat::HostEscalationProof,
+        choice:&crate::store::inbox::host_rule::HostRecipient)->Result<(String,String)> {
+        self.prepare_session_home(request,seat_id,generation,resume,None,Some((proof,choice)))
+    }
+
     fn prepare_session_home(&mut self, request: &V37Request, seat_id: &str,
-        generation: &str, resume: bool,caller:Option<&seat::NativeSeatCall>) -> Result<(String, String)> {
+        generation: &str, resume: bool,caller:Option<&seat::NativeSeatCall>,
+        host:Option<(&seat::HostEscalationProof,&crate::store::inbox::host_rule::HostRecipient)>)
+        -> Result<(String, String)> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let seat = seat::get(&self.connection, &request.domain_id, seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
         if let Some(caller)=caller {self.check_native_child_home_caller(request,&seat,caller)?;}
@@ -368,6 +378,9 @@ impl<'root> ProductDatabase<'root> {
                 .ok_or(OrchestrationError::AccessDenied)?;
             if now != seat { return Err(OrchestrationError::OperationConflict); }
             if let Some(caller)=caller {self.check_native_child_home_caller(request,&now,caller)?;}
+            if let Some((proof,choice))=host {
+                self.check_host_recipient_choice_in_transaction(proof,choice)?;
+            }
             let found = Statement::prepare(self.connection.as_ptr(),
                 "SELECT binding_id,instance_id,generation,state FROM main.gogoke_v37_h_owner_binding WHERE domain_id=?1 AND kind='SESSION' AND owner_id=?2 AND generation=?3")?;
             found.bind_text(1, &request.domain_id)?;
@@ -394,12 +407,14 @@ impl<'root> ProductDatabase<'root> {
                 return Err(error);
             }
         }
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let profile = AppContainerProfile::ensure(&format!("Gogoke37.Session.{suffix}"), false)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("session profile: {error}")))?;
         let preparation_hash = crate::store::digest::sha256_hex(
             format!("{}\n{}", request.domain_id, request.request_id).as_bytes());
         let preparation_id = format!("homeprep-{}", &preparation_hash[..40]);
         if let Some(caller)=caller {self.check_native_child_home_caller(request,&seat,caller)?;}
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let home = instance::create_temporary_home(&mut self.connection, self.root, &profile,
             &instance::CreateTemporaryHome {
                 request_id: &preparation_id, request_bytes: &request.raw_bytes, home_id: &home_id,
@@ -410,6 +425,58 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::V37StoreFailure(format!("session home unresolved: {}", home.disposition)));
         }
         Ok((seat.instance_id, home_id))
+    }
+
+    pub(super) fn dispatch_host_recipient_admission(&mut self,request:&V37Request,
+        proof:&seat::HostEscalationProof,
+        choice:&crate::store::inbox::host_rule::HostRecipient)->Result<Vec<u8>> {
+        let reserve=request.operation=="admission-reserve";
+        if request.family!="K-SESSION" || request.domain_id!=proof.domain_id()
+            || request.target_id!=choice.session_id || choice.mode!="FRESH"
+            || request.payload.len()!=2
+            || request.request_id.as_str()!=(if reserve {choice.reserve_request_id.as_str()}
+                else {choice.commit_request_id.as_str()})
+            || (!reserve && request.operation!="admission-commit")
+            || user_payload_string(request,"seatId")?!=proof.destination_seat_id()
+            || user_payload_string(request,"generation")?!=choice.generation {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        self.check_host_recipient_choice(proof,choice)?;
+        let expected=i64::try_from(request.expected_revision)
+            .map_err(|_|OrchestrationError::OperationConflict)?;
+        let (instance_id,home_id)=if reserve {
+            if expected!=0 {return Err(OrchestrationError::OperationConflict);}
+            self.prepare_host_recipient_session_home(request,proof.destination_seat_id(),
+                &choice.generation,false,proof,choice)?
+        } else {
+            let claim=runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+                proof.domain_id(),proof.destination_seat_id(),&choice.session_id)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!("host commit claim: {error:?}")))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            (claim.instance_id,claim.home_id)
+        };
+        if instance_id!=choice.instance_id {return Err(OrchestrationError::AccessDenied);}
+        let input=AdmissionRequest {domain_id:&request.domain_id,session_id:&request.target_id,
+            request_id:&request.request_id,raw_bytes:&request.raw_bytes,instance_id:&instance_id,
+            home_id:&home_id,generation:&choice.generation,expected_revision:expected};
+        let result=if reserve {
+            runtime::reserve_native_for_host(&mut self.connection,&self.owner,proof,choice,&input)
+        } else {
+            runtime::commit_native_for_host(&mut self.connection,&self.owner,proof,choice,&input)
+        };
+        let (status,revision,reason)=match result {
+            Ok(AdmissionResult::Applied(value))=>(V37Status::Applied,value,None),
+            Ok(AdmissionResult::Replayed(value))=>(V37Status::Replayed,value,None),
+            Ok(AdmissionResult::Conflict)=>(V37Status::Conflict,expected,None),
+            Ok(AdmissionResult::Stale)=>(V37Status::Stale,expected,None),
+            Ok(AdmissionResult::Unknown)=>(V37Status::Unknown,expected,None),
+            Err(error)=>(admission_status(&error),expected,Some(format!("host admission: {error:?}"))),
+        };
+        let mut body=BTreeMap::new();
+        if let Some(reason)=reason {body.insert(JsonString::from_str("reason"),text(&reason));}
+        body.insert(JsonString::from_str("generation"),text(&choice.generation));
+        Ok(encode_receipt(request,status,request.expected_revision,
+            u64::try_from(revision).map_err(|_|OrchestrationError::OperationConflict)?,body))
     }
 
     pub(super) fn user_session_request_identity_matches(&mut self, request: &V37Request) -> Result<bool> {
@@ -431,6 +498,11 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_user_session(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.request_id.starts_with("hostrecipient-")
+            || request.target_id.starts_with("hostsession-") {
+            return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
         if !self.user_session_request_identity_matches(request)? {
             return Ok(encode_receipt(request, V37Status::Conflict,
                 request.expected_revision, request.expected_revision, Default::default()));

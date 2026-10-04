@@ -8,6 +8,8 @@ use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
 use crate::store::instance::{self, InstanceLaunchHomes};
 use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{self, NativeOrigin, PermissionTier, Seat, State};
+use crate::store::seat::HostEscalationProof;
+use crate::store::inbox::host_rule::{self as host_rule, HostRecipient};
 use crate::store::worktree::{self, ResolvedBinding};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,6 +51,29 @@ pub(crate) struct LaunchEvidence {
     resume_old: Option<ClaimObservation>,
     resume_request_id: Option<String>,
     launch_admission: Option<seat::NativeLeadAdmission>,
+    host_guard: Option<(HostEscalationProof,HostRecipient)>,
+}
+
+fn verify_host_guard(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    host:Option<(&HostEscalationProof,&HostRecipient)>)->Result<(),String> {
+    if let Some((proof,choice))=host {
+        unsafe extern "C" {fn sqlite3_get_autocommit(database:*mut std::ffi::c_void)->i32;}
+        let own_transaction=unsafe {sqlite3_get_autocommit(db.as_ptr())}!=0;
+        if own_transaction {evidence(db.execute("BEGIN IMMEDIATE"))?;}
+        let checked=evidence(host_rule::revalidate_host_recipient_in_transaction(db,owner,proof,choice));
+        if own_transaction {
+            match checked {
+                Ok(())=>evidence(db.execute("COMMIT"))?,
+                Err(primary)=>{
+                    if let Err(rollback)=db.execute("ROLLBACK") {
+                        return Err(format!("{primary}; host guard rollback: {rollback:?}"));
+                    }
+                    return Err(primary);
+                },
+            }
+        } else {checked?;}
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -101,6 +126,23 @@ impl LaunchEvidence {
         origin:&NativeOrigin<'_>,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,
     )->Result<Self,String> {
+        Self::observe_with_guard(db,root,host,origin,domain_id,seat_id,session_id,
+            repository_id,worktree_id,None)
+    }
+
+    pub(crate) fn observe_host(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+        owner:&OwnerIssuer,domain_id:&str,seat_id:&str,session_id:&str,
+        repository_id:&str,worktree_id:&str,proof:&HostEscalationProof,
+        choice:&HostRecipient)->Result<Self,String> {
+        Self::observe_with_guard(db,root,owner,&NativeOrigin::user(owner),domain_id,seat_id,
+            session_id,repository_id,worktree_id,Some((proof,choice)))
+    }
+
+    fn observe_with_guard(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+        host:&OwnerIssuer,origin:&NativeOrigin<'_>,domain_id:&str,seat_id:&str,session_id:&str,
+        repository_id:&str,worktree_id:&str,
+        guard:Option<(&HostEscalationProof,&HostRecipient)>)->Result<Self,String> {
+        verify_host_guard(db,host,guard)?;
         let identity = evidence(authority::read_product_identity(db, host))?;
         let seat = evidence(seat::get(db, domain_id, seat_id))?
             .ok_or("native session launch: missing seat")?;
@@ -114,12 +156,29 @@ impl LaunchEvidence {
             NativeOrigin::Lead(admission)=>Some((*admission).clone()),
             NativeOrigin::User(_)=>None,
         };
-        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission)
+        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission,guard)
     }
 
     pub(crate) fn observe_resume(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
         owner: &OwnerIssuer, domain_id: &str, seat_id: &str, session_id: &str,
         repository_id: &str, worktree_id: &str, request_id: &str) -> Result<Self,String> {
+        Self::observe_resume_with_guard(db,root,owner,domain_id,seat_id,session_id,
+            repository_id,worktree_id,request_id,None)
+    }
+
+    pub(crate) fn observe_host_resume(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+        owner:&OwnerIssuer,domain_id:&str,seat_id:&str,session_id:&str,
+        repository_id:&str,worktree_id:&str,request_id:&str,
+        proof:&HostEscalationProof,choice:&HostRecipient)->Result<Self,String> {
+        Self::observe_resume_with_guard(db,root,owner,domain_id,seat_id,session_id,
+            repository_id,worktree_id,request_id,Some((proof,choice)))
+    }
+
+    fn observe_resume_with_guard(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+        owner:&OwnerIssuer,domain_id:&str,seat_id:&str,session_id:&str,
+        repository_id:&str,worktree_id:&str,request_id:&str,
+        guard:Option<(&HostEscalationProof,&HostRecipient)>)->Result<Self,String> {
+        verify_host_guard(db,owner,guard)?;
         let identity=evidence(authority::read_product_identity(db,owner))?;
         let seat=evidence(seat::get(db,domain_id,seat_id))?.ok_or("native resume: seat absent")?;
         if seat.state!=State::Busy {return Err("native resume: seat not busy".into());}
@@ -173,13 +232,15 @@ impl LaunchEvidence {
         let candidate=ClaimObservation {generation,home_id,binding_id,instance_id,
             phase:SessionPhase::Committed,process_operation_id:None,..old.clone()};
         Self::build(db,root,owner,identity,seat,candidate,repository_id,worktree_id,
-            Some(old),Some(request_id.to_owned()),None)
+            Some(old),Some(request_id.to_owned()),None,guard)
     }
 
     fn build(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         identity: ProductIdentitySnapshot, seat: Seat, claim: ClaimObservation,
         repository_id: &str, worktree_id: &str, resume_old: Option<ClaimObservation>,
-        resume_request_id: Option<String>,launch_admission:Option<seat::NativeLeadAdmission>) -> Result<Self,String> {
+        resume_request_id: Option<String>,launch_admission:Option<seat::NativeLeadAdmission>,
+        host_guard:Option<(&HostEscalationProof,&HostRecipient)>) -> Result<Self,String> {
+        verify_host_guard(db,owner,host_guard)?;
         let domain_id=&claim.domain_id;
         let session_id=&claim.session_id;
         let seat_id=&seat.seat_id;
@@ -192,6 +253,7 @@ impl LaunchEvidence {
             root.canonical_root().identity.opaque(), domain_id, session_id,
             seat.incarnation, claim.generation).as_bytes());
         let profile_name = format!("Gogoke37.Session.{}", &suffix[..40]);
+        verify_host_guard(db,owner,host_guard)?;
         let profile = evidence(AppContainerProfile::ensure_for_cli(&profile_name,
             tier == PermissionTier::NetworkedWrite))?;
         let homes = launch_homes(db, root, &profile, &claim, &pin)?;
@@ -205,14 +267,19 @@ impl LaunchEvidence {
         let program_identity = evidence(AppContainerProfile::capture_program_identity(&program))?;
         // Runtime home writes are separate from workspace permission. No
         // public parent, other session, source tree or common Git dir is granted.
+        verify_host_guard(db,owner,host_guard)?;
         evidence(profile.grant_bound_tree(&homes.instance.path, &homes.instance.identity, true))?;
+        verify_host_guard(db,owner,host_guard)?;
         evidence(profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
         for member in &worktree_group {
+            verify_host_guard(db,owner,host_guard)?;
             evidence(profile.grant_bound_tree(&member.path, &member.identity, writable))?;
         }
+        verify_host_guard(db,owner,host_guard)?;
         evidence(profile.grant_bound_program(&program, &program_identity))?;
         let code_mode = if pin.driver_id == "codex" {
+            verify_host_guard(db,owner,host_guard)?;
             Some(super::codex_component::BoundCodexComponent::prepare(&program, &profile)?)
         } else { None };
         let mut roots = vec![
@@ -222,13 +289,16 @@ impl LaunchEvidence {
         roots.extend(worktree_group.iter().map(|member|
             (member.path.clone(), member.identity.clone())));
         let (module, directory_roots) = if pin.driver_id == "codex" {
+            verify_host_guard(db,owner,host_guard)?;
             (Some(evidence(CompatModule::prepare_with_roots(root, &roots, &profile, &profile_name))?), None)
         } else {
+            verify_host_guard(db,owner,host_guard)?;
             (None, Some(Arc::new(evidence(DirectoryRoots::prepare(root, &roots))?)))
         };
         let observed = Self { identity, seat, claim, pin, homes, repository_id: repository_id.into(),
             worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
-            resume_old,resume_request_id,launch_admission };
+            resume_old,resume_request_id,launch_admission,
+            host_guard:host_guard.map(|(proof,choice)|(proof.clone(),choice.clone())) };
         observed.verify(db, root, owner, None)?;
         Ok(observed)
     }
@@ -283,6 +353,7 @@ impl LaunchEvidence {
     fn verify_snapshot(&self, db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
         owner: &OwnerIssuer, expected_operation: Option<&str>, revision: i64,
         identity: ProductIdentitySnapshot, phase: VerificationPhase) -> Result<(), String> {
+        verify_host_guard(db,owner,self.host_guard.as_ref().map(|(p,c)|(p,c)))?;
         if identity != self.identity
             || evidence(seat::get(db, &self.seat.domain_id, &self.seat.seat_id))?.as_ref() != Some(&self.seat)
             || evidence(runtime::current_instance_pin(db, &self.claim.instance_id))? != self.pin {
@@ -391,6 +462,7 @@ impl LaunchEvidence {
     }
 
     pub(crate) fn cwd(&self) -> &Path { &self.worktree.path }
+    pub(crate) fn clear_host_guard(&mut self) {self.host_guard=None;}
     pub(crate) fn seat_id(&self) -> &str { &self.seat.seat_id }
 
     pub(crate) fn verify_observed_cwd(&self, observed: &str) -> Result<(), String> {
