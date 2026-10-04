@@ -6,7 +6,7 @@
 //! original command and source key; it does not copy provider output.
 
 use super::codex_rpc::{self, Command, Reply, RpcId};
-use super::provider_evidence::{acp, commands, stream_json};
+use super::provider_evidence::{acp, claude_question, commands, stream_json};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -199,6 +199,29 @@ pub(crate) struct ClaudeStep<'a> {
     pub(crate) step_id: &'a str,
     pub(crate) custody: &'a PreparedCustody,
     pub(crate) command: &'a commands::ClaudeCommand<'a>,
+}
+
+/// A Claude question reply is a no-ACK control_response on the original
+/// process stdin. Its source is the captured AskUserQuestion request, and its
+/// intent is the already committed C User answer operation.
+pub(crate) struct ClaudeQuestionStep<'a> {
+    pub(crate) domain_id:&'a str,
+    pub(crate) session_id:&'a str,
+    pub(crate) open_request_id:&'a str,
+    pub(crate) open_request_bytes:&'a [u8],
+    pub(crate) step_id:&'a str,
+    pub(crate) custody:&'a PreparedCustody,
+    pub(crate) card_id:&'a str,
+    pub(crate) answer_request_id:&'a str,
+    pub(crate) source:&'a RawSourceKey,
+    pub(crate) wire:&'a [u8],
+}
+impl<'a> ClaudeQuestionStep<'a> {
+    fn fields(&self)->StepFields<'a> {
+        StepFields {domain_id:self.domain_id,session_id:self.session_id,
+            open_request_id:self.open_request_id,open_request_bytes:self.open_request_bytes,
+            step_id:self.step_id,custody:self.custody}
+    }
 }
 
 pub(crate) fn claude_initialize_identity(open_request_bytes: &[u8]) -> (String, String) {
@@ -2129,6 +2152,213 @@ fn claude_bytes(step: &ClaudeStep<'_>, driver: &str) -> Result<Vec<u8>> {
             commands::ClaudeCommand::User { uuid, text },
     };
     commands::encode_claude(command).map_err(RpcJournalError::AcpEncode)
+}
+
+fn claude_question_bound(db:&VerifiedDatabaseConnection<'_>,
+    step:&ClaudeQuestionStep<'_>,operation:&str)->Result<()> {
+    if step.source.operation_id!=operation ||
+        step.source.source_epoch!=step.custody.custodian_nonce ||
+        step.wire.is_empty() || step.wire.len()>65_536 ||
+        !step.wire.ends_with(b"\n") {
+        return Err(RpcJournalError::Denied);
+    }
+    let original=ledger::read_captured_raw_source(db,&step.source.operation_id,
+        &step.source.source_epoch,&step.source.source_cursor)?
+        .ok_or(RpcJournalError::Denied)?;
+    if original.domain_id!=step.domain_id || original.session_id!=step.session_id
+        || original.process_ticket!=step.custody.ticket.opaque()
+        || original.custodian_nonce!=step.custody.custodian_nonce
+        || original.generation!=step.custody.binding.generation {
+        return Err(RpcJournalError::Denied);
+    }
+    let question=claude_question::decode(&original.raw_bytes)
+        .map_err(|_|RpcJournalError::Denied)?
+        .ok_or(RpcJournalError::Denied)?;
+    claude_question::validate_answer_wire(&question,step.wire)
+        .map_err(|_|RpcJournalError::Denied)?;
+    let basis=format!("{}\n{}\n{}\n{}\n{}",step.domain_id,step.session_id,
+        step.source.operation_id,step.source.source_epoch,step.source.source_cursor);
+    if step.card_id!=format!("card{}",crate::store::digest::sha256_hex(basis.as_bytes())) {
+        return Err(RpcJournalError::Denied);
+    }
+    let answer_basis=format!("{}\n{}\n{}",step.domain_id,step.session_id,
+        step.answer_request_id);
+    if step.step_id!=format!("qanswer{}",crate::store::digest::sha256_hex(answer_basis.as_bytes())) {
+        return Err(RpcJournalError::Denied);
+    }
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT c.vendor_request_id,c.vendor_item_id,c.question_payload,c.turn_id,
+                c.vendor_thread_id,c.seat_id,c.generation,c.answer,o.answer,o.answer_kind
+           FROM main.gogoke_v37_qcard_native c
+           JOIN main.gogoke_v37_qcard_native_operations o
+             ON o.domain_id=c.domain_id AND o.card_id=c.card_id
+          WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3
+            AND c.state='ANSWER_UNKNOWN' AND o.state='UNKNOWN'")?;
+    q.bind_text(1,step.domain_id)?;q.bind_text(2,step.card_id)?;
+    q.bind_text(3,step.answer_request_id)?;
+    if !q.step_row()? {return Err(RpcJournalError::Denied);}
+    let vendor_request=q.column_text(0)?;let tool_use=q.column_text(1)?;
+    let payload=q.column_text(2)?;let host_turn=q.column_text(3)?;
+    let vendor_session=q.column_text(4)?;let seat=q.column_text(5)?;
+    let generation=q.column_text(6)?;let card_answer=q.column_text(7)?;
+    let operation_answer=q.column_text(8)?;let answer_kind=q.column_text(9)?;
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}
+    drop(q);
+    if vendor_request!=Json::String(JsonString::from_str(question.request_id())).canonical()
+        || tool_use!=question.tool_use_id()
+        || payload!=question.display_payload() || generation!=step.custody.binding.generation
+        || answer_kind!="WIRE" || card_answer!=operation_answer
+        || card_answer.as_bytes()!=&step.wire[..step.wire.len()-1] {
+        return Err(RpcJournalError::Denied);
+    }
+    let h=Statement::prepare(db.as_ptr(),
+        "SELECT h.request_hex,e.seat_id FROM main.gogoke_v37_h_stdin_journal h
+           JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=h.domain_id
+             AND e.session_id=h.session_id AND e.generation=h.generation
+             AND e.process_operation_id=h.process_operation_id
+          WHERE h.domain_id=?1 AND h.session_id=?2 AND h.request_id=?3
+            AND h.process_operation_id=?4 AND h.ticket=?5
+            AND h.custodian_nonce=?6 AND h.generation=?7
+            AND h.operation='send' AND h.phase='PREPARED'
+            AND e.phase IN ('ACTIVE','UNKNOWN')")?;
+    for (index,value) in [step.domain_id,step.session_id,host_turn.as_str(),operation,
+        step.custody.ticket.opaque(),step.custody.custodian_nonce.as_str(),
+        step.custody.binding.generation.as_str()].iter().enumerate() {
+        h.bind_text((index+1) as i32,value)?;
+    }
+    if !h.step_row()? {return Err(RpcJournalError::Denied);}
+    let original_send=unhex(&h.column_text(0)?)?;
+    if h.column_text(1)?!=seat || h.step_row()? {return Err(RpcJournalError::Denied);}
+    drop(h);
+    let send=super::decode_request(&original_send).map_err(|_|RpcJournalError::Denied)?;
+    if send.request_id!=host_turn || send.operation!="send" ||
+        send.domain_id!=step.domain_id || send.target_id!=step.session_id {
+        return Err(RpcJournalError::Denied);
+    }
+    let send_digest=crate::store::digest::sha256_hex(&original_send);
+    let send_step=format!("claude-send-{}",&send_digest[..40]);
+    let send_uuid=format!("{}-{}-5{}-8{}-{}",&send_digest[..8],&send_digest[8..12],
+        &send_digest[13..16],&send_digest[17..20],&send_digest[20..32]);
+    let Some(Json::String(body))=send.payload.get(&JsonString::from_str("body")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let body=body.to_well_formed_string().ok_or(RpcJournalError::Denied)?;
+    let expected=commands::encode_claude(commands::ClaudeCommand::User {
+        uuid:&send_uuid,text:&body,
+    }).map_err(RpcJournalError::AcpEncode)?;
+    let echo=Statement::prepare(db.as_ptr(),
+        "SELECT source_epoch,source_cursor,command_hex FROM main.gogoke_v37_rpc_steps
+         WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+           AND step_id=?4 AND ticket=?5 AND custodian_nonce=?6
+           AND generation=?7 AND phase='OBSERVED' AND requires_response=1")?;
+    for (index,value) in [step.domain_id,step.session_id,operation,send_step.as_str(),
+        step.custody.ticket.opaque(),step.custody.custodian_nonce.as_str(),
+        step.custody.binding.generation.as_str()].iter().enumerate() {
+        echo.bind_text((index+1) as i32,value)?;
+    }
+    if !echo.step_row()? {return Err(RpcJournalError::Denied);}
+    let echo_epoch=echo.column_text(0)?;
+    let echo_cursor=echo.column_text(1)?;
+    let echo_command=unhex(&echo.column_text(2)?)?;
+    if echo.step_row()? || echo_command!=expected || echo_epoch!=step.source.source_epoch {
+        return Err(RpcJournalError::Denied);
+    }
+    drop(echo);
+    let echo_number=echo_cursor.parse::<u64>().map_err(|_|RpcJournalError::Denied)?;
+    let question_number=step.source.source_cursor.parse::<u64>()
+        .map_err(|_|RpcJournalError::Denied)?;
+    if echo_number==0 || echo_number>=question_number ||
+        echo_number.to_string()!=echo_cursor || question_number.to_string()!=step.source.source_cursor {
+        return Err(RpcJournalError::Denied);
+    }
+    let echo_source=ledger::read_captured_raw_source(db,operation,&echo_epoch,&echo_cursor)?
+        .ok_or(RpcJournalError::Denied)?;
+    if echo_source.domain_id!=step.domain_id || echo_source.session_id!=step.session_id
+        || echo_source.process_ticket!=step.custody.ticket.opaque() ||
+        !matches!(stream_json::decode_claude_line(&echo_source.raw_bytes),
+            Ok(stream_json::ClaudeData::UserReplay {session_id,uuid,text})
+                if session_id==vendor_session && uuid==send_uuid && text==body) {
+        return Err(RpcJournalError::Denied);
+    }
+    let pending=Statement::prepare(db.as_ptr(),
+        "SELECT step_id,phase,requires_response FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+            AND (phase IN ('INTENT','UNKNOWN') OR (phase='WRITTEN' AND requires_response=1))")?;
+    pending.bind_text(1,step.domain_id)?;pending.bind_text(2,step.session_id)?;
+    pending.bind_text(3,operation)?;
+    while pending.step_row()? {
+        let pending_id=pending.column_text(0)?;
+        if pending_id==step.step_id {continue;}
+        return Err(RpcJournalError::Unknown);
+    }
+    // This session ID must have come from the same A process before the
+    // question. No control_request field is treated as a session identifier.
+    let init=Statement::prepare(db.as_ptr(),
+        "SELECT source_cursor FROM main.v37_ledger_raw_source
+          WHERE operation_id=?1 AND source_epoch=?2 AND
+                CAST(source_cursor AS INTEGER)<CAST(?3 AS INTEGER)
+          ORDER BY CAST(source_cursor AS INTEGER)")?;
+    init.bind_text(1,operation)?;init.bind_text(2,&step.source.source_epoch)?;
+    init.bind_text(3,&step.source.source_cursor)?;
+    let mut session_seen=false;
+    while init.step_row()? {
+        let source=ledger::read_captured_raw_source(db,operation,&step.source.source_epoch,
+            &init.column_text(0)?)?.ok_or(RpcJournalError::Denied)?;
+        if source.domain_id!=step.domain_id || source.session_id!=step.session_id
+            || source.process_ticket!=step.custody.ticket.opaque() {
+            return Err(RpcJournalError::Denied);
+        }
+        if matches!(stream_json::decode_claude_line(&source.raw_bytes),
+            Ok(stream_json::ClaudeData::Init {session_id,..}) if session_id==vendor_session) {
+            session_seen=true;
+        }
+    }
+    if !session_seen {return Err(RpcJournalError::Denied);}
+    Ok(())
+}
+
+pub(crate) fn prepare_claude_question(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&ClaudeQuestionStep<'_>)->Result<PreparedStep> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let (operation,driver)=assert_current_binding(db,&step.fields(),&["ACTIVE"],false)?;
+        if driver!="claude" {return Err(RpcJournalError::Denied);}
+        claude_question_bound(db,step,&operation)?;
+        if let Some(phase)=same_row(db,&step.fields(),&operation,step.wire)? {
+            return Ok(PreparedStep {bytes:step.wire.to_vec(),
+                disposition:Disposition::Existing(phase)});
+        }
+        insert_intent(db,&step.fields(),&operation,step.wire,false)?;
+        Ok(PreparedStep {bytes:step.wire.to_vec(),disposition:Disposition::NewWrite})
+    })
+}
+
+fn transition_claude_question(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&ClaudeQuestionStep<'_>,phase:Phase,error:Option<&str>)->Result<()> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let states=if phase==Phase::Unknown {&["ACTIVE","UNKNOWN"][..]} else {&["ACTIVE"][..]};
+        let (operation,driver)=assert_current_binding(db,&step.fields(),states,
+            phase==Phase::Unknown)?;
+        if driver!="claude" {return Err(RpcJournalError::Denied);}
+        // The original C/A binding remains immutable between intent and the
+        // physical write. UNKNOWN never grants another prepare or retry.
+        claude_question_bound(db,step,&operation)?;
+        transition_row(db,&step.fields(),&operation,step.wire,phase,error)
+    })
+}
+pub(crate) fn mark_claude_question_written(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&ClaudeQuestionStep<'_>)->Result<()> {
+    transition_claude_question(db,owner,step,Phase::Written,None)
+}
+pub(crate) fn mark_claude_question_unknown(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&ClaudeQuestionStep<'_>,original_error:&str)->Result<()> {
+    if original_error.is_empty() || original_error.len()>4096 {
+        return Err(RpcJournalError::Invalid("original error"));
+    }
+    transition_claude_question(db,owner,step,Phase::Unknown,Some(original_error))
 }
 
 /// Persist original Claude stdin intent before the physical writer. An

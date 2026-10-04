@@ -1096,6 +1096,9 @@ fn validate_native_question(question: &NativeQuestion<'_>) -> Result<(), InboxEr
         return Err(InboxError::Invalid("auto resolution"));
     }
     vendor_nonempty(question.question_payload,"question payload")?;
+    let claude_payload=matches!(Parser::parse(question.question_payload)?,Json::Object(ref fields)
+        if fields.get(&JsonString::from_str("provider"))
+            ==Some(&Json::String(JsonString::from_str("claude"))));
     for (value,name) in [(question.question_id,"question id"),
         (question.header,"question header"),(question.question,"question"),
         (question.turn_id,"turn")] { vendor_nonempty(value,name)?; }
@@ -1111,7 +1114,9 @@ fn validate_native_question(question: &NativeQuestion<'_>) -> Result<(), InboxEr
     for option in question.options {
         if !valid_id(option.id) || !ids.insert(option.id) { return Err(InboxError::Invalid("option id")); }
         vendor_nonempty(option.label,"option label")?;
-        vendor_nonempty(option.description,"option description")?;
+        if claude_payload {
+            if option.description.contains('\0') {return Err(InboxError::Invalid("option description"));}
+        } else {vendor_nonempty(option.description,"option description")?;}
     }
     Ok(())
 }
@@ -1437,6 +1442,7 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
     owner: &crate::store::authority::OwnerIssuer, envelope: &CardEnvelope<'_>,
     session_id: &str, step_id: &str) -> Result<NativeCardOperation, InboxError> {
     use crate::store::session_transport::codex_rpc::{self,Reply};
+    use crate::store::session_transport::provider_evidence::{claude_question,stream_json};
     envelope.validate()?;
     if !valid_id(session_id) || !valid_id(step_id) {return Err(InboxError::Invalid("native answer step"));}
     transact(connection,|connection| {
@@ -1453,11 +1459,12 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
         let mut command_bytes=card.answer.as_bytes().to_vec();command_bytes.push(b'\n');
         let command_hex=raw_hex(&command_bytes);
         let step=Statement::prepare(connection.as_ptr(),
-            "SELECT s.process_operation_id,s.custodian_nonce,s.open_request_id,s.ticket
+            "SELECT s.process_operation_id,s.custodian_nonce,s.open_request_id,s.ticket,i.driver_id
                FROM main.gogoke_v37_rpc_steps s
                JOIN main.gogoke_v37_h_process_episode ep ON ep.domain_id=s.domain_id
                  AND ep.session_id=s.session_id AND ep.generation=s.generation
                  AND ep.process_operation_id=s.process_operation_id
+               JOIN main.gogoke_v37_instances i ON i.instance_id=ep.instance_id
                LEFT JOIN main.gogoke_v37_h_claim h ON h.domain_id=ep.domain_id
                  AND h.session_id=ep.session_id AND h.generation=ep.generation
                  AND h.process_operation_id=ep.process_operation_id
@@ -1485,7 +1492,7 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
             step.bind_text((index+1) as i32,value)?;
         }
         if !step.step_row()? {return Err(InboxError::Denied);}
-        let operation=step.column_text(0)?;let nonce=step.column_text(1)?;let open_id=step.column_text(2)?;let ticket=step.column_text(3)?;
+        let operation=step.column_text(0)?;let nonce=step.column_text(1)?;let open_id=step.column_text(2)?;let ticket=step.column_text(3)?;let driver=step.column_text(4)?;
         if step.step_row()? {return Err(InboxError::Conflict);}drop(step);
         let decode_hex=|value:&str| -> Result<Vec<u8>,InboxError> {
             if value.len()%2!=0 {return Err(InboxError::Invalid("native answer source hex"));}
@@ -1523,27 +1530,79 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
         if source.step_row()? {return Err(InboxError::Conflict);}drop(source);
         let raw=decode_hex(&source_hex)?;
         if crate::store::digest::sha256_hex(&raw)!=source_digest {return Err(InboxError::Denied);}
-        let Reply::Question(question)=codex_rpc::decode(&raw,None).map_err(InboxError::Codec)? else {return Err(InboxError::Denied);};
-        if question.thread_id!=card.vendor_thread_id || question.turn_id!=card.turn_id || question.item_id!=card.vendor_item_id {return Err(InboxError::Denied);}
-        let Json::Object(frame)=Parser::parse(&card.answer)? else {return Err(InboxError::Invalid("native answer object"));};
-        if frame.len()!=2 || frame.get(&JsonString::from_str("id")).map(Json::canonical).as_deref()!=Some(card.vendor_request_id.as_str()) {return Err(InboxError::Denied);}
-        let Some(Json::Object(result))=frame.get(&JsonString::from_str("result")) else {return Err(InboxError::Invalid("native answer result"));};
-        let Some(Json::Object(answers))=result.get(&JsonString::from_str("answers")) else {return Err(InboxError::Invalid("native answers"));};
-        let mut answer_values=std::collections::BTreeMap::new();
-        for (id,value) in answers {
-            let Json::Object(values)=value else {return Err(InboxError::Invalid("native answer values"));};
-            let Some(Json::Array(values))=values.get(&JsonString::from_str("answers")) else {return Err(InboxError::Invalid("native answer values"));};
-            let mut texts=Vec::new();
-            for value in values {let Json::String(text)=value else {return Err(InboxError::Invalid("native answer text"));};
-                texts.push(text.to_well_formed_string().ok_or(InboxError::Invalid("native answer text"))?);}
-            answer_values.insert(id.to_well_formed_string().ok_or(InboxError::Invalid("native question ID"))?,texts);
-        }
-        let expected=question.answer(answer_values).map_err(InboxError::Codec)?.encode(None).map_err(InboxError::Codec)?;
-        if expected!=command_bytes {return Err(InboxError::Denied);}
-        let observed=crate::store::session_transport::rpc_journal::observed_thread_id(connection,
-            envelope.domain_id,session_id,&operation,&card.generation,&open_id,&ticket,&nonce)
-            .map_err(|error|InboxError::InvalidEvidence(format!("H observed thread: {error:?}")))?;
-        if observed!=card.vendor_thread_id {return Err(InboxError::Denied);}
+        if driver=="claude" {
+            let Some(question)=claude_question::decode(&raw).map_err(|error|
+                InboxError::InvalidEvidence(format!("Claude A question: {error:?}")))? else {
+                return Err(InboxError::Denied);
+            };
+            if Json::String(JsonString::from_str(question.request_id())).canonical()!=card.vendor_request_id ||
+                question.tool_use_id()!=card.vendor_item_id ||
+                question.display_payload()!=card.question_payload ||
+                claude_question::validate_answer_wire(&question,&command_bytes).is_err() {
+                return Err(InboxError::Denied);
+            }
+            let original_send=Statement::prepare(connection.as_ptr(),
+                "SELECT request_hex FROM main.gogoke_v37_h_stdin_journal
+                 WHERE domain_id=?1 AND session_id=?2 AND request_id=?3
+                   AND process_operation_id=?4 AND ticket=?5 AND custodian_nonce=?6
+                   AND generation=?7 AND operation='send'")?;
+            for (index,value) in [envelope.domain_id,session_id,card.turn_id.as_str(),
+                operation.as_str(),ticket.as_str(),nonce.as_str(),card.generation.as_str()].iter().enumerate() {
+                original_send.bind_text((index+1) as i32,value)?;
+            }
+            if !original_send.step_row()? {return Err(InboxError::Denied);}
+            let send_hex=original_send.column_text(0)?;
+            if original_send.step_row()? {return Err(InboxError::Conflict);}
+            drop(original_send);
+            let send_bytes=decode_hex(&send_hex)?;
+            let send=crate::store::session_transport::decode_request(&send_bytes)
+                .map_err(|error|InboxError::InvalidEvidence(format!("Claude H send: {error:?}")))?;
+            if send.request_id!=card.turn_id || send.operation!="send" ||
+                send.domain_id!=envelope.domain_id || send.target_id!=session_id {
+                return Err(InboxError::Denied);
+            }
+            let init=Statement::prepare(connection.as_ptr(),
+                "SELECT source_cursor FROM main.v37_ledger_raw_source
+                 WHERE operation_id=?1 AND source_epoch=?2 AND
+                   CAST(source_cursor AS INTEGER)<CAST(?3 AS INTEGER)
+                 ORDER BY CAST(source_cursor AS INTEGER)")?;
+            init.bind_text(1,&operation)?;init.bind_text(2,&nonce)?;
+            init.bind_text(3,&source_cursor)?;
+            let mut saw_session=false;
+            while init.step_row()? {
+                let candidate=ledger::read_captured_raw_source(connection,&operation,&nonce,
+                    &init.column_text(0)?)?.ok_or(InboxError::Denied)?;
+                if candidate.domain_id!=envelope.domain_id || candidate.session_id!=session_id
+                    || candidate.process_ticket!=ticket {return Err(InboxError::Denied);}
+                if matches!(stream_json::decode_claude_line(&candidate.raw_bytes),
+                    Ok(stream_json::ClaudeData::Init {session_id,..}) if session_id==card.vendor_thread_id) {
+                    saw_session=true;
+                }
+            }
+            if !saw_session {return Err(InboxError::Denied);}
+        } else if driver=="codex" {
+            let Reply::Question(question)=codex_rpc::decode(&raw,None).map_err(InboxError::Codec)? else {return Err(InboxError::Denied);};
+            if question.thread_id!=card.vendor_thread_id || question.turn_id!=card.turn_id || question.item_id!=card.vendor_item_id {return Err(InboxError::Denied);}
+            let Json::Object(frame)=Parser::parse(&card.answer)? else {return Err(InboxError::Invalid("native answer object"));};
+            if frame.len()!=2 || frame.get(&JsonString::from_str("id")).map(Json::canonical).as_deref()!=Some(card.vendor_request_id.as_str()) {return Err(InboxError::Denied);}
+            let Some(Json::Object(result))=frame.get(&JsonString::from_str("result")) else {return Err(InboxError::Invalid("native answer result"));};
+            let Some(Json::Object(answers))=result.get(&JsonString::from_str("answers")) else {return Err(InboxError::Invalid("native answers"));};
+            let mut answer_values=std::collections::BTreeMap::new();
+            for (id,value) in answers {
+                let Json::Object(values)=value else {return Err(InboxError::Invalid("native answer values"));};
+                let Some(Json::Array(values))=values.get(&JsonString::from_str("answers")) else {return Err(InboxError::Invalid("native answer values"));};
+                let mut texts=Vec::new();
+                for value in values {let Json::String(text)=value else {return Err(InboxError::Invalid("native answer text"));};
+                    texts.push(text.to_well_formed_string().ok_or(InboxError::Invalid("native answer text"))?);}
+                answer_values.insert(id.to_well_formed_string().ok_or(InboxError::Invalid("native question ID"))?,texts);
+            }
+            let expected=question.answer(answer_values).map_err(InboxError::Codec)?.encode(None).map_err(InboxError::Codec)?;
+            if expected!=command_bytes {return Err(InboxError::Denied);}
+            let observed=crate::store::session_transport::rpc_journal::observed_thread_id(connection,
+                envelope.domain_id,session_id,&operation,&card.generation,&open_id,&ticket,&nonce)
+                .map_err(|error|InboxError::InvalidEvidence(format!("H observed thread: {error:?}")))?;
+            if observed!=card.vendor_thread_id {return Err(InboxError::Denied);}
+        } else {return Err(InboxError::Denied);}
         let receipt_basis=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",envelope.domain_id,session_id,step_id,operation,nonce,command_hex,prior.request_hex);
         let proof=NativeCardAnswerProof {domain_id:envelope.domain_id.into(),card_id:envelope.card_id.into(),
             request_id:envelope.request_id.into(),vendor_request_id:card.vendor_request_id,seat_id:card.seat_id,
