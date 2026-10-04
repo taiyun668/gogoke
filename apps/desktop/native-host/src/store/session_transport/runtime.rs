@@ -286,6 +286,17 @@ pub(crate) fn release_native(
     admission::release_admission(db, request, |db| check_owner_current(db, &identity))
 }
 
+/// Private cleanup of C's frozen failed Host FRESH recipe. The caller has
+/// checked that exact C operation; H independently refuses any open intent.
+pub(crate) fn release_unstarted_host_native(
+    db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    request:&AdmissionRequest<'_>,
+)->Result<AdmissionResult,AdmissionError> {
+    let identity=authority::read_product_identity(db,owner).map_err(AdmissionError::Identity)?;
+    admission::release_unstarted_host_commit(db,request,|db|
+        check_owner_current(db,&identity))
+}
+
 /// Later child control has a new sealed model call, not the old reserve call.
 /// Release only its exact stopped child; replay reads the same released claim
 /// and original journal without requiring the child to remain BUSY.

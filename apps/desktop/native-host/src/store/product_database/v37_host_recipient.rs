@@ -1,7 +1,7 @@
 //! Private HostRule recipient preparation. C freezes the selection and exact
 //! K-SESSION requests; E/F/H remain the authority for every physical effect.
 use super::*;
-use crate::store::inbox::host_rule::{self as c, HostRecipient};
+use crate::store::inbox::host_rule::{self as c, HostCleanupCandidate, HostRecipient};
 use crate::store::ledger::{self, SessionPurpose};
 use crate::store::seat::{self, HostEscalationProof, State};
 use crate::store::session_transport::{self as h, runtime};
@@ -39,6 +39,26 @@ fn stage_request(choice: &HostRecipient, proof: &HostEscalationProof,
         (JsonString::from_str("domainId"),string(proof.domain_id())),
         (JsonString::from_str("expectedRevision"),string(&revision.to_string())),
         (JsonString::from_str("payload"),Json::Object(payload)),
+    ])).canonical();
+    h::decode_request(raw.as_bytes()).map_err(recipient_error)
+}
+
+fn cleanup_request(candidate:&HostCleanupCandidate,stage:&str,revision:u64)->Result<V37Request> {
+    let operation=match stage {"stop"=>"stop","release"=>"admission-release",
+        _=>return Err(OrchestrationError::Invalid("host cleanup stage"))};
+    let basis=candidate.message_id.replacen("hostmsg-","hostcleanup-",1);
+    let raw=Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"),string("gogoke.37.operations.v1")),
+        (JsonString::from_str("family"),string("K-SESSION")),
+        (JsonString::from_str("operation"),string(operation)),
+        (JsonString::from_str("requestId"),string(&format!("{basis}-{stage}"))),
+        (JsonString::from_str("targetId"),string(&candidate.choice.session_id)),
+        (JsonString::from_str("domainId"),string(&candidate.domain_id)),
+        (JsonString::from_str("expectedRevision"),string(&revision.to_string())),
+        (JsonString::from_str("payload"),Json::Object(BTreeMap::from([
+            (JsonString::from_str("seatId"),string(&candidate.seat_id)),
+            (JsonString::from_str("generation"),string(&candidate.choice.generation)),
+        ]))),
     ])).canonical();
     h::decode_request(raw.as_bytes()).map_err(recipient_error)
 }
@@ -100,6 +120,19 @@ impl<'root> ProductDatabase<'root> {
         let bytes=c::freeze_host_stage(&mut self.connection,&self.owner,proof,choice,
             stage,&proposed.raw_bytes).map_err(recipient_error)?;
         h::decode_request(&bytes).map_err(recipient_error)
+    }
+
+    fn host_recipient_stage_applied(&mut self,proof:&HostEscalationProof,
+        choice:&HostRecipient,stage:&str,request:&V37Request,bytes:&[u8])->Result<bool> {
+        let receipt=h::decode_receipt(bytes).map_err(recipient_error)?;
+        let status=receipt.status;
+        let reason=match receipt.into_result().get(&JsonString::from_str("reason")) {
+            Some(Json::String(value))=>value.to_well_formed_string().unwrap_or_default(),
+            _=>String::new(),
+        };
+        c::record_host_stage_result(&mut self.connection,&self.owner,proof,choice,stage,
+            &request.raw_bytes,status,&reason).map_err(recipient_error)?;
+        Ok(matches!(status,V37Status::Applied|V37Status::Replayed))
     }
 
     fn host_recipient_candidate(&mut self,proof:&HostEscalationProof)
@@ -299,6 +332,9 @@ impl<'root> ProductDatabase<'root> {
                     .map_err(recipient_error)?
             },
         };
+        if c::host_recipient_failure_recorded(&self.connection,proof).map_err(recipient_error)? {
+            return Ok(None);
+        }
         self.check_host_recipient_choice(proof,&choice)?;
         let key=(proof.domain_id().to_owned(),choice.session_id.clone());
         if self.native_sessions.contains_key(&key) {return Ok(Some(key));}
@@ -312,30 +348,167 @@ impl<'root> ProductDatabase<'root> {
             let request=self.host_recipient_stage(proof,&choice,"start",
                 u64::try_from(claim.revision).map_err(recipient_error)?)?;
             let receipt=self.dispatch_host_recipient_resume(&request,proof,&choice)?;
-            if !matches!(h::decode_receipt(&receipt).map_err(recipient_error)?.status,
-                V37Status::Applied|V37Status::Replayed) {return Ok(None);}
+            if !self.host_recipient_stage_applied(proof,&choice,"start",&request,&receipt)? {return Ok(None);}
         } else {
             let reserve=self.host_recipient_stage(proof,&choice,"reserve",0)?;
             let receipt=self.dispatch_host_recipient_admission(&reserve,proof,&choice)?;
-            if !matches!(h::decode_receipt(&receipt).map_err(recipient_error)?.status,
-                V37Status::Applied|V37Status::Replayed) {return Ok(None);}
+            if !self.host_recipient_stage_applied(proof,&choice,"reserve",&reserve,&receipt)? {return Ok(None);}
             let claim=runtime::observe_claim(&self.connection,&seat::NativeOrigin::user(&self.owner),
                 proof.domain_id(),proof.destination_seat_id(),&choice.session_id)
                     .map_err(recipient_error)?.ok_or(OrchestrationError::OperationConflict)?;
             let commit=self.host_recipient_stage(proof,&choice,"commit",
                 u64::try_from(claim.revision).map_err(recipient_error)?)?;
             let receipt=self.dispatch_host_recipient_admission(&commit,proof,&choice)?;
-            if !matches!(h::decode_receipt(&receipt).map_err(recipient_error)?.status,
-                V37Status::Applied|V37Status::Replayed) {return Ok(None);}
+            if !self.host_recipient_stage_applied(proof,&choice,"commit",&commit,&receipt)? {return Ok(None);}
             let claim=runtime::observe_claim(&self.connection,&seat::NativeOrigin::user(&self.owner),
                 proof.domain_id(),proof.destination_seat_id(),&choice.session_id)
                     .map_err(recipient_error)?.ok_or(OrchestrationError::OperationConflict)?;
             let open=self.host_recipient_stage(proof,&choice,"start",
                 u64::try_from(claim.revision).map_err(recipient_error)?)?;
             let receipt=self.dispatch_host_recipient_open(&open,proof,&choice)?;
-            if !matches!(h::decode_receipt(&receipt).map_err(recipient_error)?.status,
-                V37Status::Applied|V37Status::Replayed) {return Ok(None);}
+            if !self.host_recipient_stage_applied(proof,&choice,"start",&open,&receipt)? {return Ok(None);}
         }
         Ok(self.native_sessions.contains_key(&key).then_some(key))
+    }
+
+    /// Reconcile the original failed preparation independently of today's E
+    /// route. No new recipient or send is chosen here.
+    pub(super) fn cleanup_host_rule_preparations(&mut self)->Result<()> {
+        let candidates=c::failed_host_preparations(&self.connection).map_err(recipient_error)?;
+        for candidate in candidates {
+            self.cleanup_one_host_preparation(&candidate)?;
+        }
+        Ok(())
+    }
+
+    fn cleanup_one_host_preparation(&mut self,candidate:&HostCleanupCandidate)->Result<()> {
+        let choice=&candidate.choice;
+        let bound=Statement::prepare(self.connection.as_ptr(),
+            "SELECT a.instance_id,a.generation,a.state,a.revision,
+                    COALESCE(a.process_operation_id,''),s.seat_id,s.seat_incarnation
+               FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id
+                 AND s.session_id=a.session_id AND s.generation=a.generation
+              WHERE a.domain_id=?1 AND a.session_id=?2")?;
+        bound.bind_text(1,&candidate.domain_id)?;bound.bind_text(2,&choice.session_id)?;
+        if !bound.step_row()? {return Ok(());}
+        let instance=bound.column_text(0)?;let generation=bound.column_text(1)?;
+        let state=bound.column_text(2)?;
+        let revision=bound.column_text(3)?.parse::<u64>().map_err(recipient_error)?;
+        let operation=bound.column_text(4)?;
+        let seat=bound.column_text(5)?;let incarnation=bound.column_text(6)?;
+        if bound.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(bound);
+        if instance!=choice.instance_id ||generation!=choice.generation
+            ||seat!=candidate.seat_id ||incarnation!=choice.seat_incarnation {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        if state=="RELEASED" {
+            let id=format!("{}-release",candidate.message_id.replacen("hostmsg-","hostcleanup-",1));
+            if let Some(saved)=crate::store::inbox::read_operation(&self.connection,
+                &candidate.domain_id,&id).map_err(recipient_error)? {
+                let original=super::v37_host_rule::original_bytes(&saved.request_hex)?;
+                let applied=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1
+                      AND session_id=?2 AND request_id=?3 AND operation='admission-release'
+                      AND raw_hex=?4 AND status='APPLIED'")?;
+                applied.bind_text(1,&candidate.domain_id)?;
+                applied.bind_text(2,&choice.session_id)?;applied.bind_text(3,&id)?;
+                applied.bind_text(4,&saved.request_hex)?;
+                if applied.step_row()? {
+                    if applied.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                    drop(applied);
+                    c::record_host_cleanup_result(&mut self.connection,&self.owner,candidate,
+                        "release",&original,V37Status::Applied,"").map_err(recipient_error)?;
+                }
+            }
+            return Ok(());
+        }
+        if !matches!(state.as_str(),"RESERVED"|"COMMITTED"|"UNKNOWN"|"STOPPED") {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let claim=runtime::observe_claim(&self.connection,&seat::NativeOrigin::user(&self.owner),
+            &candidate.domain_id,&candidate.seat_id,&choice.session_id)
+            .map_err(recipient_error)?.ok_or(OrchestrationError::AccessDenied)?;
+        if u64::try_from(claim.revision).ok()!=Some(revision) ||claim.instance_id!=instance
+            ||claim.generation!=generation ||claim.process_operation_id.as_deref().unwrap_or("")!=operation {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        if matches!(state.as_str(),"COMMITTED"|"UNKNOWN") && !operation.is_empty() {
+            let key=(candidate.domain_id.clone(),choice.session_id.clone());
+            let Some(run)=self.native_sessions.get(&key) else {return Ok(())};
+            if run.operation_id!=operation ||run.evidence.seat_id()!=candidate.seat_id
+                ||run.evidence.driver_id()!="codex"
+                ||run.custody.binding.generation!=generation {return Err(OrchestrationError::AccessDenied);}
+            let held=Statement::prepare(self.connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_coordination_process_custody
+                  WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3
+                    AND domain_id=?4 AND generation=?5
+                    AND state IN ('PREPARED','ACTIVE','UNKNOWN')")?;
+            for (index,value) in [operation.as_str(),run.custody.ticket.opaque(),
+                run.custody.custodian_nonce.as_str(),candidate.domain_id.as_str(),generation.as_str()]
+                .iter().enumerate() {held.bind_text((index+1) as i32,value)?;}
+            if !held.step_row()? ||held.step_row()? {return Err(OrchestrationError::AccessDenied);}
+            drop(held);
+            let proposed=cleanup_request(candidate,"stop",revision)?;
+            let (bytes,fresh)=c::freeze_host_cleanup(&mut self.connection,&self.owner,
+                candidate,"stop",&proposed.raw_bytes).map_err(recipient_error)?;
+            let request=h::decode_request(&bytes).map_err(recipient_error)?;
+            if fresh {
+                match self.dispatch_native_stop(&request) {
+                    Ok(raw)=>{
+                        let receipt=h::decode_receipt(&raw).map_err(recipient_error)?;
+                        let status=receipt.status;
+                        c::record_host_cleanup_result(&mut self.connection,&self.owner,candidate,
+                            "stop",&bytes,status,&String::from_utf8_lossy(&raw))
+                            .map_err(recipient_error)?;
+                    },
+                    Err(error)=>{
+                        c::record_host_cleanup_result(&mut self.connection,&self.owner,candidate,
+                            "stop",&bytes,V37Status::Unknown,&format!("{error:?}"))
+                            .map_err(recipient_error)?;
+                        return Ok(());
+                    },
+                }
+            }
+        }
+        let claim=runtime::observe_claim(&self.connection,&seat::NativeOrigin::user(&self.owner),
+            &candidate.domain_id,&candidate.seat_id,&choice.session_id)
+            .map_err(recipient_error)?.ok_or(OrchestrationError::AccessDenied)?;
+        if !matches!(claim.phase,runtime::SessionPhase::Reserved|runtime::SessionPhase::Committed
+            |runtime::SessionPhase::Stopped) {return Ok(());}
+        if claim.phase==runtime::SessionPhase::Stopped {
+            let fact=runtime::observe_stop_fact(&self.connection,&candidate.domain_id,
+                &choice.session_id).map_err(recipient_error)?;
+            if fact.as_ref().is_none_or(|fact|fact.generation()!=generation
+                ||Some(fact.process_operation_id())!=claim.process_operation_id.as_deref()) {
+                return Ok(());
+            }
+        }
+        let proposed=cleanup_request(candidate,"release",
+            u64::try_from(claim.revision).map_err(recipient_error)?)?;
+        let (bytes,_)=c::freeze_host_cleanup(&mut self.connection,&self.owner,candidate,
+            "release",&proposed.raw_bytes).map_err(recipient_error)?;
+        let request=h::decode_request(&bytes).map_err(recipient_error)?;
+        let input=h::AdmissionRequest {domain_id:&candidate.domain_id,session_id:&choice.session_id,
+            request_id:&request.request_id,raw_bytes:&bytes,instance_id:&claim.instance_id,
+            home_id:&claim.home_id,generation:&choice.generation,
+            expected_revision:i64::try_from(request.expected_revision).map_err(recipient_error)?};
+        let result=if claim.phase==runtime::SessionPhase::Committed {
+            runtime::release_unstarted_host_native(&mut self.connection,&self.owner,&input)
+        } else {
+            runtime::release_native(&mut self.connection,&seat::NativeOrigin::user(&self.owner),&input)
+        };
+        let (status,reason)=match result {
+            Ok(h::AdmissionResult::Applied(_))=>(V37Status::Applied,String::new()),
+            Ok(h::AdmissionResult::Replayed(_))=>(V37Status::Replayed,String::new()),
+            Ok(h::AdmissionResult::Conflict)=>(V37Status::Conflict,"H cleanup conflict".into()),
+            Ok(h::AdmissionResult::Stale)=>(V37Status::Stale,"H cleanup stale".into()),
+            Ok(h::AdmissionResult::Unknown)=>(V37Status::Unknown,"H cleanup unknown".into()),
+            Err(error)=>(V37Status::Unknown,format!("H cleanup: {error:?}")),
+        };
+        c::record_host_cleanup_result(&mut self.connection,&self.owner,candidate,"release",
+            &bytes,status,&reason).map_err(recipient_error)?;
+        Ok(())
     }
 }
