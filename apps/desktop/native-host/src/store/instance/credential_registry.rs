@@ -424,6 +424,67 @@ pub(crate) fn read_credential_aliases(db: &VerifiedDatabaseConnection<'_>, insta
 fn alias(db: &VerifiedDatabaseConnection<'_>, instance: &str, history: &str) -> Result<Option<CredentialAliasRecord>> {
     Ok(read_credential_aliases(db, instance)?.into_iter().find(|row| row.history_id == history))
 }
+/// Read the original durable REMOVE input, independent of a later login's
+/// request. This grants no side effect: callers reselect its existing journal
+/// through begin, then obtain only H's read-only removed-name witness.
+pub(crate) fn recover_pending_credential_remove(db: &VerifiedDatabaseConnection<'_>,
+    instance: &str, history: &str) -> Result<CredentialAliasIntent> {
+    atom(instance)?; atom(history)?;
+    let row = alias(db, instance, history)?.ok_or(CredentialRegistryError::Unknown)?;
+    if row.state != "REMOVE_PENDING" { return Err(CredentialRegistryError::Unknown); }
+    let query = Statement::prepare(db.as_ptr(),
+        "SELECT request_hex,target_id,phase FROM main.gogoke_v37_instance_operations WHERE request_id=?1 AND receipt_json IS NULL AND native_receipt_id IS NULL")?;
+    query.bind_text(1, &row.intent_request)?;
+    if !query.step_row()? { return Err(CredentialRegistryError::Unknown); }
+    let fingerprint = query.column_text(0)?;
+    if query.column_text(1)? != journal_target(instance) || query.column_text(2)? != "PREPARING" || query.step_row()? {
+        return Err(CredentialRegistryError::Unknown);
+    }
+    // The canonical fingerprint consists of exactly eight UTF-8 fields,
+    // each prefixed by an unsigned 64-bit big-endian byte length.
+    if fingerprint.is_empty() || fingerprint.len() > 8192 || fingerprint.len() % 2 != 0
+        || !fingerprint.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')) {
+        return Err(CredentialRegistryError::Unknown);
+    }
+    let mut bytes = Vec::with_capacity(fingerprint.len() / 2);
+    for pair in fingerprint.as_bytes().chunks_exact(2) {
+        let text = std::str::from_utf8(pair).map_err(|_| CredentialRegistryError::Unknown)?;
+        bytes.push(u8::from_str_radix(text, 16).map_err(CredentialRegistryError::IdentityParse)?);
+    }
+    let mut fields = Vec::with_capacity(8);
+    let mut offset = 0usize;
+    for _ in 0..8 {
+        let header_end = offset.checked_add(8).ok_or(CredentialRegistryError::Unknown)?;
+        let header = bytes.get(offset..header_end).ok_or(CredentialRegistryError::Unknown)?;
+        let length = usize::try_from(u64::from_be_bytes(header.try_into().map_err(|_| CredentialRegistryError::Unknown)?))
+            .map_err(|_| CredentialRegistryError::Unknown)?;
+        let end = header_end.checked_add(length).ok_or(CredentialRegistryError::Unknown)?;
+        if length > 256 { return Err(CredentialRegistryError::Unknown); }
+        let value = bytes.get(header_end..end).ok_or(CredentialRegistryError::Unknown)?;
+        fields.push(std::str::from_utf8(value).map_err(|_| CredentialRegistryError::Unknown)?);
+        offset = end;
+    }
+    if offset != bytes.len() || framed(&fields) != fingerprint || fields[0] != "credential-alias-v1"
+        || fields[1] != instance || fields[2] != history || fields[6] != "REMOVE" {
+        return Err(CredentialRegistryError::Conflict);
+    }
+    atom(fields[3])?;
+    let input = CredentialAliasIntent { request_id: fields[3].into(), instance_id: instance.into(), history_id: history.into(),
+        directory_identity: parse_identity(fields[4])?, source_file_identity: parse_identity(fields[5])?,
+        expected_revision: number(fields[7])?, action: CredentialAliasAction::Remove };
+    if input.expected_revision < 0 || input.expected_revision.to_string() != fields[7]
+        || input.expected_revision.checked_add(1) != Some(row.revision)
+        || journal_key("alias", instance, &input.request_id) != row.intent_request
+        || input.directory_identity != row.directory_identity || input.source_file_identity != row.source_file_identity {
+        return Err(CredentialRegistryError::Conflict);
+    }
+    current_history(db, instance, history, &row.directory_identity)?;
+    check_alias_source(db, &row, false)?;
+    let object = read_credential_object(db, instance)?.ok_or(CredentialRegistryError::Unknown)?;
+    if current_pin(db, instance)?.0 != object.home_identity { return Err(CredentialRegistryError::Conflict); }
+    no_live_profiles(db, history)?;
+    Ok(input)
+}
 fn check_alias_source(db: &VerifiedDatabaseConnection<'_>, row: &CredentialAliasRecord, use_object: bool) -> Result<()> {
     if use_object {
         read_usable_credential_backend(db, &row.instance_id)?;
