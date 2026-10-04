@@ -361,7 +361,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         "mergeTargetCommit": tree[9]}
     result["providerSessions"] = []
     for case in journal["providerCases"]:
-        if case["result"] == "NOT_RUN_NOT_LOGGED_IN" or case["driverId"] == "antigravity":
+        if case["result"] in ("NOT_RUN_NOT_LOGGED_IN", "NOT_RUN_NOT_CONFIGURED") or case["driverId"] == "antigravity":
             result["providerSessions"].append({"driverId": case["driverId"],
                                                "result": case["result"]})
             continue
@@ -438,11 +438,17 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
     result["providerWorktrees"] = []
     if phase == "final":
         provider_plan = journal.get("providerWorktreePlan")
-        if not isinstance(provider_plan, list) or len(provider_plan) != 3 or \
-                {row.get("driverId") for row in provider_plan} != {"claude", "opencode", "grok"} or \
-                len({row.get("worktreeId") for row in provider_plan}) != 3 or \
-                len({row.get("seatId") for row in provider_plan}) != 3:
-            raise RuntimeError("Original provider F selection is not three distinct fixed seats/worktrees")
+        if not isinstance(provider_plan, list) or len(provider_plan) > 3 or \
+                not {row.get("driverId") for row in provider_plan}.issubset({"claude", "opencode", "grok"}) or \
+                len({row.get("driverId") for row in provider_plan}) != len(provider_plan) or \
+                len({row.get("worktreeId") for row in provider_plan}) != len(provider_plan) or \
+                len({row.get("seatId") for row in provider_plan}) != len(provider_plan):
+            raise RuntimeError("Original provider F selection is not a distinct fixed-provider subset")
+        result["providerCoverage"] = {"configured": len(provider_plan),
+            "notConfigured": sorted({"claude", "opencode", "grok"} -
+                {row["driverId"] for row in provider_plan}),
+            "state": "ALL_PROVIDER_BINDINGS_READ_BACK" if len(provider_plan) == 3
+                else "NOT_RUN_UNCONFIGURED_PROVIDER_BINDINGS"}
         for selection in provider_plan:
             expected = (domain, journal["repositoryId"], selection["seatId"], selection["instanceId"])
             provider_tree = one(db,
@@ -465,7 +471,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 raise RuntimeError("Original provider F instance does not match fixed driver")
             result["providerWorktrees"].append({**selection, "path": str(observed_path),
                                                "nativeOpaqueIdentity": provider_tree[5]})
-        if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) != 3:
+        if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) != len(provider_plan):
             raise RuntimeError("Original provider F physical worktrees overlap")
 
     result["worktrees"] = []

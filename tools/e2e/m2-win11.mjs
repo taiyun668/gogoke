@@ -24,8 +24,8 @@ if (process.platform !== 'win32' || !process.argv[2] ||
     !atom(config.templateId) || !atom(config.childInstanceId) ||
     !atom(config.takeoverQuestionId) || config.seatId === config.childSeatId ||
     !/^[a-f0-9]{40}$/.test(config.sourceCommit) ||
-    !Array.isArray(config.providerCases) || config.providerCases.length !== 3 ||
-    new Set(config.providerCases.map(row => row.driverId)).size !== 3 ||
+    !Array.isArray(config.providerCases) || config.providerCases.length > 3 ||
+    new Set(config.providerCases.map(row => row.driverId)).size !== config.providerCases.length ||
     config.providerCases.some(row => !['claude', 'opencode', 'grok'].includes(row.driverId) ||
       ![row.instanceId, row.seatId, row.worktreeId].every(atom) ||
       typeof row.version !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256)) ||
@@ -58,6 +58,12 @@ const journal = { schema: 'gogoke.37.m2-win11-e2e.v1', caseId: id('m2'),
     driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId, worktreeId: row.worktreeId })),
   sideChatCases: [], v12: 'NOT_RUN_NOT_CONFIGURED',
   assertions: [], nativeCards: [], readbacks: [] };
+for (const driverId of ['claude', 'opencode', 'grok']) {
+  if (!config.providerCases.some(row => row.driverId === driverId)) {
+    journal.providerCases.push({ driverId, result: 'NOT_RUN_NOT_CONFIGURED',
+      reason: 'No providerCases row was supplied in the private M2 config' });
+  }
+}
 const product = new ActualProduct(config, journal);
 delete journal.driverBytes['m1-win11.mjs'];
 delete journal.driverBytes['m1-readback.py'];
@@ -647,21 +653,26 @@ try {
   await recordProviderGoldens(final);
   check(final.worktree.id === captured.worktree.id && final.worktree.mergeTargetCommit === graph.result.mergeTargetCommit,
     'Original final F/Git merge receipt and graph agree');
-  check(Array.isArray(final.providerWorktrees) && final.providerWorktrees.length === 3,
-    'Three provider paths come from normally closed original F registrations');
+  check(Array.isArray(final.providerWorktrees) && final.providerWorktrees.length === config.providerCases.length,
+    'Configured provider paths come from normally closed original F registrations');
   const boundaryRows = config.providerCases.map(row => {
     const tree = final.providerWorktrees.find(value => value.worktreeId === row.worktreeId);
     check(tree && tree.driverId === row.driverId && tree.instanceId === row.instanceId &&
       tree.seatId === row.seatId, `${row.driverId}: closed original F provider worktree identity`);
     return { ...row, worktreeRoot: tree.path };
   });
-  await product.launch();
-  const { runProviderBoundaryCases } = await import('./m2-provider-cases.mjs');
-  await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows } }, journal);
-  await product.closeNormally();
-  await providerBoundaryReadback();
-  // Complete the earlier readers before adding cross-domain history sessions;
-  // their case scopes must never be widened by later journal entries.
+  if (boundaryRows.length === 3) {
+    await product.launch();
+    const { runProviderBoundaryCases } = await import('./m2-provider-cases.mjs');
+    await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows } }, journal);
+    await product.closeNormally();
+    await providerBoundaryReadback();
+  } else {
+    journal.providerBoundarySummary = { V03b: 'NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES',
+      V04b: 'NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES',
+      V10: 'NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES', acceptance: false };
+    product.save();
+  }
   await runHistoryBoundaries();
   await snapshot('after');
   for (const observer of config.observers) {

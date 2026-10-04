@@ -17,10 +17,12 @@ The Controller prepares a new private JSON config in an ordinary Interactive
 `takeoverQuestionId`, `takeoverPrompt`, `takeoverOption`, and `providerCases`.
 The test repository must be the private `gogokeSeatTestbed`; the real lead
 instance is `codexTestM1`; the main child uses an already admitted Codex
-instance so its native turn completion can be read through A. The three
-`providerCases` identify the previously
-admitted Claude, OpenCode and Grok seat/instance/worktree plus their fixed
-version and SHA-256. A provider not already `LOGGED_IN` is recorded `NOT_RUN`.
+instance so its native turn completion can be read through A. `providerCases`
+may contain any subset of Claude, OpenCode and Grok, including an empty array.
+Each supplied row identifies the previously admitted seat/instance/worktree
+plus its fixed version and SHA-256. An omitted provider is recorded
+`NOT_RUN_NOT_CONFIGURED`; a supplied provider not already `LOGGED_IN` remains
+`NOT_RUN_NOT_LOGGED_IN`.
 Antigravity remains `NOT_RUN_OWNER_DECISION_PENDING` regardless of status.
 
 The config's `result` and observer outputs must be fresh paths under a private
@@ -29,6 +31,13 @@ and testbed source. The mandatory `formal` observer compares `formal`,
 `registeredFormal`, `formalData`, `formalRegistry` and `shortcuts`; `memory`
 and `ledger` retain the M1 read-only measurement contract. No file here
 contains a real local path, account name, credential or token.
+
+The private fixture helper accepts `fixtureSetup.providerFixtureSelection`
+`DEFER_ALL` to create only the authorized Codex lead and three history E/F
+fixtures. It leaves the model-created child unused, preserves the existing
+Codex cap of four, emits `providerCases: []`, and records each provider as
+`NOT_RUN_DEFERRED_TO_CODEX_M2_FIRST`. Provider pins, settings, seats and
+worktrees are not synthesized in that mode.
 
 ## Exact case path
 
@@ -55,7 +64,8 @@ contains a real local path, account name, credential or token.
 5. Restart the same installed candidate and resume the same lead session.
    Only the lead model invokes `gogoke_worktree merge` for the verified ID.
    A User graph query may observe its state, then H stops/releases the lead.
-   Each already logged-in provider is visited sequentially through its own
+   Configured Codex history cases complete before any provider session. Each
+   configured already logged-in provider is visited sequentially through its own
    existing H seat/worktree. It receives one actual User send with non-secret test content;
    original H input receipts and raw A protocol are exported for the existing
    golden-sample tool. No provider login or model substitution is performed.
@@ -148,7 +158,8 @@ Smart App Control, browser and account outcomes are **NOT_RUN**.
 
 ## Provider boundary module integration
 
-Keep the existing `providerCase` loop and `journal.providerCases` unchanged:
+Preserve the existing `providerCase` behavior and every supplied
+`journal.providerCases` result:
 `m2-readback.py` binds their real User send and stopped H/A session for the
 private provider golden source. After that loop and its normal-close golden readback, the runner calls
 `runProviderBoundaryCases(product, {...config, providerBoundary:{cases}}, journal)`
@@ -161,10 +172,12 @@ the module's `providerBoundaryCases` beside the old `providerCases` rather
 than replacing the golden source or treating a second case as replay of the
 first request.
 
-After the boundary flow's final ordinary caption close, the runner invokes signed Python
+The existing boundary module requires exactly three provider rows. With a
+provider subset, those boundary checks remain `NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES`.
+After a configured three-row boundary flow's final ordinary caption close, the runner invokes signed Python
 `m2-provider-readback.py STATE_ROOT NEW_PRIVATE_OUTPUT ORIGINAL_JOURNAL`
 once with a fresh output path under the same private evidence directory.
-The normal-close golden reader exports all three provider F registrations;
+The normal-close golden reader exports the configured provider F registrations;
 the runner supplies their physical paths automatically and the boundary
 reader checks them again against the original F identities. The old golden
 reader runs before these distinct sessions, preserving its original
