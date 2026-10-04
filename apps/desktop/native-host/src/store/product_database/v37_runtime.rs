@@ -72,6 +72,36 @@ fn unhex(bytes: &str) -> Result<Vec<u8>> {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn finish_native_preparation(&mut self, request:&V37Request,
+        observed: std::result::Result<LaunchEvidence,String>,
+        retained: Vec<h::credential_launch::CredentialPreparationCustody>) -> Result<LaunchEvidence> {
+        let key=(request.domain_id.clone(),request.target_id.clone());
+        match observed {
+            Ok(evidence) => {
+                // The successful launch now owns this exact custody itself.
+                self.pending_credential_preparations.remove(&key);
+                Ok(evidence)
+            },
+            Err(mut original) => {
+                let mut pending=Vec::new();
+                for custody in retained {
+                    match custody.settled(&self.connection) {
+                        Ok(true) => (),
+                        Ok(false) => pending.push(custody),
+                        Err(error) => {
+                            original.push_str(&format!("; preparation settlement readback: {error}"));
+                            pending.push(custody);
+                        },
+                    }
+                }
+                if !pending.is_empty() {
+                    self.pending_credential_preparations.entry(key).or_default().extend(pending);
+                }
+                Err(OrchestrationError::V37StoreFailure(original))
+            },
+        }
+    }
+
     fn failed_uncreated_native_launch(&mut self, key: (String,String), evidence: LaunchEvidence,
         original: OrchestrationError, no_child_confirmed: bool) -> OrchestrationError {
         let cleanup = if no_child_confirmed {
@@ -393,15 +423,17 @@ impl<'root> ProductDatabase<'root> {
         self.finish_native_transaction(intended)?;
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         self.ensure_native_credential_backend(&old.instance_id,request)?;
-        let evidence=if let Some((proof,choice))=host {
-            failure(LaunchEvidence::observe_host_resume(&mut self.connection,self.root,
+        let mut retained=Vec::new();
+        let observed=if let Some((proof,choice))=host {
+            LaunchEvidence::observe_host_resume(&mut self.connection,self.root,
                 &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
-                &worktree_id,&request.request_id,proof,choice))?
+                &worktree_id,&request.request_id,proof,choice,&mut retained)
         } else {
-            failure(LaunchEvidence::observe_resume(&mut self.connection,self.root,
+            LaunchEvidence::observe_resume(&mut self.connection,self.root,
                 &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
-                &worktree_id,&request.request_id))?
+                &worktree_id,&request.request_id,&mut retained)
         };
+        let evidence=self.finish_native_preparation(request,observed,retained)?;
         let (evidence,custody,model,effort)=self.prepare_native_launch(request,evidence,host)?;
         let key=(request.domain_id.clone(),request.target_id.clone());
         let digest=crate::store::digest::sha256_hex(&request.raw_bytes);
@@ -1609,14 +1641,16 @@ impl<'root> ProductDatabase<'root> {
         }
         self.ensure_native_credential_backend(&credential_claim.instance_id,request)?;
         let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
-        let evidence = if let Some((proof,choice))=host {
-            failure(LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,
+        let mut retained=Vec::new();
+        let observed = if let Some((proof,choice))=host {
+            LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,
                 &request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,
-                proof,choice,&request.request_id))?
+                proof,choice,&request.request_id,&mut retained)
         } else {
-            failure(LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
-                &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,&request.request_id))?
+            LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
+                &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,&request.request_id,&mut retained)
         };
+        let evidence=self.finish_native_preparation(request,observed,retained)?;
         // A committed original intention fences every subsequent open before
         // the first OS side effect. OS creation is not represented as SQL atomic.
         let intended = (|| -> Result<()> {
@@ -1770,11 +1804,11 @@ impl<'root> ProductDatabase<'root> {
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             failure(run.evidence.bind_original_history_source(&self.connection,&custody,&operation_id))?;
-            let next=current.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
+            let next=credential_claim.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
             let advance=Statement::prepare(self.connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_claim SET revision=?1 WHERE domain_id=?2 AND session_id=?3 AND state='COMMITTED' AND revision=?4 AND process_operation_id=?5")?;
             advance.bind_i64(1,next)?;advance.bind_text(2,&request.domain_id)?;
-            advance.bind_text(3,&request.target_id)?;advance.bind_i64(4,current.revision)?;
+            advance.bind_text(3,&request.target_id)?;advance.bind_i64(4,credential_claim.revision)?;
             advance.bind_text(5,&operation_id)?;advance.step_done()?;
             let changed=Statement::prepare(self.connection.as_ptr(),"SELECT changes()")?;
             if !changed.step_row()? || changed.column_text(0)?!="1" {return Err(OrchestrationError::OperationConflict);}

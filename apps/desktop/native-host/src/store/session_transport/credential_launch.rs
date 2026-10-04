@@ -292,6 +292,25 @@ pub(crate) struct CredentialLaunch {
     granted_in_this_attempt: bool,
 }
 
+/// Physical custody retained before the first alias/profile side effect.
+/// Durable F journals retain the intent; this holder never grants authority.
+pub(crate) struct CredentialPreparationCustody {
+    _binding: Arc<CredentialBinding>,
+    _directory: Arc<crate::process::DirectoryRoots>,
+    history: PrivateHistoryGeneration,
+}
+impl CredentialPreparationCustody {
+    pub(crate) fn settled(&self, db: &VerifiedDatabaseConnection<'_>) -> Result<bool, String> {
+        let profiles = evidence(instance::read_credential_profiles(db, &self.history.instance_id))?;
+        if profiles.iter().any(|row| row.binding_id == self.history.binding_id && row.state != "REVOKED") {
+            return Ok(false);
+        }
+        let aliases = evidence(instance::read_credential_aliases(db, &self.history.instance_id))?;
+        Ok(!aliases.iter().any(|row| row.history_id == self.history.history_id
+            && !matches!(row.state.as_str(), "DORMANT" | "REMOVED")))
+    }
+}
+
 /// Resume only the original credential revocation after a host restart. This
 /// derives an existing principal and reads metadata; it neither launches nor
 /// stops a process and never manufactures a PreparedCustody or stop proof.
@@ -378,7 +397,8 @@ pub(crate) fn reconcile_stopped_credential(db: &mut VerifiedDatabaseConnection<'
 
 impl CredentialLaunch {
     pub(crate) fn prepare(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
-        profile: &AppContainerProfile, history: &PrivateHistoryReceipt, request: &str)
+        profile: &AppContainerProfile, history: &PrivateHistoryReceipt, request: &str,
+        retained: &mut Vec<CredentialPreparationCustody>)
         -> Result<Option<Self>, String> {
         let home = source_home(db, root, &history.generation.instance_id)?;
         let source = home.path.join("auth.json");
@@ -409,6 +429,8 @@ impl CredentialLaunch {
         let scopes = alias_scopes(db, root, &object, &rows,
             if pending { Some(history.generation.history_id.as_str()) } else { None })?;
         let binding = evidence(CredentialBinding::open_registered(root, &source, &home.identity, &object.file_identity, &scopes))?;
+        retained.push(CredentialPreparationCustody { _binding: binding.clone(),
+            _directory: history.custody.clone(), history: history.generation.clone() });
         let scope = CredentialAliasScope { root: registered.path.clone(), root_identity: registered.identity.clone() };
         let alias = if pending {
             let intent = recover_alias_intent(db, &history.generation, &registered, &object, request, current.ok_or_else(|| denied("pending alias absent"))?)?;
@@ -664,6 +686,49 @@ mod tests {
         custody.bind_text(1, &digest).unwrap(); custody.step_done().unwrap(); drop(custody);
         run(&mut db, &root);
         db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn credential_uncreated_cleanup_requires_this_attempt_and_preserves_alias_namespace() {
+        fixture(|db, root| {
+            let home = source_home(db, root, "instanceA").unwrap();
+            let history = instance::create_initial_private_history(db, root, &instance::PrivateHistoryLaunch {
+                instance_id: "instanceA", domain_id: "projectA", session_id: "sessionA", seat_id: "seatA",
+                seat_incarnation: "1", binding_id: "bindingA", generation: "1", request_id: "openA" }).unwrap();
+            // Physical namespace control only: no real credential bytes or CLI.
+            let source = home.path.join("auth.json");
+            drop(fs::OpenOptions::new().write(true).create_new(true).open(&source).unwrap());
+            let pin = Statement::prepare(db.as_ptr(), "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+            assert!(pin.step_row().unwrap()); let digest = pin.column_text(0).unwrap(); drop(pin);
+            instance::record_credential_backend(db, &instance::BackendSource { request_id: "backendA".into(),
+                instance_id: "instanceA".into(), home_identity: home.identity.clone(), program_digest: digest,
+                version: "0.160.0".into(), backend: instance::CredentialBackend::File,
+                startup_selector: instance::CredentialStartupSelector::FileBound,
+                operation_id: "accountRead".into(), ticket: "ticketA".into(), nonce: "nonceA".into(), generation: "1".into() }).unwrap();
+            let name = format!("Gogoke37.Uncreated.{}", &sha256_hex(root.canonical_root().identity.opaque().as_bytes())[..40]);
+            let profile = AppContainerProfile::derived_for_test(&name).unwrap();
+            let mut retained = Vec::new();
+            let mut launch = CredentialLaunch::prepare(db, root, &profile, &history, "openA", &mut retained).unwrap().unwrap();
+            assert!(launch.granted_in_this_attempt);
+            let identity = launch.object.file_identity.clone();
+            let revision = launch.profile_record.revision;
+            // An ACTIVE row alone cannot recover an earlier native attempt.
+            launch.granted_in_this_attempt = false;
+            assert!(launch.revoke_uncreated(db, root, &profile, "openA").is_err());
+            assert_eq!(instance::read_credential_profiles(db, "instanceA").unwrap()[0].revision, revision);
+            profile.verify_credential_alias(&launch.binding, &launch.alias).unwrap();
+            launch.granted_in_this_attempt = true;
+            assert!(launch.revoke_uncreated(db, root, &profile, "anotherOpen").is_err());
+            launch.revoke_uncreated(db, root, &profile, "openA").unwrap();
+            assert_eq!(instance::read_credential_profiles(db, "instanceA").unwrap()[0].state, "REVOKED");
+            assert_eq!(instance::read_credential_aliases(db, "instanceA").unwrap()[0].state, "DORMANT");
+            profile.verify_revoked_credential_alias(&launch.binding, &launch.alias).unwrap();
+            let (after, links) = CredentialBinding::observe_source_metadata(root, &source, &home.identity).unwrap();
+            assert_eq!(after, identity); assert_eq!(links, 2);
+            assert!(fs::symlink_metadata(launch.alias.path()).unwrap().is_file());
+            let custody = Statement::prepare(db.as_ptr(), "SELECT count(*) FROM main.gogoke_coordination_process_custody WHERE domain_id='projectA'").unwrap();
+            assert!(custody.step_row().unwrap()); assert_eq!(custody.column_text(0).unwrap(), "0");
+        });
     }
 
     #[test]

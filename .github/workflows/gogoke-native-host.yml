@@ -332,6 +332,8 @@ jobs:
               @{ id = 'credential-real-file-startup'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' }
               @{ id = 'credential-no-source-quiescence'; filter = 'credential_cleanup_without_source_rejects_unknown_global_custody' }
               @{ id = 'credential-original-remove-recovery'; filter = 'credential_cleanup_new_login_recovers_original_pending_remove_without_delete_retry' }
+              @{ id = 'credential-uncreated-attempt'; filter = 'credential_uncreated_cleanup_requires_this_attempt_and_preserves_alias_namespace' }
+              @{ id = 'credential-real-dual-scope'; filter = 'actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_model' }
             )
             Write-Host 'F private-history identity/schema boundary only; full library, compiled mutations and server suites NOT_RUN.'
           }

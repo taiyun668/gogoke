@@ -119,35 +119,37 @@ impl LaunchEvidence {
         db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         domain_id: &str, seat_id: &str, session_id: &str,
         repository_id: &str, worktree_id: &str,
-        request_id: &str,
+        request_id: &str, retained: &mut Vec<super::credential_launch::CredentialPreparationCustody>,
     ) -> Result<Self, String> {
         Self::observe_with_origin(db,root,owner,&NativeOrigin::user(owner),
-            domain_id,seat_id,session_id,repository_id,worktree_id,request_id)
+            domain_id,seat_id,session_id,repository_id,worktree_id,request_id,retained)
     }
 
     pub(crate) fn observe_with_origin(
         db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,host:&OwnerIssuer,
         origin:&NativeOrigin<'_>,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,
-        request_id:&str,
+        request_id:&str,retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>,
     )->Result<Self,String> {
         Self::observe_with_guard(db,root,host,origin,domain_id,seat_id,session_id,
-            repository_id,worktree_id,request_id,None)
+            repository_id,worktree_id,request_id,None,retained)
     }
 
     pub(crate) fn observe_host(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
         owner:&OwnerIssuer,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,proof:&HostEscalationProof,
-        choice:&HostRecipient,request_id:&str)->Result<Self,String> {
+        choice:&HostRecipient,request_id:&str,
+        retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>)->Result<Self,String> {
         Self::observe_with_guard(db,root,owner,&NativeOrigin::user(owner),domain_id,seat_id,
-            session_id,repository_id,worktree_id,request_id,Some((proof,choice)))
+            session_id,repository_id,worktree_id,request_id,Some((proof,choice)),retained)
     }
 
     fn observe_with_guard(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
         host:&OwnerIssuer,origin:&NativeOrigin<'_>,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,
         request_id:&str,
-        guard:Option<(&HostEscalationProof,&HostRecipient)>)->Result<Self,String> {
+        guard:Option<(&HostEscalationProof,&HostRecipient)>,
+        retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>)->Result<Self,String> {
         verify_host_guard(db,host,guard)?;
         let identity = evidence(authority::read_product_identity(db, host))?;
         let seat = evidence(seat::get(db, domain_id, seat_id))?
@@ -162,28 +164,31 @@ impl LaunchEvidence {
             NativeOrigin::Lead(admission)=>Some((*admission).clone()),
             NativeOrigin::User(_)=>None,
         };
-        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission,guard,request_id)
+        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission,guard,request_id,retained)
     }
 
     pub(crate) fn observe_resume(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
         owner: &OwnerIssuer, domain_id: &str, seat_id: &str, session_id: &str,
-        repository_id: &str, worktree_id: &str, request_id: &str) -> Result<Self,String> {
+        repository_id: &str, worktree_id: &str, request_id: &str,
+        retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>) -> Result<Self,String> {
         Self::observe_resume_with_guard(db,root,owner,domain_id,seat_id,session_id,
-            repository_id,worktree_id,request_id,None)
+            repository_id,worktree_id,request_id,None,retained)
     }
 
     pub(crate) fn observe_host_resume(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
         owner:&OwnerIssuer,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,request_id:&str,
-        proof:&HostEscalationProof,choice:&HostRecipient)->Result<Self,String> {
+        proof:&HostEscalationProof,choice:&HostRecipient,
+        retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>)->Result<Self,String> {
         Self::observe_resume_with_guard(db,root,owner,domain_id,seat_id,session_id,
-            repository_id,worktree_id,request_id,Some((proof,choice)))
+            repository_id,worktree_id,request_id,Some((proof,choice)),retained)
     }
 
     fn observe_resume_with_guard(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
         owner:&OwnerIssuer,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,request_id:&str,
-        guard:Option<(&HostEscalationProof,&HostRecipient)>)->Result<Self,String> {
+        guard:Option<(&HostEscalationProof,&HostRecipient)>,
+        retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>)->Result<Self,String> {
         verify_host_guard(db,owner,guard)?;
         let identity=evidence(authority::read_product_identity(db,owner))?;
         let seat=evidence(seat::get(db,domain_id,seat_id))?.ok_or("native resume: seat absent")?;
@@ -238,14 +243,15 @@ impl LaunchEvidence {
         let candidate=ClaimObservation {generation,home_id,binding_id,instance_id,
             phase:SessionPhase::Committed,process_operation_id:None,..old.clone()};
         Self::build(db,root,owner,identity,seat,candidate,repository_id,worktree_id,
-            Some(old),Some(request_id.to_owned()),None,guard,request_id)
+            Some(old),Some(request_id.to_owned()),None,guard,request_id,retained)
     }
 
     fn build(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         identity: ProductIdentitySnapshot, seat: Seat, claim: ClaimObservation,
         repository_id: &str, worktree_id: &str, resume_old: Option<ClaimObservation>,
         resume_request_id: Option<String>,launch_admission:Option<seat::NativeLeadAdmission>,
-        host_guard:Option<(&HostEscalationProof,&HostRecipient)>,request_id:&str) -> Result<Self,String> {
+        host_guard:Option<(&HostEscalationProof,&HostRecipient)>,request_id:&str,
+        retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>) -> Result<Self,String> {
         verify_host_guard(db,owner,host_guard)?;
         let domain_id=&claim.domain_id;
         let session_id=&claim.session_id;
@@ -302,7 +308,7 @@ impl LaunchEvidence {
             } else {evidence(instance::create_initial_private_history(db,root,&input))?})
         } else {None};
         let credential=if let Some(history)=&private_history {
-            super::credential_launch::CredentialLaunch::prepare(db,root,&profile,history,request_id)?
+            super::credential_launch::CredentialLaunch::prepare(db,root,&profile,history,request_id,retained)?
         } else {None};
         // Retain the exact credential witness across all remaining fallible
         // preparation. No process factory has been called in this builder.
