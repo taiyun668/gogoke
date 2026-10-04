@@ -178,6 +178,16 @@ fn exact_credential_alias_custody_allows_two_profiles_and_precise_revocation() {
     assert_eq!(result_b, "read=OK write=OK", "B native in-place access: {result_b}");
     binding.verify_registered_aliases(&[a.clone(), b.clone()])
         .expect("all three names still refer to the same object");
+    // Reopen metadata custody with the original durable ACL still present.
+    // A fresh holder must not rebuild that source DACL or erase peer grants.
+    drop((same, binding));
+    let binding = CredentialBinding::open_registered(&root, &source, &instance_id,
+        &source_id, &[a.clone(), b.clone()]).expect("cold exact metadata holder");
+    assert!(!binding.acl_prepared_in_this_holder().unwrap());
+    profile_b.grant_registered_credential_tree(&scope_b_path, &b.root_identity,
+        &binding, &alias_b, true).expect("cold registered scope does not reset source ACL");
+    profile_a.verify_credential_alias(&binding, &alias_a).expect("cold B scope preserves original A SID");
+    assert_eq!(run_child(&name_a, &runner_a, &alias_a, true), "read=OK write=OK");
     assert!(profile_a.verify_revoked_credential_alias(&binding, &alias_a).is_err(),
         "admitted SID cannot be mistaken for a completed revoke");
     profile_a.revoke_credential_alias(&binding, &alias_a)
@@ -191,7 +201,7 @@ fn exact_credential_alias_custody_allows_two_profiles_and_precise_revocation() {
     assert_eq!(remaining_b, "read=OK write=OK", "B remains admitted: {remaining_b}");
     assert!(alias_a.path().is_file() && alias_b.path().is_file(),
         "normal stop must not unlink aliases while another scope is active");
-    drop((profile_a, profile_b, same, binding));
+    drop((profile_a, profile_b, binding));
     drop(root);
     fs::remove_dir_all(requested).expect("only isolated synthetic root cleanup");
     #[link(name = "userenv")]

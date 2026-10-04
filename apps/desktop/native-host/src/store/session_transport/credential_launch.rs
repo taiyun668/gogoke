@@ -17,6 +17,11 @@ use crate::store::instance::{self, CredentialAliasAction, CredentialAliasIntent,
 use crate::store::same_open::VerifiedDatabaseConnection;
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_AFTER_CREDENTIAL_GRANT_BEFORE_COMPLETION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn evidence<T, E: std::fmt::Debug>(value: Result<T, E>) -> Result<T, String> {
     value.map_err(|error| format!("credential launch: {error:?}"))
 }
@@ -243,12 +248,20 @@ fn permit_new_grant(db: &VerifiedDatabaseConnection<'_>, binding: &CredentialBin
             return Err(denied("fresh holder cannot rebuild an old active profile DACL"));
         }
         let query = evidence(Statement::prepare(db.as_ptr(),
-            "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND state<>'STOPPED' LIMIT 1"))?;
+            "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1
+               AND (state<>'STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1"))?;
         evidence(query.bind_text(1, instance))?;
         if evidence(query.step_row())? { return Err(denied("fresh holder requires stopped instance custody")); }
         let query = evidence(Statement::prepare(db.as_ptr(),
-            "SELECT 1 FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND
-             (state='UNKNOWN' OR (process_operation_id IS NOT NULL AND state<>'STOPPED')) LIMIT 1"))?;
+            "SELECT 1 FROM main.gogoke_v37_h_claim a
+               LEFT JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=a.process_operation_id AND c.profile_id=a.instance_id
+                   AND c.domain_id=a.domain_id AND c.generation=a.generation
+              WHERE a.instance_id=?1 AND (a.state='UNKNOWN'
+                OR (a.process_operation_id IS NOT NULL AND
+                  (a.state NOT IN ('STOPPED','RELEASED') OR c.state IS NULL OR c.state<>'STOPPED'
+                    OR a.stop_fact_id IS NULL OR a.stop_fact_id='' OR c.stop_proof_hash IS NULL
+                    OR a.stop_fact_id<>c.stop_proof_hash))) LIMIT 1"))?;
         evidence(query.bind_text(1, instance))?;
         if evidence(query.step_row())? { return Err(denied("fresh holder requires resolved stopped H objects")); }
     }
@@ -290,6 +303,25 @@ pub(crate) struct CredentialLaunch {
     // Ephemeral provenance, never reconstructed from an ACTIVE database row.
     // Only this attempt's newly reserved grant can use NoAttempt cleanup.
     granted_in_this_attempt: bool,
+}
+
+/// Physical custody retained before the first alias/profile side effect.
+/// Durable F journals retain the intent; this holder never grants authority.
+pub(crate) struct CredentialPreparationCustody {
+    _binding: Arc<CredentialBinding>,
+    _directory: Arc<crate::process::DirectoryRoots>,
+    history: PrivateHistoryGeneration,
+}
+impl CredentialPreparationCustody {
+    pub(crate) fn settled(&self, db: &VerifiedDatabaseConnection<'_>) -> Result<bool, String> {
+        let profiles = evidence(instance::read_credential_profiles(db, &self.history.instance_id))?;
+        if profiles.iter().any(|row| row.binding_id == self.history.binding_id && row.state != "REVOKED") {
+            return Ok(false);
+        }
+        let aliases = evidence(instance::read_credential_aliases(db, &self.history.instance_id))?;
+        Ok(!aliases.iter().any(|row| row.history_id == self.history.history_id
+            && !matches!(row.state.as_str(), "DORMANT" | "REMOVED")))
+    }
 }
 
 /// Resume only the original credential revocation after a host restart. This
@@ -378,7 +410,8 @@ pub(crate) fn reconcile_stopped_credential(db: &mut VerifiedDatabaseConnection<'
 
 impl CredentialLaunch {
     pub(crate) fn prepare(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
-        profile: &AppContainerProfile, history: &PrivateHistoryReceipt, request: &str)
+        profile: &AppContainerProfile, history: &PrivateHistoryReceipt, request: &str,
+        retained: &mut Vec<CredentialPreparationCustody>)
         -> Result<Option<Self>, String> {
         let home = source_home(db, root, &history.generation.instance_id)?;
         let source = home.path.join("auth.json");
@@ -409,6 +442,8 @@ impl CredentialLaunch {
         let scopes = alias_scopes(db, root, &object, &rows,
             if pending { Some(history.generation.history_id.as_str()) } else { None })?;
         let binding = evidence(CredentialBinding::open_registered(root, &source, &home.identity, &object.file_identity, &scopes))?;
+        retained.push(CredentialPreparationCustody { _binding: binding.clone(),
+            _directory: history.custody.clone(), history: history.generation.clone() });
         let scope = CredentialAliasScope { root: registered.path.clone(), root_identity: registered.identity.clone() };
         let alias = if pending {
             let intent = recover_alias_intent(db, &history.generation, &registered, &object, request, current.ok_or_else(|| denied("pending alias absent"))?)?;
@@ -465,6 +500,10 @@ impl CredentialLaunch {
                 if intent.disposition != CredentialIntentDisposition::New { return Err(denied("grant was not newly reserved")); }
                 evidence(profile.grant_credential_alias(&binding, &alias))?;
                 evidence(profile.verify_credential_alias(&binding, &alias))?;
+            }
+            #[cfg(test)]
+            if FAIL_AFTER_CREDENTIAL_GRANT_BEFORE_COMPLETION.with(|fault| fault.replace(false)) {
+                return Err(denied("test interruption after exact credential grant before F completion"));
             }
             (evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Active))?, !recovering)
         };
@@ -664,6 +703,65 @@ mod tests {
         custody.bind_text(1, &digest).unwrap(); custody.step_done().unwrap(); drop(custody);
         run(&mut db, &root);
         db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn credential_uncreated_cleanup_requires_this_attempt_and_preserves_alias_namespace() {
+        fixture(|db, root| {
+            let home = source_home(db, root, "instanceA").unwrap();
+            let history = instance::create_initial_private_history(db, root, &instance::PrivateHistoryLaunch {
+                instance_id: "instanceA", domain_id: "projectA", session_id: "sessionA", seat_id: "seatA",
+                seat_incarnation: "1", binding_id: "bindingA", generation: "1", request_id: "openA" }).unwrap();
+            // Physical namespace control only: no real credential bytes or CLI.
+            let source = home.path.join("auth.json");
+            drop(fs::OpenOptions::new().write(true).create_new(true).open(&source).unwrap());
+            let pin = Statement::prepare(db.as_ptr(), "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+            assert!(pin.step_row().unwrap()); let digest = pin.column_text(0).unwrap(); drop(pin);
+            instance::record_credential_backend(db, &instance::BackendSource { request_id: "backendA".into(),
+                instance_id: "instanceA".into(), home_identity: home.identity.clone(), program_digest: digest,
+                version: "0.160.0".into(), backend: instance::CredentialBackend::File,
+                startup_selector: instance::CredentialStartupSelector::FileBound,
+                operation_id: "accountRead".into(), ticket: "ticketA".into(), nonce: "nonceA".into(), generation: "1".into() }).unwrap();
+            let name = format!("Gogoke37.Uncreated.{}", &sha256_hex(root.canonical_root().identity.opaque().as_bytes())[..40]);
+            let profile = AppContainerProfile::derived_for_test(&name).unwrap();
+            let mut retained = Vec::new();
+            let mut launch = CredentialLaunch::prepare(db, root, &profile, &history, "openA", &mut retained).unwrap().unwrap();
+            assert!(launch.granted_in_this_attempt);
+            let identity = launch.object.file_identity.clone();
+            let revision = launch.profile_record.revision;
+            // An ACTIVE row alone cannot recover an earlier native attempt.
+            launch.granted_in_this_attempt = false;
+            assert!(launch.revoke_uncreated(db, root, &profile, "openA").is_err());
+            assert_eq!(instance::read_credential_profiles(db, "instanceA").unwrap()[0].revision, revision);
+            profile.verify_credential_alias(&launch.binding, &launch.alias).unwrap();
+            launch.granted_in_this_attempt = true;
+            assert!(launch.revoke_uncreated(db, root, &profile, "anotherOpen").is_err());
+            launch.revoke_uncreated(db, root, &profile, "openA").unwrap();
+            assert_eq!(instance::read_credential_profiles(db, "instanceA").unwrap()[0].state, "REVOKED");
+            assert_eq!(instance::read_credential_aliases(db, "instanceA").unwrap()[0].state, "DORMANT");
+            profile.verify_revoked_credential_alias(&launch.binding, &launch.alias).unwrap();
+            let (after, links) = CredentialBinding::observe_source_metadata(root, &source, &home.identity).unwrap();
+            assert_eq!(after, identity); assert_eq!(links, 2);
+            assert!(fs::symlink_metadata(launch.alias.path()).unwrap().is_file());
+            let custody = Statement::prepare(db.as_ptr(), "SELECT count(*) FROM main.gogoke_coordination_process_custody WHERE domain_id='projectA'").unwrap();
+            assert!(custody.step_row().unwrap()); assert_eq!(custody.column_text(0).unwrap(), "0");
+            drop(custody);
+            let history_b = instance::create_initial_private_history(db, root, &instance::PrivateHistoryLaunch {
+                instance_id: "instanceA", domain_id: "projectB", session_id: "sessionB", seat_id: "seatB",
+                seat_incarnation: "1", binding_id: "bindingB", generation: "1", request_id: "openB" }).unwrap();
+            let profile_b = AppContainerProfile::derived_for_test(&format!("{name}.B")).unwrap();
+            let mut partial = Vec::new();
+            FAIL_AFTER_CREDENTIAL_GRANT_BEFORE_COMPLETION.with(|fault| fault.set(true));
+            assert!(CredentialLaunch::prepare(db, root, &profile_b, &history_b, "openB", &mut partial).is_err());
+            assert_eq!(partial.len(), 1, "partial original physical holder returned before any child");
+            assert!(!partial[0].settled(db).unwrap());
+            assert_eq!(instance::read_credential_profiles(db, "instanceA").unwrap().into_iter()
+                .find(|row| row.binding_id == "bindingB").unwrap().state, "GRANT_PENDING");
+            assert!(quiescent_cleanup(db, root, "instanceA", "anotherLogin").is_err());
+            let recovered = CredentialLaunch::prepare(db, root, &profile_b, &history_b, "openB", &mut partial).unwrap().unwrap();
+            assert!(!recovered.granted_in_this_attempt, "recovered physical grant is not a new native attempt");
+            assert!(recovered.revoke_uncreated(db, root, &profile_b, "openB").is_err());
+        });
     }
 
     #[test]
