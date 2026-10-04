@@ -573,6 +573,10 @@ impl<'root> ProductDatabase<'root> {
     fn generation_error(&mut self,request:&V37Request,reason:&str)->Result<Vec<u8>> {
         let c=failure(change::read(&self.connection,&request.domain_id,&request.request_id))?
             .ok_or(OrchestrationError::OperationConflict)?;
+        // The durable first failure remains immutable. Cloud controls also
+        // retain each later direct failure at this existing error boundary.
+        #[cfg(test)]
+        eprintln!("GOGOKE_GENERATION_FAILURE stage={} latest_error={reason}",c.stage);
         if c.original_error.is_none() {
             let bounded=reason.chars().skip(reason.chars().count().saturating_sub(1024)).collect::<String>();
             self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
@@ -612,6 +616,11 @@ impl<'root> ProductDatabase<'root> {
         if run.operation_id!=c.old_operation || run.custody.ticket.opaque()!=c.old_ticket
             || run.custody.custodian_nonce!=c.old_nonce || run.thread_id.as_deref()!=Some(&c.thread_id)
             || run.turn_id.is_some() || (!run.allows_input() && run.stop_proof.is_none()) {
+            #[cfg(test)]
+            eprintln!("GOGOKE_GENERATION_STOP_BLOCKED process={} ticket={} nonce={} thread={} turn={:?} pending={} source_failed={} stop_proof={}",
+                run.operation_id==c.old_operation,run.custody.ticket.opaque()==c.old_ticket,
+                run.custody.custodian_nonce==c.old_nonce,run.thread_id.as_deref()==Some(&c.thread_id),
+                run.turn_id,run.raw_capture.has_pending(),run.raw_capture.source_failed(),run.stop_proof.is_some());
             return Err(OrchestrationError::OperationConflict);
         }
         let custody=run.custody.clone();
@@ -1668,6 +1677,15 @@ impl<'root> ProductDatabase<'root> {
             Ok(())
         })();
         if let Err(error) = started {
+            #[cfg(test)]
+            if let Some(process)=self.process_custodian.active(&custody.ticket) {
+                let fragment=process.persistent_stdout_fragment().map(|bytes|
+                    String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(4096)..]).into_owned());
+                let stderr=process.stderr_live_bytes().map(|bytes|
+                    String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(4096)..]).into_owned());
+                eprintln!("GOGOKE_OPEN_FAILURE_DIRECT exit={:?} job_active={:?} stdout_fragment={fragment:?} stderr={stderr:?}; original={error:?}",
+                    process.exit_code(),process.active_job_processes());
+            }
             // Keep the original intention UNKNOWN even if cleanup succeeds;
             // do not make a failed handshake an APPLIED open via a stop receipt.
             if self.native_sessions.get(&key).is_some_and(|run|run.raw_capture.has_pending()) {
