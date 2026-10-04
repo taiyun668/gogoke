@@ -2869,6 +2869,9 @@ impl<'root> ProductDatabase<'root> {
                     if let Reply::Turn {turn_id,status:codex_rpc::TurnStatus::InProgress,..}=&reply {
                         self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.turn_id=Some(turn_id.clone());
                         self.process_native_pending_output(key)?;
+                    } else if let Reply::Turn {turn_id,..}=&reply {
+                        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+                        if run.turn_id.as_deref()==Some(turn_id.as_str()) {run.turn_id=None;}
                     }
                     return Ok(Some(RpcObservation { reply, frame }));
                 }

@@ -153,14 +153,28 @@ impl<'root> ProductDatabase<'root> {
                 if let Some(turn) = value(result, "turn") {
                     let Some(turn) = object(turn) else { return Ok(false); };
                     let Some(id) = string(value(turn, "id")) else { return Ok(false); };
-                    if id.is_empty() || !matches!(string(value(turn, "status")).as_deref(),
-                        Some("inProgress" | "completed" | "failed" | "interrupted")) {
+                    if id.is_empty() || command_hex.is_empty() { return Ok(false); }
+                    let command_bytes = bytes(&command_hex)?;
+                    let (rpc_id, command) = codex_rpc::decode_stored_turn_start(&command_bytes)
+                        .map_err(|error| OrchestrationError::V37StoreFailure(
+                            format!("original Host idle turn command: {error:?}")))?;
+                    if !matches!(&command, codex_rpc::Command::TurnStart {thread_id, ..} if thread_id == &thread) {
                         return Ok(false);
                     }
+                    let reply = codex_rpc::decode(&source.raw_bytes, Some((&rpc_id, &command)))
+                        .map_err(|error| OrchestrationError::V37StoreFailure(
+                            format!("original Host idle turn ACK: {error:?}")))?;
+                    let codex_rpc::Reply::Turn {turn_id, status, ..} = reply else { return Ok(false); };
+                    if turn_id != id { return Ok(false); }
                     known.insert(id.clone());
-                    // A terminal notification may precede its turn/start ACK.
-                    // A late ACK must not resurrect that exact completed turn.
-                    if !terminal.contains(&id) {
+                    if status != codex_rpc::TurnStatus::InProgress {
+                        // The original matched ACK can itself be terminal.
+                        // It does not manufacture a positive thread idle.
+                        terminal.insert(id.clone());
+                        unfinished.remove(&id);
+                    } else if !terminal.contains(&id) {
+                        // A late in-progress ACK cannot reopen an earlier
+                        // original terminal for this exact turn.
                         unfinished.insert(id);
                         idle = false;
                     }
