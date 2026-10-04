@@ -127,7 +127,7 @@ def session_evidence(db, session, case, operations):
               "repositoryId": session["repositoryId"], "worktreeId": session["worktreeId"],
               **({"purpose": "FORMAL_REVIEW"} if session["purpose"] == "FORMAL_REVIEW" else {})},
           "Actual original H open input is not the expected zero-lineage registration")
-    native_id, native_path = None, None
+    native_id, native_path, effective_memory_configuration = None, None, None
     start_method = "thread/start" if case["driverId"] == "codex" else "session/new"
     if case["driverId"] != "claude":
         starts = [(row, command) for row, command in commands if command.get("method") == start_method]
@@ -145,6 +145,25 @@ def session_evidence(db, session, case, operations):
         if case["driverId"] == "codex":
             check(native_id == session["threadId"], "Original Codex native thread identity differs")
             native_path = ack["thread"].get("path")  # Export source only; do not open or guess a path.
+            configs = [(row, frame) for row, frame in commands if frame.get("method") == "config/read"]
+            check(len(configs) == 1 and configs[0][0]["phase"] == "OBSERVED" and
+                  path_spelling(configs[0][1]["params"]["cwd"]) == path_spelling(tree["worktree_path"]),
+                  "Actual Codex config observation lacks its original H binding")
+            config_step, config_command = configs[0]
+            replies = [(row, frame) for row, frame in decoded if "method" not in frame and "id" in frame and
+                       rpc_id(frame["id"]) == rpc_id(config_command["id"])]
+            check(len(replies) == 1 and replies[0][0]["source_epoch"] == config_step["source_epoch"] and
+                  replies[0][0]["source_cursor"] == config_step["source_cursor"] and "error" not in replies[0][1],
+                  "Actual Codex config has no original typed H/A response")
+            config_source, config_reply = replies[0]
+            config_value = config_reply["result"]["config"]
+            check(config_value["features"]["memories"] is False and
+                  config_value["memories"]["generate_memories"] is False and
+                  config_value["memories"]["use_memories"] is False,
+                  "Actual Codex effective memory configuration is not disabled")
+            effective_memory_configuration = {"source": "ORIGINAL_H_A_CONFIG_READ",
+                "sourceEpoch": config_source["source_epoch"], "sourceCursor": config_source["source_cursor"],
+                "featureMemories": False, "generateMemories": False, "useMemories": False}
     check(not any(command.get("method") in ("thread/resume", "thread/fork", "session/load", "session/resume")
                   for _, command in commands), "Fresh history session inherited native context")
     check(len(session["inputs"]) == 1, "Exactly one genuine marker turn per original history session")
@@ -244,6 +263,7 @@ def session_evidence(db, session, case, operations):
     return {"domainId": domain, "sessionId": sid, "nativeSessionId": native_id, "originalCodexThreadPath": native_path,
             "episode": episode, "custody": custody, "registration": registration, "worktree": tree,
             "stdin": stdin, "rawSource": incoming, "rpcSteps": outgoing, "normalized": normalized,
+            "effectiveMemoryConfiguration": effective_memory_configuration,
             "originalBody": original_body, "marker": input_row["marker"]}
 
 

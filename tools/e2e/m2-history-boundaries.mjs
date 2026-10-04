@@ -42,7 +42,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     sourceCommit: config.sourceCommit, domainId: config.domainId, stateRoot: config.stateRoot,
     evidenceDirectory: config.evidenceDirectory, cases: [], refusals: [],
     notRun: [
-      { caseId: 'V04b_EFFECTIVE_VENDOR_MEMORY', reason: 'No qualified production memory-store or loaded-instruction provenance API; real H inputs alone do not prove vendor memory disabled.' },
+      { caseId: 'V04b_EFFECTIVE_VENDOR_MEMORY', reason: 'Codex startup memory flags are checked from the original H/A config/read response; vendor memory-store/activity, other providers and loaded-instruction provenance still need direct evidence. H inputs alone do not close V04b.' },
       { caseId: 'WORKER_OWNERLEAD_HISTORY', reason: 'No model history-query tool or production locator for an exact non-secret OwnerLead test-history object. User reader controls are not model scope evidence.' },
       { caseId: 'ANTIGRAVITY', reason: 'Not admitted: fixed CLI/login/memory contract remains an Owner decision.' },
     ] };

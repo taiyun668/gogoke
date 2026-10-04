@@ -142,6 +142,15 @@ there is no resend, alternative CLI, forced process stop or synthetic golden.
 
 ## Remaining production dependencies and non-claims
 
+For Codex, the reader reuses the already existing production `config/read`
+command and fixed response decoder's three effective memory flags. It matches
+the actual H command to its original A response by typed RPC ID, source epoch,
+cursor and physical custody; `features.memories`, `generate_memories` and
+`use_memories` must each be false. It reports that original configuration fact,
+without a new probe or operation. Other vendors have no such qualified fact in
+this reader. Configuration observation does not prove memory-store activity or
+loaded instruction provenance.
+
 V04b overall remains **NOT_RUN** until actual vendor memory-store and loaded
 instruction provenance are available. Original prompt isolation and fresh
 threads prove the tested H input behavior; launch flags, config intent,
