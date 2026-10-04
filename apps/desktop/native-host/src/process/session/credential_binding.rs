@@ -351,6 +351,16 @@ impl CredentialBinding {
 
     pub(crate) fn identity(&self) -> &RootIdentity { &self.identity }
 
+    /// This is only this process's completed baseline-ACL operation state.
+    /// A fresh holder after restart may observe an already-protected DACL but
+    /// must not treat that as authority to rebuild while jobs are UNKNOWN.
+    pub(crate) fn acl_prepared_in_this_holder(&self) -> Result<bool, CredentialError> {
+        let state = self.state.lock().map_err(|_| CredentialError::CustodyPoisoned)?;
+        let scopes: Vec<_> = state.aliases.iter().map(|entry| entry.witness.scope.clone()).collect();
+        self.verify_locked(&state, &scopes)?;
+        Ok(state.acl_prepared)
+    }
+
     #[cfg(test)]
     fn denied_data_read_for_test(&self) -> io::Result<()> {
         #[link(name = "kernel32")]
