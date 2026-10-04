@@ -33,11 +33,19 @@ type Result<T> = std::result::Result<T, CredentialRegistryError>;
 pub(crate) enum CredentialBackend { File, Other, Unknown }
 impl CredentialBackend {
     fn text(self) -> &'static str { match self { Self::File => "FILE", Self::Other => "OTHER", Self::Unknown => "UNKNOWN" } }
+    fn from_text(value: &str) -> Result<Self> {
+        match value { "FILE" => Ok(Self::File), "OTHER" => Ok(Self::Other), "UNKNOWN" => Ok(Self::Unknown),
+            _ => Err(CredentialRegistryError::Unusable) }
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CredentialStartupSelector { FileBound, Unknown }
 impl CredentialStartupSelector {
     fn text(self) -> &'static str { match self { Self::FileBound => "FILE_BOUND", Self::Unknown => "UNKNOWN" } }
+    fn from_text(value: &str) -> Result<Self> {
+        match value { "FILE_BOUND" => Ok(Self::FileBound), "UNKNOWN" => Ok(Self::Unknown),
+            _ => Err(CredentialRegistryError::Unusable) }
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BackendSource {
@@ -299,19 +307,28 @@ pub(crate) fn record_credential_backend(db: &mut VerifiedDatabaseConnection<'_>,
         finish_journal(db, &key, &fingerprint, "BACKEND_METADATA_RECORDED", false)
     })
 }
-pub(crate) fn read_usable_credential_backend(db: &VerifiedDatabaseConnection<'_>, instance: &str) -> Result<BackendSource> {
+/// Original configured enum is evidence, never startup/use qualification.
+pub(crate) fn read_configured_credential_backend(db: &VerifiedDatabaseConnection<'_>, instance: &str) -> Result<BackendSource> {
     atom(instance)?;
     let query = Statement::prepare(db.as_ptr(),
-        "SELECT home_identity,program_digest,version,request_id,operation_id,ticket,custodian_nonce,generation
-           FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id=?1 AND backend='FILE' AND startup_selector='FILE_BOUND'")?;
+        "SELECT home_identity,program_digest,version,request_id,operation_id,ticket,custodian_nonce,generation,backend,startup_selector
+           FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id=?1")?;
     query.bind_text(1, instance)?;
     if !query.step_row()? { return Err(CredentialRegistryError::Unusable); }
     let source = BackendSource { instance_id: instance.into(), home_identity: parse_identity(&query.column_text(0)?)?,
         program_digest: query.column_text(1)?, version: query.column_text(2)?, request_id: query.column_text(3)?,
         operation_id: query.column_text(4)?, ticket: query.column_text(5)?, nonce: query.column_text(6)?, generation: query.column_text(7)?,
-        backend: CredentialBackend::File, startup_selector: CredentialStartupSelector::FileBound };
+        backend: CredentialBackend::from_text(&query.column_text(8)?)?,
+        startup_selector: CredentialStartupSelector::from_text(&query.column_text(9)?)? };
     if query.step_row()? { return Err(CredentialRegistryError::Conflict); }
     check_backend_source(db, &source)?; Ok(source)
+}
+pub(crate) fn read_usable_credential_backend(db: &VerifiedDatabaseConnection<'_>, instance: &str) -> Result<BackendSource> {
+    let source = read_configured_credential_backend(db, instance)?;
+    if source.backend != CredentialBackend::File || source.startup_selector != CredentialStartupSelector::FileBound {
+        return Err(CredentialRegistryError::Unusable);
+    }
+    Ok(source)
 }
 pub(crate) fn read_credential_object(db: &VerifiedDatabaseConnection<'_>, instance: &str) -> Result<Option<CredentialObjectRecord>> {
     let query = Statement::prepare(db.as_ptr(),
@@ -665,6 +682,7 @@ mod tests {
             initialize_credential_schema(db).unwrap();
             let config_only = BackendSource { startup_selector: CredentialStartupSelector::Unknown, ..backend() };
             record_credential_backend(db, &config_only).unwrap();
+            assert_eq!(read_configured_credential_backend(db, "instanceA").unwrap(), config_only);
             assert!(matches!(read_usable_credential_backend(db, "instanceA"), Err(CredentialRegistryError::Unusable)));
             let actual = BackendSource { request_id: "backendB".into(), ..backend() };
             record_credential_backend(db, &actual).unwrap();
@@ -738,6 +756,8 @@ mod tests {
             let unknown_backend = BackendSource { request_id: "backendUnknown".into(), backend: CredentialBackend::Other,
                 startup_selector: CredentialStartupSelector::Unknown, ..backend() };
             record_credential_backend(db, &unknown_backend).unwrap();
+            assert_eq!(read_configured_credential_backend(db, "instanceA").unwrap().backend, CredentialBackend::Other);
+            assert!(matches!(read_usable_credential_backend(db, "instanceA"), Err(CredentialRegistryError::Unusable)));
             complete_credential_profile(db, &grant, CredentialProfileResult::Active).unwrap();
             let revoke = CredentialProfileIntent { request_id: "revokeA".into(), expected_revision: 2,
                 action: CredentialProfileAction::Revoke, ..input };

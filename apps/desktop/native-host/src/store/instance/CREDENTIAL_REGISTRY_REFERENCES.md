@@ -15,7 +15,11 @@ Backend evidence retains the original STOPPED process operation, ticket, nonce,
 generation, F home/pin/version and non-secret backend enum. Usability additionally
 requires a separately verified `FILE_BOUND` startup selector. A configuration
 response containing File alone is insufficient. Other/Unknown never converts to
-File. The source object first binds only at link count one. Replacement requires
+File. `read_configured_credential_backend` returns the original enum/selector after
+the same current pin/home and stopped-custody checks; it grants no usability.
+Root checks a known File configuration before its new File-bound observer, and
+only records usable evidence after actual account/presence success and STOPPED.
+The source object first binds only at link count one. Replacement requires
 an explicit old identity/revision plus all aliases removed, all profiles revoked
 and no unresolved credential intent; Root supplies actual instance quiescence.
 
