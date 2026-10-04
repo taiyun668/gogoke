@@ -1,6 +1,7 @@
 //! Host health uses sealed terminal H/A facts and the existing generation
 //! journal. It has no model permissions, new scheduler or work-input resend.
 use super::*;
+use crate::store::atomic::Parser;
 use crate::store::ledger::RawSourceKey;
 use crate::store::session_transport::{self as h,host_health,generation_change as change,runtime};
 use crate::store::seat::{self,NativeOrigin};

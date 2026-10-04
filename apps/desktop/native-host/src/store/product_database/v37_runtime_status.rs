@@ -1,6 +1,7 @@
 //! Owner-private display facts from the current seat generation's actual H/A
 //! source. These facts grant no input, health action, login or instance change.
 use super::*;
+use crate::store::atomic::Parser;
 use crate::store::ledger;
 use crate::store::session_transport::{codex_rpc,provider_evidence::stream_json};
 
@@ -26,6 +27,11 @@ fn cli_failure(driver:&str,raw:&[u8])->Result<Option<Option<String>>> {
     if matches!(driver,"codex"|"opencode"|"grok")&&field(&root,"id").is_some()
         &&field(&root,"method").is_none() {
         if let Some(error)=field(&root,"error") {return Ok(Some(Some(error_text(error))));}
+        if matches!(driver,"opencode"|"grok") {
+            if let Some(Json::Object(result))=field(&root,"result") {
+                if value(result,"stopReason").as_deref()==Some("end_turn") {return Ok(Some(None));}
+            }
+        }
     }
     if driver=="codex"&&value(&root,"method").as_deref()==Some("turn/completed") {
         let codex_rpc::Reply::TurnNotification {status,..}=codex_rpc::decode(raw,None)
