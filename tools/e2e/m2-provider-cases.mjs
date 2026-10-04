@@ -193,8 +193,8 @@ export async function runProviderBoundaryCases(product, config, journal) {
         `Call the real AskUserQuestion tool with exactly one question: ${JSON.stringify({
           question: questionText, header: questionHeader, options: questionOptions, multiSelect: false,
         })}. Wait for its answer. If the User selects JSON, create only the new relative file ` +
-        `${JSON.stringify(markerFile)} in this bound worktree, containing the compact UTF-8 ` +
-        `JSON object ${JSON.stringify(marker)} followed by one newline. ` +
+        `${JSON.stringify(markerFile)} in this bound worktree, containing the UTF-8 ` +
+        `JSON object ${JSON.stringify(marker)}. ` +
         `Do not create it before the question is answered. ` +
         `Do not read credentials or files outside this worktree, use the network, open a browser, ` +
         `or run any generated text in the host. After the file is written, report its name.`;

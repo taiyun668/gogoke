@@ -211,9 +211,8 @@ def original_claude_question(db, case, journal, operation_rows, raw_rows, tree_p
     if not marker.is_file() or marker.is_symlink() or not within(tree_path, marker.resolve(strict=True)):
         raise RuntimeError("Claude marker is not a new local file in the F worktree")
     marker_bytes = marker.read_bytes()
-    if len(marker_bytes) > 4096 or marker_bytes.decode("utf-8") != \
-            json.dumps(case["claudeQuestion"]["marker"], ensure_ascii=False, separators=(",", ":")) + "\n":
-        raise RuntimeError("Claude post-answer marker bytes differ from prescribed JSON")
+    if len(marker_bytes) > 4096 or json.loads(marker_bytes.decode("utf-8")) != case["claudeQuestion"]["marker"]:
+        raise RuntimeError("Claude post-answer marker differs from prescribed JSON value")
     return {"state": "DIRECT_ORIGINAL_CLAUDE_QUESTION_ANSWER_CONTINUATION_REQUIRES_REVIEW",
             "cardId": card_ref["cardId"], "requestId": asking["request_id"],
             "toolUseId": card[4], "hostTurnId": send_id, "vendorSessionId": terminal["session_id"],
