@@ -258,7 +258,7 @@ pub(crate) struct AclWitness {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum ExistingCredentialScopeAce { Inherited, Explicit, Missing }
+enum ExistingCredentialScopeAce { Inherited, Explicit, ExplicitAndInherited, Missing }
 
 impl AppContainerProfile {
     /// Recover the exact historical package SID for metadata-only revocation.
@@ -548,8 +548,18 @@ impl AppContainerProfile {
                 == ExistingCredentialScopeAce::Missing {
                 drop(object);
                 let writable_object = open_bound_object(child, identity, *directory)?;
-                grant_exact_acl(writable_object.0, self.sid, identity, rights,
-                    if *directory { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE })?;
+                if let Err(error) = grant_exact_acl(writable_object.0, self.sid, identity, rights,
+                    if *directory { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE }) {
+                    // SetSecurityInfo may materialize the same parent's inherited
+                    // grant while adding the missing explicit leaf grant. This
+                    // exact pair has the same rights; the general one-ACE writer
+                    // remains strict for every other object.
+                    if !matches!(&error, IsolationError::AclWitnessDetail { .. })
+                        || self.credential_scope_child_ace(writable_object.0, child,
+                            *directory, rights)? != ExistingCredentialScopeAce::ExplicitAndInherited {
+                        return Err(error.into());
+                    }
+                }
                 if self.credential_scope_child_ace(writable_object.0, child, *directory, rights)?
                     == ExistingCredentialScopeAce::Missing {
                     return Err(IsolationError::AclWitnessMismatch.into());
@@ -576,8 +586,9 @@ impl AppContainerProfile {
             }
             return Ok(ExistingCredentialScopeAce::Missing);
         }
-        if observed.len() == 1 && observed[0].0 == GRANT_ACCESS && observed[0].1 == rights
-            && observed[0].2 & INHERITED_ACE != 0 && observed[0].2 & INHERIT_ONLY_ACE == 0 {
+        let inherited_flags = INHERITED_ACE |
+            if directory { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE };
+        if observed.as_slice() == &[(GRANT_ACCESS, rights, inherited_flags)] {
             return Ok(ExistingCredentialScopeAce::Inherited);
         }
         let explicit_flags = if directory { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE };
@@ -585,9 +596,13 @@ impl AppContainerProfile {
             && !dacl_protected(handle)? {
             return Ok(ExistingCredentialScopeAce::Explicit);
         }
+        if observed.as_slice() == &[(GRANT_ACCESS, rights, explicit_flags),
+            (GRANT_ACCESS, rights, inherited_flags)] && !dacl_protected(handle)? {
+            return Ok(ExistingCredentialScopeAce::ExplicitAndInherited);
+        }
         Err(IsolationError::AclWitnessDetail { object: child.to_path_buf(),
             sid: self.package_sid_string()?, expected: format!(
-                "one inherited effective or exact explicit unprotected grant, rights={rights:#x}"),
+                "one exact inherited, exact explicit, or exact same-rights explicit-plus-inherited unprotected grant, rights={rights:#x}"),
             observed })
     }
 
