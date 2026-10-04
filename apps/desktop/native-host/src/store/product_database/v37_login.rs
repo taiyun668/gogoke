@@ -388,6 +388,209 @@ pub(super) fn is_owner_instance_list_frame(frame: &[u8]) -> bool {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn legacy_account_custody(&self, instance_id: &str) -> Result<Vec<instance::LegacyCustodyRow>> {
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,''),stop_proof_hash IS NULL FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 ORDER BY operation_id")?;
+        query.bind_text(1, instance_id)?;
+        let mut rows = Vec::new();
+        while query.step_row()? {
+            rows.push(instance::LegacyCustodyRow {
+                operation_id: query.column_text(0)?, ticket: query.column_text(1)?,
+                custodian_nonce: query.column_text(2)?, pid: query.column_text(3)?,
+                creation_time_100ns: query.column_text(4)?, image_path: query.column_text(5)?,
+                binary_digest_sha256: query.column_text(6)?, profile_id: query.column_text(7)?,
+                domain_id: query.column_text(8)?, generation: query.column_text(9)?,
+                state: query.column_text(10)?, stop_proof_hash: if query.column_text(12)? == "1" {
+                    None
+                } else { Some(query.column_text(11)?) },
+            });
+        }
+        Ok(rows)
+    }
+
+    fn legacy_account_profile_names(&self, instance_id: &str, home: &RootIdentity,
+        rows: &[instance::LegacyCustodyRow]) -> Result<Vec<String>> {
+        let mut names = vec![owner_login_profile_name(instance_id, home)];
+        for row in rows {
+            if row.profile_id != instance_id { return Err(OrchestrationError::AccessDenied); }
+            if row.domain_id == "global" { continue; }
+            let query = Statement::prepare(self.connection.as_ptr(),
+                "SELECT domain_id,session_id,seat_incarnation,generation,instance_id FROM main.gogoke_v37_h_process_episode WHERE process_operation_id=?1")?;
+            query.bind_text(1, &row.operation_id)?;
+            if !query.step_row()? { return Err(OrchestrationError::Invalid("legacy profile original H episode missing")); }
+            let domain = query.column_text(0)?;
+            let session = query.column_text(1)?;
+            let incarnation = query.column_text(2)?;
+            let generation = query.column_text(3)?;
+            if domain != row.domain_id || generation != row.generation
+                || query.column_text(4)? != instance_id || incarnation.is_empty() || query.step_row()? {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let digest = crate::store::digest::sha256_hex(format!("{}\n{domain}\n{session}\n{incarnation}\n{generation}",
+                self.root.canonical_root().identity.opaque()).as_bytes());
+            names.push(format!("Gogoke37.Session.{}", &digest[..40]));
+        }
+        names.sort(); names.dedup();
+        Ok(names)
+    }
+
+    /// This is an ACL recovery qualification, never a stop or quiescence fact.
+    /// It runs before creating a new account runtime directory so the saved
+    /// physical inventory cannot contain that attempt's transient substitute.
+    fn recover_legacy_account_baseline(&mut self, instance_id: &str,
+        home: &instance::ResolvedDirectory, profile: &AppContainerProfile) -> Result<()> {
+        use crate::process::{CredentialBinding, CredentialError, LegacyAclInventory, NativeBootIdentity};
+        use instance::{LegacyAclStep, LegacyStepPhase};
+        fn failure<T>(result: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
+            result.map_err(|error| OrchestrationError::V37StoreFailure(format!("legacy boot ACL recovery: {error:?}")))
+        }
+        failure(instance::initialize_legacy_fence_schema(&mut self.connection))?;
+        let prior = failure(instance::read_legacy_fence(&self.connection, instance_id))?;
+        let source = home.path.join("auth.json");
+        let (source_identity, source_links) = match CredentialBinding::observe_source_metadata(self.root, &source, &home.identity) {
+            Ok(value) => value,
+            Err(CredentialError::Io { source, .. }) if source.raw_os_error() == Some(2) && prior.is_none() => return Ok(()),
+            Err(error) => return failure(Err::<(), _>(error)),
+        };
+        let legacy = failure(profile.has_legacy_owner_login_grant(&home.path, &home.identity))?;
+        if prior.is_none() {
+            if !legacy { return Ok(()); }
+            let unresolved = Statement::prepare(self.connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE domain_id='global' AND profile_id=?1 AND (state<>'STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1")?;
+            unresolved.bind_text(1, instance_id)?;
+            if !unresolved.step_row()? { return Ok(()); }
+        }
+        let boot = failure(NativeBootIdentity::observe())?.canonical_hex();
+        let aliases = failure(instance::read_credential_aliases(&self.connection, instance_id))?;
+        let mut scopes = Vec::new();
+        for alias in aliases.iter().filter(|row| row.state != "REMOVED") {
+            if !matches!(alias.state.as_str(), "ACTIVE" | "DORMANT") || alias.source_file_identity != source_identity {
+                return Err(OrchestrationError::Invalid("legacy recovery alias intent or source changed"));
+            }
+            let directory = failure(instance::resolve_private_history_directory(&self.connection, self.root, &alias.history_id))?;
+            if directory.identity != alias.directory_identity { return Err(OrchestrationError::AccessDenied); }
+            scopes.push(crate::process::CredentialAliasScope { root: directory.path, root_identity: directory.identity });
+        }
+        let binding = failure(CredentialBinding::open_registered(self.root, &source,
+            &home.identity, &source_identity, &scopes))?;
+        if let Some(retained) = self.recovered_credential_holders.get(&(instance_id.into(), source_identity.opaque())) {
+            if !std::sync::Arc::ptr_eq(retained, &binding) { return Err(OrchestrationError::AccessDenied); }
+            failure(binding.verify_registered_aliases(&scopes))?;
+            if failure(binding.acl_prepared_in_this_holder())? { return Ok(()); }
+        }
+        let object = failure(instance::read_credential_object(&self.connection, instance_id))?;
+        if object.as_ref().is_some_and(|row| row.root_identity != *self.connection.root_identity()
+            || row.home_identity != home.identity || row.file_identity != source_identity
+            || row.source_parent_identity != home.identity) { return Err(OrchestrationError::AccessDenied); }
+        let original_rows = match &prior { Some(row) => row.custody.clone(), None => self.legacy_account_custody(instance_id)? };
+        let names = self.legacy_account_profile_names(instance_id, &home.identity, &original_rows)?;
+        let provenance = crate::store::digest::sha256_hex(names.join("\n").as_bytes());
+        let completed = match &prior {
+            Some(_) => failure(instance::read_legacy_step(&self.connection, instance_id, LegacyAclStep::Baseline))?
+                .filter(|step| step.phase == LegacyStepPhase::Applied),
+            None => None,
+        };
+        if let (Some(record), Some(step)) = (&prior, completed) {
+            if record.original_boot == boot || record.database_identity != self.connection.identity().opaque()
+                || record.root_identity != self.connection.root_identity().opaque()
+                || record.home_identity != home.identity.opaque() || record.source_identity != source_identity.opaque()
+                || record.source_parent_identity != home.identity.opaque() || record.acl_provenance_digest != provenance {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let live = self.legacy_account_custody(instance_id)?;
+            if original_rows.iter().any(|original| !live.iter().any(|row| row == original))
+                || live.iter().any(|row| !original_rows.iter().any(|old| old.operation_id == row.operation_id)
+                    && (row.state != "STOPPED" || row.stop_proof_hash.as_deref().map_or(true, str::is_empty))) {
+                return Err(OrchestrationError::Invalid("legacy recovery retains current unknown or active custody"));
+            }
+            let profiles = failure(instance::read_credential_profiles(&self.connection, instance_id))?;
+            if profiles.iter().any(|row| row.state != "REVOKED") {
+                return Err(OrchestrationError::Invalid("legacy cold baseline retains active credential holders"));
+            }
+            let permitted = vec![(failure(profile.sid_identity())?, 0x0012_0089)];
+            let (inventory, receipt) = failure(LegacyAclInventory::restore_for_adoption(self.root,
+                &home.path, &home.identity, &binding, &names, &record.native_snapshot,
+                &record.native_snapshot_digest, &scopes, &permitted))?;
+            if inventory.source_target_digest() != step.target_source_acl_digest
+                || receipt.baseline_core_digest != inventory.baseline_core_digest() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            self.recovered_credential_holders.insert((instance_id.into(), source_identity.opaque()), binding);
+            return Ok(());
+        }
+        if source_links != 1 || !scopes.is_empty() {
+            return Err(OrchestrationError::Invalid("legacy recovery requires original single-link source without aliases"));
+        }
+        let inventory = match &prior {
+            Some(row) => failure(LegacyAclInventory::restore(self.root, &home.path, &home.identity,
+                &binding, &names, &row.native_snapshot, &row.native_snapshot_digest))?,
+            None => failure(LegacyAclInventory::capture(self.root, &home.path, &home.identity, &binding, &names))?,
+        };
+        let mut record = match prior {
+            Some(row) => row,
+            None => {
+                let capture = instance::LegacyFenceCapture {
+                instance_id: instance_id.into(), original_boot: boot.clone(),
+                database_identity: self.connection.identity().clone(), root_identity: self.connection.root_identity().clone(),
+                home_identity: home.identity.clone(), source_identity: source_identity.clone(),
+                source_parent_identity: home.identity.clone(), source_revision: object.as_ref().map(|row| row.revision),
+                source_link_count: u64::from(source_links), registered_alias_count: 0, custody: original_rows,
+                home_acl_digest: inventory.home_original_digest(), source_acl_digest: inventory.source_original_digest(),
+                acl_provenance_digest: provenance.clone(), native_snapshot: inventory.encode_snapshot(),
+                native_snapshot_digest: inventory.original_digest(),
+                };
+                failure(instance::capture_legacy_fence(&mut self.connection, &capture))?
+            },
+        };
+        if record.original_boot == boot {
+            return Err(OrchestrationError::Invalid("legacy account scope requires original stopped observer custody; exact metadata fence saved, Windows system restart required"));
+        }
+        let mut proof = instance::LegacyPhysicalProof {
+            database_identity: self.connection.identity().clone(), root_identity: self.connection.root_identity().clone(),
+            home_identity: home.identity.clone(), source_identity: source_identity.clone(), source_parent_identity: home.identity.clone(),
+            source_revision: object.as_ref().map(|row| row.revision), source_link_count: u64::from(source_links),
+            registered_alias_count: 0, acl_provenance_digest: provenance,
+            actual_home_acl_digest: inventory.home_original_digest(), actual_source_acl_digest: inventory.source_original_digest(),
+        };
+        let request_base = format!("legacy-acl-{}", crate::store::digest::sha256_hex(instance_id.as_bytes()));
+        let home_step = match failure(instance::read_legacy_step(&self.connection, instance_id, LegacyAclStep::Home))? {
+            Some(step) => step,
+            None => failure(instance::begin_legacy_acl_step(&mut self.connection, &instance::LegacyStepRequest {
+                instance_id, step: LegacyAclStep::Home, request_id: &format!("{request_base}-home"), current_boot: &boot,
+                expected_revision: record.revision, target_home_acl_digest: &inventory.home_target_digest(),
+                target_source_acl_digest: &inventory.source_after_home_digest(), proof: &proof,
+            }))?,
+        };
+        let home_receipt = failure(inventory.reconcile_home(self.root, &home.path, &home.identity, &binding))?;
+        proof.actual_home_acl_digest = home_receipt.home_observed_digest.clone();
+        proof.actual_source_acl_digest = home_receipt.source_observed_digest.clone();
+        if home_step.phase == LegacyStepPhase::Pending {
+            record = failure(instance::finish_legacy_acl_step(&mut self.connection, &instance::LegacyStepFinish {
+                instance_id, step: LegacyAclStep::Home, request_id: &home_step.request_id,
+                current_boot: &boot, expected_intent_revision: home_step.intent_revision, proof: &proof,
+            }))?;
+        }
+        let baseline = match failure(instance::read_legacy_step(&self.connection, instance_id, LegacyAclStep::Baseline))? {
+            Some(step) => step,
+            None => failure(instance::begin_legacy_acl_step(&mut self.connection, &instance::LegacyStepRequest {
+                instance_id, step: LegacyAclStep::Baseline, request_id: &format!("{request_base}-baseline"), current_boot: &boot,
+                expected_revision: record.revision, target_home_acl_digest: &inventory.home_target_digest(),
+                target_source_acl_digest: &inventory.source_target_digest(), proof: &proof,
+            }))?,
+        };
+        let receipt = failure(inventory.prepare_source_baseline(self.root, &home.path,
+            &home.identity, &binding, &home_receipt))?;
+        proof.actual_source_acl_digest = receipt.source_observed_digest;
+        if baseline.phase == LegacyStepPhase::Pending {
+            failure(instance::finish_legacy_acl_step(&mut self.connection, &instance::LegacyStepFinish {
+                instance_id, step: LegacyAclStep::Baseline, request_id: &baseline.request_id,
+                current_boot: &boot, expected_intent_revision: baseline.intent_revision, proof: &proof,
+            }))?;
+        }
+        self.recovered_credential_holders.insert((instance_id.into(), source_identity.opaque()), binding);
+        Ok(())
+    }
+
     fn credential_instance_is_quiescent(&self,instance_id:&str)->Result<bool> {
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT 1 FROM main.gogoke_coordination_process_custody c
@@ -1845,6 +2048,7 @@ impl<'root> ProductDatabase<'root> {
         let profile = AppContainerProfile::ensure_for_cli(&profile_name, true)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                 "login isolation profile: {error}")))?;
+        self.recover_legacy_account_baseline(instance_id, &home, &profile)?;
         let (runtime, runtime_identity) = runtime_home(&home.path)?;
         let scope = (|| -> Result<_> {
             let mut environment = clean_environment(&home.path, &runtime)?;
@@ -2909,6 +3113,47 @@ exit 0
         let value = statement.column_text(0).unwrap();
         assert!(!statement.step_row().unwrap());
         value
+    }
+
+    #[test]
+    fn legacy_original_home_capture_refuses_same_boot_preserves_unknown_and_reopens_exact_fence() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-legacy-fence-product-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        let registration = request("register", "registerLegacyA", 0, r#"{"driverId":"codex"}"#);
+        assert_eq!(decode_receipt(&product.register_user_instance(&registration).unwrap()).unwrap().status, V37Status::Applied);
+        let home = instance::resolve_codex_instance_home(&product.connection, &root, "instanceA").unwrap();
+        let source = home.path.join("auth.json");
+        fs::write(&source, b"synthetic opaque credential fixture, not an account").unwrap();
+        let profile = AppContainerProfile::derive_for_revocation(&owner_login_profile_name("instanceA", &home.identity)).unwrap();
+        profile.grant_bound_tree(&home.path, &home.identity, true).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('oldLoginA','oldTicketA','oldNonceA','111','222','synthetic.exe','sha256:0000000000000000000000000000000000000000000000000000000000000000','instanceA','global','1','UNKNOWN',NULL)").unwrap();
+        let before_source = crate::process::CredentialBinding::observe_source_metadata(&root, &source, &home.identity).unwrap();
+        let error = product.recover_legacy_account_baseline("instanceA", &home, &profile).unwrap_err();
+        assert!(format!("{error:?}").contains("Windows system restart required"));
+        let original = instance::read_legacy_fence(&product.connection, "instanceA").unwrap().unwrap();
+        assert_eq!(original.custody.len(), 1);
+        assert_eq!(original.custody[0].state, "UNKNOWN");
+        assert!(original.custody[0].stop_proof_hash.is_none());
+        assert!(instance::read_legacy_step(&product.connection, "instanceA", instance::LegacyAclStep::Home).unwrap().is_none());
+        assert!(profile.has_legacy_owner_login_grant(&home.path, &home.identity).unwrap(), "same boot must not write ACLs");
+        assert_eq!(crate::process::CredentialBinding::observe_source_metadata(&root, &source, &home.identity).unwrap(), before_source);
+        assert_eq!(fs::read(&source).unwrap(), b"synthetic opaque credential fixture, not an account");
+        assert!(!home.path.join("gogoke-login-runtime").exists(), "capture precedes temporary runtime creation");
+        product.close_checked().unwrap();
+        let mut reopened = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        assert!(format!("{:?}", reopened.recover_legacy_account_baseline("instanceA", &home, &profile).unwrap_err()).contains("Windows system restart required"));
+        let replay = instance::read_legacy_fence(&reopened.connection, "instanceA").unwrap().unwrap();
+        assert_eq!(replay.original_boot, original.original_boot);
+        assert_eq!(replay.native_snapshot_digest, original.native_snapshot_digest);
+        assert_eq!(replay.custody, original.custody);
+        assert_eq!(replay.revision, original.revision);
+        assert_eq!(scalar(&reopened, "SELECT state FROM main.gogoke_coordination_process_custody WHERE operation_id='oldLoginA'"), "UNKNOWN");
+        reopened.close_checked().unwrap(); drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

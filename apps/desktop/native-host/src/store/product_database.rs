@@ -158,6 +158,11 @@ pub struct ProductDatabase<'root> {
     pending_native_launches: BTreeMap<(String, String), super::session_transport::launch::LaunchEvidence>,
     pending_credential_preparations: BTreeMap<(String, String),
         Vec<super::session_transport::credential_launch::CredentialPreparationCustody>>,
+    // Keep the original metadata-only source holder after a completed legacy
+    // baseline recovery. Model launches reuse this exact verified holder;
+    // no cold holder can silently rebuild an active source DACL.
+    recovered_credential_holders: BTreeMap<(String, String),
+        std::sync::Arc<crate::process::CredentialBinding>>,
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -181,7 +186,8 @@ impl<'root> ProductDatabase<'root> {
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
         Ok(Self { root, connection, owner, process_custodian, owner_login: None,
             native_sessions: BTreeMap::new(), pending_native_launches: BTreeMap::new(),
-            pending_credential_preparations: BTreeMap::new() })
+            pending_credential_preparations: BTreeMap::new(),
+            recovered_credential_holders: BTreeMap::new() })
     }
 
     pub fn serve_pipe(&mut self, pipe: &PrivatePipeConnection) -> Result<()> {
@@ -741,7 +747,7 @@ impl<'root> ProductDatabase<'root> {
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
         let Self { root: _, connection, owner: _, process_custodian, owner_login, native_sessions,
-            pending_native_launches, pending_credential_preparations } = self;
+            pending_native_launches, pending_credential_preparations, recovered_credential_holders } = self;
         drop(owner_login);
         // Closing the Job first prevents a child from outliving the active
         // coordination database. Unresolved rows stay UNKNOWN on recovery.
@@ -749,6 +755,7 @@ impl<'root> ProductDatabase<'root> {
         drop(native_sessions);
         drop(pending_native_launches);
         drop(pending_credential_preparations);
+        drop(recovered_credential_holders);
         connection.close_checked()
     }
 
