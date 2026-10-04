@@ -13,6 +13,10 @@ use crate::root::{RootIdentity, RootLock};
 use super::credential_binding::{CredentialAlias, CredentialAliasScope,
     CredentialBinding, CredentialError};
 
+#[path = "legacy_acl.rs"]
+mod legacy_acl;
+pub(crate) use legacy_acl::{LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt};
+
 type Handle = *mut c_void;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_IS_APP_CONTAINER: u32 = 29;
