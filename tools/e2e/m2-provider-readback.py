@@ -86,6 +86,14 @@ def original_claude_question(db, case, journal, operation_rows, raw_rows, tree_p
             hash_bytes(bytes(result_row[4])) != h_receipt["result"].get("rawResultSha256") or \
             result_row[5] != "NO_EVENT" or result_reason != "CLAUDE_RESULT_RESPONSE":
         raise RuntimeError("Claude CLI success Result does not match original H terminal receipt")
+    if db.execute(
+            "SELECT 1 FROM gogoke_v37_seat_health e JOIN v37_ledger_raw_source r "
+            "ON r.resolved_event_id=e.source_event_id AND r.domain_id=e.domain_id "
+            "WHERE r.domain_id=? AND r.session_id=? AND r.operation_id=? LIMIT 1",
+            (domain, session, send[4])).fetchone() is not None or db.execute(
+            "SELECT 1 FROM gogoke_v37_h_generation_change WHERE domain_id=? AND session_id=? LIMIT 1",
+            (domain, session)).fetchone() is not None:
+        raise RuntimeError("Normal real Claude session created a Codex-only health action")
     send_step = "claude-send-" + hash_bytes(send_wire)[:40]
     echo = one(db,
         "SELECT phase,command_hex,source_epoch,source_cursor,process_operation_id,ticket,custodian_nonce "

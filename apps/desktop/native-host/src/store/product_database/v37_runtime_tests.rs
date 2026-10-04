@@ -200,9 +200,25 @@ fn health_compact_late_original_ack_continues_without_second_write_or_new_reques
         assert_eq!(product.native_sessions.get(&key).unwrap().next_rpc_id,original_ordinal);
         assert_eq!(health_control_rows(product,"SELECT stage,request_id FROM main.gogoke_v37_h_generation_change")[0],vec!["ACKED".to_owned(),request.request_id.clone()],
             "an ACK alone does not settle compact or stop/restart the original process");
-        let complete=format!("{{\"method\":\"item/completed\",\"params\":{{\"threadId\":{},\"turnId\":\"healthCompactTurn\",\"completedAtMs\":0,\"item\":{{\"type\":\"contextCompaction\",\"id\":\"healthCompactItem\"}}}}}}\n",
-            Json::String(JsonString::from_str(&thread)).canonical());
+        let retained_compact_turn=product.native_sessions.get(&key).unwrap().turn_id.clone();
+        let compact_turn=retained_compact_turn.as_deref().unwrap_or("healthCompactTurn");
+        // These explicit synthetic A controls must describe the retained
+        // actual compact turn. An item alone cannot terminate that turn.
+        let complete=format!("{{\"method\":\"item/completed\",\"params\":{{\"threadId\":{},\"turnId\":{},\"completedAtMs\":0,\"item\":{{\"type\":\"contextCompaction\",\"id\":\"healthCompactItem\"}}}}}}\n",
+            Json::String(JsonString::from_str(&thread)).canonical(),
+            Json::String(JsonString::from_str(compact_turn)).canonical());
         health_control_source(product,complete.as_bytes());product.process_native_pending_output(&key).unwrap();
+        if let Some(turn)=retained_compact_turn {
+            product.pump_host_health().unwrap();
+            assert_eq!(health_control_rows(product,"SELECT stage,request_id FROM main.gogoke_v37_h_generation_change")[0],
+                vec!["ITEM_OBSERVED".to_owned(),request.request_id.clone()],
+                "the original active compact turn still fences generation stop");
+            assert_eq!(product.native_sessions.get(&key).unwrap().turn_id.as_deref(),Some(turn.as_str()));
+            let terminal=format!("{{\"method\":\"turn/completed\",\"params\":{{\"threadId\":{},\"turn\":{{\"id\":{},\"status\":\"completed\"}}}}}}\n",
+                Json::String(JsonString::from_str(&thread)).canonical(),
+                Json::String(JsonString::from_str(&turn)).canonical());
+            health_control_source(product,terminal.as_bytes());product.process_native_pending_output(&key).unwrap();
+        }
         product.pump_host_health().unwrap();product.pump_host_health().unwrap();
         assert_eq!(health_control_rows(product,"SELECT raw_hex,request_id FROM main.gogoke_v37_h_generation_change"),change,
             "automatic continuation keeps original request identity and exact bytes");
@@ -217,38 +233,6 @@ fn health_compact_late_original_ack_continues_without_second_write_or_new_reques
         assert_eq!(health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps WHERE step_id LIKE 'compact-%'").len(),1,
             "no new command ID is allocated");
         product.connection.execute("DROP TRIGGER health_count_compact_write; DROP TABLE temp.health_control_writes").unwrap();
-    });
-}
-
-#[test]
-fn health_real_retained_claude_normal_update_commits_without_codex_health_action() {
-    let expected=std::path::PathBuf::from(std::env::var_os("GOGOKE_CLAUDE_CLI_PATH")
-        .expect("NOT_RUN: actual fixed Claude 2.1.196 cloud catalog fixture required; no Codex substitute"));
-    assert!(expected.is_file(),"NOT_RUN: actual Claude executable missing");
-    health_control_product("claude",|product| {
-        let key=("projectA".to_owned(),"sessionA".to_owned());let live=product.native_sessions.get(&key).unwrap();
-        assert_eq!(live.evidence.driver_id(),"claude");
-        assert_eq!(std::fs::canonicalize(&live.custody.identity.image_path).unwrap(),std::fs::canonicalize(&expected).unwrap(),
-            "the retained H/C process is the genuine cloud-pinned Claude binary");
-        let thread=live.thread_id.clone().unwrap();
-        let frame=format!("{{\"type\":\"assistant\",\"session_id\":{},\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}\n",
-            Json::String(JsonString::from_str(&thread)).canonical());
-        let before=health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps");
-        let source=health_control_source(product,frame.as_bytes());
-        product.process_native_pending_output(&key).unwrap();product.pump_host_health().unwrap();
-        let raw=ledger::read_captured_raw_source(&product.connection,&source.operation_id,&source.source_epoch,&source.source_cursor).unwrap().unwrap();
-        assert_eq!(raw.raw_bytes,frame.as_bytes());assert_eq!(raw.state,ledger::RawSourceState::Resolved,
-            "normal Claude Update plus real production health hook must commit together");
-        let event=Statement::prepare(product.connection.as_ptr(),
-            "SELECT update_json FROM main.v37_ledger_index WHERE source_event_id=?1 AND domain_id='projectA' AND session_id='sessionA'").unwrap();
-        event.bind_text(1,raw.resolved_event_id.as_deref().unwrap()).unwrap();assert!(event.step_row().unwrap());
-        let update=event.column_text(0).unwrap();assert!(!event.step_row().unwrap());drop(event);
-        assert!(update.contains("\"sessionUpdate\":\"agent_message_chunk\"")&&update.contains("\"text\":\"ok\"")&&
-            update.contains("\"provider\":\"claude\""),"actual normal Claude update differs: {update}");
-        assert!(health_control_rows(product,"SELECT event_id,state FROM main.gogoke_v37_seat_health").is_empty());
-        assert!(health_control_rows(product,"SELECT request_id,stage FROM main.gogoke_v37_h_generation_change").is_empty());
-        assert_eq!(health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps"),before,
-            "normal non-Codex output creates no writer or action");
     });
 }
 
