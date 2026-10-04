@@ -68,7 +68,7 @@ fn prepare_control_input(product:&mut ProductDatabase<'_>,verb:&str,id:&str,ack:
         let completed=h::recover_codex_turn_request(&mut product.connection,&input).unwrap().unwrap();
         let receipt=h::decode_receipt(&completed.record.receipt_bytes.unwrap()).unwrap();
         assert_eq!(receipt.status,V37Status::Applied);
-        assert_eq!(receipt.into_result().get(&JsonString::from_str("createdTurn")),Some(&Json::Bool(false)));
+        assert!(matches!(receipt.into_result().get(&JsonString::from_str("createdTurn")),Some(Json::Bool(false))));
     }
 }
 
@@ -116,7 +116,7 @@ fn repair_control(product:&mut ProductDatabase<'_>,source:Option<&ledger::RawSou
 }
 const METHOD_MISSING:&[u8]=b"{\"id\":88102,\"error\":{\"code\":-32601,\"message\":\"synthetic method-not-found wire control\"}}\n";
 
-fn projection(product:&mut ProductDatabase<'_>)->Vec<Json> {
+fn projection(product:&mut ProductDatabase<'_>)->Vec<String> {
     let request=h::decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-INBOX","operation":"check-unknown","requestId":"stalled-owner-read","targetId":"OWNER","domainId":"global","expectedRevision":"0","payload":{"projection":"OWNER_HOST_RULE_NOTICES"}}"#).unwrap();
     let before=scalar(product,"SELECT total_changes()");
     let bytes=product.dispatch_user_request(&request).unwrap();
@@ -127,7 +127,7 @@ fn projection(product:&mut ProductDatabase<'_>)->Vec<Json> {
     let receipt=h::decode_receipt(&bytes).unwrap();assert_eq!(receipt.status,V37Status::Applied);
     let result=receipt.into_result();
     let Some(Json::Array(notices))=result.get(&JsonString::from_str("notices")) else {panic!("Owner notices shape")};
-    notices.clone()
+    notices.iter().map(Json::canonical).collect()
 }
 fn notification_rows(product:&ProductDatabase<'_>)->Vec<Vec<String>> {
     health_control_rows(product,"SELECT event_id,fingerprint FROM main.gogoke_v37_seat_policy_events WHERE operation='escalate' ORDER BY event_id")
@@ -237,7 +237,7 @@ fn stalled_health_original_stop_intent_and_route_changes_suppress_without_new_id
                 domain_id:"projectA",seat_id:"seatB",template_id:"templateA",instance_id:None,
                 kind:Kind::Long,request_id:"stalled-route-seat",request_bytes:b"route replacement logical seat",
             }).unwrap();
-            let revision=seat::current_policy_revision(&product.connection,"projectA").unwrap();
+            let revision=scalar(product,"SELECT revision FROM main.gogoke_v37_seat_policy_head WHERE domain_id='projectA'").parse::<i64>().unwrap();
             let next=seat::configure_escalation_route(&mut product.connection,&product.owner,"projectA","seatA","STALL","seatB",revision).unwrap();
             product.pump_host_rules().unwrap();assert!(projection(product).is_empty());
             seat::configure_escalation_route(&mut product.connection,&product.owner,"projectA","seatA","STALL","OWNER",next).unwrap();
