@@ -135,6 +135,13 @@ vendor memory/instruction provenance and the OwnerLead exact-history object
 remain explicit NOT_RUN dependencies; these flow facts cannot close V04b/V10.
 Without configured original test bindings, history records NOT_RUN, not PASS.
 
+With `historyBoundary.peerRead=true`, the original marker and formal-refusal
+flow is read back before opening two new peer-read sessions. Their normally
+closed `peer-final` readback requires the original tool command and its native
+access-denied reason for the exact previously verified test history object.
+Missing objects, no tool execution or unqualified refusal stay NOT_RUN. This
+separate result never promotes the old flow or overall V04b/V10 to acceptance.
+
 The current script package has received only signed Node syntax and Python
 parser checks. Native code builds remain cloud-only; actual installed Win11,
 Smart App Control, browser and account outcomes are **NOT_RUN**.

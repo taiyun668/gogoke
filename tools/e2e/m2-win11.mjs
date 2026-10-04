@@ -199,7 +199,9 @@ async function historyBoundaryReadback(phase) {
   const value = readJson(output);
   check(value.measurementPreservedDatabaseBytes === true && value.directFlowEvidence === true &&
     value.acceptance === false && value.databaseWrites === false && value.credentialReads === false &&
-    (phase !== 'final' || value.directRefusalEvidence === true),
+    (phase !== 'final' || value.directRefusalEvidence === true) &&
+    (phase !== 'peer-final' || value.directPeerReadEvidence === true ||
+      value.peerState === 'NOT_RUN_PEER_READ_DENIAL_UNQUALIFIED'),
     `History ${phase}: original H/A/D/F facts and immutable measurement`);
   const reference = { file, sha256: sha256(output) };
   journal.readbacks.push({ phase: `history-${phase}`, ...reference }); product.save();
@@ -243,6 +245,20 @@ async function runHistoryBoundaries() {
   await product.closeNormally();
   await historyBoundaryReadback('final');
   journal.historyFlow = 'DIRECT_FACTS_COMPLETE_ACCEPTANCE_FALSE'; product.save();
+  if (config.historyBoundary.peerRead === true) {
+    await product.launch();
+    const { runHistoryPeerReadCases } = await import('./m2-history-boundaries.mjs');
+    const peer = await runHistoryPeerReadCases(product, config, journal);
+    check(peer.state === 'PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED',
+      'History peer flow must preserve its original outcomes for direct readback');
+    await product.closeNormally();
+    const reference = await historyBoundaryReadback('peer-final');
+    const facts = readJson(path.join(config.evidenceDirectory, reference.file));
+    journal.historyPeerFlow = facts.directPeerReadEvidence === true
+      ? 'DIRECT_PEER_DENIAL_FACTS_COMPLETE_ACCEPTANCE_FALSE'
+      : facts.peerState;
+    product.save();
+  }
 }
 async function seatCard(seatId) {
   let reply = await product.operation('K-SEAT', 'state-card', seatId, {}, '0', ['APPLIED', 'STALE']);

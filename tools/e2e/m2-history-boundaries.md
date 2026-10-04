@@ -227,6 +227,13 @@ signed Python tools/e2e/m2-history-boundaries-readback.py STATE_ROOT NEW_PRIVATE
 
 ## References and execution record
 
+The registered home identity comparison requires Windows Python 3.12 or later.
+CPython's [Windows stat conversion](https://github.com/python/cpython/blob/v3.13.0/Python/fileutils.c)
+uses the native volume serial and 128-bit file ID, matching `root::RootIdentity`;
+unsupported or unequal observations stay NOT_RUN. The reader preserves the
+original extended local path for file access, rejects reparse and additional
+links, and compares its DOS spelling with the registered home.
+
 The historical GOGO PARTY context/session governance in
 [`06-context-session-governance.md`](../../docs/design/06-context-session-governance.md)
 requires source-bound prompt/load evidence and distinguishes fresh context from

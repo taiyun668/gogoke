@@ -287,21 +287,28 @@ def vendor_objects(root, cases):
             home = root / "v37-instances" / source["episode"]["instance_id"]
             try:
                 # Registry resolver's existing home_ref/layout, not a guessed history path.
-                check(os.name == "nt" and original.is_absolute() and original.suffix == ".jsonl" and
-                      ".." not in original.parts and not any(":" in part for part in original.parts[1:]) and
-                      not original.drive.startswith("\\\\") and
+                # H uses GetFinalPathNameByHandleW's extended local spelling;
+                # compare the same DOS spelling while opening the original path.
+                local = Path(value[4:] if value.startswith("\\\\?\\") else value)
+                home_value = str(home)
+                local_home = Path(home_value[4:] if home_value.startswith("\\\\?\\") else home_value)
+                check(os.name == "nt" and sys.version_info >= (3, 12) and
+                      original.is_absolute() and original.suffix == ".jsonl" and
+                      local.is_absolute() and ".." not in local.parts and
+                      not any(":" in part for part in local.parts[1:]) and not local.drive.startswith("\\\\") and
                       pin["home_ref"] == "instance-home-" + pin["instance_id"] and
-                      original.is_relative_to(home) and original != home,
+                      local.is_relative_to(local_home) and local != local_home,
                       "Original test thread path is outside its registered candidate home")
                 for entry in (original, *original.parents):
                     check(not entry.lstat().st_file_attributes & 0x400, "Original thread path traverses a reparse point")
-                    if entry == root:
+                    if path_spelling(str(entry)) == path_spelling(str(root)):
                         break
                 stat = home.stat()
                 observed_home = f"volume:{stat.st_dev:016x}/file:{stat.st_ino.to_bytes(16, 'little').hex()}"
                 check(observed_home == pin["home_identity"], "Python stat cannot confirm original registered home identity")
                 check(original.is_file(), "Original thread path is not a file")
                 before = original.stat()
+                check(before.st_nlink == 1, "Original vendor history object has another link")
                 raw = original.read_bytes()
                 frames = [json.loads(line) for line in raw.splitlines() if line.strip()]
                 check(frames and frames[0].get("type") == "session_meta" and
@@ -314,8 +321,8 @@ def vendor_objects(root, cases):
                           for content in message.get("content", []) if isinstance(content, dict)),
                       "Original vendor object lacks the actual non-secret assistant marker")
                 after = original.stat()
-                check((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) ==
-                      (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) and digest(original.read_bytes()) == digest(raw),
+                check((before.st_dev, before.st_ino, before.st_nlink, before.st_size, before.st_mtime_ns) ==
+                      (after.st_dev, after.st_ino, after.st_nlink, after.st_size, after.st_mtime_ns) and digest(original.read_bytes()) == digest(raw),
                       "Original vendor object changed during normal-close readback")
                 objects.append({**identity, "domainId": source["domainId"], "path": value,
                     "nativeSessionId": source["nativeSessionId"], "instanceId": pin["instance_id"],
