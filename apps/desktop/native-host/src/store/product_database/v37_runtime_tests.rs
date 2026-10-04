@@ -875,7 +875,8 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
         "gogoke-v37-real-two-scope-{}-{stamp}", std::process::id()));
     std::fs::create_dir(&path).unwrap();
     let root = RootLock::acquire(&path).unwrap();
-    let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+    let database = path.join("state.sqlite");
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
     let register = operation("K-INSTANCE", "register", "two-scope-register", "instanceA", 0,
         r#"{"driverId":"codex"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
@@ -1038,8 +1039,50 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
         V37Status::Applied);
     let stop_b = operation_in_domain("projectB", "K-SESSION", "stop", "two-scope-stop-b",
         "sessionB", 3, r#"{"seatId":"seatB","generation":"2"}"#);
-    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop_b).unwrap()).unwrap().status,
-        V37Status::Applied);
+    let b_operation = product.native_sessions.get(&key_b).unwrap().operation_id.clone();
+    FAIL_AFTER_DURABLE_STOP_BEFORE_CREDENTIAL_REVOKE.with(|fault| fault.set(true));
+    assert!(product.dispatch_user_request(&stop_b).is_err(),
+        "one injected boundary after the original B durable STOPPED fact");
+    let durable = Statement::prepare(product.connection.as_ptr(),
+        "SELECT c.state,e.phase,c.stop_proof_hash FROM main.gogoke_coordination_process_custody c
+           JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id
+          WHERE c.operation_id=?1 AND e.domain_id='projectB' AND e.session_id='sessionB'").unwrap();
+    durable.bind_text(1, &b_operation).unwrap();
+    assert!(durable.step_row().unwrap(), "same original B STOPPED custody/episode rows");
+    assert_eq!(durable.column_text(0).unwrap(), "STOPPED");
+    assert_eq!(durable.column_text(1).unwrap(), "STOPPED");
+    assert!(!durable.column_text(2).unwrap().is_empty());
+    assert!(!durable.step_row().unwrap());
+    drop(durable);
+    assert_eq!(instance::read_credential_profiles(&product.connection, "instanceA").unwrap()
+        .iter().find(|row| row.history_id == history_b).unwrap().state, "ACTIVE",
+        "the injected gap precedes B's original credential revoke");
+    product.close_checked().unwrap();
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
+    let replayed = h::decode_receipt(&product.dispatch_user_request(&stop_b)
+        .expect("original B STOPPED replay from durable custody")).unwrap();
+    assert_eq!(replayed.status, V37Status::Replayed,
+        "same stop request recovers original credential revoke: {}",
+        String::from_utf8_lossy(&replayed.raw_bytes));
+    let profiles = instance::read_credential_profiles(&product.connection, "instanceA").unwrap();
+    assert_eq!(profiles.iter().find(|row| row.history_id == history_b).unwrap().state, "REVOKED");
+    let aliases = instance::read_credential_aliases(&product.connection, "instanceA").unwrap();
+    assert_eq!(aliases.iter().find(|row| row.history_id == history_b).unwrap().state, "DORMANT");
+    crate::store::session_transport::credential_launch::quiescent_cleanup(&mut product.connection,
+        &root, "instanceA", "two-scope-final-cleanup")
+        .expect("one original quiescent remove intent for each dormant alias");
+    let aliases = instance::read_credential_aliases(&product.connection, "instanceA").unwrap();
+    assert_eq!(aliases.len(), 2);
+    assert!(aliases.iter().all(|row| row.state == "REMOVED"));
+    let (remaining_id, remaining_links) = CredentialBinding::observe_source_metadata(&root,
+        &source_path, &home.identity).unwrap();
+    assert_eq!((remaining_id, remaining_links), (source_id, 1));
+    let after_cleanup = h::decode_receipt(&product.dispatch_user_request(&stop_b)
+        .expect("same original stop replay after alias removal")).unwrap();
+    assert_eq!(after_cleanup.status, V37Status::Replayed,
+        "REMOVED completion cannot re-create or re-grant alias");
+    assert!(instance::read_credential_aliases(&product.connection, "instanceA").unwrap()
+        .iter().all(|row| row.state == "REMOVED"));
     product.close_checked().unwrap();
     drop(root);
     std::fs::remove_dir_all(path).unwrap();
