@@ -2941,7 +2941,10 @@ mod tests {
         managed.write_protocol(b"controlled\n").expect("bounded command write");
         assert_eq!(managed.write_protocol(b"second\n").unwrap_err().kind(),
             io::ErrorKind::AlreadyExists, "legacy protocol remains one-shot");
-        let output = managed.read_protocol_frame(Duration::from_secs(5)).expect("bounded frame read");
+        let output = managed.read_protocol_frame(Duration::from_secs(5)).unwrap_or_else(|original| {
+            panic!("bounded frame read: {original}; child exit: {:?}; original stderr: {}",
+                managed.exit_code(), managed.stderr_tail())
+        });
         assert!(String::from_utf8_lossy(&output).contains("echo:controlled"));
         assert!(managed.wait(Duration::from_secs(5)).expect("child exit"));
     }

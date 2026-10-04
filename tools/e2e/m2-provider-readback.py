@@ -86,6 +86,14 @@ def original_claude_question(db, case, journal, operation_rows, raw_rows, tree_p
             hash_bytes(bytes(result_row[4])) != h_receipt["result"].get("rawResultSha256") or \
             result_row[5] != "NO_EVENT" or result_reason != "CLAUDE_RESULT_RESPONSE":
         raise RuntimeError("Claude CLI success Result does not match original H terminal receipt")
+    if db.execute(
+            "SELECT 1 FROM gogoke_v37_seat_health e JOIN v37_ledger_raw_source r "
+            "ON r.resolved_event_id=e.source_event_id AND r.domain_id=e.domain_id "
+            "WHERE r.domain_id=? AND r.session_id=? AND r.operation_id=? LIMIT 1",
+            (domain, session, send[4])).fetchone() is not None or db.execute(
+            "SELECT 1 FROM gogoke_v37_h_generation_change WHERE domain_id=? AND session_id=? LIMIT 1",
+            (domain, session)).fetchone() is not None:
+        raise RuntimeError("Normal real Claude session created a Codex-only health action")
     send_step = "claude-send-" + hash_bytes(send_wire)[:40]
     echo = one(db,
         "SELECT phase,command_hex,source_epoch,source_cursor,process_operation_id,ticket,custodian_nonce "
@@ -202,7 +210,8 @@ def original_claude_question(db, case, journal, operation_rows, raw_rows, tree_p
     if not post:
         raise RuntimeError("Claude did not continue with original assistant marker output after answering")
     marker_name = case["claudeQuestion"]["markerFile"]
-    if Path(marker_name).name != marker_name or not case["claudeQuestion"].get("markerAbsentBeforeSend"):
+    if Path(marker_name).name != marker_name or not case["claudeQuestion"].get("markerAbsentBeforeSend") \
+            or not case["claudeQuestion"].get("markerAbsentBeforeAnswer"):
         raise RuntimeError("Claude original marker absence or relative path not recorded")
     if local_path(case["claudeQuestion"]["worktreeRoot"]) != tree_path or not worktree_identity:
         raise RuntimeError("Claude configured worktree root is not original F registered worktree")
@@ -210,9 +219,8 @@ def original_claude_question(db, case, journal, operation_rows, raw_rows, tree_p
     if not marker.is_file() or marker.is_symlink() or not within(tree_path, marker.resolve(strict=True)):
         raise RuntimeError("Claude marker is not a new local file in the F worktree")
     marker_bytes = marker.read_bytes()
-    if len(marker_bytes) > 4096 or marker_bytes.decode("utf-8").rstrip("\r\n") != \
-            json.dumps(case["claudeQuestion"]["marker"], ensure_ascii=False, separators=(",", ":")):
-        raise RuntimeError("Claude post-answer marker bytes differ from prescribed JSON")
+    if len(marker_bytes) > 4096 or json.loads(marker_bytes.decode("utf-8")) != case["claudeQuestion"]["marker"]:
+        raise RuntimeError("Claude post-answer marker differs from prescribed JSON value")
     return {"state": "DIRECT_ORIGINAL_CLAUDE_QUESTION_ANSWER_CONTINUATION_REQUIRES_REVIEW",
             "cardId": card_ref["cardId"], "requestId": asking["request_id"],
             "toolUseId": card[4], "hostTurnId": send_id, "vendorSessionId": terminal["session_id"],

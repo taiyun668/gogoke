@@ -162,16 +162,22 @@ pub(crate) fn revalidate_host_escalation_in_transaction(
     Ok(())
 }
 
-pub(crate) fn begin_host_escalation_in_transaction(
-    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer, proof: &HostEscalationProof,
-) -> Result<EscalationIntent, SeatError> {
-    revalidate_host_escalation_in_transaction(db, owner, proof)?;
-    let fp = fingerprint(&["host-escalate", &proof.source, &proof.source_incarnation,
+fn host_intent_fingerprint(proof:&HostEscalationProof)->String {
+    fingerprint(&["host-escalate", &proof.source, &proof.source_incarnation,
         &proof.trigger, &proof.request, &proof.destination,
         proof.destination_incarnation.as_deref().unwrap_or("OWNER"),
         &proof.cause_event, &proof.cause_fingerprint,
         &proof.policy_revision.to_string(), &proof.route_revision.to_string()],
-        proof.notice.as_bytes());
+        proof.notice.as_bytes())
+}
+
+/// Read the same original reservation used by begin; no new intent is
+/// created. A changed route cannot present an old cause as a fresh notice.
+pub(crate) fn read_host_escalation_intent_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,proof:&HostEscalationProof,
+)->Result<Option<EscalationIntent>,SeatError> {
+    revalidate_host_escalation_in_transaction(db,owner,proof)?;
+    let fp=host_intent_fingerprint(proof);
     if let Some(old) = prior_event(db, &proof.domain, &proof.request, "escalate", &fp)? {
         let q = Statement::prepare(db.as_ptr(),
             "SELECT from_seat_id,to_seat_id,reason,state,revision FROM
@@ -190,10 +196,20 @@ pub(crate) fn begin_host_escalation_in_transaction(
         let revision = q.column_text(4)?.parse::<i64>().map_err(|_| SeatError::SchemaDrift)?;
         if !matches!(state.as_str(), "INTENT" | "UNKNOWN" | "DELIVERED")
             || revision < 1 || q.step_row()? { return Err(SeatError::Conflict); }
-        return Ok(EscalationIntent { trigger_id: proof.trigger.clone(),
+        return Ok(Some(EscalationIntent { trigger_id: proof.trigger.clone(),
             from_seat_id: proof.source.clone(), to_seat_id: proof.destination.clone(),
-            reason: "REJECT_CAP".into(), state, revision, replayed: true });
+            reason: "REJECT_CAP".into(), state, revision, replayed: true }));
     }
+    Ok(None)
+}
+
+pub(crate) fn begin_host_escalation_in_transaction(
+    db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer, proof: &HostEscalationProof,
+) -> Result<EscalationIntent, SeatError> {
+    if let Some(original)=read_host_escalation_intent_in_transaction(db,owner,proof)? {
+        return Ok(original);
+    }
+    let fp=host_intent_fingerprint(proof);
     let q = Statement::prepare(db.as_ptr(),
         "INSERT INTO main.gogoke_v37_seat_policy_escalations
          (domain_id,trigger_id,request_id,from_seat_id,to_seat_id,reason,state,revision)

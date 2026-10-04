@@ -165,7 +165,8 @@ def host_snapshot(db, domain, host):
                 row = rows[0]
                 request = json.loads(bytes.fromhex(row["request_hex"]))
                 check(row["message_id"] == message["message_id"] and row["phase"] == "PREPARED" and
-                      row["result_state"] == "PENDING" and request["schema"] == "gogoke.37.operations.v1" and
+                      row["result_state"] in ("APPLIED", "REPLAYED") and not row["reason"] and
+                      request["schema"] == "gogoke.37.operations.v1" and
                       request["family"] == "K-SESSION" and request["domainId"] == domain and
                       request["targetId"] == recipe["sessionId"] and request["requestId"] == recipe[key] and
                       request["operation"] == {"reserve": "admission-reserve", "commit": "admission-commit", "start": "open"}[stage] and

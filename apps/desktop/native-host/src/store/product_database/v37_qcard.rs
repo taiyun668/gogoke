@@ -639,6 +639,11 @@ impl<'root> ProductDatabase<'root> {
     /// from another turn or session cannot expire the current question.
     pub(super) fn expire_claude_terminal_cards(&mut self,key:&(String,String),
         source_key:&RawSourceKey)->Result<()> {
+        self.expire_claude_terminal_cards_for_turn(key,source_key,None)
+    }
+
+    fn expire_claude_terminal_cards_for_turn(&mut self,key:&(String,String),
+        source_key:&RawSourceKey,expected_turn:Option<&str>)->Result<()> {
         use crate::store::session_transport::provider_evidence::stream_json::{self,ClaudeData};
         let source=ledger::read_captured_raw_source(&self.connection,
             &source_key.operation_id,&source_key.source_epoch,&source_key.source_cursor)?
@@ -653,11 +658,13 @@ impl<'root> ProductDatabase<'root> {
         let sends=Statement::prepare(self.connection.as_ptr(),
             "SELECT request_id,request_hex,generation,ticket,custodian_nonce
              FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2
-               AND process_operation_id=?3 AND custodian_nonce=?4 AND operation='send'")?;
+               AND process_operation_id=?3 AND custodian_nonce=?4 AND operation='send'
+               AND (?5='' OR request_id=?5)")?;
         for (index,value) in [key.0.as_str(),key.1.as_str(),source_key.operation_id.as_str(),
             source_key.source_epoch.as_str()].iter().enumerate() {
             sends.bind_text((index+1) as i32,value)?;
         }
+        sends.bind_text(5,expected_turn.unwrap_or(""))?;
         let mut matched=None;
         while sends.step_row()? {
             let turn=sends.column_text(0)?;
@@ -700,7 +707,7 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::OperationConflict);
         }
         let cards=Statement::prepare(self.connection.as_ptr(),
-            "SELECT card_id,revision,vendor_request_id,seat_id FROM main.gogoke_v37_qcard_native
+            "SELECT card_id FROM main.gogoke_v37_qcard_native
              WHERE domain_id=?1 AND vendor_thread_id=?2 AND turn_id=?3
                AND generation=?4 AND state='OPEN'")?;
         for (index,value) in [key.0.as_str(),vendor_session.as_str(),turn.as_str(),
@@ -708,26 +715,149 @@ impl<'root> ProductDatabase<'root> {
             cards.bind_text((index+1) as i32,value)?;
         }
         let mut open=Vec::new();
-        while cards.step_row()? {
-            open.push((cards.column_text(0)?,cards.column_text(1)?,
-                cards.column_text(2)?,cards.column_text(3)?));
-        }
+        while cards.step_row()? {open.push(cards.column_text(0)?);}
         drop(cards);
         let descriptor=source_descriptor(&source);
-        for (card_id,revision,vendor_id,seat) in open {
-            let revision=revision.parse::<u64>().map_err(|error|
-                store_error("Claude card revision",error))?;
+        let result_cursor=source_key.source_cursor.parse::<u64>().map_err(|error|
+            store_error("Claude result cursor",error))?;
+        for card_id in open {
+            let card=inbox::query_native_card(&mut self.connection,&key.0,&card_id,|db| {
+                authority::check_owner_in_current_transaction(db,&self.owner)
+                    .map_err(InboxError::Authority)?;
+                Ok(true)
+            }).map_err(|error|store_error("Claude terminal C card",error))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if card.state!="OPEN" {return Err(OrchestrationError::OperationConflict);}
+            let binding=CurrentCardBinding {domain:key.0.clone(),session:key.1.clone(),
+                seat:card.seat_id.clone(),generation:generation.clone(),
+                operation:source_key.operation_id.clone(),ticket:ticket.clone(),
+                nonce:nonce.clone(),thread:vendor_session.clone(),turn:turn.clone()};
+            let question_source=stored_claude_source(&self.connection,&binding,&card)?;
+            let question_cursor=question_source.key.source_cursor.parse::<u64>().map_err(|error|
+                store_error("Claude question cursor",error))?;
+            if question_cursor>=result_cursor ||
+                question_source.process_ticket!=source.process_ticket ||
+                question_source.custodian_nonce!=source.custodian_nonce {
+                return Err(OrchestrationError::OperationConflict);
+            }
             let expiry=format!("expire{}",sha256_hex(format!("{}\n{}",card_id,descriptor).as_bytes()));
             let envelope=CardEnvelope {domain_id:&key.0,card_id:&card_id,
-                request_id:&expiry,request_bytes:descriptor.as_bytes(),expected_revision:revision};
-            inbox::expire_native_card(&mut self.connection,&envelope,&vendor_id,&seat,
+                request_id:&expiry,request_bytes:descriptor.as_bytes(),expected_revision:card.revision};
+            inbox::expire_native_card(&mut self.connection,&envelope,&card.vendor_request_id,&card.seat_id,
                 &turn,&generation,|db| {
                     authority::check_owner_in_current_transaction(db,&self.owner)
                         .map_err(InboxError::Authority)?;
                     let current=ledger::read_captured_raw_source(db,&source.key.operation_id,
                         &source.key.source_epoch,&source.key.source_cursor)?;
-                    Ok(current.as_ref()==Some(&source) && nonce==source.custodian_nonce)
+                    let question=ledger::read_captured_raw_source(db,&question_source.key.operation_id,
+                        &question_source.key.source_epoch,&question_source.key.source_cursor)?;
+                    Ok(current.as_ref()==Some(&source) &&
+                        question.as_ref()==Some(&question_source) && nonce==source.custodian_nonce)
                 }).map_err(|error|store_error("Claude terminal card expiry",error))?;
+        }
+        Ok(())
+    }
+
+    /// At the existing authority-thread safe point, close only historical C
+    /// OPEN Claude cards whose exact original H User send already has a
+    /// committed APPLIED or FAILED Result receipt. This works after restart
+    /// without an in-memory NativeSession and performs no provider I/O.
+    pub(super) fn reconcile_durable_claude_open_cards(&mut self)->Result<()> {
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT c.domain_id,c.card_id,c.question_payload,h.session_id,h.request_id,h.request_hex,
+                    h.generation,h.ticket,h.custodian_nonce,h.process_operation_id,
+                    h.receipt_hex,h.receipt_status
+               FROM main.gogoke_v37_qcard_native c
+               JOIN main.gogoke_v37_h_stdin_journal h
+                 ON h.domain_id=c.domain_id AND h.request_id=c.turn_id
+                AND h.generation=c.generation AND h.operation='send'
+              WHERE c.state='OPEN' AND instr(c.question_payload,'\"provider\":\"claude\"')>0
+                AND h.phase='RECEIPTED'
+                AND h.receipt_status IN ('APPLIED','FAILED')
+              ORDER BY c.domain_id,c.card_id LIMIT 32")?;
+        let mut candidates=Vec::new();
+        while query.step_row()? {
+            let payload=query.column_text(2)?;
+            let Json::Object(fields)=Parser::parse(&payload)? else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            if !matches!(fields.get(&JsonString::from_str("provider")),
+                Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("claude")) {
+                continue;
+            }
+            candidates.push((query.column_text(0)?,query.column_text(1)?,
+                query.column_text(3)?,query.column_text(4)?,query.column_text(5)?,
+                query.column_text(6)?,query.column_text(7)?,query.column_text(8)?,
+                query.column_text(9)?,query.column_text(10)?,query.column_text(11)?));
+        }
+        drop(query);
+        for (domain,card_id,session,turn_id,request_hex,generation,ticket,nonce,operation,
+            receipt_hex,receipt_status) in candidates {
+            let request_bytes=unhex(&request_hex)?;
+            let input=session_transport::StdinRequest {domain_id:&domain,
+                session_id:&session,ticket:&ticket,generation:&generation,
+                request_bytes:&request_bytes};
+            let completed=session_transport::read_original_claude_send_completed(
+                &self.connection,&input).map_err(|error|
+                    store_error("durable Claude H result",error))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            let original=completed.user.record.receipt_bytes.as_ref()
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if original!=&unhex(&receipt_hex)? ||
+                completed.user.record.process_operation_id!=operation ||
+                completed.user.record.custodian_nonce!=nonce ||
+                completed.user.record.ticket!=ticket {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let receipt=session_transport::decode_receipt(original).map_err(|error|
+                store_error("durable Claude receipt",error))?;
+            if receipt.status.wire()!=receipt_status ||
+                !matches!(receipt.status,V37Status::Applied|V37Status::Failed) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let result=receipt.into_result();
+            let field=|name:&str|->Result<String> {
+                let Some(Json::String(value))=result.get(&JsonString::from_str(name)) else {
+                    return Err(OrchestrationError::OperationConflict);
+                };
+                value.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)
+            };
+            let source=RawSourceKey {operation_id:operation.clone(),
+                source_epoch:field("sourceEpoch")?,source_cursor:field("sourceCursor")?};
+            let crate::store::session_transport::provider_evidence::stream_json::ClaudeData::Result {
+                session_id:result_session,subtype:result_subtype,..}= &completed.terminal else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            if source.source_epoch!=nonce ||
+                field("deliveryBasis")?!="CLAUDE_USER_REPLAY_AND_RESULT" ||
+                field("vendorSessionId")?!=completed.vendor_session_id ||
+                result_session!=&completed.vendor_session_id ||
+                field("resultSubtype")?!=result_subtype.as_str() {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let raw=ledger::read_captured_raw_source(&self.connection,&source.operation_id,
+                &source.source_epoch,&source.source_cursor)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if raw.domain_id!=domain || raw.session_id!=session ||
+                raw.generation!=generation || raw.process_ticket!=ticket ||
+                raw.custodian_nonce!=nonce ||
+                raw.state!=ledger::RawSourceState::NoEvent ||
+                raw.no_event_reason.as_deref()!=Some("CLAUDE_RESULT_RESPONSE") ||
+                sha256_hex(&raw.raw_bytes)!=field("rawResultSha256")? {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            // The original fixed Claude reader rechecks the native pin,
+            // echo UUID/text/session, first subsequent Result and receipt.
+            // C independently checks its earlier question source below.
+            self.expire_claude_terminal_cards_for_turn(&(domain,session),&source,
+                Some(&turn_id))?;
+            let still_open=Statement::prepare(self.connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_qcard_native WHERE domain_id=?1
+                  AND card_id=?2 AND state='OPEN'")?;
+            still_open.bind_text(1,&raw.domain_id)?;still_open.bind_text(2,&card_id)?;
+            if still_open.step_row()? {
+                return Err(OrchestrationError::OperationConflict);
+            }
         }
         Ok(())
     }

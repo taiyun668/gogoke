@@ -34,6 +34,7 @@ fn original_fields(encoded:&str)->Result<BTreeMap<JsonString,Json>> {
 impl<'root> ProductDatabase<'root> {
     pub(super) fn pump_host_rules(&mut self)->Result<()> {
         self.settle_original_host_deliveries()?;
+        self.cleanup_host_rule_preparations()?;
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT domain_id,gate_id FROM main.gogoke_v37_seat_policy_gates WHERE state='ESCALATION_REQUIRED' ORDER BY domain_id,gate_id")?;
         let mut causes=Vec::new();while query.step_row()? {causes.push((query.column_text(0)?,query.column_text(1)?));}drop(query);
@@ -60,6 +61,13 @@ impl<'root> ProductDatabase<'root> {
             let message=inbox::read_message(&self.connection,proof.domain_id(),&ids.message_id).map_err(failure)?
                 .ok_or(OrchestrationError::OperationConflict)?;
             if message.state!="PENDING" {continue;}
+            // OWNER is the existing native notification endpoint, never a
+            // model recipient. C retains the original pending notice; the
+            // User projection displays it without a fabricated H delivery.
+            if proof.destination_seat_id()=="OWNER" {continue;}
+            if c::host_recipient_failure_recorded(&self.connection,&proof).map_err(failure)? {
+                continue;
+            }
             // No current process or a currently busy upper seat is not a
             // failed delivery. The original C pending survives without a turn.
             let candidate=self.native_sessions.iter().filter(|(key,run)|key.0==proof.domain_id()
@@ -144,6 +152,7 @@ impl<'root> ProductDatabase<'root> {
                 },
             }
         }
+        self.cleanup_host_rule_preparations()?;
         Ok(())
     }
 

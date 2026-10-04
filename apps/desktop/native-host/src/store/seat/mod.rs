@@ -16,7 +16,8 @@ pub(crate) use resource::{read_effective_project_parallel_cap,read_host_parallel
     refresh_host_parallel_fact_in_transaction,HostParallelFact};
 pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
     HostEscalationProof,observe_host_reject_cap_in_transaction,
-    revalidate_host_escalation_in_transaction,begin_host_escalation_in_transaction,
+    revalidate_host_escalation_in_transaction,read_host_escalation_intent_in_transaction,
+    begin_host_escalation_in_transaction,
     apply_owner_policy_configuration,
     begin_escalation,begin_trigger_cancel,begin_trigger_register,configure_call_grant,
     configure_escalation_route,configure_gate,
