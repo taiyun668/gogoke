@@ -47,6 +47,8 @@ extern "system" {
     fn GetFileInformationByHandle(handle: *mut c_void, output: *mut FileInfo) -> i32;
     fn CreateHardLinkW(new_name: *const u16, existing_name: *const u16,
         security: *const c_void) -> i32;
+    fn SetFileInformationByHandle(handle: *mut c_void, class: i32,
+        information: *mut c_void, length: u32) -> i32;
 }
 
 #[derive(Debug)]
@@ -91,6 +93,16 @@ pub(crate) struct CredentialAliasScope {
 pub(crate) struct CredentialAlias {
     scope: CredentialAliasScope,
     file_identity: RootIdentity,
+}
+
+/// Physical postcondition only. F owns the durable remove intent and may
+/// commit it only after this exact readback; no credential bytes are opened.
+#[derive(Clone, Debug)]
+pub(crate) struct CredentialRemovalReceipt {
+    pub(crate) source_identity: RootIdentity,
+    pub(crate) removed: CredentialAliasScope,
+    pub(crate) remaining_aliases: Vec<CredentialAliasScope>,
+    pub(crate) remaining_links: u32,
 }
 
 impl CredentialAlias {
@@ -361,6 +373,154 @@ impl CredentialBinding {
         Ok(state.acl_prepared)
     }
 
+    /// F must first durably record the remove intent and prove whole-instance
+    /// STOPPED, all profiles REVOKED, and no other pending intent. Consuming the
+    /// only Arc closes the no-share-delete source handle before a single
+    /// handle-bound disposition of this registered name. A failed operation is
+    /// UNKNOWN for F; this method never retries or removes another name.
+    pub(crate) fn remove_quiescent_alias(binding: Arc<Self>, root: &RootLock,
+        alias: &CredentialAlias, complete_before: &[CredentialAliasScope])
+        -> Result<CredentialRemovalReceipt, CredentialError> {
+        let mut cache = custody().lock().map_err(|_| CredentialError::CustodyPoisoned)?;
+        if Arc::strong_count(&binding) != 1 {
+            return Err(CredentialError::Invalid("credential holder is still shared"));
+        }
+        binding.verify_registered_aliases(complete_before)?;
+        if alias.file_identity != binding.identity || !complete_before.contains(&alias.scope) {
+            return Err(CredentialError::IdentityChanged);
+        }
+        let state = binding.state.lock().map_err(|_| CredentialError::CustodyPoisoned)?;
+        if !state.aliases.iter().any(|entry| entry.witness == *alias) {
+            return Err(CredentialError::IdentityChanged);
+        }
+        drop(state);
+        let binding = Arc::try_unwrap(binding)
+            .map_err(|_| CredentialError::Invalid("credential holder is still shared"))?;
+        let Self { source, source_parent_identity, identity, file,
+            source_parents, state } = binding;
+        let state = state.into_inner().map_err(|_| CredentialError::CustodyPoisoned)?;
+        let remaining: Vec<_> = complete_before.iter()
+            .filter(|scope| **scope != alias.scope).cloned().collect();
+        let source_parent = source.parent().ok_or(CredentialError::Invalid("source parent absent"))?;
+        let root_source = DirectoryRoots::prepare(root,
+            &[(source_parent.to_path_buf(), source_parent_identity.clone())])
+            .map_err(|error| io_error("hold remove source under RootLock", error))?;
+        let mut root_aliases = Vec::with_capacity(state.aliases.len());
+        for entry in &state.aliases {
+            root_aliases.push(DirectoryRoots::prepare(root,
+                &[(entry.witness.scope.root.clone(), entry.witness.scope.root_identity.clone())])
+                .map_err(|error| io_error("hold remove alias under RootLock", error))?);
+        }
+        source_parents.verify().map_err(|error| io_error("verify source parent before remove", error))?;
+        for entry in &state.aliases {
+            entry.parents.verify().map_err(|error| io_error("verify alias parent before remove", error))?;
+        }
+        // Keep RootLock and all held parent directories alive, but release the
+        // sole DELETE-owning handle that intentionally denied share-delete.
+        drop(file);
+        cache.retain(|entry| entry.identity != identity);
+        let path = alias.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| io_error("read exact alias before remove", error))?;
+        if metadata.file_attributes() & (REPARSE | DIRECTORY) != 0 || !metadata.is_file() {
+            return Err(CredentialError::Invalid("remove target is not an ordinary file"));
+        }
+        let target = OpenOptions::new()
+            .access_mode(READ_ATTRIBUTES | READ_CONTROL | DELETE_ACCESS)
+            .share_mode(SHARE_ALL).custom_flags(OPEN_REPARSE_POINT)
+            .open(&path).map_err(|error| io_error("open exact alias for removal", error))?;
+        let (target_identity, links) = physical_info(&target, "verify removal handle identity")?;
+        if target_identity != identity { return Err(CredentialError::IdentityChanged); }
+        let expected_links = u32::try_from(complete_before.len()).ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(CredentialError::Invalid("registered alias count overflow"))?;
+        if links != expected_links {
+            return Err(CredentialError::LinkCount { expected: expected_links, observed: links });
+        }
+        source_parents.verify().map_err(|error| io_error("verify source parent at remove", error))?;
+        for entry in &state.aliases {
+            entry.parents.verify().map_err(|error| io_error("verify alias parent at remove", error))?;
+        }
+        root_source.verify().map_err(|error| io_error("verify RootLock source at remove", error))?;
+        for parents in &root_aliases {
+            parents.verify().map_err(|error| io_error("verify RootLock alias at remove", error))?;
+        }
+        // FILE_DISPOSITION_INFO.DeleteFile is one BOOLEAN byte. Windows
+        // applies the disposition to the already-identified opened name.
+        let mut delete_file = 1u8;
+        if unsafe { SetFileInformationByHandle(target.as_raw_handle(), 4,
+            (&mut delete_file as *mut u8).cast(), 1) } == 0 {
+            return Err(io_error("SetFileInformationByHandle exact alias",
+                io::Error::last_os_error()));
+        }
+        drop(target);
+        root_source.verify().map_err(|error| io_error("verify RootLock source after remove", error))?;
+        for parents in &root_aliases {
+            parents.verify().map_err(|error| io_error("verify RootLock alias after remove", error))?;
+        }
+        Self::verify_removed_alias(root, &source, &source_parent_identity,
+            &identity, &alias.scope, &remaining)
+    }
+
+    /// Read-only resolution of a known pending remove intent. A present or
+    /// replaced target is an error; recovery never issues another delete.
+    pub(crate) fn verify_removed_alias(root: &RootLock, source: &Path,
+        source_parent_identity: &RootIdentity, expected: &RootIdentity,
+        removed: &CredentialAliasScope, remaining: &[CredentialAliasScope])
+        -> Result<CredentialRemovalReceipt, CredentialError> {
+        if source.file_name() != Some(OsStr::new(AUTH_NAME)) {
+            return Err(CredentialError::Invalid("source is not fixed Codex/File auth name"));
+        }
+        if remaining.contains(removed) || remaining.iter().enumerate().any(|(index, scope)|
+            remaining[..index].contains(scope)) {
+            return Err(CredentialError::Invalid("invalid remaining alias registry"));
+        }
+        let parent = source.parent().ok_or(CredentialError::Invalid("source parent absent"))?;
+        if removed.root == parent { return Err(CredentialError::Invalid("remove target is source")); }
+        let source_parents = DirectoryRoots::prepare(root,
+            &[(parent.to_path_buf(), source_parent_identity.clone())])
+            .map_err(|error| io_error("hold remaining source parent", error))?;
+        let removed_parents = DirectoryRoots::prepare(root,
+            &[(removed.root.clone(), removed.root_identity.clone())])
+            .map_err(|error| io_error("hold removed alias parent", error))?;
+        let mut remaining_parents = Vec::with_capacity(remaining.len());
+        for scope in remaining {
+            remaining_parents.push(DirectoryRoots::prepare(root,
+                &[(scope.root.clone(), scope.root_identity.clone())])
+                .map_err(|error| io_error("hold remaining alias parent", error))?);
+        }
+        require_absent_alias(&alias_path(removed)?)?;
+        let source_file = open_metadata(source, "read remaining source metadata")?;
+        let (source_identity, links) = physical_info(&source_file, "read remaining source ID and links")?;
+        if &source_identity != expected { return Err(CredentialError::IdentityChanged); }
+        let expected_links = u32::try_from(remaining.len()).ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(CredentialError::Invalid("remaining alias count overflow"))?;
+        if links != expected_links {
+            return Err(CredentialError::LinkCount { expected: expected_links, observed: links });
+        }
+        for scope in remaining {
+            let file = open_metadata(&alias_path(scope)?, "read remaining alias metadata")?;
+            if physical_info(&file, "read remaining alias identity")?.0 != *expected {
+                return Err(CredentialError::IdentityChanged);
+            }
+        }
+        source_parents.verify().map_err(|error| io_error("verify remaining source parent", error))?;
+        removed_parents.verify().map_err(|error| io_error("verify removed alias parent", error))?;
+        for parents in &remaining_parents {
+            parents.verify().map_err(|error| io_error("verify remaining alias parent", error))?;
+        }
+        require_absent_alias(&alias_path(removed)?)?;
+        let (rechecked_identity, rechecked_links) = physical_info(&source_file,
+            "recheck remaining source ID and links")?;
+        if &rechecked_identity != expected { return Err(CredentialError::IdentityChanged); }
+        if rechecked_links != expected_links {
+            return Err(CredentialError::LinkCount { expected: expected_links, observed: rechecked_links });
+        }
+        Ok(CredentialRemovalReceipt { source_identity, removed: removed.clone(),
+            remaining_aliases: remaining.to_vec(), remaining_links: links })
+    }
+
     #[cfg(test)]
     fn denied_data_read_for_test(&self) -> io::Result<()> {
         #[link(name = "kernel32")]
@@ -376,6 +536,14 @@ impl CredentialBinding {
         }
         Err(io::Error::new(io::ErrorKind::Other,
             format!("metadata-only credential handle unexpectedly read {read} bytes")))
+    }
+}
+
+fn require_absent_alias(path: &Path) -> Result<(), CredentialError> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.raw_os_error() == Some(2) => Ok(()),
+        Err(error) => Err(io_error("verify removed alias absence", error)),
+        Ok(_) => Err(CredentialError::Invalid("removed alias name still exists")),
     }
 }
 
