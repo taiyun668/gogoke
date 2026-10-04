@@ -10,6 +10,7 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use crate::root::RootIdentity;
+use super::credential_binding::{CredentialAlias, CredentialBinding, CredentialError};
 
 type Handle = *mut c_void;
 const TOKEN_QUERY: u32 = 0x0008;
@@ -19,8 +20,11 @@ const TOKEN_APP_CONTAINER_SID: u32 = 31;
 const PROFILE_ALREADY_EXISTS: u32 = 0x8007_00b7;
 const FILE_OBJECT: u32 = 1;
 const DACL_SECURITY_INFORMATION: u32 = 4;
+const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+const SE_DACL_PROTECTED: u16 = 0x1000;
 const GRANT_ACCESS: u32 = 1;
 const DENY_ACCESS: u32 = 3;
+const REVOKE_ACCESS: u32 = 4;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
@@ -31,6 +35,8 @@ const NO_INHERITANCE: u32 = 0;
 const FILE_GENERIC_READ: u32 = 0x0012_0089;
 const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
 const FILE_GENERIC_EXECUTE: u32 = 0x0012_00a0;
+const FILE_ALL_ACCESS: u32 = 0x001f_01ff;
+const CREDENTIAL_FILE_RIGHTS: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const READ_CONTROL: u32 = 0x0002_0000;
 const WRITE_DAC: u32 = 0x0004_0000;
@@ -138,6 +144,8 @@ extern "system" {
     fn GetAce(acl: *mut c_void, index: u32, ace: *mut *mut c_void) -> i32;
     fn ConvertStringSidToSidW(text: *const u16, sid: *mut *mut c_void) -> i32;
     fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
+    fn GetSecurityDescriptorControl(descriptor: *mut c_void,
+        control: *mut u16, revision: *mut u32) -> i32;
 }
 
 #[link(name = "OneCoreUAP")]
@@ -151,6 +159,7 @@ extern "system" {
 extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
     fn LocalFree(handle: Handle) -> Handle;
+    fn GetCurrentProcess() -> Handle;
     fn CreateFileW(path: *const u16, access: u32, sharing: u32,
         security: *const c_void, creation: u32, flags: u32, template: Handle) -> Handle;
     fn GetFileInformationByHandle(handle: Handle, information: *mut FileInformation) -> i32;
@@ -484,6 +493,91 @@ impl AppContainerProfile {
             rights, inheritance: OBJECT_AND_CONTAINER_INHERIT })
     }
 
+    /// Codex/File only: the exact F-registered auth alias is the sole
+    /// multi-link exception. The ordinary tree method above stays strict.
+    pub(crate) fn grant_bound_credential_tree(&self, path: &Path,
+        expected: &RootIdentity, binding: &CredentialBinding,
+        alias: &CredentialAlias, writable: bool) -> Result<AclWitness, CredentialError> {
+        if alias.root() != path || alias.root_identity() != expected
+            || alias.file_identity() != binding.identity() {
+            return Err(CredentialError::IdentityChanged);
+        }
+        protect_credential_source_acl(binding)?;
+        self.grant_credential_alias(binding, alias)?;
+        let root = open_bound_object(path, expected, true)?;
+        let before = collect_tree_with_credential(path, binding, alias)?;
+        let result = grant_exact_acl(root.0, self.sid, expected,
+            directory_rights(writable), OBJECT_AND_CONTAINER_INHERIT)?;
+        require_bound_path(path, expected, true)?;
+        let after = collect_tree_with_credential(path, binding, alias)?;
+        if before != after { return Err(IsolationError::AclWitnessMismatch.into()); }
+        let witness = self.verify_bound_credential_tree_grant(path, expected, binding, alias, writable)?;
+        if witness.identity != result { return Err(IsolationError::AclWitnessMismatch.into()); }
+        Ok(witness)
+    }
+
+    pub(crate) fn verify_bound_credential_tree_grant(&self, path: &Path,
+        expected: &RootIdentity, binding: &CredentialBinding,
+        alias: &CredentialAlias, writable: bool) -> Result<AclWitness, CredentialError> {
+        if alias.root() != path || alias.root_identity() != expected
+            || alias.file_identity() != binding.identity() {
+            return Err(CredentialError::IdentityChanged);
+        }
+        require_bound_path(path, expected, true)?;
+        let witness = self.verify_bound_directory_grant(path, expected, writable)?;
+        let rights = directory_rights(writable);
+        for (child, identity, directory, credential) in
+            collect_tree_with_credential(path, binding, alias)? {
+            if credential {
+                binding.with_exact_alias(alias, |handle| {
+                    if file_identity(handle)? != identity || !dacl_protected(handle)?
+                        || package_aces(handle, self.sid)?.as_slice() !=
+                            &[(GRANT_ACCESS, CREDENTIAL_FILE_RIGHTS, NO_INHERITANCE)] {
+                        return Err(IsolationError::AclWitnessMismatch.into());
+                    }
+                    Ok(())
+                })?;
+                continue;
+            }
+            let object = open_physical_object(&child, directory, READ_CONTROL)?;
+            if file_identity(object.0)? != identity { return Err(IsolationError::AclWitnessMismatch.into()); }
+            let entries = package_aces(object.0, self.sid)?;
+            if entries.len() != 1 || entries[0].0 != GRANT_ACCESS || entries[0].1 != rights
+                || entries[0].2 & INHERITED_ACE == 0 || entries[0].2 & INHERIT_ONLY_ACE != 0 {
+                return Err(IsolationError::AclWitnessDetail { object: child.to_path_buf(),
+                    sid: self.package_sid_string()?, expected: format!(
+                        "one inherited effective grant, rights={rights:#x}"), observed: entries }.into());
+            }
+            require_bound_path(&child, &identity, directory)?;
+        }
+        require_bound_path(path, expected, true)?;
+        Ok(witness)
+    }
+
+    /// The shared auth object's DACL grants only the exact admitted SID.
+    /// Rights contain no DELETE, WRITE_DAC or WRITE_OWNER bits.
+    pub(crate) fn grant_credential_alias(&self, binding: &CredentialBinding,
+        alias: &CredentialAlias) -> Result<(), CredentialError> {
+        protect_credential_source_acl(binding)?;
+        binding.with_exact_alias(alias, |handle| {
+            if !dacl_protected(handle)? { return Err(IsolationError::AclWitnessMismatch.into()); }
+            grant_exact_acl(handle, self.sid, binding.identity(),
+                CREDENTIAL_FILE_RIGHTS, NO_INHERITANCE)?;
+            if !dacl_protected(handle)? { return Err(IsolationError::AclWitnessMismatch.into()); }
+            Ok(())
+        })
+    }
+
+    /// Stopping one generation removes only its package SID from the shared
+    /// object. F controls dormant alias unlink after whole-instance quiescence.
+    pub(crate) fn revoke_credential_alias(&self, binding: &CredentialBinding,
+        alias: &CredentialAlias) -> Result<(), CredentialError> {
+        binding.with_exact_alias(alias, |handle| {
+            revoke_exact_credential_ace(handle, self.sid, binding.identity())?;
+            Ok(())
+        })
+    }
+
     /// The program path must come from F's fixed native catalog. Its object
     /// identity is captured before the grant and rechecked by process custody
     /// at suspended creation; an arbitrary caller-supplied path is insufficient.
@@ -686,6 +780,48 @@ fn collect_tree(root: &Path) -> Result<Vec<(PathBuf, RootIdentity, bool)>, Isola
     Ok(objects)
 }
 
+fn collect_tree_with_credential(root: &Path, binding: &CredentialBinding,
+    alias: &CredentialAlias) -> Result<Vec<(PathBuf, RootIdentity, bool, bool)>, CredentialError> {
+    if alias.root() != root { return Err(CredentialError::IdentityChanged); }
+    let exact_alias = alias.path();
+    let mut pending = vec![root.to_path_buf()];
+    let mut objects = Vec::new();
+    let mut found_alias = false;
+    while let Some(parent) = pending.pop() {
+        for child in std::fs::read_dir(&parent)
+            .map_err(|error| CredentialError::Io { operation: "enumerate scope tree", source: error })? {
+            let path = child.map_err(|error| CredentialError::Io {
+                operation: "read scope entry", source: error })?.path();
+            let metadata = std::fs::symlink_metadata(&path).map_err(|error|
+                CredentialError::Io { operation: "read scope object metadata", source: error })?;
+            let directory = metadata.is_dir();
+            if path == exact_alias {
+                if found_alias || directory || !metadata.is_file()
+                    || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(CredentialError::Invalid("registered alias is not one physical leaf"));
+                }
+                binding.with_exact_alias(alias, |handle| {
+                    if file_identity(handle)? != *alias.file_identity() {
+                        return Err(IsolationError::AclWitnessMismatch.into());
+                    }
+                    Ok(())
+                })?;
+                objects.push((path, alias.file_identity().clone(), false, true));
+                found_alias = true;
+                continue;
+            }
+            let object = open_physical_object(&path, directory, READ_CONTROL)?;
+            let identity = file_identity(object.0)?;
+            require_bound_path(&path, &identity, directory)?;
+            if directory { pending.push(path.clone()); }
+            objects.push((path, identity, directory, false));
+        }
+    }
+    if !found_alias { return Err(CredentialError::Invalid("registered alias missing from exact scope")); }
+    objects.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(objects)
+}
+
 fn package_aces(handle: Handle, sid: *mut c_void)
     -> Result<Vec<(u32, u32, u32)>, IsolationError> {
     let mut acl = ptr::null_mut();
@@ -763,6 +899,123 @@ fn grant_exact_acl(handle: Handle, sid: *mut c_void, expected: &RootIdentity,
             observed });
     }
     Ok(expected.clone())
+}
+
+fn dacl_protected(handle: Handle) -> Result<bool, IsolationError> {
+    let mut acl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe { GetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    let _descriptor = LocalAllocation(descriptor);
+    if descriptor.is_null() || acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let mut control = 0u16;
+    let mut revision = 0u32;
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    Ok(control & SE_DACL_PROTECTED != 0)
+}
+
+fn host_user_sid() -> Result<(Token, Vec<usize>, *mut c_void), IsolationError> {
+    let mut raw = ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
+        return Err(IsolationError::Token(io::Error::last_os_error()));
+    }
+    let token = Token(raw);
+    let mut size = 0u32;
+    unsafe { GetTokenInformation(token.0, 1, ptr::null_mut(), 0, &mut size); }
+    if size < size_of::<SidAndAttributes>() as u32 || size > 4096 {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    let mut words = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
+    let mut returned = 0u32;
+    if unsafe { GetTokenInformation(token.0, 1, words.as_mut_ptr().cast(),
+        size, &mut returned) } == 0 {
+        return Err(IsolationError::Token(io::Error::last_os_error()));
+    }
+    if returned < size_of::<SidAndAttributes>() as u32 {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    let sid = unsafe { (*(words.as_ptr().cast::<SidAndAttributes>())).sid };
+    if sid.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    Ok((token, words, sid))
+}
+
+fn well_known_sid(value: &str) -> Result<LocalAllocation, IsolationError> {
+    let wide: Vec<u16> = std::ffi::OsStr::new(value).encode_wide().chain(Some(0)).collect();
+    let mut raw = ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut raw) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    if raw.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    Ok(LocalAllocation(raw))
+}
+
+fn protect_credential_source_acl(binding: &CredentialBinding) -> Result<(), CredentialError> {
+    binding.with_source_acl(|handle, prepared| {
+        if !prepared {
+            let (_token, _user_buffer, user) = host_user_sid()?;
+            let system = well_known_sid("S-1-5-18")?;
+            let administrators = well_known_sid("S-1-5-32-544")?;
+            let mut entries = [user, system.0, administrators.0].map(|sid|
+                ExplicitAccessW { permissions: FILE_ALL_ACCESS, access_mode: GRANT_ACCESS,
+                    inheritance: NO_INHERITANCE, trustee: TrusteeW {
+                        multiple: ptr::null_mut(), multiple_operation: 0,
+                        form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN,
+                        name: sid.cast() } });
+            let mut raw_acl = ptr::null_mut();
+            let status = unsafe { SetEntriesInAclW(entries.len() as u32,
+                entries.as_mut_ptr(), ptr::null_mut(), &mut raw_acl) };
+            if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)).into()); }
+            if raw_acl.is_null() { return Err(IsolationError::AclWitnessMismatch.into()); }
+            let acl = LocalAllocation(raw_acl);
+            let status = unsafe { SetSecurityInfo(handle, FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                ptr::null_mut(), ptr::null_mut(), acl.0, ptr::null_mut()) };
+            if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)).into()); }
+        }
+        if !dacl_protected(handle)? { return Err(IsolationError::AclWitnessMismatch.into()); }
+        let (_token, _user_buffer, user) = host_user_sid()?;
+        if package_aces(handle, user)?.as_slice() !=
+            &[(GRANT_ACCESS, FILE_ALL_ACCESS, NO_INHERITANCE)] {
+            return Err(IsolationError::AclWitnessMismatch.into());
+        }
+        Ok(())
+    })
+}
+
+fn revoke_exact_credential_ace(handle: Handle, sid: *mut c_void,
+    expected: &RootIdentity) -> Result<(), IsolationError> {
+    if &file_identity(handle)? != expected { return Err(IsolationError::AclWitnessMismatch); }
+    let observed = package_aces(handle, sid)?;
+    if observed.is_empty() { return Ok(()); }
+    if observed.as_slice() != &[(GRANT_ACCESS, CREDENTIAL_FILE_RIGHTS, NO_INHERITANCE)] {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    let mut old_acl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe { GetSecurityInfo(handle, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), &mut old_acl, ptr::null_mut(), &mut descriptor) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    let _descriptor = LocalAllocation(descriptor);
+    if old_acl.is_null() || !dacl_protected(handle)? { return Err(IsolationError::AclWitnessMismatch); }
+    let mut entry = ExplicitAccessW { permissions: 0, access_mode: REVOKE_ACCESS,
+        inheritance: NO_INHERITANCE, trustee: TrusteeW { multiple: ptr::null_mut(),
+            multiple_operation: 0, form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN,
+            name: sid.cast() } };
+    let mut new_acl = ptr::null_mut();
+    let status = unsafe { SetEntriesInAclW(1, &mut entry, old_acl, &mut new_acl) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    if new_acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let new_acl = LocalAllocation(new_acl);
+    let status = unsafe { SetSecurityInfo(handle, FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), new_acl.0, ptr::null_mut()) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    if &file_identity(handle)? != expected || !package_aces(handle, sid)?.is_empty()
+        || !dacl_protected(handle)? { return Err(IsolationError::AclWitnessMismatch); }
+    Ok(())
 }
 
 fn require_fresh_physical_path(path: &Path) -> Result<(), IsolationError> {
