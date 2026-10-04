@@ -109,6 +109,32 @@ the end-turn fact; an intermediate `session/update` or write alone is not.
 The existing golden-sample importer consumes this readback's original private
 `frames` and `commands`, never a hand-written provider transcript.
 
+After the original `final` readback, the runner invokes that existing importer
+once per completed Claude, OpenCode and Grok session. It selects the actual H/F
+session identity, fixed version and program SHA-256; both input file hashes
+must equal the retained original readback. Outputs remain private and sanitized,
+with `REVIEW_REQUIRED` and `acceptance=NOT_ASSESSED`. Missing or not-run sessions
+cannot create a baseline. Codex's already recorded M1 baseline is separate;
+this does not invent a helper digest or promote a CLI label from config alone.
+
+## Cross-project history integration
+
+Optional `historyBoundary` follows `m2-history-boundaries.md`: each case has
+`projectA`, `projectB` and `sideBinding`, each with an explicit actual domain,
+the authorized `gogokeSeatTestbed` repository, seat and original registered F
+worktree. A and B use different domains on the same fixed instance; the third
+side/review binding belongs to A's domain. These exclusive objects must already
+be registered and must not overlap main, provider, rules or V12 objects.
+
+The runner completes the earlier readers before these cross-domain sessions
+enter the journal. It then owns normal-close, immutable `before-refusal`
+readback, same-candidate restart, actual formal refusal operations, normal-close
+and immutable `final` readback. Both require original H/A/D/F facts and unchanged
+database bytes. No reader opens vendor histories or credentials. Effective
+vendor memory/instruction provenance and the OwnerLead exact-history object
+remain explicit NOT_RUN dependencies; these flow facts cannot close V04b/V10.
+Without configured original test bindings, history records NOT_RUN, not PASS.
+
 The current script package has received only signed Node syntax and Python
 parser checks. Native code builds remain cloud-only; actual installed Win11,
 Smart App Control, browser and account outcomes are **NOT_RUN**.

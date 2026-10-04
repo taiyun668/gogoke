@@ -136,6 +136,51 @@ async function providerBoundaryReadback() {
   }
   return value;
 }
+async function recordProviderGoldens(originalReadback) {
+  const reference = journal.readbacks.find(row => row.phase === 'final');
+  check(reference && originalReadback.directCaseEvidence === true &&
+    originalReadback.measurementPreservedDatabaseBytes === true &&
+    originalReadback.sourceCommit === config.sourceCommit,
+    'Provider goldens require the normally closed original M2 readback');
+  const input = path.join(config.evidenceDirectory, reference.file);
+  check(sha256(input) === reference.sha256, 'Original provider golden input bytes unchanged');
+  journal.driverBytes['cli-protocol-golden.mjs'] = sha256(path.join(here, 'cli-protocol-golden.mjs'));
+  journal.providerGoldens = []; product.save();
+  for (const row of config.providerCases) {
+    const observed = originalReadback.providerSessions.find(session => session.driverId === row.driverId);
+    if (!observed || typeof observed.sessionId !== 'string') {
+      journal.providerGoldens.push({ driverId: row.driverId,
+        state: observed?.result ?? 'NOT_RUN_NO_ORIGINAL_PROVIDER_SESSION' });
+      product.save(); continue;
+    }
+    check(observed.result === 'DIRECT_ORIGINAL_PROTOCOL_EXPORTED_NOT_OWNER_ACCEPTANCE',
+      `${row.driverId}: original normalized output required for a golden`);
+    const file = `m2-${row.driverId}-protocol-golden.json`;
+    const output = path.join(config.evidenceDirectory, file);
+    if (fs.existsSync(output)) throw Error(`${row.driverId}: golden output already exists`);
+    await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [path.join(here, 'cli-protocol-golden.mjs'), 'import',
+        '--frames', input, '--normalized', input, '--out', output,
+        '--session-id', observed.sessionId, '--cli-version', row.version,
+        '--binary-sha256', row.sha256, '--capture-id', `${journal.caseId}-${row.driverId}`,
+        '--outcome', 'success'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = ''; child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+      child.once('error', reject);
+      child.once('exit', code => code === 0 ? resolve() :
+        reject(Error(`${row.driverId}: original golden import exit=${code}: ${stderr}`)));
+    });
+    const golden = readJson(output);
+    check(golden.schema === 'gogoke.cli-protocol-capture.v1' &&
+      golden.manifest.cliDriver === row.driverId && golden.manifest.cliVersion === row.version &&
+      golden.manifest.cliBinarySha256 === row.sha256 && golden.manifest.productSourceCommit === config.sourceCommit &&
+      golden.manifest.inputSha256.privateFrames === reference.sha256 &&
+      golden.manifest.inputSha256.normalizedOutput === reference.sha256 &&
+      golden.manifest.baselineStatus === 'REVIEW_REQUIRED' && golden.manifest.acceptance === 'NOT_ASSESSED',
+      `${row.driverId}: golden facts must bind original H/F identity and readback bytes`);
+    journal.providerGoldens.push({ driverId: row.driverId, sessionId: observed.sessionId,
+      file, sha256: sha256(output), state: 'REVIEW_REQUIRED_ACCEPTANCE_NOT_ASSESSED' }); product.save();
+  }
+}
 async function historyBoundaryReadback(phase) {
   const file = `m2-history-boundaries-${phase}.json`;
   const output = path.join(config.evidenceDirectory, file);
@@ -583,6 +628,7 @@ try {
   journal.providerCases.push({ driverId: 'antigravity', result: 'NOT_RUN_OWNER_DECISION_PENDING' }); product.save();
   await product.closeNormally();
   const final = await readback('final');
+  await recordProviderGoldens(final);
   check(final.worktree.id === captured.worktree.id && final.worktree.mergeTargetCommit === graph.result.mergeTargetCommit,
     'Original final F/Git merge receipt and graph agree');
   check(Array.isArray(final.providerWorktrees) && final.providerWorktrees.length === 3,
