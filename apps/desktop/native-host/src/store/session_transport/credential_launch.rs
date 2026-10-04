@@ -84,6 +84,123 @@ pub(crate) fn registered_credential_binding(db: &VerifiedDatabaseConnection<'_>,
     Ok(Some((binding, scopes)))
 }
 
+fn stopped_instance(db: &VerifiedDatabaseConnection<'_>, instance: &str) -> Result<(), String> {
+    for sql in [
+        "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1
+           AND (state<>'STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c
+           ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation
+          WHERE e.instance_id=?1 AND NOT (e.phase='FAILED' AND e.process_operation_id IS NULL)
+           AND (e.phase<>'STOPPED' OR c.state IS NULL OR c.state<>'STOPPED' OR e.stop_fact_id IS NULL
+             OR e.stop_fact_id='' OR c.stop_proof_hash IS NULL OR e.stop_fact_id<>c.stop_proof_hash) LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_coordination_process_custody c
+           ON c.operation_id=a.process_operation_id AND c.profile_id=a.instance_id AND c.domain_id=a.domain_id AND c.generation=a.generation
+          WHERE a.instance_id=?1 AND (a.state NOT IN ('STOPPED','RELEASED')
+           OR (a.process_operation_id IS NOT NULL AND (c.state IS NULL OR c.state<>'STOPPED'
+             OR a.stop_fact_id IS NULL OR a.stop_fact_id='' OR c.stop_proof_hash IS NULL OR a.stop_fact_id<>c.stop_proof_hash))) LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e
+           ON e.process_operation_id=g.old_process_operation_id WHERE e.instance_id=?1
+             AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1",
+    ] {
+        let query = evidence(Statement::prepare(db.as_ptr(), sql))?;
+        evidence(query.bind_text(1, instance))?;
+        if evidence(query.step_row())? { return Err(denied("instance has unresolved or unstopped original H custody")); }
+    }
+    Ok(())
+}
+
+/// Called under Root's instance quiescence boundary after all original grants
+/// are revoked and their holders are released. It never stops a model, removes
+/// a history directory, or opens credential data. One name is removed per
+/// durable intent; pending work receives only a read-only physical readback.
+pub(crate) fn quiescent_cleanup(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+    instance: &str, request: &str) -> Result<(), String> {
+    let profiles = evidence(instance::read_credential_profiles(db, instance))?;
+    if profiles.iter().any(|profile| profile.state != "REVOKED") {
+        return Err(denied("cleanup requires all original F profiles revoked"));
+    }
+    let Some(object) = evidence(instance::read_credential_object(db, instance))? else {
+        if !profiles.is_empty() || !evidence(instance::read_credential_aliases(db, instance))?.is_empty() {
+            return Err(denied("credential inventory without source"));
+        }
+        return Ok(());
+    };
+    let home = source_home(db, root, instance)?;
+    let source = home.path.join("auth.json");
+    let (identity, _) = evidence(CredentialBinding::observe_source_metadata(root, &source, &home.identity))?;
+    object_matches(db, &home, &object, &identity)?;
+    loop {
+        stopped_instance(db, instance)?;
+        let rows = evidence(instance::read_credential_aliases(db, instance))?;
+        if rows.iter().any(|row| !matches!(row.state.as_str(), "DORMANT" | "REMOVED" | "REMOVE_PENDING")) {
+            return Err(denied("cleanup retains active or unknown alias intents"));
+        }
+        // A pending original remove is reconciled before reserving any new
+        // side effect. Other unresolved journal entries remain blockers.
+        let selected = rows.iter().find(|row| row.state == "REMOVE_PENDING")
+            .or_else(|| rows.iter().find(|row| row.state == "DORMANT"));
+        let target = format!("credential-instance-{}", sha256_hex(instance.as_bytes()));
+        let query = evidence(Statement::prepare(db.as_ptr(),
+            "SELECT request_id,phase FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase IN ('PREPARING','UNKNOWN')"))?;
+        evidence(query.bind_text(1, &target))?;
+        while evidence(query.step_row())? {
+            let key = evidence(query.column_text(0))?;
+            let phase = evidence(query.column_text(1))?;
+            if !selected.is_some_and(|row| row.state == "REMOVE_PENDING"
+                && key == row.intent_request)
+                || phase != "PREPARING" {
+                return Err(denied("cleanup retains another unresolved original journal"));
+            }
+        }
+        let Some(row) = selected else { return Ok(()); };
+        let recovering = row.state == "REMOVE_PENDING";
+        let mut scopes = Vec::new();
+        let mut scope = None;
+        for alias in rows.iter().filter(|alias| alias.state != "REMOVED") {
+            if alias.instance_id != object.instance_id || alias.source_file_identity != object.file_identity {
+                return Err(denied("cleanup source association changed"));
+            }
+            let directory = evidence(instance::resolve_private_history_directory(db, root, &alias.history_id))?;
+            if directory.identity != alias.directory_identity { return Err(denied("cleanup directory identity changed")); }
+            let exact = CredentialAliasScope { root: directory.path, root_identity: directory.identity };
+            if alias.history_id == row.history_id { scope = Some(exact.clone()); }
+            scopes.push(exact);
+        }
+        let scope = scope.ok_or_else(|| denied("cleanup original scope absent"))?;
+        let revision = if recovering { row.revision.checked_sub(1).ok_or_else(|| denied("remove revision invalid"))? }
+            else { row.revision };
+        let input = CredentialAliasIntent { request_id: step_request(request, &format!("remove:{}", row.history_id)),
+            instance_id: instance.into(), history_id: row.history_id.clone(), directory_identity: row.directory_identity.clone(),
+            source_file_identity: object.file_identity.clone(), expected_revision: revision, action: CredentialAliasAction::Remove };
+        let binding = if recovering { None } else {
+            let binding = evidence(CredentialBinding::open_registered(root, &source, &home.identity, &object.file_identity, &scopes))?;
+            if Arc::strong_count(&binding) != 1 { return Err(denied("cleanup credential holder is still shared")); }
+            Some(binding)
+        };
+        let intent = evidence(instance::begin_credential_alias(db, &input))?;
+        let remaining: Vec<_> = scopes.iter().filter(|entry| **entry != scope).cloned().collect();
+        let physical = if recovering {
+            if intent.disposition != CredentialIntentDisposition::Pending {
+                return Err(denied("cleanup recovery did not select original remove intent"));
+            }
+            evidence(CredentialBinding::verify_removed_alias(root, &source, &home.identity,
+                &object.file_identity, &scope, &remaining))?
+        } else {
+            if intent.disposition != CredentialIntentDisposition::New { return Err(denied("remove was not newly reserved")); }
+            stopped_instance(db, instance)?;
+            let binding = binding.ok_or_else(|| denied("cleanup held source absent"))?;
+            let alias = evidence(binding.alias(&scope, &scopes))?;
+            evidence(CredentialBinding::remove_quiescent_alias(binding, root, &alias, &scopes))?
+        };
+        if physical.source_identity != object.file_identity || physical.removed != scope || physical.remaining_aliases != remaining {
+            return Err(denied("cleanup physical receipt changed original namespace"));
+        }
+        evidence(instance::complete_credential_alias(db, &intent, &CredentialAliasPhysicalReceipt {
+            source_file_identity: physical.source_identity, directory_identity: physical.removed.root_identity,
+            observed_nlink: u64::from(physical.remaining_links), result: CredentialAliasResult::Removed }))?;
+    }
+}
+
 fn known_profile_custody(db: &VerifiedDatabaseConnection<'_>, profile: &CredentialProfileRecord) -> Result<(), String> {
     let generation = evidence(instance::read_private_history_generation(db, &profile.binding_id, &profile.generation))?
         .ok_or_else(|| denied("old profile F generation absent"))?;
@@ -183,7 +300,7 @@ impl CredentialLaunch {
         let (identity, links) = match CredentialBinding::observe_source_metadata(root, &source, &home.identity) {
             Ok(metadata) => metadata,
             Err(CredentialError::Io { operation: "observe source metadata", source: error })
-                if error.kind() == std::io::ErrorKind::NotFound && existing.is_none()
+                if error.raw_os_error() == Some(2) && existing.is_none()
                     && rows.is_empty() && profiles.is_empty() => return Ok(None),
             Err(error) => return Err(format!("credential original source metadata: {error:?}")),
         };
@@ -317,19 +434,27 @@ impl CredentialLaunch {
             "SELECT 1 FROM main.gogoke_coordination_process_custody c JOIN main.gogoke_v37_h_process_episode e
                ON e.process_operation_id=c.operation_id AND e.instance_id=c.profile_id AND e.domain_id=c.domain_id AND e.generation=c.generation
               WHERE c.operation_id=?1 AND c.ticket=?2 AND c.custodian_nonce=?3 AND c.profile_id=?4 AND c.domain_id=?5 AND c.generation=?6
-                AND e.binding_id=?7 AND e.session_id=?8 AND c.binary_digest_sha256=?9 AND c.pid=?10 AND c.creation_time_100ns=?11
+                AND e.binding_id=?7 AND e.session_id=?8 AND c.binary_digest_sha256=?9 AND c.pid=?10 AND c.creation_time_100ns=?11 AND c.image_path=?12
                 AND c.state='STOPPED' AND e.phase='STOPPED' AND c.stop_proof_hash=e.stop_fact_id
                 AND e.stop_fact_id IS NOT NULL AND e.stop_fact_id<>''"))?;
         let ticket = custody.ticket.opaque(); let pid = custody.identity.pid.to_string();
         let created = custody.identity.creation_time_100ns.to_string();
-        for (index, value) in [operation, ticket.as_str(), custody.custodian_nonce.as_str(), self.object.instance_id.as_str(),
+        let image = custody.identity.image_path.to_string_lossy();
+        for (index, value) in [operation, ticket, custody.custodian_nonce.as_str(), self.object.instance_id.as_str(),
             self.history.domain_id.as_str(), self.history.generation.as_str(), self.history.binding_id.as_str(),
-            self.history.session_id.as_str(), custody.binding.binary_digest_sha256.as_str(), pid.as_str(), created.as_str()].iter().enumerate() {
+            self.history.session_id.as_str(), custody.binding.binary_digest_sha256.as_str(), pid.as_str(), created.as_str(), image.as_ref()].iter().enumerate() {
             evidence(query.bind_text((index + 1) as i32, value))?;
         }
         if !evidence(query.step_row())? || evidence(query.step_row())? { return Err(denied("exact original STOPPED custody absent")); }
-        let (_, scopes) = registered_credential_binding(db, root, &self.object.instance_id)?
+        let home = source_home(db, root, &self.object.instance_id)?;
+        let object = evidence(instance::read_credential_object(db, &self.object.instance_id))?
             .ok_or_else(|| denied("original registered source absent"))?;
+        let (identity, _) = evidence(CredentialBinding::observe_source_metadata(root, &home.path.join("auth.json"), &home.identity))?;
+        object_matches(db, &home, &object, &identity)?;
+        if object.file_identity != self.object.file_identity { return Err(denied("original revoke source changed")); }
+        let rows = evidence(instance::read_credential_aliases(db, &self.object.instance_id))?;
+        if rows.iter().any(|row| row.state == "UNKNOWN") { return Err(denied("unknown alias retained during revoke")); }
+        let scopes = alias_scopes(db, root, &object, &rows, Some(&self.history.history_id))?;
         evidence(self.binding.verify_registered_aliases(&scopes))?;
         let current = evidence(instance::read_credential_profiles(db, &self.object.instance_id))?.into_iter()
             .find(|row| row.binding_id == self.profile_record.binding_id).ok_or_else(|| denied("original profile absent"))?;
@@ -338,17 +463,26 @@ impl CredentialLaunch {
             return Err(denied("original revoke profile association changed"));
         }
         if current.state != "REVOKED" {
-        if current.state != "ACTIVE" { return Err(denied("unresolved revoke must be reconciled without another ACL action")); }
+        let recovering = current.state == "REVOKE_PENDING";
+        if !recovering && current.state != "ACTIVE" { return Err(denied("unknown original revoke retained")); }
+        let revision = if recovering { current.revision.checked_sub(1).ok_or_else(|| denied("revoke revision invalid"))? }
+            else { current.revision };
         let intent = evidence(instance::begin_credential_profile(db, &CredentialProfileIntent {
             request_id: step_request(operation, "revoke"), instance_id: self.object.instance_id.clone(),
             history_id: self.history.history_id.clone(), binding_id: self.history.binding_id.clone(),
             generation: self.history.generation.clone(), profile_sid: current.profile_sid,
-            source_file_identity: self.object.file_identity.clone(), expected_revision: current.revision,
+            source_file_identity: self.object.file_identity.clone(), expected_revision: revision,
             action: CredentialProfileAction::Revoke }))?;
-        if intent.disposition != CredentialIntentDisposition::New { return Err(denied("revoke was not newly reserved")); }
-        evidence(profile.revoke_credential_alias(&self.binding, &self.alias))?;
-        evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Revoked))?;
+        if recovering {
+            if intent.disposition != CredentialIntentDisposition::Pending { return Err(denied("revoke did not select original pending intent")); }
+            evidence(profile.verify_revoked_credential_alias(&self.binding, &self.alias))?;
+        } else {
+            if intent.disposition != CredentialIntentDisposition::New { return Err(denied("revoke was not newly reserved")); }
+            evidence(profile.revoke_credential_alias(&self.binding, &self.alias))?;
+            evidence(profile.verify_revoked_credential_alias(&self.binding, &self.alias))?;
         }
+        evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Revoked))?;
+        } else { evidence(profile.verify_revoked_credential_alias(&self.binding, &self.alias))?; }
         let others = evidence(instance::read_credential_profiles(db, &self.object.instance_id))?;
         if !others.iter().any(|row| row.history_id == self.history.history_id && row.state != "REVOKED") {
             let aliases = evidence(instance::read_credential_aliases(db, &self.object.instance_id))?;
