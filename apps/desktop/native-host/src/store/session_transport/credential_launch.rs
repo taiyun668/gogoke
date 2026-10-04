@@ -115,6 +115,7 @@ fn stopped_instance(db: &VerifiedDatabaseConnection<'_>, instance: &str) -> Resu
 /// durable intent; pending work receives only a read-only physical readback.
 pub(crate) fn quiescent_cleanup(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
     instance: &str, request: &str) -> Result<(), String> {
+    stopped_instance(db, instance)?;
     let profiles = evidence(instance::read_credential_profiles(db, instance))?;
     if profiles.iter().any(|profile| profile.state != "REVOKED") {
         return Err(denied("cleanup requires all original F profiles revoked"));
@@ -167,11 +168,10 @@ pub(crate) fn quiescent_cleanup(db: &mut VerifiedDatabaseConnection<'_>, root: &
             scopes.push(exact);
         }
         let scope = scope.ok_or_else(|| denied("cleanup original scope absent"))?;
-        let revision = if recovering { row.revision.checked_sub(1).ok_or_else(|| denied("remove revision invalid"))? }
-            else { row.revision };
-        let input = CredentialAliasIntent { request_id: step_request(request, &format!("remove:{}", row.history_id)),
+        let input = if recovering { evidence(instance::recover_pending_credential_remove(db, instance, &row.history_id))? }
+            else { CredentialAliasIntent { request_id: step_request(request, &format!("remove:{}", row.history_id)),
             instance_id: instance.into(), history_id: row.history_id.clone(), directory_identity: row.directory_identity.clone(),
-            source_file_identity: object.file_identity.clone(), expected_revision: revision, action: CredentialAliasAction::Remove };
+            source_file_identity: object.file_identity.clone(), expected_revision: row.revision, action: CredentialAliasAction::Remove } };
         let binding = if recovering { None } else {
             let binding = evidence(CredentialBinding::open_registered(root, &source, &home.identity, &object.file_identity, &scopes))?;
             if Arc::strong_count(&binding) != 1 { return Err(denied("cleanup credential holder is still shared")); }
@@ -507,5 +507,128 @@ impl CredentialLaunch {
             } else if row.state != "DORMANT" { return Err(denied("original alias dormant transition unresolved")); }
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::store::same_open::{create_new, route_b_test_guard};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &RootLock)) {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-credential-cleanup-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut db = create_new(&root, &path.join("state.sqlite")).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        instance::initialize_credential_schema(&mut db).unwrap();
+        crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
+        super::super::initialize_admission_schema(&mut db).unwrap();
+        let binary = path.join("fixture-program.bin");
+        fs::write(&binary, b"non-executable synthetic program fixture").unwrap();
+        let program = instance::ProgramObservation::observe(&binary, "0.160.0").unwrap();
+        instance::register_instance(&mut db, &root, &instance::Registration { request_id: "registerA",
+            request_bytes: b"cleanup synthetic registration", instance_id: "instanceA", driver_id: "codex",
+            program: &program }).unwrap();
+        let pin = Statement::prepare(db.as_ptr(), "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+        assert!(pin.step_row().unwrap()); let digest = pin.column_text(0).unwrap(); drop(pin);
+        let custody = Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_coordination_process_custody VALUES('accountRead','ticketA','nonceA','1','1','fixture-image',?1,'instanceA','global','1','STOPPED','fixture-stop-proof')").unwrap();
+        custody.bind_text(1, &digest).unwrap(); custody.step_done().unwrap(); drop(custody);
+        run(&mut db, &root);
+        db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn credential_cleanup_without_source_rejects_unknown_global_custody() {
+        fixture(|db, root| {
+            let home = source_home(db, root, "instanceA").unwrap();
+            assert_eq!(fs::symlink_metadata(home.path.join("auth.json")).unwrap_err().raw_os_error(), Some(2));
+            assert!(instance::read_credential_object(db, "instanceA").unwrap().is_none());
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET state='UNKNOWN' WHERE operation_id='accountRead'").unwrap();
+            assert!(quiescent_cleanup(db, root, "instanceA", "loginNew").is_err());
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash=NULL WHERE operation_id='accountRead'").unwrap();
+            assert!(quiescent_cleanup(db, root, "instanceA", "loginNew").is_err());
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='fixture-stop-proof' WHERE operation_id='accountRead'").unwrap();
+            quiescent_cleanup(db, root, "instanceA", "loginNew").unwrap();
+            assert!(instance::read_credential_aliases(db, "instanceA").unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn credential_cleanup_new_login_recovers_original_pending_remove_without_delete_retry() {
+        fixture(|db, root| {
+            let home = source_home(db, root, "instanceA").unwrap();
+            let history = instance::create_initial_private_history(db, root, &instance::PrivateHistoryLaunch {
+                instance_id: "instanceA", domain_id: "projectA", session_id: "sessionA", seat_id: "seatA",
+                seat_incarnation: "1", binding_id: "bindingA", generation: "1", request_id: "openA" }).unwrap();
+            // An empty, exclusively owned synthetic file models the physical
+            // namespace. No actual credential is opened and no bytes are read.
+            let source = home.path.join("auth.json");
+            drop(fs::OpenOptions::new().write(true).create_new(true).open(&source).unwrap());
+            let (identity, links) = CredentialBinding::observe_source_metadata(root, &source, &home.identity).unwrap();
+            let pin = Statement::prepare(db.as_ptr(), "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+            assert!(pin.step_row().unwrap()); let digest = pin.column_text(0).unwrap(); drop(pin);
+            instance::record_credential_backend(db, &instance::BackendSource { request_id: "backendA".into(),
+                instance_id: "instanceA".into(), home_identity: home.identity.clone(), program_digest: digest,
+                version: "0.160.0".into(), backend: instance::CredentialBackend::File,
+                startup_selector: instance::CredentialStartupSelector::FileBound,
+                operation_id: "accountRead".into(), ticket: "ticketA".into(), nonce: "nonceA".into(), generation: "1".into() }).unwrap();
+            let input = CredentialObjectInput { request_id: "objectA".into(), instance_id: "instanceA".into(),
+                root_identity: db.root_identity().clone(), home_identity: home.identity.clone(), file_identity: identity.clone(),
+                source_parent_identity: home.identity.clone(), observed_nlink: u64::from(links), expected_revision: 0, rebind_from: None };
+            let object = instance::bind_credential_object(db, &input).unwrap();
+            let binding = CredentialBinding::open_registered(root, &source, &home.identity, &identity, &[]).unwrap();
+            let scope = CredentialAliasScope { root: history.directory.path.clone(), root_identity: history.directory.identity.clone() };
+            let mut input = CredentialAliasIntent { request_id: "createA".into(), instance_id: "instanceA".into(),
+                history_id: history.generation.history_id.clone(), directory_identity: scope.root_identity.clone(),
+                source_file_identity: object.file_identity.clone(), expected_revision: 0, action: CredentialAliasAction::Create };
+            let created = instance::begin_credential_alias(db, &input).unwrap();
+            let alias = binding.create_alias(root, scope.clone(), &[]).unwrap();
+            let (linked_identity, linked_count) = CredentialBinding::observe_source_metadata(root, &source, &home.identity).unwrap();
+            assert_eq!(linked_identity, identity); assert_eq!(linked_count, 2);
+            let physical = CredentialAliasPhysicalReceipt { source_file_identity: identity.clone(),
+                directory_identity: scope.root_identity.clone(), observed_nlink: u64::from(linked_count), result: CredentialAliasResult::Active };
+            let row = instance::complete_credential_alias(db, &created, &physical).unwrap();
+            input.request_id = "dormantA".into(); input.expected_revision = row.revision; input.action = CredentialAliasAction::Dormant;
+            let dormant = instance::begin_credential_alias(db, &input).unwrap();
+            let row = instance::complete_credential_alias(db, &dormant, &CredentialAliasPhysicalReceipt {
+                result: CredentialAliasResult::Dormant, ..physical }).unwrap();
+            input.request_id = step_request("loginOriginal", &format!("remove:{}", row.history_id));
+            input.expected_revision = row.revision; input.action = CredentialAliasAction::Remove;
+            let original = instance::begin_credential_alias(db, &input).unwrap();
+            CredentialBinding::remove_quiescent_alias(binding, root, &alias, &[scope.clone()]).unwrap();
+            // Simulate stop after actual deletion and before F's completion.
+            let original_key = original.alias.intent_request.clone();
+            let query = Statement::prepare(db.as_ptr(), "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id=?1").unwrap();
+            query.bind_text(1, &original_key).unwrap(); assert!(query.step_row().unwrap());
+            let fingerprint = query.column_text(0).unwrap(); drop(query);
+            for malformed in [fingerprint[..fingerprint.len()-2].to_owned(), format!("{fingerprint}00")] {
+                let write = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_instance_operations SET request_hex=?2 WHERE request_id=?1").unwrap();
+                write.bind_text(1, &original_key).unwrap(); write.bind_text(2, &malformed).unwrap(); write.step_done().unwrap();
+                assert!(quiescent_cleanup(db, root, "instanceA", "loginNew").is_err());
+                assert_eq!(instance::read_credential_aliases(db, "instanceA").unwrap()[0].state, "REMOVE_PENDING");
+            }
+            let write = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_instance_operations SET request_hex=?2,phase='UNKNOWN' WHERE request_id=?1").unwrap();
+            write.bind_text(1, &original_key).unwrap(); write.bind_text(2, &fingerprint).unwrap(); write.step_done().unwrap(); drop(write);
+            assert!(quiescent_cleanup(db, root, "instanceA", "loginNew").is_err());
+            assert_eq!(instance::read_credential_aliases(db, "instanceA").unwrap()[0].intent_request, original_key);
+            db.execute("UPDATE main.gogoke_v37_instance_operations SET phase='PREPARING' WHERE phase='UNKNOWN'").unwrap();
+            let before = Statement::prepare(db.as_ptr(), "SELECT COUNT(*) FROM main.gogoke_v37_instance_operations").unwrap();
+            assert!(before.step_row().unwrap()); let count = before.column_text(0).unwrap(); drop(before);
+            quiescent_cleanup(db, root, "instanceA", "loginNew").unwrap();
+            let final_row = instance::read_credential_aliases(db, "instanceA").unwrap().remove(0);
+            assert_eq!(final_row.state, "REMOVED"); assert_eq!(final_row.intent_request, original_key);
+            let after = Statement::prepare(db.as_ptr(), "SELECT COUNT(*) FROM main.gogoke_v37_instance_operations").unwrap();
+            assert!(after.step_row().unwrap()); assert_eq!(after.column_text(0).unwrap(), count); drop(after);
+            let receipt = CredentialBinding::verify_removed_alias(root, &source, &home.identity, &identity, &scope, &[]).unwrap();
+            assert_eq!(receipt.remaining_links, 1); assert_eq!(receipt.source_identity, identity);
+            assert_eq!(fs::symlink_metadata(alias.path()).unwrap_err().raw_os_error(), Some(2));
+        });
     }
 }
