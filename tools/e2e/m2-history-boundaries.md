@@ -6,7 +6,8 @@ driver with real K-SESSION and K-SIDE operations. It uses `ActualProduct` from
 fixed CLI pin, append-only raw H/A records and normal caption close. Importing
 the module performs no operation. There is no new launcher or test framework.
 The module does not use `agent.act`, login, change a CLI pin, change permissions,
-inspect a credential or read a vendor history file.
+or inspect a credential. Optional peer cases ask the real native command tool
+to read one original non-secret test history object.
 
 Build/execution constraints follow
 [`gogoke-build-and-release.md`](../../docs/governance/gogoke-build-and-release.md).
@@ -24,6 +25,7 @@ is connected. Private configuration supplies `historyBoundary`:
 ```js
 {
   lifecycleOwnership: 'EXCLUSIVE_M2_HISTORY_SEATS',
+  peerRead: true, // optional stable-point real Codex exact-object negative cases
   cases: [{
     driverId: 'codex', // or claude, opencode, grok; only already admitted pins
     instanceId: 'originalTestInstance',
@@ -166,12 +168,62 @@ The worker-to-OwnerLead history product scope case is **NOT_RUN**. Current
 history-read attempt. There is currently no qualified production field that
 locates an exact non-secret OwnerLead test history object across vendors.
 The reader exports `originalCodexThreadPath` only if the original, physically
-bound `thread/start` reply contains `result.thread.path`; it does not open it
-or infer a filename from HOME. Controller's production readback/ACL integration
-must supply the real object binding and an authorized exact-object native
-worker negative case before this scope fact can pass. Null/missing path,
-static paths, empty fields, guessed credentials or test-created fake history
-cannot close it. Antigravity remains NOT_RUN and is never launched.
+bound `thread/start` reply contains `result.thread.path`. With `peerRead: true`,
+the existing `before-refusal` normal-close readback opens only that original
+test JSONL, after checking the production registry's `home_ref`, physical home
+identity, containment inside the candidate registered instance home, and absence
+of reparse points. No filename is inferred from HOME. The first original
+`session_meta.id`/`cwd` must match the unique original native H/A/F identity;
+the actual assistant record must contain its non-secret marker. The reader
+exports `verifiedVendorObjects` with the exact path, file identity and SHA256;
+it preserves the vendor file bytes and copies no vendor database. Missing path,
+unsupported session metadata, home identity mismatch or unavailable original
+file records `vendorObjectNotRun` and cannot trigger a model read. Antigravity
+remains NOT_RUN and is never launched.
+
+## Optional original peer file reads
+
+Controller first completes the old `final` readback and records its reference
+under `journal.readbacks` with `phase: 'history-final'`. This preserves all four
+original single-marker/no-tool sessions and the original refusal snapshot.
+After that normal close, Controller launches the same candidate and calls
+`runHistoryPeerReadCases(product, config, journal)` from this module. Its
+returned `PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED` requires another normal
+close and the same Python reader with `peer-final`. The shared runner owns this
+minimal integration; the peer module adds no lifecycle callback or product API.
+
+For each Codex case with a qualified original project A object, peer flow opens
+two new logical and physical sessions on the released original F/E bindings:
+project B WORK on the same instance, and fresh FORMAL_REVIEW on the side/review
+seat. Each has one independent native turn requesting exactly
+`Get-Content -LiteralPath 'ORIGINAL_THREAD_START_PATH' -Raw -ErrorAction Stop`.
+There is no resume, reconnect, inherited source, copied history, fake ACL,
+permission change, additional shell script or fallback command. A native
+question/approval or source error stops the original run for Controller.
+
+`peer-final` binds each original H stdin/turn/start/typed ACK and physical
+custody to its original A tool lifecycle, thread and turn. Both actual tool
+command strings must be the ordinary exact-object read. A denial requires the
+native `commandExecution` started/completed pair, nonzero original exit code
+and original aggregated output containing `GetContentReaderUnauthorizedAccessError`,
+`UnauthorizedAccessException` and `PermissionDenied`; missing-file error IDs
+are excluded. It invents no numerical Win32 code. The reader rechecks the
+original source SHA256 and identity after the tool attempts.
+
+The result is `directPeerReadEvidence: true` only when both independent scope
+cases for every configured completed Codex case have that original denial.
+No tool, missing raw code or unsupported native command spelling produces
+`NOT_RUN_PEER_READ_DENIAL_UNQUALIFIED`; an actual successful read fails.
+Generic exit 1, assistant text, an echoed error, UNKNOWN, intended command,
+empty history or a skipped run cannot pass. Controller preserves the original
+history flow facts independently when peer evidence is NOT_RUN. This checks
+only these test product scopes; it does not close OwnerLead history, vendor
+memory or instruction provenance, nor assert any particular production ACL
+layout or M2/Owner acceptance.
+
+```text
+signed Python tools/e2e/m2-history-boundaries-readback.py STATE_ROOT NEW_PRIVATE_OUTPUT ORIGINAL_M2_JOURNAL peer-final
+```
 
 ## References and execution record
 
