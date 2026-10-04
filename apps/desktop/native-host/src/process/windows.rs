@@ -1106,6 +1106,19 @@ impl ProcessCustodian {
                 return Err(error);
             }
         };
+        #[cfg(test)]
+        if let Some(name) = request.launch.app_container_profile.as_deref() {
+            if crate::store::session_transport::launch::history_candidate_profile_for_test(name) {
+                let result = AppContainerProfile::derived_for_test(name)
+                    .map_err(|error| error.to_string())
+                    .and_then(|profile| profile.set_history_default_dacl_for_test(prepared.process.raw()));
+                if let Err(error) = result {
+                    return Err(prepared.reject(ProcessCustodyError::Isolation(
+                        format!("synthetic history ACL token preparation: {error}")),
+                        &mut self.failed_launches));
+                }
+            }
+        }
         let launched_digest = match file_sha256(&prepared.identity.image_path) {
             Ok(digest) => digest,
             Err(error) => return Err(prepared.reject(error, &mut self.failed_launches)),

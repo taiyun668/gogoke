@@ -249,6 +249,44 @@ pub(crate) struct AclWitness {
 
 impl AppContainerProfile {
     #[cfg(test)]
+    pub(crate) fn set_history_candidate_home_for_test(path: &Path,
+        profiles: &[&Self]) -> Result<(), String> {
+        history_acl_qualification::set_candidate_home_acl(path, profiles)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verify_history_candidate_home_for_test(&self, path: &Path,
+        identity: &RootIdentity) -> Result<(), String> {
+        history_acl_qualification::verify_candidate_home_acl(path, identity, self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_history_default_dacl_for_test(&self, process: Handle)
+        -> Result<(), String> {
+        history_acl_qualification::set_child_default_dacl(process, self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn probe_vendor_history_paths_for_test(&self, name: &str,
+        runner: &Path, foreign: &Path, own: &Path) -> Result<(String, String), String> {
+        history_acl_qualification::probe_vendor_history_paths(self, name, runner, foreign, own)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_vendor_history_leaf_acl_for_test(path: &Path,
+        own: &Self, peer: &Self) -> Result<(RootIdentity, Vec<(u32,u32,u32)>,
+        Vec<(u32,u32,u32)>, Vec<(u32,u32,u32)>), String> {
+        history_acl_qualification::observed_vendor_leaf_acl(path, own, peer)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_vendor_history_directory_acl_for_test(path: &Path,
+        first: &Self, second: &Self) -> Result<(RootIdentity, Vec<(u32,u32,u32)>,
+        Vec<(u32,u32,u32)>), String> {
+        history_acl_qualification::observed_vendor_directory_acl(path, first, second)
+    }
+
+    #[cfg(test)]
     pub(crate) fn derived_for_test(name: &str) -> Result<Self, IsolationError> {
         if !valid_profile_name(name) { return Err(IsolationError::InvalidProfileName); }
         let wide: Vec<u16> = std::ffi::OsStr::new(name).encode_wide().chain(Some(0)).collect();

@@ -17,6 +17,7 @@ const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
 const FILE_ALL_ACCESS: u32 = 0x001f_01ff;
 const CONTAINER_INHERIT: u32 = 2;
 const TEST_HELPER: &str = "process::session::isolation::history_acl_qualification::synthetic_history_acl_child";
+const VENDOR_READ_HELPER: &str = "process::session::isolation::history_acl_qualification::vendor_history_read_child";
 
 #[repr(C)]
 struct TokenDefaultDacl { default_dacl: *mut c_void }
@@ -85,7 +86,7 @@ fn acl_has_sid(acl: *mut c_void, sid: *mut c_void) -> Result<bool, String> {
     Ok(false)
 }
 
-fn set_child_default_dacl(process: Handle, profile: &AppContainerProfile) -> Result<(), String> {
+pub(super) fn set_child_default_dacl(process: Handle, profile: &AppContainerProfile) -> Result<(), String> {
     let mut raw = ptr::null_mut();
     if unsafe { OpenProcessToken(process, TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &mut raw) } == 0 {
         return Err(format!("OpenProcessToken suspended child: {}", io::Error::last_os_error()));
@@ -118,7 +119,7 @@ fn set_child_default_dacl(process: Handle, profile: &AppContainerProfile) -> Res
     Ok(())
 }
 
-fn set_protected_synthetic_acl(path: &Path, user: *mut c_void,
+pub(super) fn set_protected_synthetic_acl(path: &Path, user: *mut c_void,
     profiles: &[&AppContainerProfile], inheritance: u32) -> Result<(), String> {
     let mut entries = vec![(user, FILE_ALL_ACCESS, inheritance)];
     entries.extend(profiles.iter().map(|profile| (profile.sid,
@@ -140,6 +141,59 @@ fn set_protected_synthetic_acl(path: &Path, user: *mut c_void,
     Ok(())
 }
 
+pub(super) fn set_candidate_home_acl(path: &Path,
+    profiles: &[&AppContainerProfile]) -> Result<(), String> {
+    let mut raw = ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
+        return Err(format!("open ordinary-user token: {}", io::Error::last_os_error()));
+    }
+    let token = Token(raw);
+    let (_user_buffer, user) = token_user(token.0)?;
+    set_protected_synthetic_acl(path, user, profiles, CONTAINER_INHERIT)
+}
+
+pub(super) fn verify_candidate_home_acl(path: &Path, identity: &RootIdentity,
+    profile: &AppContainerProfile) -> Result<(), String> {
+    let object = open_physical_object(path, true, READ_CONTROL)
+        .map_err(|error| error.to_string())?;
+    if &file_identity(object.0).map_err(|error| error.to_string())? != identity {
+        return Err("candidate home object identity changed".into());
+    }
+    let rights = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE;
+    let actual = package_aces(object.0, profile.sid).map_err(|error| error.to_string())?;
+    if actual != vec![(GRANT_ACCESS, rights, CONTAINER_INHERIT)] {
+        return Err(format!("candidate home package ACE mismatch: {actual:?}"));
+    }
+    Ok(())
+}
+
+pub(super) fn observed_vendor_leaf_acl(path: &Path, own: &AppContainerProfile,
+    peer: &AppContainerProfile) -> Result<(RootIdentity, Vec<(u32,u32,u32)>,
+    Vec<(u32,u32,u32)>, Vec<(u32,u32,u32)>), String> {
+    let object = open_physical_object(path, false, READ_CONTROL).map_err(|error| error.to_string())?;
+    let identity = file_identity(object.0).map_err(|error| error.to_string())?;
+    let mut raw = ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
+        return Err(format!("open Host token: {}", io::Error::last_os_error()));
+    }
+    let token = Token(raw);
+    let (_user_buffer, user) = token_user(token.0)?;
+    let own_aces = package_aces(object.0, own.sid).map_err(|error| error.to_string())?;
+    let peer_aces = package_aces(object.0, peer.sid).map_err(|error| error.to_string())?;
+    let user_aces = package_aces(object.0, user).map_err(|error| error.to_string())?;
+    Ok((identity, own_aces, peer_aces, user_aces))
+}
+
+pub(super) fn observed_vendor_directory_acl(path: &Path, first: &AppContainerProfile,
+    second: &AppContainerProfile) -> Result<(RootIdentity, Vec<(u32,u32,u32)>,
+    Vec<(u32,u32,u32)>), String> {
+    let object = open_physical_object(path, true, READ_CONTROL).map_err(|error| error.to_string())?;
+    let identity = file_identity(object.0).map_err(|error| error.to_string())?;
+    let first_aces = package_aces(object.0, first.sid).map_err(|error| error.to_string())?;
+    let second_aces = package_aces(object.0, second.sid).map_err(|error| error.to_string())?;
+    Ok((identity, first_aces, second_aces))
+}
+
 fn path_for(root: &Path, layout: &str, owner: &str) -> PathBuf {
     if layout == "ci_nested" {
         root.join("sessions").join("2026").join("10").join("03")
@@ -152,6 +206,52 @@ fn record(report: &mut Vec<String>, name: &str, result: io::Result<()>) {
         Ok(()) => report.push(format!("{name}=OK")),
         Err(error) => report.push(format!("{name}=ERR:{:?};{}", error.raw_os_error(), error)),
     }
+}
+
+#[test]
+fn vendor_history_read_child() {
+    let Some(foreign) = std::env::var_os("GOGOKE_TEST_VENDOR_FOREIGN_HISTORY") else { return; };
+    let own = PathBuf::from(std::env::var_os("GOGOKE_TEST_VENDOR_OWN_HISTORY").expect("own original path"));
+    let report = PathBuf::from(std::env::var_os("GOGOKE_TEST_VENDOR_HISTORY_REPORT").expect("report"));
+    let mut observations = Vec::new();
+    record(&mut observations, "foreign", fs::read(PathBuf::from(foreign)).map(|_| ()));
+    record(&mut observations, "own", fs::read(own).map(|_| ()));
+    fs::write(report, observations.join("\n")).expect("LPAC real vendor path report");
+}
+
+pub(super) fn probe_vendor_history_paths(profile: &AppContainerProfile, name: &str,
+    runner: &Path, foreign: &Path, own: &Path) -> Result<(String, String), String> {
+    fs::create_dir(runner).map_err(|error| format!("probe runner create: {error}"))?;
+    profile.grant_fresh_session_directory(runner).map_err(|error| error.to_string())?;
+    let exe = runner.join("vendor-history-read-child.exe");
+    fs::copy(std::env::current_exe().map_err(|error| error.to_string())?, &exe)
+        .map_err(|error| format!("probe exact test image copy: {error}"))?;
+    let report = runner.join("actual-read.txt");
+    let mut launch = ProcessLaunch::new(&exe);
+    launch.current_directory = Some(runner.to_path_buf());
+    launch.protocol_stdio = true;
+    launch.app_container_profile = Some(name.to_owned());
+    launch.app_container_internet_client = true;
+    launch.app_container_cli_identity_services = true;
+    launch.environment = Some(vec![
+        ("SystemRoot".into(), std::env::var("SystemRoot").map_err(|error| error.to_string())?),
+        ("GOGOKE_TEST_VENDOR_FOREIGN_HISTORY".into(), foreign.to_string_lossy().into_owned()),
+        ("GOGOKE_TEST_VENDOR_OWN_HISTORY".into(), own.to_string_lossy().into_owned()),
+        ("GOGOKE_TEST_VENDOR_HISTORY_REPORT".into(), report.to_string_lossy().into_owned()),
+    ]);
+    launch.arguments = vec!["--exact".into(), VENDOR_READ_HELPER.into(), "--nocapture".into()];
+    let managed = prepare_and_activate_with_suspended_test(&launch,
+        |process| set_child_default_dacl(process, profile), |_| Ok(()))
+        .map_err(|error| format!("probe exact B LPAC launch: {error}"))?;
+    if !managed.wait(Duration::from_secs(20)).map_err(|error| error.to_string())?
+        || managed.exit_code().map_err(|error| error.to_string())? != Some(0) {
+        return Err(format!("probe B LPAC child exit={:?}; stderr={}",
+            managed.exit_code(), managed.stderr_tail()));
+    }
+    drop(managed);
+    let observed = read_report(&report);
+    Ok((observed.get("foreign").cloned().ok_or("foreign report absent")?,
+        observed.get("own").cloned().ok_or("own report absent")?))
 }
 
 fn try_write_dac(path: &Path) -> io::Result<()> {

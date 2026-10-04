@@ -13,6 +13,81 @@ use crate::store::inbox::host_rule::{self as host_rule, HostRecipient};
 use crate::store::worktree::{self, ResolvedBinding};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
+fn session_profile_name(root_identity: &RootIdentity, domain_id: &str,
+    session_id: &str, incarnation: &str, generation: &str) -> String {
+    let suffix = crate::store::digest::sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+        root_identity.opaque(), domain_id, session_id, incarnation, generation).as_bytes());
+    format!("Gogoke37.Session.{}", &suffix[..40])
+}
+
+#[cfg(test)]
+struct HistoryAclTestMode {
+    home: PathBuf,
+    identity: RootIdentity,
+    profiles: Vec<String>,
+    matched_home_checks: usize,
+}
+
+#[cfg(test)]
+static HISTORY_ACL_TEST_MODE: OnceLock<Mutex<Option<HistoryAclTestMode>>> = OnceLock::new();
+
+#[cfg(test)]
+fn history_mode() -> &'static Mutex<Option<HistoryAclTestMode>> {
+    HISTORY_ACL_TEST_MODE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) struct HistoryAclTestGuard;
+
+#[cfg(test)]
+impl Drop for HistoryAclTestGuard {
+    fn drop(&mut self) {
+        *history_mode().lock().expect("history ACL test mode mutex") = None;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_history_acl_test_mode(home: PathBuf, identity: RootIdentity,
+    profiles: Vec<String>) -> HistoryAclTestGuard {
+    let mut mode = history_mode().lock().expect("history ACL test mode mutex");
+    assert!(mode.is_none(), "only one exact-root history ACL experiment at a time");
+    assert!(!profiles.is_empty() && profiles.iter().all(|name| name.starts_with("Gogoke37.Session.")));
+    *mode = Some(HistoryAclTestMode { home, identity, profiles, matched_home_checks: 0 });
+    HistoryAclTestGuard
+}
+
+#[cfg(test)]
+pub(crate) fn history_candidate_profile_name_for_test(root_identity: &RootIdentity,
+    domain_id: &str, session_id: &str, incarnation: &str, generation: &str) -> String {
+    session_profile_name(root_identity, domain_id, session_id, incarnation, generation)
+}
+
+#[cfg(test)]
+fn history_candidate_home(home: &Path, identity: &RootIdentity, profile: &str) -> bool {
+    let mut guard = history_mode().lock().expect("history ACL test mode mutex");
+    let Some(mode) = guard.as_mut() else { return false; };
+    if mode.home != home { return false; }
+    assert_eq!(&mode.identity, identity, "exact synthetic HOME identity changed");
+    assert!(mode.profiles.iter().any(|allowed| allowed == profile),
+        "unexpected H profile would bypass the candidate ACL test mode");
+    mode.matched_home_checks += 1;
+    true
+}
+
+#[cfg(test)]
+pub(crate) fn history_candidate_home_checks_for_test() -> usize {
+    history_mode().lock().expect("history ACL test mode mutex").as_ref()
+        .map_or(0, |mode| mode.matched_home_checks)
+}
+
+#[cfg(test)]
+pub(crate) fn history_candidate_profile_for_test(profile: &str) -> bool {
+    history_mode().lock().expect("history ACL test mode mutex").as_ref()
+        .is_some_and(|mode| mode.profiles.iter().any(|allowed| allowed == profile))
+}
 
 // Model guidance only: LPAC and the bound native assets still enforce access.
 // Keep the official base instructions and the original tool failure evidence.
@@ -249,10 +324,8 @@ impl LaunchEvidence {
         if !supported_driver_version(&pin) {
             return Err("native session launch: unsupported pinned driver/version".into());
         }
-        let suffix = crate::store::digest::sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
-            root.canonical_root().identity.opaque(), domain_id, session_id,
-            seat.incarnation, claim.generation).as_bytes());
-        let profile_name = format!("Gogoke37.Session.{}", &suffix[..40]);
+        let profile_name = session_profile_name(&root.canonical_root().identity,
+            domain_id, session_id, &seat.incarnation, &claim.generation);
         verify_host_guard(db,owner,host_guard)?;
         let profile = evidence(AppContainerProfile::ensure_for_cli(&profile_name,
             tier == PermissionTier::NetworkedWrite))?;
@@ -268,6 +341,14 @@ impl LaunchEvidence {
         // Runtime home writes are separate from workspace permission. No
         // public parent, other session, source tree or common Git dir is granted.
         verify_host_guard(db,owner,host_guard)?;
+        #[cfg(test)]
+        if history_candidate_home(&homes.instance.path, &homes.instance.identity, &profile_name) {
+            evidence(profile.verify_history_candidate_home_for_test(
+                &homes.instance.path, &homes.instance.identity))?;
+        } else {
+            evidence(profile.grant_bound_tree(&homes.instance.path, &homes.instance.identity, true))?;
+        }
+        #[cfg(not(test))]
         evidence(profile.grant_bound_tree(&homes.instance.path, &homes.instance.identity, true))?;
         verify_host_guard(db,owner,host_guard)?;
         evidence(profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
@@ -433,6 +514,11 @@ impl LaunchEvidence {
             (&self.homes.instance.path, &self.homes.instance.identity, true),
             (&self.homes.session.path, &self.homes.session.identity, true),
         ] {
+            #[cfg(test)]
+            if history_candidate_home(path, identity, &self.profile_name) {
+                evidence(self.profile.verify_history_candidate_home_for_test(path, identity))?;
+                continue;
+            }
             match phase {
                 VerificationPhase::PreActivation =>
                     evidence(self.profile.verify_bound_tree_grant(path, identity, writable))?,

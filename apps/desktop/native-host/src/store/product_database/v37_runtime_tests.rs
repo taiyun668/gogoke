@@ -3,6 +3,7 @@ use crate::root::RootLock;
 use crate::store::seat::{CreateSeat, Kind, StoreTemplate};
 use crate::store::same_open::route_b_test_guard;
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::process::AppContainerProfile;
 
 // Reuses the actual fixed-catalog E/F/H launch from the session control below.
 // Login presence alone is synthetic. No credentials or model are loaded.
@@ -760,4 +761,279 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     product.close_checked().unwrap();
     drop(root);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+/// Select a physical history path only from the exact H-journaled original
+/// thread/start response. The production RPC decoder first validates the same
+/// command/response identity; this test reads the field it intentionally omits.
+fn original_codex_thread_path_for_acl_test(product: &ProductDatabase<'_>,
+    session: &str) -> (String, Option<std::path::PathBuf>) {
+    let key = ("projectA".to_owned(), session.to_owned());
+    let run = product.native_sessions.get(&key).expect("exact active H session");
+    let thread = h::rpc_journal::observed_thread_id(&product.connection, "projectA", session,
+        &run.operation_id, &run.custody.binding.generation, &run.open_request_id,
+        run.custody.ticket.opaque(), &run.custody.custodian_nonce)
+        .expect("production original RPC/source binding");
+    assert_eq!(run.thread_id.as_deref(), Some(thread.as_str()));
+    let q = Statement::prepare(product.connection.as_ptr(),
+        "SELECT hex(r.raw_bytes)
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+             AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+             AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+             AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+             AND r.generation=s.generation
+          WHERE s.domain_id='projectA' AND s.session_id=?1
+            AND s.process_operation_id=?2 AND s.open_request_id=?3
+            AND s.ticket=?4 AND s.custodian_nonce=?5
+            AND s.step_id='thread-start' AND s.phase='OBSERVED'
+            AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'")
+        .expect("original thread source query");
+    for (index, value) in [session, run.operation_id.as_str(), run.open_request_id.as_str(),
+        run.custody.ticket.opaque(), run.custody.custodian_nonce.as_str()].iter().enumerate() {
+        q.bind_text((index + 1) as i32, value).expect("bind original source identity");
+    }
+    assert!(q.step_row().expect("read original source"), "original thread/start response absent");
+    let raw = unhex(&q.column_text(0).expect("original response bytes")).expect("decode original hex");
+    assert!(!q.step_row().expect("unique original source"), "duplicate original thread response");
+    let body = raw.strip_suffix(b"\n").expect("original JSONL LF");
+    let Json::Object(top) = Parser::parse(std::str::from_utf8(body).expect("original UTF-8"))
+        .expect("original response JSON") else { panic!("original response object"); };
+    let Json::Object(result) = top.get(&JsonString::from_str("result")).expect("original result")
+        else { panic!("original result object"); };
+    let Json::Object(native_thread) = result.get(&JsonString::from_str("thread")).expect("original thread")
+        else { panic!("original thread object"); };
+    let Some(Json::String(found_id)) = native_thread.get(&JsonString::from_str("id")) else {
+        panic!("original thread id absent");
+    };
+    assert_eq!(found_id.to_well_formed_string().as_deref(), Some(thread.as_str()));
+    let path = match native_thread.get(&JsonString::from_str("path")) {
+        None | Some(Json::Null) => None,
+        Some(Json::String(value)) => Some(std::path::PathBuf::from(
+            value.to_well_formed_string().expect("original path Unicode"))),
+        _ => panic!("original thread path shape"),
+    };
+    (thread, path)
+}
+
+#[test]
+fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
+    let _route_guard = route_b_test_guard();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("gogoke-v37-vendor-acl-{}-{stamp}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+    let register = operation("K-INSTANCE", "register", "acl-register", "instanceA", 0,
+        r#"{"driverId":"codex"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
+        V37Status::Applied, "exact installed CLI registration");
+    instance::record_observation(&mut product.connection, &root, &instance::ObservationRequest {
+        request_id: "acl-synthetic-login-presence",
+        request_bytes: b"SYNTHETIC_LOGIN_PRESENCE_NOT_AUTHENTICATION",
+        instance_id: "instanceA", expected_revision: 1,
+        observation: instance::InstanceObservation::LoggedIn,
+    }).unwrap();
+    instance::set_instance_concurrency_cap(&mut product.connection, &product.owner, "instanceA", 2).unwrap();
+    seat::set_project_parallel_cap(&mut product.connection, &product.owner, "projectA", 2).unwrap();
+    seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
+        domain_id: "projectA", template_id: "aclTemplate",
+        settings_json: br#"{"effort":"high","model":"gpt-6-sol","permissionTier":"NETWORKED_WRITE"}"#,
+    }).unwrap();
+    for (seat_id, request_id) in [("seatA", "acl-seat-a"), ("seatB", "acl-seat-b")] {
+        seat::create(&mut product.connection, NativeOrigin::user(&product.owner), CreateSeat {
+            domain_id: "projectA", seat_id, template_id: "aclTemplate", instance_id: Some("instanceA"),
+            kind: Kind::Long, request_id, request_bytes: request_id.as_bytes(),
+        }).unwrap();
+    }
+    let source = crate::store::worktree::tests::make_source_fixture(&mut product.connection,
+        &root, &product.owner, &mut product.process_custodian);
+    let git = std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").expect("cloud pinned Git backend");
+    let configuration = Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"), Json::String(JsonString::from_str("gogoke.37.owner-configuration.v1"))),
+        (JsonString::from_str("command"), Json::String(JsonString::from_str("worktree-source"))),
+        (JsonString::from_str("repositoryId"), Json::String(JsonString::from_str("fixtureRepo"))),
+        (JsonString::from_str("sourcePath"), Json::String(JsonString::from_str(source.to_str().unwrap()))),
+        (JsonString::from_str("gitPath"), Json::String(JsonString::from_str(git.to_str().unwrap()))),
+    ])).canonical();
+    product.configure_user_v37(configuration.as_bytes()).unwrap();
+    for (seat_id, tree_id) in [("seatA", "treeA"), ("seatB", "treeB")] {
+        let create = operation("K-WORKTREE", "create", &format!("acl-create-{tree_id}"), tree_id, 0,
+            &format!(r#"{{"repositoryId":"fixtureRepo","seatId":"{seat_id}"}}"#));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&create).unwrap()).unwrap().status,
+            V37Status::Applied, "exact F worktree");
+    }
+    for (session, seat_id) in [("sessionA", "seatA"), ("sessionB", "seatB")] {
+        for (verb, revision) in [("admission-reserve", 0), ("admission-commit", 1)] {
+            let request = operation("K-SESSION", verb, &format!("acl-{verb}-{session}"),
+                session, revision, &format!(r#"{{"seatId":"{seat_id}","generation":"2"}}"#));
+            assert_eq!(h::decode_receipt(&product.dispatch_user_request(&request).unwrap()).unwrap().status,
+                V37Status::Applied, "exact H admission");
+        }
+    }
+    let home = instance::resolve_codex_instance_home(&product.connection, &root, "instanceA")
+        .expect("registered physical Codex HOME");
+    let seat_a = seat::get(&product.connection, "projectA", "seatA").unwrap().unwrap();
+    let seat_b = seat::get(&product.connection, "projectA", "seatB").unwrap().unwrap();
+    let profile_name = |session: &str, incarnation: &str, generation: &str|
+        h::launch::history_candidate_profile_name_for_test(&root.canonical_root().identity,
+            "projectA", session, incarnation, generation);
+    let name_a = profile_name("sessionA", &seat_a.incarnation, "2");
+    let name_b = profile_name("sessionB", &seat_b.incarnation, "2");
+    let name_a_resume = profile_name("sessionA", &seat_a.incarnation, "3");
+    let profile_a = AppContainerProfile::ensure_for_cli(&name_a, true).unwrap();
+    let profile_b = AppContainerProfile::ensure_for_cli(&name_b, true).unwrap();
+    let profile_a_resume = AppContainerProfile::ensure_for_cli(&name_a_resume, true).unwrap();
+    AppContainerProfile::set_history_candidate_home_for_test(&home.path,
+        &[&profile_a, &profile_b, &profile_a_resume]).expect("initial CI-only HOME candidate ACL");
+    let _candidate_guard = h::launch::install_history_acl_test_mode(home.path.clone(),
+        home.identity.clone(), vec![name_a, name_b.clone(), name_a_resume]);
+    let open = |session: &str, seat_id: &str, tree_id: &str| operation("K-SESSION", "open",
+        &format!("acl-open-{session}"), session, 2,
+        &format!(r#"{{"seatId":"{seat_id}","generation":"2","repositoryId":"fixtureRepo","worktreeId":"{tree_id}"}}"#));
+    let run = (|| -> std::result::Result<String, String> {
+        let open_a = open("sessionA", "seatA", "treeA");
+        let opened_a = product.dispatch_user_request(&open_a)
+            .map_err(|error| format!("CANDIDATE_REJECTED stage=A thread/start original={error:?}"))?;
+        let opened_a = h::decode_receipt(&opened_a).expect("A original receipt shape");
+        if opened_a.status != V37Status::Applied {
+            return Err(format!("CANDIDATE_REJECTED stage=A open status={:?}", opened_a.status));
+        }
+        let (thread_a, Some(path_a)) = original_codex_thread_path_for_acl_test(&product, "sessionA")
+            else { return Err("NOT_RUN original thread/start returned no path".into()); };
+        if !path_a.is_absolute() || !path_a.starts_with(&home.path) {
+            return Err("CANDIDATE_REJECTED original A path outside bound HOME".into());
+        }
+        let key_a = ("projectA".to_owned(), "sessionA".to_owned());
+        let appended_a = product.native_append_rpc(&key_a, "acl-save-a", &thread_a,
+            "cloud no-model nonsecret A history".into())
+            .map_err(|error| format!("CANDIDATE_REJECTED stage=A native save original={error:?}"))?;
+        if !matches!(appended_a, Some(Reply::Ack { .. })) {
+            return Err(format!("CANDIDATE_REJECTED stage=A native save reply={appended_a:?}"));
+        }
+        let (id_a, a_own, a_peer, a_user) = AppContainerProfile::observed_vendor_history_leaf_acl_for_test(
+            &path_a, &profile_a, &profile_b)
+            .map_err(|error| format!("CANDIDATE_REJECTED stage=A original leaf={error}"))?;
+        let open_b = open("sessionB", "seatB", "treeB");
+        let opened_b = product.dispatch_user_request(&open_b)
+            .map_err(|error| format!("CANDIDATE_REJECTED stage=B thread/start original={error:?}"))?;
+        let opened_b = h::decode_receipt(&opened_b).expect("B original receipt shape");
+        if opened_b.status != V37Status::Applied {
+            return Err(format!("CANDIDATE_REJECTED stage=B open status={:?}", opened_b.status));
+        }
+        let (thread_b, Some(path_b)) = original_codex_thread_path_for_acl_test(&product, "sessionB")
+            else { return Err("NOT_RUN original B thread/start returned no path".into()); };
+        if !path_b.is_absolute() || !path_b.starts_with(&home.path) || path_a == path_b {
+            return Err("CANDIDATE_REJECTED B path outside HOME or same history object".into());
+        }
+        let key_b = ("projectA".to_owned(), "sessionB".to_owned());
+        let appended_b = product.native_append_rpc(&key_b, "acl-save-b", &thread_b,
+            "cloud no-model nonsecret B history".into())
+            .map_err(|error| format!("CANDIDATE_REJECTED stage=B native save original={error:?}"))?;
+        if !matches!(appended_b, Some(Reply::Ack { .. })) {
+            return Err(format!("CANDIDATE_REJECTED stage=B native save reply={appended_b:?}"));
+        }
+        let (id_b, b_own, b_peer, b_user) = AppContainerProfile::observed_vendor_history_leaf_acl_for_test(
+            &path_b, &profile_b, &profile_a)
+            .map_err(|error| format!("CANDIDATE_REJECTED stage=B original leaf={error}"))?;
+        let parent_a = path_a.parent().expect("original A history parent");
+        let parent_b = path_b.parent().expect("original B history parent");
+        let (_directory_a_identity, dir_a_own, dir_a_peer) =
+            AppContainerProfile::observed_vendor_history_directory_acl_for_test(
+                parent_a, &profile_a, &profile_b)
+                .map_err(|error| format!("CANDIDATE_REJECTED original date directory ACL={error}"))?;
+        let (_directory_b_identity, dir_b_own, dir_b_peer) =
+            AppContainerProfile::observed_vendor_history_directory_acl_for_test(
+                parent_b, &profile_b, &profile_a)
+                .map_err(|error| format!("CANDIDATE_REJECTED B date directory ACL={error}"))?;
+        if dir_a_own.is_empty() || dir_a_peer.is_empty() || dir_b_own.is_empty()
+            || dir_b_peer.is_empty() {
+            return Err(format!("CANDIDATE_REJECTED shared date directory ACEs A=({dir_a_own:?},{dir_a_peer:?}) B=({dir_b_own:?},{dir_b_peer:?})"));
+        }
+        if id_a == id_b || a_own.is_empty() || b_own.is_empty() || !a_peer.is_empty()
+            || !b_peer.is_empty() || a_user.is_empty() || b_user.is_empty() {
+            return Err(format!("CANDIDATE_REJECTED actual history DACL A=({a_own:?},{a_peer:?},{a_user:?}) B=({b_own:?},{b_peer:?},{b_user:?})"));
+        }
+        std::fs::read(&path_a).map_err(|error| format!("CANDIDATE_REJECTED Host A read Win32={:?}", error.raw_os_error()))?;
+        std::fs::read(&path_b).map_err(|error| format!("CANDIDATE_REJECTED Host B read Win32={:?}", error.raw_os_error()))?;
+        let (foreign, own) = profile_b.probe_vendor_history_paths_for_test(&name_b,
+            &path.join("peer-read-runner"), &path_a, &path_b).expect("exact profile B native read probe");
+        if !foreign.starts_with("ERR:Some(5);") || own != "OK" {
+            return Err(format!("CANDIDATE_REJECTED actual peer read foreign={foreign} own={own}"));
+        }
+        let index_path = home.path.join("session_index.jsonl");
+        let index_state = if index_path.is_file() {
+            let (_index_id, index_a, index_b, index_user) =
+                AppContainerProfile::observed_vendor_history_leaf_acl_for_test(
+                    &index_path, &profile_a, &profile_b)
+                    .map_err(|error| format!("CANDIDATE_REJECTED actual session index ACL={error}"))?;
+            let index_bytes = std::fs::read(&index_path)
+                .map_err(|error| format!("CANDIDATE_REJECTED Host index read Win32={:?}",
+                    error.raw_os_error()))?;
+            let (peer_index, peer_own) = profile_b.probe_vendor_history_paths_for_test(&name_b,
+                &path.join("peer-index-runner"), &index_path, &path_b)
+                .expect("exact B LPAC native index read probe");
+            if peer_own != "OK" {
+                return Err(format!("CANDIDATE_REJECTED B own history during index probe={peer_own}"));
+            }
+            let contains_a = String::from_utf8_lossy(&index_bytes).contains(&thread_a);
+            if contains_a && peer_index == "OK" {
+                return Err("CANDIDATE_REJECTED shared index exposes A native thread to peer".into());
+            }
+            format!("PRESENT A={index_a:?} B={index_b:?} User={index_user:?} contains_A={contains_a} peer={peer_index}")
+        } else { "NOT_RUN_INDEX_NOT_CREATED_BY_NO_MODEL_SEQUENCE".into() };
+        let cwd_b = product.native_sessions.get(&key_b).unwrap().evidence.cwd()
+            .to_string_lossy().into_owned();
+        let cross = product.native_rpc(&key_b, "acl-cross-resume-a", Some(50),
+            &Command::ThreadResume { thread_id: thread_a.clone(), cwd: cwd_b,
+                model: "gpt-6-sol".into() });
+        let cross_state = match cross {
+            Ok(Some(Reply::RemoteError { raw_frame, .. })) =>
+                format!("REMOTE_ERROR:{}", String::from_utf8_lossy(&raw_frame)),
+            Ok(Some(Reply::Thread { .. })) => "PEER_RESUME_SUCCEEDED".into(),
+            Ok(other) => format!("UNEXPECTED:{other:?}"),
+            Err(error) => format!("ORIGINAL_ERROR:{error:?}"),
+        };
+        if cross_state == "PEER_RESUME_SUCCEEDED" {
+            return Err("CANDIDATE_REJECTED peer native thread/resume succeeded".into());
+        }
+        let stop_a = operation("K-SESSION", "stop", "acl-stop-a", "sessionA", 3,
+            r#"{"seatId":"seatA","generation":"2"}"#);
+        let stopped_a = product.dispatch_user_request(&stop_a)
+            .map_err(|error| format!("CANDIDATE_REJECTED stage=A normal stop original={error:?}"))?;
+        if h::decode_receipt(&stopped_a).expect("A stop receipt").status != V37Status::Applied {
+            return Err("CANDIDATE_REJECTED A normal stop did not apply".into());
+        }
+        let resume_a = operation("K-SESSION", "resume", "acl-resume-a", "sessionA", 4,
+            r#"{"generation":"2"}"#);
+        let resumed = product.dispatch_user_request(&resume_a);
+        let resume_state = match resumed {
+            Ok(bytes) => {
+                let receipt = h::decode_receipt(&bytes).expect("same UUID resume receipt");
+                format!("{:?}", receipt.status)
+            }
+            Err(error) => format!("ORIGINAL_ERROR:{error:?}"),
+        };
+        println!("HISTORY_VENDOR_ACL_FACT primitive=CI_ONLY same_home=true fixed_codex=true date_dir_A={dir_a_own:?}/{dir_a_peer:?} date_dir_B={dir_b_own:?}/{dir_b_peer:?} A_leaf_dacl={a_own:?}/{a_peer:?}/{a_user:?} B_leaf_dacl={b_own:?}/{b_peer:?}/{b_user:?} host_reads=OK/OK peer_read={foreign}/{own} session_index={index_state} cross_resume={cross_state} normal_resume={resume_state}");
+        if resume_state != "Applied" {
+            return Err(format!("CANDIDATE_REJECTED normal same-UUID new-generation resume={resume_state}"));
+        }
+        if !cross_state.starts_with("REMOTE_ERROR:") {
+            return Err(format!("NOT_RUN peer native resume was not an original vendor rejection: {cross_state}"));
+        }
+        Ok("CANDIDATE_QUALIFIED fixed Codex no-model current CI-only HOME sequence".into())
+    })();
+    match run {
+        Ok(result) => println!("HISTORY_VENDOR_ACL_QUALIFICATION verdict={result}"),
+        Err(reason) => println!("HISTORY_VENDOR_ACL_QUALIFICATION verdict={reason}"),
+    }
+    assert!(h::launch::history_candidate_home_checks_for_test() > 0,
+        "the actual H launch never used the exact-root candidate ACL test seam");
+    drop(product);
+    drop(_candidate_guard);
+    drop((profile_a, profile_b, profile_a_resume));
+    drop(root);
+    if let Err(error) = std::fs::remove_dir_all(&path) {
+        println!("HISTORY_VENDOR_ACL_CLEANUP_UNVERIFIED original={error}");
+    }
 }
