@@ -251,6 +251,19 @@ fn physical_receipt(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     Ok(PrivateHistoryReceipt { generation, directory_ref: row.directory_ref,
         directory: ResolvedDirectory { path, identity: leaf }, custody })
 }
+
+/// Resolve a retained alias scope from its original F row, never from an IPC
+/// path or a guessed name. The original generation selects registration facts;
+/// it grants no H continuation or current execution authority.
+pub(crate) fn resolve_private_history_directory(db: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock, history_id: &str) -> Result<ResolvedDirectory, PrivateHistoryError> {
+    let row = history(db, history_id)?;
+    let generation = read_private_history_generation(db, &row.initial_binding, &row.initial_generation)?
+        .ok_or(PrivateHistoryError::Unknown)?;
+    if generation.history_id != history_id || generation.request_id != row.initial_request
+        || generation.predecessor_binding_id.is_some() { return Err(PrivateHistoryError::Conflict); }
+    Ok(physical_receipt(db, root, generation)?.directory)
+}
 fn insert_generation(db: &VerifiedDatabaseConnection<'_>, id: &str,
     input: &PrivateHistoryLaunch<'_>, predecessor: Option<&str>) -> Result<(), PrivateHistoryError> {
     let statement = Statement::prepare(db.as_ptr(),
