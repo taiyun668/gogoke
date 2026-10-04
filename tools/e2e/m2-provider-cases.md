@@ -1,81 +1,95 @@
-# M2 provider boundary cases: current executable preflight and explicit gaps
+# M2 real provider boundary cases
 
-`runProviderBoundaryCases(product, config, journal)` is import-only. The caller
-must already hold the M1 `ActualProduct` connection to the exact installed
-candidate's unique WebView2 Home, with telemetry disabled and no `agent.act`.
-The function never starts login, an authentication page, a model turn, a
-browser, or another executable. It uses only the current User pipe and the
-registered fixed CLI instances. This script has **not been run**.
+`runProviderBoundaryCases(product, config, journal)` uses the already installed,
+logged-in native product and its original User operation pipe. Importing the
+module starts nothing. Run it after the existing `m2-win11.mjs` provider capture
+loop in a distinct H session; `m2-readback.py` depends on that loop's unchanged
+`journal.providerCases` and original golden-source export. The new module writes
+`journal.providerBoundaryCases` and never reuses or replays an old send.
 
-The private `config.providerBoundary.cases` lists exactly one case each for
-`claude`, `opencode`, and `grok`: `instanceId`, `seatId`, `worktreeId`, fixed
-`version`, and lower-case executable `sha256`. The caller's `domainId` and
-`repositoryId` must identify the private `gogokeSeatTestbed`, with the
-already admitted `codexTestM1` lead context. Seats and worktrees must have
-been created by the real product and be Idle/REGISTERED; this function never
-creates or repairs them. A missing or logged-out provider is `NOT_RUN`; no
-automated login follows. Antigravity `1.2.11` is always
-`NOT_RUN_OWNER_DECISION_PENDING` because its current shared Windows credential
-and memory-close contract are not qualified.
+The private `config.providerBoundary.cases` contains exactly one fixed
+`claude`, `opencode`, and `grok` row with `instanceId`, `seatId`, `worktreeId`,
+`version`, and executable `sha256`. Claude also needs `worktreeRoot`, obtained
+automatically from a prior normally closed F worktree readback. The driver
+checks that root is local under the private candidate state root and that its
+random new marker filename is absent from both F's worktree and the testbed
+source before the model prompt. The final reader independently compares the
+configured root with F's persisted `worktree_path` and identity. These are
+machine facts, not Owner-entered paths. A missing/login-required instance is
+`NOT_RUN`; no login or external browser is opened.
 
-For each already logged-in provider, the driver checks the actual instance
-status, E seat card and F graph, then reserves, commits and opens one new H
-session, reads its own CLI-owned `capability-probe`, stops the process and
-releases the admission. `ActualProduct.operation` saves the exact JSON frame
-and request ID before each single User invocation. Unknown, disconnect or
-timeout is an error and never triggers a new request ID or implicit resend.
-The driver does not ask a model to raise a question it cannot answer.
+## Claude V03b direct case
 
-After the candidate **normally closes**, run signed Python
-`m2-provider-readback.py STATE_ROOT NEW_PRIVATE_OUTPUT ORIGINAL_JOURNAL`.
-It rejects nonempty WAL and opens `state.sqlite` in `mode=ro&immutable=1` with
-`query_only`. It rechecks F instance digest/version, E seat, F worktree path,
-H original request bytes and STOPPED custody, the original capability
-request/receipt bytes, A raw frames, H RPC commands and normalized events.
-It reports pending raw frames by their real method and verifies that no model
-`send` occurred in this preflight. Existing before/after memory snapshot
-references are rehashed if present, but their general memory counters are
-not vendor-specific memory-store proof. Both scripts keep every V03b, V04b
-and V10 outcome `NOT_RUN`; a complete preflight is not an acceptance result.
+The actual fixed `2.1.196` instance/seat/F worktree is reserved, committed,
+opened and probed. The static capability
+`SOURCE_PRESENT_NATIVE_ASK_USER_BEHAVIOUR_NOT_RUN` only licenses this trial;
+it is never a PASS. One original H User send asks the model to call
+`AskUserQuestion` with one non-secret `Format` choice, `JSON` or `Plain`, and
+to create a new prescribed JSON marker only after the User selects `JSON`.
+The User request frame and ID are saved before its sole invocation. An
+`UNKNOWN` send is an in-flight original request: the driver polls only
+`output-stream`, never resends it or substitutes a new request ID.
 
-## Current executable boundaries
+The original output's `nativeCardRefs` must expose one `OPEN` card whose
+`turnId` equals the original H send request ID. `K-QCARD/recover` must return
+the complete source-bound `originalInput` and every question with
+`idOrigin=HOST_DERIVED_ARRAY_INDEX`, `hostIndex`, `hostQuestionId`, original
+options and `multiSelect`; the prescribed case requires one `host0` question.
+The User sends one `K-QCARD/answer` with `answers.host0=["JSON"]`. An
+`ANSWERED`/`NATIVE_EXACT_WRITE_RECEIPT` result means only H wrote the exact
+`control_response`; it explicitly reports no vendor consumption. If that
+answer is `UNKNOWN`, there is no retry. The driver only polls the original
+H send receipt until the actual CLI Result is observed, then stops/releases.
+Timeout or uncertain custody preserves the original run for Controller
+disposition. Model output is never executed by the host.
 
-| Check | Direct current source | Current outcome |
-| --- | --- | --- |
-| V03b | `v37_capability.rs` reports `nativeQuestionCard: UNSUPPORTED_REPLY_ENCODER` for fixed Claude/OpenCode/Grok. `v37_qcard_user.rs` exposes `recover`/`answer` only for an already captured Codex-native card; `v37_output.rs` raises only Codex's `requestUserInput`. | `NOT_RUN_NO_PROVIDER_BOUND_HOST_CARD`: no original asking-turn host-card raise/answer transport to test. Codex's M1 native card does not satisfy this check. |
-| V04b | Codex loaded features provide `memories:false`; fixed Claude/OpenCode/Grok capability returns `memoryOffLaunch: NOT_RUN`. H/F select the actual home and workspace, but there is no per-provider observed memory-store write ledger or instruction-load manifest, nor a completed same-instance/two-project original-input case. | `NOT_RUN_NO_EFFECTIVE_MEMORY_AND_CROSS_PROJECT_INPUT_PROOF`. A launch flag, distinct HOME, model statement, or general snapshot cannot prove the requirement. |
-| V10 | At this package's `fb5ceb2d` baseline, public `K-SESSION/open` registers WORK and only the side composition registers SIDE_CHAT. Controller's pending shared change adds User-only `open` with the sole optional `purpose: "FORMAL_REVIEW"` value, persists that purpose, starts a fresh native session and denies resume/reconnect/compact/renew before process effects. | `NOT_RUN_NO_SAME_SEAT_PROVIDER_SIDE_SOURCE`. The current V12 side case uses Codex seats; its marker cannot stand in for a Claude, OpenCode or Grok side history. Even after the formal ingress lands, fresh identity, rejected recovery, no side/private marker in original H input, and worker/lead privacy need their own direct same-seat evidence. |
+Only after normal product close does `m2-provider-readback.py` verify the
+original User bytes, F/E/H fixed instance and physical worktree, H User echo
+UUID/text/session, the A `can_use_tool/AskUserQuestion` frame, complete C
+card/source descriptor, original User answer, H no-ACK exactwrite step,
+subsequent matching Claude `tool_result`, same-session successful Result,
+later assistant marker output, and the actual new JSON marker file. Its
+`DIRECT_ORIGINAL_CLAUDE_QUESTION_ANSWER_CONTINUATION_REQUIRES_REVIEW` is a
+direct evidence label, never milestone acceptance. The static source shape
+or successful pipe write alone cannot produce this label. All raw frames and
+commands remain in the private normal-close readback for independent review.
 
-The exact needed product interfaces belong to Controller's shared scope:
-provider-bound host question cards tied to the captured A asking turn and
-current H session, with C answer and H exact write receipt; an observed
-effective memory/instruction provenance source plus an authorized second
-project's original H input; and provider-specific same-seat SIDE_CHAT facts
-before a fresh `FormalReview` case can test native identity and recovery
-refusals. The optional formal purpose is a Controller shared-product change,
-not evidence of V10 behavior until the exact installed binary and H/A facts
-are read back.
-The importer must select each real provider session by exact session ID and
-F/H pin, not combine all providers under one CLI version.
+OpenCode and Grok still run their real fixed capability preflight without a
+question send because the current pinned codecs expose
+`UNSUPPORTED_REPLY_ENCODER`. Antigravity remains
+`NOT_RUN_OWNER_DECISION_PENDING`. An ordinary ACP permission prompt is never
+called a question card.
 
-## References and differences
+## V04b and V10 preparation and limits
 
-Read the active `docs/design/gogoke-37-plan-v1/PLAN.json` checks V03b/V04b/V10;
-the fixed `K-INSTANCE`, `K-SESSION`, `K-QCARD`, `K-SEAT`, E/F/H/A/ledger source;
-`tools/e2e/m1-win11.mjs`, `product-cdp.mjs`, `m1-readback.py`, and M2's
-immutable reader. GOGO PARTY `packages/room/src/accounts.ts` and
-`packages/seat-runtime/src/isolation.test.ts` show historical per-seat homes
-and negative isolation controls; they do not certify the current native
-provider. NaveHQ's isolation fit note explicitly separates profiles,
-credentials and runtime evidence; LoomOS's design remains a planning source,
-not an executable provider proof. Repository `docs/research/reuse-blueprint.md`
-recommends source-bound context manifests. The existing fixed-provider
-`COMMANDS_REFERENCES.md` records Claude `--safe-mode` and OpenCode `--pure`
-as launch controls, not effective memory proof. The
-[ACP prompt-turn contract](https://agentclientprotocol.com/protocol/v1/prompt-turn)
-distinguishes interim `session/update` from the correlated prompt response;
-no stream chunk is promoted to a delivered answer or completed check.
+Optional `crossProject` on a provider row names a *different* registered F
+repository/worktree and E seat on the *same* instance. The driver checks the
+original F graph and Idle E seat; the immutable reader checks those persisted
+bindings again. This is readiness for two concurrent project sessions, not
+evidence that vendor memory was off. V04b requires those two original H input
+streams plus effective vendor memory-store and loaded-instruction provenance
+that excludes auth/key/token material. The current provider capability says
+`memoryOffLaunch=NOT_RUN`, and the product has no qualified vendor instruction
+load or memory write readback. V04b remains **NOT_RUN** even if F bindings exist;
+launch flags, separate HOME and general snapshots are insufficient.
 
-Only signed Node syntax, signed Python compile parsing and `git diff --check`
-are in this package. Native build, installed Win11, actual providers, account
-state, memory isolation, cards and formal review remain **NOT_RUN**.
+Optional `reviewSource` names a distinct F source seat/worktree. The product's
+actual side open is `gogoke.37.owner-side-open.v1` with original source
+session/cursor, nested K-SESSION open and K-SIDE create; the provider seat
+would be the SIDE_CHAT seat and then reopen as fresh `FORMAL_REVIEW` after a
+physical stop. Current rows do not provide that original source session,
+side marker, D create, or subsequent formal H/A input. An ordinary WORK
+session and the Codex V12 side case cannot replace them. V10 remains
+**NOT_RUN** until a same-provider-seat side source, fresh formal native
+identity, refusal of continuation, and independent immutable H/A/D/F
+readback exist. No model self-report proves zero inheritance.
+
+The historical `packages/seat-runtime/src/claude-seat.ts` informs the question
+shape; current fixed codec/H/C source is authoritative. The actual source
+chain is `provider_evidence/claude_question.rs`, `v37_qcard.rs`,
+`rpc_journal.rs`, `v37_output.rs`, `journal.rs`, and F's registered rows.
+`m2-sidechat.mjs` supplies the real D composition precedent. The fixed SDK
+0.3.196 source and CLI 2.1.196 source are recorded in
+`CLAUDE_QUESTION_REFERENCES.md`. The code here has received only signed Node
+syntax, Python AST parsing, and `git diff --check`; installed candidate,
+model, browser, login, native build, and Win11/SAC are **NOT_RUN**.

@@ -56,7 +56,7 @@ contains a real local path, account name, credential or token.
    Only the lead model invokes `gogoke_worktree merge` for the verified ID.
    A User graph query may observe its state, then H stops/releases the lead.
    Each already logged-in provider is visited sequentially through its own
-   existing H seat/worktree. It receives one synthetic, non-secret prompt;
+   existing H seat/worktree. It receives one actual User send with non-secret test content;
    original H input receipts and raw A protocol are exported for the existing
    golden-sample tool. No provider login or model substitution is performed.
 6. Close normally, run the final immutable readback, then compare the
@@ -112,3 +112,30 @@ The existing golden-sample importer consumes this readback's original private
 The current script package has received only signed Node syntax and Python
 parser checks. Native code builds remain cloud-only; actual installed Win11,
 Smart App Control, browser and account outcomes are **NOT_RUN**.
+
+## Provider boundary module integration
+
+Keep the existing `providerCase` loop and `journal.providerCases` unchanged:
+`m2-readback.py` binds their real User send and stopped H/A session for the
+private provider golden source. After that loop, a distinct call to
+`runProviderBoundaryCases(product, {...config, providerBoundary:{cases}}, journal)`
+may open separate H sessions on the same already logged-in provider rows.
+The caller supplies each fixed row's `instanceId`, `seatId`, `worktreeId`,
+`version`, and SHA-256; Claude additionally receives its `worktreeRoot` from
+the prior normally closed F reader, not an Owner-typed path. Optional
+`crossProject` and `reviewSource` are F/E binding preflights only. Preserve
+the module's `providerBoundaryCases` beside the old `providerCases` rather
+than replacing the golden source or treating a second case as replay of the
+first request.
+
+After the final ordinary caption close, invoke signed Python
+`m2-provider-readback.py STATE_ROOT NEW_PRIVATE_OUTPUT ORIGINAL_JOURNAL`
+once with a fresh output path under the same private evidence directory.
+Record its basename and SHA-256 in the journal and retain it for independent
+review. Its Claude direct case requires the real C/H/A answer-to-Result and
+marker chain; `SOURCE_PRESENT_NATIVE_ASK_USER_BEHAVIOUR_NOT_RUN` and the
+module's `FLOW_*` state are not a PASS. A pending original send or uncertain
+answer may only be observed through read-only native output, without a new
+send/answer request. V04b and V10 remain NOT_RUN until their documented
+same-instance second project and same-seat side-to-formal source chains are
+real and independently read back.
