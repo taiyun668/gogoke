@@ -2908,11 +2908,14 @@ mod tests {
 
     #[test]
     fn suspended_job_child_receives_only_explicit_protocol_handles() {
-        let mut launch = ProcessLaunch::new(powershell());
+        // This boundary is explicit handle inheritance and one-shot pipe IO,
+        // independent of PowerShell/CLR startup. Reuse the existing system cmd
+        // fixture; real pinned CLI startup is verified by its separate probe.
+        let mut launch = ProcessLaunch::new(system_cmd());
         launch.protocol_stdio = true;
         launch.arguments = vec![
-            "-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            "$line=[Console]::ReadLine(); [Console]::Out.WriteLine('echo:' + $line)".into(),
+            "/D".into(), "/Q".into(), "/V:ON".into(), "/C".into(),
+            "set /p line=&echo echo:!line!".into(),
         ];
         let managed = prepare_and_activate(&launch, |_| Ok(())).expect("durably activate piped child");
         let pipes = managed.protocol.as_ref().expect("protocol pipes");
