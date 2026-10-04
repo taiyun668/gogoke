@@ -289,6 +289,16 @@ impl<'root> ProductDatabase<'root> {
                             failure(self.connection.execute("BEGIN IMMEDIATE"))?;
                             let promoted=(|| -> Result<i64> {
                                 authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+                                if let Some((proof,choice))=host {
+                                    self.check_host_recipient_choice_in_transaction(proof,choice)?;
+                                }
+                                // Reconcile the original retained launch exactly as
+                                // the normal promotion does. Its F continuation
+                                // source must commit with H, before advancing the claim.
+                                failure(run.evidence.verify_active_in_transaction(&mut self.connection,
+                                    self.root,&self.owner,Some(&operation)))?;
+                                failure(run.evidence.bind_original_history_source(&self.connection,
+                                    &run.custody,&operation))?;
                                 failure(h::promote_resume(&self.connection,&request.domain_id,
                                     &request.target_id,&request.request_id,&operation,current.revision))
                             })();
