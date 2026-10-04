@@ -241,7 +241,8 @@ export async function runRulesCase(product, config, journal) {
             original.message.generation === original.autoBinding.generation &&
             original.recipientTerminal?.status === 'completed' &&
             original.recipientTerminal.source.state !== 'PENDING' :
-          original.message.state === 'PENDING' && original.message.turn_id === '' &&
+          original.message.state === (host.kind === 'CANCELLED' ? 'CANCELLED' : 'PENDING') &&
+            original.message.turn_id === '' &&
             original.message.generation === '' && original.deliveries.length === 0 &&
             original.sends.length === 0 && original.recipient === null),
         'Actual Host checkpoint must contain the original automatic delivery or genuinely blocked queue');
@@ -378,13 +379,18 @@ export async function runRulesCase(product, config, journal) {
         host.causeEventId = rejected.receipt.requestId; host.state = 'ORIGINAL_CAP_OBSERVED'; product.save();
         if (busySession) await readBusy(host, busySession);
         if (kind === 'DELIVERED') await observeAutomatic(host);
-        await checkpoint(host);
         if (kind === 'ROUTE_CHANGED') {
           await configure('policy-escalation-route', { fromSeatId: submitter.seatId,
             reason: 'REJECT_CAP', toSeatId: h.alternateDestination.seatId });
           host.changedRouteRevision = policyRevision; product.save();
         }
-        if (kind === 'CANCELLED' || kind === 'BUSY_QUEUED') await cancel(host);
+        if (kind === 'CANCELLED') {
+          host.messageId = hostSessionLocator(config.domainId, host.causeEventId, host.policyRevision).messageId;
+          host.queuedRevision = '1'; product.save();
+          await cancel(host);
+        }
+        await checkpoint(host);
+        if (kind === 'BUSY_QUEUED') await cancel(host);
         if (busySession) await c.releaseStoppedRulesSession(busySession);
         if (kind === 'DELIVERED') {
           const target = journal.sessions.find(row => row.id === host.targetSessions[0].id);
