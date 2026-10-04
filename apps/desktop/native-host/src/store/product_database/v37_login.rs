@@ -83,6 +83,7 @@ pub(super) struct PreparedOwnerLogin {
     pub(super) runtime_identity: RootIdentity,
     pub(super) registered_driver: String,
     pub(super) registered_home_identity: RootIdentity,
+    pub(super) credential_custody: Option<std::sync::Arc<crate::process::CredentialBinding>>,
 }
 
 /// In-memory Owner action state. ProductDatabase owns one of these beside its
@@ -125,6 +126,7 @@ struct PendingAccountCustody {
     released: bool,
     frame: Option<OriginBoundFrame>,
     backend_source: Option<instance::BackendSource>,
+    credential_custody: Option<std::sync::Arc<crate::process::CredentialBinding>>,
     request: Option<V37Request>,
 }
 
@@ -172,7 +174,8 @@ fn account_prepare_failure(launch: &PreparedOwnerLogin, error: ProcessCustodyErr
             runtime_home: Some(launch.runtime_home.clone()), runtime_identity: Some(launch.runtime_identity.clone()),
             registered_driver: Some(launch.registered_driver.clone()),
             registered_home_identity: Some(launch.registered_home_identity.clone()),
-            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, backend_source: None, request: None,
+            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, backend_source: None,
+            credential_custody: launch.credential_custody.clone(), request: None,
         }),
     }
 }
@@ -385,6 +388,106 @@ pub(super) fn is_owner_instance_list_frame(frame: &[u8]) -> bool {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn credential_instance_is_quiescent(&self,instance_id:&str)->Result<bool> {
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_coordination_process_custody c
+             WHERE c.state<>'STOPPED' AND
+               ((c.domain_id='global' AND c.profile_id=?1) OR c.operation_id IN
+                (SELECT process_operation_id FROM main.gogoke_v37_h_claim WHERE instance_id=?1
+                 UNION SELECT process_operation_id FROM main.gogoke_v37_h_process_episode WHERE instance_id=?1)) LIMIT 1")?;
+        query.bind_text(1,instance_id)?;
+        if query.step_row()? {return Ok(false);}
+        Ok(instance::read_credential_profiles(&self.connection,instance_id)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("credential quiescent profiles: {error:?}")))?
+            .iter().all(|profile|profile.state=="REVOKED"))
+    }
+
+    fn migrate_owner_account_scope(&self,profile:&AppContainerProfile,instance_id:&str,
+        home:&instance::ResolvedDirectory,credential:Option<(&crate::process::CredentialBinding,
+            &[crate::process::CredentialAliasScope])>)->Result<()> {
+        if !profile.has_legacy_owner_login_grant(&home.path,&home.identity)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("legacy observer scope: {error:?}")))? {
+            return Ok(());
+        }
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_coordination_process_custody
+             WHERE domain_id='global' AND profile_id=?1 AND
+               (state<>'STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1")?;
+        query.bind_text(1,instance_id)?;
+        if query.step_row()? {return Err(OrchestrationError::Invalid("legacy account scope requires original stopped observer custody"));}
+        profile.migrate_legacy_owner_login_grant(self.root,&home.path,&home.identity,credential)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("legacy account scope migration: {error:?}")))
+    }
+
+    fn grant_registered_account_observer(&mut self,profile:&AppContainerProfile,
+        instance_id:&str,home:&instance::ResolvedDirectory,runtime:&Path,
+        runtime_identity:&RootIdentity,program:&Path)
+        ->Result<Option<std::sync::Arc<crate::process::CredentialBinding>>> {
+        use crate::process::{CredentialAliasScope,CredentialBinding,CredentialError};
+        let source=home.path.join("auth.json");
+        let observed=CredentialBinding::observe_source_metadata(self.root,&source,&home.identity);
+        let held=match observed {
+            Err(CredentialError::Io {source,..}) if source.raw_os_error()==Some(2)=>{
+                self.migrate_owner_account_scope(profile,instance_id,home,None)?;
+                profile.grant_bound_owner_account_empty(self.root,&home.path,&home.identity,
+                    runtime,runtime_identity).map_err(|error|OrchestrationError::V37StoreFailure(
+                        format!("empty account observer scope: {error:?}")))?;
+                None
+            },
+            Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!("account source metadata: {error:?}"))),
+            Ok((identity,_))=>{
+                let registered=instance::read_credential_object(&self.connection,instance_id)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account source registration: {error:?}")))?;
+                let aliases=instance::read_credential_aliases(&self.connection,instance_id)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account alias registration: {error:?}")))?;
+                let mut scopes=Vec::new();
+                for alias in aliases.iter().filter(|alias|alias.state!="REMOVED") {
+                    if !matches!(alias.state.as_str(),"ACTIVE"|"DORMANT")
+                        || alias.source_file_identity!=identity {
+                        return Err(OrchestrationError::Invalid("account alias intent unresolved or source changed"));
+                    }
+                    let directory=instance::resolve_private_history_directory(&self.connection,self.root,&alias.history_id)
+                        .map_err(|error|OrchestrationError::V37StoreFailure(format!("account alias scope: {error:?}")))?;
+                    if directory.identity!=alias.directory_identity {
+                        return Err(OrchestrationError::AccessDenied);
+                    }
+                    scopes.push(CredentialAliasScope {root:directory.path,root_identity:directory.identity});
+                }
+                if let Some(registered)=registered {
+                    if registered.home_identity!=home.identity || registered.source_parent_identity!=home.identity {
+                        return Err(OrchestrationError::AccessDenied);
+                    }
+                    if registered.file_identity!=identity
+                        && (!scopes.is_empty() || !self.credential_instance_is_quiescent(instance_id)?) {
+                        return Err(OrchestrationError::Invalid("account source replacement is not quiescent"));
+                    }
+                } else if !scopes.is_empty() {return Err(OrchestrationError::AccessDenied);}
+                let binding=CredentialBinding::open_registered(self.root,&source,&home.identity,&identity,&scopes)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account source custody: {error:?}")))?;
+                self.migrate_owner_account_scope(profile,instance_id,home,Some((&binding,&scopes)))?;
+                if scopes.is_empty() && !binding.acl_prepared_in_this_holder()
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account source ACL witness: {error:?}")))? {
+                    if !self.credential_instance_is_quiescent(instance_id)? {
+                        return Err(OrchestrationError::Invalid("account source baseline requires stopped instance"));
+                    }
+                    AppContainerProfile::prepare_quiescent_owner_account_source(self.root,&home.path,&home.identity,&binding)
+                        .map_err(|error|OrchestrationError::V37StoreFailure(format!("quiescent account source: {error:?}")))?;
+                }
+                profile.grant_bound_owner_account_observer(self.root,&home.path,&home.identity,
+                    runtime,runtime_identity,&binding,&scopes).map_err(|error|OrchestrationError::V37StoreFailure(
+                        format!("registered account observer scope: {error:?}")))?;
+                Some(binding)
+            },
+        };
+        let program_identity=AppContainerProfile::capture_program_identity(program)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("account program identity: {error:?}")))?;
+        profile.grant_bound_program(program,&program_identity)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("account program scope: {error:?}")))?;
+        profile.verify_bound_program_grant(program,&program_identity)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("account program scope readback: {error:?}")))?;
+        Ok(held)
+    }
+
     /// Read the durable F.1 instance registry after the parent verifies User
     /// origin. The list exposes no account data, credential path or home path.
     pub(super) fn dispatch_owner_instance_list_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
@@ -707,39 +810,6 @@ fn owner_login_profile_name(instance_id: &str, home_identity: &RootIdentity) -> 
     format!("Gogoke37.OwnerLogin.{}", &digest[..40])
 }
 
-fn grant_owner_login_scope(profile: &AppContainerProfile, home: &instance::ResolvedDirectory,
-    runtime: &Path, runtime_identity: &RootIdentity, program: &Path) -> Result<()> {
-    // The runtime is a child of the exact F home. Its inherited ACE is
-    // verified with the rest of that tree; granting it an extra explicit ACE
-    // would make the bound-tree witness ambiguous.
-    let actual_runtime = inspect_root(runtime).map_err(|error|
-        OrchestrationError::V37StoreFailure(format!("login runtime scope: {error:?}")))?;
-    if &actual_runtime.identity != runtime_identity || runtime.parent() != Some(home.path.as_path()) {
-        return Err(OrchestrationError::AccessDenied);
-    }
-    let program_identity = AppContainerProfile::capture_program_identity(program)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login program identity: {error}")))?;
-    profile.grant_bound_tree(&home.path, &home.identity, true)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login instance scope: {error}")))?;
-    profile.grant_bound_program(program, &program_identity)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login program scope: {error}")))?;
-    profile.verify_bound_tree_grant(&home.path, &home.identity, true)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login instance scope verification: {error}")))?;
-    profile.verify_bound_program_grant(program, &program_identity)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login program scope verification: {error}")))?;
-    let actual_runtime = inspect_root(runtime).map_err(|error|
-        OrchestrationError::V37StoreFailure(format!("login runtime verification: {error:?}")))?;
-    if &actual_runtime.identity != runtime_identity {
-        return Err(OrchestrationError::AccessDenied);
-    }
-    Ok(())
-}
-
 impl<'root> ProductDatabase<'root> {
     fn prior_owner_login_custody(&self, command: &OwnerLoginCommand) -> Result<bool> {
         let query = Statement::prepare(self.connection.as_ptr(),
@@ -908,6 +978,10 @@ impl<'root> ProductDatabase<'root> {
         if row.driver_id != "codex" {
             return self.begin_registered_provider_login(command);
         }
+        crate::store::session_transport::credential_launch::quiescent_cleanup(&mut self.connection,
+            self.root,&command.instance_id,&command.request_id)
+            .map_err(|error|self.settle_owner_login_preflight_error(command,
+                OrchestrationError::V37StoreFailure(format!("ordinary login credential aliases: {error}"))))?;
         let launch = self.prepare_owner_codex_login(&command.instance_id)
             .map_err(|error| self.settle_owner_login_preflight_error(command, error))?;
         self.start_owner_device_login(command, launch, |custodian, prepared| custodian.activate(prepared))
@@ -926,7 +1000,8 @@ impl<'root> ProductDatabase<'root> {
             runtime_home:Some(launch.runtime_home.clone()),runtime_identity:Some(launch.runtime_identity.clone()),
             registered_driver:Some(launch.registered_driver.clone()),
             registered_home_identity:Some(launch.registered_home_identity.clone()),
-            proof,durable_revision:None,abort_prepared,released:false,frame:None,backend_source:None,request:None,
+            proof,durable_revision:None,abort_prepared,released:false,frame:None,backend_source:None,
+            credential_custody:None,request:None,
         };
         if let Err(error) = authority::record_prepared_process(
             &mut self.connection, &operation_id, &prepared,
@@ -1638,6 +1713,7 @@ impl<'root> ProductDatabase<'root> {
                     released: true,
                     frame: None,
                     backend_source: None,
+                    credential_custody: None,
                     request: None,
                 },
                 continuation: Some(ConfirmedLoginContinuation {
@@ -1773,14 +1849,15 @@ impl<'root> ProductDatabase<'root> {
         let scope = (|| -> Result<_> {
             let mut environment = clean_environment(&home.path, &runtime)?;
             let login_environment = ordinary_login_environment(&home.path, &runtime)?;
-            grant_owner_login_scope(&profile, &home, &runtime, &runtime_identity, &program)?;
+            let credential_custody = self.grant_registered_account_observer(&profile,
+                instance_id,&home,&runtime,&runtime_identity,&program)?;
             let module = CompatModule::prepare(self.root, &home.path, &home.identity,
                 &profile, &profile_name).map_err(|source|
                     OrchestrationError::V37StoreFailure(format!("login path compatibility: {source}")))?;
             module.extend_environment(&mut environment);
-            Ok((login_environment, environment, module))
+            Ok((login_environment, environment, module, credential_custody))
         })();
-        let (login_environment, environment, module) = match scope {
+        let (login_environment, environment, module, credential_custody) = match scope {
             Ok(prepared) => prepared,
             Err(error) => {
                 let cleanup = remove_owned_runtime(&runtime, &runtime_identity);
@@ -1826,6 +1903,7 @@ impl<'root> ProductDatabase<'root> {
         account_read.app_container_cli_identity_services = true;
         account_read.path_compat = Some(module);
         Ok(PreparedOwnerLogin {
+            credential_custody,
             login: PrepareRequest { launch: login, binding: binding.clone() },
             account_read: PrepareRequest { launch: account_read, binding },
             runtime_home: runtime,
@@ -1956,6 +2034,7 @@ impl<'root> ProductDatabase<'root> {
             let id=format!("credential-observe-{}",crate::store::digest::sha256_hex(
                 format!("{}\n{instance_id}\n{selector}\n{revision}",
                     crate::store::digest::sha256_hex(&original_request.raw_bytes)).as_bytes()));
+            let text=|value:&str|Json::String(JsonString::from_str(value));
             let fields=BTreeMap::from([
                 (JsonString::from_str("schema"),text("gogoke.37.operations.v1")),
                 (JsonString::from_str("family"),text("K-INSTANCE")),
@@ -2050,6 +2129,7 @@ impl<'root> ProductDatabase<'root> {
                 runtime_identity: Some(prepared_login.runtime_identity.clone()),
                 registered_driver: None, registered_home_identity: None,
                 proof, durable_revision, abort_prepared, released: false, frame: None, backend_source: None,
+                credential_custody:prepared_login.credential_custody.clone(),
                 request: Some(V37Request {
                     raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
                     operation: request.operation.clone(), request_id: request.request_id.clone(),
@@ -3302,6 +3382,7 @@ exit 0
                 profile_id: "instanceA".into(), domain_id: "global".into(),
                 generation: "1".into() } };
         let launch = PreparedOwnerLogin { login: login.clone(), account_read: login.clone(),
+            credential_custody:None,
             runtime_home: runtime.clone(), runtime_identity: runtime_identity.clone(),
             registered_driver: "opencode".into(),
             registered_home_identity: home.identity.clone() };
@@ -3579,6 +3660,19 @@ exit 0
             &request("login-state", "observeSyntheticPresence", 1, "{}")).unwrap();
         assert!(String::from_utf8(observed).unwrap().contains("\"state\":\"LOGGED_IN\""),
             "CLI presence observation is distinct from authentication validity");
+        let original=instance::read_configured_credential_backend(&product.connection,"instanceA").unwrap();
+        assert_eq!(original.backend,instance::CredentialBackend::File);
+        assert_eq!(original.startup_selector,instance::CredentialStartupSelector::Unknown,
+            "the prior CLI was not started with an explicit File selector");
+        assert!(instance::read_usable_credential_backend(&product.connection,"instanceA").is_err());
+        let bound=product.dispatch_owner_file_backend_observation(
+            &request("login-state","observeSyntheticFileStartup",2,"{}")).unwrap();
+        assert_eq!(owner_login_state_from_receipt(&bound).unwrap(),"LOGGED_IN");
+        let qualified=instance::read_usable_credential_backend(&product.connection,"instanceA").unwrap();
+        assert_eq!(qualified.startup_selector,instance::CredentialStartupSelector::FileBound);
+        assert_ne!(original.operation_id,qualified.operation_id,
+            "File-bound evidence must come from the subsequent actual CLI, not backstamp the old process");
+        assert_ne!(original.ticket,qualified.ticket);
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();

@@ -28,6 +28,7 @@ pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_
     CreateTemporaryHome, TemporaryHomeError, TemporaryHomeReceipt, TemporaryKind,
     TransitionTemporaryHome};
 pub(crate) use private_history::{create_initial_private_history, resume_private_history,
+    resolve_private_history_directory,
     read_private_history_generation, bind_private_history_continuation_in_transaction,
     verify_private_history, PrivateHistoryLaunch, PrivateHistorySource,
     PrivateHistoryGeneration, StoppedPrivateHistory, PrivateHistoryReceipt, PrivateHistoryError};

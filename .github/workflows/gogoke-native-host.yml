@@ -139,7 +139,7 @@ jobs:
           if ($state -ne 'PASS') { throw "Native-host release build failed or lacked a release-profile completion marker: $state (exit $exitCode)" }
       - name: Build and run required native-host process axes
         id: native-axes
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -240,7 +240,7 @@ jobs:
           "machine_result=$machineResult" >> $env:GITHUB_OUTPUT
           if ($failed -or $releaseResult.state -ne 'PASS') { throw 'Release build or one or more required native-host axes failed or did not execute.' }
       - name: Run focused native-host lib failure probes
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -325,6 +325,11 @@ jobs:
               @{ id = 'credential-unknown-alias'; filter = 'unknown_link_and_replaced_alias_fail_complete_metadata_registration' }
               @{ id = 'history-real-generation'; filter = 'stalled_health_new_generation_suppresses_original_physical_cause' }
               @{ id = 'credential-owner-observer'; filter = 'owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime' }
+              @{ id = 'credential-empty-observer'; filter = 'empty_owner_account_observer_initializes_only_fresh_runtime' }
+              @{ id = 'credential-real-empty-cli'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' }
+              @{ id = 'credential-quiescent-remove'; filter = 'quiescent_alias_removal_preserves_source_and_other_registered_alias' }
+              @{ id = 'credential-legacy-migration'; filter = 'legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer' }
+              @{ id = 'credential-real-file-startup'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' }
             )
             Write-Host 'F private-history identity/schema boundary only; full library, compiled mutations and server suites NOT_RUN.'
           }
@@ -370,6 +375,10 @@ jobs:
               state = $state
               log = "focused-$($probe.id).log"
             }
+            # A compilation failure discovers no test. Preserve its original
+            # log and leave remaining cases NOT_RUN instead of recompiling the
+            # same broken source once for every filter.
+            if ($exitCode -ne 0 -and $running.Count -eq 0) { break }
           }
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }

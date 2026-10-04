@@ -442,8 +442,7 @@ impl<'root> ProductDatabase<'root> {
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
-            self.native_rpc(&key,&format!("{operation_id}-config-read"),Some(2),
-                &Command::ConfigRead {cwd:cwd.clone()})?;
+            self.native_credential_config_read(&key,&format!("{operation_id}-config-read"),cwd.clone())?;
             let response=self.native_rpc(&key,&format!("{operation_id}-thread-resume"),
                 Some(3),&Command::ThreadResume {thread_id:thread_id.clone(),cwd,model})?;
             let Some(Reply::Thread {thread_id:observed,..})=response else {
@@ -1650,7 +1649,7 @@ impl<'root> ProductDatabase<'root> {
                         else {Command::Initialize {client_version:"0.1.0".into()}};
                     self.native_rpc(&key,"initialize",Some(1),&initialize)?;
                     self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
-                    self.native_rpc(&key,"config-read",Some(2),&Command::ConfigRead {cwd:cwd.clone()})?;
+                    self.native_credential_config_read(&key,"config-read",cwd.clone())?;
                     let start=if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
                     let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
@@ -2051,6 +2050,8 @@ impl<'root> ProductDatabase<'root> {
         let revision = row.column_text(0)?.parse::<u64>().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native stop durable revision: {error}")))?;
         drop(row);
+        failure(run.evidence.revoke_stopped_credential(&mut self.connection,self.root,
+            &run.operation_id,&run.custody))?;
         if self.process_custodian.active(&run.custody.ticket).is_some() {
             self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
                 ticket: run.custody.ticket.clone(), custodian_nonce: run.custody.custodian_nonce.clone(),
@@ -2846,6 +2847,17 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn native_rpc(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<Reply>> {
         self.native_rpc_observation(key, step_id, number, command).map(|result| result.map(|result| result.reply))
+    }
+
+    fn native_credential_config_read(&mut self,key:&(String,String),step:&str,cwd:String)->Result<()> {
+        let configured=self.native_rpc_observation(key,step,Some(2),&Command::ConfigRead {cwd})?
+            .ok_or(OrchestrationError::Invalid("native config response absent"))?;
+        if self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?.evidence.file_credentials_bound()
+            && super::v37_login::configured_credential_backend_for_id(configured.frame.bytes(),"2")?
+                !=instance::CredentialBackend::File {
+            return Err(OrchestrationError::Invalid("model startup effective credential backend is not File"));
+        }
+        Ok(())
     }
 
     fn native_rpc_observation(&mut self, key: &(String, String), step_id: &str,

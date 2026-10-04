@@ -38,6 +38,7 @@ pub(crate) struct LaunchEvidence {
     pin: InstancePin,
     homes: InstanceLaunchHomes,
     private_history: Option<instance::PrivateHistoryReceipt>,
+    credential: Option<super::credential_launch::CredentialLaunch>,
     launch_request_id: String,
     repository_id: String,
     worktree: ResolvedBinding,
@@ -300,6 +301,9 @@ impl LaunchEvidence {
                 evidence(instance::resume_private_history(db,root,&input,&stopped))?
             } else {evidence(instance::create_initial_private_history(db,root,&input))?})
         } else {None};
+        let credential=if let Some(history)=&private_history {
+            super::credential_launch::CredentialLaunch::prepare(db,root,&profile,history,request_id)?
+        } else {None};
         let worktree = evidence(worktree::resolve_for_launch(db, root, worktree_id,
             repository_id, domain_id, seat_id, &seat.incarnation, seat.generation))?;
         let worktree_group = evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
@@ -312,7 +316,12 @@ impl LaunchEvidence {
         // public parent, other session, source tree or common Git dir is granted.
         verify_host_guard(db,owner,host_guard)?;
         let model_home=private_history.as_ref().map(|history|&history.directory).unwrap_or(&homes.instance);
-        evidence(profile.grant_bound_tree(&model_home.path, &model_home.identity, true))?;
+        if let Some(credential)=&credential {
+            evidence(profile.grant_bound_credential_tree(&model_home.path,&model_home.identity,
+                &credential.binding,&credential.alias,true))?;
+        } else {
+            evidence(profile.grant_bound_tree(&model_home.path, &model_home.identity, true))?;
+        }
         verify_host_guard(db,owner,host_guard)?;
         evidence(profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
@@ -340,6 +349,7 @@ impl LaunchEvidence {
             (None, Some(Arc::new(evidence(DirectoryRoots::prepare(root, &roots))?)))
         };
         let observed = Self { identity, seat, claim, pin, homes, private_history,
+            credential,
             launch_request_id:request_id.into(),repository_id: repository_id.into(),
             worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id,launch_admission,
@@ -458,6 +468,7 @@ impl LaunchEvidence {
         if let Some(history)=&self.private_history {
             evidence(instance::verify_private_history(db,root,history,&self.history_input()))?;
         }
+        if let Some(credential)=&self.credential {credential.verify(db,root,&self.profile)?;}
         // A owns immutable purpose and session membership. First open creates
         // this registration before activation; absence must never imply WORK.
         if expected_operation.is_some() {
@@ -489,10 +500,26 @@ impl LaunchEvidence {
         }
         let program = evidence(instance::locate_pinned_program(&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
         if program != self.program { return Err("native session launch: program path changed".into()); }
-        for (path, identity, writable) in [
-            (&self.model_home().path, &self.model_home().identity, true),
-            (&self.homes.session.path, &self.homes.session.identity, true),
-        ] {
+        if let Some(credential)=&self.credential {
+            match phase {
+                VerificationPhase::PreActivation=>{
+                    evidence(self.profile.verify_bound_credential_tree_grant(&self.model_home().path,
+                        &self.model_home().identity,&credential.binding,&credential.alias,true))?;
+                },
+                VerificationPhase::Active=>{
+                    evidence(self.profile.verify_bound_directory_grant(&self.model_home().path,
+                        &self.model_home().identity,true))?;
+                },
+            }
+        } else {
+            match phase {
+                VerificationPhase::PreActivation=>{evidence(self.profile.verify_bound_tree_grant(
+                    &self.model_home().path,&self.model_home().identity,true))?;},
+                VerificationPhase::Active=>{evidence(self.profile.verify_bound_directory_grant(
+                    &self.model_home().path,&self.model_home().identity,true))?;},
+            }
+        }
+        for (path, identity, writable) in [(&self.homes.session.path, &self.homes.session.identity, true)] {
             match phase {
                 VerificationPhase::PreActivation =>
                     evidence(self.profile.verify_bound_tree_grant(path, identity, writable))?,
@@ -525,6 +552,16 @@ impl LaunchEvidence {
 
     fn model_home(&self)->&instance::ResolvedDirectory {
         self.private_history.as_ref().map(|history|&history.directory).unwrap_or(&self.homes.instance)
+    }
+
+    pub(crate) fn file_credentials_bound(&self)->bool {self.credential.is_some()}
+
+    pub(crate) fn revoke_stopped_credential(&self,db:&mut VerifiedDatabaseConnection<'_>,
+        root:&RootLock,operation:&str,custody:&crate::process::PreparedCustody)->Result<(),String> {
+        if let Some(credential)=&self.credential {
+            credential.revoke(db,root,&self.profile,operation,custody)?;
+        }
+        Ok(())
     }
 
     fn history_input(&self)->instance::PrivateHistoryLaunch<'_> {
@@ -686,6 +723,9 @@ impl LaunchEvidence {
                 },
                 _ => return Err("native session launch: unsupported pinned driver/version".into()),
             }};
+        if self.file_credentials_bound() {
+            launch.arguments.splice(0..0,["-c".to_owned(),"cli_auth_credentials_store=\"file\"".to_owned()]);
+        }
         launch.current_directory = Some(self.worktree.path.clone());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
