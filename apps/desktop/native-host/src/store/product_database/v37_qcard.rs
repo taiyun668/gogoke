@@ -747,10 +747,19 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::OperationConflict);
         }
         let cards=Statement::prepare(self.connection.as_ptr(),
-            "SELECT card_id FROM main.gogoke_v37_qcard_native
+            "SELECT card_id,question_payload FROM main.gogoke_v37_qcard_native
              WHERE domain_id=?1 AND generation=?2 AND state='OPEN'")?;
         cards.bind_text(1,&key.0)?;cards.bind_text(2,&source.generation)?;
-        let mut ids=Vec::new();while cards.step_row()? {ids.push(cards.column_text(0)?);}drop(cards);
+        let mut ids=Vec::new();
+        while cards.step_row()? {
+            let payload=cards.column_text(1)?;
+            if matches!(Parser::parse(&payload),Ok(Json::Object(ref fields))
+                if fields.get(&JsonString::from_str("provider"))
+                    ==Some(&Json::String(JsonString::from_str("claude")))) {
+                ids.push(cards.column_text(0)?);
+            }
+        }
+        drop(cards);
         let descriptor=source_descriptor(&source);
         let current_cursor=source_key.source_cursor.parse::<u64>()
             .map_err(|_|OrchestrationError::OperationConflict)?;

@@ -1096,7 +1096,7 @@ fn validate_native_question(question: &NativeQuestion<'_>) -> Result<(), InboxEr
         return Err(InboxError::Invalid("auto resolution"));
     }
     vendor_nonempty(question.question_payload,"question payload")?;
-    let claude_payload=matches!(Parser::parse(question.question_payload)?,Json::Object(ref fields)
+    let claude_payload=matches!(Parser::parse(question.question_payload),Ok(Json::Object(ref fields))
         if fields.get(&JsonString::from_str("provider"))
             ==Some(&Json::String(JsonString::from_str("claude"))));
     for (value,name) in [(question.question_id,"question id"),
