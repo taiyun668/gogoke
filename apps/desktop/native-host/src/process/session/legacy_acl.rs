@@ -173,8 +173,10 @@ fn baseline_target() -> Result<Dacl, IsolationError> {
 
 fn acl_equal(left: &Dacl, right: &Dacl) -> bool {
     if left.protected != right.protected || left.aces.len() != right.aces.len() { return false; }
-    // Windows may canonicalize allow ACE order. Compare the entire ACE multiset;
-    // no principal, mask, or inheritance flag may be added or changed.
+    // Deny/allow order can change effective access. Only all-allow ACLs may
+    // tolerate Windows reordering otherwise identical entries.
+    if left.aces.iter().chain(&right.aces).any(|ace|
+        ace.kind == ACCESS_DENIED_ACE_TYPE) { return left.aces == right.aces; }
     let mut remaining = right.aces.clone();
     for ace in &left.aces {
         let Some(index) = remaining.iter().position(|other| other == ace) else { return false; };
@@ -672,8 +674,10 @@ fn encode_dacl(bytes: &mut Vec<u8>, acl: &Dacl) {
 }
 fn encode_dacl_canonical(bytes: &mut Vec<u8>, acl: &Dacl) {
     let mut ordered = acl.clone();
-    ordered.aces.sort_by(|left, right| (&left.sid, left.kind, left.mask, left.flags)
-        .cmp(&(&right.sid, right.kind, right.mask, right.flags)));
+    if ordered.aces.iter().all(|ace| ace.kind == ACCESS_ALLOWED_ACE_TYPE) {
+        ordered.aces.sort_by(|left, right| (&left.sid, left.mask, left.flags)
+            .cmp(&(&right.sid, right.mask, right.flags)));
+    }
     encode_dacl(bytes, &ordered);
 }
 fn dacl_digest(acl: &Dacl) -> String {
@@ -791,6 +795,11 @@ mod tests {
         changed.aces.push(Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 0,
             mask: FILE_GENERIC_READ, sid: "S-1-15-2-999".into() });
         assert!(!acl_equal(&changed, &target));
+        let deny = Ace { kind: ACCESS_DENIED_ACE_TYPE, flags: 0,
+            mask: FILE_GENERIC_READ, sid: "S-1-5-21-123".into() };
+        let ordered = Dacl { protected: false, aces: vec![deny.clone(), target.aces[0].clone()] };
+        let reordered = Dacl { protected: false, aces: vec![target.aces[0].clone(), deny] };
+        assert!(!acl_equal(&ordered, &reordered));
     }
 
     #[test]
