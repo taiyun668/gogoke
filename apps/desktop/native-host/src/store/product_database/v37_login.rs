@@ -545,6 +545,18 @@ impl<'root> ProductDatabase<'root> {
         if record.original_boot == boot {
             return Err(OrchestrationError::Invalid("legacy account scope requires original stopped observer custody; exact metadata fence saved, Windows system restart required"));
         }
+        // Replaying a pending intent does not run begin again. Recheck its
+        // original process/holder boundary before any native ACL operation,
+        // not only at the subsequent finish transaction.
+        let live = self.legacy_account_custody(instance_id)?;
+        if record.custody.iter().any(|original| !live.iter().any(|row| row == original))
+            || live.iter().any(|row| !record.custody.iter().any(|old| old.operation_id == row.operation_id)
+                && (row.state != "STOPPED" || row.stop_proof_hash.as_deref().map_or(true, str::is_empty))) {
+            return Err(OrchestrationError::Invalid("legacy pending recovery retains current unknown or active custody"));
+        }
+        if failure(instance::read_credential_profiles(&self.connection, instance_id))?.iter().any(|row| row.state != "REVOKED") {
+            return Err(OrchestrationError::Invalid("legacy pending recovery retains credential holder intent"));
+        }
         let mut proof = instance::LegacyPhysicalProof {
             database_identity: self.connection.identity().clone(), root_identity: self.connection.root_identity().clone(),
             home_identity: home.identity.clone(), source_identity: source_identity.clone(), source_parent_identity: home.identity.clone(),
@@ -561,7 +573,16 @@ impl<'root> ProductDatabase<'root> {
                 target_source_acl_digest: &inventory.source_after_home_digest(), proof: &proof,
             }))?,
         };
-        let home_receipt = failure(inventory.reconcile_home(self.root, &home.path, &home.identity, &binding))?;
+        let prior_baseline = failure(instance::read_legacy_step(&self.connection, instance_id, LegacyAclStep::Baseline))?;
+        let home_receipt = if home_step.phase == LegacyStepPhase::Applied && prior_baseline.is_some() {
+            // Reconstruct the already-committed HOME receipt from its exact
+            // immutable targets. The native baseline reconciler independently
+            // verifies all current HOME objects and either precise source state.
+            crate::process::LegacyHomeReceipt {
+                home_observed_digest: home_step.target_home_acl_digest.clone(),
+                source_observed_digest: home_step.target_source_acl_digest.clone(),
+            }
+        } else { failure(inventory.reconcile_home(self.root, &home.path, &home.identity, &binding))? };
         proof.actual_home_acl_digest = home_receipt.home_observed_digest.clone();
         proof.actual_source_acl_digest = home_receipt.source_observed_digest.clone();
         if home_step.phase == LegacyStepPhase::Pending {
