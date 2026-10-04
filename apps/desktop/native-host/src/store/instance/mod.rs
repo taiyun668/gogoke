@@ -10,6 +10,7 @@ mod resolver;
 mod reprobe;
 mod temporary;
 mod private_history;
+mod credential_registry;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use catalog::{discover_program, known_new_version, locate_pinned_program, CatalogError};
@@ -30,6 +31,16 @@ pub(crate) use private_history::{create_initial_private_history, resume_private_
     read_private_history_generation, bind_private_history_continuation_in_transaction,
     verify_private_history, PrivateHistoryLaunch, PrivateHistorySource,
     PrivateHistoryGeneration, StoppedPrivateHistory, PrivateHistoryReceipt, PrivateHistoryError};
+pub(crate) use credential_registry::{initialize_credential_schema, record_credential_backend,
+    read_usable_credential_backend, bind_credential_object, read_credential_object,
+    read_credential_aliases, begin_credential_alias, complete_credential_alias,
+    read_credential_profiles, begin_credential_profile, complete_credential_profile,
+    CredentialRegistryError, CredentialBackend, CredentialStartupSelector, BackendSource,
+    CredentialObjectInput, CredentialObjectRecord, CredentialIntentDisposition,
+    CredentialAliasAction, CredentialAliasResult, CredentialAliasIntent,
+    CredentialAliasRecord, CredentialAliasIntentReceipt, CredentialAliasPhysicalReceipt,
+    CredentialProfileAction, CredentialProfileResult, CredentialProfileIntent,
+    CredentialProfileRecord, CredentialProfileIntentReceipt};
 
 use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
