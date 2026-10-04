@@ -251,6 +251,7 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $probes = @(
+            @{ id = 'job-second-stop'; filter = 'actual_kernel_rejects_invalid_job_handle_and_second_stop_retains_custody' },
             @{ id = 'legacy-product-recovery'; filter = 'legacy_original_home_capture_refuses_same_boot_preserves_unknown_and_reopens_exact_fence' },
             @{ id = 'legacy-partial-physical'; filter = 'two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback' },
             @{ id = 'legacy-snapshot-negative'; filter = 'snapshot_rejects_tampering_and_unknown_package_grants' },
@@ -289,7 +290,7 @@ jobs:
             @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
           if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') {
-            $probes = @($probes | Where-Object { $_.id -eq 'job-descendant' })
+            $probes = @($probes | Where-Object { $_.id -in @('job-descendant', 'job-second-stop') })
             Write-Host 'Focused changed Job fixture only; full library and mutation suites NOT_RUN.'
           } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') {
             $probes = @($probes | Where-Object { $_.id -eq 'stop-124-negative' })

@@ -3980,7 +3980,8 @@ mod tests {
             },
             || Ok(()),
         );
-        assert_eq!(proof.disposition, StopDisposition::Stopped);
+        assert_eq!(proof.disposition, StopDisposition::Stopped,
+            "original controlled Job stop proof: {proof:?}");
         assert!(proof.kill_attempted && proof.kill_succeeded);
         assert!(proof.parent_exited);
         assert_eq!(proof.active_job_processes, Some(0));
