@@ -313,6 +313,11 @@ impl<'root> ProductDatabase<'root> {
                 effective_revision,BTreeMap::from([(JsonString::from_str("reason"),
                     text("This fixed provider has no integrated native metadata resume"))])));
         }
+        let old_operation=old.process_operation_id.as_deref()
+            .ok_or(OrchestrationError::OperationConflict)?;
+        failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+            &mut self.connection,self.root,old_operation,&request.domain_id,
+            &request.target_id,&old_generation))?;
         let old_number=old_generation.parse::<i64>().map_err(|_|
             OrchestrationError::Invalid("native resume old generation"))?;
         let new_generation=old_number.checked_add(1).ok_or(
@@ -718,6 +723,9 @@ impl<'root> ProductDatabase<'root> {
         self.finish_native_transaction(recorded)?;
         if self.native_sessions.get(key).is_some_and(|run|run.operation_id==operation) {
             self.confirm_native_stop(key)?;
+        } else {
+            failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+                &mut self.connection,self.root,operation,&key.0,&key.1,generation))?;
         }
         Ok(())
     }
@@ -1846,6 +1854,10 @@ impl<'root> ProductDatabase<'root> {
                 let key=(request.domain_id.clone(),request.target_id.clone());
                 if self.native_sessions.get(&key).is_some_and(|run|run.operation_id==stopped_operation) {
                     self.confirm_native_stop(&key)?;
+                } else {
+                    failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+                        &mut self.connection,self.root,&stopped_operation,&request.domain_id,
+                        &request.target_id,&generation))?;
                 }
                 return Ok(encode_receipt(request, V37Status::Replayed,
                     request.expected_revision, revision, BTreeMap::from([
@@ -1898,6 +1910,9 @@ impl<'root> ProductDatabase<'root> {
                         Ok(())
                     })();
                     self.finish_native_transaction(recovered)?;
+                    failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+                        &mut self.connection,self.root,&operation,&request.domain_id,
+                        &request.target_id,&generation))?;
                     return Ok(encode_receipt(request, V37Status::Replayed, request.expected_revision,
                         request.expected_revision.checked_add(1).ok_or(OrchestrationError::Invalid("stop revision overflow"))?,
                         BTreeMap::from([(JsonString::from_str("stopFact"), Json::String(JsonString::from_str(&hash)))])));
