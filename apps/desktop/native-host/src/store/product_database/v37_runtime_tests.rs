@@ -886,6 +886,17 @@ fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
     let profile_a_resume = AppContainerProfile::ensure_for_cli(&name_a_resume, true).unwrap();
     AppContainerProfile::set_history_candidate_home_for_test(&home.path,
         &[&profile_a, &profile_b, &profile_a_resume]).expect("initial CI-only HOME candidate ACL");
+    // Pin down the first original Registry(Io(5)) source before H observes this
+    // exact HOME. All probes are ordinary Host reads of the registered fixture.
+    let marker = home.path.join("gogoke-instance.marker");
+    println!("HISTORY_VENDOR_ACL_PRECHECK home_metadata={:?} home_entries={:?} marker_metadata={:?} marker_read={:?} absent_temp_metadata={:?} resolver={:?}",
+        std::fs::symlink_metadata(&home.path).map(|v| v.is_dir()),
+        std::fs::read_dir(&home.path).map(|entries| entries.count()),
+        std::fs::symlink_metadata(&marker).map(|v| (v.is_file(), v.len())),
+        std::fs::read(&marker).map(|bytes| bytes.len()),
+        std::fs::symlink_metadata(home.path.join("temporary-homes")).map(|v| v.is_dir()),
+        instance::resolve_codex_instance_home(&product.connection, &root, "instanceA")
+            .map(|v| v.identity));
     let _candidate_guard = h::launch::install_history_acl_test_mode(home.path.clone(),
         home.identity.clone(), vec![name_a, name_b.clone(), name_a_resume]);
     let open = |session: &str, seat_id: &str, tree_id: &str| operation("K-SESSION", "open",
