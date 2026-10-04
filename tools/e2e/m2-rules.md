@@ -1,7 +1,7 @@
 # M2 V08 installed-product rules and Host cases
 
 TASK / RESULT / CURRENT_STATE: real E2E preparation from `349ac3983720d780f86db32ca61c1c9ae94865bd`. Actual app/model/CLI/native/cloud/Win11 execution and acceptance are **NOT_RUN**. No product API, DB fixture, unit/mutation framework, hidden probe or altered CLI is added.
-FILES_CHANGED: only `m2-rules.mjs`, `m2-rules-readback.py`, this reference; Root owns the shared runner.
+FILES_CHANGED: `m2-win11.mjs`, `m2-rules-readback.py`, this reference in this focused source repair. Root owns integration.
 
 ## Runner context
 
@@ -25,6 +25,8 @@ stopRulesSession, releaseStoppedRulesSession,
 Callbacks are injected by the runner, not serialized in JSON. host may be omitted; then delivery remains NOT_RUN and the existing business cases still run.
 
 The shared `m2-win11.mjs` runner now injects this context from private JSON `rules.submitter` and `rules.reviewer` selections (`seatId`, `instanceId`, `worktreeId`) plus the optional host selections. It refuses overlap with the main or side-chat seats/worktrees, verifies actual logged-in Codex instances, creates/registers fresh case-owned testbed worktrees, and takes the normal-close baseline before opening the sources. Its five callbacks use original H receipts and the immutable checkpoint's STOPPED revisions; no cached revision is guessed. It preserves old event/turn history while resetting only the output cursor for a new physical generation. Baseline/checkpoint are explicitly not results; final requires the rules reader's direct evidence. Without rules configuration the journal records V08 NOT_RUN, not a pass. Actual app/model execution remains NOT_RUN at this SOURCE stage.
+
+Focused instrument repair: preflight now excludes every configured provider seat/worktree before any rules F create/register. The reader accepts the two TurnStart ACK statuses recognized by native H/C (`inProgress`, `completed`) while still requiring a separate original CLI turn completion. It also binds each source's final journal identity to its last original H resume/thread ACK, stopped episode/StopFact, RELEASED claim and IDLE seat; historical Model actions retain their own generation bindings. For each relevant raw A thread/turn, the reader recognizes ordinary text/reasoning/context items and the one prescribed native tool or busy question, rejecting extra or unexplained item/tool activity including `collabAgentToolCall`. References are the existing M2 journal/readback, native `codex_rpc`/`episodes`/`admission` sources and the repository's `codexMultiAgentWire.json` capture; no native normalizer or product authority changes. These are source changes only, with runtime and acceptance NOT_RUN.
 
 | Callback | Required actual behavior |
 | --- | --- |

@@ -370,15 +370,19 @@ async function runRules() {
     new Set(selections.map(row => row.worktreeId)).size === selections.length,
   'Rules require distinct explicit case-owned seats and fresh worktrees');
   const forbiddenSeats = [config.seatId, config.childSeatId,
-    config.sideChat?.sourceSeatId, config.sideChat?.sideSeatId];
+    config.sideChat?.sourceSeatId, config.sideChat?.sideSeatId,
+    ...config.providerCases.map(row => row.seatId)];
   const forbiddenTrees = [config.worktreeId, journal.worktreeId,
-    config.sideChat?.sourceWorktreeId, config.sideChat?.sideWorktreeId];
+    config.sideChat?.sourceWorktreeId, config.sideChat?.sideWorktreeId,
+    ...config.providerCases.map(row => row.worktreeId)];
   const instances = await product.instances();
   for (const row of selections) {
     check(!forbiddenSeats.includes(row.seatId) && !forbiddenTrees.includes(row.worktreeId) &&
       instances.instances.some(instance => instance.instanceId === row.instanceId &&
         instance.driverId === 'codex' && instance.state === 'LOGGED_IN'),
     'Rules use qualified exclusive Codex test identities');
+  }
+  for (const row of selections) {
     await prepareSideWorktree({ rulesSeatId: row.seatId, rulesInstanceId: row.instanceId,
       rulesWorktreeId: row.worktreeId }, 'rules');
   }
