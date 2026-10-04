@@ -1096,3 +1096,7 @@ mod tests {
             cli_networked.internet_sid.as_ref().unwrap().0);
     }
 }
+
+#[cfg(test)]
+#[path = "isolation/history_acl_qualification.rs"]
+mod history_acl_qualification;

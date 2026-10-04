@@ -1017,6 +1017,21 @@ fn prepare_and_activate<F>(
 where
     F: FnOnce(&ProcessIdentity) -> Result<(), String>,
 {
+    prepare_and_activate_with_suspended_test(launch, |_| Ok(()), persist_custody)
+}
+
+/// Test-only access to the exact suspended child token. No production launch
+/// path can request a token-default-DACL change through this hook.
+#[cfg(test)]
+pub(crate) fn prepare_and_activate_with_suspended_test<Configure, Persist>(
+    launch: &ProcessLaunch,
+    configure: Configure,
+    persist_custody: Persist,
+) -> Result<ManagedProcess, ProcessCustodyError>
+where
+    Configure: FnOnce(Handle) -> Result<(), String>,
+    Persist: FnOnce(&ProcessIdentity) -> Result<(), String>,
+{
     let mut retained = Vec::new();
     let prepared = PreparedProcess::prepare(launch, &mut retained)?;
     let non_inheritable = match prepared.handles_are_non_inheritable() {
@@ -1028,6 +1043,9 @@ where
             io::ErrorKind::Other,
             "process, thread, or job handle remained inheritable",
         )), &mut retained));
+    }
+    if let Err(error) = configure(prepared.process.raw()) {
+        return Err(prepared.reject(ProcessCustodyError::Isolation(error), &mut retained));
     }
     if let Err(error) = persist_custody(&prepared.identity) {
         return Err(prepared.reject(ProcessCustodyError::DurableCustody(error), &mut retained));
