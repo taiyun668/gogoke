@@ -441,14 +441,16 @@ impl<'root> ProductDatabase<'root> {
                 ||run.evidence.driver_id()!="codex"
                 ||run.custody.binding.generation!=generation {return Err(OrchestrationError::AccessDenied);}
             let held=Statement::prepare(self.connection.as_ptr(),
-                "SELECT 1 FROM main.gogoke_coordination_process_custody
+                "SELECT state FROM main.gogoke_coordination_process_custody
                   WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3
                     AND domain_id=?4 AND generation=?5
-                    AND state IN ('PREPARED','ACTIVE','UNKNOWN')")?;
+                    AND state IN ('PREPARED','ACTIVE','UNKNOWN','STOPPED')")?;
             for (index,value) in [operation.as_str(),run.custody.ticket.opaque(),
                 run.custody.custodian_nonce.as_str(),candidate.domain_id.as_str(),generation.as_str()]
                 .iter().enumerate() {held.bind_text((index+1) as i32,value)?;}
-            if !held.step_row()? ||held.step_row()? {return Err(OrchestrationError::AccessDenied);}
+            if !held.step_row()? {return Err(OrchestrationError::AccessDenied);}
+            let custody_state=held.column_text(0)?;
+            if held.step_row()? {return Err(OrchestrationError::AccessDenied);}
             drop(held);
             let proposed=cleanup_request(candidate,"stop",revision)?;
             let (bytes,_fresh)=c::freeze_host_cleanup(&mut self.connection,&self.owner,
@@ -467,10 +469,12 @@ impl<'root> ProductDatabase<'root> {
                 (true,status=="APPLIED")
             } else {(false,false)};
             drop(prior);
-            // H records stop intent before touching the Job. A frozen C
-            // request with no H intent can still enter its first OS stop;
-            // an uncertain H stop is held for its original proof.
-            if !h_intended && !h_applied {
+            // H records stop intent before touching the Job. No intent means
+            // no previous OS stop. After intent, only the retained original
+            // stop proof permits continuation without a second OS stop.
+            let retained_proof=h_intended &&self.host_cleanup_has_stop_proof(&key);
+            if custody_state=="STOPPED" && !retained_proof {return Ok(());}
+            if !h_applied &&(!h_intended ||retained_proof) {
                 c::verify_frozen_host_cleanup_in_transaction(&self.connection,candidate,
                     "stop",&bytes).map_err(recipient_error)?;
                 match self.dispatch_native_stop(&request) {
@@ -501,6 +505,25 @@ impl<'root> ProductDatabase<'root> {
             if fact.as_ref().is_none_or(|fact|fact.generation()!=generation
                 ||Some(fact.process_operation_id())!=claim.process_operation_id.as_deref()) {
                 return Ok(());
+            }
+            let stop_id=format!("{}-stop",candidate.message_id.replacen("hostmsg-","hostcleanup-",1));
+            if let Some(saved)=crate::store::inbox::read_operation(&self.connection,
+                &candidate.domain_id,&stop_id).map_err(recipient_error)? {
+                let applied=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1
+                      AND session_id=?2 AND request_id=?3 AND operation='stop'
+                      AND raw_hex=?4 AND status='APPLIED'")?;
+                applied.bind_text(1,&candidate.domain_id)?;
+                applied.bind_text(2,&choice.session_id)?;applied.bind_text(3,&stop_id)?;
+                applied.bind_text(4,&saved.request_hex)?;
+                if applied.step_row()? {
+                    if applied.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                    drop(applied);
+                    let original=super::v37_host_rule::original_bytes(&saved.request_hex)?;
+                    c::record_host_cleanup_result(&mut self.connection,&self.owner,candidate,
+                        "stop",&original,V37Status::Applied,"H original stop and StopFact APPLIED")
+                        .map_err(recipient_error)?;
+                }
             }
         }
         let proposed=cleanup_request(candidate,"release",
