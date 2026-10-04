@@ -50,6 +50,101 @@ pub(crate) struct HostRecipient {
     pub(crate) start_request_id: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct HostCleanupCandidate {
+    pub(crate) domain_id: String,
+    pub(crate) message_id: String,
+    pub(crate) seat_id: String,
+    pub(crate) choice: HostRecipient,
+}
+
+/// Historical C read: cleanup cannot require a current E grant after its
+/// route was removed. Only a failed preparation or a definite changed route
+/// or cancelled trigger enters this list. A delivered message is never torn
+/// down by preparation cleanup.
+pub(crate) fn failed_host_preparations(db:&VerifiedDatabaseConnection<'_>)
+    ->Result<Vec<HostCleanupCandidate>,InboxError> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT o.domain_id,o.request_id,o.request_hex,o.message_id,m.seat_id,m.state,
+                COALESCE(e.reason,''),COALESCE(e.phase,'')
+           FROM main.gogoke_v37_inbox_operations o
+           JOIN main.gogoke_v37_inbox_messages m ON m.domain_id=o.domain_id
+             AND m.message_id=o.message_id AND m.sender_seat_id='HOST_RULE'
+           LEFT JOIN main.gogoke_v37_inbox_operations e ON e.domain_id=o.domain_id
+             AND e.message_id=o.message_id AND e.request_id=replace(o.request_id,'hostrecipient-','hostenqueue-')
+          WHERE o.request_id LIKE 'hostrecipient-%' AND o.phase='PREPARED'
+            AND m.state IN ('PENDING','CANCELLED') ORDER BY o.domain_id,o.request_id")?;
+    let mut out=Vec::new();
+    while q.step_row()? {
+        let domain=q.column_text(0)?;let id=q.column_text(1)?;
+        let bytes=unhex_native(&q.column_text(2)?)?;
+        let message=q.column_text(3)?;let seat=q.column_text(4)?;
+        if q.column_text(7)?!="APPLIED" {return Err(InboxError::Denied);}
+        if !id.starts_with("hostrecipient-") ||
+            message!=id.replacen("hostrecipient-","hostmsg-",1) {return Err(InboxError::Denied);}
+        let Json::Object(fields)=Parser::parse(std::str::from_utf8(&bytes)
+            .map_err(|error|InboxError::InvalidEvidence(format!("cleanup UTF-8: {error}")))?)?
+            else {return Err(InboxError::Denied)};
+        let get=|name:&str|->Result<String,InboxError> {
+            match fields.get(&JsonString::from_str(name)) {
+                Some(Json::String(v))=>v.to_well_formed_string().ok_or(InboxError::Denied),
+                _=>Err(InboxError::Denied),
+            }
+        };
+        if get("schema")?!="gogoke.37.host-recipient.v1" ||get("actor")?!=HOST_RULE_ACTOR
+            ||get("domainId")?!=domain ||get("messageId")?!=message
+            ||get("destinationSeatId")?!=seat ||get("mode")?!="FRESH"
+            || !valid_id(&get("sessionId")?) ||
+            get("sessionId")?!=id.replacen("hostrecipient-","hostsession-",1)
+            ||get("reserveRequestId")?!=format!("{id}-reserve")
+            ||get("commitRequestId")?!=format!("{id}-commit")
+            ||get("startRequestId")?!=format!("{id}-start")
+            || bytes.last()!=Some(&b'\n')
+            || Json::Object(fields.clone()).canonical().as_bytes()!=&bytes[..bytes.len()-1] {
+            continue;
+        }
+        let trigger=get("triggerId")?;let route_revision=get("routeRevision")?;
+        let escalation=get("escalationRequestId")?;
+        let source=Statement::prepare(db.as_ptr(),
+            "SELECT from_seat_id,state FROM main.gogoke_v37_seat_policy_escalations
+              WHERE domain_id=?1 AND trigger_id=?2 AND request_id=?3 AND to_seat_id=?4 AND reason='REJECT_CAP'")?;
+        source.bind_text(1,&domain)?;source.bind_text(2,&trigger)?;
+        source.bind_text(3,&escalation)?;source.bind_text(4,&seat)?;
+        if !source.step_row()? {return Err(InboxError::Denied);}
+        let source_seat=source.column_text(0)?;let escalation_state=source.column_text(1)?;
+        if source.step_row()? {return Err(InboxError::Denied);}
+        drop(source);
+        if escalation_state=="DELIVERED" {continue;}
+        let route=Statement::prepare(db.as_ptr(),
+            "SELECT to_seat_id,revision FROM main.gogoke_v37_seat_policy_routes
+              WHERE domain_id=?1 AND from_seat_id=?2 AND reason='REJECT_CAP'")?;
+        route.bind_text(1,&domain)?;route.bind_text(2,&source_seat)?;
+        let changed=if route.step_row()? {
+            let changed=route.column_text(0)?!=seat ||route.column_text(1)?!=route_revision;
+            let duplicate=route.step_row()?;
+            changed ||duplicate
+        } else {true};drop(route);
+        let trigger_row=Statement::prepare(db.as_ptr(),
+            "SELECT state FROM main.gogoke_v37_seat_policy_triggers WHERE domain_id=?1 AND trigger_id=?2")?;
+        trigger_row.bind_text(1,&domain)?;trigger_row.bind_text(2,&trigger)?;
+        let cancelled=if trigger_row.step_row()? {
+            let state=trigger_row.column_text(0)?;
+            let duplicate=trigger_row.step_row()?;
+            state=="CANCELLED" ||duplicate
+        } else {true};drop(trigger_row);
+        let failed=!q.column_text(6)?.is_empty();
+        if !failed && !changed && !cancelled {continue;}
+        out.push(HostCleanupCandidate {domain_id:domain,message_id:message,seat_id:seat,
+            choice:HostRecipient {mode:"FRESH".into(),session_id:get("sessionId")?,
+                seat_incarnation:get("seatIncarnation")?,instance_id:get("instanceId")?,
+                permission_tier:get("permissionTier")?,repository_id:get("repositoryId")?,
+                worktree_id:get("worktreeId")?,generation:get("generation")?,
+                reserve_request_id:get("reserveRequestId")?,
+                commit_request_id:get("commitRequestId")?,start_request_id:get("startRequestId")?}});
+    }
+    Ok(out)
+}
+
 fn recipient_id(ids: &HostMessageIds) -> String {
     ids.enqueue_request_id.replacen("hostenqueue-", "hostrecipient-", 1)
 }
@@ -266,11 +361,119 @@ pub(crate) fn record_host_recipient_error(db:&mut VerifiedDatabaseConnection<'_>
         revalidate(db,owner,proof)?;
         original_host_message(db,proof,&ids)?;
         let q=Statement::prepare(db.as_ptr(),
-            "UPDATE main.gogoke_v37_inbox_operations SET reason=?1
+            "UPDATE main.gogoke_v37_inbox_operations SET reason=CASE WHEN reason='' THEN ?1 ELSE reason END
               WHERE domain_id=?2 AND request_id=?3 AND message_id=?4 AND phase='APPLIED'")?;
         q.bind_text(1,original)?;q.bind_text(2,proof.domain_id())?;
         q.bind_text(3,&ids.enqueue_request_id)?;q.bind_text(4,&ids.message_id)?;
         q.step_done()?;
+        require_one_change(db)
+    })
+}
+
+pub(crate) fn host_recipient_failure_recorded(db:&VerifiedDatabaseConnection<'_>,
+    proof:&HostEscalationProof)->Result<bool,InboxError> {
+    let ids=identity(proof);
+    let operation=read_operation(db,proof.domain_id(),&ids.enqueue_request_id)?
+        .ok_or(InboxError::Conflict)?;
+    if operation.message_id!=ids.message_id ||operation.phase!="APPLIED" {
+        return Err(InboxError::Denied);
+    }
+    Ok(!operation.reason.is_empty())
+}
+
+/// The F/H receipt is a C fact even when a later route check no longer grants
+/// a new start. Keep its original reason beside the exact frozen stage.
+pub(crate) fn record_host_stage_result(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,proof:&HostEscalationProof,choice:&HostRecipient,
+    stage:&str,request:&[u8],status:V37Status,reason:&str)->Result<(),InboxError> {
+    let ids=identity(proof);
+    let id=stage_id(&ids,stage)?;
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner).map_err(InboxError::Authority)?;
+        if read_host_recipient(db,proof)?.as_ref()!=Some(choice) {return Err(InboxError::Denied);}
+        let original=read_operation(db,proof.domain_id(),&id)?.ok_or(InboxError::Conflict)?;
+        if original.message_id!=ids.message_id || original.request_hex!=raw_hex(request)
+            || original.phase!="PREPARED" {return Err(InboxError::Denied);}
+        let detail=if reason.is_empty() {format!("H {}",status.wire())}
+            else {format!("H {}: {reason}",status.wire())};
+        let update=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_inbox_operations SET result_state=CASE WHEN result_state='PENDING' THEN ?1 ELSE result_state END,
+                reason=CASE WHEN reason='' THEN ?2 ELSE reason END
+              WHERE domain_id=?3 AND request_id=?4 AND message_id=?5 AND phase='PREPARED'")?;
+        update.bind_text(1,status.wire())?;update.bind_text(2,&detail)?;
+        update.bind_text(3,proof.domain_id())?;update.bind_text(4,&id)?;
+        update.bind_text(5,&ids.message_id)?;update.step_done()?;
+        require_one_change(db)?;
+        if !matches!(status,V37Status::Applied|V37Status::Replayed) {
+            let enqueue=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_inbox_operations SET reason=CASE WHEN reason='' THEN ?1 ELSE reason END
+                  WHERE domain_id=?2 AND request_id=?3 AND message_id=?4 AND phase='APPLIED'")?;
+            enqueue.bind_text(1,&detail)?;enqueue.bind_text(2,proof.domain_id())?;
+            enqueue.bind_text(3,&ids.enqueue_request_id)?;enqueue.bind_text(4,&ids.message_id)?;
+            enqueue.step_done()?;require_one_change(db)?;
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn freeze_host_cleanup(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    candidate:&HostCleanupCandidate,stage:&str,proposed:&[u8])
+    ->Result<(Vec<u8>,bool),InboxError> {
+    if !matches!(stage,"stop"|"release") {return Err(InboxError::Denied);}
+    let id=candidate.message_id.replacen("hostmsg-","hostcleanup-",1);
+    let request_id=format!("{id}-{stage}");
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner).map_err(InboxError::Authority)?;
+        if !failed_host_preparations(db)?.iter().any(|value|
+            value.domain_id==candidate.domain_id &&value.message_id==candidate.message_id
+            &&value.seat_id==candidate.seat_id &&value.choice==candidate.choice) {
+            return Err(InboxError::Denied);
+        }
+        let prior=read_operation(db,&candidate.domain_id,&request_id)?;
+        let fresh=prior.is_none();
+        let bytes=if let Some(prior)=prior {
+            if prior.message_id!=candidate.message_id ||prior.phase!="PREPARED" {
+                return Err(InboxError::Denied);
+            }
+            unhex_native(&prior.request_hex)?
+        } else {proposed.to_vec()};
+        let request=decode_request(&bytes).map_err(|error|
+            InboxError::InvalidEvidence(format!("cleanup request: {error:?}")))?;
+        let payload=|name:&str|->Result<String,InboxError> {
+            match request.payload.get(&JsonString::from_str(name)) {
+                Some(Json::String(value))=>value.to_well_formed_string().ok_or(InboxError::Denied),
+                _=>Err(InboxError::Denied),
+            }
+        };
+        if request.family!="K-SESSION" ||request.operation!=(if stage=="stop" {"stop"} else {"admission-release"})
+            ||request.domain_id!=candidate.domain_id ||request.target_id!=candidate.choice.session_id
+            ||request.request_id!=request_id ||request.payload.len()!=2
+            ||payload("seatId")?!=candidate.seat_id
+            ||payload("generation")?!=candidate.choice.generation {return Err(InboxError::Denied);}
+        if fresh {
+            save_operation(db,&candidate.domain_id,&request_id,&raw_hex(&bytes),
+                &candidate.message_id,"PREPARED",1,1,"PENDING","","")?;
+        }
+        Ok((bytes,fresh))
+    })
+}
+
+pub(crate) fn record_host_cleanup_result(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,candidate:&HostCleanupCandidate,stage:&str,request:&[u8],
+    status:V37Status,reason:&str)->Result<(),InboxError> {
+    let id=candidate.message_id.replacen("hostmsg-","hostcleanup-",1);
+    let request_id=format!("{id}-{stage}");
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner).map_err(InboxError::Authority)?;
+        let original=read_operation(db,&candidate.domain_id,&request_id)?.ok_or(InboxError::Denied)?;
+        if original.request_hex!=raw_hex(request) ||original.message_id!=candidate.message_id
+            ||original.phase!="PREPARED" {return Err(InboxError::Denied);}
+        let update=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_inbox_operations SET result_state=?1,reason=?2
+              WHERE domain_id=?3 AND request_id=?4 AND request_hex=?5 AND phase='PREPARED'")?;
+        update.bind_text(1,status.wire())?;update.bind_text(2,reason)?;
+        update.bind_text(3,&candidate.domain_id)?;update.bind_text(4,&request_id)?;
+        update.bind_text(5,&raw_hex(request))?;update.step_done()?;
         require_one_change(db)
     })
 }

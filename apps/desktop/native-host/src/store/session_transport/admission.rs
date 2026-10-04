@@ -594,6 +594,25 @@ pub(crate) fn release_admission(
     input: &AdmissionRequest<'_>,
     authorize: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<(), AdmissionError>,
 ) -> Result<AdmissionResult, AdmissionError> {
+    release_admission_inner(connection,input,authorize,false)
+}
+
+/// C's original failed FRESH preparation can return an unstarted COMMITTED
+/// reservation only when H proves no launch intent or physical custody exists.
+/// The private caller must bind this to its frozen Host recipient first.
+pub(crate) fn release_unstarted_host_commit(
+    connection:&mut VerifiedDatabaseConnection<'_>,input:&AdmissionRequest<'_>,
+    authorize:impl FnOnce(&mut VerifiedDatabaseConnection<'_>)->Result<(),AdmissionError>,
+) -> Result<AdmissionResult,AdmissionError> {
+    release_admission_inner(connection,input,authorize,true)
+}
+
+fn release_admission_inner(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &AdmissionRequest<'_>,
+    authorize: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<(), AdmissionError>,
+    unstarted_host_commit: bool,
+) -> Result<AdmissionResult, AdmissionError> {
     in_transaction(connection, |connection| {
         authorize(connection)?;
         if let Some(result) = prior(connection, input, "admission-release")? {
@@ -612,8 +631,25 @@ pub(crate) fn release_admission(
         if input.expected_revision != revision {
             return Ok(AdmissionResult::Stale);
         }
-        if state != "RESERVED" && state != "STOPPED" {
+        if state != "RESERVED" && state != "STOPPED" &&
+            !(unstarted_host_commit && state=="COMMITTED") {
             return Ok(AdmissionResult::Conflict);
+        }
+        if state=="COMMITTED" {
+            // No process episode, custody or H open intent may exist. A
+            // crashed or uncertain launch stays COMMITTED/UNKNOWN for readback.
+            if count(connection,
+                "SELECT COUNT(*) FROM gogoke_v37_h_claim a WHERE a.domain_id=?1
+                   AND a.session_id=?2 AND a.state='COMMITTED' AND a.process_operation_id IS NULL",
+                &[input.domain_id,input.session_id])?!=1 ||
+                count(connection,
+                "SELECT COUNT(*) FROM gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2",
+                &[input.domain_id,input.session_id])?!=0 ||
+                count(connection,
+                "SELECT COUNT(*) FROM gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open'",
+                &[input.domain_id,input.session_id])?!=0 {
+                return Ok(AdmissionResult::Conflict);
+            }
         }
         if super::generation_change::active_for_session(connection,input.domain_id,input.session_id)
             .map_err(AdmissionError::Store)?.is_some() {
