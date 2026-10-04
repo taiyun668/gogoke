@@ -117,7 +117,7 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
         }
         SeatError::Unknown => V37Status::Conflict,
         SeatError::Store(_) | SeatError::Open(_) | SeatError::CommitUnknown(_)
-        | SeatError::RollbackUnknown(_) | SeatError::HostResourceObservation(_)
+        | SeatError::RollbackUnknown(_) | SeatError::HostResourceObservation(_) | SeatError::HostHealthObservation(_)
         | SeatError::SchemaDrift => V37Status::Unknown,
     }
 }

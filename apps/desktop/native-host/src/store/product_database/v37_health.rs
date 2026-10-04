@@ -13,6 +13,9 @@ fn health_id(source:&str)->String {format!("health-{}",crate::store::digest::sha
 impl<'root> ProductDatabase<'root> {
     pub(super) fn observe_host_health_raw_in_transaction(&mut self,key:&(String,String),source:&RawSourceKey)->Result<()> {
         let Some(run)=self.native_sessions.get(key) else {return Ok(());};
+        // This classifier belongs to the retained fixed Codex transport.
+        // Normal Claude/ACP output must never enter a Codex RPC decoder.
+        if run.evidence.driver_id()!="codex" {return Ok(());}
         let proof=match host_health::observe_codex_host_health(&self.connection,&self.owner,&run.custody,source) {
             Ok(Some(proof))=>proof,
             Ok(None)=>return Ok(()),
@@ -27,6 +30,7 @@ impl<'root> ProductDatabase<'root> {
     /// Called only after the authority-thread drain, never inside a raw-frame
     /// traversal. An old captured source must revalidate before any H intent.
     pub(super) fn pump_host_health(&mut self)->Result<()> {
+        self.revisit_host_health_sources()?;
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT h.event_id,r.domain_id,r.session_id,r.operation_id,r.source_epoch,r.source_cursor FROM main.gogoke_v37_seat_health h JOIN main.v37_ledger_raw_source r ON r.resolved_event_id=h.source_event_id AND r.domain_id=h.domain_id WHERE h.state='OBSERVED' AND h.action IN ('COMPACT','RENEW') ORDER BY h.event_id")?;
         let mut observed=Vec::new();
@@ -92,6 +96,52 @@ impl<'root> ProductDatabase<'root> {
                     let settled=self.settle_host_health_change_in_transaction(&request,&outcome);
                     self.finish_host_health_transaction(settled)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// A terminal notification can be normalized before its ordinary send
+    /// receipt commits. Its original resolved A source remains authoritative;
+    /// revisit it after the drain, with the same physical custody and seal.
+    /// This creates no new source, RPC ID, writer or scheduler.
+    fn revisit_host_health_sources(&mut self)->Result<()> {
+        let held=self.native_sessions.iter().filter(|(_,run)|run.evidence.driver_id()=="codex")
+            .map(|(key,run)|(key.clone(),run.operation_id.clone(),run.custody.custodian_nonce.clone()))
+            .collect::<Vec<_>>();
+        for (key,operation,epoch) in held {
+            let query=Statement::prepare(self.connection.as_ptr(),
+                "SELECT r.source_cursor,i.update_json FROM main.v37_ledger_raw_source r
+                   JOIN main.v37_ledger_index i ON i.source_kind='v37'
+                     AND i.source_event_id=r.resolved_event_id AND i.domain_id=r.domain_id
+                     AND i.session_id=r.session_id AND i.source_epoch=r.source_epoch
+                  WHERE r.operation_id=?1 AND r.source_epoch=?2 AND r.domain_id=?3
+                    AND r.session_id=?4 AND r.state='RESOLVED' AND r.no_event_reason IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM main.gogoke_v37_seat_health e
+                      WHERE e.domain_id=r.domain_id AND e.source_event_id=r.resolved_event_id)
+                  ORDER BY CAST(r.source_cursor AS INTEGER)")?;
+            for (index,value) in [operation.as_str(),epoch.as_str(),key.0.as_str(),key.1.as_str()]
+                .iter().enumerate() {query.bind_text((index+1) as i32,value)?;}
+            let mut sources=Vec::new();
+            while query.step_row()? {
+                let Json::Object(update)=Parser::parse(&query.column_text(1)?)? else {
+                    return Err(OrchestrationError::Invalid("host health normalized update"));
+                };
+                let Some(Json::Object(meta))=update.get(&JsonString::from_str("_meta")) else {
+                    return Err(OrchestrationError::Invalid("host health normalized metadata"));
+                };
+                let matches=|name:&str,value:&str|matches!(meta.get(&JsonString::from_str(name)),
+                    Some(Json::String(actual)) if actual.to_well_formed_string().as_deref()==Some(value));
+                if matches("provider","codex")&&matches("codexMethod","turn/completed")&&matches("turnStatus","failed") {
+                    sources.push(RawSourceKey {operation_id:operation.clone(),source_epoch:epoch.clone(),
+                        source_cursor:query.column_text(0)?});
+                }
+            }
+            drop(query);
+            for source in sources {
+                self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                let observed=self.observe_host_health_raw_in_transaction(&key,&source);
+                self.finish_host_health_transaction(observed)?;
             }
         }
         Ok(())

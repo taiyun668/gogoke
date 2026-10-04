@@ -1106,7 +1106,7 @@ impl<'root> ProductDatabase<'root> {
 
     /// Health continuation requires original action progress. A missing ACK or
     /// an uncertain write is not permission to write or stop again.
-    pub(super) fn health_generation_may_continue(&self,request:&V37Request)->Result<bool> {
+    pub(super) fn health_generation_may_continue(&mut self,request:&V37Request)->Result<bool> {
         let Some(c)=failure(change::read(&self.connection,&request.domain_id,&request.request_id))? else {return Ok(false);};
         if c.raw_hex!=hex(&request.raw_bytes)||c.owner_stop_request_id.is_some() {return Ok(false);}
         Ok(match c.stage.as_str() {
@@ -1114,9 +1114,21 @@ impl<'root> ProductDatabase<'root> {
             "ACKED" if request.operation=="compact"=>self.original_compaction_item(&request.domain_id,&c)?.is_some(),
             "INTENT" if request.operation=="compact"=>{
                 let step=format!("compact-{}",&crate::store::digest::sha256_hex(&request.raw_bytes)[..40]);
-                rpc::observed_compact_ack(&self.connection,&request.domain_id,&request.target_id,
-                    &c.old_operation,&c.old_generation,&c.old_ticket,&c.old_nonce,&step,&c.thread_id)
-                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("original health compact ACK: {error:?}")))?.is_some()
+                // Reconcile the already WRITTEN command from its exact late A
+                // reply before asking whether an OBSERVED ACK exists. This
+                // operation cannot send, allocate an ID or stop a process.
+                failure(rpc::reconcile_written_compact_from_a(&mut self.connection,&self.owner,
+                    &request.domain_id,&request.target_id,&c.old_operation,&c.old_generation,
+                    &c.old_ticket,&c.old_nonce,&step,&c.thread_id))?;
+                match rpc::observed_compact_ack(&self.connection,&request.domain_id,&request.target_id,
+                    &c.old_operation,&c.old_generation,&c.old_ticket,&c.old_nonce,&step,&c.thread_id) {
+                    Ok(ack)=>ack.is_some(),
+                    // The original dispatcher owns definite remote-error
+                    // classification; this is progress, never a new send permit.
+                    Err(rpc::RpcJournalError::Codec(codex_rpc::RpcError::RemoteResponse(_)))=>true,
+                    Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!(
+                        "original health compact ACK: {error:?}"))),
+                }
             },
             "INTENT" if request.operation=="renew-session"=>self.native_sessions.get(&(request.domain_id.clone(),request.target_id.clone()))
                 .is_some_and(|run|run.operation_id==c.old_operation&&run.stop_proof.is_some()),
