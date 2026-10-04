@@ -500,7 +500,8 @@ def verify_host(db, domain, case, host, operations, result):
               len(prior[0]["deliveries"]) == len(prior[0]["sends"]) == len(prior[0]["commands"]) == 1,
               "Checkpoint did not capture genuine automatic Host delivery")
     else:
-        check(prior[0]["message"]["state"] == "PENDING" and prior[0]["message"]["turn_id"] == "" and
+        check(prior[0]["message"]["state"] == ("CANCELLED" if host["kind"] == "CANCELLED" else "PENDING") and
+              prior[0]["message"]["turn_id"] == "" and
               prior[0]["message"]["generation"] == "" and not prior[0]["deliveries"] and
               not prior[0]["sends"] and not prior[0]["commands"] and prior[0]["recipient"] is None,
               "Unanswered target did not block Host recipient preparation before Owner control")
