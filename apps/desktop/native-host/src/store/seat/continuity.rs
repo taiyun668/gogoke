@@ -271,6 +271,60 @@ impl HealthSignal {
 pub(crate) struct HealthObservation {pub(crate) event_id:String,pub(crate) action:String,
     pub(crate) state:String,pub(crate) generation:i64}
 
+/// Root calls these kernels inside the A/H transaction. A sealed terminal
+/// health fact has no model tool authority and cannot become NativeSeatCall.
+pub(crate) fn observe_host_health_in_transaction(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&crate::store::authority::OwnerIssuer,
+    proof:&crate::store::session_transport::host_health::HostHealthProof,
+    event_id:&str)->Result<HealthObservation,SeatError> {
+    if event_id!=format!("health-{}",crate::store::digest::sha256_hex(proof.source_event_id().as_bytes()))
+        ||!valid_id(event_id)||!valid_id(proof.source_event_id()) {
+        return Err(SeatError::Invalid("host health event"));
+    }
+    let current=crate::store::session_transport::host_health::revalidate_host_health_in_transaction(db,owner,proof)
+        .map_err(|error|SeatError::HostHealthObservation(format!("original H health source: {error:?}")))?;
+    let signal=proof.signal();
+    let prior=Statement::prepare(db.as_ptr(),
+        "SELECT seat_id,generation,signal,source_event_id,action,state FROM main.gogoke_v37_seat_health WHERE domain_id=?1 AND event_id=?2")?;
+    prior.bind_text(1,proof.domain_id())?;prior.bind_text(2,event_id)?;
+    if prior.step_row()? {
+        if prior.column_text(0)?!=current.seat_id||prior.column_text(1)?!=current.generation.to_string()
+            ||prior.column_text(2)?!=signal.sql()||prior.column_text(3)?!=proof.source_event_id()
+            ||prior.column_text(4)?!=signal.action() {return Err(SeatError::Conflict);}
+        let state=prior.column_text(5)?;
+        if prior.step_row()? {return Err(SeatError::SchemaDrift);}
+        return Ok(HealthObservation {event_id:event_id.into(),action:signal.action().into(),state,generation:current.generation});
+    }
+    drop(prior);
+    let write=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_seat_health(domain_id,seat_id,event_id,generation,signal,source_event_id,action,state) VALUES(?1,?2,?3,?4,?5,?6,?7,'OBSERVED')")?;
+    write.bind_text(1,proof.domain_id())?;write.bind_text(2,&current.seat_id)?;write.bind_text(3,event_id)?;
+    write.bind_i64(4,current.generation)?;write.bind_text(5,signal.sql())?;
+    write.bind_text(6,proof.source_event_id())?;write.bind_text(7,signal.action())?;write.step_done()?;
+    Ok(HealthObservation {event_id:event_id.into(),action:signal.action().into(),state:"OBSERVED".into(),generation:current.generation})
+}
+
+/// Must commit with H generation_change INTENT, never as a separate request.
+pub(crate) fn request_host_health_in_transaction(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&crate::store::authority::OwnerIssuer,
+    proof:&crate::store::session_transport::host_health::HostHealthProof,
+    event_id:&str,request_id:&str)->Result<(),SeatError> {
+    if !valid_id(request_id) {return Err(SeatError::Invalid("host health request"));}
+    let observation=observe_host_health_in_transaction(db,owner,proof,event_id)?;
+    if observation.state!="OBSERVED" {return Err(SeatError::Unknown);}
+    let update=Statement::prepare(db.as_ptr(),
+        "UPDATE main.gogoke_v37_seat_health SET state='REQUESTED',session_request_id=?1 WHERE domain_id=?2 AND event_id=?3 AND state='OBSERVED' AND session_request_id IS NULL")?;
+    update.bind_text(1,request_id)?;update.bind_text(2,proof.domain_id())?;
+    update.bind_text(3,event_id)?;update.step_done()?;
+    let verify=Statement::prepare(db.as_ptr(),
+        "SELECT state,session_request_id FROM main.gogoke_v37_seat_health WHERE domain_id=?1 AND event_id=?2")?;
+    verify.bind_text(1,proof.domain_id())?;verify.bind_text(2,event_id)?;
+    if !verify.step_row()?||verify.column_text(0)?!="REQUESTED"||verify.column_text(1)?!=request_id||verify.step_row()? {
+        return Err(SeatError::Conflict);
+    }
+    Ok(())
+}
+
 /// Input must be an original H/adapter health event, not model prose. E only
 /// records the requested action; H owns actual K-SESSION compact/renew.
 pub(crate) fn observe_health(db:&mut VerifiedDatabaseConnection<'_>,

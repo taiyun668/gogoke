@@ -471,7 +471,7 @@ impl<'root> ProductDatabase<'root> {
                 (JsonString::from_str("receiptId"),text(&receipt_id))])))
     }
 
-    fn resume_source_receipt(&self,domain:&str,session:&str,operation:&str,
+    pub(super) fn resume_source_receipt(&self,domain:&str,session:&str,operation:&str,
         generation:&str,request_id:&str)->Result<String> {
         // Verify the typed original ACK and custody before projecting its A
         // source locator; ACP and Codex own distinct recovery step names.
@@ -883,6 +883,11 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn dispatch_native_generation_change(&mut self,request:&V37Request)
         ->Result<Vec<u8>> {
+        self.dispatch_native_generation_change_with_health(request,None)
+    }
+
+    pub(super) fn dispatch_native_generation_change_with_health(&mut self,request:&V37Request,
+        health:Option<(&h::host_health::HostHealthProof,&str)>)->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
         if let Some(refusal)=self.formal_review_continuation_refusal(request)? {
             return Ok(refusal);
@@ -946,6 +951,16 @@ impl<'root> ProductDatabase<'root> {
             self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let begun=(||->Result<()> {
                 authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+                if let Some((proof,event_id))=health {
+                    if proof.domain_id()!=request.domain_id||proof.session_id()!=request.target_id
+                        ||proof.seat_id()!=seat||proof.generation().to_string()!=generation
+                        ||!matches!((proof.signal(),request.operation.as_str()),
+                            (seat::HealthSignal::ContextCompact,"compact")|(seat::HealthSignal::RepeatedFailure,"renew-session")) {
+                        return Err(OrchestrationError::AccessDenied);
+                    }
+                    seat::request_host_health_in_transaction(&mut self.connection,&self.owner,
+                        proof,event_id,&request.request_id)?;
+                }
                 failure(change::begin(&self.connection,&request.domain_id,&request.request_id,
                     &request.raw_bytes,&request.operation,&request.target_id,&generation,
                     &process,&ticket,&nonce,&thread,&seat,claim.revision,watermark))?;
@@ -1079,13 +1094,34 @@ impl<'root> ProductDatabase<'root> {
             let applied=(||->Result<()> {
                 authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
                 failure(change::mark_applied(&self.connection,&request.domain_id,&request.request_id,
-                    i64::try_from(completed_revision).map_err(|_|OrchestrationError::OperationConflict)?))
+                    i64::try_from(completed_revision).map_err(|_|OrchestrationError::OperationConflict)?))?;
+                self.settle_host_health_change_in_transaction(request,&final_bytes)
             })();
             self.finish_native_transaction(applied)?;
             return Ok(final_bytes);
         }
         if receipt.status==V37Status::Unknown {return self.generation_unknown(request);}
         Ok(bytes)
+    }
+
+    /// Health continuation requires original action progress. A missing ACK or
+    /// an uncertain write is not permission to write or stop again.
+    pub(super) fn health_generation_may_continue(&self,request:&V37Request)->Result<bool> {
+        let Some(c)=failure(change::read(&self.connection,&request.domain_id,&request.request_id))? else {return Ok(false);};
+        if c.raw_hex!=hex(&request.raw_bytes)||c.owner_stop_request_id.is_some() {return Ok(false);}
+        Ok(match c.stage.as_str() {
+            "APPLIED"|"OLD_STOPPED"|"ITEM_OBSERVED"=>true,
+            "ACKED" if request.operation=="compact"=>self.original_compaction_item(&request.domain_id,&c)?.is_some(),
+            "INTENT" if request.operation=="compact"=>{
+                let step=format!("compact-{}",&crate::store::digest::sha256_hex(&request.raw_bytes)[..40]);
+                rpc::observed_compact_ack(&self.connection,&request.domain_id,&request.target_id,
+                    &c.old_operation,&c.old_generation,&c.old_ticket,&c.old_nonce,&step,&c.thread_id)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("original health compact ACK: {error:?}")))?.is_some()
+            },
+            "INTENT" if request.operation=="renew-session"=>self.native_sessions.get(&(request.domain_id.clone(),request.target_id.clone()))
+                .is_some_and(|run|run.operation_id==c.old_operation&&run.stop_proof.is_some()),
+            _=>false,
+        })
     }
 
     /// Reconnect reads or commits only an already captured original outcome.

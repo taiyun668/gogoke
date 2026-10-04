@@ -166,6 +166,7 @@ impl<'root> ProductDatabase<'root> {
             // held sessions have a pipe to drain; their errors still surface.
             if self.native_sessions.contains_key(&key) { self.drain_native_output(&key)?; }
         }
+        self.pump_host_health()?;
         Ok(())
     }
 
@@ -524,6 +525,9 @@ impl<'root> ProductDatabase<'root> {
                     update_json:Json::Object(fields).canonical(),
                 })?;
                 ledger::resolve_raw_source(&mut self.connection,&operation,&nonce,&raw_cursor,&event_id)?;
+                self.observe_host_health_raw_in_transaction(key,&ledger::RawSourceKey {
+                    operation_id:operation.clone(),source_epoch:nonce.clone(),source_cursor:raw_cursor.clone(),
+                })?;
                 Ok(())
             })();
             match normalized {

@@ -25,6 +25,7 @@ pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
     CallPermissionRow,EscalationCause,EscalationIntent,GateDecision,NativeDeliveryEvidence,
     NativeCoordinatorTriggerEvidence,NativeSeatCall,OwnerPolicyCommand,PolicyEvent,TriggerTransition};
 pub(crate) use continuity::{answer_takeover,answer_takeover_at_seat_revision,answer_takeover_from_written_source,mark_health_requested,observe_health,
+    observe_host_health_in_transaction,request_host_health_in_transaction,
     read_state_card,settle_health_receipt,takeover_questions,takeover_ready,
     update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
     TakeoverQuestion};
@@ -44,6 +45,7 @@ const PROJECT_CAPS: &str = "CREATE TABLE gogoke_v37_seat_project_caps(domain_id 
 pub(crate) enum SeatError {
     Invalid(&'static str),
     HostResourceObservation(String),
+    HostHealthObservation(String),
     Denied,
     Conflict,
     Busy,
