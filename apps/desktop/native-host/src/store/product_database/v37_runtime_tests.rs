@@ -1076,7 +1076,7 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
     assert!(aliases.iter().all(|row| row.state == "REMOVED"));
     let (remaining_id, remaining_links) = CredentialBinding::observe_source_metadata(&root,
         &source_path, &home.identity).unwrap();
-    assert_eq!((remaining_id, remaining_links), (source_id, 1));
+    assert_eq!((remaining_id, remaining_links), (source_id.clone(), 1));
     let after_cleanup = h::decode_receipt(&product.dispatch_user_request(&stop_b)
         .expect("same original stop replay after alias removal")).unwrap();
     assert_eq!(after_cleanup.status, V37Status::Replayed,
