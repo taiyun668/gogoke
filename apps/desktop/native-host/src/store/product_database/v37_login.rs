@@ -124,6 +124,7 @@ struct PendingAccountCustody {
     abort_prepared: bool,
     released: bool,
     frame: Option<OriginBoundFrame>,
+    backend_source: Option<instance::BackendSource>,
     request: Option<V37Request>,
 }
 
@@ -171,7 +172,7 @@ fn account_prepare_failure(launch: &PreparedOwnerLogin, error: ProcessCustodyErr
             runtime_home: Some(launch.runtime_home.clone()), runtime_identity: Some(launch.runtime_identity.clone()),
             registered_driver: Some(launch.registered_driver.clone()),
             registered_home_identity: Some(launch.registered_home_identity.clone()),
-            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, request: None,
+            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, backend_source: None, request: None,
         }),
     }
 }
@@ -925,7 +926,7 @@ impl<'root> ProductDatabase<'root> {
             runtime_home:Some(launch.runtime_home.clone()),runtime_identity:Some(launch.runtime_identity.clone()),
             registered_driver:Some(launch.registered_driver.clone()),
             registered_home_identity:Some(launch.registered_home_identity.clone()),
-            proof,durable_revision:None,abort_prepared,released:false,frame:None,request:None,
+            proof,durable_revision:None,abort_prepared,released:false,frame:None,backend_source:None,request:None,
         };
         if let Err(error) = authority::record_prepared_process(
             &mut self.connection, &operation_id, &prepared,
@@ -1369,7 +1370,7 @@ impl<'root> ProductDatabase<'root> {
         let state = match (&pending.custody.request, &pending.custody.prepared,
             &pending.custody.frame) {
             (Some(request), Some(prepared), Some(frame)) => {
-                match self.record_trusted_account_read(request, prepared, frame)
+                match self.record_account_and_credential_backend(request, prepared, frame, pending.custody.backend_source.as_ref())
                     .and_then(|receipt| owner_login_state_from_receipt(&receipt)) {
                     Ok(state) => state,
                     Err(error) => {
@@ -1636,6 +1637,7 @@ impl<'root> ProductDatabase<'root> {
                     abort_prepared: false,
                     released: true,
                     frame: None,
+                    backend_source: None,
                     request: None,
                 },
                 continuation: Some(ConfirmedLoginContinuation {
@@ -1715,7 +1717,7 @@ impl<'root> ProductDatabase<'root> {
             expected_revision: command.expected_revision,
             payload: BTreeMap::new(),
         };
-        let receipt = match self.dispatch_owner_login_observation_inner(&observation) {
+        let receipt = match self.dispatch_owner_login_observation_inner(&observation, false) {
             Ok(receipt) => receipt,
             Err(failure) => {
                 if let Some(custody) = failure.pending {
@@ -1913,11 +1915,26 @@ impl<'root> ProductDatabase<'root> {
     /// UserOriginProof; it never accepts a process path, argv, or account
     /// contents from the wire. No model request is made.
     pub(super) fn dispatch_owner_login_observation(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_owner_login_observation_selected(request, false)
+    }
+
+    /// Native-only binding of a new observer to the original instance's File
+    /// configuration. The wire has no selector, and other modes are not converted.
+    pub(super) fn dispatch_owner_file_backend_observation(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        let configured = instance::read_configured_credential_backend(&self.connection, &request.target_id)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential configured source: {error:?}")))?;
+        if configured.backend != instance::CredentialBackend::File {
+            return Err(OrchestrationError::Invalid("original instance is not configured for File credentials"));
+        }
+        self.dispatch_owner_login_observation_selected(request, true)
+    }
+
+    fn dispatch_owner_login_observation_selected(&mut self, request: &V37Request, file_bound: bool) -> Result<Vec<u8>> {
         if matches!(self.owner_login, Some(OwnerLoginSession::Active(_) |
             OwnerLoginSession::PendingFirstStop(_) | OwnerLoginSession::PendingAccount(_))) {
             return Err(OrchestrationError::OperationConflict);
         }
-        match self.dispatch_owner_login_observation_inner(request) {
+        match self.dispatch_owner_login_observation_inner(request, file_bound) {
             Ok(receipt) => Ok(receipt),
             Err(failure) => {
                 if let Some(custody) = failure.pending {
@@ -1936,7 +1953,7 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
-    fn dispatch_owner_login_observation_inner(&mut self, request: &V37Request)
+    fn dispatch_owner_login_observation_inner(&mut self, request: &V37Request, file_bound: bool)
         -> std::result::Result<Vec<u8>, AccountObservationFailure> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let current = self.user_instance_revision(&request.target_id)?;
@@ -1954,7 +1971,21 @@ impl<'root> ProductDatabase<'root> {
                 Default::default()));
         }
         // This resolves the pin/home and scopes only; no process is prepared.
-        let prepared_login = self.prepare_owner_codex_login(&request.target_id)?;
+        let observed_version = self.read_registered_instance(&request.target_id)?
+            .ok_or(OrchestrationError::AccessDenied)?.version;
+        let mut prepared_login = self.prepare_owner_codex_login(&request.target_id)?;
+        if file_bound {
+            let args = &mut prepared_login.account_read.launch.arguments;
+            if args.last().map(String::as_str) != Some("app-server") {
+                let cleanup = remove_owned_runtime(&prepared_login.runtime_home,
+                    &prepared_login.runtime_identity);
+                return Err(retain_primary_cleanup_error(OrchestrationError::Invalid(
+                    "credential observer is not the original app-server launch"), cleanup,
+                    "credential observer selection").into());
+            }
+            let position = args.len() - 1;
+            args.splice(position..position, ["-c".to_owned(), "cli_auth_credentials_store=\"file\"".to_owned()]);
+        }
         let operation_hash = crate::store::digest::sha256_hex(&request.raw_bytes);
         let operation_id = format!("login-observe-{}", &operation_hash[..40]);
         let prepared = match self.process_custodian.prepare(&prepared_login.account_read) {
@@ -1967,7 +1998,7 @@ impl<'root> ProductDatabase<'root> {
                 runtime_home: Some(prepared_login.runtime_home.clone()),
                 runtime_identity: Some(prepared_login.runtime_identity.clone()),
                 registered_driver: None, registered_home_identity: None,
-                proof, durable_revision, abort_prepared, released: false, frame: None,
+                proof, durable_revision, abort_prepared, released: false, frame: None, backend_source: None,
                 request: Some(V37Request {
                     raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
                     operation: request.operation.clone(), request_id: request.request_id.clone(),
@@ -2021,7 +2052,22 @@ impl<'root> ProductDatabase<'root> {
                 "login active record: {error:?}; stop: {stop:?}; unknown record: {unknown:?}")),
                 pending: Some(pending(stop.ok(), None, false)) });
         }
-        let execution = self.observe_account_via_active_cli(&prepared, &prepared_login.runtime_home);
+        let mut configured_backend = instance::CredentialBackend::Unknown;
+        let execution = self.observe_account_with_credential_configuration(&prepared,
+            &prepared_login.runtime_home, &mut configured_backend, file_bound);
+        let backend_source = if execution.as_ref().is_ok_and(|frame|
+            parse_account_read(frame.bytes()) == NativeAccountState::CredentialPresent) {
+            Some(instance::BackendSource {
+                request_id: request.request_id.clone(), instance_id: request.target_id.clone(),
+                home_identity: prepared_login.registered_home_identity.clone(),
+                program_digest: prepared.binding.binary_digest_sha256.clone(), version: observed_version,
+                backend: configured_backend,
+                startup_selector: if file_bound { instance::CredentialStartupSelector::FileBound }
+                    else { instance::CredentialStartupSelector::Unknown },
+                operation_id: operation_id.clone(), ticket: prepared.ticket.clone(),
+                nonce: prepared.custodian_nonce.clone(), generation: prepared.binding.generation.clone(),
+            })
+        } else { None };
         let close = self.process_custodian.close_child_input(&prepared.ticket)
             .map_err(|error| format!("account/read stdin close: {error}"));
         let stop = self.process_custodian.stop(&prepared.ticket,
@@ -2036,6 +2082,7 @@ impl<'root> ProductDatabase<'root> {
                     execution.as_ref().err()));
                 let mut custody = pending(None, None, false);
                 custody.frame = execution.ok();
+                custody.backend_source = backend_source;
                 return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
             }
         };
@@ -2051,6 +2098,7 @@ impl<'root> ProductDatabase<'root> {
                     execution.as_ref().err()));
                 let mut custody = pending(Some(proof), None, false);
                 custody.frame = execution.ok();
+                custody.backend_source = backend_source;
                 return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
             }
         };
@@ -2068,27 +2116,73 @@ impl<'root> ProductDatabase<'root> {
             };
             let mut custody = pending(Some(proof), Some(revision), false);
             custody.frame = execution.ok();
+            custody.backend_source = backend_source;
             return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
         }
-        self.finish_confirmed_account_observation(request, &prepared,
-            &prepared_login.runtime_home, &prepared_login.runtime_identity, execution)
-            .map_err(Into::into)
+        // Keep the original frame/source if settling either durable receipt
+        // fails. Reconciliation uses this same stopped process, not a new read.
+        let retained_frame = execution.as_ref().ok().cloned();
+        match self.finish_confirmed_account_observation(request, &prepared,
+            &prepared_login.runtime_home, &prepared_login.runtime_identity, execution, backend_source.clone()) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                let mut custody = pending(Some(proof), Some(revision), false);
+                custody.released = true;
+                custody.frame = retained_frame;
+                custody.backend_source = backend_source;
+                // Cleanup is reconciled only while the original directory still
+                // exists; a completed cleanup must not be attempted a second time.
+                if !prepared_login.runtime_home.try_exists().map_err(|source|
+                    OrchestrationError::V37StoreFailure(format!("account runtime existence: {source}")))? {
+                    custody.runtime_home = None;
+                    custody.runtime_identity = None;
+                }
+                Err(AccountObservationFailure { error, pending: Some(custody) })
+            }
+        }
     }
 
     fn finish_confirmed_account_observation(&mut self, request: &V37Request,
         prepared: &PreparedCustody, runtime: &Path, identity: &RootIdentity,
-        execution: Result<OriginBoundFrame>) -> Result<Vec<u8>> {
+        execution: Result<OriginBoundFrame>, backend_source: Option<instance::BackendSource>) -> Result<Vec<u8>> {
         let cleanup = remove_owned_runtime(runtime, identity);
         let frame = match execution {
             Ok(frame) => { cleanup?; frame }
             Err(error) => return Err(retain_primary_cleanup_error(error, cleanup,
                 "account/read execution")),
         };
-        self.record_trusted_account_read(request, prepared, &frame)
+        self.record_account_and_credential_backend(request, prepared, &frame, backend_source.as_ref())
+    }
+
+    fn record_account_and_credential_backend(&mut self, request: &V37Request,
+        prepared: &PreparedCustody, frame: &OriginBoundFrame,
+        backend_source: Option<&instance::BackendSource>) -> Result<Vec<u8>> {
+        let receipt = match self.prior_login_state_request(request)? {
+            Some(receipt) => receipt,
+            None => self.record_trusted_account_read(request, prepared, frame)?,
+        };
+        if let Some(source) = backend_source.filter(|_| owner_login_state_from_receipt(&receipt)
+            .is_ok_and(|state| state == "LOGGED_IN")) {
+            if frame.custody() != prepared || source.request_id != request.request_id
+                || source.instance_id != request.target_id || source.ticket != prepared.ticket
+                || source.nonce != prepared.custodian_nonce
+                || parse_account_read(frame.bytes()) != NativeAccountState::CredentialPresent {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            instance::record_credential_backend(&mut self.connection, source)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential backend source: {error:?}")))?;
+        }
+        Ok(receipt)
     }
 
     fn observe_account_via_active_cli(&self, prepared: &PreparedCustody, cwd: &Path)
         -> Result<OriginBoundFrame> {
+        let mut ignored = instance::CredentialBackend::Unknown;
+        self.observe_account_with_credential_configuration(prepared, cwd, &mut ignored, false)
+    }
+
+    fn observe_account_with_credential_configuration(&self, prepared: &PreparedCustody, cwd: &Path,
+        configured_backend: &mut instance::CredentialBackend, file_bound: bool) -> Result<OriginBoundFrame> {
         use crate::store::session_transport::codex_rpc::{self, Command, RpcId, Reply};
         let process = self.process_custodian.active(&prepared.ticket)
             .ok_or(OrchestrationError::Invalid("login process absent"))?;
@@ -2124,6 +2218,11 @@ impl<'root> ProductDatabase<'root> {
         match codex_rpc::decode(config.bytes(), Some((&config_id, &config_command))) {
             Ok(Reply::MemoryOff { .. }) => (),
             result => return Err(OrchestrationError::V37StoreFailure(format!("native effective memory observation: {result:?}"))),
+        }
+        *configured_backend = configured_credential_backend(config.bytes())?;
+        if file_bound && *configured_backend != instance::CredentialBackend::File {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "File-bound observer effective credential configuration: {configured_backend:?}")));
         }
         process.write_persistent_frame(ACCOUNT_READ)
             .map_err(|error| OrchestrationError::Process(
@@ -2213,6 +2312,32 @@ fn owner_login_state_from_receipt(receipt: &[u8]) -> Result<String> {
             _ => "UNKNOWN".into(),
         },
         _ => "UNKNOWN".into(),
+    })
+}
+
+/// Read only the non-secret selector in the already custody/codec-checked id3
+/// frame. A missing key is not the fixed version's explicit default null.
+fn configured_credential_backend(frame: &[u8]) -> Result<instance::CredentialBackend> {
+    let text = std::str::from_utf8(frame).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("credential configuration UTF8: {error}")))?;
+    let parsed = Parser::parse(text.trim_end()).map_err(OrchestrationError::Atomic)?;
+    let mut envelope = object(parsed).ok_or(OrchestrationError::Invalid("credential config envelope"))?;
+    if !matches!(envelope.get(&JsonString::from_str("id")), Some(Json::Number(id)) if id == "3")
+        || envelope.contains_key(&JsonString::from_str("error")) {
+        return Err(OrchestrationError::Invalid("credential config original RPC identity"));
+    }
+    let mut result = envelope.remove(&JsonString::from_str("result")).and_then(object)
+        .ok_or(OrchestrationError::Invalid("credential config result"))?;
+    let mut config = result.remove(&JsonString::from_str("config")).and_then(object)
+        .ok_or(OrchestrationError::Invalid("credential config object"))?;
+    Ok(match config.remove(&JsonString::from_str("cli_auth_credentials_store")) {
+        Some(Json::Null) => instance::CredentialBackend::File,
+        Some(Json::String(value)) => match value.to_well_formed_string().as_deref() {
+            Some("file") => instance::CredentialBackend::File,
+            Some("keyring" | "auto" | "ephemeral") => instance::CredentialBackend::Other,
+            _ => instance::CredentialBackend::Unknown,
+        },
+        _ => instance::CredentialBackend::Unknown,
     })
 }
 
@@ -2588,6 +2713,21 @@ exit 0
     }
 
     #[test]
+    fn credential_configuration_preserves_missing_default_and_non_file_sources() {
+        for value in ["null", "\"file\""] {
+            let frame = format!("{{\"id\":3,\"result\":{{\"config\":{{\"cli_auth_credentials_store\":{value}}}}}}}");
+            assert_eq!(configured_credential_backend(frame.as_bytes()).unwrap(), instance::CredentialBackend::File);
+        }
+        for value in ["\"keyring\"", "\"auto\"", "\"ephemeral\""] {
+            let frame = format!("{{\"id\":3,\"result\":{{\"config\":{{\"cli_auth_credentials_store\":{value}}}}}}}");
+            assert_eq!(configured_credential_backend(frame.as_bytes()).unwrap(), instance::CredentialBackend::Other);
+        }
+        assert_eq!(configured_credential_backend(br#"{"id":3,"result":{"config":{}}}"#).unwrap(),
+            instance::CredentialBackend::Unknown);
+        assert!(configured_credential_backend(br#"{"id":"3","result":{"config":{"cli_auth_credentials_store":"file"}}}"#).is_err());
+    }
+
+    #[test]
     fn account_read_does_not_accept_other_rpc_or_unrecognized_account_type() {
         assert_eq!(parse_account_read(br#"{"id":1,"result":{"account":{"type":"chatgpt"}}}"#),
             NativeAccountState::Unknown);
@@ -2937,7 +3077,7 @@ exit 0
         let held = fs::OpenOptions::new().read(true).share_mode(0x1).open(&sentinel).unwrap();
         let observation = request("login-state", "cleanupControl", 1, "{}");
         let error = product.finish_confirmed_account_observation(&observation,
-            &prepared, &launch.runtime_home, &launch.runtime_identity, execution).unwrap_err();
+            &prepared, &launch.runtime_home, &launch.runtime_identity, execution, None).unwrap_err();
         let diagnostic = format!("{error:?}");
         assert!(diagnostic.contains("unexpected argument"), "CLI's original execution error was lost");
         assert!(diagnostic.contains("runtime cleanup"), "actual Windows delete failure was lost");

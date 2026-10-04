@@ -320,6 +320,9 @@ jobs:
               @{ id = 'credential-alias-intent'; filter = 'credential_alias_unknown_intent_preserves_identity_and_complete_registry_link_count' }
               @{ id = 'credential-profile-rebind'; filter = 'credential_profile_original_identity_and_quiescent_source_rebind_are_enforced' }
               @{ id = 'credential-exact-schema'; filter = 'credential_schema_exact_family_reopen_preserves_rows_and_rejects_unknown_shadow_trigger' }
+              @{ id = 'credential-original-config'; filter = 'credential_configuration_preserves_missing_default_and_non_file_sources' }
+              @{ id = 'credential-two-profiles'; filter = 'exact_credential_alias_custody_allows_two_profiles_and_precise_revocation' }
+              @{ id = 'credential-unknown-alias'; filter = 'unknown_link_and_replaced_alias_fail_complete_metadata_registration' }
             )
             Write-Host 'F private-history identity/schema boundary only; full library, compiled mutations and server suites NOT_RUN.'
           }

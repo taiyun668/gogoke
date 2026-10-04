@@ -86,6 +86,8 @@ pub fn open_product_database<'root>(
     apply_action_schema(&mut connection)?;
     let _owner_issuer = super::authority::initialize_profile(&mut connection, root)?;
     super::instance::initialize_schema(&mut connection)?;
+    super::instance::initialize_credential_schema(&mut connection)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential metadata schema: {error:?}")))?;
     super::seat::initialize_schema(&mut connection)?;
     super::worktree::initialize_schema(&mut connection)
         .map_err(|error| OrchestrationError::V37StoreFailure(format!("worktree schema: {error:?}")))?;
