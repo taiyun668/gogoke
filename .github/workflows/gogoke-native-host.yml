@@ -77,6 +77,33 @@ jobs:
           if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Pinned Codex CLI image missing' }
           $version = & $binary --version
           if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
+      - name: Pin fixed Claude CLI for native provider output controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@anthropic-ai/claude-code@2.1.196'
+          if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed: $LASTEXITCODE" }
+          $package = Join-Path $prefix 'node_modules\@anthropic-ai\claude-code'
+          $platform = Join-Path $package 'node_modules\@anthropic-ai\claude-code-win32-x64'
+          foreach ($fact in @(@{ path=$package; name='@anthropic-ai/claude-code' }, @{ path=$platform; name='@anthropic-ai/claude-code-win32-x64' })) {
+            $metadata = Get-Content -LiteralPath (Join-Path $fact.path 'package.json') -Raw | ConvertFrom-Json
+            if ($metadata.name -ne $fact.name -or $metadata.version -ne '2.1.196') { throw 'Fixed Claude package identity mismatch' }
+          }
+          $original = Join-Path $platform 'claude.exe'
+          if (-not (Test-Path -LiteralPath $original -PathType Leaf)) { throw 'Fixed Claude platform image missing' }
+          # The product catalog uses the installed package's bin image. Keep
+          # the official bytes identical without running npm postinstall code.
+          $bin = Join-Path $package 'bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          $binary = Join-Path $bin 'claude.exe'
+          Copy-Item -LiteralPath $original -Destination $binary
+          $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
+          Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Build native-host release image and check test-hook exclusion
         id: release-build
         shell: pwsh
