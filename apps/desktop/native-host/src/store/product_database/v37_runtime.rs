@@ -12,6 +12,11 @@ use crate::store::session_transport::{self as h, runtime, launch::LaunchEvidence
 use crate::store::atomic::Parser;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_AFTER_DURABLE_STOP_BEFORE_CREDENTIAL_REVOKE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(super) struct NativeSession {
     pub(super) evidence: LaunchEvidence,
     pub(super) custody: PreparedCustody,
@@ -67,6 +72,39 @@ fn unhex(bytes: &str) -> Result<Vec<u8>> {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn failed_uncreated_native_launch(&mut self, key: (String,String), evidence: LaunchEvidence,
+        original: OrchestrationError, no_child_confirmed: bool) -> OrchestrationError {
+        let cleanup = if no_child_confirmed {
+            evidence.revoke_uncreated_credential(&mut self.connection,self.root)
+        } else { Err("original process launch cleanup is unconfirmed".into()) };
+        if cleanup.is_err() { self.pending_native_launches.insert(key,evidence); }
+        OrchestrationError::V37StoreFailure(format!("native launch: {original:?}; credential settlement: {cleanup:?}"))
+    }
+
+    fn prepare_native_launch(&mut self, request: &V37Request, evidence: LaunchEvidence,
+        host: Option<(&HostEscalationProof,&HostRecipient)>)
+        -> Result<(LaunchEvidence,PreparedCustody,String,String)> {
+        let key = (request.domain_id.clone(),request.target_id.clone());
+        let preflight = (|| -> Result<_> {
+            let (model,effort) = failure(evidence.settings())?;
+            let launch = failure(evidence.request())?;
+            if let Some((proof,choice)) = host { self.check_host_recipient_choice(proof,choice)?; }
+            Ok((launch,model,effort))
+        })();
+        let (launch,model,effort) = match preflight {
+            Ok(value) => value,
+            Err(original) => return Err(self.failed_uncreated_native_launch(key,evidence,original,true)),
+        };
+        let custody = match self.process_custodian.prepare(&launch) {
+            Ok(custody) => custody,
+            Err(error) => {
+                let known = !matches!(&error,crate::process::ProcessCustodyError::LaunchCleanup { .. });
+                return Err(self.failed_uncreated_native_launch(key,evidence,error.into(),known));
+            }
+        };
+        Ok((evidence,custody,model,effort))
+    }
+
     pub(super) fn original_native_continuation(&self, domain: &str, session: &str)
         -> Result<(String,String,String)> {
         let initial=Statement::prepare(self.connection.as_ptr(),
@@ -263,7 +301,8 @@ impl<'root> ProductDatabase<'root> {
                 effective_revision,Default::default()));
         }
         drop(pending);
-        if self.native_sessions.contains_key(&(request.domain_id.clone(),request.target_id.clone())) {
+        if self.native_sessions.contains_key(&(request.domain_id.clone(),request.target_id.clone()))
+            || self.pending_native_launches.contains_key(&(request.domain_id.clone(),request.target_id.clone())) {
             return Ok(encode_receipt(request,V37Status::Conflict,effective_revision,
                 effective_revision,Default::default()));
         }
@@ -313,6 +352,11 @@ impl<'root> ProductDatabase<'root> {
                 effective_revision,BTreeMap::from([(JsonString::from_str("reason"),
                     text("This fixed provider has no integrated native metadata resume"))])));
         }
+        let old_operation=old.process_operation_id.as_deref()
+            .ok_or(OrchestrationError::OperationConflict)?;
+        failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+            &mut self.connection,self.root,old_operation,&request.domain_id,
+            &request.target_id,&old_generation))?;
         let old_number=old_generation.parse::<i64>().map_err(|_|
             OrchestrationError::Invalid("native resume old generation"))?;
         let new_generation=old_number.checked_add(1).ok_or(
@@ -358,10 +402,7 @@ impl<'root> ProductDatabase<'root> {
                 &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
                 &worktree_id,&request.request_id))?
         };
-        let (model,effort)=failure(evidence.settings())?;
-        let launch=failure(evidence.request())?;
-        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
-        let custody=self.process_custodian.prepare(&launch)?;
+        let (evidence,custody,model,effort)=self.prepare_native_launch(request,evidence,host)?;
         let key=(request.domain_id.clone(),request.target_id.clone());
         let digest=crate::store::digest::sha256_hex(&request.raw_bytes);
         let operation_id=format!("h-resume-{}",&digest[..40]);
@@ -718,6 +759,9 @@ impl<'root> ProductDatabase<'root> {
         self.finish_native_transaction(recorded)?;
         if self.native_sessions.get(key).is_some_and(|run|run.operation_id==operation) {
             self.confirm_native_stop(key)?;
+        } else {
+            failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+                &mut self.connection,self.root,operation,&key.0,&key.1,generation))?;
         }
         Ok(())
     }
@@ -1553,6 +1597,16 @@ impl<'root> ProductDatabase<'root> {
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let credential_claim=failure(runtime::observe_claim_bound(&self.connection,
             &request.domain_id,&seat_id,&request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
+        if credential_claim.generation != generation
+            || u64::try_from(credential_claim.revision).ok() != Some(request.expected_revision) {
+            return Ok(encode_receipt(request, V37Status::Stale,
+                request.expected_revision, request.expected_revision, Default::default()));
+        }
+        let key = (request.domain_id.clone(), request.target_id.clone());
+        if self.native_sessions.contains_key(&key) || self.pending_native_launches.contains_key(&key) {
+            return Ok(encode_receipt(request, V37Status::Conflict,
+                request.expected_revision, request.expected_revision, Default::default()));
+        }
         self.ensure_native_credential_backend(&credential_claim.instance_id,request)?;
         let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
         let evidence = if let Some((proof,choice))=host {
@@ -1563,20 +1617,9 @@ impl<'root> ProductDatabase<'root> {
             failure(LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
                 &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,&request.request_id))?
         };
-        let (model, effort) = failure(evidence.settings())?;
-        let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
-            &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
-        if current.generation != generation || u64::try_from(current.revision).ok() != Some(request.expected_revision) {
-            return Ok(encode_receipt(request, V37Status::Stale,
-                request.expected_revision, request.expected_revision, Default::default()));
-        }
-        let key = (request.domain_id.clone(), request.target_id.clone());
-        if self.native_sessions.contains_key(&key) {
-            return Ok(encode_receipt(request, V37Status::Conflict,
-                request.expected_revision, request.expected_revision, Default::default()));
-        }
         // A committed original intention fences every subsequent open before
         // the first OS side effect. OS creation is not represented as SQL atomic.
+        let intended = (|| -> Result<()> {
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let intention = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
@@ -1590,14 +1633,16 @@ impl<'root> ProductDatabase<'root> {
                 hex(&request.raw_bytes).as_str(), request.target_id.as_str()].iter().enumerate() {
                 insert.bind_text((index + 1) as i32, value)?;
             }
-            insert.bind_i64(5, current.revision)?;
+            insert.bind_i64(5, credential_claim.revision)?;
             insert.step_done()?;
             Ok(())
         })();
-        self.finish_native_transaction(intention)?;
-        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
-        let launch = failure(evidence.request())?;
-        let custody = self.process_custodian.prepare(&launch)?;
+        self.finish_native_transaction(intention)
+        })();
+        if let Err(original) = intended {
+            return Err(self.failed_uncreated_native_launch(key,evidence,original,true));
+        }
+        let (evidence,custody,model,effort)=self.prepare_native_launch(request,evidence,host)?;
         let digest = crate::store::digest::sha256_hex(&request.raw_bytes);
         let operation_id = format!("h-open-{}", &digest[..40]);
         // Hold the complete witness before any fallible persistence/activation.
@@ -1846,6 +1891,10 @@ impl<'root> ProductDatabase<'root> {
                 let key=(request.domain_id.clone(),request.target_id.clone());
                 if self.native_sessions.get(&key).is_some_and(|run|run.operation_id==stopped_operation) {
                     self.confirm_native_stop(&key)?;
+                } else {
+                    failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+                        &mut self.connection,self.root,&stopped_operation,&request.domain_id,
+                        &request.target_id,&generation))?;
                 }
                 return Ok(encode_receipt(request, V37Status::Replayed,
                     request.expected_revision, revision, BTreeMap::from([
@@ -1898,6 +1947,9 @@ impl<'root> ProductDatabase<'root> {
                         Ok(())
                     })();
                     self.finish_native_transaction(recovered)?;
+                    failure(crate::store::session_transport::credential_launch::reconcile_stopped_credential(
+                        &mut self.connection,self.root,&operation,&request.domain_id,
+                        &request.target_id,&generation))?;
                     return Ok(encode_receipt(request, V37Status::Replayed, request.expected_revision,
                         request.expected_revision.checked_add(1).ok_or(OrchestrationError::Invalid("stop revision overflow"))?,
                         BTreeMap::from([(JsonString::from_str("stopFact"), Json::String(JsonString::from_str(&hash)))])));
@@ -2038,6 +2090,10 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn confirm_native_stop(&mut self, key: &(String, String)) -> Result<()> {
+        #[cfg(test)]
+        if FAIL_AFTER_DURABLE_STOP_BEFORE_CREDENTIAL_REVOKE.with(|fault| fault.replace(false)) {
+            return Err(OrchestrationError::Invalid("test interruption after original durable stop"));
+        }
         let Some(run) = self.native_sessions.get(key) else { return Ok(()); };
         let proof = run.stop_proof.as_ref().ok_or(OrchestrationError::Invalid("native durable stop proof absent"))?;
         let row = Statement::prepare(self.connection.as_ptr(),

@@ -304,6 +304,9 @@ impl LaunchEvidence {
         let credential=if let Some(history)=&private_history {
             super::credential_launch::CredentialLaunch::prepare(db,root,&profile,history,request_id)?
         } else {None};
+        // Retain the exact credential witness across all remaining fallible
+        // preparation. No process factory has been called in this builder.
+        let prepared = (|| -> Result<_, String> {
         let worktree = evidence(worktree::resolve_for_launch(db, root, worktree_id,
             repository_id, domain_id, seat_id, &seat.incarnation, seat.generation))?;
         let worktree_group = evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
@@ -348,13 +351,29 @@ impl LaunchEvidence {
             verify_host_guard(db,owner,host_guard)?;
             (None, Some(Arc::new(evidence(DirectoryRoots::prepare(root, &roots))?)))
         };
+        Ok((worktree, worktree_group, program, program_identity, code_mode, module, directory_roots))
+        })();
+        let (worktree, worktree_group, program, program_identity, code_mode, module, directory_roots) =
+            match prepared {
+                Ok(prepared) => prepared,
+                Err(original) => {
+                    let cleanup = match &credential {
+                        Some(credential) => credential.revoke_uncreated(db,root,&profile,request_id),
+                        None => Ok(()),
+                    };
+                    return Err(format!("{original}; uncreated credential settlement: {cleanup:?}"));
+                }
+            };
         let observed = Self { identity, seat, claim, pin, homes, private_history,
             credential,
             launch_request_id:request_id.into(),repository_id: repository_id.into(),
             worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id,launch_admission,
             host_guard:host_guard.map(|(proof,choice)|(proof.clone(),choice.clone())) };
-        observed.verify(db, root, owner, None)?;
+        if let Err(original) = observed.verify(db, root, owner, None) {
+            let cleanup = observed.revoke_uncreated_credential(db,root);
+            return Err(format!("{original}; uncreated credential settlement: {cleanup:?}"));
+        }
         Ok(observed)
     }
 
@@ -555,6 +574,14 @@ impl LaunchEvidence {
     }
 
     pub(crate) fn file_credentials_bound(&self)->bool {self.credential.is_some()}
+
+    pub(crate) fn revoke_uncreated_credential(&self,db:&mut VerifiedDatabaseConnection<'_>,
+        root:&RootLock)->Result<(),String> {
+        if let Some(credential)=&self.credential {
+            credential.revoke_uncreated(db,root,&self.profile,&self.launch_request_id)?;
+        }
+        Ok(())
+    }
 
     pub(crate) fn revoke_stopped_credential(&self,db:&mut VerifiedDatabaseConnection<'_>,
         root:&RootLock,operation:&str,custody:&crate::process::PreparedCustody)->Result<(),String> {

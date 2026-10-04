@@ -287,7 +287,95 @@ pub(crate) struct CredentialLaunch {
     history: PrivateHistoryGeneration,
     object: CredentialObjectRecord,
     profile_record: CredentialProfileRecord,
+    // Ephemeral provenance, never reconstructed from an ACTIVE database row.
+    // Only this attempt's newly reserved grant can use NoAttempt cleanup.
+    granted_in_this_attempt: bool,
 }
+
+/// Resume only the original credential revocation after a host restart. This
+/// derives an existing principal and reads metadata; it neither launches nor
+/// stops a process and never manufactures a PreparedCustody or stop proof.
+pub(crate) fn reconcile_stopped_credential(db: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, operation: &str, domain: &str, session: &str,
+    generation: &str) -> Result<(), String> {
+    let query = evidence(Statement::prepare(db.as_ptr(),
+        "SELECT e.binding_id,e.instance_id,c.ticket,c.custodian_nonce
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id
+               AND c.domain_id=e.domain_id AND c.generation=e.generation
+          WHERE e.process_operation_id=?1 AND e.domain_id=?2 AND e.session_id=?3
+            AND e.generation=?4 AND e.phase='STOPPED' AND c.state='STOPPED'
+            AND e.stop_fact_id=c.stop_proof_hash AND e.stop_fact_id IS NOT NULL
+            AND e.stop_fact_id<>''"))?;
+    for (index, value) in [operation, domain, session, generation].iter().enumerate() {
+        evidence(query.bind_text((index + 1) as i32, value))?;
+    }
+    if !evidence(query.step_row())? { return Err(denied("restart has no exact original STOPPED custody")); }
+    let binding_id = evidence(query.column_text(0))?;
+    let instance_id = evidence(query.column_text(1))?;
+    let ticket = evidence(query.column_text(2))?;
+    let nonce = evidence(query.column_text(3))?;
+    if evidence(query.step_row())? { return Err(denied("ambiguous original STOPPED custody")); }
+    drop(query);
+    let profiles = evidence(instance::read_credential_profiles(db, &instance_id))?;
+    let Some(profile_record) = profiles.into_iter().find(|row| row.binding_id == binding_id) else {
+        // Providers or unauthenticated launches with no credential grant have
+        // nothing to revoke. No absence is interpreted as a process stop.
+        return Ok(());
+    };
+    let history = evidence(instance::read_private_history_generation(db, &binding_id, generation))?
+        .ok_or_else(|| denied("original stopped F generation absent"))?;
+    if history.instance_id != instance_id || history.domain_id != domain
+        || history.session_id != session || profile_record.generation != generation
+        || profile_record.history_id != history.history_id {
+        return Err(denied("original stopped history/profile association changed"));
+    }
+    if let Some(source) = &history.source {
+        if source.process_operation_id != operation || source.ticket != ticket
+            || source.custodian_nonce != nonce {
+            return Err(denied("original stopped F source changed"));
+        }
+    }
+    let suffix = sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+        root.canonical_root().identity.opaque(), domain, session,
+        history.seat_incarnation, generation).as_bytes());
+    let profile = evidence(AppContainerProfile::derive_for_revocation(
+        &format!("Gogoke37.Session.{}", &suffix[..40])))?;
+    if evidence(profile.sid_identity())? != profile_record.profile_sid {
+        return Err(denied("original stopped profile SID changed"));
+    }
+    let object = evidence(instance::read_credential_object(db, &instance_id))?
+        .ok_or_else(|| denied("original stopped credential source absent"))?;
+    if profile_record.source_file_identity != object.file_identity {
+        return Err(denied("original stopped credential identity changed"));
+    }
+    let home = source_home(db, root, &instance_id)?;
+    let rows = evidence(instance::read_credential_aliases(db, &instance_id))?;
+    if rows.iter().any(|row| row.state == "UNKNOWN") {
+        return Err(denied("unknown alias retained during restart revoke"));
+    }
+    let scopes = alias_scopes(db, root, &object, &rows, Some(&history.history_id))?;
+    let binding = evidence(CredentialBinding::open_registered(root, &home.path.join("auth.json"),
+        &home.identity, &object.file_identity, &scopes))?;
+    let directory = evidence(instance::resolve_private_history_directory(db, root, &history.history_id))?;
+    let scope = CredentialAliasScope { root: directory.path, root_identity: directory.identity };
+    let row = rows.iter().find(|row| row.history_id == history.history_id)
+        .ok_or_else(|| denied("original stopped alias receipt absent"))?;
+    if row.directory_identity != scope.root_identity || row.source_file_identity != object.file_identity {
+        return Err(denied("original stopped alias identity changed"));
+    }
+    if row.state == "REMOVED" && profile_record.state == "REVOKED" {
+        evidence(CredentialBinding::verify_removed_alias(root, &home.path.join("auth.json"),
+            &home.identity, &object.file_identity, &scope, &scopes))?;
+        evidence(profile.verify_revoked_credential_source(&binding))?;
+        return Ok(());
+    }
+    let alias = evidence(binding.alias(&scope, &scopes))?;
+    CredentialLaunch { binding, alias, history, object, profile_record, granted_in_this_attempt: false }
+        .finish_original_revoke(db, root, &profile, operation)
+}
+
 impl CredentialLaunch {
     pub(crate) fn prepare(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
         profile: &AppContainerProfile, history: &PrivateHistoryReceipt, request: &str)
@@ -351,13 +439,13 @@ impl CredentialLaunch {
         };
         let sid = evidence(profile.sid_identity())?;
         let prior = profiles.iter().find(|row| row.binding_id == history.generation.binding_id);
-        let profile_record = if let Some(row) = prior.filter(|row| row.state == "ACTIVE") {
+        let (profile_record, granted_in_this_attempt) = if let Some(row) = prior.filter(|row| row.state == "ACTIVE") {
             if row.generation != history.generation.generation || row.history_id != history.generation.history_id
                 || row.profile_sid != sid || row.source_file_identity != object.file_identity {
                 return Err(denied("current profile original binding changed"));
             }
             evidence(profile.verify_credential_alias(&binding, &alias))?;
-            row.clone()
+            (row.clone(), false)
         } else {
             let recovering = prior.is_some_and(|row| matches!(row.state.as_str(), "GRANT_PENDING" | "UNKNOWN"));
             let revision = if recovering { prior.ok_or_else(|| denied("profile absent"))?.revision.checked_sub(1)
@@ -378,10 +466,14 @@ impl CredentialLaunch {
                 evidence(profile.grant_credential_alias(&binding, &alias))?;
                 evidence(profile.verify_credential_alias(&binding, &alias))?;
             }
-            evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Active))?
+            (evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Active))?, !recovering)
         };
-        let result = Self { binding, alias, history: history.generation.clone(), object, profile_record };
-        result.verify(db, root, profile)?;
+        let result = Self { binding, alias, history: history.generation.clone(), object, profile_record,
+            granted_in_this_attempt };
+        if let Err(original) = result.verify(db, root, profile) {
+            let cleanup = result.revoke_uncreated(db, root, profile, request);
+            return Err(format!("{original}; uncreated credential settlement: {cleanup:?}"));
+        }
         Ok(Some(result))
     }
     pub(crate) fn verify(&self, db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -425,6 +517,28 @@ impl CredentialLaunch {
         }
         evidence(profile.verify_credential_alias(&self.binding, &self.alias))
     }
+    /// Internal launch boundary only: the caller has not attempted process
+    /// creation, or the original factory error confirms no surviving child.
+    /// LaunchCleanup must retain its witness instead of calling this method.
+    /// Database absence alone is never used to infer that a child has stopped.
+    pub(crate) fn revoke_uncreated(&self, db: &mut VerifiedDatabaseConnection<'_>,
+        root: &RootLock, profile: &AppContainerProfile, request: &str) -> Result<(), String> {
+        let history = evidence(instance::read_private_history_generation(db,
+            &self.history.binding_id, &self.history.generation))?
+            .ok_or_else(|| denied("uncreated original F generation absent"))?;
+        if !self.granted_in_this_attempt || history != self.history || history.request_id != request || history.source.is_some()
+            || evidence(profile.sid_identity())? != self.profile_record.profile_sid {
+            return Err(denied("uncreated original launch association changed"));
+        }
+        let query = evidence(Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE binding_id=?1
+               AND (process_operation_id IS NOT NULL OR phase NOT IN ('INTENT','FAILED'))"))?;
+        evidence(query.bind_text(1, &history.binding_id))?;
+        if evidence(query.step_row())? { return Err(denied("uncreated launch already has original process custody")); }
+        drop(query);
+        self.finish_original_revoke(db, root, profile, &step_request(request, "uncreated"))
+    }
+
     pub(crate) fn revoke(&self, db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
         profile: &AppContainerProfile, operation: &str, custody: &PreparedCustody) -> Result<(), String> {
         if custody.binding.profile_id != self.object.instance_id || custody.binding.domain_id != self.history.domain_id
@@ -446,6 +560,14 @@ impl CredentialLaunch {
             evidence(query.bind_text((index + 1) as i32, value))?;
         }
         if !evidence(query.step_row())? || evidence(query.step_row())? { return Err(denied("exact original STOPPED custody absent")); }
+        drop(query);
+        self.finish_original_revoke(db, root, profile, operation)
+    }
+
+    // Both the retained live witness and restart recovery enter only after
+    // checking the original durable STOPPED episode/custody association.
+    fn finish_original_revoke(&self, db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+        profile: &AppContainerProfile, operation: &str) -> Result<(), String> {
         let home = source_home(db, root, &self.object.instance_id)?;
         let object = evidence(instance::read_credential_object(db, &self.object.instance_id))?
             .ok_or_else(|| denied("original registered source absent"))?;
