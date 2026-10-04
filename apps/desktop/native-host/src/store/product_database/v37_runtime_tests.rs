@@ -2,7 +2,7 @@ use super::*;
 use crate::root::RootLock;
 use crate::store::seat::{CreateSeat, Kind, StoreTemplate};
 use crate::store::same_open::route_b_test_guard;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[path = "v37_stalled_health_tests.rs"]
 mod stalled_health;
@@ -247,6 +247,11 @@ fn health_compact_late_original_ack_continues_without_second_write_or_new_reques
 
 fn operation(family: &str, verb: &str, id: &str, target: &str, revision: u64, payload: &str) -> V37Request {
     let domain = if family == "K-INSTANCE" { "global" } else { "projectA" };
+    operation_in_domain(domain, family, verb, id, target, revision, payload)
+}
+
+fn operation_in_domain(domain: &str, family: &str, verb: &str, id: &str,
+    target: &str, revision: u64, payload: &str) -> V37Request {
     decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"{family}","operation":"{verb}","requestId":"{id}","targetId":"{target}","domainId":"{domain}","expectedRevision":"{revision}","payload":{payload}}}"#).as_bytes()).unwrap()
 }
 
@@ -766,6 +771,270 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let review_release=operation("K-SESSION","admission-release","release-review","reviewA",4,
         &format!(r#"{{"seatId":"seatA","generation":"{review_generation}"}}"#));
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&review_release).unwrap()).unwrap().status,V37Status::Applied);
+    product.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+// This fixture uses the official pinned CLI's own File backend. The marker is
+// deliberately invalid and public; neither helper nor ProductDatabase reads
+// auth.json data. Custody/STOPPED facts come from the actual child and H.
+fn qualify_synthetic_file_backend(product: &mut ProductDatabase<'_>, root: &RootLock) {
+    use crate::process::{CredentialBinding, DurableStopConfirmation, StopBudgets};
+    use crate::root::inspect_root;
+    use std::os::windows::fs::MetadataExt;
+    let home = instance::resolve_codex_instance_home(&product.connection, root, "instanceA").unwrap();
+    let mut scope = product.prepare_owner_codex_login("instanceA")
+        .expect("actual fixed CLI initial empty account observer");
+    assert!(scope.credential_custody.is_none(), "initial auth object is absent");
+    scope.login.launch.arguments = vec!["login".into(), "--with-api-key".into()];
+    let prepared = product.process_custodian.prepare(&scope.login).unwrap();
+    let operation_id = "two-scope-synthetic-cli-file-login";
+    authority::record_prepared_process(&mut product.connection, operation_id, &prepared).unwrap();
+    product.process_custodian.activate(&prepared).unwrap();
+    authority::mark_process_active(&mut product.connection, operation_id, &prepared).unwrap();
+    product.process_custodian.active(&prepared.ticket).unwrap()
+        .write_persistent_frame(b"gogoke-synthetic-invalid-key-no-auth\n").unwrap();
+    product.process_custodian.close_child_input(&prepared.ticket).unwrap();
+    assert!(product.process_custodian.active(&prepared.ticket).unwrap()
+        .wait(Duration::from_secs(15)).unwrap(), "real CLI credential-file action did not exit");
+    let proof = product.process_custodian.stop(&prepared.ticket,
+        StopBudgets::production(), || Ok(())).unwrap();
+    assert_eq!(proof.exit_code, Some(0), "original CLI stderr: {}",
+        product.process_custodian.active(&prepared.ticket).unwrap().stderr_tail());
+    let revision = authority::mark_process_stopped(&mut product.connection,
+        operation_id, &proof).unwrap();
+    product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+        ticket: prepared.ticket.clone(), custodian_nonce: prepared.custodian_nonce.clone(),
+        identity: prepared.identity.clone(), proof_hash: proof.proof_hash(), durable_revision: revision,
+    }).unwrap();
+    assert_eq!(inspect_root(&scope.runtime_home).unwrap().identity, scope.runtime_identity);
+    fn physical_runtime(path: &std::path::Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let child = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&child).unwrap();
+            assert_eq!(metadata.file_attributes() & 0x400, 0, "runtime reparse child: {child:?}");
+            if metadata.is_dir() { physical_runtime(&child); }
+        }
+    }
+    physical_runtime(&scope.runtime_home);
+    std::fs::remove_dir_all(&scope.runtime_home).unwrap();
+    let (observed, links) = CredentialBinding::observe_source_metadata(root,
+        &home.path.join("auth.json"), &home.identity).expect("CLI-created physical credential object");
+    assert_eq!(links, 1, "initial official CLI source has one physical name");
+    let account = operation("K-INSTANCE", "login-state", "two-scope-original-account",
+        "instanceA", 1, "{}");
+    let account_reply = product.dispatch_owner_login_observation(&account)
+        .expect("original fixed CLI account/read observation");
+    assert!(String::from_utf8_lossy(&account_reply).contains("\"state\":\"LOGGED_IN\""),
+        "synthetic marker establishes presence only: {}", String::from_utf8_lossy(&account_reply));
+    let bound = operation("K-INSTANCE", "login-state", "two-scope-file-bound",
+        "instanceA", 2, "{}");
+    let bound_reply = product.dispatch_owner_file_backend_observation(&bound)
+        .expect("separate actual FileBound startup observer");
+    assert!(String::from_utf8_lossy(&bound_reply).contains("\"state\":\"LOGGED_IN\""));
+    let backend = instance::read_usable_credential_backend(&product.connection, "instanceA").unwrap();
+    assert_eq!(backend.backend, instance::CredentialBackend::File);
+    assert_eq!(backend.startup_selector, instance::CredentialStartupSelector::FileBound);
+    let (readback, count) = CredentialBinding::observe_source_metadata(root,
+        &home.path.join("auth.json"), &home.identity).unwrap();
+    assert_eq!((readback, count), (observed, 1), "observers preserved the original CLI file object");
+}
+
+fn actual_saved_thread_files(home: &std::path::Path, thread: &str) -> Vec<std::path::PathBuf> {
+    use std::os::windows::fs::MetadataExt;
+    let mut pending = vec![home.to_path_buf()];
+    let mut matches = Vec::new();
+    let suffix = format!("{thread}.jsonl");
+    while let Some(parent) = pending.pop() {
+        for entry in std::fs::read_dir(&parent).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            assert_eq!(metadata.file_attributes() & 0x400, 0, "native history reparse: {path:?}");
+            if metadata.is_dir() { pending.push(path); }
+            else if metadata.is_file() && path.file_name().unwrap().to_string_lossy().ends_with(&suffix) {
+                matches.push(path);
+            }
+        }
+    }
+    matches
+}
+
+#[test]
+fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_model() {
+    use crate::process::{CredentialAliasScope, CredentialBinding};
+    use crate::store::session_transport::codex_rpc::Reply;
+    let _guard = route_b_test_guard();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "gogoke-v37-real-two-scope-{}-{stamp}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+    let register = operation("K-INSTANCE", "register", "two-scope-register", "instanceA", 0,
+        r#"{"driverId":"codex"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
+        V37Status::Applied, "actual fixed Codex 0.160.0 registration");
+    qualify_synthetic_file_backend(&mut product, &root);
+    instance::set_instance_concurrency_cap(&mut product.connection, &product.owner,
+        "instanceA", 2).unwrap();
+    let source = crate::store::worktree::tests::make_source_fixture(&mut product.connection,
+        &root, &product.owner, &mut product.process_custodian);
+    let git = std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").expect("cloud Git pin");
+    let configuration = Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"), Json::String(JsonString::from_str("gogoke.37.owner-configuration.v1"))),
+        (JsonString::from_str("command"), Json::String(JsonString::from_str("worktree-source"))),
+        (JsonString::from_str("repositoryId"), Json::String(JsonString::from_str("fixtureRepo"))),
+        (JsonString::from_str("sourcePath"), Json::String(JsonString::from_str(source.to_str().unwrap()))),
+        (JsonString::from_str("gitPath"), Json::String(JsonString::from_str(git.to_str().unwrap()))),
+    ])).canonical();
+    product.configure_user_v37(configuration.as_bytes()).unwrap();
+    for (domain, seat_id, tree_id, session_id) in [
+        ("projectA", "seatA", "treeA", "sessionA"),
+        ("projectB", "seatB", "treeB", "sessionB"),
+    ] {
+        seat::set_project_parallel_cap(&mut product.connection, &product.owner, domain, 1).unwrap();
+        seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
+            domain_id: domain, template_id: "templateA",
+            settings_json: br#"{"effort":"high","model":"gpt-6-sol","permissionTier":"NETWORKED_WRITE"}"#,
+        }).unwrap();
+        seat::create(&mut product.connection, NativeOrigin::user(&product.owner), CreateSeat {
+            domain_id: domain, seat_id, template_id: "templateA", instance_id: Some("instanceA"),
+            kind: Kind::Long, request_id: &format!("two-scope-create-{seat_id}"),
+            request_bytes: format!("real two-scope seat {seat_id}").as_bytes(),
+        }).unwrap();
+        let create = operation_in_domain(domain, "K-WORKTREE", "create",
+            &format!("two-scope-tree-{tree_id}"), tree_id, 0,
+            &format!(r#"{{"repositoryId":"fixtureRepo","seatId":"{seat_id}"}}"#));
+        let created = h::decode_receipt(&product.dispatch_user_request(&create).unwrap()).unwrap();
+        assert_eq!(created.status, V37Status::Applied,
+            "original worktree receipt: {}", String::from_utf8_lossy(&created.raw_bytes));
+        for (verb, phase, revision) in [("admission-reserve", "reserve", 0),
+            ("admission-commit", "commit", 1)] {
+            let request = operation_in_domain(domain, "K-SESSION", verb,
+                &format!("two-scope-{phase}-{session_id}"), session_id, revision,
+                &format!(r#"{{"seatId":"{seat_id}","generation":"2"}}"#));
+            let receipt = h::decode_receipt(&product.dispatch_user_request(&request).unwrap()).unwrap();
+            assert_eq!(receipt.status, V37Status::Applied,
+                "original admission receipt: {}", String::from_utf8_lossy(&receipt.raw_bytes));
+        }
+        let open = operation_in_domain(domain, "K-SESSION", "open",
+            &format!("two-scope-open-{session_id}"), session_id, 2,
+            &format!(r#"{{"seatId":"{seat_id}","generation":"2","repositoryId":"fixtureRepo","worktreeId":"{tree_id}"}}"#));
+        let opened = h::decode_receipt(&product.dispatch_user_request(&open)
+            .expect("real private CODEX_HOME app-server initialize/config/thread-start original error")).unwrap();
+        assert_eq!(opened.status, V37Status::Applied,
+            "original native open reply: {}", String::from_utf8_lossy(&opened.raw_bytes));
+        assert_eq!(opened.revision, 3);
+        let key = (domain.to_owned(), session_id.to_owned());
+        assert!(product.native_sessions.get(&key).unwrap().evidence.file_credentials_bound(),
+            "original native launch selected fixed File-bound credentials");
+        let observed = Statement::prepare(product.connection.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND phase='OBSERVED'").unwrap();
+        observed.bind_text(1, domain).unwrap(); observed.bind_text(2, session_id).unwrap();
+        assert!(observed.step_row().unwrap());
+        assert_eq!(observed.column_text(0).unwrap(), "3", "original initialize/config/thread-start replies");
+    }
+    let key_a = ("projectA".to_owned(), "sessionA".to_owned());
+    let key_b = ("projectB".to_owned(), "sessionB".to_owned());
+    let thread_a = product.native_sessions.get(&key_a).unwrap().thread_id.clone().unwrap();
+    let thread_b = product.native_sessions.get(&key_b).unwrap().thread_id.clone().unwrap();
+    assert_ne!(thread_a, thread_b, "two original thread/start replies");
+    for (key, thread, step) in [(&key_a, &thread_a, "two-scope-save-a"),
+        (&key_b, &thread_b, "two-scope-save-b")] {
+        let reply = product.native_append_rpc(key, step, thread,
+            format!("synthetic no-model durable history {step}")).unwrap();
+        assert!(matches!(reply, Some(Reply::Ack { .. })), "original native append ACK: {reply:?}");
+    }
+    let history_id = |domain: &str, session: &str| {
+        let query = Statement::prepare(product.connection.as_ptr(),
+            "SELECT history_id FROM main.gogoke_v37_instance_histories WHERE instance_id='instanceA' AND domain_id=?1 AND session_id=?2 AND state='READY'").unwrap();
+        query.bind_text(1, domain).unwrap(); query.bind_text(2, session).unwrap();
+        assert!(query.step_row().unwrap(), "original F history row for {domain}/{session}");
+        let id = query.column_text(0).unwrap();
+        assert!(!query.step_row().unwrap(), "one F history per original scope");
+        id
+    };
+    let history_a = history_id("projectA", "sessionA");
+    let history_b = history_id("projectB", "sessionB");
+    assert_ne!(history_a, history_b);
+    let dir_a = instance::resolve_private_history_directory(&product.connection, &root, &history_a).unwrap();
+    let dir_b = instance::resolve_private_history_directory(&product.connection, &root, &history_b).unwrap();
+    assert_ne!(dir_a.identity, dir_b.identity, "independent physical F histories");
+    assert_ne!(dir_a.path, dir_b.path);
+    let home = instance::resolve_codex_instance_home(&product.connection, &root, "instanceA").unwrap();
+    assert!(dir_a.path.starts_with(&home.path) && dir_b.path.starts_with(&home.path));
+    for (key, expected) in [(&key_a, &dir_a.path), (&key_b, &dir_b.path)] {
+        let request = product.native_sessions.get(key).unwrap().evidence.request().unwrap();
+        let environment = request.launch.environment.unwrap();
+        assert_eq!(environment.iter().find(|(name, _)| name == "CODEX_HOME")
+            .map(|(_, value)| value.as_str()), expected.to_str(),
+            "production launch maps the registered F private directory");
+    }
+    let saved_a = actual_saved_thread_files(&dir_a.path, &thread_a);
+    let saved_b = actual_saved_thread_files(&dir_b.path, &thread_b);
+    assert_eq!(saved_a.len(), 1, "original saved A thread file in A F history");
+    assert_eq!(saved_b.len(), 1, "original saved B thread file in B F history");
+    assert!(actual_saved_thread_files(&dir_a.path, &thread_b).is_empty()
+        && actual_saved_thread_files(&dir_b.path, &thread_a).is_empty(),
+        "peer native history UUID absent from other F directory");
+    let object = instance::read_credential_object(&product.connection, "instanceA").unwrap().unwrap();
+    let source_path = home.path.join("auth.json");
+    let (source_id, links) = CredentialBinding::observe_source_metadata(&root,
+        &source_path, &home.identity).unwrap();
+    assert_eq!(object.file_identity, source_id);
+    assert_eq!(links, 3, "one CLI source and two registered physical aliases");
+    let aliases = instance::read_credential_aliases(&product.connection, "instanceA").unwrap();
+    assert_eq!(aliases.len(), 2);
+    assert!(aliases.iter().all(|row| row.state == "ACTIVE" && row.source_file_identity == source_id));
+    let scopes = [CredentialAliasScope {root:dir_a.path.clone(),root_identity:dir_a.identity.clone()},
+        CredentialAliasScope {root:dir_b.path.clone(),root_identity:dir_b.identity.clone()}];
+    let binding = CredentialBinding::open_registered(&root, &source_path, &home.identity,
+        &source_id, &scopes).unwrap();
+    binding.verify_registered_aliases(&scopes).unwrap();
+    drop(binding);
+    let profiles = instance::read_credential_profiles(&product.connection, "instanceA").unwrap();
+    assert_eq!(profiles.len(), 2);
+    let profile_a = profiles.iter().find(|row| row.history_id == history_a).unwrap();
+    let profile_b = profiles.iter().find(|row| row.history_id == history_b).unwrap();
+    assert!(profile_a.state == "ACTIVE" && profile_b.state == "ACTIVE");
+    assert_ne!(profile_a.profile_sid, profile_b.profile_sid, "distinct current model profile SIDs");
+    assert_eq!(profile_a.source_file_identity, source_id);
+    assert_eq!(profile_b.source_file_identity, source_id);
+    let stop_a = operation_in_domain("projectA", "K-SESSION", "stop", "two-scope-stop-a",
+        "sessionA", 3, r#"{"seatId":"seatA","generation":"2"}"#);
+    let stopped_a = h::decode_receipt(&product.dispatch_user_request(&stop_a).unwrap()).unwrap();
+    assert_eq!(stopped_a.status, V37Status::Applied,
+        "original A STOPPED and ACL revoke: {}", String::from_utf8_lossy(&stopped_a.raw_bytes));
+    assert!(product.native_sessions.contains_key(&key_b), "B actual native child retained");
+    let profiles = instance::read_credential_profiles(&product.connection, "instanceA").unwrap();
+    assert_eq!(profiles.iter().find(|row| row.history_id == history_a).unwrap().state, "REVOKED");
+    assert_eq!(profiles.iter().find(|row| row.history_id == history_b).unwrap().state, "ACTIVE");
+    let aliases = instance::read_credential_aliases(&product.connection, "instanceA").unwrap();
+    assert_eq!(aliases.iter().find(|row| row.history_id == history_a).unwrap().state, "DORMANT");
+    assert_eq!(aliases.iter().find(|row| row.history_id == history_b).unwrap().state, "ACTIVE");
+    let reply_b = product.native_append_rpc(&key_b, "two-scope-b-after-a-stop", &thread_b,
+        "synthetic B no-model save after A STOPPED".into()).unwrap();
+    assert!(matches!(reply_b, Some(Reply::Ack { .. })), "B original child survives A revoke: {reply_b:?}");
+    let resume_a = operation_in_domain("projectA", "K-SESSION", "resume", "two-scope-resume-a",
+        "sessionA", 4, r#"{"generation":"2"}"#);
+    let resumed = h::decode_receipt(&product.dispatch_user_request(&resume_a)
+        .expect("original A thread/resume from its F history")).unwrap();
+    assert_eq!(resumed.status, V37Status::Applied,
+        "original same-UUID resume: {}", String::from_utf8_lossy(&resumed.raw_bytes));
+    assert_eq!(product.native_sessions.get(&key_a).unwrap().thread_id.as_deref(), Some(thread_a.as_str()));
+    let same_dir = instance::resolve_private_history_directory(&product.connection, &root, &history_a).unwrap();
+    assert_eq!(same_dir.identity, dir_a.identity, "A new generation reuses F physical history");
+    assert_eq!(same_dir.path, dir_a.path);
+    let stop_resumed_a = operation_in_domain("projectA", "K-SESSION", "stop",
+        "two-scope-stop-resumed-a", "sessionA", 5,
+        r#"{"seatId":"seatA","generation":"3"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop_resumed_a).unwrap()).unwrap().status,
+        V37Status::Applied);
+    let stop_b = operation_in_domain("projectB", "K-SESSION", "stop", "two-scope-stop-b",
+        "sessionB", 3, r#"{"seatId":"seatB","generation":"2"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop_b).unwrap()).unwrap().status,
+        V37Status::Applied);
     product.close_checked().unwrap();
     drop(root);
     std::fs::remove_dir_all(path).unwrap();
