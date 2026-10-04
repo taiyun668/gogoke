@@ -222,7 +222,7 @@ fn transact<T>(connection: &mut VerifiedDatabaseConnection<'_>,
     }
 }
 
-fn read_message(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
+pub(crate) fn read_message(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
     message_id: &str) -> Result<Option<Message>, InboxError> {
     let statement = Statement::prepare(connection.as_ptr(), "SELECT revision,state,sender_seat_id,seat_id,turn_id,generation,body,queued_at,COALESCE(requeued_as,'') FROM main.gogoke_v37_inbox_messages WHERE domain_id=? AND message_id=?")?;
     statement.bind_text(1, domain_id)?;
@@ -246,7 +246,7 @@ pub(crate) fn current_revision(connection:&mut VerifiedDatabaseConnection<'_>,do
     })
 }
 
-fn read_operation(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
+pub(crate) fn read_operation(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
     request_id: &str) -> Result<Option<StoredOperation>, InboxError> {
     let statement = Statement::prepare(connection.as_ptr(), "SELECT request_hex,message_id,phase,previous_revision,revision,result_state,reason,native_receipt_id FROM main.gogoke_v37_inbox_operations WHERE domain_id=? AND request_id=?")?;
     statement.bind_text(1, domain_id)?;

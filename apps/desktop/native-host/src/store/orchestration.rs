@@ -22,6 +22,8 @@ pub enum OrchestrationError {
     Io(std::io::Error),
     Ipc(PrivateIpcError),
     V37StoreFailure(String),
+    /// An original provider/pipe failure, distinct from the native store.
+    NativeRecipientFailure(String),
 }
 
 impl std::fmt::Display for OrchestrationError {

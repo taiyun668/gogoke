@@ -1786,6 +1786,8 @@ impl<'root> ProductDatabase<'root> {
             // Recover a trustworthy already-observed send before the stop
             // increments this claim. An old stop revision remains stale.
             if run.evidence.driver_id()=="codex" {
+                failure(rpc::reconcile_written_sends_from_a(&mut self.connection,&self.owner,
+                    &request.domain_id,&request.target_id,&generation))?;
                 failure(h::reconcile_observed_codex_sends(&mut self.connection,
                     &request.domain_id,&request.target_id,&generation))?;
             } else {self.drain_native_output(&key)?;}
@@ -2082,6 +2084,7 @@ impl<'root> ProductDatabase<'root> {
             Ok(Some(observation)) => observation,
             other => {
                 let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                let recipient_failure=matches!(&other,Err(OrchestrationError::NativeRecipientFailure(_)));
                 let original = match other {
                     Err(error) => format!("{error:?}"),
                     _ => "native turn response absent".into(),
@@ -2089,8 +2092,11 @@ impl<'root> ProductDatabase<'root> {
                 let unknown = if run.raw_capture.has_pending() { Ok(()) }
                     else { authority::mark_process_unknown(&mut self.connection, &run.operation_id, &custody) };
                 let journal = h::mark_codex_write_unknown(&mut self.connection, &input);
-                return Err(OrchestrationError::V37StoreFailure(format!(
-                    "native send: {original}; custody UNKNOWN: {unknown:?}; original request UNKNOWN: {journal:?}")));
+                let cause=format!("native send: {original}; custody UNKNOWN: {unknown:?}; original request UNKNOWN: {journal:?}");
+                if recipient_failure && unknown.is_ok() && journal.is_ok() {
+                    return Err(OrchestrationError::NativeRecipientFailure(cause));
+                }
+                return Err(OrchestrationError::V37StoreFailure(cause));
             }
         };
         let id = failure(RpcId::client(number))?;
@@ -2655,15 +2661,27 @@ impl<'root> ProductDatabase<'root> {
             let original = self.process_custodian.protocol_error_with_stderr(&custody.ticket,
                 crate::process::ProcessCustodyError::ProtocolPipe(error));
             let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &original.to_string());
-            return Err(OrchestrationError::V37StoreFailure(format!("native RPC write: {original}; UNKNOWN: {persisted:?}")));
+            let cause=format!("native RPC write: {original}; UNKNOWN: {persisted:?}");
+            if persisted.is_ok() {return Err(OrchestrationError::NativeRecipientFailure(cause));}
+            return Err(OrchestrationError::V37StoreFailure(cause));
         }
         failure(rpc::mark_written(&mut self.connection, &self.owner, &step))?;
         if id.is_none() { return Ok(None); }
         let start = Instant::now();
         loop {
             let remaining = Duration::from_secs(30).saturating_sub(start.elapsed());
-            if remaining.is_zero() { return Err(OrchestrationError::Invalid("native RPC response deadline")); }
-            let frame = self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining)?;
+            if remaining.is_zero() { return Err(OrchestrationError::NativeRecipientFailure("native RPC response deadline".into())); }
+            let frame = self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining)
+                .map_err(|error| {
+                    let pipe=match &error {
+                        crate::process::ProcessCustodyError::ProtocolPipe(_)=>true,
+                        crate::process::ProcessCustodyError::ProtocolEvidence {cause,..}=>
+                            matches!(cause.as_ref(),crate::process::ProcessCustodyError::ProtocolPipe(_)),
+                        _=>false,
+                    };
+                    if pipe {OrchestrationError::NativeRecipientFailure(error.to_string())}
+                    else {OrchestrationError::Process(error)}
+                })?;
             let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
             run.raw_capture.retain(frame)?;
             let (frame,raw)=run.raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?
@@ -2689,8 +2707,9 @@ impl<'root> ProductDatabase<'root> {
                     // reporting it; no UNKNOWN resend is authorized.
                     let persisted=rpc::complete_response(&mut self.connection,&self.owner,
                         &step,&frame,&raw.key);
-                    return Err(OrchestrationError::V37StoreFailure(format!(
-                        "native RPC remote error: {text}; observed journal: {persisted:?}")));
+                    let cause=format!("native RPC remote error: {text}; observed journal: {persisted:?}");
+                    if persisted.is_ok() {return Err(OrchestrationError::NativeRecipientFailure(cause));}
+                    return Err(OrchestrationError::V37StoreFailure(cause));
                 }
                 _ => {
                     failure(rpc::observe_event(&mut self.connection, &frame, &raw.key, &step))?;

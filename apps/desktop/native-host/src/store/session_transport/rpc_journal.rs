@@ -2478,6 +2478,75 @@ fn stored_compact_id(command:&[u8],thread:&str)->Result<RpcId> {
 
 /// Settle a command already physically WRITTEN from its one captured A reply.
 /// The original writer step remains the only send authority.
+/// A delayed response to an original ordinary send is already captured before
+/// this safe point. Reconcile that original WRITTEN step without any pipe IO.
+pub(crate) fn reconcile_written_sends_from_a(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,domain:&str,session:&str,generation:&str)->Result<()> {
+    let pending=Statement::prepare(db.as_ptr(),
+        "SELECT request_id,ticket FROM main.gogoke_v37_h_stdin_journal
+         WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+           AND operation IN ('send','append-without-turn') AND phase IN ('PREPARED','UNKNOWN')")?;
+    pending.bind_text(1,domain)?;pending.bind_text(2,session)?;pending.bind_text(3,generation)?;
+    let mut keys=Vec::new();while pending.step_row()? {keys.push((pending.column_text(0)?,pending.column_text(1)?));}
+    drop(pending);
+    for (request,ticket) in keys {
+        transact(db,|db| {
+            check_owner_in_current_transaction(db,owner)?;
+            let key=super::journal::StdinJournalKey {domain_id:domain,request_id:&request,
+                session_id:session,ticket:&ticket,generation};
+            let record=super::journal::read_stdin_journal(db,&key)
+                .map_err(|error|RpcJournalError::Authority(crate::store::orchestration::OrchestrationError::V37StoreFailure(
+                    format!("original H send read: {error:?}"))))?.ok_or(RpcJournalError::Denied)?;
+            if record.state==super::journal::JournalState::Receipted {return Ok(());}
+            let step_id=format!("{}-{}",if record.operation=="append-without-turn" {"append"} else {"send"},
+                &crate::store::digest::sha256_hex(&record.request_bytes)[..40]);
+            let step=Statement::prepare(db.as_ptr(),
+                "SELECT command_hex FROM main.gogoke_v37_rpc_steps
+                 WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+                   AND generation=?4 AND ticket=?5 AND custodian_nonce=?6
+                   AND step_id=?7 AND phase='WRITTEN' AND requires_response=1")?;
+            for (index,value) in [domain,session,record.process_operation_id.as_str(),generation,
+                ticket.as_str(),record.custodian_nonce.as_str(),step_id.as_str()].iter().enumerate() {
+                step.bind_text((index+1) as i32,value)?;
+            }
+            if !step.step_row()? {return Ok(());}
+            let bytes=unhex(&step.column_text(0)?)?;
+            if step.step_row()? {return Err(RpcJournalError::Conflict);}
+            let (id,command)=if record.operation=="append-without-turn" {
+                codex_rpc::decode_stored_append(&bytes)?
+            } else {codex_rpc::decode_stored_turn_start(&bytes)?};
+            let source=Statement::prepare(db.as_ptr(),
+                "SELECT source_epoch,source_cursor,hex(raw_bytes) FROM main.v37_ledger_raw_source
+                 WHERE operation_id=?1 AND domain_id=?2 AND session_id=?3
+                   AND generation=?4 AND process_ticket=?5 AND custodian_nonce=?6
+                   AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;
+            for (index,value) in [record.process_operation_id.as_str(),domain,session,generation,
+                ticket.as_str(),record.custodian_nonce.as_str()].iter().enumerate() {
+                source.bind_text((index+1) as i32,value)?;
+            }
+            let mut found=None;
+            while source.step_row()? {
+                let bytes=unhex(&source.column_text(2)?)?;
+                let matching=match codex_rpc::decode(&bytes,Some((&id,&command))) {
+                    Ok(Reply::Turn {..})=>matches!(&command,Command::TurnStart {..}),
+                    Ok(Reply::Ack {..})=>matches!(&command,Command::AppendWithoutTurn {..}),
+                    Ok(Reply::RemoteError {..})=>true,
+                    _=>false,
+                };
+                if matching {
+                    if found.is_some() {return Err(RpcJournalError::Conflict);}
+                    found=Some(RawSourceKey {operation_id:record.process_operation_id.clone(),
+                        source_epoch:source.column_text(0)?,source_cursor:source.column_text(1)?});
+                }
+            }
+            if let Some(key)=found {persist_observation_and_no_event(db,domain,session,&step_id,
+                &record.process_operation_id,&key)?;}
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn reconcile_written_compact_from_a(db:&mut VerifiedDatabaseConnection<'_>,
     owner:&OwnerIssuer,domain:&str,session:&str,operation:&str,generation:&str,
     ticket:&str,nonce:&str,step_id:&str,thread:&str)->Result<bool> {

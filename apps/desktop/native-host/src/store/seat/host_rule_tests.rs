@@ -173,6 +173,32 @@ fn changed_owner_boundary_or_cause_denies_new_effect_and_preserves_original_inte
 }
 
 #[test]
+fn unrelated_owner_grant_refreshes_admission_without_replacing_original_intent() {
+    fixture(|db,owner| {
+        establish_cap(db,owner,"source");
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let original=observe(db,owner);
+        begin_host_escalation_in_transaction(db,owner,&original).unwrap();
+        db.execute("COMMIT").unwrap();
+        let head=head_revision(db,"projectA").unwrap();
+        configure_call_grant(db,owner,"projectA","reviewer","destination",
+            CallAction::Message,None,head).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert!(matches!(revalidate_host_escalation_in_transaction(db,owner,&original),
+            Err(SeatError::Denied)),"the old current-admission snapshot is stale");
+        let current=observe(db,owner);
+        assert_eq!(current.policy_revision(),original.policy_revision());
+        assert_eq!(current.notice_body(),original.notice_body());
+        assert_eq!(current.trigger_id(),original.trigger_id());
+        assert_eq!(current.request_id(),original.request_id());
+        assert!(begin_host_escalation_in_transaction(db,owner,&current).unwrap().replayed);
+        assert_eq!(count(db,"SELECT count(*) FROM gogoke_v37_seat_policy_escalations"),1);
+        assert_eq!(count(db,"SELECT count(*) FROM gogoke_v37_seat_policy_events WHERE operation='escalate'"),1);
+        db.execute("COMMIT").unwrap();
+    });
+}
+
+#[test]
 fn no_cause_or_ambiguous_cause_is_not_a_host_proof_and_reservation_rolls_back_atomically() {
     fixture(|db, owner| {
         establish_cap(db, owner, "source");

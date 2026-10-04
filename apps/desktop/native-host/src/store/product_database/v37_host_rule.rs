@@ -76,7 +76,13 @@ impl<'root> ProductDatabase<'root> {
                 .ok_or(OrchestrationError::AccessDenied)?;
             let target=c::HostDeliveryTarget {session_id:&key.1,ticket:custody.ticket.opaque(),
                 generation:&custody.binding.generation};
-            let (operation,permit)=c::reserve_host_delivery(&mut self.connection,&self.owner,&proof,&target).map_err(failure)?;
+            let (operation,permit)=match c::reserve_host_delivery(&mut self.connection,&self.owner,&proof,&target) {
+                Ok(reserved)=>reserved,
+                // The retained process may now be UNKNOWN or stopped. C's
+                // original target guard grants no write in that case.
+                Err(inbox::InboxError::Denied|inbox::InboxError::Conflict)=>continue,
+                Err(error)=>return Err(failure(error)),
+            };
             if permit.is_none() {continue;}
             let raw=Json::Object(BTreeMap::from([
                 (JsonString::from_str("schema"),text("gogoke.37.operations.v1")),
@@ -103,10 +109,16 @@ impl<'root> ProductDatabase<'root> {
                     }
                     self.settle_original_host_deliveries()?;
                 },
-                Err(original)=>{
+                Err(original @ OrchestrationError::NativeRecipientFailure(_))=>{
                     self.record_host_delivery_error(&proof,&ids,&operation,&format!("{original:?}"))?;
                     self.settle_original_host_deliveries()?;
-                }
+                },
+                Err(original)=>{
+                    if let Err(record)=self.record_host_delivery_error(&proof,&ids,&operation,&format!("{original:?}")) {
+                        return Err(failure((original,record)));
+                    }
+                    return Err(original);
+                },
             }
         }
         Ok(())
@@ -164,6 +176,10 @@ impl<'root> ProductDatabase<'root> {
             let generation=field(&original,"generation")?;
             let target=c::HostDeliveryTarget {session_id:&session,ticket:&ticket,generation:&generation};
             c::mark_host_delivery_unknown(&mut self.connection,&self.owner,&domain,&message,&target)
+                .map_err(failure)?;
+            h::rpc_journal::reconcile_written_sends_from_a(&mut self.connection,&self.owner,
+                &domain,&session,&generation).map_err(failure)?;
+            h::reconcile_observed_codex_sends(&mut self.connection,&domain,&session,&generation)
                 .map_err(failure)?;
             let operation=match c::settle_host_turn_start_observed(&mut self.connection,&self.owner,&domain,&message,&target) {
                 Ok(operation)=>operation,Err(inbox::InboxError::Unknown|inbox::InboxError::Denied)=>continue,

@@ -16,6 +16,7 @@ pub(crate) struct HostEscalationProof {
     cause_event: String,
     cause_fingerprint: String,
     cause_policy_revision: i64,
+    current_owner_revision: i64,
     policy_revision: i64,
     route_revision: i64,
     gate_fact: (String, String, String, String, i64, i64, String, i64),
@@ -121,17 +122,34 @@ pub(crate) fn observe_host_reject_cap_in_transaction(
     let digest = sha256_hex(identity.as_bytes());
     let trigger = format!("host-reject-cap-{}", &digest[..40]);
     let request = format!("host-escalate-{}", &digest[..40]);
+    // Preserve the Owner snapshot recorded by the original INTENT. A later
+    // unrelated grant update changes current admission, not this cause's
+    // C bytes/identity. Actual route/cause changes still fail prior_event.
+    let prior = Statement::prepare(db.as_ptr(),
+        "SELECT operation,target_id,policy_revision,state,detail FROM
+         main.gogoke_v37_seat_policy_events WHERE domain_id=?1 AND event_id=?2")?;
+    prior.bind_text(1,domain)?;
+    prior.bind_text(2,&request)?;
+    let intent_revision=if prior.step_row()? {
+        let original=prior.column_text(2)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+        if prior.column_text(0)?!="escalate" || prior.column_text(1)?!=trigger
+            || prior.column_text(3)?!="INTENT" || prior.column_text(4)?!=cause
+            || original<cause_revision || original>revision || prior.step_row()? {
+            return Err(SeatError::Denied);
+        }
+        original
+    } else {revision};
     let notice = format!(
         "Host rule REJECT_CAP: gate {gate} reached rejection count {} (cap {}). \
          Source seat {}; destination {destination}; cause event {cause}; \
-         Owner policy revision {revision}. The gate reason remains a reference \
+         Original Owner policy revision {intent_revision}. The gate reason remains a reference \
          in the original E event; this notice carries no model instruction.",
         fact.5, fact.4, source.seat_id);
     Ok(Some(HostEscalationProof {
         domain: domain.into(), gate: gate.into(), source: source.seat_id,
         source_incarnation: source.incarnation, destination, destination_incarnation,
         cause_event: cause, cause_fingerprint, cause_policy_revision: cause_revision,
-        policy_revision: revision, route_revision, gate_fact: fact,
+        current_owner_revision: revision, policy_revision: intent_revision, route_revision, gate_fact: fact,
         trigger, request, notice,
     }))
 }
