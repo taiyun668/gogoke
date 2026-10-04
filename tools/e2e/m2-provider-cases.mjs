@@ -233,6 +233,9 @@ export async function runProviderBoundaryCases(product, config, journal) {
       record.card = { cardId: originalCard.cardId, revision: originalCard.revision,
         hostQuestionId: 'host0', turnId: record.sendRequestId,
         requestRef: recovered.result.requestRef, originalInput: q.originalInput };
+      checked(!fs.existsSync(path.join(row.worktreeRoot, markerFile)),
+        'Claude marker must still be absent while the original question is unanswered');
+      record.claudeQuestion.markerAbsentBeforeAnswer = true;
       product.save();
       const answered = await operation('K-QCARD', 'answer', originalCard.cardId,
         { generation: session.generation, answers: { host0: ['JSON'] } }, recovered.revision,

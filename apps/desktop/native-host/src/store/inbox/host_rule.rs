@@ -82,9 +82,10 @@ pub(crate) fn failed_host_preparations(db:&VerifiedDatabaseConnection<'_>)
         if q.column_text(7)?!="APPLIED" {return Err(InboxError::Denied);}
         if !id.starts_with("hostrecipient-") ||
             message!=id.replacen("hostrecipient-","hostmsg-",1) {return Err(InboxError::Denied);}
-        let Json::Object(fields)=Parser::parse(std::str::from_utf8(&bytes)
-            .map_err(|error|InboxError::InvalidEvidence(format!("cleanup UTF-8: {error}")))?)?
-            else {return Err(InboxError::Denied)};
+        let parsed=Parser::parse(std::str::from_utf8(&bytes)
+            .map_err(|error|InboxError::InvalidEvidence(format!("cleanup UTF-8: {error}")))?)?;
+        let canonical=parsed.canonical();
+        let Json::Object(fields)=parsed else {return Err(InboxError::Denied)};
         let get=|name:&str|->Result<String,InboxError> {
             match fields.get(&JsonString::from_str(name)) {
                 Some(Json::String(v))=>v.to_well_formed_string().ok_or(InboxError::Denied),
@@ -100,7 +101,7 @@ pub(crate) fn failed_host_preparations(db:&VerifiedDatabaseConnection<'_>)
             ||get("commitRequestId")?!=format!("{id}-commit")
             ||get("startRequestId")?!=format!("{id}-start")
             || bytes.last()!=Some(&b'\n')
-            || Json::Object(fields.clone()).canonical().as_bytes()!=&bytes[..bytes.len()-1] {
+            || canonical.as_bytes()!=&bytes[..bytes.len()-1] {
             continue;
         }
         let trigger=get("triggerId")?;let route_revision=get("routeRevision")?;
