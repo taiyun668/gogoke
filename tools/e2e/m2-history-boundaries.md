@@ -30,12 +30,16 @@ is connected. Private configuration supplies `historyBoundary`:
     version: 'originalFixedVersion',
     sha256: 'originalFixedBinarySha256', // 64 hexadecimal characters
     projectA: {
-      repositoryId: 'gogokeSeatTestbed',
+      domainId: 'originalTestDomainA', repositoryId: 'gogokeSeatTestbed',
       seatId: 'originalExclusiveSeatA', worktreeId: 'originalHostCreatedTreeA'
     },
     projectB: {
-      repositoryId: 'originalSecondTestRepository',
+      domainId: 'originalTestDomainB', repositoryId: 'gogokeSeatTestbed',
       seatId: 'originalExclusiveSeatB', worktreeId: 'originalHostCreatedTreeB'
+    },
+    sideBinding: {
+      domainId: 'originalTestDomainA', repositoryId: 'gogokeSeatTestbed',
+      seatId: 'originalExclusiveSideSeat', worktreeId: 'originalHostCreatedSideTree'
     }
   }],
   normalCloseReadbackRestart: async phase => { /* existing runner integration */ }
@@ -44,12 +48,25 @@ is connected. Private configuration supplies `historyBoundary`:
 
 The configuration and its records remain in the existing private evidence
 directory. `sha256`, version, IDs and test objects must come from original F/E
-creation/registration evidence. Both repositories are candidate test sources;
+creation/registration evidence. Both project domains share the already
+authorized private `gogoke-seat-testbed` source registered as
+`gogokeSeatTestbed`; a second remote repository is not created. All objects are
+candidate test sources;
 no formal source, installation, data or user global HOME is an allowed target.
-F must already bind each named worktree to its named seat and the same instance
-in the candidate domain. Seats/worktrees are disjoint across cases and owned
+F must already bind each named worktree to its named domain/seat and the same
+instance. `projectA.domainId !== projectB.domainId` and
+`sideBinding.domainId === projectA.domainId` are mandatory. `sideBinding` has a
+third independent seat/worktree, reused only by its subsequent formal review.
+Seats are identified by domain plus seat ID; worktree IDs are globally distinct.
+Seats/worktrees are disjoint across cases and owned
 exclusively for the whole flow; instance/project caps must already permit two
-live sessions. The module never changes caps, login state or permission tiers.
+live sessions. The Controller precreates the E seats and F worktrees in both
+domains and the third side binding; the module does no E/F provisioning. Its
+operation wrapper submits each original session's domain through the real User
+bridge and preserves raw requests/receipts without changing `ActualProduct`
+or its config. The frozen receipt envelope has no domain field; the original
+request and independent persisted H/A/F/D rows supply domain evidence.
+The module never changes caps, login state or permission tiers.
 Do not share these seats with M1, V08, V12 or other active work.
 
 The callback must perform these existing runner actions, in this order:
@@ -78,21 +95,25 @@ signed Python tools/e2e/m2-history-boundaries-readback.py STATE_ROOT NEW_PRIVATE
 
 ## Actual flow and independent assertions
 
-Each configured provider opens two genuine WORK sessions on separate registered
-test repositories, on the identical fixed instance, before sending a different
+Each configured provider opens two genuine WORK sessions in different registered
+project domains sharing the same test repository and identical fixed instance,
+before sending a different
 random non-secret marker to each. Both original H inputs are sent before either
 process stops. Neither request contains the other project's marker. The
 assistant A event streams must actually contain each original marker so an
 empty history cannot satisfy the control. Model prose about what it remembers
 is never the isolation assertion.
 
-The second seat is stopped/released, then opened through original
+The second domain's seat is stopped/released. The independent third seat in the
+first source domain is opened through original
 `gogoke.37.owner-side-open.v1` as SIDE_CHAT with the first original WORK session
-as its source. A second unique marker is delivered through
+as its source. Both nested side-open/create requests, source registration and
+side registration belong to that source domain. A second unique marker is delivered through
 `gogoke.37.owner-side-question.v1`, including D's assembled reference and exact
-explicit question. After physical stop/release, the same second seat opens a
+explicit question. After physical stop/release, the same third side seat opens a
 new FORMAL_REVIEW session and sends one fresh marker. The reader requires four
-distinct actual vendor/native session IDs, different generations on the same
+distinct actual vendor/native session IDs, two different project domains,
+three independent worktrees, different generations on the same source-domain
 side/review seat, a genuine D registry/sync, fresh native `thread/start` or
 `session/new`, and no native resume/fork command. Claude identity is bound to
 its actual echoed User and success Result. The original formal H commands must
@@ -106,7 +127,8 @@ negative shape) on each persisted formal session. Each original User ingress
 receipt must be DENIED with unchanged revision. No arbitrary standalone fork
 verb is substituted for that production branch. Final readback compares the
 original scoped H claim/operation/process/generation/stdin/RPC rows, A raw/index
-and registrations, F worktrees/seats and D registry/sync/pending rows byte for
+and registrations, F worktrees/seats and D registry/sync/pending rows in each
+session's actual domain byte for
 byte against the baseline. A denial with a new process, command, source event
 or changed test object fails.
 
@@ -159,6 +181,14 @@ Production `v37_runtime.rs`, `v37_runtime_tests.rs`, `v37_side.rs`,
 `session_transport/journal.rs`, `rpc_journal.rs`, and `ledger/mod.rs` determine
 the actual field names and denial branches. This package extends their real
 flows; it does not redefine contracts or HOME layout.
+
+The frozen design 37 §2b2 states that repositories can be shared across projects
+and project isolation is independent of repository identity. Production
+`ledger::query` filters domain, H binds claims and seats by domain, F records
+domain separately from repository, and D checks both source and side registration
+inside its own domain. The earlier same-domain/two-repository fixture premise
+was incorrect. This package now requires two real domains and three domain-bound
+F/E test bindings; changing only repository names cannot satisfy it.
 
 Validation for this construction package: signed Node `--check` and signed
 Python `ast.parse` only. Reader execution, databases, native binaries, CLI,
