@@ -27,6 +27,10 @@ on:
         description: Build and verify F history and credential metadata boundaries only; full library, mutations and server gates are NOT_RUN
         type: boolean
         default: false
+      full_library_only:
+        description: Run the unchanged formal native library and LPAC shim commands; separate process, focused, mutation and server suites are NOT_RUN
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -112,6 +116,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.full_library_only }}' -eq 'true') {
+            if (@('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}','${{ inputs.private_history_fixture_only }}') -contains 'true') {
+              throw 'Full library scope cannot be combined with a directed fixture scope'
+            }
+            Write-Host 'Formal native library and LPAC shim only; separate process, focused, mutation and server suites NOT_RUN.'
+          }
           $PSNativeCommandUseErrorActionPreference = $false
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -138,7 +148,7 @@ jobs:
           if ($state -ne 'PASS') { throw "Native-host release build failed or lacked a release-profile completion marker: $state (exit $exitCode)" }
       - name: Build and run required native-host process axes
         id: native-axes
-        if: ${{ !cancelled() && steps.release-build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.full_library_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -239,7 +249,7 @@ jobs:
           "machine_result=$machineResult" >> $env:GITHUB_OUTPUT
           if ($failed -or $releaseResult.state -ne 'PASS') { throw 'Release build or one or more required native-host axes failed or did not execute.' }
       - name: Run focused native-host lib failure probes
-        if: ${{ !cancelled() && steps.release-build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.full_library_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -390,7 +400,7 @@ jobs:
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
       - name: Retain original focused logs before the full library run
-        if: ${{ !cancelled() && !inputs.trace_canonicalize }}
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.full_library_only }}
         uses: actions/upload-artifact@v4
         with:
           name: native-host-focused-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -484,6 +494,7 @@ jobs:
           retention-days: 30
 
   native-host-windows-security-mutations:
+    if: ${{ !inputs.full_library_only }}
     name: Native host Windows security mutations
     # Same fixed CLIs, unchanged behavioral assertions and exact source restore.
     # The preceding combined run measured 49 minutes through F.1/R10;
@@ -821,7 +832,7 @@ jobs:
           }
 
   gogoke-server-tests:
-    if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only }}
+    if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
