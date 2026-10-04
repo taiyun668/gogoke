@@ -244,6 +244,11 @@ fn operation(family: &str, verb: &str, id: &str, target: &str, revision: u64, pa
 
 #[test]
 fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call() {
+    actual_pinned_codex_product_open_baseline_without_model_call();
+    actual_pinned_codex_history_acl_vendor_qualification_without_model_call();
+}
+
+fn actual_pinned_codex_product_open_baseline_without_model_call() {
     let _guard = route_b_test_guard();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let path = std::env::temp_dir().join(format!("gogoke-v37-real-session-{}-{stamp}", std::process::id()));
@@ -816,7 +821,6 @@ fn original_codex_thread_path_for_acl_test(product: &ProductDatabase<'_>,
     (thread, path)
 }
 
-#[test]
 fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
     let _route_guard = route_b_test_guard();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();

@@ -149,7 +149,25 @@ pub(super) fn set_candidate_home_acl(path: &Path,
     }
     let token = Token(raw);
     let (_user_buffer, user) = token_user(token.0)?;
-    set_protected_synthetic_acl(path, user, profiles, CONTAINER_INHERIT)
+    // Registry's already-created, nonsecret marker must remain readable by
+    // the ordinary Host when the parent switches to CI-only inheritance.
+    // Protect that exact physical file before touching the parent DACL; no
+    // package file ACE or history leaf ACL is added here.
+    let marker_path = path.join("gogoke-instance.marker");
+    let marker = open_physical_object(&marker_path, false, READ_CONTROL | WRITE_DAC)
+        .map_err(|error| error.to_string())?;
+    let marker_acl = build_acl(&[(user, FILE_ALL_ACCESS, NO_INHERITANCE)])?;
+    let status = unsafe { SetSecurityInfo(marker.0, FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), marker_acl.0, ptr::null_mut()) };
+    if status != 0 { return Err(format!("SetSecurityInfo(marker) Win32={status}")); }
+    set_protected_synthetic_acl(path, user, profiles, CONTAINER_INHERIT)?;
+    let actual = package_aces(marker.0, user).map_err(|error| error.to_string())?;
+    if actual != vec![(GRANT_ACCESS, FILE_ALL_ACCESS, NO_INHERITANCE)] {
+        return Err(format!("registered marker Host ACE mismatch: {actual:?}"));
+    }
+    fs::File::open(&marker_path).map_err(|error| format!("registered marker Host open: {error}"))?;
+    Ok(())
 }
 
 pub(super) fn verify_candidate_home_acl(path: &Path, identity: &RootIdentity,
