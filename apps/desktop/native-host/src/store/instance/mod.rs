@@ -11,6 +11,12 @@ mod reprobe;
 mod temporary;
 mod private_history;
 mod credential_registry;
+mod legacy_fence;
+
+pub(crate) use legacy_fence::{initialize_legacy_fence_schema, capture_legacy_fence,
+    read_legacy_fence, read_legacy_step, begin_legacy_acl_step, finish_legacy_acl_step,
+    LegacyFenceCapture, LegacyFenceRecord, LegacyCustodyRow, LegacyAclStep,
+    LegacyStepPhase, LegacyPhysicalProof, LegacyStepRequest, LegacyStepFinish};
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use catalog::{discover_program, known_new_version, locate_pinned_program, CatalogError};

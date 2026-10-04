@@ -15,7 +15,8 @@ mod session;
 pub use windows::*;
 #[cfg(windows)]
 pub(crate) use session::{AppContainerProfile, CompatModule, DirectoryRoots, IsolationError,
-    CredentialAlias, CredentialAliasScope, CredentialBinding, CredentialError};
+    CredentialAlias, CredentialAliasScope, CredentialBinding, CredentialError,
+    NativeBootIdentity, NativeBootIdentityError};
 
 #[cfg(not(windows))]
 compile_error!("gogoke native process custody is Windows-only");
