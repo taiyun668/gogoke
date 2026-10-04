@@ -503,7 +503,13 @@ impl LaunchEvidence {
             "app-server".into()] } else { match self.pin.driver_id.as_str() {
                 "claude" => {
                     let (model,effort)=self.settings()?;
-                    evidence(commands::claude_launch_args(&model,&effort,None))?
+                    let mut args=evidence(commands::claude_launch_args(&model,&effort,None))?;
+                    // The fixed 2.1.196 stdio permission host is required for
+                    // AskUserQuestion control_request frames. This flag does
+                    // not grant approval for ordinary tool permissions.
+                    args.push("--permission-prompt-tool".into());
+                    args.push("stdio".into());
+                    args
                 },
                 // The pinned top-level --pure switch disables external plugins;
                 // it does not by itself prove memory isolation or model choice.

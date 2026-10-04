@@ -6,6 +6,13 @@ use crate::store::atomic::Parser;
 use crate::store::inbox::{CardEnvelope,NativeQuestionCard};
 
 fn text(value:&str)->Json {Json::String(JsonString::from_str(value))}
+fn claude_card(card:&NativeQuestionCard)->Result<bool> {
+    let Json::Object(payload)=Parser::parse(&card.question_payload)? else {
+        return Err(OrchestrationError::OperationConflict);
+    };
+    Ok(payload.get(&JsonString::from_str("provider"))
+        ==Some(&Json::String(JsonString::from_str("claude"))))
+}
 
 impl<'root> ProductDatabase<'root> {
     pub(super) fn dispatch_user_qcard(&mut self,request:&V37Request)->Result<Vec<u8>> {
@@ -71,7 +78,9 @@ impl<'root> ProductDatabase<'root> {
         }
         let envelope=CardEnvelope {domain_id:&request.domain_id,card_id:&request.target_id,
             request_id:&request.request_id,request_bytes:&request.raw_bytes,expected_revision:request.expected_revision};
-        let completed=self.answer_codex_card(&key,&envelope,values)?;
+        let completed=if claude_card(&card)? {
+            self.answer_claude_card(&key,&envelope,values)?
+        } else {self.answer_codex_card(&key,&envelope,values)?};
         let operation=completed.operation;
         let status=if operation.phase=="ANSWERED" {
             if completed.newly_written {V37Status::Applied} else {V37Status::Replayed}
@@ -88,9 +97,15 @@ impl<'root> ProductDatabase<'root> {
         let mut ready=false;
         let mut availability_error=Json::Null;
         if let Some(run)=self.native_sessions.get(key) {
+            let current_turn=if run.evidence.driver_id()=="claude" {
+                run.pending_claude.as_ref().and_then(|(bytes,_)|
+                    crate::store::session_transport::decode_request(bytes).ok())
+                    .filter(|send|send.operation=="send")
+                    .map(|send|send.request_id)
+            } else {run.turn_id.clone()};
             if card.state=="OPEN" && run.allows_input() && run.custody.binding.generation==card.generation
                 && run.thread_id.as_deref()==Some(card.vendor_thread_id.as_str())
-                && run.turn_id.as_deref()==Some(card.turn_id.as_str()) {
+                && current_turn.as_deref()==Some(card.turn_id.as_str()) {
                 let claim=crate::store::session_transport::runtime::observe_claim(&self.connection,
                     &crate::store::seat::NativeOrigin::user(&self.owner),&key.0,&card.seat_id,&key.1)
                     .map_err(|error|OrchestrationError::V37StoreFailure(format!("native card current read: {error:?}")))?

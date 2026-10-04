@@ -35,6 +35,40 @@ impl ClaudeQuestion {
     /// vendor byte order remains available through `raw_frame`.
     pub(crate) fn original_input_json(&self) -> &str { &self.original_input_json }
     pub(crate) fn questions(&self) -> &[QuestionItem] { &self.questions }
+
+    /// Host IDs are explicitly derived from the original array position. The
+    /// complete vendor input is retained beside the UI projection, never
+    /// replaced by the first question's convenience columns.
+    pub(crate) fn display_payload(&self) -> String {
+        let items=self.questions.iter().map(|item| {
+            let choices=item.options.iter().enumerate().map(|(index,choice)| {
+                let mut fields=BTreeMap::from([
+                    (key("hostOptionId"),string(&format!("option{index}"))),
+                    (key("label"),string(&choice.label)),
+                    (key("description"),string(&choice.description)),
+                ]);
+                if let Some(preview)=&choice.preview {
+                    fields.insert(key("preview"),string(preview));
+                }
+                Json::Object(fields)
+            }).collect();
+            Json::Object(BTreeMap::from([
+                (key("hostIndex"),Json::Number(item.host_index.to_string())),
+                (key("hostQuestionId"),string(&format!("host{}",item.host_index))),
+                (key("question"),string(&item.question)),
+                (key("header"),string(&item.header)),
+                (key("multiSelect"),Json::Bool(item.multi_select)),
+                (key("options"),Json::Array(choices)),
+            ]))
+        }).collect();
+        Json::Object(BTreeMap::from([
+            (key("provider"),string("claude")),
+            (key("idOrigin"),string("HOST_DERIVED_ARRAY_INDEX")),
+            (key("originalInput"),Parser::parse(&self.original_input_json)
+                .expect("decoded Claude input remains valid JSON")),
+            (key("questions"),Json::Array(items)),
+        ])).canonical()
+    }
 }
 
 pub(crate) struct QuestionItem {
@@ -228,4 +262,95 @@ pub(crate) fn encode_answer(question: &ClaudeQuestion,
     ])).canonical().into_bytes();
     bytes.push(b'\n');
     Ok(bytes)
+}
+
+/// The product wire uses host0, host1, ... keys, each with the selected
+/// labels in original UI order. One arbitrary string is allowed for the
+/// provider's free-text Other entry. Multiple strings require multiSelect
+/// and must be unambiguous original option labels.
+pub(crate) fn encode_host_answers(question:&ClaudeQuestion,
+    answers:&BTreeMap<String,Vec<String>>) -> Result<Vec<u8>,QuestionError> {
+    if answers.len()!=question.questions.len() {
+        return Err(QuestionError::Invalid("host answer count"));
+    }
+    let mut joined=Vec::with_capacity(question.questions.len());
+    for item in &question.questions {
+        let values=answers.get(&format!("host{}",item.host_index))
+            .ok_or(QuestionError::Invalid("host question ID"))?;
+        if values.is_empty() || (!item.multi_select && values.len()!=1) ||
+            values.iter().any(|value|value.is_empty() || value.contains('\0')) {
+            return Err(QuestionError::Invalid("host answer values"));
+        }
+        if values.len()>1 {
+            let mut seen=BTreeSet::new();
+            for value in values {
+                if value.contains(',') || !seen.insert(value) ||
+                    !item.options.iter().any(|choice|&choice.label==value) {
+                    return Err(QuestionError::Invalid("multiSelect labels"));
+                }
+            }
+        }
+        joined.push(values.join(", "));
+    }
+    let refs=joined.iter().enumerate().map(|(host_index,answer)|QuestionAnswer {
+        host_index,answer:answer.as_str(),
+    }).collect::<Vec<_>>();
+    encode_answer(question,&refs)
+}
+
+/// Reconstruct the answer from the original A request and compare every wire
+/// byte. A caller cannot replace the tool-use ID, alter original input, or
+/// attach an unrelated permission decision while retaining a valid frame.
+pub(crate) fn validate_answer_wire(question:&ClaudeQuestion,wire:&[u8])
+    -> Result<(),QuestionError> {
+    let body=wire.strip_suffix(b"\n").ok_or(QuestionError::Invalid("answer LF"))?;
+    let parsed=Parser::parse(std::str::from_utf8(body).map_err(QuestionError::Utf8)?)
+        .map_err(QuestionError::Json)?;
+    let root=object(&parsed,"answer frame")?;
+    let envelope=object(required(root,"response")?,"answer envelope")?;
+    let decision=object(required(envelope,"response")?,"answer decision")?;
+    let updated=object(required(decision,"updatedInput")?,"updated input")?;
+    let answers=object(required(updated,"answers")?,"answers")?;
+    if answers.len()!=question.questions.len() {
+        return Err(QuestionError::Invalid("answer count"));
+    }
+    let mut values=Vec::with_capacity(question.questions.len());
+    for item in &question.questions {
+        let answer=match answers.get(&key(&item.question)) {
+            Some(Json::String(value))=>value.to_well_formed_string()
+                .ok_or(QuestionError::Invalid("answer value"))?,
+            _=>return Err(QuestionError::Invalid("answer value")),
+        };
+        values.push(answer);
+    }
+    let refs=values.iter().enumerate().map(|(host_index,answer)|QuestionAnswer {
+        host_index,answer:answer.as_str(),
+    }).collect::<Vec<_>>();
+    if encode_answer(question,&refs)?!=wire {
+        return Err(QuestionError::Invalid("original answer wire"));
+    }
+    Ok(())
+}
+
+/// A later original pure tool_result User frame can close the matching OPEN
+/// question. It is a provider resolution fact, not proof that a prior host
+/// stdin write was accepted or that the result was successful.
+pub(crate) fn tool_result_resolves(frame:&[u8],tool_use_id:&str,
+    vendor_session_id:&str)->Result<bool,QuestionError> {
+    if !stream_json::is_claude_tool_result_line(frame) {return Ok(false);}
+    let body=frame.strip_suffix(b"\n").ok_or(QuestionError::Invalid("tool result LF"))?;
+    let body=body.strip_suffix(b"\r").unwrap_or(body);
+    let parsed=Parser::parse(std::str::from_utf8(body).map_err(QuestionError::Utf8)?)
+        .map_err(QuestionError::Json)?;
+    let root=object(&parsed,"tool result")?;
+    if text(root,"session_id")?!=vendor_session_id {return Ok(false);}
+    let message=object(required(root,"message")?,"tool result message")?;
+    let Json::Array(parts)=required(message,"content")? else {
+        return Err(QuestionError::Invalid("tool result content"));
+    };
+    for part in parts {
+        let fields=object(part,"tool result block")?;
+        if text(fields,"tool_use_id")?==tool_use_id {return Ok(true);}
+    }
+    Ok(false)
 }

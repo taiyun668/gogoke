@@ -11,6 +11,8 @@ use crate::store::inbox::{self, CardEnvelope, InboxError, NativeAnswer,
 use crate::store::ledger::{self, RawSourceKey, RawSourceRecord};
 use crate::store::seat::NativeOrigin;
 use crate::store::session_transport::{codex_rpc::{self, Command, QuestionCard, Reply, RpcId}, runtime};
+use crate::store::session_transport::{self, provider_evidence::claude_question,
+    rpc_journal as rpc};
 use crate::store::digest::sha256_hex;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -131,6 +133,43 @@ fn source_matches(source:&RawSourceRecord,binding:&CurrentCardBinding)->bool {
         && source.domain_id==binding.domain && source.session_id==binding.session
         && source.generation==binding.generation
 }
+fn claude_send_present(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding)->Result<bool> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT h.request_hex FROM main.gogoke_v37_h_stdin_journal h
+          WHERE h.domain_id=?1 AND h.session_id=?2 AND h.request_id=?3
+            AND h.operation='send' AND h.process_operation_id=?4
+            AND h.ticket=?5 AND h.custodian_nonce=?6 AND h.generation=?7
+            AND h.phase IN ('PREPARED','RECEIPTED')")?;
+    for (index,value) in [binding.domain.as_str(),binding.session.as_str(),
+        binding.turn.as_str(),binding.operation.as_str(),binding.ticket.as_str(),
+        binding.nonce.as_str(),binding.generation.as_str()].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Ok(false);}
+    let bytes=unhex(&q.column_text(0)?)?;
+    if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+    drop(q);
+    let request=session_transport::decode_request(&bytes).map_err(|error|
+        store_error("Claude H send request",error))?;
+    if request.family!="K-SESSION" || request.operation!="send"
+        || request.request_id!=binding.turn || request.domain_id!=binding.domain
+        || request.target_id!=binding.session {
+        return Ok(false);
+    }
+    let digest=sha256_hex(&bytes);
+    let step_id=format!("claude-send-{}",&digest[..40]);
+    let step=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1
+          AND session_id=?2 AND step_id=?3 AND process_operation_id=?4
+          AND ticket=?5 AND custodian_nonce=?6 AND generation=?7
+          AND phase='OBSERVED' AND requires_response=1")?;
+    for (index,value) in [binding.domain.as_str(),binding.session.as_str(),
+        step_id.as_str(),binding.operation.as_str(),binding.ticket.as_str(),
+        binding.nonce.as_str(),binding.generation.as_str()].iter().enumerate() {
+        step.bind_text((index+1) as i32,value)?;
+    }
+    Ok(step.step_row()? && !step.step_row()?)
+}
 fn decoded_question(source:&RawSourceRecord,binding:&CurrentCardBinding)->Result<(QuestionCard,String)> {
     if !source_matches(source,binding) {return Err(OrchestrationError::OperationConflict);}
     let Reply::Question(card)=codex_rpc::decode(&source.raw_bytes,None).map_err(|error|store_error("provider question",error))?
@@ -157,6 +196,39 @@ fn stored_source(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding,
     if payload!=card.question_payload || request_id_wire(&original.request_id)!=card.vendor_request_id
         || original.item_id!=card.vendor_item_id || original.thread_id!=card.vendor_thread_id
         || original.turn_id!=card.turn_id {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    Ok(source)
+}
+fn stored_claude_source(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding,
+    card:&NativeQuestionCard)->Result<RawSourceRecord> {
+    let (source_key,digest)=read_source_descriptor(db,&binding.domain,&card.card_id)?;
+    if card_identity(&binding.domain,&binding.session,&source_key).0!=card.card_id
+        || !claude_send_present(db,binding)? {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    let source=ledger::read_captured_raw_source(db,&source_key.operation_id,
+        &source_key.source_epoch,&source_key.source_cursor)?
+        .ok_or(OrchestrationError::OperationConflict)?;
+    if !source_matches(&source,binding) || sha256_hex(&source.raw_bytes)!=digest {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    let original=claude_question::decode(&source.raw_bytes).map_err(|error|
+        store_error("Claude stored question",error))?
+        .ok_or(OrchestrationError::OperationConflict)?;
+    let first=original.questions().first().ok_or(OrchestrationError::OperationConflict)?;
+    if card.question_payload!=original.display_payload()
+        || card.vendor_request_id!=Json::String(JsonString::from_str(original.request_id())).canonical()
+        || card.vendor_item_id!=original.tool_use_id()
+        || card.vendor_thread_id!=binding.thread || card.turn_id!=binding.turn
+        || card.question_id!="host0" || card.header!=first.header
+        || card.question!=first.question || card.seat_id!=binding.seat
+        || card.generation!=binding.generation || !card.auto_resolution_ms.is_empty() {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    if card.options.len()!=first.options.len() || card.options.iter().enumerate().any(|(index,option)|
+        option.id!=format!("option{index}") || option.label!=first.options[index].label
+            || option.description!=first.options[index].description) {
         return Err(OrchestrationError::OperationConflict);
     }
     Ok(source)
@@ -222,6 +294,36 @@ fn recovered_card_present(db:&VerifiedDatabaseConnection<'_>,key:&(String,String
     if !source_matches(&source,&binding) || sha256_hex(&source.raw_bytes)!=digest {
         return Ok(false);
     }
+    if matches!(Parser::parse(&payload),Ok(Json::Object(ref fields))
+        if fields.get(&JsonString::from_str("provider"))
+            ==Some(&Json::String(JsonString::from_str("claude")))) {
+        if !claude_send_present(db,&binding).map_err(|error|
+            InboxError::InvalidEvidence(format!("Claude original H send: {error:?}")))? {
+            return Ok(false);
+        }
+        let Some(original)=claude_question::decode(&source.raw_bytes).map_err(|error|
+            InboxError::InvalidEvidence(format!("A Claude question: {error:?}")))? else {
+            return Ok(false);
+        };
+        let Some(first)=original.questions().first() else {return Ok(false);};
+        if payload!=original.display_payload() || vendor_request!=Json::String(JsonString::from_str(original.request_id())).canonical()
+            || item!=original.tool_use_id() || question_id!="host0"
+            || first.header!=header || first.question!=question_text {
+            return Ok(false);
+        }
+        let options=Statement::prepare(db.as_ptr(),
+            "SELECT option_id,label,description FROM main.gogoke_v37_qcard_native_options
+             WHERE domain_id=?1 AND card_id=?2 ORDER BY CAST(ordinal AS INTEGER),option_id")?;
+        options.bind_text(1,&key.0)?;options.bind_text(2,card_id)?;
+        for (index,choice) in first.options.iter().enumerate() {
+            if !options.step_row()? || options.column_text(0)?!=format!("option{index}")
+                || options.column_text(1)?!=choice.label
+                || options.column_text(2)?!=choice.description {
+                return Ok(false);
+            }
+        }
+        return Ok(!options.step_row()?);
+    }
     let (original,actual_payload)=decoded_question(&source,&binding)
         .map_err(|error|InboxError::InvalidEvidence(format!("A original question: {error:?}")))?;
     let Some(first)=original.questions.first() else {return Ok(false);};
@@ -281,8 +383,407 @@ pub(super) struct CodexAnswerWrite {
     pub(super) operation:NativeCardOperation,
     pub(super) newly_written:bool,
 }
+pub(super) struct ClaudeAnswerWrite {
+    pub(super) card_id:String,
+    pub(super) request_id:String,
+    pub(super) step_id:String,
+    pub(super) wire:Vec<u8>,
+    pub(super) source_key:RawSourceKey,
+    pub(super) operation:NativeCardOperation,
+    /// Only a newly created C intent can be passed to the sole H writer.
+    pub(super) write_permitted:bool,
+}
 
 impl<'root> ProductDatabase<'root> {
+    // Claude's fixed stream has a real session_id but no vendor turn_id.
+    // The card's turn_id is the original H User send request ID, kept under
+    // the same physical custody; it is never presented as a vendor turn.
+    fn observed_claude_card_binding(&mut self,key:&(String,String),live_input:bool)
+        ->Result<CurrentCardBinding> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="claude" || (live_input && !run.allows_input()) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let (send_bytes,identity)=run.pending_claude.as_ref()
+            .ok_or(OrchestrationError::AccessDenied)?;
+        let send=session_transport::decode_request(send_bytes).map_err(|error|
+            store_error("Claude original H send",error))?;
+        if send.family!="K-SESSION" || send.operation!="send" || send.domain_id!=key.0
+            || send.target_id!=key.1 || identity.step_id.is_empty() {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let seat=run.evidence.seat_id().to_owned();
+        let claim=runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,&seat,&key.1).map_err(|error|store_error("H Claude claim",error))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision).map_err(OrchestrationError::V37StoreFailure)?;
+        if self.process_custodian.active(&run.custody.ticket).is_none() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let binding=CurrentCardBinding {domain:key.0.clone(),session:key.1.clone(),seat,
+            generation:run.custody.binding.generation.clone(),operation:run.operation_id.clone(),
+            ticket:run.custody.ticket.opaque().to_owned(),nonce:run.custody.custodian_nonce.clone(),
+            thread:run.thread_id.clone().ok_or(OrchestrationError::AccessDenied)?,
+            turn:send.request_id};
+        if !claude_send_present(&self.connection,&binding)? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok(binding)
+    }
+
+    /// Retain the original Claude AskUserQuestion request in C. Ordinary
+    /// can_use_tool permissions and request_user_dialog never enter this path.
+    pub(super) fn raise_claude_card(&mut self,key:&(String,String),source_key:&RawSourceKey)
+        ->Result<RaisedCodexCard> {
+        let binding=self.observed_claude_card_binding(key,false)?;
+        let source=ledger::read_pending_raw_source(&self.connection,&source_key.operation_id,
+            &source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if !source_matches(&source,&binding) {return Err(OrchestrationError::OperationConflict);}
+        let card=claude_question::decode(&source.raw_bytes).map_err(|error|
+            store_error("Claude original question",error))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let first=card.questions().first().ok_or(OrchestrationError::OperationConflict)?;
+        let payload=card.display_payload();
+        let option_ids=(0..first.options.len()).map(|index|format!("option{index}"))
+            .collect::<Vec<_>>();
+        let options=first.options.iter().zip(&option_ids).map(|(choice,id)|NativeQuestionOption {
+            id,label:&choice.label,description:&choice.description,
+        }).collect::<Vec<_>>();
+        let (card_id,raise_id)=card_identity(&binding.domain,&binding.session,&source.key);
+        let descriptor=source_descriptor(&source);
+        let envelope=CardEnvelope {domain_id:&binding.domain,card_id:&card_id,request_id:&raise_id,
+            request_bytes:descriptor.as_bytes(),expected_revision:0};
+        let host_id="host0";
+        let vendor_id=Json::String(JsonString::from_str(card.request_id())).canonical();
+        let question=NativeQuestion {vendor_request_id:&vendor_id,
+            vendor_thread_id:&binding.thread,vendor_item_id:card.tool_use_id(),
+            auto_resolution_ms:"",question_payload:&payload,question_id:host_id,
+            header:&first.header,question:&first.question,
+            answer_shape:NativeAnswerShape::OptionsOrFree,options:&options,
+            seat_id:&binding.seat,turn_id:&binding.turn,generation:&binding.generation};
+        let mut owner_error=None;
+        let result=inbox::raise_native_card(&mut self.connection,&envelope,&question,|db| {
+            if let Err(error)=authority::check_owner_in_current_transaction(db,&self.owner) {
+                owner_error=Some(error);return Err(InboxError::Denied);
+            }
+            if !native_binding_present(db,&binding,true)? ||
+                !claude_send_present(db,&binding).map_err(|error|
+                    InboxError::InvalidEvidence(format!("Claude H send: {error:?}")))? {
+                return Ok(false);
+            }
+            Ok(ledger::read_pending_raw_source(db,&source.key.operation_id,
+                &source.key.source_epoch,&source.key.source_cursor)?.as_ref()==Some(&source))
+        });
+        if matches!(&result,Err(InboxError::Denied)) {
+            if let Some(error)=owner_error {return Err(error);}
+        }
+        let operation=result.map_err(|error|store_error("Claude raise",error))?;
+        Ok(RaisedCodexCard {card_id,operation})
+    }
+
+    pub(super) fn query_claude_card(&mut self,key:&(String,String),card_id:&str)
+        ->Result<Option<NativeQuestionCard>> {
+        let binding=self.observed_claude_card_binding(key,true)?;
+        let mut owner_error=None;
+        let result=inbox::query_native_card(&mut self.connection,&binding.domain,card_id,|db| {
+            if let Err(error)=authority::check_owner_in_current_transaction(db,&self.owner) {
+                owner_error=Some(error);return Err(InboxError::Denied);
+            }
+            if !native_binding_present(db,&binding,false)? {return Ok(false);}
+            claude_send_present(db,&binding).map_err(|error|
+                InboxError::InvalidEvidence(format!("Claude original H send: {error:?}")))
+        });
+        if matches!(&result,Err(InboxError::Denied)) {
+            if let Some(error)=owner_error {return Err(error);}
+        }
+        let card=result.map_err(|error|store_error("Claude query",error))?;
+        if let Some(ref card)=card {stored_claude_source(&self.connection,&binding,card)?;}
+        Ok(card)
+    }
+
+    /// C's exact intent is committed before Root's sole H stdin writer. A
+    /// replay returns its old operation and never grants a second write.
+    pub(super) fn begin_claude_card_answer(&mut self,key:&(String,String),
+        envelope:&CardEnvelope<'_>,answers:BTreeMap<String,Vec<String>>)
+        ->Result<ClaudeAnswerWrite> {
+        if envelope.domain_id!=key.0 {return Err(OrchestrationError::OperationConflict);}
+        let prior=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_hex FROM main.gogoke_v37_qcard_native_operations
+             WHERE domain_id=?1 AND request_id=?2")?;
+        prior.bind_text(1,envelope.domain_id)?;prior.bind_text(2,envelope.request_id)?;
+        let existing=if prior.step_row()? {
+            let bytes=unhex(&prior.column_text(0)?)?;
+            if prior.step_row()? || bytes!=envelope.request_bytes {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            true
+        } else {false};
+        drop(prior);
+        let binding=if existing {None} else {Some(self.observed_claude_card_binding(key,true)?)};
+        let card=if existing {
+            self.query_codex_card_recovered(key,envelope.card_id)?
+        } else {
+            self.query_claude_card(key,envelope.card_id)?
+        }.ok_or(OrchestrationError::OperationConflict)?;
+        let (source_key,_)=read_source_descriptor(&self.connection,&key.0,&card.card_id)?;
+        let source=ledger::read_captured_raw_source(&self.connection,&source_key.operation_id,
+            &source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let original=claude_question::decode(&source.raw_bytes).map_err(|error|
+            store_error("Claude answer original",error))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if card.question_payload!=original.display_payload()
+            || card.vendor_request_id!=Json::String(JsonString::from_str(original.request_id())).canonical()
+            || card.vendor_item_id!=original.tool_use_id() {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let wire=claude_question::encode_host_answers(&original,&answers).map_err(|error|
+            store_error("Claude answer encoding",error))?;
+        let wire_text=std::str::from_utf8(wire.strip_suffix(b"\n")
+            .ok_or(OrchestrationError::OperationConflict)?).map_err(|error|
+                store_error("Claude answer UTF-8",error))?;
+        let step_id=format!("qanswer{}",sha256_hex(format!("{}\n{}\n{}",key.0,
+            key.1,envelope.request_id).as_bytes()));
+        let mut owner_error=None;
+        let intent=inbox::begin_native_answer_intent(&mut self.connection,envelope,
+            &card.vendor_request_id,&card.seat_id,&card.turn_id,&card.generation,
+            NativeAnswer::Wire(wire_text),|db| {
+                if let Err(error)=authority::check_owner_in_current_transaction(db,&self.owner) {
+                    owner_error=Some(error);return Err(InboxError::Denied);
+                }
+                if let Some(ref binding)=binding {
+                    if !native_binding_present(db,binding,false)? {return Ok(false);}
+                    let Some(current)=ledger::read_captured_raw_source(db,&source.key.operation_id,
+                        &source.key.source_epoch,&source.key.source_cursor)? else {return Ok(false);};
+                    Ok(current==source && claude_send_present(db,binding).map_err(|error|
+                        InboxError::InvalidEvidence(format!("Claude H answer send: {error:?}")))?)
+                } else {recovered_card_present(db,key,envelope.card_id)}
+            });
+        if matches!(&intent,Err(InboxError::Denied)) {
+            if let Some(error)=owner_error {return Err(error);}
+        }
+        let NativeAnswerIntent {operation,disposition}=intent.map_err(|error|
+            store_error("Claude answer intent",error))?;
+        if operation.answer_kind!="WIRE" || operation.answer!=wire_text {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        Ok(ClaudeAnswerWrite {card_id:card.card_id,request_id:envelope.request_id.into(),
+            step_id,wire,source_key,operation,
+            write_permitted:disposition==NativeAnswerDisposition::New})
+    }
+
+    /// C's fresh intent is the sole grant for one H exact write. Every replay
+    /// reads the original outcome; neither UNKNOWN nor a pipe error retries.
+    pub(super) fn answer_claude_card(&mut self,key:&(String,String),
+        envelope:&CardEnvelope<'_>,answers:BTreeMap<String,Vec<String>>)
+        ->Result<CodexAnswerWrite> {
+        let plan=self.begin_claude_card_answer(key,envelope,answers)?;
+        if !plan.write_permitted {
+            let operation=if plan.operation.phase=="UNKNOWN" {
+                match inbox::settle_native_answer_written(&mut self.connection,&self.owner,
+                    envelope,&key.1,&plan.step_id) {
+                    Ok(settled)=>settled,
+                    Err(InboxError::Denied)=>plan.operation,
+                    Err(error)=>return Err(store_error("Claude answer readback",error)),
+                }
+            } else {plan.operation};
+            return Ok(CodexAnswerWrite {card_id:plan.card_id,
+                request_id:plan.request_id,step_id:plan.step_id,
+                operation,newly_written:false});
+        }
+        // This repeats live physical and owner checks after C's intent was
+        // committed, immediately before asking H for an exact write permit.
+        let binding=self.observed_claude_card_binding(key,true)?;
+        if plan.source_key.operation_id!=binding.operation ||
+            plan.source_key.source_epoch!=binding.nonce {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let custody=run.custody.clone();
+        let open_id=run.open_request_id.clone();
+        let open_bytes=run.open_request_bytes.clone();
+        let step=rpc::ClaudeQuestionStep {domain_id:&key.0,session_id:&key.1,
+            open_request_id:&open_id,open_request_bytes:&open_bytes,
+            step_id:&plan.step_id,custody:&custody,card_id:&plan.card_id,
+            answer_request_id:&plan.request_id,source:&plan.source_key,wire:&plan.wire};
+        let prepared=rpc::prepare_claude_question(&mut self.connection,&self.owner,&step)
+            .map_err(|error|store_error("Claude H answer intent",error))?;
+        if prepared.disposition!=rpc::Disposition::NewWrite {
+            return Ok(CodexAnswerWrite {card_id:plan.card_id,
+                request_id:plan.request_id,step_id:plan.step_id,
+                operation:plan.operation,newly_written:false});
+        }
+        let process=self.process_custodian.active(&custody.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
+            let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(error));
+            let marked=rpc::mark_claude_question_unknown(&mut self.connection,&self.owner,
+                &step,&original.to_string());
+            return Err(OrchestrationError::NativeRecipientFailure(format!(
+                "Claude question stdin write: {original}; UNKNOWN: {marked:?}")));
+        }
+        rpc::mark_claude_question_written(&mut self.connection,&self.owner,&step)
+            .map_err(|error|store_error("Claude H answer written",error))?;
+        let operation=inbox::settle_native_answer_written(&mut self.connection,&self.owner,
+            envelope,&key.1,&plan.step_id)
+            .map_err(|error|store_error("Claude exactwrite settlement",error))?;
+        Ok(CodexAnswerWrite {card_id:plan.card_id,request_id:plan.request_id,
+            step_id:plan.step_id,operation,newly_written:true})
+    }
+
+    /// Close only OPEN Claude cards for the original H User send whose
+    /// committed receipt cites this exact provider result source. A result
+    /// from another turn or session cannot expire the current question.
+    pub(super) fn expire_claude_terminal_cards(&mut self,key:&(String,String),
+        source_key:&RawSourceKey)->Result<()> {
+        use crate::store::session_transport::provider_evidence::stream_json::{self,ClaudeData};
+        let source=ledger::read_captured_raw_source(&self.connection,
+            &source_key.operation_id,&source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let ClaudeData::Result {session_id:vendor_session,..}=
+            stream_json::decode_claude_line(&source.raw_bytes).map_err(|error|
+                store_error("Claude result source",error))? else {return Ok(());};
+        if source.domain_id!=key.0 || source.session_id!=key.1 ||
+            source.key!=*source_key || source.custodian_nonce!=source_key.source_epoch {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let sends=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id,request_hex,generation,ticket,custodian_nonce
+             FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2
+               AND process_operation_id=?3 AND custodian_nonce=?4 AND operation='send'")?;
+        for (index,value) in [key.0.as_str(),key.1.as_str(),source_key.operation_id.as_str(),
+            source_key.source_epoch.as_str()].iter().enumerate() {
+            sends.bind_text((index+1) as i32,value)?;
+        }
+        let mut matched=None;
+        while sends.step_row()? {
+            let turn=sends.column_text(0)?;
+            let bytes=unhex(&sends.column_text(1)?)?;
+            let generation=sends.column_text(2)?;
+            let ticket=sends.column_text(3)?;
+            let nonce=sends.column_text(4)?;
+            let input=session_transport::StdinRequest {domain_id:&key.0,
+                session_id:&key.1,ticket:&ticket,generation:&generation,
+                request_bytes:&bytes};
+            let Some(completed)=session_transport::read_original_claude_send_completed(
+                &self.connection,&input).map_err(|error|
+                    store_error("Claude original result readback",error))? else {continue;};
+            if completed.vendor_session_id!=vendor_session || nonce!=source_key.source_epoch
+                || completed.terminal!=stream_json::decode_claude_line(&source.raw_bytes)
+                    .map_err(|error|store_error("Claude terminal repeat",error))? {
+                continue;
+            }
+            let receipt=completed.user.record.receipt_bytes.as_ref()
+                .ok_or(OrchestrationError::OperationConflict)?;
+            let fields=session_transport::decode_receipt(receipt).map_err(|error|
+                store_error("Claude result receipt",error))?.into_result();
+            let original_field=|name:&str|->Result<String> {
+                let Some(Json::String(value))=fields.get(&JsonString::from_str(name)) else {
+                    return Err(OrchestrationError::OperationConflict);
+                };
+                value.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)
+            };
+            if original_field("sourceEpoch")?!=source_key.source_epoch ||
+                original_field("sourceCursor")?!=source_key.source_cursor {
+                continue;
+            }
+            if matched.replace((turn,generation,ticket,nonce)).is_some() {
+                return Err(OrchestrationError::OperationConflict);
+            }
+        }
+        drop(sends);
+        let Some((turn,generation,ticket,nonce))=matched else {return Ok(());};
+        if source.process_ticket!=ticket || source.generation!=generation {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let cards=Statement::prepare(self.connection.as_ptr(),
+            "SELECT card_id,revision,vendor_request_id,seat_id FROM main.gogoke_v37_qcard_native
+             WHERE domain_id=?1 AND vendor_thread_id=?2 AND turn_id=?3
+               AND generation=?4 AND state='OPEN'")?;
+        for (index,value) in [key.0.as_str(),vendor_session.as_str(),turn.as_str(),
+            generation.as_str()].iter().enumerate() {
+            cards.bind_text((index+1) as i32,value)?;
+        }
+        let mut open=Vec::new();
+        while cards.step_row()? {
+            open.push((cards.column_text(0)?,cards.column_text(1)?,
+                cards.column_text(2)?,cards.column_text(3)?));
+        }
+        drop(cards);
+        let descriptor=source_descriptor(&source);
+        for (card_id,revision,vendor_id,seat) in open {
+            let revision=revision.parse::<u64>().map_err(|error|
+                store_error("Claude card revision",error))?;
+            let expiry=format!("expire{}",sha256_hex(format!("{}\n{}",card_id,descriptor).as_bytes()));
+            let envelope=CardEnvelope {domain_id:&key.0,card_id:&card_id,
+                request_id:&expiry,request_bytes:descriptor.as_bytes(),expected_revision:revision};
+            inbox::expire_native_card(&mut self.connection,&envelope,&vendor_id,&seat,
+                &turn,&generation,|db| {
+                    authority::check_owner_in_current_transaction(db,&self.owner)
+                        .map_err(InboxError::Authority)?;
+                    let current=ledger::read_captured_raw_source(db,&source.key.operation_id,
+                        &source.key.source_epoch,&source.key.source_cursor)?;
+                    Ok(current.as_ref()==Some(&source) && nonce==source.custodian_nonce)
+                }).map_err(|error|store_error("Claude terminal card expiry",error))?;
+        }
+        Ok(())
+    }
+
+    /// The fixed stream's original pure tool_result block is a narrower
+    /// question-resolution fact than a whole-turn result. It closes only the
+    /// matching source/tool-use ID while the card remains OPEN.
+    pub(super) fn expire_claude_resolved_cards(&mut self,key:&(String,String),
+        source_key:&RawSourceKey)->Result<()> {
+        use crate::store::session_transport::provider_evidence::stream_json;
+        let source=ledger::read_captured_raw_source(&self.connection,
+            &source_key.operation_id,&source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if !stream_json::is_claude_tool_result_line(&source.raw_bytes) {return Ok(());}
+        if source.domain_id!=key.0 || source.session_id!=key.1 || source.key!=*source_key
+            || source.custodian_nonce!=source_key.source_epoch {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let cards=Statement::prepare(self.connection.as_ptr(),
+            "SELECT card_id FROM main.gogoke_v37_qcard_native
+             WHERE domain_id=?1 AND generation=?2 AND state='OPEN'")?;
+        cards.bind_text(1,&key.0)?;cards.bind_text(2,&source.generation)?;
+        let mut ids=Vec::new();while cards.step_row()? {ids.push(cards.column_text(0)?);}drop(cards);
+        let descriptor=source_descriptor(&source);
+        let current_cursor=source_key.source_cursor.parse::<u64>()
+            .map_err(|_|OrchestrationError::OperationConflict)?;
+        for card_id in ids {
+            let Some(card)=self.query_codex_card_recovered(key,&card_id)? else {continue;};
+            if card.state!="OPEN" || card.question_payload.is_empty() {continue;}
+            let (question_key,_)=read_source_descriptor(&self.connection,&key.0,&card_id)?;
+            if question_key.operation_id!=source_key.operation_id ||
+                question_key.source_epoch!=source_key.source_epoch ||
+                question_key.source_cursor.parse::<u64>().ok().map_or(true,|cursor|
+                    cursor>=current_cursor) {
+                continue;
+            }
+            if !claude_question::tool_result_resolves(&source.raw_bytes,
+                &card.vendor_item_id,&card.vendor_thread_id).map_err(|error|
+                    store_error("Claude tool result",error))? {
+                continue;
+            }
+            let expiry=format!("expire{}",sha256_hex(format!("{}\n{}",card_id,descriptor).as_bytes()));
+            let envelope=CardEnvelope {domain_id:&key.0,card_id:&card_id,
+                request_id:&expiry,request_bytes:descriptor.as_bytes(),expected_revision:card.revision};
+            inbox::expire_native_card(&mut self.connection,&envelope,&card.vendor_request_id,
+                &card.seat_id,&card.turn_id,&card.generation,|db| {
+                    authority::check_owner_in_current_transaction(db,&self.owner)
+                        .map_err(InboxError::Authority)?;
+                    let current=ledger::read_captured_raw_source(db,&source.key.operation_id,
+                        &source.key.source_epoch,&source.key.source_cursor)?;
+                    Ok(current.as_ref()==Some(&source) &&
+                        recovered_card_present(db,key,&card_id)?)
+                }).map_err(|error|store_error("Claude tool result card expiry",error))?;
+        }
+        Ok(())
+    }
     fn current_card_binding(&mut self,key:&(String,String))->Result<CurrentCardBinding> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         if !run.allows_input() {return Err(OrchestrationError::AccessDenied);}
