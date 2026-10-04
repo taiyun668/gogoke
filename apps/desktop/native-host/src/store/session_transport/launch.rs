@@ -581,6 +581,14 @@ impl LaunchEvidence {
                     // not grant approval for ordinary tool permissions.
                     args.push("--permission-prompt-tool".into());
                     args.push("stdio".into());
+                    // Reuse Room's tier mapping: approved workspace edits
+                    // must not become an extra Owner permission prompt.
+                    // The outer LPAC grants remain the execution boundary.
+                    args.push("--permission-mode".into());
+                    args.push(if matches!(self.tier,
+                        PermissionTier::IsolatedWrite|PermissionTier::NetworkedWrite) {
+                        "acceptEdits".into()
+                    } else { "plan".into() });
                     args
                 },
                 // The pinned top-level --pure switch disables external plugins;

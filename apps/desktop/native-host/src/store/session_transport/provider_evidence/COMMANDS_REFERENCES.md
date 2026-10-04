@@ -60,3 +60,21 @@ identity remain with the native E/F/H path. This changes argv only, not the
 fixed CLI bytes or LPAC capabilities. The original fixed help and the official
 [CLI reference](https://code.claude.com/docs/en/cli-reference) support the flag;
 actual initialized tool exposure remains a stable-point CLI golden check.
+
+## Bound Claude permission tier
+
+The Controller reused historical gogo-party `claude-seat.ts`'s explicit
+workspace-write mapping: H's current E `ReadOnly` and `NoNetwork` tiers request
+`plan`, while the two already authorized writable tiers request `acceptEdits`.
+This uses the same explicit pair as H's workspace writable grant. The value
+comes from the bound E seat, never a model argument. Existing LPAC directory
+grants still enforce physical scope; no capability or tool permission is added.
+The [official permission modes](https://code.claude.com/docs/en/permissions)
+and [CLI reference](https://code.claude.com/docs/en/cli-reference) support this
+mapping. The current docs are not a fixed-version runtime result: fixed
+2.1.196 startup, actual mode, real Write and question continuation require
+the cloud/installed-provider flow. Ordinary permission callbacks are not
+promoted to AskUserQuestion; the existing stdio callback remains restricted.
+This closes the mismatch between an already writable E tier and a CLI default
+that could require the Owner to approve each ordinary file edit. It does not
+claim that any pending Claude handshake was caused by that default.
