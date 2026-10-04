@@ -8,6 +8,8 @@ import { id, delay } from './product-cdp.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const decimal = value => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value);
 const requireFact = (condition, message) => { if (!condition) throw Error(message); };
+const binding = ({ id, seatId, instanceId, worktreeId, generation, threadId }) =>
+  ({ id, seatId, instanceId, worktreeId, generation, threadId });
 
 export async function runRulesCase(product, config, journal) {
   const c = config.rules;
@@ -19,13 +21,14 @@ export async function runRulesCase(product, config, journal) {
   const record = { caseId: id('V08'), state: 'RUNNING', acceptance: false,
     sourceCommit: config.sourceCommit, domainId: config.domainId,
     driverSha256: hash(fs.readFileSync(fileURLToPath(import.meta.url))),
+    readerSha256: hash(fs.readFileSync(fileURLToPath(new URL('./m2-rules-readback.py', import.meta.url)))),
     ownership: { lifecycle: c.lifecycleOwnership, policy: c.policyOwnership },
-    ownerConfigurations: [], seatCards: [], userBoundaries: [], actions: [], notRun: [
+    ownerConfigurations: [], seatCards: [], initialSessions: [], userBoundaries: [], actions: [], hostCases: [], notRun: [
       { caseId: 'V08_MODEL_FORGED_SENDER', reason: 'The advertised tool accepts no sender/caller field; a real malformed caller A frame is required. User bytes cannot substitute.' },
       { caseId: 'V08_MODEL_CROSS_PROJECT', reason: 'The native tool derives domain from H; it exposes no cross-domain selector. A genuine reachable cross-project model call is required.' },
       { caseId: 'V08_MODEL_SUBORDINATE_OWNER', reason: 'A distinct admitted subordinate and its real reachable MESSAGE/Owner operation are required; gate target text is not that operation.' },
-      { caseId: 'V08_REJECT_CAP_DELIVERY', reason: 'ESCALATION_REQUIRED is a gate state. Native K-POLICY escalate/trigger dispatch is UNSUPPORTED; original coordinator trigger and C/H delivery are required.' },
-      { caseId: 'V08_STALL_CHAIN', reason: 'Requires an actual stalled seat health event, configured chain and original coordinator/C/H delivery; none may be synthesized.' },
+      { caseId: 'V08_REJECT_CAP_DELIVERY', reason: 'Host recipient/checkpoint context not supplied; gate state alone cannot prove original E/C/H delivery.' },
+      { caseId: 'V08_STALL_CHAIN', reason: 'There is no current STALLED source producer for the Host observer; an enum/table row or scheduled trigger cannot substitute.' },
     ], readbackRequired: true };
   journal.rulesCases ??= []; journal.rulesCases.push(record); product.save();
   try {
@@ -38,7 +41,8 @@ export async function runRulesCase(product, config, journal) {
     requireFact(before.schema === 'gogoke.37.private-m2-rules-readback.v1' && before.phase === 'before' &&
       before.caseId === journal.caseId && before.sourceCommit === config.sourceCommit &&
       before.domainId === config.domainId && before.measurementPreservedDatabaseBytes === true &&
-      before.databaseWrites === false && before.credentialReads === false && before.policy.head.length === 1,
+      before.databaseWrites === false && before.credentialReads === false && before.policy.head.length === 1 &&
+      before.readerSha256 === record.readerSha256,
     'V08 baseline must be the same candidate/domain immutable native readback');
     record.baselineReadback = baseline;
     let policyRevision = String(before.policy.head[0].revision);
@@ -57,6 +61,7 @@ export async function runRulesCase(product, config, journal) {
     requireFact(submitter.id !== reviewer.id && submitter.seatId !== reviewer.seatId &&
       submitter.worktreeId !== reviewer.worktreeId, 'V08 needs two independent exclusive seats/worktrees');
     record.submitterSession = submitter.id; record.reviewerSession = reviewer.id;
+    record.initialSessions = [binding(submitter), binding(reviewer)];
     record.fromStage = fromStage; record.toStage = toStage;
     record.rejectGate = id('v08Reject'); record.passGate = id('v08Pass');
     record.rejectReasons = [id('V08_reason_one'), id('V08_reason_cap')]; product.save();
@@ -98,7 +103,7 @@ export async function runRulesCase(product, config, journal) {
       requestId: journal.operations.at(-1).request.requestId, receipt: userReply,
       authority: 'REAL_USER_INGRESS_ONLY' }); product.save();
 
-    const output = async session => {
+    const output = async (session, allowQuestion = false) => {
       let reply = await product.operation('K-SESSION', 'output-stream', session.id,
         { generation: session.generation, afterCursor: session.cursor }, session.revision, ['APPLIED', 'STALE']);
       if (reply.status === 'STALE') {
@@ -111,13 +116,15 @@ export async function runRulesCase(product, config, journal) {
       session.cursor = reply.result.cursor; session.revision = reply.revision;
       session.events.push(...reply.result.events); product.save();
       if (reply.result.sourceError) throw Error(`V08 original source error: ${JSON.stringify(reply.result.sourceError)}`);
-      requireFact(!reply.result.nativeCardRefs.some(row => row.state === 'OPEN'),
+      requireFact(allowQuestion || !reply.result.nativeCardRefs.some(row => row.state === 'OPEN'),
         'V08 unexpected question card; preserve without answering');
+      return reply.result;
     };
     const call = async (caseId, session, operation, gate, revision, payload, status, state = null, reason = '') => {
       const args = { operation, targetId: gate, expectedRevision: revision, payload };
       const action = { caseId, sessionId: session.id, seatId: session.seatId,
-        arguments: args, expected: { status, state, reason, policyRevision }, state: 'PREPARED' };
+        binding: binding(session), arguments: args,
+        expected: { status, state, reason, policyRevision }, state: 'PREPARED' };
       record.actions.push(action); product.save();
       const body = `Owner-authorized V08 test, ${record.caseId}/${caseId}. Make exactly one real gogoke_policy call with these exact arguments: ${JSON.stringify(args)}. No retries or other tool calls. Do not edit files, invoke processes, dispatch seats, contact anyone, request permission, or infer success from prose. Preserve the original native result and finish this turn.`;
       action.askBytes = body; const start = session.events.length; product.save();
@@ -156,6 +163,7 @@ export async function runRulesCase(product, config, journal) {
         receipt.result.policyRevision === policyRevision, 'V08 native state/reason/policy revision');
       action.state = 'OBSERVED_NATIVE_RECEIPT_READBACK_REQUIRED';
       session.turns.push({ turnId: action.turnId, sendRequestId: action.sendRequestId }); product.save();
+      return action;
     };
     const reject = record.rejectGate, pass = record.passGate;
     await call('V08_SUBMIT_REJECT_GATE', submitter, 'gate-submit', reject, '1', {}, 'APPLIED', 'SUBMITTED');
@@ -176,6 +184,179 @@ export async function runRulesCase(product, config, journal) {
     await call('V08_APPROVE', reviewer, 'gate-decide', pass, '2', { decision: 'PASS' }, 'APPLIED', 'PASSED');
     policyRevision = (BigInt(policyRevision) + 1n).toString();
     await call('V08_LEGAL_STAGE', submitter, 'stage-transition', pass, '3', {}, 'APPLIED', 'ADVANCED', toStage);
+    if (c.host) {
+      const h = c.host;
+      requireFact(h.lifecycleOwnership === 'EXCLUSIVE_V08_HOST_RECIPIENTS' &&
+        ['hostCheckpoint', 'openHostSession', 'resumeRulesSession', 'stopRulesSession',
+          'releaseStoppedRulesSession'].every(name => typeof c[name] === 'function'),
+      'Host cases require scoped real runner lifecycle/checkpoint callbacks');
+      const selections = [h.destination, h.alternateDestination];
+      requireFact(selections.every(row => row && ['seatId', 'instanceId', 'worktreeId']
+        .every(name => typeof row[name] === 'string' && row[name])) &&
+        new Set([submitter.seatId, reviewer.seatId, ...selections.map(row => row.seatId)]).size === 4 &&
+        new Set([submitter.worktreeId, reviewer.worktreeId, ...selections.map(row => row.worktreeId)]).size === 4 &&
+        typeof h.busyQuestion?.questionId === 'string' && typeof h.busyQuestion?.optionLabel === 'string',
+      'Four exclusive actual registered test seats/worktrees and a nonsecret busy question are required');
+      record.hostOwnership = h.lifecycleOwnership;
+      record.hostRecipients = selections; product.save();
+      const open = async selection => {
+        const session = await c.openHostSession(selection);
+        requireFact(journal.sessions.includes(session) && selections.some(row =>
+          row.seatId === session.seatId && row.instanceId === session.instanceId && row.worktreeId === session.worktreeId) &&
+          session.threadId && decimal(session.generation), 'Recipient must be the actual case-owned H open');
+        return session;
+      };
+      const checkpoint = async host => {
+        const reference = await c.hostCheckpoint();
+        requireFact(reference && path.basename(reference.file) === reference.file &&
+          /^[a-f0-9]{64}$/.test(reference.sha256), 'Host checkpoint original artifact required');
+        const bytes = fs.readFileSync(path.join(config.evidenceDirectory, reference.file));
+        requireFact(hash(bytes) === reference.sha256, 'Original host checkpoint bytes changed');
+        const snapshot = JSON.parse(bytes.toString('utf8'));
+        requireFact(snapshot.schema === before.schema && snapshot.phase === 'checkpoint' &&
+          snapshot.caseId === journal.caseId && snapshot.sourceCommit === config.sourceCommit &&
+          snapshot.domainId === config.domainId && snapshot.databasePath === before.databasePath &&
+          snapshot.readerSha256 === record.readerSha256 &&
+          snapshot.rootIdentity.observer === before.rootIdentity.observer &&
+          JSON.stringify(snapshot.rootIdentity) === JSON.stringify(before.rootIdentity) &&
+          snapshot.measurementPreservedDatabaseBytes && !snapshot.databaseWrites && !snapshot.credentialReads,
+        'Host checkpoint must be a normally closed original immutable candidate readback');
+        const original = snapshot.hostSnapshots.find(row => row.caseId === host.caseId);
+        requireFact(original?.message.state === 'PENDING' && original.message.turn_id === '' &&
+          original.message.generation === '' && original.deliveries.length === 0 && original.sends.length === 0,
+        'Actual Host queue must precede any delivery/turn, not a script queue claim');
+        const stopped = [submitter, reviewer, ...(host.busy ? [journal.sessions.find(row => row.id === host.busy.binding.id)] : [])];
+        for (const session of stopped) {
+          const claim = snapshot.stoppedClaims.find(row => row.session_id === session?.id);
+          requireFact(claim?.state === 'STOPPED' && claim.generation === session.generation &&
+            claim.instance_id === session.instanceId && claim.stop_fact_id && Number.isSafeInteger(claim.revision),
+          'Normal close must leave this exact case-owned H generation physically stopped');
+          session.revision = String(claim.revision);
+        }
+        host.checkpoint = reference; host.messageId = original.message.message_id;
+        host.enqueueRequestId = original.enqueue.request_id;
+        host.triggerId = original.intent.trigger_id; host.escalationRequestId = original.intent.request_id;
+        host.queuedRevision = original.message.revision; product.save();
+      };
+      const resumeSources = async () => {
+        for (const session of [submitter, reviewer]) await c.resumeRulesSession(session);
+        requireFact([submitter, reviewer].every((row, index) => row.threadId && decimal(row.generation) &&
+          ['id', 'seatId', 'instanceId', 'worktreeId'].every(name => row[name] === record.initialSessions[index][name])),
+          'Sources must return through real H resume, preserving journal identity');
+      };
+      const inbox = async host => {
+        let reply = await product.operation('K-INBOX', 'check-unknown', host.messageId, {},
+          host.queuedRevision, ['APPLIED', 'STALE']);
+        if (reply.status === 'STALE') reply = await product.operation('K-INBOX', 'check-unknown',
+          host.messageId, {}, reply.revision);
+        host.readRequestIds.push(journal.operations.at(-1).request.requestId); product.save();
+        return reply;
+      };
+      const cancel = async host => {
+        const current = await inbox(host);
+        requireFact(current.result.state === 'PENDING', 'Only actual pending Host notices may be cancelled');
+        const cancelled = await product.operation('K-INBOX', 'cancel', host.messageId, {}, current.revision);
+        requireFact(cancelled.result.state === 'CANCELLED', 'Original User Host cancellation receipt');
+        host.cancelRequestId = journal.operations.at(-1).request.requestId; product.save();
+      };
+      const holdBusy = async (host, session) => {
+        const body = `Owner-authorized V08 busy-queue case ${host.caseId}. Ask exactly one non-secret native request_user_input question with id ${JSON.stringify(h.busyQuestion.questionId)}, header "V08 queue", text "Keep this test turn waiting for the Owner", and option label ${JSON.stringify(h.busyQuestion.optionLabel)}. Wait for the answer. Do not call any other tool, edit files, dispatch or contact anyone.`;
+        host.busy = { binding: binding(session), question: h.busyQuestion,
+          askBytes: body, readRequestIds: [] }; product.save();
+        const sent = await product.operation('K-SESSION', 'send', session.id,
+          { generation: session.generation, body }, session.revision);
+        session.revision = sent.revision;
+        requireFact(sent.result.createdTurn && sent.result.turnId, 'Real native busy turn required');
+        host.busy.sendRequestId = journal.operations.at(-1).request.requestId;
+        host.busy.turnId = sent.result.turnId; product.save();
+        const deadline = Date.now() + 600000;
+        while (Date.now() < deadline) {
+          const page = await output(session, true);
+          const card = page.nativeCardRefs.find(row => row.state === 'OPEN');
+          if (card) { host.busy.cardId = card.cardId; host.busy.cardRevision = card.revision; break; }
+          await delay(300);
+        }
+        requireFact(host.busy.cardId, 'No actual native question: busy control cannot run');
+      };
+      const readBusy = async (host, session) => {
+        const reply = await product.operation('K-QCARD', 'recover', host.busy.cardId, {}, host.busy.cardRevision);
+        requireFact(reply.result.state === 'OPEN' && reply.result.availableForAnswer === true &&
+          reply.result.seatId === session.seatId && reply.result.generation === session.generation &&
+          reply.result.nativeQuestion.threadId === session.threadId &&
+          reply.result.nativeQuestion.turnId === host.busy.turnId &&
+          reply.result.nativeQuestion.questions.length === 1 &&
+          reply.result.nativeQuestion.questions[0].id === h.busyQuestion.questionId &&
+          !reply.result.nativeQuestion.questions[0].isSecret &&
+          reply.result.nativeQuestion.questions[0].options.some(row => row.label === h.busyQuestion.optionLabel),
+        'Busy precondition is original live native question custody, not a BUSY table claim');
+        host.busy.readRequestIds.push(journal.operations.at(-1).request.requestId); product.save();
+      };
+      for (const kind of ['DELIVERED', 'BUSY_QUEUED', 'ROUTE_CHANGED', 'CANCELLED']) {
+        const host = { caseId: id(`V08_HOST_${kind}`), kind, gateId: id('v08HostGate'),
+          toStage: id('v08HostStage'), reason: id('v08HostReason'), sourceSeatId: submitter.seatId,
+          destination: h.destination, readRequestIds: [], targetSessions: [], state: 'PREPARING' };
+        record.hostCases.push(host); product.save();
+        let busySession;
+        if (kind === 'BUSY_QUEUED') {
+          busySession = await open(h.destination);
+          await holdBusy(host, busySession); await readBusy(host, busySession);
+        }
+        await configure('policy-escalation-route', { fromSeatId: submitter.seatId,
+          reason: 'REJECT_CAP', toSeatId: h.destination.seatId });
+        host.routeRevision = policyRevision;
+        await configure('policy-gate', { gateId: host.gateId, submitterSeatId: submitter.seatId,
+          reviewerSeatId: reviewer.seatId, fromStage: toStage, toStage: host.toStage, rejectCap: 1 });
+        host.policyRevision = policyRevision; product.save();
+        await call(`${host.caseId}_SUBMIT`, submitter, 'gate-submit', host.gateId, '1', {}, 'APPLIED', 'SUBMITTED');
+        const rejected = await call(`${host.caseId}_REJECT`, reviewer, 'gate-decide', host.gateId, '2',
+          { decision: 'REJECT', reason: host.reason }, 'APPLIED', 'ESCALATION_REQUIRED', host.reason);
+        host.causeEventId = rejected.receipt.requestId; host.state = 'ORIGINAL_CAP_OBSERVED'; product.save();
+        if (busySession) await readBusy(host, busySession);
+        await checkpoint(host);
+        if (kind === 'ROUTE_CHANGED') {
+          await configure('policy-escalation-route', { fromSeatId: submitter.seatId,
+            reason: 'REJECT_CAP', toSeatId: h.alternateDestination.seatId });
+          host.changedRouteRevision = policyRevision; product.save();
+        }
+        if (kind === 'CANCELLED' || kind === 'BUSY_QUEUED') await cancel(host);
+        if (busySession) await c.releaseStoppedRulesSession(busySession);
+        if (kind !== 'BUSY_QUEUED') {
+          const targets = kind === 'ROUTE_CHANGED' ? selections : [h.destination];
+          for (const selection of targets) {
+            const target = await open(selection);
+            host.targetSessions.push(binding(target)); product.save();
+            const start = target.events.length;
+            if (kind === 'DELIVERED') {
+              const deadline = Date.now() + 600000;
+              let completed;
+              while (Date.now() < deadline) {
+                const current = await inbox(host); await output(target);
+                completed = target.events.slice(start).find(row => row._meta?.codexMethod === 'turn/completed' &&
+                  row._meta.threadId === target.threadId && row._meta.turnStatus === 'completed');
+                if (current.result.state === 'DELIVERED' && completed) break;
+                await delay(300);
+              }
+              requireFact(completed && (await inbox(host)).result.state === 'DELIVERED',
+                'Host original send/CLI completion absent; do not resend or infer from prose');
+              host.observedTurnId = completed._meta.turnId;
+              // Revisit existing safe points using readonly original views.
+              await output(target); await inbox(host); await output(target); await inbox(host);
+            } else {
+              await output(target); await inbox(host); await output(target);
+              requireFact((await inbox(host)).result.state ===
+                (kind === 'CANCELLED' ? 'CANCELLED' : 'PENDING'), 'Original Owner control boundary changed');
+            }
+            await c.stopRulesSession(target);
+          }
+        }
+        await resumeSources();
+        host.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();
+      }
+      record.notRun = record.notRun.filter(row => row.caseId !== 'V08_REJECT_CAP_DELIVERY');
+      record.notRun.push({ caseId: 'V08_HOST_AUTOMATIC_ADMISSION', reason: 'Absent retained targets are queued; this case explicitly uses ordinary Owner H admission, not automatic Host admission.' },
+        { caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'No real deterministic UNKNOWN/late-ACK occurrence is available here; synthetic ACK/faults and input replay are not used.' },
+        { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Busy is proved by the native unanswered question; normal close and User cancellation clean up that separate cause. Its old vendor turn is never presumed idle on resume.' });
+    }
     record.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();
     return record;
   } catch (error) {
