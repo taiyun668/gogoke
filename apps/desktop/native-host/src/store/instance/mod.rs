@@ -14,7 +14,7 @@ mod credential_registry;
 mod legacy_fence;
 
 pub(crate) use legacy_fence::{initialize_legacy_fence_schema, capture_legacy_fence,
-    read_legacy_fence, read_legacy_step, begin_legacy_acl_step, finish_legacy_acl_step,
+    read_legacy_fence, read_legacy_step, begin_legacy_acl_step, validate_legacy_acl_write, finish_legacy_acl_step,
     LegacyFenceCapture, LegacyFenceRecord, LegacyCustodyRow, LegacyAclStep,
     LegacyStepPhase, LegacyPhysicalProof, LegacyStepRequest, LegacyStepFinish};
 

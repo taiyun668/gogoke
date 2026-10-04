@@ -1,6 +1,6 @@
 # M2 原测试实例的旧隔离状态恢复：Controller 细节修订
 
-状态：DETAIL_PLAN_REVIEW_PENDING。保持旧凭据、ACL 和 custody；先完成范围不变的细节计划 PR 及独立审计，再实施恢复。
+状态：IMPLEMENTATION_CLOUD_VALIDATION_PENDING。范围不变的细节 PR #64 经独立审计后由 Controller 合并；PR #65 纠正 MANIFEST 对 Git 内精确 LF 字节的哈希，两份均未改变范围摘要或授权回执。恢复实现正在云端验证，实际 Win11 场景保持原样。
 
 ## 已取得的事实
 
@@ -23,7 +23,7 @@
 
 ## 细节修订：补充独立的系统重启栅栏事实
 
-Controller 起草并独立审计一个恢复细节 PR：产品在重启前，绑定当前系统启动身份、原物理数据库、root、home 和旧 custody 的确切身份，持久保存恢复栅栏；正常 Windows 系统重启后，产品从受信 OS 来源读回不同的启动身份，才允许针对这些确切旧身份进行权限迁移。
+已合入的细节约定：产品在重启前，绑定当前系统启动身份、原物理数据库、root、home 和旧 custody 的确切身份，持久保存恢复栅栏；正常 Windows 系统重启后，产品从受信 OS 来源读回不同的启动身份，才允许针对这些确切旧身份进行权限迁移。
 
 这个事实不转换成 NativeStopProof，旧 UNKNOWN 及缺失的停止证明保持原样。当前启动期的 UNKNOWN、未纳入原栅栏的对象、来源或身份变化均继续拒绝；固定 CLI、登录 home、模型 LPAC 和 capability 集合保持不变。不能把普通界面重启、时间差、PID 缺席或调用者提供的 boot 值当成系统重启事实。
 
@@ -36,6 +36,12 @@ Controller 起草并独立审计一个恢复细节 PR：产品在重启前，绑
 沿用当前 `AGENTS.md` 的角色/契约边界、先查逻辑硬伤、直接证据和阶段内轻规则；对照现有 `process_custody.rs` 原 ticket/nonce/Job/writer 停止契约，`v37_login.rs` 旧作用域迁移及 source quiescence，`credential_binding.rs` 进程内 ACL 完成状态，`credential_launch.rs` 冷 holder 拒绝逻辑，`private_history.rs` 的目录继承行为。沿用本轮原始普通视图 ACL 回执、历史登录源码和捕获 custody；完整本机路径、身份及私有回执留在私有证据区。
 
 本文件不是施工授权、产品验收或新恢复事实的执行回执。
+
+## 当前实现与验证
+
+原生启动身份、F 的两步持久意图和精确旧 SID ACL 迁移已接到原实例入口；冷模型入口直接复用原受保护源，不靠额外登录观察。独立首次全轴源码审计发现部分 SID 中断、待决意图写前核对、冷模型接线和缓存 UNKNOWN 拒绝问题，已集中修正并补云端 Windows 边界回归。完整云端结果及新的候选实测尚未完成；旧 UNKNOWN、空停止证明和 COMMITTED 预留保持。
+
+普通视图只读原生启动 API 两次返回成功且同一非零启动身份；这只证明 API 可用，不证明实际系统重启恢复通过。没有改真实 ACL、没有读取凭据内容，没有启动新候选或自动重启系统。云端测试临时数据库里的合成旧启动身份不会写成 Owner Win11 的重启证据。
 
 ## 走法反思
 

@@ -580,8 +580,7 @@ impl<'root> ProductDatabase<'root> {
                 target_source_acl_digest: &inventory.source_after_home_digest(), proof: &proof,
             }))?,
         };
-        let prior_baseline = failure(instance::read_legacy_step(&self.connection, instance_id, LegacyAclStep::Baseline))?;
-        let home_receipt = if home_step.phase == LegacyStepPhase::Applied && prior_baseline.is_some() {
+        let home_receipt = if home_step.phase == LegacyStepPhase::Applied {
             // Reconstruct the already-committed HOME receipt from its exact
             // immutable targets. The native baseline reconciler independently
             // verifies all current HOME objects and either precise source state.
@@ -589,7 +588,10 @@ impl<'root> ProductDatabase<'root> {
                 home_observed_digest: home_step.target_home_acl_digest.clone(),
                 source_observed_digest: home_step.target_source_acl_digest.clone(),
             }
-        } else { failure(inventory.reconcile_home(self.root, &home.path, &home.identity, &binding))? };
+        } else {
+            failure(instance::validate_legacy_acl_write(&self.connection, &home_step, &boot, &proof))?;
+            failure(inventory.reconcile_home(self.root, &home.path, &home.identity, &binding))?
+        };
         proof.actual_home_acl_digest = home_receipt.home_observed_digest.clone();
         proof.actual_source_acl_digest = home_receipt.source_observed_digest.clone();
         if home_step.phase == LegacyStepPhase::Pending {
@@ -606,6 +608,7 @@ impl<'root> ProductDatabase<'root> {
                 target_source_acl_digest: &inventory.source_target_digest(), proof: &proof,
             }))?,
         };
+        failure(instance::validate_legacy_acl_write(&self.connection, &baseline, &boot, &proof))?;
         let receipt = failure(inventory.prepare_source_baseline(self.root, &home.path,
             &home.identity, &binding, &home_receipt))?;
         proof.actual_source_acl_digest = receipt.source_observed_digest;
@@ -3190,6 +3193,78 @@ exit 0
         assert_eq!(replay.custody, original.custody);
         assert_eq!(replay.revision, original.revision);
         assert_eq!(scalar(&reopened, "SELECT state FROM main.gogoke_coordination_process_custody WHERE operation_id='oldLoginA'"), "UNKNOWN");
+        // This cloud fixture models a recorded earlier boot only in its own
+        // temporary database. It is not evidence of a real Owner reboot.
+        let fixture_boot = format!("{}{}", if replay.original_boot.starts_with('0') { "1" } else { "0" }, &replay.original_boot[1..]);
+        let q = Statement::prepare(reopened.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_legacy_acl_fences SET boot_identity=?1 WHERE instance_id='instanceA'").unwrap();
+        q.bind_text(1, &fixture_boot).unwrap(); q.step_done().unwrap(); drop(q);
+        let binding = crate::process::CredentialBinding::open_registered(&root, &source, &home.identity, &before_source.0, &[]).unwrap();
+        let names = vec![owner_login_profile_name("instanceA", &home.identity)];
+        let inventory = crate::process::LegacyAclInventory::restore(&root, &home.path, &home.identity,
+            &binding, &names, &replay.native_snapshot, &replay.native_snapshot_digest).unwrap();
+        let proof = instance::LegacyPhysicalProof {
+            database_identity: reopened.connection.identity().clone(), root_identity: reopened.connection.root_identity().clone(),
+            home_identity: home.identity.clone(), source_identity: before_source.0.clone(), source_parent_identity: home.identity.clone(),
+            source_revision: None, source_link_count: u64::from(before_source.1), registered_alias_count: 0,
+            acl_provenance_digest: replay.acl_provenance_digest.clone(),
+            actual_home_acl_digest: inventory.home_original_digest(), actual_source_acl_digest: inventory.source_original_digest(),
+        };
+        let current_boot = crate::process::NativeBootIdentity::observe().unwrap().canonical_hex();
+        instance::begin_legacy_acl_step(&mut reopened.connection, &instance::LegacyStepRequest {
+            instance_id: "instanceA", step: instance::LegacyAclStep::Home, request_id: "fixtureHomeIntent",
+            current_boot: &current_boot, expected_revision: replay.revision,
+            target_home_acl_digest: &inventory.home_target_digest(), target_source_acl_digest: &inventory.source_after_home_digest(), proof: &proof,
+        }).unwrap();
+        let q = Statement::prepare(reopened.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES('fixtureUnresolved','fixture',?1,'PREPARING')").unwrap();
+        q.bind_text(1, &format!("credential-instance-{}", crate::store::digest::sha256_hex(b"instanceA"))).unwrap();
+        q.step_done().unwrap(); drop(q);
+        assert!(reopened.recover_legacy_account_baseline("instanceA", &home, &profile).is_err(),
+            "an unresolved credential journal must refuse before pending HOME writes");
+        assert!(profile.has_legacy_owner_login_grant(&home.path, &home.identity).unwrap());
+        assert_eq!(crate::process::LegacyAclInventory::capture(&root, &home.path, &home.identity, &binding, &names).unwrap().original_digest(),
+            inventory.original_digest(), "both physical ACLs stay exact on prewrite refusal");
+        assert_eq!(instance::read_legacy_step(&reopened.connection, "instanceA", instance::LegacyAclStep::Home).unwrap().unwrap().phase,
+            instance::LegacyStepPhase::Pending);
+        reopened.connection.execute("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='fixtureUnresolved'").unwrap();
+        reopened.recover_legacy_account_baseline("instanceA", &home, &profile).unwrap();
+        assert!(binding.acl_prepared_in_this_holder().unwrap());
+        assert_eq!(instance::read_legacy_step(&reopened.connection, "instanceA", instance::LegacyAclStep::Baseline).unwrap().unwrap().phase,
+            instance::LegacyStepPhase::Applied);
+        // Synthetic durable backend metadata exercises the model's cold
+        // composition path. The separate fixed-CLI lifecycle case owns real
+        // backend observations; this case must not run an extra observer.
+        let registered = reopened.read_registered_instance("instanceA").unwrap().unwrap();
+        let q = Statement::prepare(reopened.connection.as_ptr(),
+            "INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('fixtureBackend','fixtureBackendTicket','fixtureBackendNonce','333','444','synthetic.exe',?1,'instanceA','global','2','STOPPED','fixtureStopProof')").unwrap();
+        q.bind_text(1, &registered.program_digest).unwrap(); q.step_done().unwrap(); drop(q);
+        instance::record_credential_backend(&mut reopened.connection, &instance::BackendSource {
+            request_id: "fixtureBackendRecord".into(), instance_id: "instanceA".into(), home_identity: home.identity.clone(),
+            program_digest: registered.program_digest, version: registered.version, backend: instance::CredentialBackend::File,
+            startup_selector: instance::CredentialStartupSelector::FileBound, operation_id: "fixtureBackend".into(),
+            ticket: "fixtureBackendTicket".into(), nonce: "fixtureBackendNonce".into(), generation: "2".into(),
+        }).unwrap();
+        reopened.connection.execute("UPDATE main.gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='instanceA'").unwrap();
+        drop(binding);
+        reopened.close_checked().unwrap();
+        let mut reopened = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        assert!(reopened.recovered_credential_holders.is_empty());
+        let before_count = scalar(&reopened, "SELECT count(*) FROM main.gogoke_coordination_process_custody");
+        reopened.ensure_native_credential_backend("instanceA", &registration).unwrap();
+        let retained = reopened.recovered_credential_holders.get(&("instanceA".into(), before_source.0.opaque())).unwrap();
+        assert!(retained.acl_prepared_in_this_holder().unwrap(), "cold model entry must adopt the original protected source");
+        assert_eq!(scalar(&reopened, "SELECT count(*) FROM main.gogoke_coordination_process_custody"), before_count,
+            "durable File composition must not replace cold adoption with a CLI refresh");
+        reopened.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('fixtureCurrent','fixtureCurrentTicket','fixtureCurrentNonce','555','666','synthetic.exe','sha256:0000000000000000000000000000000000000000000000000000000000000000','instanceA','global','3','UNKNOWN',NULL)").unwrap();
+        for state in ["UNKNOWN", "PREPARED"] {
+            reopened.connection.execute(&format!("UPDATE main.gogoke_coordination_process_custody SET state='{state}' WHERE operation_id='fixtureCurrent'")).unwrap();
+            assert!(format!("{:?}", reopened.ensure_native_credential_backend("instanceA", &registration).unwrap_err())
+                .contains("does not retire current uncertain custody"));
+            assert_eq!(scalar(&reopened, "SELECT state FROM main.gogoke_coordination_process_custody WHERE operation_id='fixtureCurrent'"), state);
+        }
+        assert_eq!(scalar(&reopened, "SELECT state FROM main.gogoke_coordination_process_custody WHERE operation_id='oldLoginA'"), "UNKNOWN");
+        assert_eq!(crate::process::CredentialBinding::observe_source_metadata(&root, &source, &home.identity).unwrap(), before_source);
         reopened.close_checked().unwrap(); drop(root);
         fs::remove_dir_all(path).unwrap();
     }
