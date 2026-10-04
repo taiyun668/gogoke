@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPreviewHost } from "./host";
+import { Design37OwnerNoticePresenter } from "../Design37OwnerNoticePresenter";
+import { requestDesign37OwnerNotices, type Design37OwnerNotice } from "../design37OwnerNotices";
 import "../../../styles/base.css";
+import "../../../styles/ds-tokens.css";
+import "../../../styles/ds-modal.css";
 import "../../../styles/buttons.css";
 import "../../../styles/settings.css";
 
@@ -17,6 +21,19 @@ function Preview() {
   const [generation, setGeneration] = useState(0);
   const [showNewVersion, setShowNewVersion] = useState(false);
   const [showRuntimeIssues, setShowRuntimeIssues] = useState(false);
+  const [ownerNotices, setOwnerNotices] = useState<Design37OwnerNotice[]>([]);
+  const [noticeUiLifetime, setNoticeUiLifetime] = useState(0);
+  const [ownerNoticeError, setOwnerNoticeError] = useState<string | null>(null);
+  const showOwnerNotice = async (visible: boolean, newCause = false) => {
+    host.setOwnerNotice(visible, newCause);
+    try {
+      setOwnerNotices(await requestDesign37OwnerNotices(host.executeUserSourceOperation, `previewOwner_${crypto.randomUUID()}`));
+      setOwnerNoticeError(null);
+    } catch (cause) {
+      setOwnerNotices([]);
+      setOwnerNoticeError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
   const refresh = () => setGeneration(value => value + 1);
   const choose: typeof host.setState = next => { host.setState(next); refresh(); };
   return <main style={{ margin: "0 auto", maxWidth: 980, padding: 24, minHeight: "100dvh" }}>
@@ -43,6 +60,23 @@ function Preview() {
       <button className="ghost" onClick={() => setMounted(value => !value)}>{mounted ? "关闭实例页" : "重开实例页"}</button>
     </div>
     {mounted ? <Design37InstanceSection key={generation} /> : <p role="status">实例页已关闭，预览宿主持有当前登录状态。</p>}
+    <section style={{ marginTop: 32 }} aria-label="Owner 通知预览">
+      <h2>Owner 通知预览（假）</h2>
+      <p>通知来自假 User 投影；关闭只隐藏当前界面。C 消息仍为 PENDING，此预览不产生持久 Owner ACK。</p>
+      <div className="settings-field-actions">
+        <button className="ghost" onClick={() => void showOwnerNotice(true)}>显示同一原因（假）</button>
+        <button className="ghost" onClick={() => void showOwnerNotice(false)}>撤销路由（假）</button>
+        <button className="ghost" onClick={() => {
+          void showOwnerNotice(true, true);
+          setTimeout(() => void showOwnerNotice(false), 3000);
+        }}>显示后自动撤销路由（假）</button>
+        <button className="ghost" onClick={() => void showOwnerNotice(true, true)}>显示新原因（假）</button>
+        <button className="ghost" onClick={() => setNoticeUiLifetime(value => value + 1)}>重启通知界面（假）</button>
+      </div>
+      <p role="status">当前投影：{ownerNotices.length ? "1 条 PENDING 消息" : "无通知"}</p>
+      {ownerNoticeError && <p role="alert">{ownerNoticeError}</p>}
+    </section>
+    <Design37OwnerNoticePresenter key={noticeUiLifetime} notices={ownerNotices} />
   </main>;
 }
 
