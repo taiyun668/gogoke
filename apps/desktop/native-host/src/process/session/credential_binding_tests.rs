@@ -57,6 +57,11 @@ fn prepare_runner(profile: &AppContainerProfile, path: &Path) -> std::path::Path
 
 fn run_child(profile_name: &str, exe: &Path, alias: &CredentialAlias,
     write: bool) -> String {
+    run_child_path(profile_name, exe, &alias.path(), write)
+}
+
+fn run_child_path(profile_name: &str, exe: &Path, target: &Path,
+    write: bool) -> String {
     let runner = exe.parent().expect("child runner");
     let report = runner.join("actual-result.txt");
     if report.exists() { fs::remove_file(&report).expect("remove old synthetic report"); }
@@ -70,7 +75,7 @@ fn run_child(profile_name: &str, exe: &Path, alias: &CredentialAlias,
         ("SystemRoot".into(), std::env::var("SystemRoot").expect("cloud SystemRoot")),
         ("USERPROFILE".into(), runner.to_string_lossy().into_owned()),
         ("LOCALAPPDATA".into(), runner.to_string_lossy().into_owned()),
-        ("GOGOKE_TEST_CREDENTIAL_ALIAS".into(), alias.path().to_string_lossy().into_owned()),
+        ("GOGOKE_TEST_CREDENTIAL_ALIAS".into(), target.to_string_lossy().into_owned()),
         ("GOGOKE_TEST_CREDENTIAL_REPORT".into(), report.to_string_lossy().into_owned()),
     ]);
     if write { launch.environment.as_mut().unwrap().push((
@@ -190,4 +195,65 @@ fn unknown_link_and_replaced_alias_fail_complete_metadata_registration() {
         "same alias name with another file ID is refused");
     drop(root);
     fs::remove_dir_all(requested).unwrap();
+}
+
+#[test]
+fn owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime() {
+    let (root, requested) = test_root();
+    let base = root.canonical_root().canonical_path.clone();
+    let instance = base.join("instanceA");
+    let scope_path = instance.join("private-history").join("scopeA");
+    let runtime = instance.join("gogoke-login-runtime");
+    fs::create_dir_all(&scope_path).unwrap();
+    fs::create_dir(&runtime).unwrap();
+    let source = instance.join(AUTH_NAME);
+    fs::write(&source, b"synthetic-nonsecret-auth").unwrap();
+    let source_id = AppContainerProfile::capture_program_identity(&source).unwrap();
+    let instance_id = inspect_root(&instance).unwrap().identity;
+    let runtime_id = inspect_root(&runtime).unwrap().identity;
+    let scope = scope(&scope_path);
+    let binding = CredentialBinding::open_registered(&root, &source,
+        &instance_id, &source_id, &[]).expect("registered metadata holder");
+    let name = format!("Gogoke37.OwnerAccountObserver.{}", std::process::id());
+    let observer = AppContainerProfile::ensure_for_cli(&name, true).unwrap();
+    assert!(observer.grant_bound_owner_account_observer(&root, &instance,
+        &instance_id, &runtime, &runtime_id, &binding, &[]).is_err(),
+        "unknown live state must not silently reconstruct the source DACL");
+    AppContainerProfile::prepare_quiescent_owner_account_source(&root,
+        &instance, &instance_id, &binding).expect("explicit quiescent source preparation");
+    let alias = binding.create_alias(&root, scope.clone(), &[])
+        .expect("registered existing credential object alias");
+    let history = scope_path.join("private-history.jsonl");
+    fs::write(&history, b"synthetic-history-not-for-observer").unwrap();
+    observer.grant_bound_owner_account_observer(&root, &instance,
+        &instance_id, &runtime, &runtime_id, &binding, &[scope.clone()])
+        .expect("narrow account/read observer ACL");
+    observer.verify_bound_owner_account_observer(&root, &instance,
+        &instance_id, &runtime, &runtime_id, &binding, &[scope.clone()])
+        .expect("exact source/runtime and no history ACE");
+    assert!(binding.verify_registered_aliases(&[]).is_err(),
+        "cached binding cannot replace F's complete alias set");
+    let runner = prepare_runner(&observer, &base.join("observer-runner"));
+    let source_read = run_child_path(&name, &runner, &source, false);
+    assert_eq!(source_read, "read=OK write=OK", "actual LPAC source read: {source_read}");
+    let source_write = run_child_path(&name, &runner, &source, true);
+    assert!(source_write.starts_with("read=OK write=ERR:Some(5);"),
+        "account/read observer cannot write registered auth: {source_write}");
+    let private_read = run_child_path(&name, &runner, &history, false);
+    assert!(private_read.starts_with("read=ERR:Some(5);") && private_read.ends_with(" write=OK"),
+        "actual LPAC history denial: {private_read}");
+    assert!(alias.path().is_file(), "the registered hardlink remains present");
+    let history_id = AppContainerProfile::capture_program_identity(&history).unwrap();
+    observer.grant_bound_program(&history, &history_id)
+        .expect("controlled residual history ACE");
+    assert!(observer.verify_bound_owner_account_observer(&root, &instance,
+        &instance_id, &runtime, &runtime_id, &binding, &[scope]).is_err(),
+        "a residual observer ACE on history must invalidate the exact witness");
+    drop((observer, binding));
+    drop(root);
+    fs::remove_dir_all(requested).unwrap();
+    #[link(name = "userenv")]
+    extern "system" { fn DeleteAppContainerProfile(name: *const u16) -> i32; }
+    let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
+    assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
 }
