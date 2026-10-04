@@ -105,7 +105,7 @@ impl<'root> ProductDatabase<'root> {
     /// receipt commits. Its original resolved A source remains authoritative;
     /// revisit it after the drain, with the same physical custody and seal.
     /// This creates no new source, RPC ID, writer or scheduler.
-    fn revisit_host_health_sources(&mut self)->Result<()> {
+    pub(super) fn revisit_host_health_sources(&mut self)->Result<()> {
         let held=self.native_sessions.iter().filter(|(_,run)|run.evidence.driver_id()=="codex")
             .map(|(key,run)|(key.clone(),run.operation_id.clone(),run.custody.custodian_nonce.clone()))
             .collect::<Vec<_>>();
