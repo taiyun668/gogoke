@@ -33,12 +33,13 @@ pub(crate) struct LegacyAclInventory {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct LegacyHomeReceipt { pub(crate) observed_digest: String }
+pub(crate) struct LegacyHomeReceipt {
+    pub(crate) home_observed_digest: String,
+    pub(crate) source_observed_digest: String,
+}
 #[derive(Clone, Debug)]
 pub(crate) struct LegacySourceReceipt {
-    /// Present only for the initial sealed-tree preparation. Later adoption
-    /// validates only the source core plus F/H's complete current grants.
-    pub(crate) target_digest: Option<String>,
+    pub(crate) source_observed_digest: String,
     pub(crate) baseline_core_digest: String,
     pub(crate) observed_raw_digest: String,
 }
@@ -267,13 +268,22 @@ impl LegacyAclInventory {
 
     pub(crate) fn encode_snapshot(&self) -> String { hex(&self.bytes()) }
     pub(crate) fn original_digest(&self) -> String { sha256_hex(&self.bytes()) }
+    pub(crate) fn home_original_digest(&self) -> String { self.home_digest(false) }
     pub(crate) fn home_target_digest(&self) -> String {
-        sha256_hex(&self.target_bytes(false))
+        self.home_digest(true)
+    }
+    pub(crate) fn source_original_digest(&self) -> String {
+        self.source_digest(&self.source().original)
+    }
+    pub(crate) fn source_after_home_digest(&self) -> String {
+        self.source_digest(&home_target(&self.source().original, &self.historical))
     }
     pub(crate) fn source_target_digest(&self) -> String {
-        sha256_hex(&self.target_bytes(true))
+        self.source_digest(&self.baseline)
     }
-    pub(crate) fn baseline_core_digest(&self) -> String { dacl_digest(&self.baseline) }
+    pub(crate) fn baseline_core_digest(&self) -> String {
+        canonical_dacl_digest(&self.baseline)
+    }
 
     pub(crate) fn restore(root: &RootLock, home: &Path,
         home_identity: &RootIdentity, binding: &CredentialBinding,
@@ -430,7 +440,15 @@ impl LegacyAclInventory {
             !acl_equal(actual, &home_target(&object.original, &self.historical))) {
             return Err(mismatch());
         }
-        Ok(LegacyHomeReceipt { observed_digest: self.observed_digest(&after) })
+        let receipt = LegacyHomeReceipt {
+            home_observed_digest: self.observed_home_digest(&after),
+            source_observed_digest: self.source_digest(&after[self.source_index()]),
+        };
+        if receipt.home_observed_digest != self.home_target_digest()
+            || receipt.source_observed_digest != self.source_after_home_digest() {
+            return Err(mismatch());
+        }
+        Ok(receipt)
     }
 
     /// F/H supply boot qualification and F persists the baseline intent. The
@@ -438,7 +456,10 @@ impl LegacyAclInventory {
     pub(crate) fn prepare_source_baseline(&self, root: &RootLock, home: &Path,
         home_identity: &RootIdentity, binding: &CredentialBinding,
         home_receipt: &LegacyHomeReceipt) -> Result<LegacySourceReceipt, CredentialError> {
-        if home_receipt.observed_digest != self.home_target_digest() { return Err(mismatch()); }
+        if home_receipt.home_observed_digest != self.home_target_digest()
+            || home_receipt.source_observed_digest != self.source_after_home_digest() {
+            return Err(mismatch());
+        }
         self.verify_structure(root, home, home_identity, binding)?;
         let observed = self.verify_live(root, home, home_identity, binding, true)?;
         for (object, acl) in self.objects.iter().zip(&observed) {
@@ -492,9 +513,14 @@ impl LegacyAclInventory {
                 else { home_target(&object.original, &self.historical) })) {
             return Err(mismatch());
         }
-        Ok(LegacySourceReceipt { target_digest: Some(self.observed_digest(&after)),
+        let receipt = LegacySourceReceipt {
+            source_observed_digest: self.source_digest(&after[self.source_index()]),
             baseline_core_digest: self.baseline_core_digest(),
-            observed_raw_digest: dacl_digest(&source_acl(binding)?) })
+            observed_raw_digest: dacl_digest(&source_acl(binding)?) };
+        if receipt.source_observed_digest != self.source_target_digest() {
+            return Err(mismatch());
+        }
+        Ok(receipt)
     }
 
     /// A later holder may inherit a completed fenced baseline together with
@@ -528,25 +554,55 @@ impl LegacyAclInventory {
         })?;
         binding.verify_registered_aliases(registered_aliases)?;
         require_bound_path(home, home_identity, true)?;
-        Ok(LegacySourceReceipt { target_digest: None,
+        Ok(LegacySourceReceipt {
+            source_observed_digest: self.source_digest(&observed),
             baseline_core_digest: self.baseline_core_digest(),
             observed_raw_digest: dacl_digest(&observed) })
     }
 
-    fn target_bytes(&self, source_baseline: bool) -> Vec<u8> {
-        let mut bytes = self.bytes();
-        for object in &self.objects {
-            let acl = if source_baseline && object.source {
-                self.baseline.clone()
-            } else { home_target(&object.original, &self.historical) };
-            encode_dacl_canonical(&mut bytes, &acl);
-        }
+    fn source_index(&self) -> usize {
+        self.objects.iter().position(|object| object.source).expect("sealed source")
+    }
+
+    fn source(&self) -> &Object { &self.objects[self.source_index()] }
+
+    fn digest_prefix(&self, domain: &[u8]) -> Vec<u8> {
+        let mut bytes = domain.to_vec();
+        encode_identity(&mut bytes, &self.root_identity);
+        encode_identity(&mut bytes, &self.home_identity);
+        encode_identity(&mut bytes, &self.source_identity);
         bytes
     }
 
-    fn observed_digest(&self, observed: &[Dacl]) -> String {
-        let mut bytes = self.bytes();
-        for acl in observed { encode_dacl_canonical(&mut bytes, acl); }
+    fn home_digest(&self, target: bool) -> String {
+        let mut bytes = self.digest_prefix(b"gogoke-legacy-home-acl-v1\0");
+        for object in self.objects.iter().filter(|object| !object.source) {
+            put_path(&mut bytes, &object.relative);
+            encode_identity(&mut bytes, &object.identity);
+            bytes.push(u8::from(object.directory));
+            let acl = if target { home_target(&object.original, &self.historical) }
+                else { object.original.clone() };
+            encode_dacl_canonical(&mut bytes, &acl);
+        }
+        sha256_hex(&bytes)
+    }
+
+    fn observed_home_digest(&self, observed: &[Dacl]) -> String {
+        let mut bytes = self.digest_prefix(b"gogoke-legacy-home-acl-v1\0");
+        for (object, acl) in self.objects.iter().zip(observed)
+            .filter(|(object, _)| !object.source) {
+            put_path(&mut bytes, &object.relative);
+            encode_identity(&mut bytes, &object.identity);
+            bytes.push(u8::from(object.directory));
+            encode_dacl_canonical(&mut bytes, acl);
+        }
+        sha256_hex(&bytes)
+    }
+
+    fn source_digest(&self, acl: &Dacl) -> String {
+        let mut bytes = self.digest_prefix(b"gogoke-legacy-source-acl-v1\0");
+        put_path(&mut bytes, &self.source().relative);
+        encode_dacl_canonical(&mut bytes, acl);
         sha256_hex(&bytes)
     }
 
@@ -622,6 +678,9 @@ fn encode_dacl_canonical(bytes: &mut Vec<u8>, acl: &Dacl) {
 }
 fn dacl_digest(acl: &Dacl) -> String {
     let mut bytes = Vec::new(); encode_dacl(&mut bytes, acl); sha256_hex(&bytes)
+}
+fn canonical_dacl_digest(acl: &Dacl) -> String {
+    let mut bytes = Vec::new(); encode_dacl_canonical(&mut bytes, acl); sha256_hex(&bytes)
 }
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -732,5 +791,32 @@ mod tests {
         changed.aces.push(Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 0,
             mask: FILE_GENERIC_READ, sid: "S-1-15-2-999".into() });
         assert!(!acl_equal(&changed, &target));
+    }
+
+    #[test]
+    fn home_and_source_digests_bind_separate_acl_steps() {
+        let identity = RootIdentity { volume_serial: 1, file_id: [2; 16] };
+        let legacy = Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 3,
+            mask: directory_rights(true), sid: "S-1-15-2-123".into() };
+        let home = Object { relative: PathBuf::new(), identity: identity.clone(),
+            directory: true, source: false,
+            original: Dacl { protected: false, aces: vec![legacy.clone()] } };
+        let source = Object { relative: PathBuf::from("auth.json"), identity: identity.clone(),
+            directory: false, source: true,
+            original: Dacl { protected: false, aces: vec![Ace {
+                flags: INHERITED_ACE as u8, ..legacy
+            }] } };
+        let mut inventory = LegacyAclInventory { root_identity: identity.clone(),
+            home_identity: identity.clone(), source_identity: identity,
+            historical: vec![("old".into(), "S-1-15-2-123".into())],
+            baseline: Dacl { protected: true, aces: vec![] },
+            objects: vec![home, source] };
+        let home_digest = inventory.home_original_digest();
+        let source_digest = inventory.source_original_digest();
+        assert_ne!(home_digest, inventory.home_target_digest());
+        assert_ne!(source_digest, inventory.source_after_home_digest());
+        inventory.objects[1].original.aces[0].mask = FILE_GENERIC_READ;
+        assert_eq!(home_digest, inventory.home_original_digest());
+        assert_ne!(source_digest, inventory.source_original_digest());
     }
 }
