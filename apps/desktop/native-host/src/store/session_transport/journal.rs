@@ -2058,6 +2058,29 @@ pub(crate) fn recover_codex_turn_request(
             binding_matches(&prior,&binding)?;
             return Ok(Some(existing_decision(prior)));
         }
+        // A positively stopped old episode with no original receipt remains
+        // UNKNOWN. Reading that historical request cannot require a current
+        // completion grant or terminate the host's unrelated safe points.
+        let stopped=Statement::prepare(connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+             JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
+               AND g.session_id=e.session_id AND g.generation=e.generation
+               AND g.process_operation_id=e.process_operation_id
+             JOIN main.gogoke_coordination_process_custody c
+               ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                 AND c.generation=e.generation
+             WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3
+               AND e.generation=?4 AND c.ticket=?5 AND c.custodian_nonce=?6
+               AND e.phase='STOPPED' AND c.state='STOPPED'
+               AND e.stop_fact_id=c.stop_proof_hash AND length(c.stop_proof_hash)>0")?;
+        for (index,value) in [input.domain_id,input.session_id,prior.process_operation_id.as_str(),
+            input.generation,input.ticket,prior.custodian_nonce.as_str()].iter().enumerate() {
+            stopped.bind_text((index+1) as i32,value)?;
+        }
+        if stopped.step_row()? {
+            if stopped.step_row()? {return Err(JournalError::Conflict);}
+            return Ok(None);
+        }
         let binding=h_binding(connection,input.domain_id,input.session_id,input.ticket,
             input.generation,BindingUse::Complete)?;
         binding_matches(&prior,&binding)?;
