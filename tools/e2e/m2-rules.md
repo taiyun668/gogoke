@@ -24,6 +24,8 @@ stopRulesSession, releaseStoppedRulesSession,
 
 Callbacks are injected by the runner, not serialized in JSON. host may be omitted; then delivery remains NOT_RUN and the existing business cases still run.
 
+The shared `m2-win11.mjs` runner now injects this context from private JSON `rules.submitter` and `rules.reviewer` selections (`seatId`, `instanceId`, `worktreeId`) plus the optional host selections. It refuses overlap with the main or side-chat seats/worktrees, verifies actual logged-in Codex instances, creates/registers fresh case-owned testbed worktrees, and takes the normal-close baseline before opening the sources. Its five callbacks use original H receipts and the immutable checkpoint's STOPPED revisions; no cached revision is guessed. It preserves old event/turn history while resetting only the output cursor for a new physical generation. Baseline/checkpoint are explicitly not results; final requires the rules reader's direct evidence. Without rules configuration the journal records V08 NOT_RUN, not a pass. Actual app/model execution remains NOT_RUN at this SOURCE stage.
+
 | Callback | Required actual behavior |
 | --- | --- |
 | hostCheckpoint() | product.closeNormally(); signed Python rules reader phase checkpoint with actual state root/original saved journal/fresh private output; save artifact metadata; product.launch(); return `{file:basename,sha256}`. No implicit session resume/open. checkpoint is a snapshot, so directCaseEvidence is false. |

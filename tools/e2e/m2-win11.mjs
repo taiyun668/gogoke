@@ -338,6 +338,87 @@ async function runSideChat() {
   journal.v12 = 'FLOW_COMPLETE_DIRECT_READBACK_INDEPENDENT_REVIEW_REQUIRED'; product.save();
 }
 
+async function rulesReadback(phase) {
+  const file = `m2-rules-${phase}-${id('snapshot')}.json`;
+  const output = path.join(config.evidenceDirectory, file);
+  await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-rules-readback.py'),
+      config.stateRoot, output, config.result, phase],
+    { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = ''; child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() :
+      reject(Error(`Original rules ${phase} readback exit=${code}: ${stderr}`)));
+  });
+  const value = readJson(output);
+  check(value.measurementPreservedDatabaseBytes === true && value.databaseWrites === false &&
+    value.credentialReads === false, `Rules ${phase}: immutable original measurement`);
+  check(phase !== 'final' || value.directCaseEvidence === true,
+    'Rules final requires direct evidence; baseline and checkpoint are not results');
+  const reference = { file, sha256: sha256(output) };
+  journal.readbacks.push({ phase: `rules-${phase}`, ...reference }); product.save();
+  return reference;
+}
+
+async function runRules() {
+  if (!config.rules) { journal.v08 = 'NOT_RUN_NOT_CONFIGURED'; product.save(); return; }
+  const selections = [config.rules.submitter, config.rules.reviewer,
+    config.rules.host?.destination, config.rules.host?.alternateDestination].filter(Boolean);
+  check(selections.length === (config.rules.host ? 4 : 2) &&
+    selections.every(row => ['seatId', 'instanceId', 'worktreeId'].every(name => atom(row[name]))) &&
+    new Set(selections.map(row => row.seatId)).size === selections.length &&
+    new Set(selections.map(row => row.worktreeId)).size === selections.length,
+  'Rules require distinct explicit case-owned seats and fresh worktrees');
+  const forbiddenSeats = [config.seatId, config.childSeatId,
+    config.sideChat?.sourceSeatId, config.sideChat?.sideSeatId];
+  const forbiddenTrees = [config.worktreeId, journal.worktreeId,
+    config.sideChat?.sourceWorktreeId, config.sideChat?.sideWorktreeId];
+  const instances = await product.instances();
+  for (const row of selections) {
+    check(!forbiddenSeats.includes(row.seatId) && !forbiddenTrees.includes(row.worktreeId) &&
+      instances.instances.some(instance => instance.instanceId === row.instanceId &&
+        instance.driverId === 'codex' && instance.state === 'LOGGED_IN'),
+    'Rules use qualified exclusive Codex test identities');
+    await prepareSideWorktree({ rulesSeatId: row.seatId, rulesInstanceId: row.instanceId,
+      rulesWorktreeId: row.worktreeId }, 'rules');
+  }
+  journal.driverBytes['m2-rules.mjs'] = sha256(path.join(here, 'm2-rules.mjs'));
+  journal.driverBytes['m2-rules-readback.py'] = sha256(path.join(here, 'm2-rules-readback.py'));
+  journal.v08 = 'RUNNING'; product.save();
+  await product.closeNormally();
+  const baselineReadback = await rulesReadback('before');
+  await product.launch();
+  const submitterSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
+    .map(name => config.rules.submitter[name]), 'V08 submitter');
+  const reviewerSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
+    .map(name => config.rules.reviewer[name]), 'V08 reviewer');
+  const { runRulesCase } = await import('./m2-rules.mjs');
+  const record = await runRulesCase(product, { ...config, rules: { ...config.rules,
+    baselineReadback, submitterSession, reviewerSession,
+    hostCheckpoint: async () => {
+      await product.closeNormally(); const reference = await rulesReadback('checkpoint');
+      await product.launch(); return reference;
+    },
+    openHostSession: row => openUserSession(row.seatId, row.instanceId, row.worktreeId, 'V08 Host recipient'),
+    resumeRulesSession: async session => {
+      const originalThread = session.threadId;
+      const receipt = await sessionOp(session, 'resume');
+      check(receipt.result.state === 'RUNNING' && receipt.result.newGeneration &&
+        (!receipt.result.threadId || receipt.result.threadId === originalThread),
+      'Rules resume preserves the original native logical thread');
+      session.cursor = '0'; product.save();
+    },
+    stopRulesSession: session => stopUser(session, true),
+    releaseStoppedRulesSession: session => sessionOp(session, 'admission-release', { seatId: session.seatId }),
+  } }, journal);
+  check(record.state === 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED', 'Rules actual flow completed');
+  for (const session of [submitterSession, reviewerSession]) await stopUser(session, true);
+  await product.closeNormally();
+  await rulesReadback('final');
+  journal.v08 = 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE'; product.save();
+  await product.launch();
+}
+
 try {
   check(fs.existsSync(config.testbedSource) && fs.statSync(config.testbedSource).isDirectory(), 'Private testbed source exists');
   check(!fs.existsSync(path.join(config.testbedSource, journal.markerFile)), 'Unique marker absent from main tree');
@@ -399,6 +480,7 @@ try {
     'Actual F graph reports merged original worktree');
   await stopUser(lead, true);
   await runSideChat();
+  await runRules();
   const latest = await product.instances();
   for (const row of config.providerCases) await providerCase(row, latest);
   journal.providerCases.push({ driverId: 'antigravity', result: 'NOT_RUN_OWNER_DECISION_PENDING' }); product.save();
