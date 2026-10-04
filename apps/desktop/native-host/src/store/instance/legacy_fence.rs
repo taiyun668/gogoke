@@ -369,6 +369,48 @@ fn eligible_boot(fence: &LegacyFenceRecord, boot: &str) -> Result<()> {
     if boot.eq_ignore_ascii_case("UNKNOWN") || boot == fence.original_boot { return Err(LegacyFenceError::Unsafe); }
     Ok(())
 }
+/// Read-only qualification immediately before a native ACL write. A pending
+/// aggregate ACL may be between endpoints; the native sealed snapshot must
+/// reconcile each object. This returns only this exact journaled action, not
+/// instance quiescence or any authority to clean later grants.
+pub(crate) fn validate_legacy_acl_write(db: &VerifiedDatabaseConnection<'_>, expected: &LegacyStepIntent,
+    current_boot: &str, proof: &LegacyPhysicalProof) -> Result<LegacyStepIntent> {
+    atom(&expected.instance_id)?;
+    let fence = read_legacy_fence(db, &expected.instance_id)?.ok_or(LegacyFenceError::Unsafe)?;
+    eligible_boot(&fence, current_boot)?;
+    check_proof(db, &fence, proof)?;
+    let recorded = read_legacy_step(db, &expected.instance_id, expected.step)?.ok_or(LegacyFenceError::Unsafe)?;
+    eligible_boot(&fence, &recorded.current_boot)?;
+    if recorded != *expected || recorded.phase != LegacyStepPhase::Pending ||
+        recorded.applied_revision.is_some() || recorded.intent_revision != fence.revision {
+        return Err(LegacyFenceError::Conflict);
+    }
+    for value in [&recorded.before_home_acl_digest, &recorded.before_source_acl_digest,
+        &recorded.target_home_acl_digest, &recorded.target_source_acl_digest] { digest(value)?; }
+    match recorded.step {
+        LegacyAclStep::Home => {
+            if read_legacy_step(db, &recorded.instance_id, LegacyAclStep::Baseline)?.is_some() ||
+                recorded.before_home_acl_digest != fence.home_acl_digest ||
+                recorded.before_source_acl_digest != fence.source_acl_digest ||
+                (recorded.target_home_acl_digest == recorded.before_home_acl_digest &&
+                    recorded.target_source_acl_digest == recorded.before_source_acl_digest) {
+                return Err(LegacyFenceError::Unsafe);
+            }
+        },
+        LegacyAclStep::Baseline => {
+            let home = read_legacy_step(db, &recorded.instance_id, LegacyAclStep::Home)?.ok_or(LegacyFenceError::Unsafe)?;
+            eligible_boot(&fence, &home.current_boot)?;
+            if home.phase != LegacyStepPhase::Applied ||
+                home.target_home_acl_digest != recorded.before_home_acl_digest ||
+                home.target_source_acl_digest != recorded.before_source_acl_digest ||
+                home.target_home_acl_digest != recorded.target_home_acl_digest ||
+                recorded.target_source_acl_digest == recorded.before_source_acl_digest {
+                return Err(LegacyFenceError::Unsafe);
+            }
+        },
+    }
+    Ok(recorded)
+}
 pub(crate) fn begin_legacy_acl_step(db: &mut VerifiedDatabaseConnection<'_>, input: &LegacyStepRequest<'_>) -> Result<LegacyStepIntent> {
     atom(input.instance_id)?; atom(input.request_id)?;
     digest(input.target_home_acl_digest)?; digest(input.target_source_acl_digest)?;
@@ -522,6 +564,9 @@ mod tests {
             initialize_legacy_fence_schema(&mut db).unwrap();
             assert_eq!(read_legacy_step(&db, "instanceA", LegacyAclStep::Home).unwrap(), Some(home.clone()));
             let partial = proof(&db, 'd', 'b');
+            assert_eq!(validate_legacy_acl_write(&db, &home, "bootC", &partial).unwrap(), home);
+            assert!(matches!(validate_legacy_acl_write(&db, &home, "bootA", &partial),
+                Err(LegacyFenceError::Unsafe)));
             assert!(matches!(begin_legacy_acl_step(&mut db, &LegacyStepRequest {
                 instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
                 expected_revision: 2, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('f'), proof: &partial,
@@ -698,6 +743,58 @@ mod tests {
             capture_legacy_fence(&mut db, &input).unwrap();
             db.execute("UPDATE main.gogoke_v37_legacy_acl_fences SET native_snapshot='abcd' WHERE instance_id='instanceA'").unwrap();
             assert!(matches!(read_legacy_fence(&db, "instanceA"), Err(LegacyFenceError::Conflict)));
+            db.close_checked().unwrap();
+        });
+    }
+
+    #[test]
+    fn prewrite_validation_refuses_late_source_registration() {
+        fixture(|_, _, mut db| {
+            db.execute("DELETE FROM main.gogoke_v37_credential_objects WHERE instance_id='instanceA'").unwrap();
+            let mut input = capture(&db);
+            input.source_revision = None;
+            capture_legacy_fence(&mut db, &input).unwrap();
+            let mut physical = proof(&db, 'a', 'b');
+            physical.source_revision = None;
+            let pending = begin_legacy_acl_step(&mut db, &LegacyStepRequest {
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
+                expected_revision: 1, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('f'), proof: &physical,
+            }).unwrap();
+            assert!(validate_legacy_acl_write(&db, &pending, "bootC", &physical).is_ok());
+            let source = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_credential_objects VALUES('instanceA',?1,?2,?3,?2,'ACTIVE',1)").unwrap();
+            bind(&source, &[&db.root_identity().opaque(), &id(1).opaque(), &id(3).opaque()]).unwrap();
+            source.step_done().unwrap(); drop(source);
+            assert!(matches!(validate_legacy_acl_write(&db, &pending, "bootC", &physical),
+                Err(LegacyFenceError::Conflict)));
+            db.close_checked().unwrap();
+        });
+    }
+
+    #[test]
+    fn prewrite_validation_checks_same_open_database_and_credential_journal() {
+        fixture(|_, _, mut db| {
+            let input = capture(&db);
+            capture_legacy_fence(&mut db, &input).unwrap();
+            let mut physical = proof(&db, 'a', 'b');
+            let pending = begin_legacy_acl_step(&mut db, &LegacyStepRequest {
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
+                expected_revision: 1, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('f'), proof: &physical,
+            }).unwrap();
+            let original_db = db.identity().opaque();
+            let changed = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_legacy_acl_fences SET database_identity=?1 WHERE instance_id='instanceA'").unwrap();
+            changed.bind_text(1, &id(9).opaque()).unwrap(); changed.step_done().unwrap(); drop(changed);
+            physical.database_identity = id(9);
+            assert!(matches!(validate_legacy_acl_write(&db, &pending, "bootC", &physical),
+                Err(LegacyFenceError::Conflict)));
+            let restore = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_legacy_acl_fences SET database_identity=?1 WHERE instance_id='instanceA'").unwrap();
+            restore.bind_text(1, &original_db).unwrap(); restore.step_done().unwrap(); drop(restore);
+            physical.database_identity = db.identity().clone();
+            assert!(validate_legacy_acl_write(&db, &pending, "bootC", &physical).is_ok());
+            let target = format!("credential-instance-{}", sha256_hex(b"instanceA"));
+            let journal = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES('newIntent','newIntent',?1,'PREPARING')").unwrap();
+            journal.bind_text(1, &target).unwrap(); journal.step_done().unwrap(); drop(journal);
+            assert!(matches!(validate_legacy_acl_write(&db, &pending, "bootC", &physical),
+                Err(LegacyFenceError::Unsafe)));
             db.close_checked().unwrap();
         });
     }
