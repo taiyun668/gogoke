@@ -17,6 +17,11 @@ use crate::store::instance::{self, CredentialAliasAction, CredentialAliasIntent,
 use crate::store::same_open::VerifiedDatabaseConnection;
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_AFTER_CREDENTIAL_GRANT_BEFORE_COMPLETION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn evidence<T, E: std::fmt::Debug>(value: Result<T, E>) -> Result<T, String> {
     value.map_err(|error| format!("credential launch: {error:?}"))
 }
@@ -488,6 +493,10 @@ impl CredentialLaunch {
                 evidence(profile.grant_credential_alias(&binding, &alias))?;
                 evidence(profile.verify_credential_alias(&binding, &alias))?;
             }
+            #[cfg(test)]
+            if FAIL_AFTER_CREDENTIAL_GRANT_BEFORE_COMPLETION.with(|fault| fault.replace(false)) {
+                return Err(denied("test interruption after exact credential grant before F completion"));
+            }
             (evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Active))?, !recovering)
         };
         let result = Self { binding, alias, history: history.generation.clone(), object, profile_record,
@@ -728,6 +737,22 @@ mod tests {
             assert!(fs::symlink_metadata(launch.alias.path()).unwrap().is_file());
             let custody = Statement::prepare(db.as_ptr(), "SELECT count(*) FROM main.gogoke_coordination_process_custody WHERE domain_id='projectA'").unwrap();
             assert!(custody.step_row().unwrap()); assert_eq!(custody.column_text(0).unwrap(), "0");
+            drop(custody);
+            let history_b = instance::create_initial_private_history(db, root, &instance::PrivateHistoryLaunch {
+                instance_id: "instanceA", domain_id: "projectB", session_id: "sessionB", seat_id: "seatB",
+                seat_incarnation: "1", binding_id: "bindingB", generation: "1", request_id: "openB" }).unwrap();
+            let profile_b = AppContainerProfile::derived_for_test(&format!("{name}.B")).unwrap();
+            let mut partial = Vec::new();
+            FAIL_AFTER_CREDENTIAL_GRANT_BEFORE_COMPLETION.with(|fault| fault.set(true));
+            assert!(CredentialLaunch::prepare(db, root, &profile_b, &history_b, "openB", &mut partial).is_err());
+            assert_eq!(partial.len(), 1, "partial original physical holder returned before any child");
+            assert!(!partial[0].settled(db).unwrap());
+            assert_eq!(instance::read_credential_profiles(db, "instanceA").unwrap().into_iter()
+                .find(|row| row.binding_id == "bindingB").unwrap().state, "GRANT_PENDING");
+            assert!(quiescent_cleanup(db, root, "instanceA", "anotherLogin").is_err());
+            let recovered = CredentialLaunch::prepare(db, root, &profile_b, &history_b, "openB", &mut partial).unwrap().unwrap();
+            assert!(!recovered.granted_in_this_attempt, "recovered physical grant is not a new native attempt");
+            assert!(recovered.revoke_uncreated(db, root, &profile_b, "openB").is_err());
         });
     }
 
