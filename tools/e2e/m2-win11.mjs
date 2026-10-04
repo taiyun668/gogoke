@@ -290,6 +290,54 @@ async function openUserSession(seatId, instanceId, worktreeId, tag) {
   session.threadId = open.result.threadId; product.save();
   return session;
 }
+async function openRetainedLead() {
+  const reference = config.retainedPrelaunchFailure;
+  check(reference && typeof reference.result === 'string' &&
+    inside(path.resolve(reference.result), path.resolve(config.evidenceDirectory)) &&
+    /^[a-f0-9]{64}$/.test(reference.sha256) && sha256(reference.result) === reference.sha256,
+  'Retained lead uses the exact original failed journal');
+  const prior = readJson(reference.result);
+  const original = prior.operations?.at(-1);
+  const saved = prior.sessions?.find(row => row.id === original?.request?.targetId);
+  check(prior.schema === journal.schema && prior.state === 'FAIL' &&
+    prior.domainId === config.domainId && prior.repositoryId === config.repositoryId &&
+    prior.error?.includes('GOGOKE_DESIGN37_NATIVE_USER_OPERATION_FAILED:ERR') &&
+    prior.error.includes('legacy account scope requires original stopped observer custody') &&
+    original?.receipt === null && original.request.family === 'K-SESSION' &&
+    original.request.operation === 'open' && original.request.domainId === config.domainId &&
+    saved?.seatId === config.seatId && saved.instanceId === config.instanceId &&
+    saved.worktreeId === config.worktreeId && !saved.threadId &&
+    saved.events?.length === 0 && saved.turns?.length === 0 &&
+    original.request.expectedRevision === saved.revision &&
+    original.request.payload.generation === saved.generation &&
+    original.request.payload.seatId === config.seatId &&
+    original.request.payload.repositoryId === config.repositoryId &&
+    original.request.payload.worktreeId === config.worktreeId &&
+    JSON.stringify(JSON.parse(original.rawFrame)) === JSON.stringify(original.request),
+  'Retained open is only the original definite prelaunch refusal, never an uncertain model request');
+  const card = await seatCard(config.seatId);
+  check(card.result.state === 'BUSY' && card.result.instanceId === config.instanceId &&
+    card.result.generation === saved.generation,
+  'Original committed lead claim remains bound; do not reserve or release another claim');
+  const session = { ...saved, events: [], turns: [] };
+  journal.sessions.push(session);
+  journal.retainedPrelaunchFailure = { sha256: reference.sha256,
+    requestId: original.request.requestId, sessionId: session.id };
+  const record = { request: original.request, rawFrame: original.rawFrame,
+    startedAt: new Date().toISOString(), receipt: null, originalPrelaunchRefusal: true };
+  journal.operations.push(record); product.save();
+  // One explicit recovery of the recorded prelaunch refusal. No reserve,
+  // commit, general retry, altered frame or automatic resend is performed.
+  const raw = await product.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(record.rawFrame)}})`);
+  record.receipt = JSON.parse(raw); record.finishedAt = new Date().toISOString(); product.save();
+  check(record.receipt.requestId === original.request.requestId &&
+    record.receipt.targetId === session.id && record.receipt.family === 'K-SESSION' &&
+    record.receipt.operation === 'open' && ['APPLIED', 'REPLAYED'].includes(record.receipt.status) &&
+    typeof record.receipt.result.threadId === 'string' && record.receipt.result.threadId.length > 0,
+  'Exact retained open returns its actual native thread');
+  session.revision = record.receipt.revision; session.threadId = record.receipt.result.threadId;
+  product.save(); return session;
+}
 async function output(session) {
   let reply = await product.operation('K-SESSION', 'output-stream', session.id,
     { generation: session.generation, afterCursor: session.cursor }, session.revision, ['APPLIED', 'STALE']);
@@ -597,7 +645,8 @@ try {
   check(instances.instances.some(row => row.instanceId === config.childInstanceId &&
     row.driverId === 'codex' && row.state === 'LOGGED_IN'),
   'Actual child Codex instance pre-admitted without any login action');
-  const lead = await openUserSession(config.seatId, config.instanceId, config.worktreeId, 'lead');
+  const lead = config.retainedPrelaunchFailure ? await openRetainedLead() :
+    await openUserSession(config.seatId, config.instanceId, config.worktreeId, 'lead');
   const firstPrompt = `Owner-authorized M2 case ${journal.caseId} in the private gogoke-seat-testbed. ` +
     `Use the real native gogoke_seat state-card for your own seat. Its takeoverQuestions include ${config.takeoverQuestionId}. ` +
     `Ask exactly that question via native request_user_input, with non-secret option ${JSON.stringify(config.takeoverOption)}, then use gogoke_takeover takeover-answers with the original nativeAnswerSources. ` +

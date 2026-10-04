@@ -32,6 +32,17 @@ and testbed source. The mandatory `formal` observer compares `formal`,
 and `ledger` retain the M1 read-only measurement contract. No file here
 contains a real local path, account name, credential or token.
 
+When the original lead admission is already COMMITTED and its open failed at
+the definite legacy-account prelaunch guard, optional `retainedPrelaunchFailure`
+contains the original private journal's `result` path and `sha256`. The path
+must stay inside the private evidence directory. The driver checks that failed
+journal, the original empty model session and exact open frame, and the live
+BUSY seat's instance and generation. It sends the original frame once per
+invocation without another reserve, commit or release. This is not a replay of
+an uncertain model request or a continuation licensed by the boot fence; native
+same-request fencing remains authoritative. It requires no manually copied ID.
+Any further error stops that invocation and preserves its original frame.
+
 The private fixture helper accepts `fixtureSetup.providerFixtureSelection`
 `DEFER_ALL` to create only the authorized Codex lead and three history E/F
 fixtures. It leaves the model-created child unused, preserves the existing
