@@ -40,7 +40,7 @@ export async function runRulesCase(product, config, journal) {
       { caseId: 'V08_MODEL_CROSS_PROJECT', reason: 'The native tool derives domain from H; it exposes no cross-domain selector. A genuine reachable cross-project model call is required.' },
       { caseId: 'V08_MODEL_SUBORDINATE_OWNER', reason: 'A distinct admitted subordinate and its real reachable MESSAGE/Owner operation are required; gate target text is not that operation.' },
       { caseId: 'V08_REJECT_CAP_DELIVERY', reason: 'Host recipient/checkpoint context not supplied; gate state alone cannot prove original E/C/H delivery.' },
-      { caseId: 'V08_STALL_CHAIN', reason: 'There is no current STALLED source producer for the Host observer; an enum/table row or scheduled trigger cannot substitute.' },
+      { caseId: 'V08_STALL_CHAIN', reason: 'The sealed producer is present in source. This installed flow has not observed an original failed WORK followed by its definite Unsupported repair and unchanged custody with no successor work; synthetic cloud controls cannot substitute.' },
     ], readbackRequired: true };
   journal.rulesCases ??= []; journal.rulesCases.push(record); product.save();
   try {
