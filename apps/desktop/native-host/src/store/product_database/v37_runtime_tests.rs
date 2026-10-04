@@ -821,6 +821,47 @@ fn original_codex_thread_path_for_acl_test(product: &ProductDatabase<'_>,
     (thread, path)
 }
 
+fn require_original_history_path_in_home_before_save(path: &std::path::Path,
+    home: &std::path::Path) -> std::result::Result<(), String> {
+    let spelling = |path: &std::path::Path| -> std::result::Result<String, String> {
+        let raw = path.to_str().ok_or("original history path is not Unicode")?;
+        if !path.is_absolute() || raw.contains('\0') { return Err(format!("not absolute: {raw:?}")); }
+        // Match H's observed-cwd DOS/verbatim spelling rule, then reject
+        // remote, alternate-stream and relative components before any save.
+        let slash = raw.replace('/', "\\");
+        let local = slash.strip_prefix("\\\\?\\").unwrap_or(&slash);
+        let bytes = local.as_bytes();
+        if bytes.len() < 4 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
+            return Err(format!("not a local drive path: {raw:?}"));
+        }
+        if local[3..].split('\\').any(|component| component.is_empty() || component == "."
+            || component == ".." || component.contains(':')) {
+            return Err(format!("ambiguous local path component: {raw:?}"));
+        }
+        Ok(local.to_ascii_lowercase())
+    };
+    let original = spelling(path)?;
+    let bound = spelling(home)?;
+    if !original.starts_with(&(bound + "\\")) {
+        return Err(format!("original path outside registered HOME spelling: path={path:?} home={home:?}"));
+    }
+    Ok(())
+}
+
+fn require_saved_history_leaf_in_home(path: &std::path::Path,
+    home: &instance::ResolvedDirectory) -> std::result::Result<std::path::PathBuf, String> {
+    let actual = std::fs::canonicalize(path)
+        .map_err(|error| format!("actual history leaf canonicalize: path={path:?} error={error}"))?;
+    let bound = std::fs::canonicalize(&home.path)
+        .map_err(|error| format!("registered HOME canonicalize: error={error}"))?;
+    let identity = crate::root::inspect_root(&home.path)
+        .map_err(|error| format!("registered HOME identity read: {error:?}"))?.identity;
+    if identity != home.identity || !actual.starts_with(&bound) {
+        return Err(format!("actual history leaf outside registered HOME identity: path={path:?} actual={actual:?} bound={bound:?} home_identity_matches={}", identity == home.identity));
+    }
+    Ok(actual)
+}
+
 fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
     let _route_guard = route_b_test_guard();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -916,9 +957,9 @@ fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
         }
         let (thread_a, Some(path_a)) = original_codex_thread_path_for_acl_test(&product, "sessionA")
             else { return Err("NOT_RUN original thread/start returned no path".into()); };
-        if !path_a.is_absolute() || !path_a.starts_with(&home.path) {
-            return Err("CANDIDATE_REJECTED original A path outside bound HOME".into());
-        }
+        println!("HISTORY_VENDOR_ACL_ORIGINAL_PATH A={path_a:?} HOME={:?}", home.path);
+        require_original_history_path_in_home_before_save(&path_a, &home.path)
+            .map_err(|error| format!("CANDIDATE_REJECTED A pre-save path={error}"))?;
         let key_a = ("projectA".to_owned(), "sessionA".to_owned());
         let appended_a = product.native_append_rpc(&key_a, "acl-save-a", &thread_a,
             "cloud no-model nonsecret A history".into())
@@ -926,6 +967,9 @@ fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
         if !matches!(appended_a, Some(Reply::Ack { .. })) {
             return Err(format!("CANDIDATE_REJECTED stage=A native save reply={appended_a:?}"));
         }
+        let physical_a = require_saved_history_leaf_in_home(&path_a, &home)
+            .map_err(|error| format!("CANDIDATE_REJECTED A saved leaf={error}"))?;
+        println!("HISTORY_VENDOR_ACL_SAVED_PATH A={physical_a:?}");
         let (id_a, a_own, a_peer, a_user) = AppContainerProfile::observed_vendor_history_leaf_acl_for_test(
             &path_a, &profile_a, &profile_b)
             .map_err(|error| format!("CANDIDATE_REJECTED stage=A original leaf={error}"))?;
@@ -938,9 +982,10 @@ fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
         }
         let (thread_b, Some(path_b)) = original_codex_thread_path_for_acl_test(&product, "sessionB")
             else { return Err("NOT_RUN original B thread/start returned no path".into()); };
-        if !path_b.is_absolute() || !path_b.starts_with(&home.path) || path_a == path_b {
-            return Err("CANDIDATE_REJECTED B path outside HOME or same history object".into());
-        }
+        println!("HISTORY_VENDOR_ACL_ORIGINAL_PATH B={path_b:?} HOME={:?}", home.path);
+        require_original_history_path_in_home_before_save(&path_b, &home.path)
+            .map_err(|error| format!("CANDIDATE_REJECTED B pre-save path={error}"))?;
+        if path_a == path_b { return Err("CANDIDATE_REJECTED same original history path".into()); }
         let key_b = ("projectA".to_owned(), "sessionB".to_owned());
         let appended_b = product.native_append_rpc(&key_b, "acl-save-b", &thread_b,
             "cloud no-model nonsecret B history".into())
@@ -948,6 +993,10 @@ fn actual_pinned_codex_history_acl_vendor_qualification_without_model_call() {
         if !matches!(appended_b, Some(Reply::Ack { .. })) {
             return Err(format!("CANDIDATE_REJECTED stage=B native save reply={appended_b:?}"));
         }
+        let physical_b = require_saved_history_leaf_in_home(&path_b, &home)
+            .map_err(|error| format!("CANDIDATE_REJECTED B saved leaf={error}"))?;
+        println!("HISTORY_VENDOR_ACL_SAVED_PATH B={physical_b:?}");
+        if physical_a == physical_b { return Err("CANDIDATE_REJECTED same physical history leaf".into()); }
         let (id_b, b_own, b_peer, b_user) = AppContainerProfile::observed_vendor_history_leaf_acl_for_test(
             &path_b, &profile_b, &profile_a)
             .map_err(|error| format!("CANDIDATE_REJECTED stage=B original leaf={error}"))?;
