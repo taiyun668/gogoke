@@ -569,6 +569,20 @@ impl AppContainerProfile {
         })
     }
 
+    /// Read back this exact registered alias and this profile's completed
+    /// protected file grant. This does not prepare or change the DACL.
+    pub(crate) fn verify_credential_alias(&self, binding: &CredentialBinding,
+        alias: &CredentialAlias) -> Result<(), CredentialError> {
+        binding.with_exact_alias(alias, |handle| {
+            if &file_identity(handle)? != binding.identity() || !dacl_protected(handle)?
+                || package_aces(handle, self.sid)?.as_slice() !=
+                    &[(GRANT_ACCESS, CREDENTIAL_FILE_RIGHTS, NO_INHERITANCE)] {
+                return Err(IsolationError::AclWitnessMismatch.into());
+            }
+            Ok(())
+        })
+    }
+
     /// Stopping one generation removes only its package SID from the shared
     /// object. F controls dormant alias unlink after whole-instance quiescence.
     pub(crate) fn revoke_credential_alias(&self, binding: &CredentialBinding,
