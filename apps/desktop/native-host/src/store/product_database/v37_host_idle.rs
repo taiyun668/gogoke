@@ -36,7 +36,8 @@ fn positive_idle(status: Option<&Json>) -> bool {
     let Some(status) = status.and_then(object) else { return false; };
     status.len() == 1 && string(value(status, "type")).as_deref() == Some("idle")
 }
-fn original_thread_turns(thread: &BTreeMap<JsonString, Json>) -> Option<BTreeSet<String>> {
+fn original_thread_turns(thread: &BTreeMap<JsonString, Json>)
+    -> Option<(BTreeSet<String>, BTreeSet<String>)> {
     let status = value(thread, "status").and_then(object)?;
     if !matches!(string(value(status, "type")).as_deref(), Some("idle" | "active")) {
         return None;
@@ -54,7 +55,7 @@ fn original_thread_turns(thread: &BTreeMap<JsonString, Json>) -> Option<BTreeSet
             _ => return None,
         }
     }
-    Some(unfinished)
+    Some((seen, unfinished))
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -121,7 +122,9 @@ impl<'root> ProductDatabase<'root> {
         drop(query);
         let mut idle = false;
         let mut opening_seen = false;
+        let mut known = BTreeSet::new();
         let mut unfinished = BTreeSet::new();
+        let mut terminal = BTreeSet::new();
         for (cursor, command_hex) in rows {
             let source = ledger::read_captured_raw_source(&self.connection, &operation,
                 &custody.custodian_nonce, &cursor)?.ok_or(OrchestrationError::OperationConflict)?;
@@ -139,8 +142,9 @@ impl<'root> ProductDatabase<'root> {
                     }.map_err(|error| OrchestrationError::V37StoreFailure(
                         format!("original Host idle thread ACK: {error:?}")))?;
                     if observed != thread { return Ok(false); }
-                    let Some(blockers) = original_thread_turns(observed_thread) else { return Ok(false); };
-                    unfinished = blockers;
+                    let Some((turns, blockers)) = original_thread_turns(observed_thread) else { return Ok(false); };
+                    known.extend(turns);
+                    unfinished.extend(blockers.into_iter().filter(|id| !terminal.contains(id)));
                     idle = positive_idle(value(observed_thread, "status"));
                     opening_seen = true;
                     continue;
@@ -149,20 +153,24 @@ impl<'root> ProductDatabase<'root> {
                 if let Some(turn) = value(result, "turn") {
                     let Some(turn) = object(turn) else { return Ok(false); };
                     let Some(id) = string(value(turn, "id")) else { return Ok(false); };
-                    if id.is_empty() || string(value(turn, "status")).as_deref() != Some("inProgress") {
+                    if id.is_empty() || !matches!(string(value(turn, "status")).as_deref(),
+                        Some("inProgress" | "completed" | "failed" | "interrupted")) {
                         return Ok(false);
                     }
-                    unfinished.insert(id);
-                    idle = false;
+                    known.insert(id.clone());
+                    // A terminal notification may precede its turn/start ACK.
+                    // A late ACK must not resurrect that exact completed turn.
+                    if !terminal.contains(&id) {
+                        unfinished.insert(id);
+                        idle = false;
+                    }
                 }
             }
             let Some(params) = value(&raw, "params").and_then(object) else { continue; };
             if string(value(params, "threadId")).as_deref() != Some(thread.as_str()) { continue; }
-            // The opening ACK is the first complete thread snapshot. Earlier
-            // notifications can precede that response in the captured pipe.
-            if !opening_seen { continue; }
             let method = string(value(&raw, "method"));
             if method.as_deref() == Some("thread/status/changed") {
+                if !opening_seen { continue; }
                 let Some(status) = value(params, "status").and_then(object) else { return Ok(false); };
                 if !matches!(string(value(status, "type")).as_deref(), Some("idle" | "active")) {
                     return Ok(false);
@@ -174,15 +182,23 @@ impl<'root> ProductDatabase<'root> {
                 if id.is_empty() || string(value(turn, "status")).as_deref() != Some("inProgress") {
                     return Ok(false);
                 }
-                unfinished.insert(id);
-                idle = false;
+                known.insert(id.clone());
+                if !terminal.contains(&id) {
+                    unfinished.insert(id);
+                    idle = false;
+                }
             } else if method.as_deref() == Some("turn/completed") {
                 let Some(turn) = value(params, "turn").and_then(object) else { return Ok(false); };
                 let Some(id) = string(value(turn, "id")) else { return Ok(false); };
                 if id.is_empty() || !matches!(string(value(turn, "status")).as_deref(),
-                    Some("completed" | "failed" | "interrupted")) || !unfinished.remove(&id) {
+                    Some("completed" | "failed" | "interrupted")) {
                     return Ok(false);
                 }
+                terminal.insert(id.clone());
+                unfinished.remove(&id);
+            } else if !opening_seen {
+                // The opening ACK is the first complete thread snapshot.
+                continue;
             }
             if source.state == ledger::RawSourceState::Pending {
                 if value(&raw, "id").is_some() { return Ok(false); }
@@ -195,6 +211,6 @@ impl<'root> ProductDatabase<'root> {
                 }
             }
         }
-        Ok(opening_seen && idle && unfinished.is_empty())
+        Ok(opening_seen && idle && unfinished.is_empty() && terminal.is_subset(&known))
     }
 }
