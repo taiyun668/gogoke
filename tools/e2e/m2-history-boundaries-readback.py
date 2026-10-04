@@ -46,7 +46,7 @@ def path_spelling(value):
     return (value[4:] if value.startswith("\\\\?\\") else value).lower()
 
 
-def snapshot(db, domain, sessions, cases):
+def snapshot(db, sessions, cases):
     # Compare scoped production rows, never synthesize fixture/golden records.
     result = {}
     for table in ("gogoke_v37_h_claim", "gogoke_v37_h_operation", "gogoke_v37_h_process_episode",
@@ -55,11 +55,11 @@ def snapshot(db, domain, sessions, cases):
         result[table] = []
         for session in sessions:
             result[table].extend(rows(db, f"SELECT * FROM {table} WHERE domain_id=? AND session_id=? ORDER BY rowid",
-                                     (domain, session["id"])))
+                                     (session["domainId"], session["id"])))
     result["seats"] = [one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?", (domain, seat))
-                       for seat in sorted({session["seatId"] for session in sessions})]
+                       for domain, seat in sorted({(session["domainId"], session["seatId"]) for session in sessions})]
     result["worktrees"] = [one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?", (domain, tree))
-                           for tree in sorted({session["worktreeId"] for session in sessions})]
+                           for domain, tree in sorted({(session["domainId"], session["worktreeId"]) for session in sessions})]
     result["processCustody"] = [one(db, "SELECT * FROM gogoke_coordination_process_custody WHERE operation_id=?",
                                    (episode["process_operation_id"],))
                                for episode in result["gogoke_v37_h_process_episode"]]
@@ -67,7 +67,7 @@ def snapshot(db, domain, sessions, cases):
         result[table] = []
         for case in cases:
             result[table].extend(rows(db, f"SELECT * FROM {table} WHERE domain_id=? AND side_id=? ORDER BY rowid",
-                                     (domain, case["sideId"])))
+                                     (case["sideBinding"]["domainId"], case["sideId"])))
     return result
 
 
@@ -82,7 +82,8 @@ def serializable(value):
     return value
 
 
-def session_evidence(db, domain, session, case, operations):
+def session_evidence(db, session, case, operations):
+    domain = session["domainId"]
     sid = session["id"]
     registration = one(db, "SELECT * FROM v37_ledger_session WHERE domain_id=? AND session_id=?", (domain, sid))
     check(registration["seat_id"] == session["seatId"] and registration["purpose"] == session["purpose"] and
@@ -121,6 +122,7 @@ def session_evidence(db, domain, session, case, operations):
     commands = [(row, decode_hex(row["command_hex"])) for row in outgoing]
     open_request = case["sideOpenRequest"] if session["purpose"] == "SIDE_CHAT" else operations[session["openRequestId"]]["request"]
     check(decode_hex(episode["raw_hex"]) == open_request and episode["request_id"] == open_request["requestId"] and
+          open_request["domainId"] == domain and
           open_request["payload"] == {"generation": session["generation"], "seatId": session["seatId"],
               "repositoryId": session["repositoryId"], "worktreeId": session["worktreeId"],
               **({"purpose": "FORMAL_REVIEW"} if session["purpose"] == "FORMAL_REVIEW" else {})},
@@ -239,7 +241,7 @@ def session_evidence(db, domain, session, case, operations):
                              if update.get("sessionUpdate") == "agent_message_chunk")
     check(input_row["marker"] in assistant_text,
               "Non-secret marker is absent from actual assistant A events; no empty history control")
-    return {"sessionId": sid, "nativeSessionId": native_id, "originalCodexThreadPath": native_path,
+    return {"domainId": domain, "sessionId": sid, "nativeSessionId": native_id, "originalCodexThreadPath": native_path,
             "episode": episode, "custody": custody, "registration": registration, "worktree": tree,
             "stdin": stdin, "rawSource": incoming, "rpcSteps": outgoing, "normalized": normalized,
             "originalBody": original_body, "marker": input_row["marker"]}
@@ -259,15 +261,21 @@ def verify_flow(db, journal, boundary, result):
         owned = [session for session in journal["sessions"] if session["id"] in ids]
         check(len(owned) == 4 and [session["purpose"] for session in owned] == ["WORK", "WORK", "SIDE_CHAT", "FORMAL_REVIEW"],
               "Four original H sessions with their actual purposes required")
-        observed = [session_evidence(db, journal["domainId"], session, case, operations) for session in owned]
+        for session, binding in zip(owned, (case["projectA"], case["projectB"], case["sideBinding"], case["sideBinding"])):
+            check(all(session[key] == binding[key] for key in ("domainId", "repositoryId", "seatId", "worktreeId")),
+                  "Original session domain/F binding differs from its configured test object")
+        observed = [session_evidence(db, session, case, operations) for session in owned]
         check(len({row["nativeSessionId"] for row in observed}) == 4 and all(row["nativeSessionId"] for row in observed),
               "Original native sessions reused/forked prior context identity")
         a, b, side, formal = observed
-        check(a["worktree"]["repository_id"] != b["worktree"]["repository_id"] and
+        check(a["domainId"] != b["domainId"] and
+              a["worktree"]["repository_id"] == b["worktree"]["repository_id"] == journal["repositoryId"] and
               a["episode"]["instance_id"] == b["episode"]["instance_id"] == case["instanceId"],
-              "Actual projects do not share the identical pinned instance")
-        check(owned[1]["seatId"] == owned[2]["seatId"] == owned[3]["seatId"] and
-              int(owned[1]["generation"]) < int(owned[2]["generation"]) < int(owned[3]["generation"]),
+              "Two actual project domains must share the identical pinned instance and authorized test repository")
+        check(a["domainId"] == side["domainId"] == formal["domainId"] and
+              owned[2]["seatId"] == owned[3]["seatId"] and owned[2]["worktreeId"] == owned[3]["worktreeId"] and
+              owned[2]["seatId"] != owned[0]["seatId"] and len({session["worktreeId"] for session in owned}) == 3 and
+              int(owned[2]["generation"]) < int(owned[3]["generation"]),
               "SideChat and fresh formal review must reuse the actual same seat through distinct generations")
         check(b["marker"] not in a["originalBody"] and a["marker"] not in b["originalBody"],
               "Original double-project H prompts contain another project's private marker")
@@ -276,14 +284,15 @@ def verify_flow(db, journal, boundary, result):
                   all(marker.encode() not in bytes.fromhex(step["command_hex"]) for step in formal["rpcSteps"])
                   for marker in forbidden), "Fresh formal original H commands contain prior project/side private bytes")
         registry = one(db, "SELECT * FROM gogoke_v37_side_registry WHERE domain_id=? AND side_id=?",
-                       (journal["domainId"], case["sideId"]))
+                       (side["domainId"], case["sideId"]))
         check(registry["session_id"] == side["sessionId"] and registry["source_session_id"] == a["sessionId"] and
               registry["seat_id"] == owned[2]["seatId"], "Actual D registry does not bind original source/side")
         sessions.extend(owned); result["cases"].append({"caseId": case["caseId"], "driverId": case["driverId"],
+            "projectDomains": [a["domainId"], b["domainId"]], "sideDomain": side["domainId"],
             "actualHInputIsolation": True, "actualSideThenFreshFormal": True, "sessions": observed,
             "V04b": "NOT_RUN_EFFECTIVE_VENDOR_MEMORY_AND_INSTRUCTION_PROVENANCE_MISSING",
             "V10": "NOT_RUN_VENDOR_HISTORY_PROVENANCE_MISSING_ACTUAL_NATIVE_FLOW_READ_BACK"})
-    result["scopedSnapshot"] = serializable(snapshot(db, journal["domainId"], sessions, cases))
+    result["scopedSnapshot"] = serializable(snapshot(db, sessions, cases))
     result["directFlowEvidence"] = True
 
 
@@ -332,10 +341,11 @@ def main():
                       baseline["measurementPreservedDatabaseBytes"] is True and
                       baseline["scopedSnapshot"] == result["scopedSnapshot"],
                       "Formal refusal produced new H/A/D/F rows or changed original test objects")
-                formal_ids = {case["formalSessionId"] for case in boundary["cases"] if case["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED"}
-                expected = {(sid, verb) for sid in formal_ids for verb in ("resume", "reconnect", "compact", "renew-session", "open")}
+                formal_ids = {(case["sideBinding"]["domainId"], case["formalSessionId"]) for case in boundary["cases"]
+                              if case["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED"}
+                expected = {(domain, sid, verb) for domain, sid in formal_ids for verb in ("resume", "reconnect", "compact", "renew-session", "open")}
                 check(len(boundary["refusals"]) == len(expected) and
-                      {(refusal["sessionId"], refusal["operation"]) for refusal in boundary["refusals"]} == expected,
+                      {(refusal["domainId"], refusal["sessionId"], refusal["operation"]) for refusal in boundary["refusals"]} == expected,
                       "Incomplete actual formal resume/fork controls")
                 operations = {entry["request"]["requestId"]: entry for entry in journal["operations"] if entry.get("request", {}).get("requestId")}
                 for refusal in boundary["refusals"]:
@@ -344,6 +354,7 @@ def main():
                     check(json.loads(entry["rawFrame"]) == req and reply == refusal["receipt"] and
                           reply["requestId"] == req["requestId"] and reply["status"] == "DENIED" and
                           req["targetId"] == reply["targetId"] == refusal["sessionId"] and
+                          req["domainId"] == refusal["domainId"] and
                           req["operation"] == reply["operation"] == refusal["operation"] and
                           reply["previousRevision"] == reply["revision"] == req["expectedRevision"],
                           "Original User ingress formal refusal differs from exact sent request")

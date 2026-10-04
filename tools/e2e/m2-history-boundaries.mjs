@@ -26,14 +26,15 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       atom(row.instanceId) && typeof row.version === 'string' && /^[a-f0-9]{64}$/.test(row.sha256),
     'One original fixed already admitted instance per configured provider');
     pins.add(row.driverId);
-    for (const project of [row.projectA, row.projectB]) {
-      check(project && ['repositoryId', 'seatId', 'worktreeId'].every(key => atom(project[key])) &&
-        !seats.has(project.seatId) && !trees.has(project.worktreeId), 'Disjoint exclusive original F/E test objects');
-      seats.add(project.seatId); trees.add(project.worktreeId);
+    for (const project of [row.projectA, row.projectB, row.sideBinding]) {
+      check(project && ['domainId', 'repositoryId', 'seatId', 'worktreeId'].every(key => atom(project[key])) &&
+        project.repositoryId === config.repositoryId &&
+        !seats.has(`${project.domainId}/${project.seatId}`) && !trees.has(project.worktreeId),
+      'Disjoint exclusive original domain/F/E test objects in the authorized test repository');
+      seats.add(`${project.domainId}/${project.seatId}`); trees.add(project.worktreeId);
     }
-    check(row.projectA.repositoryId === config.repositoryId &&
-      row.projectA.repositoryId !== row.projectB.repositoryId,
-    'Two actual registered test repositories on the identical instance are required');
+    check(row.projectA.domainId !== row.projectB.domainId && row.sideBinding.domainId === row.projectA.domainId,
+      'Two actual project domains are required; the independent third side seat must belong to the source domain');
   }
   const record = { schema: 'gogoke.37.m2-history-boundaries.v1', state: 'RUNNING', acceptance: false,
     driverSha256: sha256(path.join(here, 'm2-history-boundaries.mjs')),
@@ -49,9 +50,9 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     record.notRun.push({ caseId: driverId, reason: 'No exclusive real fixed already logged-in test instance configured.' });
   }
   journal.historyBoundary = record; journal.sessions ??= []; product.save();
-  const request = (family, operation, targetId, payload, expectedRevision) => ({
+  const request = (domainId, family, operation, targetId, payload, expectedRevision) => ({
     schema: 'gogoke.37.operations.v1', family, operation, requestId: id('m2History'),
-    domainId: config.domainId, targetId, expectedRevision, payload,
+    domainId, targetId, expectedRevision, payload,
   });
   const composition = async (schema, fields) => {
     const req = { schema, ...fields }, rawFrame = JSON.stringify(req);
@@ -62,18 +63,28 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       entry.rawReceipt = raw; entry.receipt = JSON.parse(raw); product.save(); return entry.receipt;
     } catch (error) { entry.originalError = String(error.stack ?? error); product.save(); throw error; }
   };
-  const read = async (family, verb, target, payload = {}, revision = '0') => {
-    let reply = await product.operation(family, verb, target, payload, revision, ['APPLIED', 'STALE']);
-    if (reply.status === 'STALE') reply = await product.operation(family, verb, target, payload, reply.revision);
+  const operation = async (domainId, family, verb, target, payload = {}, revision = '0', allowed = ['APPLIED']) => {
+    const req = request(domainId, family, verb, target, payload, revision);
+    // ActualProduct.operation fixes the runner domain. Use the identical real
+    // User bridge with this original session's domain; never change product.config.
+    const reply = await composition(req.schema, req);
+    check(reply.schema === req.schema && reply.requestId === req.requestId &&
+      reply.targetId === target && reply.family === family && reply.operation === verb && allowed.includes(reply.status),
+    `Original ${domainId}/${family}/${verb} result=${reply.status}; no mutation replay`);
+    return reply;
+  };
+  const read = async (domainId, family, verb, target, payload = {}, revision = '0') => {
+    let reply = await operation(domainId, family, verb, target, payload, revision, ['APPLIED', 'STALE']);
+    if (reply.status === 'STALE') reply = await operation(domainId, family, verb, target, payload, reply.revision);
     return reply;
   };
   const step = async (s, verb, payload = {}, allowed = ['APPLIED']) => {
-    const reply = await product.operation('K-SESSION', verb, s.id,
+    const reply = await operation(s.domainId, 'K-SESSION', verb, s.id,
       { generation: s.generation, ...payload }, s.revision, allowed);
     s.revision = reply.revision; product.save(); return reply;
   };
   const output = async s => {
-    const reply = await read('K-SESSION', 'output-stream', s.id,
+    const reply = await read(s.domainId, 'K-SESSION', 'output-stream', s.id,
       { generation: s.generation, afterCursor: s.cursor }, s.revision);
     const page = reply.result;
     check(page.generation === s.generation && decimal(page.cursor) && BigInt(page.cursor) >= BigInt(s.cursor),
@@ -94,12 +105,12 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     throw Error(`${label}: original input retained; no completion before observation deadline`);
   };
   const allocate = async (binding, row, purpose, caseId) => {
-    const card = await read('K-SEAT', 'state-card', binding.seatId);
+    const card = await read(binding.domainId, 'K-SEAT', 'state-card', binding.seatId);
     check(card.result.state === 'IDLE' && card.result.instanceId === row.instanceId,
       'Exclusive history seat is not IDLE on its actual pinned instance');
-    const graph = await read('K-WORKTREE', 'graph-query', binding.worktreeId);
+    const graph = await read(binding.domainId, 'K-WORKTREE', 'graph-query', binding.worktreeId);
     check(graph.result.state === 'REGISTERED' && graph.result.members?.some(member =>
-      member.domainId === config.domainId && member.repositoryId === binding.repositoryId &&
+      member.domainId === binding.domainId && member.repositoryId === binding.repositoryId &&
       member.seatId === binding.seatId && member.instanceId === row.instanceId && member.worktreeId === binding.worktreeId),
     'Actual F graph differs from the original test project/seat/instance');
     const s = { id: id('historySession'), caseOwner: caseId, purpose, ...binding,
@@ -168,7 +179,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     for (const row of c.cases) {
       const item = { caseId: id('history'), driverId: row.driverId, instanceId: row.instanceId,
         version: row.version, sha256: row.sha256, state: 'RUNNING', acceptance: false,
-        projectA: row.projectA, projectB: row.projectB, sideId: id('historySide') };
+        projectA: row.projectA, projectB: row.projectB, sideBinding: row.sideBinding, sideId: id('historySide') };
       record.cases.push(item); product.save();
       const instance = instances.instances.find(value => value.instanceId === row.instanceId);
       if (!instance || instance.state !== 'LOGGED_IN') {
@@ -184,11 +195,11 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       await finishInput(a, first.input, row, first.sent);
       await finishInput(b, second.input, row, second.sent);
       await stop(a, false); await stop(b, true);
-      const side = await allocate(row.projectB, row, 'SIDE_CHAT', item.caseId);
+      const side = await allocate(row.sideBinding, row, 'SIDE_CHAT', item.caseId);
       item.sideSessionId = side.id;
-      const sideOpen = request('K-SESSION', 'open', side.id, { generation: side.generation,
+      const sideOpen = request(side.domainId, 'K-SESSION', 'open', side.id, { generation: side.generation,
         seatId: side.seatId, repositoryId: side.repositoryId, worktreeId: side.worktreeId }, side.revision);
-      const create = request('K-SIDE', 'create', item.sideId, { sourceCursor: '0' }, '0');
+      const create = request(side.domainId, 'K-SIDE', 'create', item.sideId, { sourceCursor: '0' }, '0');
       item.sideOpenRequest = sideOpen; item.sideCreateRequest = create; product.save();
       const created = await composition('gogoke.37.owner-side-open.v1', {
         sourceSessionId: a.id, openRequest: JSON.stringify(sideOpen), createRequest: JSON.stringify(create) });
@@ -198,10 +209,10 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       item.sideCreateReceipt = created;
       // D create receipt is not H open revision. Observe the original claim.
       await output(side); await pin(side, row);
-      const pending = await composition('gogoke.37.owner-side-collect.v1', { domainId: config.domainId, sideId: item.sideId });
+      const pending = await composition('gogoke.37.owner-side-collect.v1', { domainId: side.domainId, sideId: item.sideId });
       const marker = id('SIDE_CHAT_PRIVATE');
       const body = `Private non-secret V10 SideChat marker ${marker}. Reply only ${marker}. Use no tools or agents; do not inspect files, credentials or other history.`;
-      const question = request('K-SESSION', 'send', side.id, { generation: side.generation, body }, side.revision);
+      const question = request(side.domainId, 'K-SESSION', 'send', side.id, { generation: side.generation, body }, side.revision);
       item.sideQuestionRequest = question; product.save();
       const sync = await composition('gogoke.37.owner-side-question.v1', {
         sideId: item.sideId, questionRequest: JSON.stringify(question) });
@@ -214,7 +225,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       const sideInput = { body, marker, requestId: question.requestId, sendReceipt: terminal, sideComposition: true };
       side.inputs.push(sideInput); product.save(); await finishInput(side, sideInput, row, terminal);
       await stop(side, true);
-      const formal = await open(row.projectB, row, 'FORMAL_REVIEW', item.caseId);
+      const formal = await open(row.sideBinding, row, 'FORMAL_REVIEW', item.caseId);
       item.formalSessionId = formal.id; product.save();
       const fresh = await send(formal, row, id('FORMAL_REVIEW_FRESH'), 'V10 fresh formal review');
       await finishInput(formal, fresh.input, row, fresh.sent);
@@ -244,7 +255,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
         const reply = await step(formal, verb, payload, ['DENIED']);
         check(reply.previousRevision === originalRevision && reply.revision === originalRevision,
           'Formal inheritance refusal changed original claim revision');
-        record.refusals.push({ sessionId: formal.id, operation: verb,
+        record.refusals.push({ domainId: formal.domainId, sessionId: formal.id, operation: verb,
           requestId: journal.operations.at(-1).request.requestId, receipt: reply }); product.save();
       }
       item.state = 'FLOW_COMPLETE_DIRECT_READBACK_REQUIRED'; product.save();
