@@ -248,7 +248,14 @@ pub(crate) fn observe_host_stalled_in_transaction(db:&VerifiedDatabaseConnection
                 crate::store::session_transport::rpc_journal::RpcJournalError::Denied)=>SeatError::Denied,
             error=>SeatError::HostHealthObservation(format!("original stalled H/A cause: {error:?}")),
         })?;
-    super::super::continuity::require_stalled_health(db,stalled.domain_id(),stalled.seat_id(),stalled.event_id())?;
+    let observation=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_seat_health WHERE domain_id=?1 AND seat_id=?2
+          AND event_id=?3 AND generation=?4 AND source_event_id=?5 AND signal='STALLED'
+          AND action='ESCALATE' AND state='OBSERVED' AND session_request_id IS NULL AND receipt_id IS NULL")?;
+    observation.bind_text(1,stalled.domain_id())?;observation.bind_text(2,stalled.seat_id())?;
+    observation.bind_text(3,stalled.event_id())?;observation.bind_i64(4,stalled.generation())?;
+    observation.bind_text(5,stalled.source_event_id())?;
+    if !observation.step_row()? || observation.step_row()? {return Err(SeatError::Denied);}
     let source=read(db,stalled.domain_id(),stalled.seat_id())?.ok_or(SeatError::Denied)?;
     original_logical_identity(db,&source)?;
     let revision=head_revision(db,stalled.domain_id())?;

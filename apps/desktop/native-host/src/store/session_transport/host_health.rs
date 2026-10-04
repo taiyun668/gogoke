@@ -126,16 +126,6 @@ fn unhex(value:&str)->Result<Vec<u8>> {
             field:"hex byte",cause})
     }).collect()
 }
-fn typed_id(object:&Fields)->Result<codex_rpc::RpcId> {
-    match object.get(&key("id")) {
-        Some(Json::String(value))=>Ok(codex_rpc::RpcId::String(
-            value.to_well_formed_string().ok_or(HostHealthError::Denied)?)),
-        Some(Json::Number(value))=>Ok(codex_rpc::RpcId::Number(
-            value.parse().map_err(|cause|HostHealthError::Integer {field:"RPC id",cause})?)),
-        _=>Err(HostHealthError::Denied),
-    }
-}
-
 /// Fixed 0.160.0 typed error only. Neither message text nor an ordinary error
 /// notification supplies a cause; CLI retry exhaustion is already a fact.
 fn typed_terminal(raw:&[u8])->Result<Option<(String,String,Cause)>> {
@@ -262,21 +252,14 @@ fn ordinary_work_turn(db:&VerifiedDatabaseConnection<'_>,custody:&PreparedCustod
         let ack_cursor=ack.column_text(2)?.parse::<u64>().map_err(|cause|
             HostHealthError::Integer {field:"ordinary ACK cursor",cause})?;
         if ack.step_row()? {return Err(HostHealthError::Conflict)}
-        let command=object(&command_raw)?;
-        let params=fields(&command,"params").ok_or(HostHealthError::Denied)?;
-        let input=params.get(&key("input")).ok_or(HostHealthError::Denied)?;
-        let Json::Array(input)=input else {return Err(HostHealthError::Denied)};
-        let [Json::Object(message)]=input.as_slice() else {return Err(HostHealthError::Denied)};
-        let response=object(&response_raw)?;
-        let actual_turn=fields(&response,"result").and_then(|result|fields(result,"turn"))
-            .ok_or(HostHealthError::Denied)?;
-        if string(&command,"method").as_deref()!=Some("turn/start")
-            || string(params,"threadId").as_deref()!=Some(thread)
-            || string(message,"type").as_deref()!=Some("text")
-            || string(message,"text").as_deref()!=Some(body.as_str())
-            || typed_id(&response)?!=typed_id(&command)?
-            || string(actual_turn,"id").as_deref()!=Some(turn)
-            || string(actual_turn,"status").as_deref()!=Some("inProgress") {
+        // H's complete_codex_turn_in_transaction already uses this fixed
+        // codec before writing APPLIED. Revalidation uses that same mechanism
+        // on the exact saved command and A response, not a second JSON meaning.
+        let (id,command)=codex_rpc::decode_stored_turn_start(&command_raw)?;
+        if !matches!(&command,codex_rpc::Command::TurnStart {thread_id,text,..}
+                if thread_id==thread && text==&body)
+            || !matches!(codex_rpc::decode(&response_raw,Some((&id,&command)))?,
+                codex_rpc::Reply::Turn {turn_id,status:codex_rpc::TurnStatus::InProgress,..} if turn_id==turn) {
             return Err(HostHealthError::Denied);
         }
         let request_sha256=sha256_hex(&raw);
