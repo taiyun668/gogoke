@@ -263,39 +263,54 @@ pub(crate) fn reserve_host_delivery(db: &mut VerifiedDatabaseConnection<'_>,
     })
 }
 
-/// Fence the physical H send before dispatch. A missing H result remains this
-/// same UNKNOWN operation; no replay creates another provider write.
+/// Record uncertainty for the original PREPARED send. This is a historical
+/// fact transition, not a fresh route or recipient authorization: Owner may
+/// have changed policy or reclaimed a seat after the reservation. A missing H
+/// result remains this same UNKNOWN operation and never permits a new send.
 pub(crate) fn mark_host_delivery_unknown(db: &mut VerifiedDatabaseConnection<'_>,
-    owner: &OwnerIssuer, proof: &HostEscalationProof, target: &HostDeliveryTarget<'_>)
+    owner: &OwnerIssuer, domain: &str, message_id: &str,
+    target: &HostDeliveryTarget<'_>)
     -> Result<StoredOperation, InboxError> {
     if !target_valid(target) { return Err(InboxError::Invalid("host delivery target")); }
-    let ids = identity(proof);
-    let bytes = original_request(proof, &ids, "deliver", Some(target));
     transact(db, |db| {
-        revalidate(db, owner, proof)?;
-        let message = original_host_message(db, proof, &ids)?;
-        let prior = replay(db, proof.domain_id(), &ids.delivery_request_id,
-            &ids.message_id, &bytes)?.ok_or(InboxError::Conflict)?;
-        if prior.phase != "PREPARED" { return Ok(prior); }
-        if message.state != "PREPARED" || message.revision != 1 ||
+        let historical = historical_host(db, owner, domain, message_id)?;
+        let ids = &historical.ids;
+        let bytes = original_request_fields(&historical.fields(), ids, "deliver", Some(target));
+        let message = &historical.message;
+        let prior = replay(db, domain, &ids.delivery_request_id,
+            message_id, &bytes)?.ok_or(InboxError::Conflict)?;
+        if prior.previous_revision != 1 { return Err(InboxError::Denied); }
+        if prior.phase == "UNKNOWN" && message.state == "UNKNOWN" &&
+            prior.result_state == "UNKNOWN" && prior.revision == 2 &&
+            message.revision == 2 &&
+            message.turn_id.is_empty() &&
+            message.generation.is_empty() { return Ok(prior); }
+        if prior.phase == "APPLIED" && message.state == "DELIVERED" &&
+            prior.result_state == "DELIVERED" && prior.revision == 2 &&
+            message.revision == 2 &&
+            !prior.native_receipt_id.is_empty() { return Ok(prior); }
+        if prior.phase != "PREPARED" { return Err(InboxError::Conflict); }
+        if prior.revision != 1 || prior.result_state != "PREPARED" ||
+            !prior.native_receipt_id.is_empty() ||
+            message.state != "PREPARED" || message.revision != 1 ||
             !message.turn_id.is_empty() || !message.generation.is_empty() {
             return Err(InboxError::Conflict);
         }
         let row = Statement::prepare(db.as_ptr(),
             "UPDATE main.gogoke_v37_inbox_messages SET state='UNKNOWN',revision='2'
               WHERE domain_id=?1 AND message_id=?2 AND state='PREPARED' AND revision='1'")?;
-        row.bind_text(1, proof.domain_id())?;
-        row.bind_text(2, &ids.message_id)?;
+        row.bind_text(1, domain)?;
+        row.bind_text(2, message_id)?;
         row.step_done()?;
         require_one_change(db)?;
         let row = Statement::prepare(db.as_ptr(),
             "UPDATE main.gogoke_v37_inbox_operations SET phase='UNKNOWN',revision='2',
               result_state='UNKNOWN' WHERE domain_id=?1 AND request_id=?2 AND phase='PREPARED'")?;
-        row.bind_text(1, proof.domain_id())?;
+        row.bind_text(1, domain)?;
         row.bind_text(2, &ids.delivery_request_id)?;
         row.step_done()?;
         require_one_change(db)?;
-        read_operation(db, proof.domain_id(), &ids.delivery_request_id)?.ok_or(InboxError::Unknown)
+        read_operation(db, domain, &ids.delivery_request_id)?.ok_or(InboxError::Unknown)
     })
 }
 
