@@ -836,8 +836,8 @@ mod tests {
             objects: vec![object] };
         let payload = inventory.encode_snapshot();
         assert_eq!(unhex(&payload).unwrap(), inventory.bytes());
-        assert_eq!(LegacyAclInventory::from_bytes(&unhex(&payload).unwrap())
-            .unwrap().bytes(), inventory.bytes());
+        assert!(LegacyAclInventory::from_bytes(&unhex(&payload).unwrap()).is_err(),
+            "a one-object fixture cannot encode both HOME and the auth source");
         assert!(unhex(&format!("{}z", payload)).is_err());
     }
 
