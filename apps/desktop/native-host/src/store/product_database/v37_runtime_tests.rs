@@ -1083,6 +1083,83 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
         "REMOVED completion cannot re-create or re-grant alias");
     assert!(instance::read_credential_aliases(&product.connection, "instanceA").unwrap()
         .iter().all(|row| row.state == "REMOVED"));
+    for (domain, session, seat_id, generation, revision) in [
+        ("projectA", "sessionA", "seatA", "3", 6),
+        ("projectB", "sessionB", "seatB", "2", 4),
+    ] {
+        let release = operation_in_domain(domain, "K-SESSION", "admission-release",
+            &format!("two-scope-release-{session}"), session, revision,
+            &format!(r#"{{"seatId":"{seat_id}","generation":"{generation}"}}"#));
+        let receipt = h::decode_receipt(&product.dispatch_user_request(&release)
+            .expect("original stopped session admission release")).unwrap();
+        assert_eq!(receipt.status, V37Status::Applied,
+            "original admission release: {}", String::from_utf8_lossy(&receipt.raw_bytes));
+        let historical = Statement::prepare(product.connection.as_ptr(),
+            "SELECT a.state,c.state,e.phase,c.stop_proof_hash
+               FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id
+               JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id
+              WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3
+                AND e.domain_id=a.domain_id AND e.session_id=a.session_id AND e.generation=a.generation").unwrap();
+        historical.bind_text(1, domain).unwrap();
+        historical.bind_text(2, session).unwrap();
+        historical.bind_text(3, generation).unwrap();
+        assert!(historical.step_row().unwrap(), "original released claim and stopped process proof");
+        assert_eq!(historical.column_text(0).unwrap(), "RELEASED");
+        assert_eq!(historical.column_text(1).unwrap(), "STOPPED");
+        assert_eq!(historical.column_text(2).unwrap(), "STOPPED");
+        assert!(!historical.column_text(3).unwrap().is_empty());
+        assert!(!historical.step_row().unwrap());
+    }
+    product.close_checked().unwrap();
+    let mut product = ProductDatabase::open(&root, &database).unwrap();
+    assert_eq!(CredentialBinding::observe_source_metadata(&root, &source_path,
+        &home.identity).unwrap(), (source_id.clone(), 1),
+        "cold holder retains the original CLI-created source object");
+    let generation_c_query = Statement::prepare(product.connection.as_ptr(),
+        "SELECT generation FROM main.gogoke_v37_seats WHERE domain_id='projectA' AND seat_id='seatA'").unwrap();
+    assert!(generation_c_query.step_row().unwrap());
+    let generation_c = generation_c_query.column_text(0).unwrap().parse::<u64>().unwrap() + 1;
+    drop(generation_c_query);
+    for (verb, phase, revision) in [("admission-reserve", "reserve", 0),
+        ("admission-commit", "commit", 1)] {
+        let request = operation_in_domain("projectA", "K-SESSION", verb,
+            &format!("two-scope-cold-{phase}-c"), "sessionC", revision,
+            &format!(r#"{{"seatId":"seatA","generation":"{generation_c}"}}"#));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&request)
+            .expect("cold holder new original admission")).unwrap().status, V37Status::Applied);
+    }
+    let open_c = operation_in_domain("projectA", "K-SESSION", "open", "two-scope-cold-open-c",
+        "sessionC", 2, &format!(r#"{{"seatId":"seatA","generation":"{generation_c}","repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#));
+    let opened_c = h::decode_receipt(&product.dispatch_user_request(&open_c)
+        .expect("cold holder real fixed CLI native open with original source")).unwrap();
+    assert_eq!(opened_c.status, V37Status::Applied,
+        "cold holder native open: {}", String::from_utf8_lossy(&opened_c.raw_bytes));
+    let key_c = ("projectA".to_owned(), "sessionC".to_owned());
+    let thread_c = product.native_sessions.get(&key_c).unwrap().thread_id.clone().unwrap();
+    assert_ne!(thread_c, thread_a);
+    assert_ne!(thread_c, thread_b);
+    assert!(product.native_sessions.get(&key_c).unwrap().evidence.file_credentials_bound());
+    let reply_c = product.native_append_rpc(&key_c, "two-scope-cold-save-c", &thread_c,
+        "synthetic C no-model save after cold holder reopen".into()).unwrap();
+    assert!(matches!(reply_c, Some(Reply::Ack { .. })),
+        "cold holder original native append ACK: {reply_c:?}");
+    let (cold_source_id, cold_links) = CredentialBinding::observe_source_metadata(&root,
+        &source_path, &home.identity).unwrap();
+    assert_eq!(cold_source_id, source_id, "cold grant keeps the original CLI-created file ID");
+    assert_eq!(cold_links, 2, "original source and only C's registered alias");
+    let stop_c = operation_in_domain("projectA", "K-SESSION", "stop", "two-scope-cold-stop-c",
+        "sessionC", 3, &format!(r#"{{"seatId":"seatA","generation":"{generation_c}"}}"#));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop_c)
+        .expect("cold holder C original durable stop")).unwrap().status, V37Status::Applied);
+    let release_c = operation_in_domain("projectA", "K-SESSION", "admission-release",
+        "two-scope-cold-release-c", "sessionC", 4,
+        &format!(r#"{{"seatId":"seatA","generation":"{generation_c}"}}"#));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&release_c)
+        .expect("cold holder C original admission release")).unwrap().status, V37Status::Applied);
+    assert_eq!(CredentialBinding::observe_source_metadata(&root, &source_path,
+        &home.identity).unwrap().0, source_id,
+        "stopped and released C does not replace the original credential source");
     product.close_checked().unwrap();
     drop(root);
     std::fs::remove_dir_all(path).unwrap();
