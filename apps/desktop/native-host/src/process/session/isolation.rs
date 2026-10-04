@@ -626,6 +626,20 @@ impl AppContainerProfile {
         })
     }
 
+    /// Read-only source witness when F has durably completed alias removal.
+    /// The held metadata handle is reused; this requests no new WRITE_DAC
+    /// handle, changes no ACE, and cannot read credential data.
+    pub(crate) fn verify_revoked_credential_source(&self,
+        binding: &CredentialBinding) -> Result<(), CredentialError> {
+        binding.with_source_metadata_acl(|handle| {
+            if &file_identity(handle)? != binding.identity() || !dacl_protected(handle)?
+                || !package_aces(handle, self.sid)?.is_empty() {
+                return Err(IsolationError::AclWitnessMismatch.into());
+            }
+            Ok(())
+        })
+    }
+
     /// Stopping one generation removes only its package SID from the shared
     /// object. F controls dormant alias unlink after whole-instance quiescence.
     pub(crate) fn revoke_credential_alias(&self, binding: &CredentialBinding,
