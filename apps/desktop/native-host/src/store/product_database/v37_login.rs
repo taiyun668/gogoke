@@ -1876,6 +1876,10 @@ impl<'root> ProductDatabase<'root> {
             "-c".into(), "features.memories=false".into(),
             "-c".into(), "memories.generate_memories=false".into(),
             "-c".into(), "memories.use_memories=false".into(),
+            "-c".into(), format!("sqlite_home={}",Json::String(JsonString::from_str(
+                &runtime.to_string_lossy())).canonical()),
+            "-c".into(), format!("log_dir={}",Json::String(JsonString::from_str(
+                &runtime.to_string_lossy())).canonical()),
             "app-server".into(),
         ];
         login.current_directory = Some(runtime.clone());
@@ -1892,6 +1896,10 @@ impl<'root> ProductDatabase<'root> {
             "-c".into(), "features.memories=false".into(),
             "-c".into(), "memories.generate_memories=false".into(),
             "-c".into(), "memories.use_memories=false".into(),
+            "-c".into(), format!("sqlite_home={}",Json::String(JsonString::from_str(
+                &runtime.to_string_lossy())).canonical()),
+            "-c".into(), format!("log_dir={}",Json::String(JsonString::from_str(
+                &runtime.to_string_lossy())).canonical()),
             "app-server".into(),
         ];
         account_read.current_directory = Some(runtime.clone());
