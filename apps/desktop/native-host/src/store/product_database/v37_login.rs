@@ -2256,7 +2256,17 @@ impl<'root> ProductDatabase<'root> {
             .ok_or(OrchestrationError::AccessDenied)?;
         if registered.driver_id!="codex" || registered.login_state!="LOGGED_IN" {return Ok(());}
         match instance::read_usable_credential_backend(&self.connection,instance_id) {
-            Ok(_)=>return Ok(()),
+            Ok(_)=>{
+                // Backend provenance is already durable, but a newly opened
+                // product must still adopt its exact recovered source holder.
+                // No extra CLI/account refresh stands in for this model path.
+                let home = instance::resolve_codex_instance_home(&self.connection, self.root, instance_id)
+                    .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential recovered home: {error:?}")))?;
+                let profile = AppContainerProfile::derive_for_revocation(&owner_login_profile_name(instance_id, &home.identity))
+                    .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential recovered SID: {error:?}")))?;
+                self.recover_legacy_account_baseline(instance_id, &home, &profile)?;
+                return Ok(());
+            },
             Err(instance::CredentialRegistryError::Unusable)=>(),
             Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!("credential startup source: {error:?}"))),
         }
