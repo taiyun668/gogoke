@@ -152,6 +152,19 @@ export function Design37InstanceSection() {
                     {summary}
                   </div>
                 ) : null}
+                {instance.runtimeIssues?.map((issue) => (
+                  <div className="settings-help settings-help-error" role="status"
+                    key={`${issue.seatId}:${issue.sessionId}:${issue.generation}:${issue.sourceEpoch}:${issue.sourceCursor}`}
+                    style={{ overflowWrap: "anywhere" }}>
+                    <div>席位 {issue.seatId} 的 CLI 运行出错：</div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{issue.reason}</div>
+                    <details>
+                      <summary>查看来源详情</summary>
+                      <div>会话 {issue.sessionId} · 代际 {issue.generation}</div>
+                      <div>来源 {issue.sourceEpoch} / {issue.sourceCursor}</div>
+                    </details>
+                  </div>
+                ))}
                 {instance.login?.error && instance.login.state !== "ERROR" ? (
                   <div className="settings-help settings-help-error" role="alert">
                     {instance.login.error}

@@ -65,6 +65,14 @@ struct NativeInstance {
     install_state: String, login_state: String,
     #[serde(default)]
     new_version: Option<String>,
+    #[serde(default)]
+    runtime_issues: Vec<RuntimeIssue>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeIssue {
+    seat_id: String, session_id: String, generation: String, reason: String,
+    source_epoch: String, source_cursor: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,6 +83,8 @@ pub(crate) struct InstanceView {
     instance_id: String, driver_id: String, version: String, revision: String, state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     new_version: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    runtime_issues: Vec<RuntimeIssue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     login: Option<LoginView>,
 }
@@ -264,6 +274,12 @@ async fn page<E: LoginEnvironment>(environment: &E, sessions: &Sessions) -> Resu
         if !valid_id(&item.instance_id) || item.revision.parse::<u64>().ok().filter(|r| *r > 0).map(|r| r.to_string()).as_deref() != Some(item.revision.as_str()) {
             return Err("GOGOKE_INSTANCE_LIST_IDENTITY_INVALID".into());
         }
+        if item.runtime_issues.iter().any(|issue| [
+            &issue.seat_id, &issue.session_id, &issue.generation, &issue.reason,
+            &issue.source_epoch, &issue.source_cursor,
+        ].iter().any(|field| field.trim().is_empty())) {
+            return Err("GOGOKE_INSTANCE_RUNTIME_ISSUE_INVALID".into());
+        }
         let login = map.get(&item.instance_id).map(|r| r.view.clone());
         let state = match (item.install_state.as_str(), item.login_state.as_str(), login.as_ref().map(|l| l.state.as_str())) {
             ("MISSING",_,_) => "NOT_INSTALLED",
@@ -275,7 +291,7 @@ async fn page<E: LoginEnvironment>(environment: &E, sessions: &Sessions) -> Resu
         };
         instances.push(InstanceView { instance_id:item.instance_id, driver_id:item.driver_id,
             version:item.version, revision:item.revision, state:state.into(),
-            new_version:item.new_version, login });
+            new_version:item.new_version, runtime_issues:item.runtime_issues, login });
     }
     Ok(InstancePage { schema:"gogoke.37.instance-page.v1", instances })
 }
