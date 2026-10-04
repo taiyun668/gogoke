@@ -24,7 +24,7 @@ on:
         type: boolean
         default: false
       private_history_fixture_only:
-        description: Build and verify F history and credential metadata boundaries only; full library, mutations and server gates are NOT_RUN
+        description: Branch-only real two-scope Codex File history qualification; full library, mutations and server gates are NOT_RUN
         type: boolean
         default: false
 
@@ -233,7 +233,7 @@ jobs:
             run_attempt = '${{ github.run_attempt }}'
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
-            evidence_scope = if ('${{ inputs.private_history_fixture_only }}' -eq 'true') { 'FOCUSED_F_PRIVATE_HISTORY_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') { 'FOCUSED_CODE_MODE_MEMBER_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
+            evidence_scope = if ('${{ inputs.private_history_fixture_only }}' -eq 'true') { 'SINGLE_REAL_PRODUCT_DUAL_SCOPE_NOT_FULL_LIBRARY' } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') { 'FOCUSED_CODE_MODE_MEMBER_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
             release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
@@ -310,28 +310,9 @@ jobs:
           if ('${{ inputs.private_history_fixture_only }}' -eq 'true') {
             if (@('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}') -contains 'true') { throw 'Directed scopes cannot be combined' }
             $probes = @(
-              @{ id = 'private-history-owner'; filter = 'initial_is_fresh_resume_selects_exact_source_and_cross_scope_is_refused' },
-              @{ id = 'private-history-intent'; filter = 'absent_physical_commit_preserves_existing_or_missing_leaf_without_recreation' },
-              @{ id = 'private-history-replaced'; filter = 'replaced_leaf_is_refused_and_original_history_is_preserved' },
-              @{ id = 'private-history-h-source'; filter = 'h_source_attachment_requires_response_transaction_and_never_rebinds' },
-              @{ id = 'private-history-pre-cap-schema'; filter = 'exact_pre_cap_schema_migrates_without_setting_cap_or_losing_instance' },
-              @{ id = 'private-history-four-table-schema'; filter = 'exact_four_table_schema_migrates_preserving_instance_and_cap' }
-              @{ id = 'credential-backend-source'; filter = 'credential_backend_requires_startup_selector_current_pin_and_original_stopped_custody' }
-              @{ id = 'credential-alias-intent'; filter = 'credential_alias_unknown_intent_preserves_identity_and_complete_registry_link_count' }
-              @{ id = 'credential-profile-rebind'; filter = 'credential_profile_original_identity_and_quiescent_source_rebind_are_enforced' }
-              @{ id = 'credential-exact-schema'; filter = 'credential_schema_exact_family_reopen_preserves_rows_and_rejects_unknown_shadow_trigger' }
-              @{ id = 'credential-original-config'; filter = 'credential_configuration_preserves_missing_default_and_non_file_sources' }
-              @{ id = 'credential-two-profiles'; filter = 'exact_credential_alias_custody_allows_two_profiles_and_precise_revocation' }
-              @{ id = 'credential-unknown-alias'; filter = 'unknown_link_and_replaced_alias_fail_complete_metadata_registration' }
-              @{ id = 'history-real-generation'; filter = 'stalled_health_new_generation_suppresses_original_physical_cause' }
-              @{ id = 'credential-owner-observer'; filter = 'owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime' }
-              @{ id = 'credential-empty-observer'; filter = 'empty_owner_account_observer_initializes_only_fresh_runtime' }
-              @{ id = 'credential-real-empty-cli'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' }
-              @{ id = 'credential-quiescent-remove'; filter = 'quiescent_alias_removal_preserves_source_and_other_registered_alias' }
-              @{ id = 'credential-legacy-migration'; filter = 'legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer' }
-              @{ id = 'credential-real-file-startup'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' }
+              @{ id = 'real-product-dual-scope'; filter = 'actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_model' }
             )
-            Write-Host 'F private-history identity/schema boundary only; full library, compiled mutations and server suites NOT_RUN.'
+            Write-Host 'Single real ProductDatabase dual-scope no-model qualification only; full library, compiled mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
