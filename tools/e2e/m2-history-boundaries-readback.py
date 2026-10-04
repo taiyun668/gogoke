@@ -1,11 +1,13 @@
 """Original H/A/D/F evidence after normal candidate close; no CLI or model calls.
 
-signed Python m2-history-boundaries-readback.py STATE_ROOT NEW_OUTPUT JOURNAL before-refusal|final
+signed Python m2-history-boundaries-readback.py STATE_ROOT NEW_OUTPUT JOURNAL before-refusal|final|peer-final
 Only candidate state.sqlite and explicitly named private evidence artifacts are read.
-Never opens vendor history, HOME, credentials or an active WAL. No DB writes.
+With peerRead requested, opens only exact original test thread/start JSONL paths
+after registered-home and H/A/F checks. No credentials or active WAL. No DB writes.
 """
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 from contextlib import closing
@@ -82,7 +84,7 @@ def serializable(value):
     return value
 
 
-def session_evidence(db, session, case, operations):
+def session_evidence(db, session, case, operations, peer=None):
     domain = session["domainId"]
     sid = session["id"]
     registration = one(db, "SELECT * FROM v37_ledger_session WHERE domain_id=? AND session_id=?", (domain, sid))
@@ -166,7 +168,8 @@ def session_evidence(db, session, case, operations):
                 "featureMemories": False, "generateMemories": False, "useMemories": False}
     check(not any(command.get("method") in ("thread/resume", "thread/fork", "session/load", "session/resume")
                   for _, command in commands), "Fresh history session inherited native context")
-    check(len(session["inputs"]) == 1, "Exactly one genuine marker turn per original history session")
+    check(len(session["inputs"]) == 1, "Exactly one genuine marker turn per original history session" if peer is None
+          else "Exactly one genuine file-read turn per independent peer session")
     input_row = session["inputs"][0]
     stdin = one(db, "SELECT * FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND session_id=? AND request_id=?",
                 (domain, sid, input_row["requestId"]))
@@ -213,7 +216,7 @@ def session_evidence(db, session, case, operations):
               frame.get("params", {}).get("turn", {}).get("id") == turn and
               frame["params"]["turn"]["status"] == "completed" for _, frame in decoded),
               "Exact Codex native marker turn has no original completion")
-        check(not any(frame.get("method", "").startswith("item/tool/") or
+        check(peer is not None or not any(frame.get("method", "").startswith("item/tool/") or
               (frame.get("method") in ("item/started", "item/completed") and
                frame.get("params", {}).get("item", {}).get("type") not in
                ("agentMessage", "reasoning", "contextCompaction")) for _, frame in decoded),
@@ -253,18 +256,155 @@ def session_evidence(db, session, case, operations):
     check(normalized and all(row["source_kind"] == "v37" and row["source_event_id"] in resolved and
               row["source_epoch"] == resolved[row["source_event_id"]]["source_epoch"] for row in normalized),
               "Normalized assistant history is not backed by original physical A sources")
-    check(not any(json.loads(row["update_json"]).get("sessionUpdate") in ("tool_call", "tool_call_update")
+    check(peer is not None or not any(json.loads(row["update_json"]).get("sessionUpdate") in ("tool_call", "tool_call_update")
                   for row in normalized), "No-tool history marker has actual tool activity")
     assistant_text = "".join(update.get("content", {}).get("text", "")
                              for update in (json.loads(row["update_json"]) for row in normalized)
                              if update.get("sessionUpdate") == "agent_message_chunk")
-    check(input_row["marker"] in assistant_text,
+    check(peer is not None or input_row["marker"] in assistant_text,
               "Non-secret marker is absent from actual assistant A events; no empty history control")
     return {"domainId": domain, "sessionId": sid, "nativeSessionId": native_id, "originalCodexThreadPath": native_path,
             "episode": episode, "custody": custody, "registration": registration, "worktree": tree,
             "stdin": stdin, "rawSource": incoming, "rpcSteps": outgoing, "normalized": normalized,
-            "effectiveMemoryConfiguration": effective_memory_configuration,
-            "originalBody": original_body, "marker": input_row["marker"]}
+            "effectiveMemoryConfiguration": effective_memory_configuration, "instance": pin,
+            "originalBody": original_body, "marker": input_row.get("marker")}
+
+
+def vendor_objects(root, cases):
+    """Only exact thread/start paths from the four original no-tool test sessions."""
+    objects, not_run = [], []
+    for case in cases:
+        if case["driverId"] != "codex":
+            continue
+        for source in case["sessions"]:
+            value = source["originalCodexThreadPath"]
+            identity = {"caseId": case["caseId"], "sessionId": source["sessionId"]}
+            if not isinstance(value, str) or not value:
+                not_run.append({**identity, "state": "NOT_RUN_ORIGINAL_THREAD_PATH_MISSING"})
+                continue
+            original = Path(value)
+            pin = source["instance"]
+            home = root / "v37-instances" / source["episode"]["instance_id"]
+            try:
+                # Registry resolver's existing home_ref/layout, not a guessed history path.
+                check(os.name == "nt" and original.is_absolute() and original.suffix == ".jsonl" and
+                      ".." not in original.parts and not any(":" in part for part in original.parts[1:]) and
+                      not original.drive.startswith("\\\\") and
+                      pin["home_ref"] == "instance-home-" + pin["instance_id"] and
+                      original.is_relative_to(home) and original != home,
+                      "Original test thread path is outside its registered candidate home")
+                for entry in (original, *original.parents):
+                    check(not entry.lstat().st_file_attributes & 0x400, "Original thread path traverses a reparse point")
+                    if entry == root:
+                        break
+                stat = home.stat()
+                observed_home = f"volume:{stat.st_dev:016x}/file:{stat.st_ino.to_bytes(16, 'little').hex()}"
+                check(observed_home == pin["home_identity"], "Python stat cannot confirm original registered home identity")
+                check(original.is_file(), "Original thread path is not a file")
+                before = original.stat()
+                raw = original.read_bytes()
+                frames = [json.loads(line) for line in raw.splitlines() if line.strip()]
+                check(frames and frames[0].get("type") == "session_meta" and
+                      frames[0].get("payload", {}).get("id") == source["nativeSessionId"] and
+                      path_spelling(frames[0]["payload"]["cwd"]) == path_spelling(source["worktree"]["worktree_path"]),
+                      "Original vendor session_meta differs from unique H/A/F identity")
+                assistant = [frame["payload"] for frame in frames if frame.get("type") == "response_item" and
+                             frame.get("payload", {}).get("type") == "message" and frame["payload"].get("role") == "assistant"]
+                check(any(source["marker"] in content.get("text", "") for message in assistant
+                          for content in message.get("content", []) if isinstance(content, dict)),
+                      "Original vendor object lacks the actual non-secret assistant marker")
+                after = original.stat()
+                check((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) ==
+                      (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) and digest(original.read_bytes()) == digest(raw),
+                      "Original vendor object changed during normal-close readback")
+                objects.append({**identity, "domainId": source["domainId"], "path": value,
+                    "nativeSessionId": source["nativeSessionId"], "instanceId": pin["instance_id"],
+                    "homeIdentity": pin["home_identity"], "fileIdentity": [str(before.st_dev), str(before.st_ino)],
+                    "sha256": digest(raw), "marker": source["marker"], "sessionMeta": frames[0],
+                    "state": "ORIGINAL_TEST_VENDOR_OBJECT_READ_BACK"})
+            except (OSError, ValueError, KeyError, RuntimeError) as error:
+                not_run.append({**identity, "state": "NOT_RUN_ORIGINAL_VENDOR_OBJECT_UNQUALIFIED", "originalError": repr(error)})
+    return objects, not_run
+
+
+def verify_peers(db, journal, boundary, result):
+    peer = boundary["peerRead"]
+    check(peer["state"] == "PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED", "Peer original flow incomplete")
+    baseline_path = Path(boundary["evidenceDirectory"]) / boundary["baselineReadback"]["file"]
+    check(digest(baseline_path.read_bytes()) == boundary["baselineReadback"]["sha256"], "Original source readback changed")
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8-sig"))
+    originals = baseline["verifiedVendorObjects"]
+    operations = {entry["request"]["requestId"]: entry for entry in journal["operations"] if entry.get("request", {}).get("requestId")}
+    result["peerReads"] = []
+    native_ids = set()
+    for attempt in peer["attempts"]:
+        case = next(case for case in boundary["cases"] if case["caseId"] == attempt["caseId"])
+        session = next(session for session in journal["sessions"] if session["id"] == attempt["sessionId"])
+        target = next(value for value in originals if value["sessionId"] == attempt["sourceSessionId"])
+        current = next((value for value in result["verifiedVendorObjects"] if value["sessionId"] == target["sessionId"]), None)
+        check(current == target, "Exact original vendor object or identity changed after peer read")
+        check(session["id"] not in case["projectSessions"] + [case["formalSessionId"], case["sideSessionId"]] and
+              session["instanceId"] == target["instanceId"] == case["instanceId"] and
+              session["purpose"] == attempt["purpose"] and
+              all(session[key] == (case["projectB"] if attempt["purpose"] == "WORK" else case["sideBinding"])[key]
+                  for key in ("domainId", "repositoryId", "seatId", "worktreeId")), "Peer is not an independent original test H/F session")
+        check(attempt["command"] == "Get-Content -LiteralPath '" + target["path"].replace("'", "''") + "' -Raw -ErrorAction Stop" and
+              session["inputs"][0]["body"] == attempt["body"] and attempt["command"] in attempt["body"],
+              "Peer H input does not request the ordinary exact-object read")
+        observed = session_evidence(db, session, case, operations, peer=attempt)
+        check(observed["nativeSessionId"] not in [original["nativeSessionId"] for original_case in baseline["cases"]
+              if original_case["caseId"] == case["caseId"] for original in original_case["sessions"]], "Peer inherited original native identity")
+        check(observed["nativeSessionId"] not in native_ids, "Independent peer scopes reused one native identity")
+        native_ids.add(observed["nativeSessionId"])
+        turn = session["inputs"][0]["turnId"]
+        decoded = [(row, json.loads(row["raw_bytes"])) for row in observed["rawSource"]]
+        items = [(row, frame) for row, frame in decoded if frame.get("method") == "item/completed" and
+                 frame.get("params", {}).get("threadId") == observed["nativeSessionId"] and
+                 frame["params"].get("turnId") == turn and frame["params"].get("item", {}).get("type") == "commandExecution"]
+        exact = [(row, frame) for row, frame in items if frame["params"]["item"].get("command") == attempt["command"]]
+        item_ids = {frame["params"]["item"].get("id") for _, frame in exact}
+        check(not any(frame.get("method") == "item/tool/call" or
+              (frame.get("method") in ("item/started", "item/completed") and frame.get("params", {}).get("turnId") == turn and
+               frame["params"].get("item", {}).get("type") not in ("agentMessage", "reasoning", "commandExecution"))
+              for _, frame in decoded), "Peer performed an unrelated tool action; preserve original run")
+        check(len(items) <= 1, "Peer repeated or substituted an ordinary file read")
+        commands = [frame["params"]["item"] for _, frame in decoded if frame.get("method") in ("item/started", "item/completed")
+                    and frame.get("params", {}).get("turnId") == turn and
+                    frame["params"].get("item", {}).get("type") == "commandExecution"]
+        fact = {"sessionId": session["id"], "purpose": session["purpose"], "target": target,
+                "evidence": observed, "originalToolItems": [{"source": row, "frame": frame} for row, frame in items],
+                "state": "NOT_RUN_ORIGINAL_EXACT_TOOL_OR_REFUSAL_CODE_MISSING", "directDeniedRead": False}
+        if len(exact) == 1:
+            source, frame = exact[0]
+            item = frame["params"]["item"]
+            started = [(row, frame) for row, frame in decoded if frame.get("method") == "item/started" and
+                       frame.get("params", {}).get("threadId") == observed["nativeSessionId"] and
+                       frame["params"].get("turnId") == turn and frame["params"].get("item", {}).get("id") in item_ids and
+                       frame["params"]["item"].get("type") == "commandExecution" and
+                       frame["params"]["item"].get("command") == attempt["command"]]
+            output = item.get("aggregatedOutput")
+            check(not isinstance(output, str) or target["marker"] not in output,
+                  "Original source marker leaked through actual peer tool output")
+            if (len(started) == 1 and len(commands) == 2 and item.get("status") in ("completed", "failed") and
+                type(item.get("exitCode")) is int and item["exitCode"] != 0 and
+                isinstance(output, str) and "GetContentReaderUnauthorizedAccessError" in output and
+                "UnauthorizedAccessException" in output and "PermissionDenied" in output and
+                not any(code in output for code in ("PathNotFound", "ItemNotFoundException", "ObjectNotFound"))):
+                fact.update(state="ORIGINAL_TOOL_EXACT_READ_DENIED", directDeniedRead=True,
+                            originalErrorId="GetContentReaderUnauthorizedAccessError", originalExitCode=item["exitCode"])
+            elif item.get("exitCode") == 0:
+                fact["state"] = "FAIL_ORIGINAL_TOOL_READ_SUCCEEDED"
+                result["peerReads"].append(fact)
+                raise RuntimeError("Original peer ordinary read succeeded; scope denial is false")
+        result["peerReads"].append(fact)
+    # No missing configured case, missing tool, generic exit=1 or model denial can pass.
+    expected = {case["caseId"] for case in boundary["cases"] if case["driverId"] == "codex" and
+                case["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED"}
+    complete = {(attempt["caseId"], attempt["purpose"]) for attempt in peer["attempts"]}
+    result["directPeerReadEvidence"] = bool(expected) and complete == {(key, purpose) for key in expected
+        for purpose in ("WORK", "FORMAL_REVIEW")} and len(peer["attempts"]) == 2 * len(expected) and all(
+        fact["directDeniedRead"] for fact in result["peerReads"])
+    result["peerState"] = "ORIGINAL_PEER_READ_DENIAL_FACTS_COMPLETE_ACCEPTANCE_FALSE" if result["directPeerReadEvidence"] else "NOT_RUN_PEER_READ_DENIAL_UNQUALIFIED"
 
 
 def verify_flow(db, journal, boundary, result):
@@ -317,7 +457,7 @@ def verify_flow(db, journal, boundary, result):
 
 
 def main():
-    check(len(sys.argv) == 5 and sys.argv[4] in ("before-refusal", "final"), "Expected candidate root, new output, original journal and phase")
+    check(len(sys.argv) == 5 and sys.argv[4] in ("before-refusal", "final", "peer-final"), "Expected candidate root, new output, original journal and phase")
     root = Path(sys.argv[1]).resolve(strict=True)
     output = Path(sys.argv[2]).resolve(strict=False)
     check(not output.exists() and not output.is_relative_to(root), "Fresh private evidence must stay outside candidate state")
@@ -344,11 +484,14 @@ def main():
               "acceptance": False, "databaseWrites": False, "credentialReads": False,
               "filesBefore": files(), "cases": [], "directFlowEvidence": False,
               "directRefusalEvidence": False, "notRun": boundary["notRun"]}
+    result["directPeerReadEvidence"] = False
     try:
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
             verify_flow(db, journal, boundary, result)
+            result["verifiedVendorObjects"], result["vendorObjectNotRun"] = vendor_objects(root, result["cases"]) \
+                if boundary.get("peerReadRequested") else ([], [{"state": "NOT_RUN_PEER_READ_NOT_CONFIGURED"}])
             if sys.argv[4] == "final":
                 check(boundary["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED", "Actual history refusal flow incomplete")
                 reference = boundary["baselineReadback"]
@@ -379,10 +522,13 @@ def main():
                           reply["previousRevision"] == reply["revision"] == req["expectedRevision"],
                           "Original User ingress formal refusal differs from exact sent request")
                 result["directRefusalEvidence"] = True
+            if sys.argv[4] == "peer-final":
+                verify_peers(db, journal, boundary, result)
             result["state"] = "DIRECT_FACTS_COMPLETE_ACCEPTANCE_FALSE"
     except Exception as error:
         result["state"] = "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL"
         result["directFlowEvidence"] = False
+        result["directPeerReadEvidence"] = False
         result["originalError"] = repr(error)
         raise
     finally:
@@ -390,6 +536,7 @@ def main():
         result["measurementPreservedDatabaseBytes"] = result["filesBefore"] == result["filesAfter"]
         if not result["measurementPreservedDatabaseBytes"]:
             result["directFlowEvidence"] = result["directRefusalEvidence"] = False
+            result["directPeerReadEvidence"] = False
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(serializable(result), stream, ensure_ascii=False, indent=2)
             stream.write("\n")
