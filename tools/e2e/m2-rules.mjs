@@ -10,6 +10,18 @@ const decimal = value => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(v
 const requireFact = (condition, message) => { if (!condition) throw Error(message); };
 const binding = ({ id, seatId, instanceId, worktreeId, generation, threadId }) =>
   ({ id, seatId, instanceId, worktreeId, generation, threadId });
+const hostSessionLocator = (domain, cause, policyRevision) => {
+  const parts = ['host-reject-cap', domain, cause, ''].map(value => Buffer.from(value));
+  const framed = Buffer.concat(parts.flatMap(part => {
+    const size = Buffer.alloc(8); size.writeBigUInt64BE(BigInt(part.length)); return [size, part];
+  }));
+  const identity = `sha256:${hash(framed)}`;
+  const suffix = hash(Buffer.from(identity)).slice(0, 40);
+  const trigger = `host-reject-cap-${suffix}`;
+  const escalation = `host-escalate-${suffix}`;
+  const digest = hash(Buffer.from(`${domain}\n${escalation}\n${trigger}\n${cause}\n${policyRevision}`));
+  return { sessionId: `hostsession-${digest}`, messageId: `hostmsg-${digest}` };
+};
 
 export async function runRulesCase(product, config, journal) {
   const c = config.rules;
@@ -222,9 +234,17 @@ export async function runRulesCase(product, config, journal) {
           snapshot.measurementPreservedDatabaseBytes && !snapshot.databaseWrites && !snapshot.credentialReads,
         'Host checkpoint must be a normally closed original immutable candidate readback');
         const original = snapshot.hostSnapshots.find(row => row.caseId === host.caseId);
-        requireFact(original?.message.state === 'PENDING' && original.message.turn_id === '' &&
-          original.message.generation === '' && original.deliveries.length === 0 && original.sends.length === 0,
-        'Actual Host queue must precede any delivery/turn, not a script queue claim');
+        requireFact(original && (host.kind === 'DELIVERED' ?
+          original.message.state === 'DELIVERED' && original.recipient?.mode === 'FRESH' &&
+            original.autoBinding && original.deliveries.length === 1 && original.sends.length === 1 &&
+            original.commands.length === 1 && original.message.turn_id &&
+            original.message.generation === original.autoBinding.generation &&
+            original.recipientTerminal?.status === 'completed' &&
+            original.recipientTerminal.source.state !== 'PENDING' :
+          original.message.state === 'PENDING' && original.message.turn_id === '' &&
+            original.message.generation === '' && original.deliveries.length === 0 &&
+            original.sends.length === 0 && original.recipient === null),
+        'Actual Host checkpoint must contain the original automatic delivery or genuinely blocked queue');
         const stopped = [submitter, reviewer, ...(host.busy ? [journal.sessions.find(row => row.id === host.busy.binding.id)] : [])];
         for (const session of stopped) {
           const claim = snapshot.stoppedClaims.find(row => row.session_id === session?.id);
@@ -237,6 +257,19 @@ export async function runRulesCase(product, config, journal) {
         host.enqueueRequestId = original.enqueue.request_id;
         host.triggerId = original.intent.trigger_id; host.escalationRequestId = original.intent.request_id;
         host.queuedRevision = original.message.revision; product.save();
+        if (host.kind === 'DELIVERED') {
+          const target = { ...original.autoBinding, cursor: '0', events: [], turns: [] };
+          requireFact(target.seatId === h.destination.seatId &&
+            target.instanceId === h.destination.instanceId && target.worktreeId === h.destination.worktreeId &&
+            target.id === host.autoObservation.sessionId &&
+            target.threadId === host.autoObservation.threadId &&
+            original.message.turn_id === host.autoObservation.turnId &&
+            !journal.sessions.some(row => row.id === target.id),
+          'Automatic recipient must be the unique original Host-created H session');
+          journal.sessions.push(target);
+          host.targetSessions.push(binding(target)); host.observedTurnId = original.message.turn_id;
+          product.save();
+        }
       };
       const resumeSources = async () => {
         for (const session of [submitter, reviewer]) await c.resumeRulesSession(session);
@@ -291,13 +324,45 @@ export async function runRulesCase(product, config, journal) {
         'Busy precondition is original live native question custody, not a BUSY table claim');
         host.busy.readRequestIds.push(journal.operations.at(-1).request.requestId); product.save();
       };
+      const observeAutomatic = async host => {
+        const locator = hostSessionLocator(config.domainId, host.causeEventId, host.policyRevision);
+        const deadline = Date.now() + 600000;
+        let card;
+        while (Date.now() < deadline) {
+          card = await product.operation('K-SEAT', 'state-card', h.destination.seatId, {}, '0', ['APPLIED', 'STALE']);
+          if (card.status === 'STALE') card = await product.operation('K-SEAT', 'state-card',
+            h.destination.seatId, {}, card.revision);
+          if (card.result.state === 'BUSY' && card.result.instanceId === h.destination.instanceId) break;
+          await delay(300);
+        }
+        requireFact(card?.result.state === 'BUSY' && card.result.instanceId === h.destination.instanceId,
+          'Original Host recipient never became a real busy E seat');
+        const target = { id: locator.sessionId, seatId: h.destination.seatId,
+          instanceId: h.destination.instanceId, worktreeId: h.destination.worktreeId,
+          generation: String(card.result.generation), revision: '0', cursor: '0', events: [] };
+        host.autoObservation = { sessionId: target.id, seatCardRequestId: journal.operations.at(-1).request.requestId };
+        product.save();
+        let completed;
+        while (Date.now() < deadline) {
+          await output(target);
+          completed = target.events.find(row => row._meta?.codexMethod === 'turn/completed' &&
+            row._meta.turnStatus === 'completed');
+          if (completed) break;
+          await delay(300);
+        }
+        requireFact(completed?._meta?.turnId && completed._meta.threadId,
+          'Original automatic recipient CLI turn did not complete before normal close');
+        host.autoObservation = { ...host.autoObservation, generation: target.generation,
+          threadId: completed._meta.threadId, turnId: completed._meta.turnId };
+        product.save();
+      };
       for (const kind of ['DELIVERED', 'BUSY_QUEUED', 'ROUTE_CHANGED', 'CANCELLED']) {
         const host = { caseId: id(`V08_HOST_${kind}`), kind, gateId: id('v08HostGate'),
           toStage: id('v08HostStage'), reason: id('v08HostReason'), sourceSeatId: submitter.seatId,
           destination: h.destination, readRequestIds: [], targetSessions: [], state: 'PREPARING' };
         record.hostCases.push(host); product.save();
         let busySession;
-        if (kind === 'BUSY_QUEUED') {
+        if (kind !== 'DELIVERED') {
           busySession = await open(h.destination);
           await holdBusy(host, busySession); await readBusy(host, busySession);
         }
@@ -312,6 +377,7 @@ export async function runRulesCase(product, config, journal) {
           { decision: 'REJECT', reason: host.reason }, 'APPLIED', 'ESCALATION_REQUIRED', host.reason);
         host.causeEventId = rejected.receipt.requestId; host.state = 'ORIGINAL_CAP_OBSERVED'; product.save();
         if (busySession) await readBusy(host, busySession);
+        if (kind === 'DELIVERED') await observeAutomatic(host);
         await checkpoint(host);
         if (kind === 'ROUTE_CHANGED') {
           await configure('policy-escalation-route', { fromSeatId: submitter.seatId,
@@ -320,41 +386,15 @@ export async function runRulesCase(product, config, journal) {
         }
         if (kind === 'CANCELLED' || kind === 'BUSY_QUEUED') await cancel(host);
         if (busySession) await c.releaseStoppedRulesSession(busySession);
-        if (kind !== 'BUSY_QUEUED') {
-          const targets = kind === 'ROUTE_CHANGED' ? selections : [h.destination];
-          for (const selection of targets) {
-            const target = await open(selection);
-            host.targetSessions.push(binding(target)); product.save();
-            const start = target.events.length;
-            if (kind === 'DELIVERED') {
-              const deadline = Date.now() + 600000;
-              let completed;
-              while (Date.now() < deadline) {
-                const current = await inbox(host); await output(target);
-                completed = target.events.slice(start).find(row => row._meta?.codexMethod === 'turn/completed' &&
-                  row._meta.threadId === target.threadId && row._meta.turnStatus === 'completed');
-                if (current.result.state === 'DELIVERED' && completed) break;
-                await delay(300);
-              }
-              requireFact(completed && (await inbox(host)).result.state === 'DELIVERED',
-                'Host original send/CLI completion absent; do not resend or infer from prose');
-              host.observedTurnId = completed._meta.turnId;
-              // Revisit existing safe points using readonly original views.
-              await output(target); await inbox(host); await output(target); await inbox(host);
-            } else {
-              await output(target); await inbox(host); await output(target);
-              requireFact((await inbox(host)).result.state ===
-                (kind === 'CANCELLED' ? 'CANCELLED' : 'PENDING'), 'Original Owner control boundary changed');
-            }
-            await c.stopRulesSession(target);
-          }
+        if (kind === 'DELIVERED') {
+          const target = journal.sessions.find(row => row.id === host.targetSessions[0].id);
+          await c.releaseStoppedRulesSession(target);
         }
         await resumeSources();
         host.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();
       }
       record.notRun = record.notRun.filter(row => row.caseId !== 'V08_REJECT_CAP_DELIVERY');
-      record.notRun.push({ caseId: 'V08_HOST_AUTOMATIC_ADMISSION', reason: 'Absent retained targets are queued; this case explicitly uses ordinary Owner H admission, not automatic Host admission.' },
-        { caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'No real deterministic UNKNOWN/late-ACK occurrence is available here; synthetic ACK/faults and input replay are not used.' },
+      record.notRun.push({ caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'No real deterministic UNKNOWN/late-ACK occurrence is available here; synthetic ACK/faults and input replay are not used.' },
         { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Busy is proved by the native unanswered question; normal close and User cancellation clean up that separate cause. Its old vendor turn is never presumed idle on resume.' });
     }
     record.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();

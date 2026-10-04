@@ -126,6 +126,54 @@ def host_snapshot(db, domain, host):
                   (domain, host["sourceSeatId"]))
     check(source == current and not (source["layer"] == "LEAD" and frame["destinationSeatId"] == "OWNER"),
           "Original immutable logical source identity/Owner boundary differs")
+    recipient_id = enqueue["request_id"].replace("hostenqueue-", "hostrecipient-", 1)
+    recipe_rows = select(db, "SELECT * FROM gogoke_v37_inbox_operations WHERE domain_id=? AND request_id=?",
+                         (domain, recipient_id))
+    check(len(recipe_rows) <= 1, "More than one frozen Host recipient choice")
+    recipe = None
+    stages = []
+    if recipe_rows:
+        frozen = recipe_rows[0]
+        recipe = json.loads(bytes.fromhex(frozen["request_hex"]))
+        check(frozen["message_id"] == message["message_id"] and frozen["phase"] == "PREPARED" and
+              frozen["result_state"] == "PENDING" and frozen["previous_revision"] == frozen["revision"] == "1" and
+              set(recipe) == {"schema", "actor", "domainId", "messageId", "escalationRequestId",
+                              "triggerId", "causeEventId", "destinationSeatId", "routeRevision", "mode",
+                              "sessionId", "seatIncarnation", "instanceId", "permissionTier",
+                              "repositoryId", "worktreeId", "generation", "reserveRequestId",
+                              "commitRequestId", "startRequestId"} and
+              recipe["schema"] == "gogoke.37.host-recipient.v1" and recipe["actor"] == "HOST_RULE" and
+              recipe["domainId"] == domain and recipe["messageId"] == message["message_id"] and
+              recipe["causeEventId"] == cause["event_id"] and recipe["triggerId"] == intent["trigger_id"] and
+              recipe["escalationRequestId"] == intent["request_id"] and
+              recipe["destinationSeatId"] == host["destination"]["seatId"] and
+              recipe["routeRevision"] == host["routeRevision"] and recipe["mode"] == "FRESH" and
+              recipe["repositoryId"] == "gogokeSeatTestbed" and
+              recipe["worktreeId"] == host["destination"]["worktreeId"] and
+              recipe["instanceId"] == host["destination"]["instanceId"] and
+              recipe["reserveRequestId"] == recipient_id + "-reserve" and
+              recipe["commitRequestId"] == recipient_id + "-commit" and
+              recipe["startRequestId"] == recipient_id + "-start" and
+              recipe["sessionId"] == recipient_id.replace("hostrecipient-", "hostsession-", 1) and
+              str(recipe["generation"]).isdecimal(),
+              "Frozen C recipe is not the exact Host-selected F/H recipient")
+        for stage, key in (("reserve", "reserveRequestId"), ("commit", "commitRequestId"), ("start", "startRequestId")):
+            rows = select(db, "SELECT * FROM gogoke_v37_inbox_operations WHERE domain_id=? AND request_id=?",
+                          (domain, recipe[key]))
+            check(len(rows) <= 1, "Duplicate frozen Host stage")
+            if rows:
+                row = rows[0]
+                request = json.loads(bytes.fromhex(row["request_hex"]))
+                check(row["message_id"] == message["message_id"] and row["phase"] == "PREPARED" and
+                      row["result_state"] == "PENDING" and request["schema"] == "gogoke.37.operations.v1" and
+                      request["family"] == "K-SESSION" and request["domainId"] == domain and
+                      request["targetId"] == recipe["sessionId"] and request["requestId"] == recipe[key] and
+                      request["operation"] == {"reserve": "admission-reserve", "commit": "admission-commit", "start": "open"}[stage] and
+                      request["payload"] == ({"seatId": recipe["destinationSeatId"], "generation": recipe["generation"]}
+                          if stage != "start" else {"seatId": recipe["destinationSeatId"], "generation": recipe["generation"],
+                                                     "repositoryId": recipe["repositoryId"], "worktreeId": recipe["worktreeId"]}),
+                      "Frozen C stage differs from the exact Host H request")
+                stages.append({"stage": stage, "operation": row, "request": request})
     deliveries = [{"operation": op, "request": raw} for op, raw in matched if raw["operation"] == "deliver"]
     check(len(matched) == 1 + len(deliveries), "Unexpected Host C operation for the cause")
     sends = []
@@ -139,9 +187,50 @@ def host_snapshot(db, domain, host):
         if command.get("method") == "turn/start" and command.get("params", {}).get("input") == [
                 {"type": "text", "text": message["body"]}]:
             commands.append(row)
+    auto_binding = None
+    recipient_terminal = None
+    if recipe and len(stages) == 3:
+        episode = one(db, "SELECT * FROM gogoke_v37_h_process_episode WHERE domain_id=? AND request_id=?",
+                      (domain, recipe["startRequestId"]))
+        claim = one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
+                    (domain, recipe["sessionId"]))
+        start = one(db, "SELECT * FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? AND step_id='thread-start'",
+                    (domain, recipe["sessionId"]))
+        ack_row = one(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=? AND source_epoch=? AND source_cursor=?",
+                      (start["process_operation_id"], start["source_epoch"], start["source_cursor"]))
+        ack = json.loads(bytes(ack_row["raw_bytes"]))
+        thread = ack["result"]["thread"]["id"]
+        check(episode["session_id"] == claim["session_id"] == recipe["sessionId"] and
+              episode["generation"] == claim["generation"] == recipe["generation"] and
+              episode["instance_id"] == claim["instance_id"] == recipe["instanceId"] and
+              episode["phase"] == "STOPPED" and claim["state"] in ("STOPPED", "RELEASED") and
+              episode["stop_fact_id"] == claim["stop_fact_id"] and start["phase"] == "OBSERVED" and
+              start["process_operation_id"] == episode["process_operation_id"] and
+              ack_row["state"] == "NO_EVENT" and ack_row["no_event_reason"] == "CODEX_RPC_RESPONSE" and thread,
+              "Host-created recipient has no exact stopped H/A thread identity")
+        auto_binding = {"id": recipe["sessionId"], "seatId": recipe["destinationSeatId"],
+                        "instanceId": recipe["instanceId"], "worktreeId": recipe["worktreeId"],
+                        "generation": recipe["generation"], "revision": str(claim["revision"]), "threadId": thread}
+        if message["turn_id"]:
+            completed = []
+            for row in select(db, "SELECT * FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? AND generation=?",
+                              (domain, recipe["sessionId"], recipe["generation"])):
+                value = json.loads(bytes(row["raw_bytes"]))
+                if value.get("method") == "turn/completed" and value.get("params", {}).get("threadId") == thread and \
+                   value["params"].get("turn", {}).get("id") == message["turn_id"]:
+                    completed.append((row, value))
+            check(len(completed) <= 1, "Host recipient has duplicate original CLI completion")
+            if completed:
+                row, value = completed[0]
+                recipient_terminal = {"source": {"state": row["state"], "operationId": row["operation_id"],
+                                                "sourceEpoch": row["source_epoch"], "sourceCursor": row["source_cursor"],
+                                                "rawHex": bytes(row["raw_bytes"]).hex()},
+                                      "status": value["params"]["turn"]["status"]}
     return {"caseId": host["caseId"], "cause": cause, "intent": intent, "intentEvent": event,
             "enqueue": enqueue, "enqueueRequest": frame, "message": message, "deliveries": deliveries,
-            "sends": sends, "commands": commands}
+            "sends": sends, "commands": commands, "recipientOperation": recipe_rows[0] if recipe_rows else None,
+            "recipient": recipe, "recipientStages": stages, "autoBinding": auto_binding,
+            "recipientTerminal": recipient_terminal}
 
 
 def original_start(db, domain, stdin, bound, body, turn=None):
@@ -221,6 +310,86 @@ def verify_recipient(db, domain, bound, operations):
           pin["domain_id"] == domain and pin["state"] == "STOPPED" and pin["stop_proof_hash"] == episode["stop_fact_id"],
           "Recipient CLI pin/custody/incarnation is another subject")
     return {"binding": bound, "originalOpen": raw, "episode": episode, "pin": pin}
+
+
+def verify_auto_recipient(db, domain, snapshot, checkpoint, bound, operations):
+    recipe = snapshot["recipient"]
+    check(recipe and snapshot["autoBinding"] and
+          all(snapshot["autoBinding"][key] == bound[key] for key in
+              ("id", "seatId", "instanceId", "worktreeId", "generation", "threadId")) and
+          recipe["sessionId"] == bound["id"] and recipe["generation"] == bound["generation"] and
+          [row["stage"] for row in snapshot["recipientStages"]] == ["reserve", "commit", "start"],
+          "Delivered recipient is not the exact C frozen Host choice")
+    registration = one(db, "SELECT * FROM v37_ledger_session WHERE session_id=?", (bound["id"],))
+    tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
+               (domain, bound["worktreeId"]))
+    seat = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+               (domain, bound["seatId"]))
+    check(registration["domain_id"] == domain and registration["seat_id"] == bound["seatId"] and
+          registration["purpose"] == "WORK" and registration["side_id"] is None and
+          tree["state"] == "REGISTERED" and tree["seat_id"] == bound["seatId"] and
+          tree["repository_id"] == recipe["repositoryId"] and tree["instance_id"] == bound["instanceId"] and
+          tree["seat_incarnation"] == recipe["seatIncarnation"] == seat["incarnation"] and
+          tree["permission_tier"] == recipe["permissionTier"] and
+          seat["instance_id"] == bound["instanceId"], "Frozen Host choice lacks actual A/F/E registration")
+    originals = []
+    for stage in snapshot["recipientStages"]:
+        request = stage["request"]
+        operation = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                        (domain, request["requestId"]))
+        check(bytes.fromhex(operation["raw_hex"]) == bytes.fromhex(stage["operation"]["request_hex"]) and
+              operation["session_id"] == bound["id"] and operation["operation"] == request["operation"] and
+              operation["status"] == "APPLIED" and operation["previous_revision"] == int(request["expectedRevision"]) and
+              operation["revision"] == int(request["expectedRevision"]) + 1,
+              "C frozen stage was not the actual H reserve/commit/open mutation")
+        originals.append(operation)
+    check([row["previous_revision"] for row in originals] == [0, 1, 2],
+          "Host admission stages changed revision/order")
+    episode = one(db, "SELECT * FROM gogoke_v37_h_process_episode WHERE domain_id=? AND request_id=?",
+                  (domain, recipe["startRequestId"]))
+    claim = one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
+                (domain, bound["id"]))
+    pin = one(db, "SELECT i.driver_id,i.program_digest,c.* FROM gogoke_v37_instances i JOIN "
+              "gogoke_coordination_process_custody c ON c.operation_id=? WHERE i.instance_id=?",
+              (episode["process_operation_id"], bound["instanceId"]))
+    check(episode["session_id"] == bound["id"] and episode["generation"] == bound["generation"] and
+          episode["instance_id"] == bound["instanceId"] and episode["seat_id"] == bound["seatId"] and
+          episode["seat_incarnation"] == recipe["seatIncarnation"] and
+          bytes.fromhex(episode["raw_hex"]) == bytes.fromhex(snapshot["recipientStages"][2]["operation"]["request_hex"]) and
+          episode["phase"] == "STOPPED" and episode["stop_fact_id"] == claim["stop_fact_id"] and
+          claim["state"] == "RELEASED" and claim["generation"] == bound["generation"] and
+          pin["driver_id"] == "codex" and pin["program_digest"] == pin["binary_digest_sha256"] and
+          pin["domain_id"] == domain and pin["generation"] == bound["generation"] and
+          pin["state"] == "STOPPED" and pin["stop_proof_hash"] == episode["stop_fact_id"],
+          "Original Host H open is not the physically stopped/released Codex recipient")
+    releases = [entry for entry in operations.values() if entry["request"].get("family") == "K-SESSION" and
+                entry["request"].get("targetId") == bound["id"] and
+                entry["request"].get("operation") == "admission-release"]
+    check(len(releases) == 1, "Host-created session needs one original User release after physical stop")
+    release = releases[0]
+    stored_release = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                         (domain, release["request"]["requestId"]))
+    check(bytes.fromhex(stored_release["raw_hex"]).decode() == release["rawFrame"] and
+          release["request"]["payload"] == {"seatId": bound["seatId"], "generation": bound["generation"]} and
+          release["request"]["expectedRevision"] == checkpoint["autoBinding"]["revision"] and
+          release["receipt"]["status"] == stored_release["status"] == "APPLIED" and
+          release["receipt"]["revision"] == str(claim["revision"]) and
+          stored_release["revision"] == claim["revision"],
+          "Original Host recipient release does not bind its checkpoint StopFact/revision")
+    step = one(db, "SELECT * FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? AND step_id='thread-start'",
+               (domain, bound["id"]))
+    command = json.loads(bytes.fromhex(step["command_hex"]))
+    ack_source = one(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=? AND source_epoch=? AND source_cursor=?",
+                     (step["process_operation_id"], step["source_epoch"], step["source_cursor"]))
+    ack = json.loads(bytes(ack_source["raw_bytes"]))
+    check(step["phase"] == "OBSERVED" and step["process_operation_id"] == episode["process_operation_id"] and
+          command["method"] == "thread/start" and typed_id(command["id"]) == typed_id(ack["id"]) and
+          ack_source["state"] == "NO_EVENT" and ack_source["no_event_reason"] == "CODEX_RPC_RESPONSE" and
+          ack["result"]["thread"]["id"] == bound["threadId"],
+          "Original Host recipient thread ACK does not bind its A identity")
+    return {"binding": bound, "recipe": snapshot["recipientOperation"], "stages": snapshot["recipientStages"],
+            "episode": episode, "claim": claim, "pin": pin, "release": release["rawFrame"],
+            "originalThreadAck": bytes(ack_source["raw_bytes"]).decode()}
 
 
 def verify_final_source(db, domain, initial, current, journal_operations):
@@ -325,26 +494,53 @@ def verify_host(db, domain, case, host, operations, result):
           queued["databaseWrites"] is False and queued["credentialReads"] is False and
           queued["readerSha256"] == case["readerSha256"] == result["readerSha256"], "Queued artifact is another subject")
     prior = [row for row in queued["hostSnapshots"] if row["caseId"] == host["caseId"]]
-    check(len(prior) == 1 and prior[0]["message"]["state"] == "PENDING" and prior[0]["message"]["turn_id"] == "" and
-          prior[0]["message"]["generation"] == "" and not prior[0]["deliveries"] and not prior[0]["sends"] and not prior[0]["commands"],
-          "Actual original C pending precondition had a delivery already")
+    check(len(prior) == 1, "Original Host checkpoint cause missing")
+    if host["kind"] == "DELIVERED":
+        check(prior[0]["message"]["state"] == "DELIVERED" and prior[0]["autoBinding"] and
+              len(prior[0]["deliveries"]) == len(prior[0]["sends"]) == len(prior[0]["commands"]) == 1,
+              "Checkpoint did not capture genuine automatic Host delivery")
+    else:
+        check(prior[0]["message"]["state"] == "PENDING" and prior[0]["message"]["turn_id"] == "" and
+              prior[0]["message"]["generation"] == "" and not prior[0]["deliveries"] and
+              not prior[0]["sends"] and not prior[0]["commands"] and prior[0]["recipient"] is None,
+              "Unanswered target did not block Host recipient preparation before Owner control")
     final = host_snapshot(db, domain, host)
     original = prior[0]
     check(final["enqueue"] == original["enqueue"] and final["intentEvent"] == original["intentEvent"] and
           final["cause"] == original["cause"] and final["message"]["message_id"] == host["messageId"] == original["message"]["message_id"] and
           final["intent"]["trigger_id"] == host["triggerId"] and final["intent"]["request_id"] == host["escalationRequestId"] and
           final["enqueue"]["request_id"] == host["enqueueRequestId"], "Original E/C cause/IDs/bytes changed after checkpoint")
-    expected_targets = case["hostRecipients"] if host["kind"] == "ROUTE_CHANGED" else [host["destination"]]
-    bound_targets = [host["busy"]["binding"]] if host["kind"] == "BUSY_QUEUED" else host["targetSessions"]
+    expected_targets = [host["destination"]]
+    bound_targets = host["targetSessions"] if host["kind"] == "DELIVERED" else [host["busy"]["binding"]]
     check(len(bound_targets) == len(expected_targets) and all(
         all(bound[name] == selected[name] for name in ("seatId", "instanceId", "worktreeId"))
         for bound, selected in zip(bound_targets, expected_targets)), "Controlled recipients were not actually opened")
-    final["recipients"] = [verify_recipient(db, domain, bound, operations) for bound in bound_targets]
+    final["recipients"] = ([verify_auto_recipient(db, domain, final, original, bound_targets[0], operations)]
+                           if host["kind"] == "DELIVERED" else
+                           [verify_recipient(db, domain, bound, operations) for bound in bound_targets])
     if host["kind"] == "DELIVERED":
-        check(len(final["deliveries"]) == len(final["sends"]) == len(final["commands"]) == len(host["targetSessions"]) == 1,
+        check(len(final["deliveries"]) == len(final["sends"]) == len(final["commands"]) == len(host["targetSessions"]) == 1 and
+              final["recipientOperation"] == original["recipientOperation"] and
+              final["recipientStages"] == original["recipientStages"],
               "A cause has a missing or second original logical C/H/RPC send")
         delivery = final["deliveries"][0]
         target = host["targetSessions"][0]
+        observed_card = operations[host["autoObservation"]["seatCardRequestId"]]
+        stored_card = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt WHERE family='K-SEAT' "
+                          "AND domain_id=? AND request_id=?",
+                          (domain, host["autoObservation"]["seatCardRequestId"]))
+        check(bytes(stored_card["request_bytes"]).decode() == observed_card["rawFrame"] and
+              json.loads(bytes(stored_card["receipt_bytes"])) == observed_card["receipt"] and
+              observed_card["request"]["operation"] == "state-card" and
+              observed_card["request"]["targetId"] == target["seatId"] and
+              observed_card["receipt"]["result"]["state"] == "BUSY" and
+              observed_card["receipt"]["result"]["instanceId"] == target["instanceId"] and
+              str(observed_card["receipt"]["result"]["generation"]) == target["generation"] and
+              host["autoObservation"]["sessionId"] == target["id"] and
+              host["autoObservation"]["generation"] == target["generation"] and
+              host["autoObservation"]["threadId"] == target["threadId"] and
+              host["autoObservation"]["turnId"] == host["observedTurnId"],
+              "Live automatic recipient observation is not the checkpoint's exact H generation/turn")
         frame, operation = delivery["request"], delivery["operation"]
         check({k: v for k, v in frame.items() if k not in ("sessionId", "ticket", "generation", "hSendRequestId", "operation")} ==
               {k: v for k, v in final["enqueueRequest"].items() if k != "operation"} and frame["operation"] == "deliver" and
@@ -359,17 +555,27 @@ def verify_host(db, domain, case, host, operations, result):
               final["intent"]["revision"] == 2 and final["intent"]["delivery_receipt_id"] == operation["native_receipt_id"] ==
               observed["receipt"]["result"]["receiptId"], "C/E delivery lacks original H createdTurn receipt")
         completed = []
-        for row in select(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=?", (observed["stdin"]["process_operation_id"],)):
+        recipient_source = select(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=?",
+                                  (observed["stdin"]["process_operation_id"],))
+        for row in recipient_source:
             value = json.loads(bytes(row["raw_bytes"]))
             if value.get("method") == "turn/completed" and value["params"]["threadId"] == target["threadId"] and value["params"]["turn"]["id"] == observed["turnId"]:
                 completed.append((row, value))
+        items, calls, questions = turn_activity([(row, json.loads(bytes(row["raw_bytes"]))) for row in recipient_source],
+                                                 target["threadId"], observed["turnId"])
+        check(not items and not calls and not questions,
+              "Host notice caused extra original recipient tool/question effects")
         check(len(completed) == 1 and completed[0][0]["state"] != "PENDING" and
-              completed[0][1]["params"]["turn"]["status"] == "completed", "Separate original Host recipient CLI completion absent")
+              completed[0][1]["params"]["turn"]["status"] == "completed" and
+              final["recipientTerminal"]["source"]["rawHex"] == bytes(completed[0][0]["raw_bytes"]).hex() and
+              original["recipientTerminal"] == final["recipientTerminal"],
+              "Separate original Host recipient CLI completion absent")
         final["nativeDelivery"] = observed
     else:
         state = "PENDING" if host["kind"] == "ROUTE_CHANGED" else "CANCELLED"
         check(final["message"]["state"] == state and not final["message"]["turn_id"] and not final["message"]["generation"] and
               not final["deliveries"] and not final["sends"] and not final["commands"] and
+              final["recipient"] is None and not final["recipientStages"] and
               final["intent"] == original["intent"] and final["intent"]["state"] == "INTENT",
               "Owner route/cancel control generated a new effect or lost historical E fact")
         if state == "CANCELLED":
@@ -388,7 +594,7 @@ def verify_host(db, domain, case, host, operations, result):
         stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt WHERE family='K-INBOX' AND domain_id=? AND request_id=?", (domain, key))
         check(bytes(stored["request_bytes"]).decode() == user["rawFrame"] and json.loads(bytes(stored["receipt_bytes"])) == user["receipt"] and
               user["request"]["operation"] == "check-unknown" and user["request"]["targetId"] == host["messageId"], "Original readonly Host observation differs")
-    if host["kind"] == "BUSY_QUEUED":
+    if host["kind"] != "DELIVERED":
         busy = host["busy"]
         user = operations[busy["sendRequestId"]]
         stdin = one(db, "SELECT * FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND request_id=?", (domain, busy["sendRequestId"]))
@@ -729,7 +935,10 @@ def verify_case(db, journal, case, result):
     for fact in host_facts:
         escalations[fact["intent"]["trigger_id"]] = fact["intent"]
         messages[fact["message"]["message_id"]] = fact["message"]
-        for op in [fact["enqueue"], *[row["operation"] for row in fact["deliveries"]], *([fact["cancel"]] if "cancel" in fact else [])]:
+        for op in [fact["enqueue"], *([fact["recipientOperation"]] if fact["recipientOperation"] else []),
+                   *[row["operation"] for row in fact["recipientStages"]],
+                   *[row["operation"] for row in fact["deliveries"]],
+                   *([fact["cancel"]] if "cancel" in fact else [])]:
             inbox_operations[op["request_id"]] = op
     check({row["trigger_id"]: row for row in current["escalations"]} == escalations, "Extra or changed E escalation outside case causes")
     check({row["message_id"]: row for row in result["inbox"]["messages"]} == messages and
@@ -745,7 +954,7 @@ def verify_case(db, journal, case, result):
                                     "persistedNativeDenialRow": False, "authority": boundary["authority"]})
     result["notRun"] = case["notRun"]
     required_not_run = {"V08_MODEL_FORGED_SENDER", "V08_MODEL_CROSS_PROJECT", "V08_MODEL_SUBORDINATE_OWNER", "V08_STALL_CHAIN"}
-    required_not_run |= {"V08_HOST_AUTOMATIC_ADMISSION", "V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE", "V08_HOST_BUSY_TO_IDLE_DELIVERY"} if host_cases else {"V08_REJECT_CAP_DELIVERY"}
+    required_not_run |= {"V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE", "V08_HOST_BUSY_TO_IDLE_DELIVERY"} if host_cases else {"V08_REJECT_CAP_DELIVERY"}
     check({row["caseId"] for row in result["notRun"]} == required_not_run, "Unimplemented boundaries must remain explicit")
     result["verifiedCaseId"] = case["caseId"]
     result["directCaseEvidence"] = True
@@ -802,7 +1011,7 @@ try:
             identifiers.update(row["busy"]["binding"]["id"] for row in case["hostCases"] if row.get("busy"))
             result["stoppedClaims"] = [one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
                                           (journal["domainId"], session)) for session in sorted(identifiers)]
-            result["state"] = "ORIGINAL_HOST_QUEUE_SNAPSHOT_NOT_A_FINAL_V08_RESULT"
+            result["state"] = "ORIGINAL_HOST_SNAPSHOT_NOT_A_FINAL_V08_RESULT"
         else:
             result["state"] = "BASELINE_ONLY_NOT_A_V08_RESULT"
 except Exception as error:
