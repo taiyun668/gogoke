@@ -1026,8 +1026,12 @@ impl<'root> ProductDatabase<'root> {
             return self.generation_unknown(request);
         }
         if c.stage=="UNSUPPORTED" {
-            return Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
-                request.expected_revision,Default::default()));
+            let bytes=encode_receipt(request,V37Status::Unsupported,request.expected_revision,
+                request.expected_revision,Default::default());
+            self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+            let settled=self.settle_host_health_change_in_transaction(request,&bytes);
+            self.finish_native_transaction(settled)?;
+            return Ok(bytes);
         }
         if c.stage=="APPLIED" {
             let new=(c.old_generation.parse::<u64>().map_err(|_|OrchestrationError::OperationConflict)?+1).to_string();
@@ -1080,15 +1084,17 @@ impl<'root> ProductDatabase<'root> {
                 &step,&c.thread_id);
             if let Err(rpc::RpcJournalError::Codec(codex_rpc::RpcError::RemoteResponse(frame)))=&ack {
                 if compact_method_missing(frame) && c.unknown_revision.is_none() {
+                    let bytes=encode_receipt(request,V37Status::Unsupported,
+                        request.expected_revision,request.expected_revision,Default::default());
                     self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
                     let unsupported=(||->Result<()> {
                         authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
                         failure(change::mark_unsupported(&self.connection,&request.domain_id,
-                            &request.request_id,&step))
+                            &request.request_id,&step))?;
+                        self.settle_host_health_change_in_transaction(request,&bytes)
                     })();
                     self.finish_native_transaction(unsupported)?;
-                    return Ok(encode_receipt(request,V37Status::Unsupported,
-                        request.expected_revision,request.expected_revision,Default::default()));
+                    return Ok(bytes);
                 }
             }
             if !matches!(ack,Ok(Some(_))) {

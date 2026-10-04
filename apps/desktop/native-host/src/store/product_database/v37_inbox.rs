@@ -337,20 +337,8 @@ impl<'root> ProductDatabase<'root> {
         self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
         let read=(||->Result<Vec<u8>> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
-            let query=Statement::prepare(self.connection.as_ptr(),
-                "SELECT domain_id,gate_id FROM main.gogoke_v37_seat_policy_gates
-                  WHERE state='ESCALATION_REQUIRED' ORDER BY domain_id,gate_id")?;
-            let mut gates=Vec::new();
-            while query.step_row()? {gates.push((query.column_text(0)?,query.column_text(1)?));}
-            drop(query);
             let mut notices=Vec::new();
-            for (domain,gate) in gates {
-                let proof=match crate::store::seat::observe_host_reject_cap_in_transaction(
-                    &self.connection,&self.owner,&domain,&gate) {
-                    Ok(Some(proof))=>proof,
-                    Ok(None)|Err(crate::store::seat::SeatError::Denied|crate::store::seat::SeatError::Conflict)=>continue,
-                    Err(error)=>return Err(inbox_error("OWNER original E cause",error)),
-                };
+            for proof in self.observe_current_host_rule_causes_in_transaction(false)? {
                 if proof.destination_seat_id()!="OWNER" {continue;}
                 // Route changes/cancellation suppress presentation of an old
                 // cause; they cannot allocate a replacement notification.
@@ -365,7 +353,7 @@ impl<'root> ProductDatabase<'root> {
                     &self.connection,&self.owner,&proof).map_err(|error|
                         inbox_error("OWNER original C notice",error))? else {continue;};
                 notices.push(Json::Object(BTreeMap::from([
-                    (JsonString::from_str("domainId"),text(&domain)),
+                    (JsonString::from_str("domainId"),text(proof.domain_id())),
                     (JsonString::from_str("messageId"),text(&message.message_id)),
                     (JsonString::from_str("revision"),text(&message.revision.to_string())),
                     (JsonString::from_str("state"),text(&message.state)),
