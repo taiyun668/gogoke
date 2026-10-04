@@ -74,11 +74,10 @@ export function Design37OwnerNoticeHost({ executeSourceOperation = executeUserSo
   const unavailable = error === HOST_NOT_STARTED;
   return <>
     <Design37OwnerNoticePresenter notices={notices} />
-    {error && <ToastViewport className="error-toasts" aria-label="Owner 通知状态">
-      <ToastCard className="error-toast" role={unavailable ? "status" : "alert"}>
-        <ToastTitle className="error-toast-title">{unavailable ? "Owner 通知暂不可用" : "Owner 通知读取失败"}</ToastTitle>
+    {error && !unavailable && <ToastViewport className="error-toasts" aria-label="Owner 通知状态">
+      <ToastCard className="error-toast" role="alert">
+        <ToastTitle className="error-toast-title">Owner 通知读取失败</ToastTitle>
         <ToastBody className="error-toast-body">
-          {unavailable && <p>宿主尚未启动，当前没有可读取的通知投影。</p>}
           <div style={{ whiteSpace: "pre-wrap" }}>{error}</div>
         </ToastBody>
         <ToastActions style={{ marginTop: 8 }}>
