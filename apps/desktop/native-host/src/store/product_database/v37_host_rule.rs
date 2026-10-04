@@ -61,6 +61,10 @@ impl<'root> ProductDatabase<'root> {
             let message=inbox::read_message(&self.connection,proof.domain_id(),&ids.message_id).map_err(failure)?
                 .ok_or(OrchestrationError::OperationConflict)?;
             if message.state!="PENDING" {continue;}
+            // OWNER is the existing native notification endpoint, never a
+            // model recipient. C retains the original pending notice; the
+            // User projection displays it without a fabricated H delivery.
+            if proof.destination_seat_id()=="OWNER" {continue;}
             if c::host_recipient_failure_recorded(&self.connection,&proof).map_err(failure)? {
                 continue;
             }

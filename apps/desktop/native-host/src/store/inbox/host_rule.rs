@@ -616,6 +616,22 @@ fn original_host_message(db: &VerifiedDatabaseConnection<'_>, proof: &HostEscala
     Ok(message)
 }
 
+/// Display-only OWNER endpoint. Current E authority and the original C bytes
+/// must both agree; reading never creates a receipt, ACK or delivery fact.
+pub(crate) fn read_owner_host_notice_in_transaction(db:&VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,proof:&HostEscalationProof)->Result<Option<Message>,InboxError> {
+    if proof.destination_seat_id()!="OWNER" {return Err(InboxError::Denied);}
+    let ids=identity(proof);
+    if read_message(db,proof.domain_id(),&ids.message_id)?.is_none() {return Ok(None);}
+    revalidate(db,owner,proof)?;
+    let message=original_host_message(db,proof,&ids)?;
+    if message.state!="PENDING" {return Ok(None);}
+    if !message.turn_id.is_empty() || !message.generation.is_empty() {
+        return Err(InboxError::Conflict);
+    }
+    Ok(Some(message))
+}
+
 /// One durable HOST_RULE notification from the existing E INTENT. Its pending
 /// turn and generation are explicitly empty until H proves an ordinary send.
 pub(crate) fn enqueue_host_escalation(db: &mut VerifiedDatabaseConnection<'_>,

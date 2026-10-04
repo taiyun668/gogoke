@@ -327,7 +327,75 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
+    /// User-only C projection of already persisted OWNER notices. No model
+    /// recipient, receipt append, new send, ACK or read-status write occurs.
+    fn read_owner_host_notices(&mut self,request:&V37Request)->Result<Vec<u8>> {
+        if request.domain_id!="global" || request.target_id!="OWNER" || request.expected_revision!=0 {
+            return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let read=(||->Result<Vec<u8>> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            let query=Statement::prepare(self.connection.as_ptr(),
+                "SELECT domain_id,gate_id FROM main.gogoke_v37_seat_policy_gates
+                  WHERE state='ESCALATION_REQUIRED' ORDER BY domain_id,gate_id")?;
+            let mut gates=Vec::new();
+            while query.step_row()? {gates.push((query.column_text(0)?,query.column_text(1)?));}
+            drop(query);
+            let mut notices=Vec::new();
+            for (domain,gate) in gates {
+                let proof=match crate::store::seat::observe_host_reject_cap_in_transaction(
+                    &self.connection,&self.owner,&domain,&gate) {
+                    Ok(Some(proof))=>proof,
+                    Ok(None)|Err(crate::store::seat::SeatError::Denied|crate::store::seat::SeatError::Conflict)=>continue,
+                    Err(error)=>return Err(inbox_error("OWNER original E cause",error)),
+                };
+                if proof.destination_seat_id()!="OWNER" {continue;}
+                // Route changes/cancellation suppress presentation of an old
+                // cause; they cannot allocate a replacement notification.
+                match crate::store::seat::read_host_escalation_intent_in_transaction(
+                    &self.connection,&self.owner,&proof) {
+                    Ok(Some(_))=>{},
+                    Ok(None)=>continue,
+                    Err(crate::store::seat::SeatError::Denied|crate::store::seat::SeatError::Conflict)=>continue,
+                    Err(error)=>return Err(inbox_error("OWNER current E route",error)),
+                }
+                let Some(message)=inbox::host_rule::read_owner_host_notice_in_transaction(
+                    &self.connection,&self.owner,&proof).map_err(|error|
+                        inbox_error("OWNER original C notice",error))? else {continue;};
+                notices.push(Json::Object(BTreeMap::from([
+                    (JsonString::from_str("domainId"),text(&domain)),
+                    (JsonString::from_str("messageId"),text(&message.message_id)),
+                    (JsonString::from_str("revision"),text(&message.revision.to_string())),
+                    (JsonString::from_str("state"),text(&message.state)),
+                    (JsonString::from_str("sourceSeatId"),text(proof.source_seat_id())),
+                    (JsonString::from_str("causeEventId"),text(proof.cause_event_id())),
+                    (JsonString::from_str("triggerId"),text(proof.trigger_id())),
+                    (JsonString::from_str("body"),text(&message.body)),
+                ])));
+            }
+            Ok(encode_receipt(request,V37Status::Applied,0,0,BTreeMap::from([
+                (JsonString::from_str("projection"),text("OWNER_HOST_RULE_NOTICES")),
+                (JsonString::from_str("notices"),Json::Array(notices)),
+            ])))
+        })();
+        match read {
+            Ok(bytes)=>{self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;Ok(bytes)},
+            Err(primary)=>{
+                if let Err(rollback)=self.connection.execute("ROLLBACK") {
+                    return Err(inbox_error("OWNER projection rollback",format!("{primary:?}; {rollback:?}")));
+                }
+                Err(primary)
+            }
+        }
+    }
+
     fn check_native_inbox(&mut self,request:&V37Request)->Result<Vec<u8>> {
+        if exact_fields(request,&["projection"])
+            && payload(request,"projection")?=="OWNER_HOST_RULE_NOTICES" {
+            return self.read_owner_host_notices(request);
+        }
         if !request.payload.is_empty() {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                 request.expected_revision,Default::default()));
