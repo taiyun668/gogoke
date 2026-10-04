@@ -4,6 +4,252 @@ use crate::store::seat::{CreateSeat, Kind, StoreTemplate};
 use crate::store::same_open::route_b_test_guard;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Reuses the actual fixed-catalog E/F/H launch from the session control below.
+// Login presence alone is synthetic. No credentials or model are loaded.
+fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)) {
+    let _guard=route_b_test_guard();
+    let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("gogoke-v37-health-control-{}-{stamp}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();
+    let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    let register=operation("K-INSTANCE","register","health-register","instanceA",0,
+        &format!(r#"{{"driverId":"{driver}"}}"#));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,V37Status::Applied);
+    instance::record_observation(&mut product.connection,&root,&instance::ObservationRequest {
+        request_id:"health-login-presence",request_bytes:b"SYNTHETIC_LOGIN_PRESENCE_NOT_AUTHENTICATION",
+        instance_id:"instanceA",expected_revision:1,observation:instance::InstanceObservation::LoggedIn,
+    }).unwrap();
+    instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,"instanceA",1).unwrap();
+    seat::set_project_parallel_cap(&mut product.connection,&product.owner,"projectA",1).unwrap();
+    let model=if driver=="claude" {"claude-sonnet-4-6"} else {"gpt-6-sol"};
+    seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate {
+        domain_id:"projectA",template_id:"templateA",settings_json:format!(
+            r#"{{"effort":"high","model":"{model}","permissionTier":"NETWORKED_WRITE"}}"#).as_bytes(),
+    }).unwrap();
+    seat::create(&mut product.connection,NativeOrigin::user(&product.owner),CreateSeat {
+        domain_id:"projectA",seat_id:"seatA",template_id:"templateA",instance_id:Some("instanceA"),
+        kind:Kind::Long,request_id:"health-create-seat",request_bytes:b"actual health control seat",
+    }).unwrap();
+    let source=crate::store::worktree::tests::make_source_fixture(&mut product.connection,&root,
+        &product.owner,&mut product.process_custodian);
+    let git=std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").unwrap();
+    let configuration=Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"),Json::String(JsonString::from_str("gogoke.37.owner-configuration.v1"))),
+        (JsonString::from_str("command"),Json::String(JsonString::from_str("worktree-source"))),
+        (JsonString::from_str("repositoryId"),Json::String(JsonString::from_str("fixtureRepo"))),
+        (JsonString::from_str("sourcePath"),Json::String(JsonString::from_str(source.to_str().unwrap()))),
+        (JsonString::from_str("gitPath"),Json::String(JsonString::from_str(git.to_str().unwrap()))),
+    ])).canonical();
+    product.configure_user_v37(configuration.as_bytes()).unwrap();
+    let create=operation("K-WORKTREE","create","health-create-tree","treeA",0,
+        r#"{"repositoryId":"fixtureRepo","seatId":"seatA"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&create).unwrap()).unwrap().status,V37Status::Applied);
+    for (verb,id,rev) in [("admission-reserve","health-reserve",0),("admission-commit","health-commit",1)] {
+        let request=operation("K-SESSION",verb,id,"sessionA",rev,r#"{"seatId":"seatA","generation":"2"}"#);
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&request).unwrap()).unwrap().status,V37Status::Applied);
+    }
+    let open=operation("K-SESSION","open","health-open","sessionA",2,
+        r#"{"seatId":"seatA","generation":"2","repositoryId":"fixtureRepo","worktreeId":"treeA"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status,V37Status::Applied);
+    run(&mut product);
+    let claim=Statement::prepare(product.connection.as_ptr(),
+        "SELECT generation,revision FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
+    assert!(claim.step_row().unwrap());let generation=claim.column_text(0).unwrap();
+    let revision=claim.column_text(1).unwrap().parse::<u64>().unwrap();drop(claim);
+    let stop=operation("K-SESSION","stop","health-final-stop","sessionA",revision,
+        &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#));
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status,V37Status::Applied);
+    product.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+}
+
+fn health_control_rows(product:&ProductDatabase<'_>,sql:&str)->Vec<Vec<String>> {
+    let row=Statement::prepare(product.connection.as_ptr(),sql).unwrap();let mut result=Vec::new();
+    while row.step_row().unwrap() {result.push(vec![row.column_text(0).unwrap(),row.column_text(1).unwrap()]);}
+    result
+}
+
+// Existing synthetic A ordering seam, under the actual opened H/C identity.
+// This is not an OriginBoundFrame/pipe observation or a hand-made health proof.
+fn health_control_source(product:&mut ProductDatabase<'_>,raw:&[u8])->ledger::RawSourceKey {
+    let key=("projectA".to_owned(),"sessionA".to_owned());let live=product.native_sessions.get(&key).unwrap();
+    let custody=live.custody.clone();let process=live.operation_id.clone();
+    let maximum=Statement::prepare(product.connection.as_ptr(),
+        "SELECT COALESCE(MAX(CAST(source_cursor AS INTEGER)),0) FROM main.v37_ledger_raw_source WHERE operation_id=?1").unwrap();
+    maximum.bind_text(1,&process).unwrap();assert!(maximum.step_row().unwrap());
+    let cursor=maximum.column_text(0).unwrap().parse::<u64>().unwrap()+1;drop(maximum);
+    let insert=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES(?1,?2,?3,'projectA','sessionA',?4,?3,?5,?6,'PENDING')").unwrap();
+    insert.bind_text(1,&process).unwrap();insert.bind_text(2,custody.ticket.opaque()).unwrap();
+    insert.bind_text(3,&custody.custodian_nonce).unwrap();insert.bind_text(4,&custody.binding.generation).unwrap();
+    insert.bind_text(5,&cursor.to_string()).unwrap();insert.bind_blob(6,raw).unwrap();insert.step_done().unwrap();drop(insert);
+    product.native_sessions.get_mut(&key).unwrap().raw_capture.install_sql_fixture_cursor(cursor);
+    ledger::RawSourceKey {operation_id:process,source_epoch:custody.custodian_nonce,source_cursor:cursor.to_string()}
+}
+
+// Modelled ordinary-send writer/ACK ordering; original receipt is generated
+// by H's production recovery. No model prompt is written to the actual pipe.
+fn health_control_work_turn(product:&mut ProductDatabase<'_>,early_terminal:bool,cause:&str)->ledger::RawSourceKey {
+    use crate::store::session_transport::{codex_rpc::{Command,RpcId},rpc_journal as rpc};
+    let key=("projectA".to_owned(),"sessionA".to_owned());let live=product.native_sessions.get(&key).unwrap();
+    let custody=live.custody.clone();let open_id=live.open_request_id.clone();let open_bytes=live.open_request_bytes.clone();
+    let original_rpc_ordinal=live.next_rpc_id;
+    let thread=live.thread_id.clone().unwrap();let body="synthetic work boundary; never written to provider";
+    let command=Command::TurnStart {thread_id:thread.clone(),cwd:live.evidence.cwd().to_string_lossy().into_owned(),
+        model:"gpt-6-sol".into(),effort:"high".into(),text:body.into(),network_access:Some(live.evidence.network_access())};
+    let request=operation("K-SESSION","send","health-work-send","sessionA",3,
+        &format!(r#"{{"generation":"2","body":"{body}"}}"#));
+    let input=h::StdinRequest {domain_id:"projectA",session_id:"sessionA",ticket:custody.ticket.opaque(),
+        generation:"2",request_bytes:&request.raw_bytes};
+    assert_eq!(h::prepare_codex_request(&mut product.connection,&input).unwrap().disposition,h::PrepareDisposition::Prepared);
+    let step_id=format!("send-{}",&crate::store::digest::sha256_hex(&request.raw_bytes)[..40]);
+    let rpc_id=RpcId::Number(88001);
+    let step=rpc::Step {domain_id:"projectA",session_id:"sessionA",open_request_id:&open_id,
+        open_request_bytes:&open_bytes,step_id:&step_id,custody:&custody,rpc_id:Some(&rpc_id),command:&command};
+    assert_eq!(rpc::prepare(&mut product.connection,&product.owner,&step).unwrap().disposition,rpc::Disposition::NewWrite);
+    rpc::mark_written(&mut product.connection,&product.owner,&step).unwrap();
+    let terminal=format!("{{\"method\":\"turn/completed\",\"params\":{{\"threadId\":{},\"turn\":{{\"id\":\"healthWorkTurn\",\"status\":\"failed\",\"error\":{{\"message\":\"synthetic typed failure control\",\"codexErrorInfo\":{cause}}}}}}}}}\n",
+        Json::String(JsonString::from_str(&thread)).canonical());
+    let mut first=None;
+    if early_terminal {
+        first=Some(health_control_source(product,terminal.as_bytes()));
+        product.process_native_pending_output(&key).unwrap();
+        assert!(health_control_rows(product,"SELECT event_id,state FROM main.gogoke_v37_seat_health").is_empty(),
+            "terminal without original ordinary receipt cannot yet mint");
+    }
+    let ack=health_control_source(product,b"{\"id\":88001,\"result\":{\"turn\":{\"id\":\"healthWorkTurn\",\"status\":\"inProgress\"}}}\n");
+    // Only the synthetic A/H association is modelled. Normal recover below
+    // decodes/rechecks command, ACK, current H seat and produces original bytes.
+    let observed=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch=?1,source_cursor=?2 WHERE step_id=?3 AND phase='WRITTEN'").unwrap();
+    observed.bind_text(1,&ack.source_epoch).unwrap();observed.bind_text(2,&ack.source_cursor).unwrap();
+    observed.bind_text(3,&step_id).unwrap();observed.step_done().unwrap();drop(observed);
+    ledger::resolve_raw_source_no_event(&mut product.connection,&ack.operation_id,&ack.source_epoch,&ack.source_cursor,"CODEX_RPC_RESPONSE").unwrap();
+    // Mirror the existing real Reply::Turn retention point, including late ACK.
+    product.native_sessions.get_mut(&key).unwrap().turn_id=Some("healthWorkTurn".into());
+    if early_terminal {
+        product.process_native_pending_output(&key).unwrap();
+        assert!(product.native_sessions.get(&key).unwrap().turn_id.is_none(),
+            "original resolved terminal must clear the turn resurrected by its late ACK");
+    }
+    let receipt=h::recover_codex_turn_request(&mut product.connection,&input).unwrap().unwrap();
+    assert_eq!(h::decode_receipt(&receipt.record.receipt_bytes.unwrap()).unwrap().status,V37Status::Applied);
+    if !early_terminal {first=Some(health_control_source(product,terminal.as_bytes()));product.process_native_pending_output(&key).unwrap();}
+    assert!(product.native_sessions.get(&key).unwrap().turn_id.is_none());
+    product.revisit_host_health_sources().unwrap();
+    let original=first.unwrap();
+    let observation=health_control_rows(product,"SELECT source_event_id,state FROM main.gogoke_v37_seat_health");
+    assert_eq!(observation.len(),1,"exactly one production sealed health observation");assert_eq!(observation[0][1],"OBSERVED");
+    let raw=ledger::read_captured_raw_source(&product.connection,&original.operation_id,&original.source_epoch,&original.source_cursor).unwrap().unwrap();
+    assert_eq!(raw.state,ledger::RawSourceState::Resolved);assert_eq!(Some(&observation[0][0]),raw.resolved_event_id.as_ref());
+    let before=health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps WHERE step_id LIKE 'send-%'");
+    health_control_source(product,terminal.as_bytes());product.process_native_pending_output(&key).unwrap();
+    product.revisit_host_health_sources().unwrap();product.revisit_host_health_sources().unwrap();
+    assert_eq!(health_control_rows(product,"SELECT source_event_id,state FROM main.gogoke_v37_seat_health"),observation,
+        "duplicate source and safe-point revisit must not mint a second observation or overwrite original source");
+    assert_eq!(health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps WHERE step_id LIKE 'send-%'"),before,
+        "health observation cannot allocate or repeat work input");
+    assert_eq!(product.native_sessions.get(&key).unwrap().next_rpc_id,original_rpc_ordinal,
+        "sealed observation/revisit cannot allocate a native writer ID");
+    original
+}
+
+#[test]
+fn health_terminal_and_ordinary_ack_orders_keep_one_original_seal_and_no_work_resend() {
+    for early in [false,true] {health_control_product("codex",|product| {
+        health_control_work_turn(product,early,r#"{"responseTooManyFailedAttempts":{"httpStatusCode":null}}"#);
+        assert!(health_control_rows(product,"SELECT request_id,stage FROM main.gogoke_v37_h_generation_change").is_empty(),
+            "observation/revisit alone cannot acquire a generation action permit");
+    });}
+}
+
+#[test]
+fn health_compact_late_original_ack_continues_without_second_write_or_new_request() {
+    health_control_product("codex",|product| {
+        let key=("projectA".to_owned(),"sessionA".to_owned());
+        let thread=product.native_sessions.get(&key).unwrap().thread_id.clone().unwrap();
+        assert!(matches!(product.native_append_rpc(&key,"health-real-history",&thread,"no-model native history marker".into()).unwrap(),
+            Some(crate::store::session_transport::codex_rpc::Reply::Ack {..})));
+        health_control_work_turn(product,false,r#""contextWindowExceeded""#);
+        // Audit the actual production mark_written immediately after its OS
+        // write. The only fault is the later OBSERVED transaction, not a writer.
+        product.connection.execute("CREATE TEMP TABLE health_control_writes(value INTEGER NOT NULL); INSERT INTO health_control_writes VALUES(0)").unwrap();
+        product.connection.execute("CREATE TEMP TRIGGER health_count_compact_write AFTER UPDATE OF phase ON main.gogoke_v37_rpc_steps WHEN NEW.phase='WRITTEN' AND OLD.phase='INTENT' AND NEW.step_id LIKE 'compact-%' BEGIN UPDATE health_control_writes SET value=value+1; END").unwrap();
+        product.connection.execute("CREATE TEMP TRIGGER health_delay_compact_ack BEFORE UPDATE OF phase ON main.gogoke_v37_rpc_steps WHEN NEW.phase='OBSERVED' AND NEW.step_id LIKE 'compact-%' BEGIN SELECT RAISE(ABORT,'health control delayed original compact observation'); END").unwrap();
+        let original_error=product.pump_host_health().expect_err("original OBSERVED fault cannot be swallowed as PASS");
+        assert!(format!("{original_error:?}").contains("health control delayed original compact observation"),
+            "the retained error must identify the actual injected observation failure: {original_error:?}");
+        product.connection.execute("DROP TRIGGER health_delay_compact_ack").unwrap();
+        let change=health_control_rows(product,"SELECT raw_hex,request_id FROM main.gogoke_v37_h_generation_change");
+        assert_eq!(change.len(),1);
+        let raw=change[0][0].as_bytes().chunks_exact(2).map(|pair|
+            u8::from_str_radix(std::str::from_utf8(pair).unwrap(),16).unwrap()).collect::<Vec<_>>();
+        let request=decode_request(&raw).unwrap();
+        let step=format!("compact-{}",&crate::store::digest::sha256_hex(&raw)[..40]);
+        let command_sql=format!("SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps WHERE step_id='{step}'");
+        let written=health_control_rows(product,&command_sql);
+        assert_eq!(written.len(),1);assert_eq!(written[0][1],"WRITTEN");
+        let original_ordinal=product.native_sessions.get(&key).unwrap().next_rpc_id;
+        assert_eq!(health_control_rows(product,"SELECT CAST(value AS TEXT),'writes' FROM temp.health_control_writes")[0][0],"1");
+        assert!(product.health_generation_may_continue(&request).unwrap(),
+            "production gate must first reconcile the exact original WRITTEN/A ACK");
+        let observed=health_control_rows(product,&command_sql);assert_eq!(observed[0][0],written[0][0]);assert_eq!(observed[0][1],"OBSERVED");
+        assert_eq!(product.native_sessions.get(&key).unwrap().next_rpc_id,original_ordinal,
+            "late ACK gate consumes original A without allocating another RPC ID");
+        product.pump_host_health().unwrap();
+        assert_eq!(product.native_sessions.get(&key).unwrap().next_rpc_id,original_ordinal);
+        assert_eq!(health_control_rows(product,"SELECT stage,request_id FROM main.gogoke_v37_h_generation_change")[0],vec!["ACKED".to_owned(),request.request_id.clone()],
+            "an ACK alone does not settle compact or stop/restart the original process");
+        let complete=format!("{{\"method\":\"item/completed\",\"params\":{{\"threadId\":{},\"turnId\":\"healthCompactTurn\",\"completedAtMs\":0,\"item\":{{\"type\":\"contextCompaction\",\"id\":\"healthCompactItem\"}}}}}}\n",
+            Json::String(JsonString::from_str(&thread)).canonical());
+        health_control_source(product,complete.as_bytes());product.process_native_pending_output(&key).unwrap();
+        product.pump_host_health().unwrap();product.pump_host_health().unwrap();
+        assert_eq!(health_control_rows(product,"SELECT raw_hex,request_id FROM main.gogoke_v37_h_generation_change"),change,
+            "automatic continuation keeps original request identity and exact bytes");
+        assert_eq!(health_control_rows(product,"SELECT stage,request_id FROM main.gogoke_v37_h_generation_change")[0][0],"APPLIED");
+        assert_eq!(health_control_rows(product,"SELECT state,session_request_id FROM main.gogoke_v37_seat_health")[0],
+            vec!["RECEIPTED".to_owned(),request.request_id.clone()]);
+        assert_eq!(health_control_rows(product,&command_sql),observed);
+        assert_eq!(health_control_rows(product,"SELECT CAST(value AS TEXT),'writes' FROM temp.health_control_writes")[0][0],"1",
+            "continuation/replay cannot repeat the actual compact writer");
+        assert_eq!(health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps WHERE step_id LIKE 'compact-%'").len(),1,
+            "no new command ID is allocated");
+        product.connection.execute("DROP TRIGGER health_count_compact_write; DROP TABLE temp.health_control_writes").unwrap();
+    });
+}
+
+#[test]
+fn health_real_retained_claude_normal_update_commits_without_codex_health_action() {
+    let expected=std::path::PathBuf::from(std::env::var_os("GOGOKE_CLAUDE_CLI_PATH")
+        .expect("NOT_RUN: actual fixed Claude 2.1.196 cloud catalog fixture required; no Codex substitute"));
+    assert!(expected.is_file(),"NOT_RUN: actual Claude executable missing");
+    health_control_product("claude",|product| {
+        let key=("projectA".to_owned(),"sessionA".to_owned());let live=product.native_sessions.get(&key).unwrap();
+        assert_eq!(live.evidence.driver_id(),"claude");
+        assert_eq!(std::fs::canonicalize(&live.custody.identity.image_path).unwrap(),std::fs::canonicalize(&expected).unwrap(),
+            "the retained H/C process is the genuine cloud-pinned Claude binary");
+        let thread=live.thread_id.clone().unwrap();
+        let frame=format!("{{\"type\":\"assistant\",\"session_id\":{},\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}\n",
+            Json::String(JsonString::from_str(&thread)).canonical());
+        let before=health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps");
+        let source=health_control_source(product,frame.as_bytes());
+        product.process_native_pending_output(&key).unwrap();product.pump_host_health().unwrap();
+        let raw=ledger::read_captured_raw_source(&product.connection,&source.operation_id,&source.source_epoch,&source.source_cursor).unwrap().unwrap();
+        assert_eq!(raw.raw_bytes,frame.as_bytes());assert_eq!(raw.state,ledger::RawSourceState::Resolved,
+            "normal Claude Update plus real production health hook must commit together");
+        let event=Statement::prepare(product.connection.as_ptr(),
+            "SELECT update_json FROM main.v37_ledger_index WHERE source_event_id=?1 AND domain_id='projectA' AND session_id='sessionA'").unwrap();
+        event.bind_text(1,raw.resolved_event_id.as_deref().unwrap()).unwrap();assert!(event.step_row().unwrap());
+        let update=event.column_text(0).unwrap();assert!(!event.step_row().unwrap());drop(event);
+        assert!(update.contains("\"sessionUpdate\":\"agent_message_chunk\"")&&update.contains("\"text\":\"ok\"")&&
+            update.contains("\"provider\":\"claude\""),"actual normal Claude update differs: {update}");
+        assert!(health_control_rows(product,"SELECT event_id,state FROM main.gogoke_v37_seat_health").is_empty());
+        assert!(health_control_rows(product,"SELECT request_id,stage FROM main.gogoke_v37_h_generation_change").is_empty());
+        assert_eq!(health_control_rows(product,"SELECT command_hex,phase FROM main.gogoke_v37_rpc_steps"),before,
+            "normal non-Codex output creates no writer or action");
+    });
+}
+
 fn operation(family: &str, verb: &str, id: &str, target: &str, revision: u64, payload: &str) -> V37Request {
     let domain = if family == "K-INSTANCE" { "global" } else { "projectA" };
     decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"{family}","operation":"{verb}","requestId":"{id}","targetId":"{target}","domainId":"{domain}","expectedRevision":"{revision}","payload":{payload}}}"#).as_bytes()).unwrap()
