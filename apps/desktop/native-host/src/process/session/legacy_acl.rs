@@ -161,6 +161,20 @@ fn home_target(original: &Dacl, historical: &[(String, String)]) -> Dacl {
             !historical.iter().any(|(_, sid)| sid == &ace.sid)).cloned().collect() }
 }
 
+/// A single ACL write may remove only one captured legacy SID. The observed
+/// ACL is legal exactly when it equals the original after removing some whole
+/// captured SID ACEs; every non-target ACE and deny ordering stay intact.
+fn legal_home_progress(observed: &Dacl, original: &Dacl,
+    historical: &[(String, String)]) -> bool {
+    let mut expected = original.clone();
+    for (_, sid) in historical {
+        if !observed.aces.iter().any(|ace| &ace.sid == sid) {
+            expected.aces.retain(|ace| &ace.sid != sid);
+        }
+    }
+    acl_equal(observed, &expected)
+}
+
 fn baseline_target() -> Result<Dacl, IsolationError> {
     let (_token, _buffer, user) = host_user_sid()?;
     let system = well_known_sid("S-1-5-18")?;
@@ -327,13 +341,7 @@ impl LegacyAclInventory {
         let inventory = Self::parse_saved(root, home_identity, binding,
             historical_profile_names, payload, original_digest)?;
         inventory.verify_structure(root, home, home_identity, binding)?;
-        let live = inventory.verify_live(root, home, home_identity, binding, true)?;
-        if live.iter().zip(&inventory.objects).any(|(acl, object)| object.source
-            && acl_equal(acl, &inventory.baseline))
-            && live.iter().zip(&inventory.objects).any(|(acl, object)| !object.source
-                && !acl_equal(acl, &home_target(&object.original, &inventory.historical))) {
-            return Err(mismatch());
-        }
+        inventory.verify_live(root, home, home_identity, binding, true)?;
         Ok(inventory)
     }
 
@@ -421,23 +429,37 @@ impl LegacyAclInventory {
             let path = home.join(&object.relative);
             let acl = observe_object(&path, &object.identity,
                 object.directory, object.source, binding)?;
-            let target = home_target(&object.original, &self.historical);
-            if !acl_equal(&acl, &object.original) && !acl_equal(&acl, &target)
+            if !legal_home_progress(&acl, &object.original, &self.historical)
                 && !(allow_baseline && object.source && acl_equal(&acl, baseline)) {
                 return Err(mismatch());
             }
             observed.push(acl);
+        }
+        // A protected source baseline is a separate step. It can appear only
+        // after the entire noncredential HOME tree has reached its target.
+        if observed.iter().zip(&self.objects).any(|(acl, object)|
+            object.source && acl_equal(acl, baseline))
+            && observed.iter().zip(&self.objects).any(|(acl, object)|
+                !object.source && !acl_equal(acl,
+                    &home_target(&object.original, &self.historical))) {
+            return Err(mismatch());
         }
         require_bound_path(home, home_identity, true)?;
         binding.verify_registered_aliases(&[])?;
         Ok(observed)
     }
 
-    /// F must durably persist the HOME intent before this call. Each object is
-    /// independently at its captured original or exact target ACL, so a crash
-    /// resumes without broadening the historical SID set.
+    /// F must durably persist the HOME intent before this call. Every object
+    /// can resume from any exact subset of captured legacy SID removals.
     pub(crate) fn reconcile_home(&self, root: &RootLock, home: &Path,
         home_identity: &RootIdentity, binding: &CredentialBinding)
+        -> Result<LegacyHomeReceipt, CredentialError> {
+        self.reconcile_home_inner(root, home, home_identity, binding, &mut |_, _| Ok(()))
+    }
+
+    fn reconcile_home_inner(&self, root: &RootLock, home: &Path,
+        home_identity: &RootIdentity, binding: &CredentialBinding,
+        after_sid: &mut impl FnMut(&Path, &str) -> Result<(), CredentialError>)
         -> Result<LegacyHomeReceipt, CredentialError> {
         self.verify_structure(root, home, home_identity, binding)?;
         let before = self.verify_live(root, home, home_identity, binding, false)?;
@@ -450,13 +472,15 @@ impl LegacyAclInventory {
             let target = home_target(&object.original, &self.historical);
             if acl_equal(&before[index], &target) { continue; }
             let path = home.join(&object.relative);
-            for profile in &profiles {
+            for (profile, (name, _)) in profiles.iter().zip(&self.historical) {
                 let apply = |handle| -> Result<(), CredentialError> {
                     if &file_identity(handle)? != &object.identity { return Err(mismatch()); }
                     // The parent helper removes only the known broad inherited
                     // grant. The complete DACL is checked after every write.
                     revoke_known_legacy_owner_ace(handle, profile.sid,
                         &object.identity, index == 0)?;
+                    if !legal_home_progress(&read_dacl(handle)?, &object.original,
+                        &self.historical) { return Err(mismatch()); }
                     Ok(())
                 };
                 if object.source {
@@ -465,6 +489,9 @@ impl LegacyAclInventory {
                     let handle = open_bound_object(&path, &object.identity, object.directory)?;
                     apply(handle.0)?;
                 }
+                // The hook is private; production supplies a no-op. Cloud
+                // Windows tests can stop immediately after one real SID write.
+                after_sid(&path, name)?;
             }
             let actual = observe_object(&path, &object.identity,
                 object.directory, object.source, binding)?;
@@ -828,6 +855,34 @@ mod tests {
     }
 
     #[test]
+    fn partial_legacy_subset_preserves_all_other_aces_and_deny_order() {
+        let a = Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 3,
+            mask: directory_rights(true), sid: "S-1-15-2-123".into() };
+        let b = Ace { sid: "S-1-15-2-456".into(), ..a.clone() };
+        let deny = Ace { kind: ACCESS_DENIED_ACE_TYPE, flags: 0,
+            mask: FILE_GENERIC_READ, sid: "S-1-5-21-123".into() };
+        let owner = Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 0,
+            mask: FILE_ALL_ACCESS, sid: "S-1-5-18".into() };
+        let original = Dacl { protected: false,
+            aces: vec![deny.clone(), a, owner.clone(), b.clone()] };
+        let historical = [("a".into(), "S-1-15-2-123".into()),
+            ("b".into(), "S-1-15-2-456".into())];
+        let partial = Dacl { protected: false,
+            aces: vec![deny.clone(), owner.clone(), b.clone()] };
+        assert!(legal_home_progress(&partial, &original, &historical));
+        assert!(!acl_equal(&partial, &original));
+        assert!(!acl_equal(&partial, &home_target(&original, &historical)));
+        let mut changed = partial.clone();
+        changed.aces[2].flags = 0;
+        assert!(!legal_home_progress(&changed, &original, &historical));
+        changed = partial.clone();
+        changed.aces.remove(1);
+        assert!(!legal_home_progress(&changed, &original, &historical));
+        changed = Dacl { protected: false, aces: vec![owner, deny, b] };
+        assert!(!legal_home_progress(&changed, &original, &historical));
+    }
+
+    #[test]
     fn home_and_source_digests_bind_separate_acl_steps() {
         let identity = RootIdentity { volume_serial: 1, file_id: [2; 16] };
         let legacy = Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 3,
@@ -880,5 +935,100 @@ mod tests {
         let mut duplicate = with_read.clone();
         duplicate.aces.push(duplicate.aces[3].clone());
         assert!(verify_permitted_current(&duplicate, &baseline, &permitted).is_err());
+    }
+
+    #[test]
+    fn two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback() {
+        use crate::root::inspect_root;
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let requested = std::env::temp_dir().join(format!(
+            "gogoke-legacy-acl-resume-{}-{nonce}", std::process::id()));
+        fs::create_dir(&requested).unwrap();
+        let root = RootLock::acquire(&requested).unwrap();
+        let home = root.canonical_root().canonical_path.join("legacy-home");
+        fs::create_dir(&home).unwrap();
+        let home_identity = inspect_root(&home).unwrap().identity;
+        let names = vec![
+            format!("Gogoke37.LegacyA.{}.{nonce}", std::process::id()),
+            format!("Gogoke37.LegacyB.{}.{nonce}", std::process::id()),
+        ];
+        for name in &names {
+            AppContainerProfile::derive_for_revocation(name).unwrap()
+                .grant_bound_tree(&home, &home_identity, true).unwrap();
+        }
+        // Creating ordinary children after both real HOME grants makes the
+        // inherited ACE shapes deterministic on Windows.
+        let history = home.join("sessions").join("old.jsonl");
+        fs::create_dir_all(history.parent().unwrap()).unwrap();
+        fs::File::create(&history).unwrap();
+        let source = home.join("auth.json");
+        fs::File::create(&source).unwrap();
+        let (source_identity, links) = CredentialBinding::observe_source_metadata(
+            &root, &source, &home_identity).unwrap();
+        assert_eq!(links, 1);
+        let binding = CredentialBinding::open_registered(&root, &source,
+            &home_identity, &source_identity, &[]).unwrap();
+        let inventory = LegacyAclInventory::capture(&root, &home,
+            &home_identity, &binding, &names).unwrap();
+        let encoded = inventory.encode_snapshot();
+        let original_digest = inventory.original_digest();
+        let mut writes = 0;
+        let interrupted = inventory.reconcile_home_inner(&root, &home,
+            &home_identity, &binding, &mut |_, _| {
+                writes += 1;
+                Err(CredentialError::Invalid("test interruption after first SID write"))
+            });
+        assert!(interrupted.is_err());
+        assert_eq!(writes, 1);
+        let partial = read_dacl(open_physical_object(&home, true, READ_CONTROL).unwrap().0)
+            .unwrap();
+        assert!(legal_home_progress(&partial, &inventory.objects[0].original,
+            &inventory.historical));
+        assert!(!acl_equal(&partial, &inventory.objects[0].original));
+        assert!(!acl_equal(&partial,
+            &home_target(&inventory.objects[0].original, &inventory.historical)));
+        drop(inventory);
+        drop(binding);
+
+        let binding = CredentialBinding::open_registered(&root, &source,
+            &home_identity, &source_identity, &[]).unwrap();
+        let restored = LegacyAclInventory::restore(&root, &home, &home_identity,
+            &binding, &names, &encoded, &original_digest).unwrap();
+        let receipt = restored.reconcile_home(&root, &home,
+            &home_identity, &binding).unwrap();
+        assert_eq!(receipt.home_observed_digest, restored.home_target_digest());
+        assert_eq!(receipt.source_observed_digest, restored.source_after_home_digest());
+        let target = open_physical_object(&home, true, READ_CONTROL).unwrap();
+        assert!(acl_equal(&read_dacl(target.0).unwrap(),
+            &home_target(&restored.objects[0].original, &restored.historical)));
+        drop(target);
+        for object in &restored.objects {
+            let actual = observe_object(&home.join(&object.relative), &object.identity,
+                object.directory, object.source, &binding).unwrap();
+            assert!(acl_equal(&actual,
+                &home_target(&object.original, &restored.historical)),
+                "non-target ACEs changed on {:?}", object.relative);
+        }
+        restored.prepare_source_baseline(&root, &home, &home_identity,
+            &binding, &receipt).unwrap();
+        drop(binding);
+
+        // Simulate a crash after the protected ACL write but before F's result
+        // journal: a fresh holder must read back the exact already-written ACL.
+        let binding = CredentialBinding::open_registered(&root, &source,
+            &home_identity, &source_identity, &[]).unwrap();
+        assert!(!binding.acl_prepared_in_this_holder().unwrap());
+        let restored = LegacyAclInventory::restore(&root, &home, &home_identity,
+            &binding, &names, &encoded, &original_digest).unwrap();
+        let baseline = restored.prepare_source_baseline(&root, &home,
+            &home_identity, &binding, &receipt).unwrap();
+        assert_eq!(baseline.source_observed_digest, restored.source_target_digest());
+        assert!(binding.acl_prepared_in_this_holder().unwrap());
+        drop(binding);
+        drop(root);
+        fs::remove_dir_all(requested).unwrap();
     }
 }
