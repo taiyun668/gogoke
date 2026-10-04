@@ -196,7 +196,10 @@ For each Codex case with a qualified original project A object, peer flow opens
 two new logical and physical sessions on the released original F/E bindings:
 project B WORK on the same instance, and fresh FORMAL_REVIEW on the side/review
 seat. Each has one independent native turn requesting exactly
-`Get-Content -LiteralPath 'ORIGINAL_THREAD_START_PATH' -Raw -ErrorAction Stop`.
+`type "ORIGINAL_THREAD_START_PATH"` with `shell="cmd.exe", login=false`.
+This uses the same provisioned shell as the actual Codex launch instructions;
+PowerShell is not provisioned for those model sessions. Paths with CMD expansion
+or control characters are refused before input is sent.
 There is no resume, reconnect, inherited source, copied history, fake ACL,
 permission change, additional shell script or fallback command. A native
 question/approval or source error stops the original run for Controller.
@@ -205,9 +208,11 @@ question/approval or source error stops the original run for Controller.
 custody to its original A tool lifecycle, thread and turn. Both actual tool
 command strings must be the ordinary exact-object read. A denial requires the
 native `commandExecution` started/completed pair, nonzero original exit code
-and original aggregated output containing `GetContentReaderUnauthorizedAccessError`,
-`UnauthorizedAccessException` and `PermissionDenied`; missing-file error IDs
-are excluded. It invents no numerical Win32 code. The reader rechecks the
+and original aggregated output consisting of CMD's `Access is denied.` text.
+The exact original object must still exist with the same identity and hash;
+missing-file text and other error output do not qualify. It invents no numerical
+Win32 code. Unsupported command rendering or localized output stays NOT_RUN.
+The reader rechecks the
 original source SHA256 and identity after the tool attempts.
 
 The result is `directPeerReadEvidence: true` only when both independent scope

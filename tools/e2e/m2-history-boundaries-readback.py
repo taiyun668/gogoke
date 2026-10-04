@@ -355,7 +355,8 @@ def verify_peers(db, journal, boundary, result):
               session["purpose"] == attempt["purpose"] and
               all(session[key] == (case["projectB"] if attempt["purpose"] == "WORK" else case["sideBinding"])[key]
                   for key in ("domainId", "repositoryId", "seatId", "worktreeId")), "Peer is not an independent original test H/F session")
-        check(attempt["command"] == "Get-Content -LiteralPath '" + target["path"].replace("'", "''") + "' -Raw -ErrorAction Stop" and
+        check(not any(char in target["path"] for char in '"%!^&|<>\r\n') and
+              attempt["command"] == 'type "' + target["path"] + '"' and
               session["inputs"][0]["body"] == attempt["body"] and attempt["command"] in attempt["body"],
               "Peer H input does not request the ordinary exact-object read")
         observed = session_evidence(db, session, case, operations, peer=attempt)
@@ -394,11 +395,9 @@ def verify_peers(db, journal, boundary, result):
                   "Original source marker leaked through actual peer tool output")
             if (len(started) == 1 and len(commands) == 2 and item.get("status") in ("completed", "failed") and
                 type(item.get("exitCode")) is int and item["exitCode"] != 0 and
-                isinstance(output, str) and "GetContentReaderUnauthorizedAccessError" in output and
-                "UnauthorizedAccessException" in output and "PermissionDenied" in output and
-                not any(code in output for code in ("PathNotFound", "ItemNotFoundException", "ObjectNotFound"))):
+                isinstance(output, str) and output.strip() == "Access is denied."):
                 fact.update(state="ORIGINAL_TOOL_EXACT_READ_DENIED", directDeniedRead=True,
-                            originalErrorId="GetContentReaderUnauthorizedAccessError", originalExitCode=item["exitCode"])
+                            originalErrorText=output, originalExitCode=item["exitCode"])
             elif item.get("exitCode") == 0:
                 fact["state"] = "FAIL_ORIGINAL_TOOL_READ_SUCCEEDED"
                 result["peerReads"].append(fact)

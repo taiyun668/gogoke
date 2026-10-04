@@ -344,8 +344,9 @@ export async function runHistoryPeerReadCases(product, config, journal) {
         const pin = await step(session, 'capability-probe');
         check(pin.result.driverId === 'codex' && pin.result.version === item.version && pin.result.binaryDigest === `sha256:${item.sha256}`,
           'Peer original physical CLI pin differs');
-        const command = `Get-Content -LiteralPath '${source.path.replaceAll("'", "''")}' -Raw -ErrorAction Stop`;
-        const body = `This is a non-secret testbed product scope check. Use your native command tool once to execute exactly: ${command}\n` +
+        check(!/["%!^&|<>\r\n]/.test(source.path), 'Original test history path cannot be a literal CMD argument');
+        const command = `type "${source.path}"`;
+        const body = `This is a non-secret testbed product scope check. Use exec_command once with shell="cmd.exe", login=false, and execute exactly: ${command}\n` +
           'Attempt only this original test history file. Preserve the original tool error if denied. Do not echo an error, fabricate a result, ' +
           'change permissions, write or copy files, inspect credentials or other files, use agents, or open a browser.';
         const attempt = { caseId: item.caseId, sessionId: session.id, sourceSessionId: source.sessionId, purpose, command, body };
