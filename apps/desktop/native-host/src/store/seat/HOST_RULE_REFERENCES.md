@@ -29,3 +29,18 @@ IMPORTANT_DIFF / INVARIANTS_CHECKED: sealed current-route rule authority, source
 VALIDATION: static diff/ownership review only; Rust compilation, native controls, cloud CI, real CLI/model/pipe, Win11/SAC and acceptance are NOT_RUN until Root integrates and executes the affected cloud batch.
 FAILURES / RISKS / DEVIATIONS_FROM_PLAN: kernel controls use synthetic instance/login metadata and H turn admission; actual production gate-submit/gate-decide and Host factory/reservation produce the tested E facts. They do not prove real caller ingress, physical delivery or V08 E2E. STALL has no qualifying source producer in this package and remains unimplemented.
 OPEN_QUESTIONS / RECOMMENDED_NEXT_ACTION: Root integrates module/exports and C/H historical receipt reconciliation, then performs same-byte cloud checks and independent review. Retain the isolated worker checkout for that integration; no self acceptance or cleanup of Controller worktrees.
+
+## Current recipient readiness
+
+Controller read the actual official `rust-v0.160.0` tag: commit
+`a956835d020762cb2b570053af06f643a11c0ecc`. Its
+`codex-rs/app-server-protocol/src/protocol/v2/thread.rs` defines
+ThreadStartResponse/ThreadResumeResponse and the tagged ThreadStatus; `thread_data.rs`
+contains the thread's current status and original turns. The retained new process's
+empty in-memory turn ID alone is therefore not readiness. The native Host idle
+reader uses the current physical episode's original observed H command/A reply or
+original thread/status/changed, rejects unfinished resumed turns, and invalidates
+the old idle observation after a new input or active status. Outstanding original
+questions, generation changes and unexplained pending requests/items grant no input.
+It reuses the existing source and safe point; there is no new RPC, timer or probe.
+Official source shapes are not a real-model golden or Win11 execution result.
