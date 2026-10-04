@@ -113,7 +113,7 @@ impl<'root> ProductDatabase<'root> {
                     (JsonString::from_str("resume"),text("UNSUPPORTED_NATIVE_METADATA_RESUME")),
                     (JsonString::from_str("inTurnSteer"),text("UNSUPPORTED_UNPROVEN_SAME_TURN")),
                     (JsonString::from_str("appendWithoutTurn"),text("UNSUPPORTED")),
-                    (JsonString::from_str("nativeQuestionCard"),text("UNSUPPORTED_REPLY_ENCODER")),
+                    (JsonString::from_str("nativeQuestionCard"),text("SOURCE_PRESENT_NATIVE_ASK_USER_BEHAVIOUR_NOT_RUN")),
                     (JsonString::from_str("manualCompaction"),text("UNSUPPORTED")),
                     (JsonString::from_str("memoryOffLaunch"),text("NOT_RUN")),
                 ]))),

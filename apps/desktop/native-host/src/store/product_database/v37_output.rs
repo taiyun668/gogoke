@@ -442,6 +442,22 @@ impl<'root> ProductDatabase<'root> {
                 }
             }
             if driver=="codex" && self.dispatch_captured_model_tool(key,&raw)? {continue;}
+            if driver=="claude" {
+                use crate::store::session_transport::provider_evidence::{claude_question, stream_json};
+                if claude_question::decode(&raw.raw_bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("original Claude question: {error:?}")))?.is_some() {
+                    // The C factory verifies the original H User echo, current
+                    // physical custody and host work-request identity. An
+                    // unrelated permission request never becomes a question.
+                    self.raise_claude_card(key,&raw.key)?;
+                    ledger::resolve_raw_source_no_event(&mut self.connection,&operation,&nonce,
+                        &raw_cursor,"NATIVE_CLAUDE_QUESTION_CARD")?;
+                    continue;
+                }
+                if stream_json::is_claude_tool_result_line(&raw.raw_bytes) {
+                    self.expire_claude_resolved_cards(key,&raw.key)?;
+                }
+            }
             let output=if driver=="codex" {
                 codex_output::normalize(&raw.raw_bytes,&thread_id).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("native output: {error:?}")))?

@@ -42,6 +42,7 @@ mod v37_output;
 mod v37_health;
 mod v37_host_rule;
 mod v37_host_idle;
+mod v37_host_recipient;
 mod v37_runtime_status;
 mod v37_model_tools;
 mod v37_qcard;

@@ -206,7 +206,9 @@ fn health_compact_late_original_ack_continues_without_second_write_or_new_reques
         product.pump_host_health().unwrap();product.pump_host_health().unwrap();
         assert_eq!(health_control_rows(product,"SELECT raw_hex,request_id FROM main.gogoke_v37_h_generation_change"),change,
             "automatic continuation keeps original request identity and exact bytes");
-        assert_eq!(health_control_rows(product,"SELECT stage,request_id FROM main.gogoke_v37_h_generation_change")[0][0],"APPLIED");
+        let final_change=health_control_rows(product,"SELECT stage,COALESCE(original_error,'') FROM main.gogoke_v37_h_generation_change");
+        assert_eq!(final_change[0][0],"APPLIED",
+            "original generation progress and stored native error: {final_change:?}");
         assert_eq!(health_control_rows(product,"SELECT state,session_request_id FROM main.gogoke_v37_seat_health")[0],
             vec!["RECEIPTED".to_owned(),request.request_id.clone()]);
         assert_eq!(health_control_rows(product,&command_sql),observed);
