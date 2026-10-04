@@ -487,6 +487,7 @@ impl<'root> ProductDatabase<'root> {
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,
                 &self.owner,Some(&operation_id)))?;
+            failure(run.evidence.bind_original_history_source(&self.connection,&custody,&operation_id))?;
             failure(h::promote_resume(&self.connection,&request.domain_id,&request.target_id,
                 &request.request_id,&operation_id,old.revision))
         })();
@@ -1554,10 +1555,10 @@ impl<'root> ProductDatabase<'root> {
         let evidence = if let Some((proof,choice))=host {
             failure(LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,
                 &request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,
-                proof,choice))?
+                proof,choice,&request.request_id))?
         } else {
             failure(LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
-                &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id))?
+                &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,&request.request_id))?
         };
         let (model, effort) = failure(evidence.settings())?;
         let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
@@ -1720,6 +1721,7 @@ impl<'root> ProductDatabase<'root> {
             }
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
+            failure(run.evidence.bind_original_history_source(&self.connection,&custody,&operation_id))?;
             let next=current.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
             let advance=Statement::prepare(self.connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_claim SET revision=?1 WHERE domain_id=?2 AND session_id=?3 AND state='COMMITTED' AND revision=?4 AND process_operation_id=?5")?;
