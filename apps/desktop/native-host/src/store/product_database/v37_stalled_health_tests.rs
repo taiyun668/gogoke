@@ -205,11 +205,20 @@ fn stalled_health_later_work_append_and_unacknowledged_write_suppress_original_c
 #[test]
 fn stalled_health_new_generation_suppresses_original_physical_cause() {
     health_control_product("codex",|product| {
-        route_owner(product);let source=health_control_work_turn(product,false,r#""contextWindowExceeded""#);
+        route_owner(product);
+        // The original empty CLI thread is ephemeral. Materialize its history
+        // through the existing real no-model RPC before the synthetic WORK/A
+        // failure; no input is added after that original failure.
+        let key=("projectA".to_owned(),"sessionA".to_owned());
+        let thread=product.native_sessions.get(&key).unwrap().thread_id.clone().unwrap();
+        let history=product.native_append_rpc(&key,"stalled-original-history",&thread,
+            "cloud no-model original history control".into()).unwrap();
+        assert!(matches!(&history,Some(Reply::Ack {..})),"original history ACK: {history:?}");
+        let source=health_control_work_turn(product,false,r#""contextWindowExceeded""#);
         let (_,outcome)=repair_control(product,Some(&source),METHOD_MISSING);assert_eq!(h::decode_receipt(&outcome.unwrap()).unwrap().status,V37Status::Unsupported);
         product.pump_host_rules().unwrap();assert_eq!(projection(product).len(),1);let original=notification_rows(product);
-        // Real existing stop/resume generation transition. The original
-        // synthetic WORK/A fixture has not created a provider rollout.
+        // Real existing stop/resume generation transition uses that original
+        // history; synthetic failure frames do not prove a provider failure.
         let renew=operation("K-SESSION","renew-session","stalled-generation-control","sessionA",
             revision(product),r#"{"generation":"2"}"#);
         let live=product.native_sessions.get(&("projectA".into(),"sessionA".into())).unwrap();
