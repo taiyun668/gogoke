@@ -303,6 +303,7 @@ pub(crate) fn read_legacy_fence(db: &VerifiedDatabaseConnection<'_>, instance: &
 
 pub(crate) fn capture_legacy_fence(db: &mut VerifiedDatabaseConnection<'_>, input: &LegacyFenceCapture) -> Result<LegacyFenceRecord> {
     atom(&input.instance_id)?; atom(&input.original_boot)?;
+    if input.original_boot.eq_ignore_ascii_case("UNKNOWN") { return Err(LegacyFenceError::Unsafe); }
     for value in [&input.home_acl_digest, &input.source_acl_digest, &input.acl_provenance_digest] { digest(value)?; }
     digest(&input.native_snapshot_digest)?;
     if snapshot_digest(&input.native_snapshot)? != input.native_snapshot_digest { return Err(LegacyFenceError::Conflict); }
@@ -365,7 +366,7 @@ pub(crate) fn read_legacy_step(db: &VerifiedDatabaseConnection<'_>, instance: &s
 }
 fn eligible_boot(fence: &LegacyFenceRecord, boot: &str) -> Result<()> {
     atom(boot)?;
-    if boot == fence.original_boot { return Err(LegacyFenceError::Unsafe); }
+    if boot.eq_ignore_ascii_case("UNKNOWN") || boot == fence.original_boot { return Err(LegacyFenceError::Unsafe); }
     Ok(())
 }
 pub(crate) fn begin_legacy_acl_step(db: &mut VerifiedDatabaseConnection<'_>, input: &LegacyStepRequest<'_>) -> Result<LegacyStepIntent> {
@@ -391,7 +392,8 @@ pub(crate) fn begin_legacy_acl_step(db: &mut VerifiedDatabaseConnection<'_>, inp
             },
             LegacyAclStep::Baseline => {
                 let home = read_legacy_step(db, input.instance_id, LegacyAclStep::Home)?.ok_or(LegacyFenceError::Unsafe)?;
-                if home.phase != LegacyStepPhase::Applied || home.current_boot != input.current_boot ||
+                eligible_boot(&fence, &home.current_boot)?;
+                if home.phase != LegacyStepPhase::Applied ||
                     before.0 != &home.target_home_acl_digest || before.1 != &home.target_source_acl_digest ||
                     input.target_home_acl_digest != home.target_home_acl_digest ||
                     input.target_source_acl_digest == before.1 { return Err(LegacyFenceError::Unsafe); }
@@ -413,14 +415,16 @@ pub(crate) fn finish_legacy_acl_step(db: &mut VerifiedDatabaseConnection<'_>, in
         eligible_boot(&fence, input.current_boot)?;
         check_proof(db, &fence, input.proof)?;
         let step = read_legacy_step(db, input.instance_id, input.step)?.ok_or(LegacyFenceError::Unsafe)?;
+        eligible_boot(&fence, &step.current_boot)?;
         if step.phase != LegacyStepPhase::Pending || step.request_id != input.request_id ||
-            step.current_boot != input.current_boot || step.intent_revision != input.expected_intent_revision ||
+            step.intent_revision != input.expected_intent_revision ||
             fence.revision != step.intent_revision { return Err(LegacyFenceError::Conflict); }
         match input.step {
             LegacyAclStep::Home => {},
             LegacyAclStep::Baseline => {
                 let home = read_legacy_step(db, input.instance_id, LegacyAclStep::Home)?.ok_or(LegacyFenceError::Unsafe)?;
-                if home.phase != LegacyStepPhase::Applied || home.current_boot != input.current_boot ||
+                eligible_boot(&fence, &home.current_boot)?;
+                if home.phase != LegacyStepPhase::Applied ||
                     step.before_home_acl_digest != home.target_home_acl_digest ||
                     step.before_source_acl_digest != home.target_source_acl_digest ||
                     step.target_home_acl_digest != home.target_home_acl_digest { return Err(LegacyFenceError::Unsafe); }
@@ -523,40 +527,45 @@ mod tests {
                 expected_revision: 2, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('f'), proof: &partial,
             }), Err(LegacyFenceError::Conflict)));
             assert!(matches!(finish_legacy_acl_step(&mut db, &LegacyStepFinish {
-                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootA",
+                expected_intent_revision: 2, proof: &partial,
+            }), Err(LegacyFenceError::Unsafe)));
+            assert!(matches!(finish_legacy_acl_step(&mut db, &LegacyStepFinish {
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootC",
                 expected_intent_revision: 2, proof: &partial,
             }), Err(LegacyFenceError::Unsafe)));
             let home_done = proof(&db, 'd', 'f');
             assert!(matches!(begin_legacy_acl_step(&mut db, &LegacyStepRequest {
-                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootC",
                 expected_revision: 2, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('e'), proof: &home_done,
             }), Err(LegacyFenceError::Unsafe)));
             finish_legacy_acl_step(&mut db, &LegacyStepFinish {
-                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootC",
                 expected_intent_revision: 2, proof: &home_done,
             }).unwrap();
+            assert_eq!(read_legacy_step(&db, "instanceA", LegacyAclStep::Home).unwrap().unwrap().current_boot, "bootB");
             let stale_source = proof(&db, 'd', 'b');
             assert!(matches!(begin_legacy_acl_step(&mut db, &LegacyStepRequest {
-                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootC",
                 expected_revision: 3, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('e'), proof: &stale_source,
             }), Err(LegacyFenceError::Unsafe)));
             assert!(matches!(begin_legacy_acl_step(&mut db, &LegacyStepRequest {
-                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeAgain", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeAgain", current_boot: "bootC",
                 expected_revision: 3, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('f'), proof: &home_done,
             }), Err(LegacyFenceError::Conflict)));
             let baseline = begin_legacy_acl_step(&mut db, &LegacyStepRequest {
-                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootC",
                 expected_revision: 3, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('e'), proof: &home_done,
             }).unwrap();
             assert_eq!(baseline.phase, LegacyStepPhase::Pending);
             assert_eq!(baseline.before_source_acl_digest, home.target_source_acl_digest);
             assert!(matches!(finish_legacy_acl_step(&mut db, &LegacyStepFinish {
-                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootC",
                 expected_intent_revision: 4, proof: &home_done,
             }), Err(LegacyFenceError::Unsafe)));
             let baseline_done = proof(&db, 'd', 'e');
             finish_legacy_acl_step(&mut db, &LegacyStepFinish {
-                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootB",
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootC",
                 expected_intent_revision: 4, proof: &baseline_done,
             }).unwrap();
             db.close_checked().unwrap();
@@ -588,6 +597,44 @@ mod tests {
                 instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
                 expected_intent_revision: 2, proof: &after,
             }), Err(LegacyFenceError::Conflict)));
+            db.close_checked().unwrap();
+        });
+    }
+
+    #[test]
+    fn home_applied_on_second_boot_allows_only_same_fence_baseline_on_third_boot() {
+        fixture(|_, _, mut db| {
+            let original = capture(&db);
+            capture_legacy_fence(&mut db, &original).unwrap();
+            let before = proof(&db, 'a', 'b');
+            begin_legacy_acl_step(&mut db, &LegacyStepRequest {
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
+                expected_revision: 1, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('f'), proof: &before,
+            }).unwrap();
+            let after_home = proof(&db, 'd', 'f');
+            finish_legacy_acl_step(&mut db, &LegacyStepFinish {
+                instance_id: "instanceA", step: LegacyAclStep::Home, request_id: "homeA", current_boot: "bootB",
+                expected_intent_revision: 2, proof: &after_home,
+            }).unwrap();
+            assert!(matches!(begin_legacy_acl_step(&mut db, &LegacyStepRequest {
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootA",
+                expected_revision: 3, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('e'), proof: &after_home,
+            }), Err(LegacyFenceError::Unsafe)));
+            assert!(matches!(begin_legacy_acl_step(&mut db, &LegacyStepRequest {
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "UNKNOWN",
+                expected_revision: 3, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('e'), proof: &after_home,
+            }), Err(LegacyFenceError::Unsafe)));
+            let baseline = begin_legacy_acl_step(&mut db, &LegacyStepRequest {
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootC",
+                expected_revision: 3, target_home_acl_digest: &hash('d'), target_source_acl_digest: &hash('e'), proof: &after_home,
+            }).unwrap();
+            assert_eq!(baseline.current_boot, "bootC");
+            let after_baseline = proof(&db, 'd', 'e');
+            finish_legacy_acl_step(&mut db, &LegacyStepFinish {
+                instance_id: "instanceA", step: LegacyAclStep::Baseline, request_id: "baselineA", current_boot: "bootC",
+                expected_intent_revision: 4, proof: &after_baseline,
+            }).unwrap();
+            assert_eq!(read_legacy_step(&db, "instanceA", LegacyAclStep::Home).unwrap().unwrap().current_boot, "bootB");
             db.close_checked().unwrap();
         });
     }
