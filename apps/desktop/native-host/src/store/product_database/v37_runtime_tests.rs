@@ -4,6 +4,9 @@ use crate::store::seat::{CreateSeat, Kind, StoreTemplate};
 use crate::store::same_open::route_b_test_guard;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "v37_stalled_health_tests.rs"]
+mod stalled_health;
+
 // Reuses the actual fixed-catalog E/F/H launch from the session control below.
 // Login presence alone is synthetic. No credentials or model are loaded.
 fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)) {
@@ -90,6 +93,11 @@ fn health_control_source(product:&mut ProductDatabase<'_>,raw:&[u8])->ledger::Ra
 // Modelled ordinary-send writer/ACK ordering; original receipt is generated
 // by H's production recovery. No model prompt is written to the actual pipe.
 fn health_control_work_turn(product:&mut ProductDatabase<'_>,early_terminal:bool,cause:&str)->ledger::RawSourceKey {
+    health_control_work_turn_with_prefix(product,early_terminal,cause,|_| {})
+}
+
+fn health_control_work_turn_with_prefix(product:&mut ProductDatabase<'_>,early_terminal:bool,cause:&str,
+    before_terminal:impl FnOnce(&mut ProductDatabase<'_>))->ledger::RawSourceKey {
     use crate::store::session_transport::{codex_rpc::{Command,RpcId},rpc_journal as rpc};
     let key=("projectA".to_owned(),"sessionA".to_owned());let live=product.native_sessions.get(&key).unwrap();
     let custody=live.custody.clone();let open_id=live.open_request_id.clone();let open_bytes=live.open_request_bytes.clone();
@@ -134,6 +142,7 @@ fn health_control_work_turn(product:&mut ProductDatabase<'_>,early_terminal:bool
     }
     let receipt=h::recover_codex_turn_request(&mut product.connection,&input).unwrap().unwrap();
     assert_eq!(h::decode_receipt(&receipt.record.receipt_bytes.unwrap()).unwrap().status,V37Status::Applied);
+    if !early_terminal {before_terminal(product);}
     if !early_terminal {first=Some(health_control_source(product,terminal.as_bytes()));product.process_native_pending_output(&key).unwrap();}
     assert!(product.native_sessions.get(&key).unwrap().turn_id.is_none());
     product.revisit_host_health_sources().unwrap();
