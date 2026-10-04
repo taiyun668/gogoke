@@ -204,11 +204,24 @@ fn check_source_original(source: &Object, historical: &[(String, String)])
     if source.original.protected { return Err(mismatch()); }
     let baseline = baseline_target()?;
     let allowed: Vec<_> = baseline.aces.iter().map(|ace| &ace.sid).collect();
-    if source.original.aces.iter().any(|ace| !historical.iter().any(|(_, sid)| sid == &ace.sid)
-        && (!allowed.contains(&&ace.sid) || ace.kind != ACCESS_ALLOWED_ACE_TYPE)) {
-        return Err(mismatch());
+    for ace in &source.original.aces {
+        if historical.iter().any(|(_, sid)| sid == &ace.sid) { continue; }
+        if allowed.contains(&&ace.sid) {
+            if ace.kind != ACCESS_ALLOWED_ACE_TYPE { return Err(mismatch()); }
+        } else if !is_exact_inherited_local_read_execute(ace) {
+            return Err(mismatch());
+        }
     }
     Ok(())
+}
+
+fn is_exact_inherited_local_read_execute(ace: &Ace) -> bool {
+    let parts: Vec<_> = ace.sid.split('-').collect();
+    let local_user_sid = parts.len() == 8 && parts.starts_with(&["S", "1", "5", "21"])
+        && parts[4..].iter().all(|part| part.parse::<u32>().is_ok());
+    local_user_sid && ace.kind == ACCESS_ALLOWED_ACE_TYPE
+        && ace.flags == INHERITED_ACE as u8
+        && ace.mask == (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE)
 }
 
 /// The caller's list is the complete *permitted* current package set. A
@@ -938,6 +951,36 @@ mod tests {
     }
 
     #[test]
+    fn original_source_accepts_only_exact_inherited_local_read_execute() {
+        let mut source = Object { relative: PathBuf::from("auth.json"),
+            identity: RootIdentity { volume_serial: 1, file_id: [2; 16] },
+            directory: false, source: true,
+            original: baseline_target().unwrap() };
+        source.original.protected = false;
+        let extra = Ace { kind: ACCESS_ALLOWED_ACE_TYPE,
+            flags: INHERITED_ACE as u8,
+            mask: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            sid: "S-1-5-21-111-222-333-1002".into() };
+        source.original.aces.push(extra.clone());
+        assert!(check_source_original(&source, &[]).is_ok());
+        source.original.aces.push(Ace { sid: "S-1-5-21-111-222-333-1003".into(),
+            ..extra.clone() });
+        assert!(check_source_original(&source, &[]).is_ok(),
+            "the captured set, rather than an incidental count, is authoritative");
+        source.original.aces.pop();
+        for changed in [
+            Ace { mask: FILE_GENERIC_READ | FILE_GENERIC_WRITE, ..extra.clone() },
+            Ace { flags: 0, ..extra.clone() },
+            Ace { kind: ACCESS_DENIED_ACE_TYPE, ..extra.clone() },
+            Ace { sid: "S-1-15-2-999".into(), ..extra.clone() },
+            Ace { sid: "S-1-5-32-545".into(), ..extra.clone() },
+        ] {
+            *source.original.aces.last_mut().unwrap() = changed;
+            assert!(check_source_original(&source, &[]).is_err());
+        }
+    }
+
+    #[test]
     fn two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback() {
         use crate::root::inspect_root;
         use std::fs;
@@ -959,8 +1002,16 @@ mod tests {
             AppContainerProfile::derive_for_revocation(name).unwrap()
                 .grant_bound_tree(&home, &home_identity, true).unwrap();
         }
+        let extra = well_known_sid("S-1-5-21-111-222-333-1002").unwrap();
+        let extra_text = sid_text(extra.0).unwrap();
+        let home_handle = open_bound_object(&home, &home_identity, true).unwrap();
+        grant_exact_acl(home_handle.0, extra.0, &home_identity,
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            OBJECT_AND_CONTAINER_INHERIT).unwrap();
+        drop(home_handle);
         // Creating ordinary children after both real HOME grants makes the
-        // inherited ACE shapes deterministic on Windows.
+        // inherited ACE shapes deterministic on Windows. The synthetic extra
+        // local-user SID is nonpackage, read/execute only, and is not a model.
         let history = home.join("sessions").join("old.jsonl");
         fs::create_dir_all(history.parent().unwrap()).unwrap();
         fs::File::create(&history).unwrap();
@@ -973,6 +1024,9 @@ mod tests {
             &home_identity, &source_identity, &[]).unwrap();
         let inventory = LegacyAclInventory::capture(&root, &home,
             &home_identity, &binding, &names).unwrap();
+        let original_source = &inventory.source().original;
+        assert!(original_source.aces.iter().any(|ace|
+            ace.sid == extra_text && is_exact_inherited_local_read_execute(ace)));
         let encoded = inventory.encode_snapshot();
         let original_digest = inventory.original_digest();
         let mut writes = 0;
@@ -1012,8 +1066,15 @@ mod tests {
                 &home_target(&object.original, &restored.historical)),
                 "non-target ACEs changed on {:?}", object.relative);
         }
+        let migrated_source = source_acl(&binding).unwrap();
+        assert!(migrated_source.aces.iter().any(|ace|
+            ace.sid == extra_text && is_exact_inherited_local_read_execute(ace)),
+            "HOME migration must retain the sealed nonpackage read/execute ACE");
         restored.prepare_source_baseline(&root, &home, &home_identity,
             &binding, &receipt).unwrap();
+        let protected_source = source_acl(&binding).unwrap();
+        assert!(acl_equal(&protected_source, &baseline_target().unwrap()));
+        assert!(!protected_source.aces.iter().any(|ace| ace.sid == extra_text));
         drop(binding);
 
         // Simulate a crash after the protected ACL write but before F's result
