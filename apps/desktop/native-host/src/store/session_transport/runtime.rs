@@ -7,8 +7,10 @@
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
 use crate::store::instance;
+use crate::store::inbox::host_rule::{self as host_rule, HostRecipient};
 use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{self, Layer as SeatLayer, NativeOrigin, State as SeatState};
+use crate::store::seat::HostEscalationProof;
 use super::admission::{self, AdmissionError, AdmissionRequest, AdmissionResult, TrustedLimits};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +77,54 @@ pub(crate) fn reserve_native(
         admission::bind_seat_in_transaction(db, &current, request.session_id)?;
         current_instance_pin(db, request.instance_id)?;
         persisted_limits(db, request.domain_id, request.instance_id)
+    })
+}
+
+/// The internal HostRule path is a separate native authority. It consumes C's
+/// frozen recipient and current E cause inside H's own admission transaction;
+/// no User-origin wire call or synthetic model caller is involved.
+pub(crate) fn reserve_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
+    host:&OwnerIssuer,proof:&HostEscalationProof,choice:&HostRecipient,
+    request:&AdmissionRequest<'_>)->Result<AdmissionResult,AdmissionError> {
+    if choice.mode!="FRESH" || request.domain_id!=proof.domain_id()
+        || request.session_id!=choice.session_id || request.instance_id!=choice.instance_id
+        || request.generation!=choice.generation || request.request_id!=choice.reserve_request_id {
+        return Err(AdmissionError::Denied);
+    }
+    let identity=authority::read_product_identity(db,host).map_err(AdmissionError::Identity)?;
+    admission::reserve_admission(db,request,|db| {
+        check_owner_current(db,&identity)?;
+        let seat=host_rule::revalidate_host_recipient_in_transaction(db,host,proof,choice)
+            .map_err(|_|AdmissionError::Denied)?;
+        let seat=if seat.state==SeatState::Idle {
+            seat::set_dispatch_state_in_transaction(db,&seat,true).map_err(AdmissionError::Seat)?
+        } else {seat};
+        if seat.state!=SeatState::Busy || seat.generation.to_string()!=request.generation {
+            return Err(AdmissionError::Denied);
+        }
+        admission::bind_seat_in_transaction(db,&seat,request.session_id)?;
+        current_instance_pin(db,request.instance_id)?;
+        persisted_limits(db,request.domain_id,request.instance_id)
+    })
+}
+
+pub(crate) fn commit_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
+    host:&OwnerIssuer,proof:&HostEscalationProof,choice:&HostRecipient,
+    request:&AdmissionRequest<'_>)->Result<AdmissionResult,AdmissionError> {
+    if choice.mode!="FRESH" || request.domain_id!=proof.domain_id()
+        || request.session_id!=choice.session_id || request.instance_id!=choice.instance_id
+        || request.generation!=choice.generation || request.request_id!=choice.commit_request_id {
+        return Err(AdmissionError::Denied);
+    }
+    let identity=authority::read_product_identity(db,host).map_err(AdmissionError::Identity)?;
+    admission::commit_admission(db,request,|db| {
+        check_owner_current(db,&identity)?;
+        let seat=host_rule::revalidate_host_recipient_in_transaction(db,host,proof,choice)
+            .map_err(|_|AdmissionError::Denied)?;
+        if seat.state!=SeatState::Busy || seat.generation.to_string()!=request.generation {
+            return Err(AdmissionError::Denied);
+        }
+        current_instance_pin(db,request.instance_id).map(|_|())
     })
 }
 

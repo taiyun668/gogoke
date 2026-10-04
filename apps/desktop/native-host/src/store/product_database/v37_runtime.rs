@@ -4,6 +4,8 @@ use super::*;
 use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets, NativeStopProof, OriginBoundFrame};
 use crate::store::ledger::{self, SessionPurpose, SessionRegistration};
 use crate::store::seat::{self, NativeOrigin};
+use crate::store::inbox::host_rule::HostRecipient;
+use crate::store::seat::HostEscalationProof;
 use crate::store::session_transport::{self as h, runtime, launch::LaunchEvidence,
     codex_rpc::{self, Command, RpcId, Reply}, rpc_journal as rpc,
     generation_change as change, provider_evidence::{acp, stream_json, commands as vendor_commands}};
@@ -26,7 +28,8 @@ pub(super) struct NativeSession {
     stop_proof: Option<NativeStopProof>,
     next_rpc_id: u64,
     pending_acp: Option<(Vec<u8>,h::AcpSendIdentity)>,
-    pending_claude: Option<(Vec<u8>,h::ClaudeSendIdentity)>,
+    pub(super) pending_claude: Option<(Vec<u8>,h::ClaudeSendIdentity)>,
+    host_recipient: Option<(HostEscalationProof,HostRecipient)>,
 }
 
 struct RpcObservation {
@@ -64,7 +67,7 @@ fn unhex(bytes: &str) -> Result<Vec<u8>> {
 }
 
 impl<'root> ProductDatabase<'root> {
-    fn original_native_continuation(&self, domain: &str, session: &str)
+    pub(super) fn original_native_continuation(&self, domain: &str, session: &str)
         -> Result<(String,String,String)> {
         let initial=Statement::prepare(self.connection.as_ptr(),
             "SELECT e.process_operation_id,e.raw_hex,e.generation
@@ -133,15 +136,28 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_native_resume(&mut self, request: &V37Request) -> Result<Vec<u8>> {
-        self.dispatch_native_resume_at(request,request.expected_revision)
+        self.dispatch_native_resume_at(request,request.expected_revision,None)
+    }
+
+    pub(super) fn dispatch_host_recipient_resume(&mut self,request:&V37Request,
+        proof:&HostEscalationProof,choice:&HostRecipient)->Result<Vec<u8>> {
+        if choice.mode!="RESUME" || request.request_id!=choice.start_request_id
+            || request.target_id!=choice.session_id || request.domain_id!=proof.domain_id()
+            || request.operation!="resume" || request.family!="K-SESSION"
+            || user_payload_string(request,"generation")?!=choice.generation {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        self.check_host_recipient_choice(proof,choice)?;
+        self.dispatch_native_resume_at(request,request.expected_revision,Some((proof,choice)))
     }
 
     // The same original compact/renew request may continue after its single
     // UNKNOWN revision. This is an internal revision, never a rewritten wire
     // request or a second authority to launch.
     fn dispatch_native_resume_at(&mut self, request:&V37Request,
-        effective_revision:u64) -> Result<Vec<u8>> {
+        effective_revision:u64,host:Option<(&HostEscalationProof,&HostRecipient)>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         if let Some(refusal)=self.formal_review_continuation_refusal(request)? {
             return Ok(refusal);
         }
@@ -303,7 +319,9 @@ impl<'root> ProductDatabase<'root> {
             OrchestrationError::Invalid("native resume generation overflow"))?.to_string();
         let (repository_id,worktree_id,thread_id)=self.original_native_continuation(
             &request.domain_id,&request.target_id)?;
-        let (instance_id,home_id)=self.prepare_resume_session_home(request,&seat_id,&new_generation)?;
+        let (instance_id,home_id)=if let Some((proof,choice))=host {
+            self.prepare_host_recipient_session_home(request,&seat_id,&new_generation,true,proof,choice)?
+        } else {self.prepare_resume_session_home(request,&seat_id,&new_generation)?};
         if instance_id!=old.instance_id {return Err(OrchestrationError::OperationConflict);}
         let owner_binding=Statement::prepare(self.connection.as_ptr(),
             "SELECT binding_id FROM main.gogoke_v37_h_owner_binding
@@ -320,17 +338,28 @@ impl<'root> ProductDatabase<'root> {
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let intended=(|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            if let Some((proof,choice))=host {
+                self.check_host_recipient_choice_in_transaction(proof,choice)?;
+            }
             failure(h::begin_resume(&self.connection,&request.domain_id,&request.target_id,
                 &request.request_id,&request.raw_bytes,&old_generation,&new_generation,
                 old.revision,&home_id,&binding_id))?;
             Ok(())
         })();
         self.finish_native_transaction(intended)?;
-        let evidence=failure(LaunchEvidence::observe_resume(&mut self.connection,self.root,
-            &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
-            &worktree_id,&request.request_id))?;
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
+        let evidence=if let Some((proof,choice))=host {
+            failure(LaunchEvidence::observe_host_resume(&mut self.connection,self.root,
+                &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
+                &worktree_id,&request.request_id,proof,choice))?
+        } else {
+            failure(LaunchEvidence::observe_resume(&mut self.connection,self.root,
+                &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
+                &worktree_id,&request.request_id))?
+        };
         let (model,effort)=failure(evidence.settings())?;
         let launch=failure(evidence.request())?;
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let custody=self.process_custodian.prepare(&launch)?;
         let key=(request.domain_id.clone(),request.target_id.clone());
         let digest=crate::store::digest::sha256_hex(&request.raw_bytes);
@@ -341,11 +370,15 @@ impl<'root> ProductDatabase<'root> {
             domain_id:request.domain_id.clone(),session_id:request.target_id.clone(),
             model,effort,thread_id:None,turn_id:None,raw_capture:Default::default(),
             stop_proof:None,next_rpc_id:4,pending_acp:None,pending_claude:None,
+            host_recipient:host.map(|(proof,choice)|(proof.clone(),choice.clone())),
         });
         authority::record_prepared_process(&mut self.connection,&operation_id,&custody)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let attached=(|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            if let Some((proof,choice))=host {
+                self.check_host_recipient_choice_in_transaction(proof,choice)?;
+            }
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_in_transaction(&mut self.connection,self.root,
                 &self.owner,None))?;
@@ -355,9 +388,11 @@ impl<'root> ProductDatabase<'root> {
         })();
         self.finish_native_transaction(attached)?;
         let started=(|| -> Result<()> {
+            if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify(&mut self.connection,self.root,&self.owner,
                 Some(&operation_id)))?;
+            if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
             self.process_custodian.activate(&custody)?;
             authority::mark_process_active(&mut self.connection,&operation_id,&custody)?;
             let driver=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
@@ -446,6 +481,9 @@ impl<'root> ProductDatabase<'root> {
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let promoted=(|| -> Result<i64> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            if let Some((proof,choice))=host {
+                self.check_host_recipient_choice_in_transaction(proof,choice)?;
+            }
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,
                 &self.owner,Some(&operation_id)))?;
@@ -462,6 +500,11 @@ impl<'root> ProductDatabase<'root> {
         self.process_native_pending_output(&key)?;
         let receipt_id=self.resume_source_receipt(&request.domain_id,&request.target_id,
             &operation_id,&new_generation,&request.request_id)?;
+        if host.is_some() {
+            let run=self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?;
+            run.host_recipient=None;
+            run.evidence.clear_host_guard();
+        }
         Ok(encode_receipt(request,V37Status::Applied,effective_revision,
             u64::try_from(next).map_err(|_|OrchestrationError::OperationConflict)?,
             BTreeMap::from([
@@ -1077,7 +1120,7 @@ impl<'root> ProductDatabase<'root> {
         if c.stage!="OLD_STOPPED" {return self.generation_unknown(request);}
         let effective=u64::try_from(c.unknown_revision.unwrap_or(c.previous_revision))
             .map_err(|_|OrchestrationError::OperationConflict)?;
-        let bytes=match self.dispatch_native_resume_at(request,effective) {
+        let bytes=match self.dispatch_native_resume_at(request,effective,None) {
             Ok(bytes)=>bytes,
             Err(error)=>return self.generation_error(request,&format!(
                 "original continuation: {error:?}")),
@@ -1237,7 +1280,7 @@ impl<'root> ProductDatabase<'root> {
             } else {
                 let original=h::decode_request(&unhex(&c.raw_hex)?).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("original generation request: {error:?}")))?;
-                let result=self.dispatch_native_resume_at(&original,before_revision)?;
+                let result=self.dispatch_native_resume_at(&original,before_revision,None)?;
                 let settled=failure(h::decode_receipt(&result))?;
                 if !matches!(settled.status,V37Status::Applied|V37Status::Replayed) {
                     return Ok(encode_receipt(request,V37Status::Unknown,before_revision,
@@ -1378,7 +1421,7 @@ impl<'root> ProductDatabase<'root> {
             _=>return Ok(encode_receipt(request,V37Status::Denied,
                 request.expected_revision,request.expected_revision,Default::default())),
         };
-        self.dispatch_native_open_registered(request, purpose, None, None)
+        self.dispatch_native_open_registered(request, purpose, None, None, None)
     }
 
     /// A formal review is a fresh native session, never a recovered or forked
@@ -1397,7 +1440,7 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn dispatch_native_child_open(&mut self,request:&V37Request,
         caller:&seat::NativeSeatCall)->Result<Vec<u8>> {
         let admission=seat::NativeLeadAdmission::from_model_call(caller)?;
-        self.dispatch_native_open_registered(request,SessionPurpose::Work,None,Some(&admission))
+        self.dispatch_native_open_registered(request,SessionPurpose::Work,None,Some(&admission),None)
     }
 
     /// Only the native User side-open composition chooses this registration.
@@ -1407,12 +1450,25 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request,V37Status::Conflict,
                 request.expected_revision,request.expected_revision,Default::default()));
         }
-        self.dispatch_native_open_registered(request, SessionPurpose::SideChat, Some(side_id), None)
+        self.dispatch_native_open_registered(request, SessionPurpose::SideChat, Some(side_id), None,None)
+    }
+
+    pub(super) fn dispatch_host_recipient_open(&mut self,request:&V37Request,
+        proof:&HostEscalationProof,choice:&HostRecipient)->Result<Vec<u8>> {
+        if choice.mode!="FRESH" || request.request_id!=choice.start_request_id
+            || request.target_id!=choice.session_id || request.domain_id!=proof.domain_id()
+            || request.operation!="open" || request.family!="K-SESSION" {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        self.check_host_recipient_choice(proof,choice)?;
+        self.dispatch_native_open_registered(request,SessionPurpose::Work,None,None,Some((proof,choice)))
     }
 
     fn dispatch_native_open_registered(&mut self, request: &V37Request,
-        purpose: SessionPurpose, side_id: Option<&str>,admission:Option<&seat::NativeLeadAdmission>) -> Result<Vec<u8>> {
+        purpose: SessionPurpose, side_id: Option<&str>,admission:Option<&seat::NativeLeadAdmission>,
+        host:Option<(&HostEscalationProof,&HostRecipient)>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let expected_fields=if purpose==SessionPurpose::FormalReview {5} else {4};
         if request.payload.len() != expected_fields {
             return Ok(encode_receipt(request, V37Status::Denied,
@@ -1466,9 +1522,16 @@ impl<'root> ProductDatabase<'root> {
                 request.expected_revision, request.expected_revision, Default::default()));
         }
         drop(fenced);
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
-        let evidence = failure(LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
-            &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id))?;
+        let evidence = if let Some((proof,choice))=host {
+            failure(LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,
+                &request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,
+                proof,choice))?
+        } else {
+            failure(LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
+                &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id))?
+        };
         let (model, effort) = failure(evidence.settings())?;
         let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
             &request.domain_id, &seat_id, &request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
@@ -1486,6 +1549,9 @@ impl<'root> ProductDatabase<'root> {
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let intention = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
+            if let Some((proof,choice))=host {
+                self.check_host_recipient_choice_in_transaction(proof,choice)?;
+            }
             failure(evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, None))?;
             let insert = Statement::prepare(self.connection.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES(?1,?2,?3,'open',?4,'UNKNOWN',?5,?5)")?;
@@ -1498,6 +1564,7 @@ impl<'root> ProductDatabase<'root> {
             Ok(())
         })();
         self.finish_native_transaction(intention)?;
+        if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let launch = failure(evidence.request())?;
         let custody = self.process_custodian.prepare(&launch)?;
         let digest = crate::store::digest::sha256_hex(&request.raw_bytes);
@@ -1507,7 +1574,8 @@ impl<'root> ProductDatabase<'root> {
             operation_id: operation_id.clone(), open_request_id: request.request_id.clone(),
             open_request_bytes: request.raw_bytes.clone(), domain_id: request.domain_id.clone(),
             session_id: request.target_id.clone(), model, effort, thread_id: None, turn_id: None, raw_capture: Default::default(), stop_proof: None,
-            next_rpc_id: 4, pending_acp:None,pending_claude:None });
+            next_rpc_id: 4, pending_acp:None,pending_claude:None,
+            host_recipient:host.map(|(proof,choice)|(proof.clone(),choice.clone())) });
         if let Err(error) = authority::record_prepared_process(&mut self.connection, &operation_id, &custody) {
             let abort = self.process_custodian.abort_prepared(&custody);
             return Err(OrchestrationError::V37StoreFailure(format!(
@@ -1516,6 +1584,9 @@ impl<'root> ProductDatabase<'root> {
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let bind = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
+            if let Some((proof,choice))=host {
+                self.check_host_recipient_choice_in_transaction(proof,choice)?;
+            }
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_in_transaction(&mut self.connection, self.root, &self.owner, None))?;
             failure(h::bind_process_operation_in_transaction(&mut self.connection,
@@ -1530,8 +1601,10 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::V37StoreFailure(format!("native open bind: {error:?}; abort: {abort:?}")));
         }
         let started = (|| -> Result<()> {
+            if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
+            if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
             self.process_custodian.activate(&custody)?;
             authority::mark_process_active(&mut self.connection, &operation_id, &custody)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
@@ -1606,6 +1679,9 @@ impl<'root> ProductDatabase<'root> {
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let applied = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
+            if let Some((proof,choice))=host {
+                self.check_host_recipient_choice_in_transaction(proof,choice)?;
+            }
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             let next=current.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
@@ -1628,6 +1704,11 @@ impl<'root> ProductDatabase<'root> {
             Ok(())
         })();
         self.finish_native_transaction(applied)?;
+        if host.is_some() {
+            let run=self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?;
+            run.host_recipient=None;
+            run.evidence.clear_host_guard();
+        }
         let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
         let result=if run.evidence.driver_id()=="claude" {
             BTreeMap::from([
@@ -1944,7 +2025,11 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn dispatch_host_rule_send(&mut self,request:&V37Request,
         proof:&crate::store::seat::HostEscalationProof)->Result<Vec<u8>> {
+        let key=(request.domain_id.clone(),request.target_id.clone());
+        self.drain_native_output(&key)?;
+        if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
         self.check_host_rule_send(request,proof)?;
+        if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
         self.dispatch_native_send_inner(request)
     }
 
@@ -2288,6 +2373,7 @@ impl<'root> ProductDatabase<'root> {
                 stream_json::ClaudeData::Result {..} if echoed=>{
                     let completed=failure(h::complete_claude_send_from_source(&mut self.connection,&self.owner,&input,&raw.key))?;
                     if completed.user.record.receipt_bytes.is_none() {return Err(OrchestrationError::OperationConflict);}
+                    self.expire_claude_terminal_cards(key,&raw.key)?;
                     let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
                     run.thread_id=Some(completed.vendor_session_id);run.pending_claude=None;return Ok(());
                 },
@@ -2635,6 +2721,8 @@ impl<'root> ProductDatabase<'root> {
 
     fn native_rpc_observation(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<RpcObservation>> {
+        let host=self.native_sessions.get(key).and_then(|run|run.host_recipient.clone());
+        if let Some((proof,choice))=&host {self.check_host_recipient_choice(proof,choice)?;}
         let id = number.map(RpcId::client).transpose().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native RPC ID: {error:?}")))?;
         let run = self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
@@ -2655,6 +2743,7 @@ impl<'root> ProductDatabase<'root> {
         if intention.disposition != rpc::Disposition::NewWrite {
             return Err(OrchestrationError::Invalid("native RPC replay cannot write"));
         }
+        if let Some((proof,choice))=&host {self.check_host_recipient_choice(proof,choice)?;}
         let process = self.process_custodian.active(&custody.ticket)
             .ok_or(OrchestrationError::Invalid("native RPC process absent"))?;
         if let Err(error) = process.write_persistent_frame(&intention.bytes) {
