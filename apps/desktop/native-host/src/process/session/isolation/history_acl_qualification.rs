@@ -277,10 +277,22 @@ fn run_child(profile: &AppContainerProfile, name: &str, executable: &Path,
     read_report(&report)
 }
 
-fn leaf_aces(path: &Path, profile: &AppContainerProfile) -> Vec<(u32, u32, u32)> {
+fn leaf_sid_aces(path: &Path, sid: *mut c_void) -> Vec<(u32, u32, u32)> {
     let object = open_physical_object(path, false, READ_CONTROL)
         .unwrap_or_else(|error| panic!("read physical synthetic leaf {path:?}: {error}"));
-    package_aces(object.0, profile.sid).expect("read actual leaf DACL")
+    package_aces(object.0, sid).expect("read actual leaf DACL")
+}
+
+fn leaf_aces(path: &Path, profile: &AppContainerProfile) -> Vec<(u32, u32, u32)> {
+    leaf_sid_aces(path, profile.sid)
+}
+
+fn host_read_exact(path: &Path, expected: &[u8]) -> String {
+    match fs::read(path) {
+        Ok(bytes) if bytes == expected => "OK".into(),
+        Ok(bytes) => format!("WRONG_BYTES:{}", bytes.len()),
+        Err(error) => format!("ERR:{:?};{error}", error.raw_os_error()),
+    }
 }
 
 #[test]
@@ -346,6 +358,16 @@ fn synthetic_history_acl_creation_time_qualification() {
             leaf_aces(&a_grand_leaf, &b_profile))) } else { None };
         let b_grand_dacl = if b_grand_leaf.is_file() { Some((leaf_aces(&b_grand_leaf, &b_profile),
             leaf_aces(&b_grand_leaf, &a_profile))) } else { None };
+        // The package-only DACL tuples above do not describe the whole ACL.
+        // Confirm the ordinary Host user ACE and actual data reads as well.
+        let user_dacls = [&a_leaf, &b_leaf, &a_grand_leaf, &b_grand_leaf].map(|path|
+            if path.is_file() { Some(leaf_sid_aces(path, user)) } else { None });
+        let host_reads = [
+            host_read_exact(&a_leaf, b"synthetic A history"),
+            host_read_exact(&b_leaf, b"synthetic B history"),
+            host_read_exact(&a_grand_leaf, b"synthetic A descendant history"),
+            host_read_exact(&b_grand_leaf, b"synthetic B descendant history"),
+        ];
         let expected = ["A_auth_read", "A_auth_append", "A_mkdir", "A_create", "A_reopen",
             "A_grandchild", "A_grand_own", "A_grand_create", "A_grand_reopen", "A_grand_auth",
             "B_auth_read", "B_auth_append", "B_mkdir", "B_create", "B_reopen", "B_grandchild",
@@ -357,10 +379,14 @@ fn synthetic_history_acl_creation_time_qualification() {
             b_grand_dacl.as_ref()].into_iter().all(|value|
             matches!(value, Some((own, other)) if own.iter().any(|(mode, _, flags)|
                 *mode == GRANT_ACCESS && *flags & INHERITED_ACE == 0) && other.is_empty()));
+        let host_keeps_access = user_dacls.iter().all(|value|
+            matches!(value, Some(entries) if entries.iter().any(|(mode, rights, flags)|
+                *mode == GRANT_ACCESS && *rights == FILE_ALL_ACCESS && *flags & INHERITED_ACE == 0)))
+            && host_reads.iter().all(|result| result.as_str() == "OK");
         let qualified = expected.iter().all(|key| reports.get(*key).is_some_and(|value| value == "OK"))
             && denied.iter().all(|key| reports.get(*key).is_some_and(|value| value.starts_with("ERR:Some(5);")))
-            && dacl_private;
-        println!("HISTORY_ACL_QUALIFICATION layout={layout} verdict={} reports={reports:?} a_leaf_dacl={a_dacl:?} b_leaf_dacl={b_dacl:?} a_grand_dacl={a_grand_dacl:?} b_grand_dacl={b_grand_dacl:?}",
+            && dacl_private && host_keeps_access;
+        println!("HISTORY_ACL_QUALIFICATION layout={layout} verdict={} reports={reports:?} a_leaf_dacl={a_dacl:?} b_leaf_dacl={b_dacl:?} a_grand_dacl={a_grand_dacl:?} b_grand_dacl={b_grand_dacl:?} host_user_dacls={user_dacls:?} host_reads={host_reads:?}",
             if qualified { "CANDIDATE_QUALIFIED" } else { "CANDIDATE_REJECTED" });
         // A rejected variant is a valid experiment, never a product ISO PASS.
     }
