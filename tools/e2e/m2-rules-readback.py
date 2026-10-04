@@ -51,6 +51,33 @@ def typed_id(value):
     return type(value).__name__, value
 
 
+def turn_activity(decoded, thread, turn, allow_question=False):
+    items, calls, questions = [], [], []
+    ordinary = {"item/agentMessage/delta", "item/reasoning/summaryTextDelta",
+                "item/reasoning/textDelta", "turn/started", "turn/completed",
+                "thread/tokenUsage/updated", "thread/status/changed"}
+    for row, frame in decoded:
+        params = frame.get("params")
+        if not isinstance(params, dict) or params.get("turnId") != turn:
+            continue
+        check(params.get("threadId") == thread, "Original turn has another thread identity")
+        method = frame.get("method")
+        if method in ("item/started", "item/completed"):
+            item = params.get("item")
+            check(isinstance(item, dict) and item.get("type") in
+                  ("agentMessage", "reasoning", "contextCompaction", "dynamicToolCall"),
+                  "Original turn has unexplained item/tool activity")
+            if item["type"] == "dynamicToolCall":
+                items.append((row, frame))
+        elif method == "item/tool/call":
+            calls.append((row, frame))
+        elif method == "item/tool/requestUserInput" and allow_question:
+            questions.append((row, frame))
+        else:
+            check(method in ordinary, "Original turn has unexplained item/tool activity")
+    return items, calls, questions
+
+
 def inbox_rows(db, domain):
     return {name: select(db, f"SELECT * FROM gogoke_v37_inbox_{name} WHERE domain_id=? ORDER BY rowid", (domain,))
             for name in ("messages", "operations")}
@@ -160,7 +187,7 @@ def original_start(db, domain, stdin, bound, body, turn=None):
     ack = json.loads(raw)
     check(source["state"] == "NO_EVENT" and source["no_event_reason"] == "CODEX_RPC_RESPONSE" and
           typed_id(ack["id"]) == typed_id(command["id"]) and ack["result"]["turn"]["id"] == receipt["result"]["turnId"] and
-          ack["result"]["turn"]["status"] == "inProgress", "Original typed A TurnStart ACK differs")
+          ack["result"]["turn"]["status"] in ("inProgress", "completed"), "Original typed A TurnStart ACK differs")
     identity = "\n".join((digest(bytes.fromhex(stdin["request_hex"])), digest(bytes.fromhex(step["command_hex"])),
                            stdin["process_operation_id"], stdin["custodian_nonce"]))
     check(receipt["result"]["receiptId"] == "rpc-" + digest(identity.encode())[:40], "Original H receipt ID has another command/custody basis")
@@ -194,6 +221,96 @@ def verify_recipient(db, domain, bound, operations):
           pin["domain_id"] == domain and pin["state"] == "STOPPED" and pin["stop_proof_hash"] == episode["stop_fact_id"],
           "Recipient CLI pin/custody/incarnation is another subject")
     return {"binding": bound, "originalOpen": raw, "episode": episode, "pin": pin}
+
+
+def verify_final_source(db, domain, initial, current, journal_operations):
+    check(all(current[name] == initial[name] for name in
+              ("id", "seatId", "instanceId", "worktreeId", "threadId")) and
+          current["generation"].isdecimal() and current["revision"].isdecimal() and
+          int(current["generation"]) > int(initial["generation"]),
+          "Final source changed its original logical binding or lacks a resumed generation")
+    scoped = [entry for entry in journal_operations if entry["request"].get("family") == "K-SESSION" and
+              entry["request"].get("targetId") == initial["id"]]
+    resumes = [index for index, entry in enumerate(scoped) if entry["request"]["operation"] == "resume"]
+    check(resumes and [entry["request"]["operation"] for entry in scoped[resumes[-1]:]
+          if entry["request"]["operation"] in ("resume", "send", "open", "stop", "admission-release")]
+          == ["resume", "stop", "admission-release"],
+          "Last actual source generation must end with one stop and release")
+    resume, stop, release = scoped[resumes[-1]], scoped[-2], scoped[-1]
+    check([entry["request"]["operation"] for entry in (resume, stop, release)] ==
+          ["resume", "stop", "admission-release"], "Final source operation order changed")
+    for entry in (resume, stop, release):
+        request, receipt = entry["request"], entry["receipt"]
+        operation = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                        (domain, request["requestId"]))
+        expected_payload = {"generation": request["payload"]["generation"]}
+        if request["operation"] != "resume":
+            expected_payload["seatId"] = initial["seatId"]
+        check(json.loads(entry["rawFrame"]) == request and
+              bytes.fromhex(operation["raw_hex"]).decode() == entry["rawFrame"] and
+              operation["operation"] == request["operation"] and operation["session_id"] == initial["id"] and
+              operation["status"] == receipt["status"] == "APPLIED" and
+              operation["previous_revision"] == int(request["expectedRevision"]) and
+              operation["revision"] == int(receipt["revision"]) and
+              receipt["previousRevision"] == request["expectedRevision"] and
+              receipt["revision"] == str(int(request["expectedRevision"]) + 1) and
+              request["payload"] == expected_payload,
+              "Final source original H mutation/receipt differs")
+    check(resume["request"]["payload"]["generation"] == resume["receipt"]["result"]["oldGeneration"] and
+          resume["receipt"]["result"]["newGeneration"] == current["generation"] ==
+          stop["request"]["payload"]["generation"] == release["request"]["payload"]["generation"] and
+          stop["receipt"]["result"]["stopFact"] and
+          release["receipt"]["revision"] == current["revision"],
+          "Final source journal does not bind its last H generation/stop/release")
+    episode = one(db, "SELECT * FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? AND generation=?",
+                  (domain, initial["id"], current["generation"]))
+    claim = one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
+                (domain, initial["id"]))
+    binding = one(db, "SELECT * FROM gogoke_v37_h_seat_binding WHERE domain_id=? AND session_id=?",
+                  (domain, initial["id"]))
+    seat = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+               (domain, initial["seatId"]))
+    pin = one(db, "SELECT i.driver_id,i.program_digest,c.* FROM gogoke_v37_instances i JOIN "
+              "gogoke_coordination_process_custody c ON c.operation_id=? WHERE i.instance_id=?",
+              (episode["process_operation_id"], initial["instanceId"]))
+    check(episode["request_id"] == resume["request"]["requestId"] and
+          episode["old_generation"] == resume["receipt"]["result"]["oldGeneration"] and
+          bytes.fromhex(episode["raw_hex"]).decode() == resume["rawFrame"] and
+          episode["seat_id"] == binding["seat_id"] == initial["seatId"] and
+          episode["seat_incarnation"] == binding["seat_incarnation"] == seat["incarnation"] and
+          episode["instance_id"] == claim["instance_id"] == seat["instance_id"] == initial["instanceId"] and
+          episode["generation"] == claim["generation"] == binding["generation"] == current["generation"] and
+          seat["generation"] == int(current["generation"]) and seat["state"] == "IDLE" and
+          episode["phase"] == "STOPPED" and episode["stop_request_id"] == stop["request"]["requestId"] and
+          episode["stop_fact_id"] == claim["stop_fact_id"] == stop["receipt"]["result"]["stopFact"] and
+          claim["state"] == "RELEASED" and claim["revision"] == int(current["revision"]) and
+          claim["process_operation_id"] == episode["process_operation_id"] and
+          pin["driver_id"] == "codex" and pin["program_digest"] == pin["binary_digest_sha256"] and
+          pin["domain_id"] == domain and pin["generation"] == current["generation"] and
+          pin["state"] == "STOPPED" and pin["stop_proof_hash"] == episode["stop_fact_id"],
+          "Final source is not the physically stopped, released original H identity")
+    step = one(db, "SELECT * FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? AND "
+               "process_operation_id=? AND step_id=?",
+               (domain, initial["id"], episode["process_operation_id"],
+                episode["process_operation_id"] + "-thread-resume"))
+    command = json.loads(bytes.fromhex(step["command_hex"]))
+    ack_source = one(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=? AND source_epoch=? AND source_cursor=? "
+                     "AND process_ticket=? AND custodian_nonce=? AND domain_id=? AND session_id=? AND generation=?",
+                     (episode["process_operation_id"], step["source_epoch"], step["source_cursor"],
+                      step["ticket"], step["custodian_nonce"], domain, initial["id"], current["generation"]))
+    ack = json.loads(bytes(ack_source["raw_bytes"]))
+    check(step["phase"] == "OBSERVED" and step["generation"] == current["generation"] and
+          step["open_request_id"] == resume["request"]["requestId"] and
+          command["method"] == "thread/resume" and command["params"]["threadId"] == current["threadId"] and
+          typed_id(command["id"]) == typed_id(ack["id"]) and
+          ack["result"]["thread"]["id"] == current["threadId"] and
+          ack_source["state"] == "NO_EVENT" and ack_source["no_event_reason"] == "CODEX_RPC_RESPONSE" and
+          resume["receipt"]["result"]["receiptId"] ==
+          f'{episode["process_operation_id"]}:{step["source_epoch"]}:{step["source_cursor"]}',
+          "Final source resume lacks its original typed A thread ACK")
+    return {"binding": current, "episode": episode, "claim": claim, "seat": seat,
+            "originalResume": resume["rawFrame"], "originalThreadAck": bytes(ack_source["raw_bytes"]).decode(),
+            "originalStop": stop["rawFrame"], "originalRelease": release["rawFrame"]}
 
 
 def verify_host(db, domain, case, host, operations, result):
@@ -304,12 +421,13 @@ def verify_host(db, domain, case, host, operations, result):
               "Native busy card has no original A question source")
         check(not select(db, "SELECT 1 FROM gogoke_v37_qcard_native_operations WHERE domain_id=? AND card_id=? AND state IN ('ANSWERED','UNKNOWN')",
                          (domain, busy["cardId"])), "Busy source was answered/replayed instead of held")
-        for row in select(db, "SELECT raw_bytes FROM v37_ledger_raw_source WHERE operation_id=?", (stdin["process_operation_id"],)):
-            frame = json.loads(bytes(row["raw_bytes"]))
-            params = frame.get("params", {})
-            if params.get("turnId") == busy["turnId"]:
-                check(frame.get("method") != "item/tool/call" and params.get("item", {}).get("type") not in
-                      ("dynamicToolCall", "commandExecution", "fileChange", "mcpToolCall"), "Busy question used unrequested additional tool work")
+        incoming = select(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=?", (stdin["process_operation_id"],))
+        items, calls, questions = turn_activity(
+            [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming],
+            busy["binding"]["threadId"], busy["turnId"], allow_question=True)
+        check(not items and not calls and len(questions) == 1 and
+              bytes(questions[0][0]["raw_bytes"]) == raw,
+              "Busy question used unrequested additional tool work")
         final["busyOriginalA"] = raw.decode()
     result["hostSnapshots"].append(final)
     return final
@@ -348,6 +466,10 @@ def verify_case(db, journal, case, result):
                   if row["request"].get("requestId")}
     check(len(operations) == sum(bool(row["request"].get("requestId")) for row in journal["operations"]),
           "Original request IDs duplicated; mutating requests must be sent once")
+    if case.get("hostCases"):
+        result["initialSources"] = [verify_recipient(db, domain, row, operations) for row in (submitter, reviewer)]
+        result["finalSources"] = [verify_final_source(db, domain, row, sessions[row["id"]], journal["operations"])
+                                  for row in (submitter, reviewer)]
     check(len(case["seatCards"]) == 2, "Original User K-SEAT cards required")
     for key, session in zip(case["seatCards"], (submitter, reviewer)):
         observed = operations[key]
@@ -486,8 +608,8 @@ def verify_case(db, journal, case, result):
                           "AND process_ticket=? AND custodian_nonce=? AND generation=? ORDER BY rowid",
                           (domain, session["id"], stdin["process_operation_id"], stdin["ticket"], stdin["custodian_nonce"], stdin["generation"]))
         decoded = [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming]
-        calls = [(row, frame) for row, frame in decoded if frame.get("method") == "item/tool/call" and
-                 frame.get("params", {}).get("turnId") == action["turnId"]]
+        tool_items, calls, questions = turn_activity(decoded, session["threadId"], action["turnId"])
+        check(not questions, "Model turn has an unrelated question")
         check(len(calls) == 1, "Exactly one original model tool call is required, without retry/substitute")
         source, frame = calls[0]
         check(frame["params"]["threadId"] == session["threadId"] and frame["params"]["tool"] == "gogoke_policy" and
@@ -509,7 +631,7 @@ def verify_case(db, journal, case, result):
               acknowledgements[0][0]["source_epoch"] == start_step["source_epoch"] and
               acknowledgements[0][0]["source_cursor"] == start_step["source_cursor"] and
               acknowledgements[0][1]["result"]["turn"]["id"] == action["turnId"] and
-              acknowledgements[0][1]["result"]["turn"]["status"] == "inProgress",
+              acknowledgements[0][1]["result"]["turn"]["status"] in ("inProgress", "completed"),
               "Original CLI turn ACK does not prove this exact H User ask")
         reply_matches = []
         for reply in replies:
@@ -528,16 +650,19 @@ def verify_case(db, journal, case, result):
               receipt["operation"] == operation and receipt["targetId"] == gate and receipt["status"] == status and
               receipt["previousRevision"] == gate_rev and receipt["revision"] == str(int(gate_rev) + (status == "APPLIED")),
               "Actual H policy receipt differs from observation/required outcome")
-        tool_completions = [(row, value) for row, value in decoded if value.get("method") == "item/completed" and
-                            value.get("params", {}).get("turnId") == action["turnId"] and
-                            value.get("params", {}).get("item", {}).get("type") in
-                            ("dynamicToolCall", "commandExecution", "fileChange", "mcpToolCall")]
+        tool_completions = [(row, value) for row, value in tool_items if value["method"] == "item/completed"]
+        tool_starts = [(row, value) for row, value in tool_items if value["method"] == "item/started"]
         check(len(tool_completions) == 1 and tool_completions[0][1]["params"]["threadId"] == session["threadId"] and
               tool_completions[0][1]["params"]["item"]["type"] == "dynamicToolCall" and
               tool_completions[0][1]["params"]["item"]["id"] == frame["params"]["callId"] and
               tool_completions[0][1]["params"]["item"]["tool"] == "gogoke_policy" and
               tool_completions[0][1]["params"]["item"]["arguments"] == arguments,
               "Original CLI tool completion includes a substitute/additional tool")
+        check(len(tool_starts) <= 1 and all(
+            started["params"]["item"]["id"] == frame["params"]["callId"] and
+            started["params"]["item"]["tool"] == "gogoke_policy" and
+            started["params"]["item"]["arguments"] == arguments
+            for _, started in tool_starts), "Original CLI tool start includes an additional tool")
         events = select(db, "SELECT * FROM gogoke_v37_seat_policy_events WHERE domain_id=? AND event_id=?",
                         (domain, receipt["requestId"]))
         if status == "APPLIED":
