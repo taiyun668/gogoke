@@ -7,7 +7,7 @@
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
 use crate::store::instance;
-use crate::store::inbox::host_rule::{self as host_rule, HostRecipient};
+use crate::store::inbox::host_rule::{self as host_rule, HostCleanupCandidate, HostRecipient};
 use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{self, Layer as SeatLayer, NativeOrigin, State as SeatState};
 use crate::store::seat::HostEscalationProof;
@@ -288,13 +288,29 @@ pub(crate) fn release_native(
 
 /// Private cleanup of C's frozen failed Host FRESH recipe. The caller has
 /// checked that exact C operation; H independently refuses any open intent.
-pub(crate) fn release_unstarted_host_native(
+pub(crate) fn release_failed_host_native(
     db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
-    request:&AdmissionRequest<'_>,
+    candidate:&HostCleanupCandidate,request:&AdmissionRequest<'_>,unstarted:bool,
 )->Result<AdmissionResult,AdmissionError> {
+    if request.domain_id!=candidate.domain_id ||request.session_id!=candidate.choice.session_id
+        ||request.instance_id!=candidate.choice.instance_id
+        ||request.generation!=candidate.choice.generation
+        ||request.request_id!=format!("{}-release",
+            candidate.message_id.replacen("hostmsg-","hostcleanup-",1)) {
+        return Err(AdmissionError::Denied);
+    }
     let identity=authority::read_product_identity(db,owner).map_err(AdmissionError::Identity)?;
-    admission::release_unstarted_host_commit(db,request,|db|
-        check_owner_current(db,&identity))
+    let authorize=|db:&mut VerifiedDatabaseConnection<'_>| {
+        check_owner_current(db,&identity)?;
+        host_rule::verify_frozen_host_cleanup_in_transaction(db,candidate,
+            "release",request.raw_bytes)
+            .map_err(host_recipient_admission_error)
+    };
+    if unstarted {
+        admission::release_unstarted_host_commit(db,request,authorize)
+    } else {
+        admission::release_admission(db,request,authorize)
+    }
 }
 
 /// Later child control has a new sealed model call, not the old reserve call.
