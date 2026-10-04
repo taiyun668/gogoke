@@ -378,3 +378,67 @@ fn empty_owner_account_observer_initializes_only_fresh_runtime() {
     let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
     assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
 }
+
+#[test]
+fn legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer() {
+    let (root, requested) = test_root();
+    let base = root.canonical_root().canonical_path.clone();
+    let home = base.join("legacy-instance");
+    let history_dir = home.join("sessions").join("2026");
+    fs::create_dir_all(&history_dir).unwrap();
+    let history = history_dir.join("synthetic-history.jsonl");
+    fs::write(&history, b"synthetic-history-not-for-new-observer").unwrap();
+    let source = home.join(AUTH_NAME);
+    fs::write(&source, b"synthetic-nonsecret-auth").unwrap();
+    let home_id = inspect_root(&home).unwrap().identity;
+    let source_id = AppContainerProfile::capture_program_identity(&source).unwrap();
+    let name = format!("Gogoke37.LegacyOwnerLoginMigration.{}", std::process::id());
+    let observer = AppContainerProfile::ensure_for_cli(&name, true).unwrap();
+    let other_name = format!("Gogoke37.LegacyOtherSid.{}", std::process::id());
+    let other_profile = AppContainerProfile::ensure_for_cli(&other_name, true).unwrap();
+    observer.grant_bound_tree(&home, &home_id, true)
+        .expect("actual legacy whole-HOME inherited RW grant");
+    observer.verify_bound_tree_grant(&home, &home_id, true)
+        .expect("legacy child ACEs came from old grant primitive");
+    let history_id = AppContainerProfile::capture_program_identity(&history).unwrap();
+    other_profile.grant_bound_program(&history, &history_id)
+        .expect("independent SID on legacy history");
+    let binding = CredentialBinding::open_registered(&root, &source,
+        &home_id, &source_id, &[]).expect("registered metadata-only source");
+    observer.migrate_legacy_owner_login_grant(&root, &home, &home_id,
+        Some((&binding, &[]))).expect("revoke only known old observer SID grants");
+    assert!(!binding.acl_prepared_in_this_holder().unwrap(),
+        "legacy revoke cannot claim protected credential baseline preparation");
+    other_profile.verify_bound_program_grant(&history, &history_id)
+        .expect("migration preserves another SID's exact ACL");
+    AppContainerProfile::prepare_quiescent_owner_account_source(&root,
+        &home, &home_id, &binding).expect("quiescent source protection after migration");
+    let runtime = home.join("gogoke-login-runtime");
+    fs::create_dir(&runtime).unwrap();
+    let runtime_id = inspect_root(&runtime).unwrap().identity;
+    observer.grant_bound_owner_account_observer(&root, &home, &home_id,
+        &runtime, &runtime_id, &binding, &[])
+        .expect("exact source-read and fresh-runtime grant after legacy cleanup");
+    let runner = prepare_runner(&observer, &base.join("migrated-observer-runner"));
+    let source_read = run_child_path(&name, &runner, &source, false);
+    assert_eq!(source_read, "read=OK write=OK", "actual LPAC auth read: {source_read}");
+    let initialized = runtime.join("synthetic-account-init.json");
+    let created = run_child_path_with_home(&name, &runner, &initialized, false, Some(&home));
+    assert_eq!(created, "create=OK reopen=Ok(true)",
+        "actual LPAC runtime creation after migration: {created}");
+    let private_read = run_child_path(&name, &runner, &history, false);
+    assert!(private_read.starts_with("read=ERR:Some(5);") && private_read.ends_with(" write=OK"),
+        "legacy history access must be revoked: {private_read}");
+    observer.verify_bound_owner_account_observer(&root, &home, &home_id,
+        &runtime, &runtime_id, &binding, &[])
+        .expect("no broad observer SID remains on history");
+    drop((observer, other_profile, binding));
+    drop(root);
+    fs::remove_dir_all(requested).unwrap();
+    #[link(name = "userenv")]
+    extern "system" { fn DeleteAppContainerProfile(name: *const u16) -> i32; }
+    for profile_name in [name, other_name] {
+        let wide: Vec<u16> = OsStr::new(&profile_name).encode_wide().chain(Some(0)).collect();
+        assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
+    }
+}

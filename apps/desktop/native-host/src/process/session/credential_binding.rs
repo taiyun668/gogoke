@@ -361,6 +361,19 @@ impl CredentialBinding {
         Ok(result)
     }
 
+    /// Legacy OwnerLogin SID migration uses the already-held metadata/ACL
+    /// handle without changing the protected-baseline completion bit.
+    pub(super) fn with_source_metadata_acl<T>(&self,
+        action: impl FnOnce(*mut c_void) -> Result<T, CredentialError>)
+        -> Result<T, CredentialError> {
+        let state = self.state.lock().map_err(|_| CredentialError::CustodyPoisoned)?;
+        let scopes: Vec<_> = state.aliases.iter().map(|entry| entry.witness.scope.clone()).collect();
+        self.verify_locked(&state, &scopes)?;
+        let result = action(self.file.as_raw_handle())?;
+        self.verify_locked(&state, &scopes)?;
+        Ok(result)
+    }
+
     pub(crate) fn identity(&self) -> &RootIdentity { &self.identity }
 
     /// This is only this process's completed baseline-ACL operation state.
