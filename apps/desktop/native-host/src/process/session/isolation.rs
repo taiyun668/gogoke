@@ -9,8 +9,9 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use crate::root::RootIdentity;
-use super::credential_binding::{CredentialAlias, CredentialBinding, CredentialError};
+use crate::root::{RootIdentity, RootLock};
+use super::credential_binding::{CredentialAlias, CredentialAliasScope,
+    CredentialBinding, CredentialError};
 
 type Handle = *mut c_void;
 const TOKEN_QUERY: u32 = 0x0008;
@@ -576,6 +577,134 @@ impl AppContainerProfile {
             revoke_exact_credential_ace(handle, self.sid, binding.identity())?;
             Ok(())
         })
+    }
+
+    /// F may call this only after proving whole-instance quiescence and
+    /// settling every alias intent. A fresh ordinary login can then replace
+    /// its source DACL before the later LPAC account/read observer is admitted.
+    pub(crate) fn prepare_quiescent_owner_account_source(root: &RootLock,
+        home: &Path, home_identity: &RootIdentity,
+        binding: &CredentialBinding) -> Result<(), CredentialError> {
+        binding.verify_registered_aliases(&[])?;
+        let (observed, links) = CredentialBinding::observe_source_metadata(root,
+            &home.join("auth.json"), home_identity)?;
+        if &observed != binding.identity() || links != 1 {
+            return Err(CredentialError::IdentityChanged);
+        }
+        protect_credential_source_acl(binding)
+    }
+
+    /// Fixed Codex/File account/read only. The ordinary same-user login is
+    /// launched separately. This LPAC observer receives exact source read,
+    /// non-inheritable HOME traverse, and its fresh runtime directory. An
+    /// existing protected source DACL is required: UNKNOWN live jobs must not
+    /// trigger a DACL rebuild at this entry point.
+    pub(crate) fn grant_bound_owner_account_observer(&self, root: &RootLock,
+        home: &Path, home_identity: &RootIdentity, runtime: &Path,
+        runtime_identity: &RootIdentity, binding: &CredentialBinding,
+        registered_aliases: &[CredentialAliasScope]) -> Result<(), CredentialError> {
+        let source = home.join("auth.json");
+        if runtime.parent() != Some(home) || runtime == source {
+            return Err(CredentialError::Invalid("account observer runtime is not an exact HOME child"));
+        }
+        binding.verify_registered_aliases(registered_aliases)?;
+        let (observed, _) = CredentialBinding::observe_source_metadata(root,
+            &source, home_identity)?;
+        if &observed != binding.identity() { return Err(CredentialError::IdentityChanged); }
+        binding.with_source_acl(|handle, _prepared| {
+            if !dacl_protected(handle)? { return Err(IsolationError::AclWitnessMismatch.into()); }
+            let (_token, _user_buffer, user) = host_user_sid()?;
+            if package_aces(handle, user)?.as_slice() !=
+                &[(GRANT_ACCESS, FILE_ALL_ACCESS, NO_INHERITANCE)] {
+                return Err(IsolationError::AclWitnessMismatch.into());
+            }
+            grant_exact_acl(handle, self.sid, binding.identity(),
+                FILE_GENERIC_READ, NO_INHERITANCE)?;
+            if !dacl_protected(handle)? { return Err(IsolationError::AclWitnessMismatch.into()); }
+            Ok(())
+        })?;
+        let home_object = open_bound_object(home, home_identity, true)?;
+        grant_exact_acl(home_object.0, self.sid, home_identity,
+            FILE_GENERIC_EXECUTE, NO_INHERITANCE)?;
+        let fresh_runtime = Self::open_fresh_directory(runtime)?;
+        if &fresh_runtime.identity != runtime_identity {
+            return Err(CredentialError::IdentityChanged);
+        }
+        self.grant_held_fresh_directory(&fresh_runtime, true, true)?;
+        self.verify_bound_owner_account_observer(root, home, home_identity,
+            runtime, runtime_identity, binding, registered_aliases)
+    }
+
+    pub(crate) fn verify_bound_owner_account_observer(&self, root: &RootLock,
+        home: &Path, home_identity: &RootIdentity, runtime: &Path,
+        runtime_identity: &RootIdentity, binding: &CredentialBinding,
+        registered_aliases: &[CredentialAliasScope]) -> Result<(), CredentialError> {
+        if runtime.parent() != Some(home) {
+            return Err(CredentialError::Invalid("account observer runtime escaped HOME"));
+        }
+        binding.verify_registered_aliases(registered_aliases)?;
+        let source = home.join("auth.json");
+        let (source_identity, _) = CredentialBinding::observe_source_metadata(root,
+            &source, home_identity)?;
+        if &source_identity != binding.identity() { return Err(CredentialError::IdentityChanged); }
+        let home_object = open_physical_object(home, true, READ_CONTROL)?;
+        if &file_identity(home_object.0)? != home_identity ||
+            package_aces(home_object.0, self.sid)?.as_slice() !=
+                &[(GRANT_ACCESS, FILE_GENERIC_EXECUTE, NO_INHERITANCE)] {
+            return Err(IsolationError::AclWitnessMismatch.into());
+        }
+        self.verify_bound_tree_grant(runtime, runtime_identity, true)?;
+        let alias_paths: Vec<PathBuf> = registered_aliases.iter().map(|scope|
+            binding.alias(scope, registered_aliases).map(|alias| alias.path()))
+            .collect::<Result<_, _>>()?;
+        let mut pending = vec![home.to_path_buf()];
+        let mut source_found = false;
+        let mut aliases_found = vec![false; alias_paths.len()];
+        while let Some(parent) = pending.pop() {
+            for entry in std::fs::read_dir(&parent).map_err(|error|
+                CredentialError::Io { operation: "enumerate account observer HOME", source: error })? {
+                let child = entry.map_err(|error| CredentialError::Io {
+                    operation: "read account observer entry", source: error })?.path();
+                if child == runtime { continue; }
+                let metadata = std::fs::symlink_metadata(&child).map_err(|error|
+                    CredentialError::Io { operation: "read account observer object metadata", source: error })?;
+                if child == source || alias_paths.contains(&child) {
+                    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                        return Err(CredentialError::Invalid("registered credential name is not physical"));
+                    }
+                    let object = open_directory(&child, READ_CONTROL)?;
+                    let info = file_information(object.0)?;
+                    if info.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+                        || &file_identity(object.0)? != binding.identity()
+                        || !dacl_protected(object.0)?
+                        || package_aces(object.0, self.sid)?.as_slice() !=
+                            &[(GRANT_ACCESS, FILE_GENERIC_READ, NO_INHERITANCE)] {
+                        return Err(IsolationError::AclWitnessMismatch.into());
+                    }
+                    if child == source { source_found = true; }
+                    if let Some(index) = alias_paths.iter().position(|path| path == &child) {
+                        aliases_found[index] = true;
+                    }
+                    continue;
+                }
+                let directory = metadata.is_dir();
+                let object = open_physical_object(&child, directory, READ_CONTROL)?;
+                if !package_aces(object.0, self.sid)?.is_empty() {
+                    return Err(IsolationError::AclWitnessDetail {
+                        object: child.strip_prefix(home).unwrap_or(&child).to_path_buf(),
+                        sid: self.package_sid_string()?,
+                        expected: "no observer package ACE outside auth object and runtime".into(),
+                        observed: package_aces(object.0, self.sid)?,
+                    }.into());
+                }
+                if directory { pending.push(child); }
+            }
+        }
+        if !source_found || aliases_found.iter().any(|found| !found) {
+            return Err(CredentialError::Invalid("registered credential source or alias absent from HOME"));
+        }
+        binding.verify_registered_aliases(registered_aliases)?;
+        Ok(())
     }
 
     /// The program path must come from F's fixed native catalog. Its object
