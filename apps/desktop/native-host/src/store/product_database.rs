@@ -155,6 +155,7 @@ pub struct ProductDatabase<'root> {
     process_custodian: ProcessCustodian,
     owner_login: Option<v37_login::OwnerLoginSession>,
     native_sessions: BTreeMap<(String, String), v37_runtime::NativeSession>,
+    pending_native_launches: BTreeMap<(String, String), super::session_transport::launch::LaunchEvidence>,
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -176,7 +177,8 @@ impl<'root> ProductDatabase<'root> {
         let process_custodian = ProcessCustodian::new()?;
         super::session_transport::rpc_journal::initialize_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
-        Ok(Self { root, connection, owner, process_custodian, owner_login: None, native_sessions: BTreeMap::new() })
+        Ok(Self { root, connection, owner, process_custodian, owner_login: None,
+            native_sessions: BTreeMap::new(), pending_native_launches: BTreeMap::new() })
     }
 
     pub fn serve_pipe(&mut self, pipe: &PrivatePipeConnection) -> Result<()> {
@@ -735,12 +737,14 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        let Self { root: _, connection, owner: _, process_custodian, owner_login, native_sessions } = self;
+        let Self { root: _, connection, owner: _, process_custodian, owner_login, native_sessions,
+            pending_native_launches } = self;
         drop(owner_login);
         // Closing the Job first prevents a child from outliving the active
         // coordination database. Unresolved rows stay UNKNOWN on recovery.
         drop(process_custodian);
         drop(native_sessions);
+        drop(pending_native_launches);
         connection.close_checked()
     }
 

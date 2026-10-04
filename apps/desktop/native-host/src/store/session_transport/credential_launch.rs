@@ -287,6 +287,9 @@ pub(crate) struct CredentialLaunch {
     history: PrivateHistoryGeneration,
     object: CredentialObjectRecord,
     profile_record: CredentialProfileRecord,
+    // Ephemeral provenance, never reconstructed from an ACTIVE database row.
+    // Only this attempt's newly reserved grant can use NoAttempt cleanup.
+    granted_in_this_attempt: bool,
 }
 
 /// Resume only the original credential revocation after a host restart. This
@@ -356,9 +359,20 @@ pub(crate) fn reconcile_stopped_credential(db: &mut VerifiedDatabaseConnection<'
     let binding = evidence(CredentialBinding::open_registered(root, &home.path.join("auth.json"),
         &home.identity, &object.file_identity, &scopes))?;
     let directory = evidence(instance::resolve_private_history_directory(db, root, &history.history_id))?;
-    let alias = evidence(binding.alias(&CredentialAliasScope {
-        root: directory.path, root_identity: directory.identity }, &scopes))?;
-    CredentialLaunch { binding, alias, history, object, profile_record }
+    let scope = CredentialAliasScope { root: directory.path, root_identity: directory.identity };
+    let row = rows.iter().find(|row| row.history_id == history.history_id)
+        .ok_or_else(|| denied("original stopped alias receipt absent"))?;
+    if row.directory_identity != scope.root_identity || row.source_file_identity != object.file_identity {
+        return Err(denied("original stopped alias identity changed"));
+    }
+    if row.state == "REMOVED" && profile_record.state == "REVOKED" {
+        evidence(CredentialBinding::verify_removed_alias(root, &home.path.join("auth.json"),
+            &home.identity, &object.file_identity, &scope, &scopes))?;
+        evidence(profile.verify_revoked_credential_source(&binding))?;
+        return Ok(());
+    }
+    let alias = evidence(binding.alias(&scope, &scopes))?;
+    CredentialLaunch { binding, alias, history, object, profile_record, granted_in_this_attempt: false }
         .finish_original_revoke(db, root, &profile, operation)
 }
 
@@ -425,13 +439,13 @@ impl CredentialLaunch {
         };
         let sid = evidence(profile.sid_identity())?;
         let prior = profiles.iter().find(|row| row.binding_id == history.generation.binding_id);
-        let profile_record = if let Some(row) = prior.filter(|row| row.state == "ACTIVE") {
+        let (profile_record, granted_in_this_attempt) = if let Some(row) = prior.filter(|row| row.state == "ACTIVE") {
             if row.generation != history.generation.generation || row.history_id != history.generation.history_id
                 || row.profile_sid != sid || row.source_file_identity != object.file_identity {
                 return Err(denied("current profile original binding changed"));
             }
             evidence(profile.verify_credential_alias(&binding, &alias))?;
-            row.clone()
+            (row.clone(), false)
         } else {
             let recovering = prior.is_some_and(|row| matches!(row.state.as_str(), "GRANT_PENDING" | "UNKNOWN"));
             let revision = if recovering { prior.ok_or_else(|| denied("profile absent"))?.revision.checked_sub(1)
@@ -452,10 +466,14 @@ impl CredentialLaunch {
                 evidence(profile.grant_credential_alias(&binding, &alias))?;
                 evidence(profile.verify_credential_alias(&binding, &alias))?;
             }
-            evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Active))?
+            (evidence(instance::complete_credential_profile(db, &intent, CredentialProfileResult::Active))?, !recovering)
         };
-        let result = Self { binding, alias, history: history.generation.clone(), object, profile_record };
-        result.verify(db, root, profile)?;
+        let result = Self { binding, alias, history: history.generation.clone(), object, profile_record,
+            granted_in_this_attempt };
+        if let Err(original) = result.verify(db, root, profile) {
+            let cleanup = result.revoke_uncreated(db, root, profile, request);
+            return Err(format!("{original}; uncreated credential settlement: {cleanup:?}"));
+        }
         Ok(Some(result))
     }
     pub(crate) fn verify(&self, db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -499,6 +517,28 @@ impl CredentialLaunch {
         }
         evidence(profile.verify_credential_alias(&self.binding, &self.alias))
     }
+    /// Internal launch boundary only: the caller has not attempted process
+    /// creation, or the original factory error confirms no surviving child.
+    /// LaunchCleanup must retain its witness instead of calling this method.
+    /// Database absence alone is never used to infer that a child has stopped.
+    pub(crate) fn revoke_uncreated(&self, db: &mut VerifiedDatabaseConnection<'_>,
+        root: &RootLock, profile: &AppContainerProfile, request: &str) -> Result<(), String> {
+        let history = evidence(instance::read_private_history_generation(db,
+            &self.history.binding_id, &self.history.generation))?
+            .ok_or_else(|| denied("uncreated original F generation absent"))?;
+        if !self.granted_in_this_attempt || history != self.history || history.request_id != request || history.source.is_some()
+            || evidence(profile.sid_identity())? != self.profile_record.profile_sid {
+            return Err(denied("uncreated original launch association changed"));
+        }
+        let query = evidence(Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE binding_id=?1
+               AND (process_operation_id IS NOT NULL OR phase NOT IN ('INTENT','FAILED'))"))?;
+        evidence(query.bind_text(1, &history.binding_id))?;
+        if evidence(query.step_row())? { return Err(denied("uncreated launch already has original process custody")); }
+        drop(query);
+        self.finish_original_revoke(db, root, profile, &step_request(request, "uncreated"))
+    }
+
     pub(crate) fn revoke(&self, db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
         profile: &AppContainerProfile, operation: &str, custody: &PreparedCustody) -> Result<(), String> {
         if custody.binding.profile_id != self.object.instance_id || custody.binding.domain_id != self.history.domain_id
