@@ -208,12 +208,15 @@ fn stalled_health_new_generation_suppresses_original_physical_cause() {
         route_owner(product);let source=health_control_work_turn(product,false,r#""contextWindowExceeded""#);
         let (_,outcome)=repair_control(product,Some(&source),METHOD_MISSING);assert_eq!(h::decode_receipt(&outcome.unwrap()).unwrap().status,V37Status::Unsupported);
         product.pump_host_rules().unwrap();assert_eq!(projection(product).len(),1);let original=notification_rows(product);
-        // Real existing metadata-only generation transition. It does not
-        // send a model prompt or compact command; cleanup reads its new claim.
+        // Real existing stop/resume generation transition. The original
+        // synthetic WORK/A fixture has not created a provider rollout.
         let renew=operation("K-SESSION","renew-session","stalled-generation-control","sessionA",
             revision(product),r#"{"generation":"2"}"#);
-        let result=h::decode_receipt(&product.dispatch_native_generation_change(&renew).unwrap()).unwrap();
-        assert!(matches!(result.status,V37Status::Applied|V37Status::Replayed));
+        let bytes=product.dispatch_native_generation_change(&renew).unwrap();
+        let result=h::decode_receipt(&bytes).unwrap();
+        let change=change::read(&product.connection,"projectA",&renew.request_id).unwrap();
+        assert!(matches!(result.status,V37Status::Applied|V37Status::Replayed),
+            "original renew receipt: {}; original generation change: {change:?}",String::from_utf8_lossy(&bytes));
         assert_eq!(scalar(product,"SELECT generation FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'"),"3");
         product.pump_host_rules().unwrap();assert!(projection(product).is_empty());assert_eq!(notification_rows(product),original);
     });
