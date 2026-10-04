@@ -375,10 +375,15 @@ impl<'root> ProductDatabase<'root> {
                     (JsonString::from_str("body"),text(&message.body)),
                 ])));
             }
-            Ok(encode_receipt(request,V37Status::Applied,0,0,BTreeMap::from([
+            let bytes=encode_receipt(request,V37Status::Applied,0,0,BTreeMap::from([
                 (JsonString::from_str("projection"),text("OWNER_HOST_RULE_NOTICES")),
                 (JsonString::from_str("notices"),Json::Array(notices)),
-            ])))
+            ]));
+            if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+                return Err(inbox_error("OWNER projection frame",format!(
+                    "{} bytes exceed the existing {} byte frame bound",bytes.len(),crate::ipc::MAX_FRAME_BYTES)));
+            }
+            Ok(bytes)
         })();
         match read {
             Ok(bytes)=>{self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;Ok(bytes)},
