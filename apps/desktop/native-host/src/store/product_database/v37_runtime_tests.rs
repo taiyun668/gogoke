@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod stalled_health;
 
 // Reuses the actual fixed-catalog E/F/H launch from the session control below.
-// Login presence alone is synthetic. No credentials or model are loaded.
+// Codex uses the real fixed CLI File observation with an invalid synthetic
+// marker; no valid credentials or model are loaded.
 fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)) {
     let _guard=route_b_test_guard();
     let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -19,10 +20,14 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
     let register=operation("K-INSTANCE","register","health-register","instanceA",0,
         &format!(r#"{{"driverId":"{driver}"}}"#));
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,V37Status::Applied);
-    instance::record_observation(&mut product.connection,&root,&instance::ObservationRequest {
-        request_id:"health-login-presence",request_bytes:b"SYNTHETIC_LOGIN_PRESENCE_NOT_AUTHENTICATION",
-        instance_id:"instanceA",expected_revision:1,observation:instance::InstanceObservation::LoggedIn,
-    }).unwrap();
+    if driver=="codex" {
+        qualify_synthetic_file_backend(&mut product,&root);
+    } else {
+        instance::record_observation(&mut product.connection,&root,&instance::ObservationRequest {
+            request_id:"health-login-presence",request_bytes:b"SYNTHETIC_LOGIN_PRESENCE_NOT_AUTHENTICATION",
+            instance_id:"instanceA",expected_revision:1,observation:instance::InstanceObservation::LoggedIn,
+        }).unwrap();
+    }
     instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,"instanceA",1).unwrap();
     seat::set_project_parallel_cap(&mut product.connection,&product.owner,"projectA",1).unwrap();
     let model=if driver=="claude" {"claude-sonnet-4-6"} else {"gpt-6-sol"};
