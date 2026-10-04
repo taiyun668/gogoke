@@ -178,8 +178,12 @@ fn exact_credential_alias_custody_allows_two_profiles_and_precise_revocation() {
     assert_eq!(result_b, "read=OK write=OK", "B native in-place access: {result_b}");
     binding.verify_registered_aliases(&[a.clone(), b.clone()])
         .expect("all three names still refer to the same object");
+    assert!(profile_a.verify_revoked_credential_alias(&binding, &alias_a).is_err(),
+        "admitted SID cannot be mistaken for a completed revoke");
     profile_a.revoke_credential_alias(&binding, &alias_a)
         .expect("stop A removes only A's auth SID");
+    profile_a.verify_revoked_credential_alias(&binding, &alias_a)
+        .expect("read-only pending-revoke completion witness");
     let denied_a = run_child(&name_a, &runner_a, &alias_a, false);
     assert!(denied_a.starts_with("read=ERR:Some(5);") && denied_a.ends_with(" write=OK"),
         "A read after its SID is revoked: {denied_a}");
@@ -396,8 +400,12 @@ fn legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer() {
     let observer = AppContainerProfile::ensure_for_cli(&name, true).unwrap();
     let other_name = format!("Gogoke37.LegacyOtherSid.{}", std::process::id());
     let other_profile = AppContainerProfile::ensure_for_cli(&other_name, true).unwrap();
+    assert!(observer.has_legacy_owner_login_grant(&home, &home_id).unwrap(),
+        "empty root must scan for a resumed legacy descendant state");
     observer.grant_bound_tree(&home, &home_id, true)
         .expect("actual legacy whole-HOME inherited RW grant");
+    assert!(observer.has_legacy_owner_login_grant(&home, &home_id).unwrap(),
+        "actual old broad root ACE requires migration");
     observer.verify_bound_tree_grant(&home, &home_id, true)
         .expect("legacy child ACEs came from old grant primitive");
     let history_id = AppContainerProfile::capture_program_identity(&history).unwrap();
@@ -407,6 +415,8 @@ fn legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer() {
         &home_id, &source_id, &[]).expect("registered metadata-only source");
     observer.migrate_legacy_owner_login_grant(&root, &home, &home_id,
         Some((&binding, &[]))).expect("revoke only known old observer SID grants");
+    assert!(observer.has_legacy_owner_login_grant(&home, &home_id).unwrap(),
+        "empty root after parent revoke still needs descendant readback");
     assert!(!binding.acl_prepared_in_this_holder().unwrap(),
         "legacy revoke cannot claim protected credential baseline preparation");
     other_profile.verify_bound_program_grant(&history, &history_id)
@@ -419,6 +429,8 @@ fn legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer() {
     observer.grant_bound_owner_account_observer(&root, &home, &home_id,
         &runtime, &runtime_id, &binding, &[])
         .expect("exact source-read and fresh-runtime grant after legacy cleanup");
+    assert!(!observer.has_legacy_owner_login_grant(&home, &home_id).unwrap(),
+        "modern no-inherit HOME grant must not retrigger legacy migration");
     let runner = prepare_runner(&observer, &base.join("migrated-observer-runner"));
     let source_read = run_child_path(&name, &runner, &source, false);
     assert_eq!(source_read, "read=OK write=OK", "actual LPAC auth read: {source_read}");
@@ -432,6 +444,13 @@ fn legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer() {
     observer.verify_bound_owner_account_observer(&root, &home, &home_id,
         &runtime, &runtime_id, &binding, &[])
         .expect("no broad observer SID remains on history");
+    let unknown_home = base.join("unknown-owner-root-shape");
+    fs::create_dir(&unknown_home).unwrap();
+    let unknown_id = inspect_root(&unknown_home).unwrap().identity;
+    observer.grant_bound_tree(&unknown_home, &unknown_id, false).unwrap();
+    assert!(matches!(observer.has_legacy_owner_login_grant(&unknown_home,
+        &unknown_id), Err(CredentialError::Isolation(_))),
+        "another root ACE shape must not select either migration or modern path");
     drop((observer, other_profile, binding));
     drop(root);
     fs::remove_dir_all(requested).unwrap();

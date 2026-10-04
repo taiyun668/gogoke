@@ -583,6 +583,19 @@ impl AppContainerProfile {
         })
     }
 
+    /// Read-only completion witness for a durable pending SID revocation.
+    /// F must still supply the complete alias registry to its binding.
+    pub(crate) fn verify_revoked_credential_alias(&self, binding: &CredentialBinding,
+        alias: &CredentialAlias) -> Result<(), CredentialError> {
+        binding.with_exact_alias(alias, |handle| {
+            if &file_identity(handle)? != binding.identity() || !dacl_protected(handle)?
+                || !package_aces(handle, self.sid)?.is_empty() {
+                return Err(IsolationError::AclWitnessMismatch.into());
+            }
+            Ok(())
+        })
+    }
+
     /// Stopping one generation removes only its package SID from the shared
     /// object. F controls dormant alias unlink after whole-instance quiescence.
     pub(crate) fn revoke_credential_alias(&self, binding: &CredentialBinding,
@@ -852,6 +865,30 @@ impl AppContainerProfile {
             require_absent_owner_auth(root, home, home_identity)?;
         }
         Ok(())
+    }
+
+    /// Only the known old whole-HOME grant or an empty root needs the legacy
+    /// descendant pass. The already-installed narrow traverse grant does not.
+    pub(crate) fn has_legacy_owner_login_grant(&self, home: &Path,
+        home_identity: &RootIdentity) -> Result<bool, CredentialError> {
+        let object = open_physical_object(home, true, READ_CONTROL)?;
+        if &file_identity(object.0)? != home_identity {
+            return Err(CredentialError::IdentityChanged);
+        }
+        let observed = package_aces(object.0, self.sid)?;
+        let answer = match observed.as_slice() {
+            [] => true,
+            [(GRANT_ACCESS, rights, OBJECT_AND_CONTAINER_INHERIT)]
+                if *rights == directory_rights(true) => true,
+            [(GRANT_ACCESS, FILE_GENERIC_EXECUTE, NO_INHERITANCE)] => false,
+            _ => return Err(IsolationError::AclWitnessDetail {
+                object: PathBuf::from("."), sid: self.package_sid_string()?,
+                expected: "empty, exact old inheritable writable grant, or exact new traverse grant".into(),
+                observed,
+            }.into()),
+        };
+        require_bound_path(home, home_identity, true)?;
+        Ok(answer)
     }
 
     /// The program path must come from F's fixed native catalog. Its object
