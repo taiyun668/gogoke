@@ -32,9 +32,19 @@ export type Design37Instance = {
   driverId: string;
   version: string;
   newVersion?: string;
+  runtimeIssues?: Design37RuntimeIssue[];
   revision: string;
   state: Design37InstanceState;
   login?: Design37LoginSnapshot;
+};
+
+export type Design37RuntimeIssue = {
+  seatId: string;
+  sessionId: string;
+  generation: string;
+  reason: string;
+  sourceEpoch: string;
+  sourceCursor: string;
 };
 
 export type Design37InstancesSnapshot = {
@@ -48,6 +58,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
   return typeof value === "string" && allowed.includes(value as T);
+}
+
+function readRuntimeIssues(value: unknown, instanceId: string): Design37RuntimeIssue[] {
+  if (!Array.isArray(value)) throw new Error(`Instance ${instanceId} returned invalid runtime issues.`);
+  return value.map((issue: unknown): Design37RuntimeIssue => {
+    if (!isRecord(issue) ||
+        ["seatId", "sessionId", "generation", "reason", "sourceEpoch", "sourceCursor"].some(
+          field => typeof issue[field] !== "string" || (issue[field] as string).trim().length === 0)) {
+      throw new Error(`Instance ${instanceId} returned an invalid runtime issue.`);
+    }
+    return {
+      seatId: issue.seatId as string,
+      sessionId: issue.sessionId as string,
+      generation: issue.generation as string,
+      reason: issue.reason as string,
+      sourceEpoch: issue.sourceEpoch as string,
+      sourceCursor: issue.sourceCursor as string,
+    };
+  });
 }
 
 const INSTANCE_STATES: readonly Design37InstanceState[] = [
@@ -106,6 +135,7 @@ export function readDesign37InstancesSnapshot(value: unknown): Design37Instances
         typeof item.driverId !== "string" ||
         typeof item.version !== "string" ||
         (item.newVersion !== undefined && (typeof item.newVersion !== "string" || item.newVersion.length === 0)) ||
+        (item.runtimeIssues !== undefined && !Array.isArray(item.runtimeIssues)) ||
         typeof item.revision !== "string" ||
         !isOneOf(item.state, INSTANCE_STATES) ||
         (item.login !== undefined && item.login !== null && !isRecord(item.login))) {
@@ -121,6 +151,8 @@ export function readDesign37InstancesSnapshot(value: unknown): Design37Instances
       driverId: item.driverId,
       version: item.version,
       ...(item.newVersion === undefined ? {} : { newVersion: item.newVersion }),
+      ...(item.runtimeIssues === undefined || item.runtimeIssues.length === 0
+        ? {} : { runtimeIssues: readRuntimeIssues(item.runtimeIssues, item.instanceId) }),
       revision: item.revision,
       state: item.state,
       ...(item.login == null ? {} : { login: readLogin(item.login, item.instanceId) }),

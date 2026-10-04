@@ -15,6 +15,7 @@ export function createPreviewHost() {
   let revision = 1;
   let login: Record<string, unknown> | undefined;
   let showNewVersion = false;
+  let showRuntimeIssues = false;
   const caller: V37TrustedCaller = {
     principalId: "previewUser", seatId: "previewUser", domainId: "preview",
     role: "user", policyRevision: "1", revocationHead: "preview",
@@ -25,6 +26,14 @@ export function createPreviewHost() {
     instanceId: DESIGN37_TEST_INSTANCE_ID, driverId: "codex",
     version: showNewVersion ? "0.149.0" : "0.160.0",
     ...(showNewVersion ? { newVersion: "0.160.0" } : {}),
+    ...(showRuntimeIssues ? { runtimeIssues: [
+      { seatId: "previewSeatA", sessionId: "previewSessionA", generation: "2",
+        reason: "CLI_ERROR_PREVIEW: 第一席位的模拟错误，当前实例仍保持原登录状态。",
+        sourceEpoch: "previewEpochA", sourceCursor: "7" },
+      { seatId: "previewSeatB", sessionId: "previewSessionB", generation: "3",
+        reason: '{"code":"CLI_ERROR_PREVIEW","message":"第二席位的模拟原始错误；这是 K-UI 假数据，不是 CLI 实测。"}',
+        sourceEpoch: "previewEpochB", sourceCursor: "11" },
+    ] } : {}),
     revision: String(revision), state, ...(login ? { login } : {}),
   }] : [] });
   const port = new V37UiForwardingFakePort({
@@ -83,6 +92,7 @@ export function createPreviewHost() {
         browserState: "NOT_REQUESTED", startedAt: Date.now(), settled: true } : undefined;
     },
     setNewVersion(visible: boolean) { showNewVersion = visible; },
+    setRuntimeIssues(visible: boolean) { showRuntimeIssues = visible; },
     settle(success: boolean) {
       if (login?.state !== "PENDING") return;
       state = success ? "LOGGED_IN" : "ERROR";
