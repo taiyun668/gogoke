@@ -564,6 +564,17 @@ impl AppContainerProfile {
             let entries = package_aces(object.0, self.sid)?;
             if entries.len() != 1 || entries[0].0 != GRANT_ACCESS || entries[0].1 != rights
                 || entries[0].2 & INHERITED_ACE == 0 || entries[0].2 & INHERIT_ONLY_ACE != 0 {
+                #[cfg(test)]
+                {
+                    let parent = child.parent().map(|path|
+                        open_physical_object(path, true, READ_CONTROL).and_then(|object|
+                            Ok((file_identity(object.0)?, dacl_protected(object.0)?,
+                                package_aces(object.0, self.sid)?))));
+                    let leaf = file_information(object.0).and_then(|info|
+                        Ok((info.attributes, info.links, dacl_protected(object.0)?)));
+                    eprintln!("GOGOKE_H_EXISTING_LEAF_ACL name={:?} identity={:?} leaf={leaf:?} parent={parent:?} current_sid_aces={entries:?}",
+                        child.file_name(), identity);
+                }
                 return Err(IsolationError::AclWitnessDetail { object: child.to_path_buf(),
                     sid: self.package_sid_string()?, expected: format!(
                         "one inherited effective grant, rights={rights:#x}"), observed: entries }.into());
