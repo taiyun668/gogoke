@@ -475,6 +475,13 @@ impl<'root> ProductDatabase<'root> {
             &home.identity, &source_identity, &scopes))?;
         if let Some(retained) = self.recovered_credential_holders.get(&(instance_id.into(), source_identity.opaque())) {
             if !std::sync::Arc::ptr_eq(retained, &binding) { return Err(OrchestrationError::AccessDenied); }
+            let original = prior.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+            let live = self.legacy_account_custody(instance_id)?;
+            if original.custody.iter().any(|old| !live.iter().any(|row| row == old))
+                || live.iter().any(|row| !original.custody.iter().any(|old| old.operation_id == row.operation_id)
+                    && matches!(row.state.as_str(), "UNKNOWN" | "PREPARED")) {
+                return Err(OrchestrationError::Invalid("legacy retained holder does not retire current uncertain custody"));
+            }
             failure(binding.verify_registered_aliases(&scopes))?;
             if failure(binding.acl_prepared_in_this_holder())? { return Ok(()); }
         }
