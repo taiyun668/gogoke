@@ -2,10 +2,13 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPreviewHost } from "./host";
 import { Design37OwnerNoticePresenter } from "../Design37OwnerNoticePresenter";
+import { Design37OwnerNoticeHost } from "../Design37OwnerNoticeHost";
 import { requestDesign37OwnerNotices, type Design37OwnerNotice } from "../design37OwnerNotices";
 import "../../../styles/base.css";
 import "../../../styles/ds-tokens.css";
 import "../../../styles/ds-modal.css";
+import "../../../styles/ds-toast.css";
+import "../../../styles/error-toasts.css";
 import "../../../styles/buttons.css";
 import "../../../styles/settings.css";
 
@@ -24,8 +27,12 @@ function Preview() {
   const [ownerNotices, setOwnerNotices] = useState<Design37OwnerNotice[]>([]);
   const [noticeUiLifetime, setNoticeUiLifetime] = useState(0);
   const [ownerNoticeError, setOwnerNoticeError] = useState<string | null>(null);
+  const [useNoticeHost, setUseNoticeHost] = useState(false);
+  const [noticeHostMounted, setNoticeHostMounted] = useState(true);
+  const [noticeReadStats, setNoticeReadStats] = useState(host.ownerNoticeReadStats());
   const showOwnerNotice = async (visible: boolean, newCause = false) => {
     host.setOwnerNotice(visible, newCause);
+    if (useNoticeHost) return;
     try {
       setOwnerNotices(await requestDesign37OwnerNotices(host.executeUserSourceOperation, `previewOwner_${crypto.randomUUID()}`));
       setOwnerNoticeError(null);
@@ -73,10 +80,34 @@ function Preview() {
         <button className="ghost" onClick={() => void showOwnerNotice(true, true)}>显示新原因（假）</button>
         <button className="ghost" onClick={() => setNoticeUiLifetime(value => value + 1)}>重启通知界面（假）</button>
       </div>
-      <p role="status">当前投影：{ownerNotices.length ? "1 条 PENDING 消息" : "无通知"}</p>
+      <p role="status">当前投影：{useNoticeHost ? "由 Host 自动读取" : ownerNotices.length ? "1 条 PENDING 消息" : "无通知"}</p>
       {ownerNoticeError && <p role="alert">{ownerNoticeError}</p>}
+      <h3>通知 Host 生命周期（假）</h3>
+      <p>Host 接入相同的假 User 源，按现有实例页节奏读取；不会调用真实 native 桥。</p>
+      <div className="settings-field-actions">
+        <button className="ghost" onClick={() => setUseNoticeHost(value => !value)}>
+          {useNoticeHost ? "切回纯 Presenter（假）" : "使用 Host 自动刷新（假）"}
+        </button>
+        <button className="ghost" onClick={() => setNoticeHostMounted(value => !value)}>
+          {noticeHostMounted ? "卸载通知 Host（假）" : "重开通知 Host（假）"}
+        </button>
+        <button className="ghost" onClick={() => host.setOwnerNoticeFailure("GOGOKE_DESIGN37_USER_HOST_NOT_STARTED")}>宿主未启动（假）</button>
+        <button className="ghost" onClick={() => host.setOwnerNoticeFailure("PREVIEW_OWNER_SOURCE_FAILED: synthetic original error")}>原始读取错误（假）</button>
+        <button className="ghost" onClick={() => host.setOwnerNoticeFailure(null)}>恢复源（假）</button>
+        <button className="ghost" onClick={() => host.setOwnerNoticeDelay(2200)}>启用慢响应（假）</button>
+        <button className="ghost" onClick={() => host.setOwnerNoticeDelay(0)}>恢复即时响应（假）</button>
+        <button className="ghost" onClick={() => setNoticeReadStats(host.ownerNoticeReadStats())}>读取假源调用记录</button>
+        <button className="ghost" onClick={() => {
+          host.setOwnerNotice(true, true);
+          host.setOwnerNoticeDelay(2200);
+          setTimeout(() => setNoticeHostMounted(false), 1300);
+        }}>慢读取开始后卸载（假）</button>
+      </div>
+      <p role="status">假源调用记录：请求 {noticeReadStats.reads}，完成 {noticeReadStats.completed}，在途 {noticeReadStats.inFlight}，最大并发 {noticeReadStats.maxInFlight}</p>
     </section>
-    <Design37OwnerNoticePresenter key={noticeUiLifetime} notices={ownerNotices} />
+    {useNoticeHost
+      ? noticeHostMounted && <Design37OwnerNoticeHost key={noticeUiLifetime} executeSourceOperation={host.executeUserSourceOperation} />
+      : <Design37OwnerNoticePresenter key={noticeUiLifetime} notices={ownerNotices} />}
   </main>;
 }
 
