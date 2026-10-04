@@ -197,6 +197,39 @@ fn check_source_original(source: &Object, historical: &[(String, String)])
     Ok(())
 }
 
+/// The caller's list is the complete *permitted* current package set. A
+/// baseline may precede the first observer grant; missing listed grants do
+/// not widen access. Every grant actually present must match one listed SID,
+/// right and no-inheritance shape, and the remaining ACL must be the baseline.
+fn verify_permitted_current(actual: &Dacl, baseline: &Dacl,
+    permitted_current: &[(String, u32)]) -> Result<(), CredentialError> {
+    if !actual.protected || !baseline.protected { return Err(mismatch()); }
+    for (index, (sid, rights)) in permitted_current.iter().enumerate() {
+        if !is_package_sid(sid) || !matches!(*rights, FILE_GENERIC_READ | CREDENTIAL_FILE_RIGHTS)
+            || baseline.aces.iter().any(|ace| &ace.sid == sid)
+            || permitted_current[..index].iter().any(|(prior, _)| prior == sid) {
+            return Err(mismatch());
+        }
+    }
+    let mut remaining = Vec::with_capacity(actual.aces.len());
+    let mut seen = Vec::new();
+    for ace in &actual.aces {
+        if is_package_sid(&ace.sid) {
+            let Some((_, rights)) = permitted_current.iter().find(|(sid, _)| sid == &ace.sid)
+                else { return Err(mismatch()); };
+            if ace.kind != ACCESS_ALLOWED_ACE_TYPE || ace.flags != 0 || ace.mask != *rights
+                || seen.contains(&ace.sid) { return Err(mismatch()); }
+            seen.push(ace.sid.clone());
+        } else {
+            remaining.push(ace.clone());
+        }
+    }
+    if !acl_equal(&Dacl { protected: true, aces: remaining }, baseline) {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
 fn relative_path(home: &Path, path: &Path) -> Result<PathBuf, CredentialError> {
     let relative = path.strip_prefix(home).map_err(|_| mismatch())?.to_path_buf();
     if relative.components().any(|component| !matches!(component,
@@ -526,8 +559,9 @@ impl LegacyAclInventory {
     }
 
     /// A later holder may inherit a completed fenced baseline together with
-    /// exact current observer/model grants. F/H must supply the complete
-    /// currently live SID set from original custody; this never writes a DACL.
+    /// exact current observer/model grants. F/H supplies the complete allowed
+    /// current SID/rights set from original custody; an allowed grant may not
+    /// yet exist after a crash. This method never writes a DACL.
     pub(crate) fn adopt_existing_protected_baseline(&self, root: &RootLock,
         home: &Path, home_identity: &RootIdentity, binding: &CredentialBinding,
         registered_aliases: &[CredentialAliasScope], permitted_current: &[(String, u32)])
@@ -539,19 +573,10 @@ impl LegacyAclInventory {
             &home.join("auth.json"), home_identity)?;
         if identity != self.source_identity
             || links as usize != registered_aliases.len() + 1 { return Err(mismatch()); }
-        let mut exact = self.baseline.clone();
-        for (sid, rights) in permitted_current {
-            if !is_package_sid(sid) || !matches!(*rights, FILE_GENERIC_READ | CREDENTIAL_FILE_RIGHTS)
-                || exact.aces.iter().any(|ace| &ace.sid == sid) {
-                return Err(mismatch());
-            }
-            exact.aces.push(Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 0,
-                mask: *rights, sid: sid.clone() });
-        }
         let observed = binding.with_source_acl(|handle, _prepared| {
             if &file_identity(handle)? != &self.source_identity { return Err(mismatch()); }
             let actual = read_dacl(handle)?;
-            if !acl_equal(&actual, &exact) { return Err(mismatch()); }
+            verify_permitted_current(&actual, &self.baseline, permitted_current)?;
             Ok(actual)
         })?;
         binding.verify_registered_aliases(registered_aliases)?;
@@ -827,5 +852,33 @@ mod tests {
         inventory.objects[1].original.aces[0].mask = FILE_GENERIC_READ;
         assert_eq!(home_digest, inventory.home_original_digest());
         assert_ne!(source_digest, inventory.source_original_digest());
+    }
+
+    #[test]
+    fn protected_baseline_adopts_optional_exact_current_read_only() {
+        let baseline = Dacl { protected: true, aces: ["S-1-5-21-123", "S-1-5-18",
+            "S-1-5-32-544"].into_iter().map(|sid| Ace {
+                kind: ACCESS_ALLOWED_ACE_TYPE, flags: 0,
+                mask: FILE_ALL_ACCESS, sid: sid.into(),
+            }).collect() };
+        let observer = ("S-1-15-2-123".to_owned(), FILE_GENERIC_READ);
+        let permitted = [observer.clone()];
+        // Crash after baseline APPLIED but before the optional new observer
+        // grant is a valid protected baseline, even with a permitted SID.
+        assert!(verify_permitted_current(&baseline, &baseline, &permitted).is_ok());
+        let mut with_read = baseline.clone();
+        with_read.aces.push(Ace { kind: ACCESS_ALLOWED_ACE_TYPE, flags: 0,
+            mask: FILE_GENERIC_READ, sid: observer.0.clone() });
+        assert!(verify_permitted_current(&with_read, &baseline, &permitted).is_ok());
+        let mut unknown = with_read.clone();
+        unknown.aces[3].sid = "S-1-15-2-999".into();
+        assert!(verify_permitted_current(&unknown, &baseline, &permitted).is_err());
+        let mut broad = with_read.clone();
+        broad.aces[3].mask = directory_rights(true);
+        broad.aces[3].flags = INHERITED_ACE as u8;
+        assert!(verify_permitted_current(&broad, &baseline, &permitted).is_err());
+        let mut duplicate = with_read.clone();
+        duplicate.aces.push(duplicate.aces[3].clone());
+        assert!(verify_permitted_current(&duplicate, &baseline, &permitted).is_err());
     }
 }
