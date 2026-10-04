@@ -224,3 +224,17 @@ V04 的“不打开凭据文件”明确为“不为内容访问打开”，仍�
 
 参照：既有 F 注册根与临时目录身份、H episode/RPC journal、A session purpose、compat_module 的 held-root custody，以及固定 Codex `a956835d020762cb2b570053af06f643a11c0ecc` 的 FileAuthStorage 原位保存方式；不是重新登录、凭据副本或替换 CLI。以上仅细化 K-SESSION/K-INSTANCE 和 V04/V04b/V10；不改需求、持久写方、wire family、共享文件或写入范围。必要的同 DB 产品入口接线由 Controller 持有，沿用已撤回多余 Owner 触点的持久组合裁定。
 
+## 旧隔离权限的系统重启后恢复细节（2026-10-04）
+
+真实 Win11 候选的首次模型启动被 `legacy account scope requires original stopped observer custody` 拒绝：旧登录 custody 是 UNKNOWN、原停止证明为空，实例根仍有旧可继承 AppContainer 授权。新根的云端通过不能作为旧根迁移证明。恢复必须保留原 UNKNOWN、原停止证明、原实例 home 和凭据字节；不以进程缺席、时间差、旧版本或名称过滤推造 STOPPED，不新增 capability，不修改 CLI，不将系统重启事实用于旧会话 continuation、worktree 删除或 admission 释放。
+
+F/H 在原注册根的既有排他协调和元数据 custody 下，增加独立、持久且不可扩充的权限迁移栅栏。第一次遇到这项旧权限阻断时，宿主从 Windows 内核读当前 boot identity，登记原物理数据库、注册根、实例 home、已登记认证物理对象及旧 custody 的确切 ticket、nonce、进程创建身份、绑定和原始状态摘要。只登记当时确切存在的旧对象，不请求凭据内容权限或修改 ACL。栅栏提交前后原元数据和旧记录必须一致；当前启动期的已有活跃 holder、新 intent 或新的 UNKNOWN 继续拒绝。栅栏所列的旧 UNKNOWN 自身是待保留的遗留对象，不被抹去；同一 boot 的再次请求只读回原栅栏，不增加记录、不改 boot 值、不准迁移。
+
+后续正常 Windows 系统重启后，宿主从同一内核接口重新读取 boot identity。在原注册根排他协调内，只有可信 boot identity 确实不同、原 root/home/认证 file identity 和栅栏记录原样匹配、所有当前启动期 holder/intent 已按既有规则结算时，才能以这项独立事实迁移栅栏所列旧身份的权限。Windows 重启终止旧用户进程，是此项“旧权限持有者已消失”的依据；它不证明旧业务调用成功或产生原 Job/writer 停止证明。原 custody 的 UNKNOWN、NULL proof 和历史记录保持不变，旧 continuation 仍按原 STOPPED 契约拒绝。原有历史与工作树不删除，COMMITTED 预留不因此释放。迁移只清理已证明属于被列旧身份的精确授权，保留 Owner/系统以及仍有原始有效 custody 的权限；同一对象的不同用途不获得新的读取权限。
+
+权限更新逐个记录意图和结果；崩溃后用原栅栏、原物理对象和实际 ACL 元数据对账，全部精确完成才记为已迁移。未完成时不启动模型、不删除认证名字或内容，不用等待、重试、宽限或全树 ACL 重置补偿。新 model/account-observer 的权限仍由原启动路径授予。没有栅栏、boot 查询失败、同 boot、根或对象替换、记录变化、未列 UNKNOWN、未知链接、重解析或当前活跃 holder 均拒绝并保留原文。恢复不能借旧栅栏让后来新增的记录跨 boot 失效。产品不执行系统重启命令；重启由用户在自己的正常工作安排中完成，准备前不要求 Owner 再登录或提前操作。
+
+实现优先取 Windows `NtQuerySystemInformation(SystemBootEnvironmentInformation)` 的 `BootIdentifier`，接口来源固定为 [System Informer/phnt ntexapi.h](https://github.com/winsiderss/systeminformer/blob/ef43345b48301ada8f01b7ce194ddbf45b15bc28/phnt/include/ntexapi.h)。它属于私有信息类；[Microsoft 的函数文档](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation) 明确接口可能变化，因此动态解析受信系统 ntdll、验证状态码、长度及非零标识，失败拒绝并保留 NTSTATUS，不使用 WMI 时间、PID 或调用者提供的 boot 值替代。普通用户云端 Windows 必须实际查询两次得到一致结果，查询需提权或不支持时不扩大权限。边界云测包括：同 boot 拒绝；精确不同 boot 只允许旧权限迁移；UNKNOWN/NULL proof 与旧 continuation 拒绝保持；未列/变化/新 intent/活跃 holder 拒绝；部分迁移崩溃对账。模拟不同 boot 仅证明判定逻辑；真实系统重启读回、实际 ACL、原实例模型会话及正式版保护快照在 Win11 本体上分别记录，没跑不算通过。
+
+参照：先查 gogo-party 的 accounts.ts、席位运行时，以及 NaveHQ、LoomOS 的 boot/fence 实现，未发现可照搬的 Windows boot identity 迁移；再查仓库 parts/substrate teardown、execution-layer-capability-table、kernel-parts-harvest、reuse-blueprint、upstream-reference-map，沿用“原 custody、单写方、未知保留、按物理对象迁移”的规则，不采用 lease/时间推断。最后核对上述 Microsoft 文档和固定 phnt 原始头文件。新增之处仅是宿主持有的独立系统重启事实；不替换 ProcessCustodian 停止事实，不改变范围摘要、权限档位、持久写方、写入范围或既有 Owner 决定。独立审计必须同时复核这一分类及恢复前提。
+
