@@ -324,6 +324,7 @@ jobs:
               @{ id = 'credential-two-profiles'; filter = 'exact_credential_alias_custody_allows_two_profiles_and_precise_revocation' }
               @{ id = 'credential-unknown-alias'; filter = 'unknown_link_and_replaced_alias_fail_complete_metadata_registration' }
               @{ id = 'history-real-generation'; filter = 'stalled_health_new_generation_suppresses_original_physical_cause' }
+              @{ id = 'credential-owner-observer'; filter = 'owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime' }
             )
             Write-Host 'F private-history identity/schema boundary only; full library, compiled mutations and server suites NOT_RUN.'
           }

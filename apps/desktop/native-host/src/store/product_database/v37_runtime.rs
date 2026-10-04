@@ -348,6 +348,7 @@ impl<'root> ProductDatabase<'root> {
         })();
         self.finish_native_transaction(intended)?;
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
+        self.ensure_native_credential_backend(&old.instance_id,request)?;
         let evidence=if let Some((proof,choice))=host {
             failure(LaunchEvidence::observe_host_resume(&mut self.connection,self.root,
                 &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
@@ -1551,6 +1552,9 @@ impl<'root> ProductDatabase<'root> {
         }
         drop(fenced);
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
+        let credential_claim=failure(runtime::observe_claim_bound(&self.connection,
+            &request.domain_id,&seat_id,&request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
+        self.ensure_native_credential_backend(&credential_claim.instance_id,request)?;
         let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
         let evidence = if let Some((proof,choice))=host {
             failure(LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,

@@ -1929,6 +1929,57 @@ impl<'root> ProductDatabase<'root> {
         self.dispatch_owner_login_observation_selected(request, true)
     }
 
+    /// Host composition only: an existing signed-in instance is observed by
+    /// the same fixed binary before selecting File for a new process. No login
+    /// or credential parsing is performed, and non-File modes are not changed.
+    pub(super) fn ensure_native_credential_backend(&mut self,instance_id:&str,
+        original_request:&V37Request)->Result<()> {
+        let registered=self.read_registered_instance(instance_id)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if registered.driver_id!="codex" || registered.login_state!="LOGGED_IN" {return Ok(());}
+        match instance::read_usable_credential_backend(&self.connection,instance_id) {
+            Ok(_)=>return Ok(()),
+            Err(instance::CredentialRegistryError::Unusable)=>(),
+            Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!("credential startup source: {error:?}"))),
+        }
+        for file_bound in [false,true] {
+            if !file_bound {
+                match instance::read_configured_credential_backend(&self.connection,instance_id) {
+                    Ok(configured) if configured.backend==instance::CredentialBackend::File=>continue,
+                    Ok(_)=>return Err(OrchestrationError::Invalid("registered instance credential backend is not File")),
+                    Err(instance::CredentialRegistryError::Unusable)=>(),
+                    Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!("credential configuration source: {error:?}"))),
+                }
+            }
+            let revision=self.user_instance_revision(instance_id)?;
+            let selector=if file_bound {"file-startup"} else {"original-config"};
+            let id=format!("credential-observe-{}",crate::store::digest::sha256_hex(
+                format!("{}\n{instance_id}\n{selector}\n{revision}",
+                    crate::store::digest::sha256_hex(&original_request.raw_bytes)).as_bytes()));
+            let fields=BTreeMap::from([
+                (JsonString::from_str("schema"),text("gogoke.37.operations.v1")),
+                (JsonString::from_str("family"),text("K-INSTANCE")),
+                (JsonString::from_str("operation"),text("login-state")),
+                (JsonString::from_str("requestId"),text(&id)),
+                (JsonString::from_str("targetId"),text(instance_id)),
+                (JsonString::from_str("domainId"),text("global")),
+                (JsonString::from_str("expectedRevision"),text(&revision.to_string())),
+                (JsonString::from_str("payload"),Json::Object(BTreeMap::new())),
+            ]);
+            let raw=Json::Object(fields).canonical().into_bytes();
+            let request=decode_request(&raw).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native credential observation request: {error:?}")))?;
+            let receipt=if file_bound {self.dispatch_owner_file_backend_observation(&request)?}
+                else {self.dispatch_owner_login_observation(&request)?};
+            if owner_login_state_from_receipt(&receipt)?!="LOGGED_IN" {
+                return Err(OrchestrationError::Invalid("native credential observation did not confirm account presence"));
+            }
+        }
+        instance::read_usable_credential_backend(&self.connection,instance_id)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("native File startup qualification: {error:?}")))?;
+        Ok(())
+    }
+
     fn dispatch_owner_login_observation_selected(&mut self, request: &V37Request, file_bound: bool) -> Result<Vec<u8>> {
         if matches!(self.owner_login, Some(OwnerLoginSession::Active(_) |
             OwnerLoginSession::PendingFirstStop(_) | OwnerLoginSession::PendingAccount(_))) {
@@ -2064,7 +2115,7 @@ impl<'root> ProductDatabase<'root> {
                 backend: configured_backend,
                 startup_selector: if file_bound { instance::CredentialStartupSelector::FileBound }
                     else { instance::CredentialStartupSelector::Unknown },
-                operation_id: operation_id.clone(), ticket: prepared.ticket.clone(),
+                operation_id: operation_id.clone(), ticket: prepared.ticket.opaque().into(),
                 nonce: prepared.custodian_nonce.clone(), generation: prepared.binding.generation.clone(),
             })
         } else { None };
@@ -2164,7 +2215,7 @@ impl<'root> ProductDatabase<'root> {
         if let Some(source) = backend_source.filter(|_| owner_login_state_from_receipt(&receipt)
             .is_ok_and(|state| state == "LOGGED_IN")) {
             if frame.custody() != prepared || source.request_id != request.request_id
-                || source.instance_id != request.target_id || source.ticket != prepared.ticket
+                || source.instance_id != request.target_id || source.ticket != prepared.ticket.opaque()
                 || source.nonce != prepared.custodian_nonce
                 || parse_account_read(frame.bytes()) != NativeAccountState::CredentialPresent {
                 return Err(OrchestrationError::AccessDenied);
@@ -2318,11 +2369,16 @@ fn owner_login_state_from_receipt(receipt: &[u8]) -> Result<String> {
 /// Read only the non-secret selector in the already custody/codec-checked id3
 /// frame. A missing key is not the fixed version's explicit default null.
 fn configured_credential_backend(frame: &[u8]) -> Result<instance::CredentialBackend> {
+    configured_credential_backend_for_id(frame,"3")
+}
+
+pub(super) fn configured_credential_backend_for_id(frame:&[u8],expected_id:&str)
+    ->Result<instance::CredentialBackend> {
     let text = std::str::from_utf8(frame).map_err(|error|
         OrchestrationError::V37StoreFailure(format!("credential configuration UTF8: {error}")))?;
     let parsed = Parser::parse(text.trim_end()).map_err(OrchestrationError::Atomic)?;
     let mut envelope = object(parsed).ok_or(OrchestrationError::Invalid("credential config envelope"))?;
-    if !matches!(envelope.get(&JsonString::from_str("id")), Some(Json::Number(id)) if id == "3")
+    if !matches!(envelope.get(&JsonString::from_str("id")), Some(Json::Number(id)) if id == expected_id)
         || envelope.contains_key(&JsonString::from_str("error")) {
         return Err(OrchestrationError::Invalid("credential config original RPC identity"));
     }

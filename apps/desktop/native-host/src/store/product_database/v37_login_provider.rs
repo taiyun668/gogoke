@@ -393,6 +393,7 @@ impl<'root> ProductDatabase<'root> {
             abort_prepared,
             released: false,
             frame: None,
+            backend_source: None,
             request: None,
         };
         if let Err(error) =
