@@ -251,6 +251,8 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $probes = @(
+            @{ id = 'legacy-product-recovery'; filter = 'legacy_original_home_capture_refuses_same_boot_preserves_unknown_and_reopens_exact_fence' },
+            @{ id = 'legacy-partial-physical'; filter = 'two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback' },
             @{ id = 'stalled-new-generation-original'; filter = 'stalled_health_new_generation_suppresses_original_physical_cause' },
             @{ id = 'ipc-dacl'; filter = 'applies_current_user_only_dacl_and_first_instance_guard' },
             @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
@@ -679,6 +681,66 @@ jobs:
             $restored | Out-Host
             if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
               throw "$($case.axis) unchanged test must pass after exact production restoration"
+            }
+          }
+      - name: Verify legacy credential recovery with compiled failing mutations
+        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $productTest = 'legacy_original_home_capture_refuses_same_boot_preserves_unknown_and_reopens_exact_fence'
+          $cases = @(
+            @{ axis='legacy-R4-partial'; path='apps/desktop/native-host/src/process/session/legacy_acl.rs';
+               filter='two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback' },
+            @{ axis='legacy-R5-prewrite'; path='apps/desktop/native-host/src/store/product_database/v37_login.rs'; filter=$productTest },
+            @{ axis='legacy-R6-cold-model'; path='apps/desktop/native-host/src/store/product_database/v37_login.rs'; filter=$productTest },
+            @{ axis='legacy-R7-cache-custody'; path='apps/desktop/native-host/src/store/product_database/v37_login.rs'; filter=$productTest }
+          )
+          foreach ($case in $cases) {
+            $original = [IO.File]::ReadAllBytes($case.path)
+            $source = [Text.Encoding]::UTF8.GetString($original)
+            $hash = (Get-FileHash -LiteralPath $case.path -Algorithm SHA256).Hash
+            if ($case.axis -ceq 'legacy-R4-partial') {
+              $start = $source.IndexOf('fn legal_home_progress(')
+              $end = $source.IndexOf('fn baseline_target()', $start)
+              if ($start -lt 0 -or $end -le $start) { throw 'Legacy partial production locator missing' }
+              $stale = 'fn legal_home_progress(observed: &Dacl, original: &Dacl, historical: &[(String, String)]) -> bool {' + "`n" +
+                '    acl_equal(observed, original) || acl_equal(observed, &home_target(original, historical))' + "`n" + '}' + "`n"
+              $mutated = $source.Substring(0,$start) + $stale + $source.Substring($end)
+            } elseif ($case.axis -ceq 'legacy-R5-prewrite') {
+              $needle = '            failure(instance::validate_legacy_acl_write(&self.connection, &home_step, &boot, &proof))?;'
+              if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) { throw 'Legacy pending HOME validator must match once' }
+              $mutated = $source.Replace($needle,'')
+            } elseif ($case.axis -ceq 'legacy-R6-cold-model') {
+              $start = $source.IndexOf('    pub(super) fn ensure_native_credential_backend(')
+              $end = $source.IndexOf('        for file_bound in [false,true] {', $start)
+              if ($start -lt 0 -or $end -le $start) { throw 'Legacy durable backend production locator missing' }
+              $method = $source.Substring($start,$end-$start)
+              $needle = '                self.recover_legacy_account_baseline(instance_id, &home, &profile)?;'
+              if ([regex]::Matches($method,[regex]::Escape($needle)).Count -ne 1) { throw 'Legacy durable File adoption must match once' }
+              $mutated = $source.Substring(0,$start) + $method.Replace($needle,'') + $source.Substring($end)
+            } else {
+              $needle = '                    && matches!(row.state.as_str(), "UNKNOWN" | "PREPARED"))'
+              if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) { throw 'Legacy cached uncertain custody check must match once' }
+              $mutated = $source.Replace($needle,'                    && false)')
+            }
+            try {
+              [IO.File]::WriteAllText($case.path,$mutated,[Text.UTF8Encoding]::new($false))
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+              $code = $LASTEXITCODE
+              $output | Out-Host
+              if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) must compile and fail its unchanged physical/product boundary test"
+              }
+            } finally {
+              [IO.File]::WriteAllBytes($case.path,$original)
+              if ((Get-FileHash -LiteralPath $case.path -Algorithm SHA256).Hash -cne $hash) { throw 'Legacy exact production source restoration failed' }
+            }
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+            $output | Out-Host
+            if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+              throw "$($case.axis) unchanged test must pass after exact restoration"
             }
           }
       - name: Verify native installation facts with independent compiled mutations
