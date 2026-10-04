@@ -212,11 +212,24 @@ fn stalled_health_new_generation_suppresses_original_physical_cause() {
         // synthetic WORK/A fixture has not created a provider rollout.
         let renew=operation("K-SESSION","renew-session","stalled-generation-control","sessionA",
             revision(product),r#"{"generation":"2"}"#);
+        let live=product.native_sessions.get(&("projectA".into(),"sessionA".into())).unwrap();
+        let preflight=format!("generation={} turn={:?} allows_input={}",live.custody.binding.generation,
+            live.turn_id,live.allows_input());
         let bytes=product.dispatch_native_generation_change(&renew).unwrap();
         let result=h::decode_receipt(&bytes).unwrap();
         let change=change::read(&product.connection,"projectA",&renew.request_id).unwrap();
+        let resume_sources=health_control_rows(product,"SELECT s.phase,hex(r.raw_bytes)
+            FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r
+              ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch
+              AND r.source_cursor=s.source_cursor
+            WHERE s.domain_id='projectA' AND s.session_id='sessionA' AND s.generation='3'
+              AND s.step_id LIKE '%-thread-resume'").into_iter().map(|row| {
+                let raw=super::super::super::v37_host_rule::original_bytes(&row[1]).unwrap();
+                format!("{} {}",row[0],String::from_utf8_lossy(&raw))
+            }).collect::<Vec<_>>();
         assert!(matches!(result.status,V37Status::Applied|V37Status::Replayed),
-            "original renew receipt: {}; original generation change: {change:?}",String::from_utf8_lossy(&bytes));
+            "original renew receipt: {}; original generation change: {change:?}; preflight: {preflight}; original resume A: {resume_sources:?}",
+            String::from_utf8_lossy(&bytes));
         assert_eq!(scalar(product,"SELECT generation FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'"),"3");
         product.pump_host_rules().unwrap();assert!(projection(product).is_empty());assert_eq!(notification_rows(product),original);
     });
