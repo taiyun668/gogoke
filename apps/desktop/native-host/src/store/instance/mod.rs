@@ -9,6 +9,8 @@ mod registry;
 mod resolver;
 mod reprobe;
 mod temporary;
+mod private_history;
+mod credential_registry;
 
 pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use catalog::{discover_program, known_new_version, locate_pinned_program, CatalogError};
@@ -25,12 +27,27 @@ pub(crate) use reprobe::{read_current_capability_reprobe, CapabilityReprobeEvide
 pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_temporary_home,
     CreateTemporaryHome, TemporaryHomeError, TemporaryHomeReceipt, TemporaryKind,
     TransitionTemporaryHome};
+pub(crate) use private_history::{create_initial_private_history, resume_private_history,
+    resolve_private_history_directory,
+    read_private_history_generation, bind_private_history_continuation_in_transaction,
+    verify_private_history, PrivateHistoryLaunch, PrivateHistorySource,
+    PrivateHistoryGeneration, StoppedPrivateHistory, PrivateHistoryReceipt, PrivateHistoryError};
+pub(crate) use credential_registry::{initialize_credential_schema, record_credential_backend,
+    read_configured_credential_backend, read_usable_credential_backend, bind_credential_object, read_credential_object,
+    read_credential_aliases, begin_credential_alias, complete_credential_alias,
+    read_credential_profiles, begin_credential_profile, complete_credential_profile,
+    CredentialRegistryError, CredentialBackend, CredentialStartupSelector, BackendSource,
+    CredentialObjectInput, CredentialObjectRecord, CredentialIntentDisposition,
+    CredentialAliasAction, CredentialAliasResult, CredentialAliasIntent,
+    CredentialAliasRecord, CredentialAliasIntentReceipt, CredentialAliasPhysicalReceipt,
+    CredentialProfileAction, CredentialProfileResult, CredentialProfileIntent,
+    CredentialProfileRecord, CredentialProfileIntentReceipt};
 
 use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
 use super::same_open::VerifiedDatabaseConnection;
 
-const SCHEMA: [(&str, &str); 4] = [
+const SCHEMA: [(&str, &str); 6] = [
     (
         "gogoke_v37_instances",
         "CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY, driver_id TEXT NOT NULL, home_ref TEXT NOT NULL UNIQUE, home_identity TEXT NOT NULL UNIQUE, program_digest TEXT NOT NULL, version TEXT NOT NULL, install_state TEXT NOT NULL CHECK(install_state IN ('UNKNOWN','INSTALLED','MISSING')), login_state TEXT NOT NULL CHECK(login_state IN ('UNKNOWN','LOGGED_IN','LOGGED_OUT')), revision INTEGER NOT NULL CHECK(revision >= 1)) STRICT",
@@ -47,6 +64,8 @@ const SCHEMA: [(&str, &str); 4] = [
         "gogoke_v37_instance_caps",
         "CREATE TABLE gogoke_v37_instance_caps(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),concurrency_cap INTEGER NOT NULL CHECK(concurrency_cap > 0)) STRICT",
     ),
+    ("gogoke_v37_instance_histories", private_history::HISTORY_SCHEMA),
+    ("gogoke_v37_instance_history_generations", private_history::GENERATIONS_SCHEMA),
 ];
 
 fn observed_schema(
@@ -97,6 +116,13 @@ fn previous_schema() -> Vec<(String, String)> {
     entries
 }
 
+fn pre_history_schema() -> Vec<(String, String)> {
+    let mut entries: Vec<_> = SCHEMA[..4].iter()
+        .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
 /// Called only after the existing native Owner issuer and root pin are verified.
 /// An incomplete or changed family is corruption, not permission to recreate it.
 pub(crate) fn initialize_schema(
@@ -108,7 +134,7 @@ pub(crate) fn initialize_schema(
     if observed == expected {
         return Ok(());
     }
-    if !observed.is_empty() && observed != previous_schema() {
+    if !observed.is_empty() && observed != previous_schema() && observed != pre_history_schema() {
         return Err(OrchestrationError::AccessDenied);
     }
     connection
@@ -120,7 +146,7 @@ pub(crate) fn initialize_schema(
         if observed_schema(connection)? != observed {
             return Err(OrchestrationError::AccessDenied);
         }
-        let to_create: &[(&str, &str)] = if observed.is_empty() { &SCHEMA } else { &SCHEMA[3..] };
+        let to_create: &[(&str, &str)] = &SCHEMA[observed.len()..];
         for (_, sql) in to_create {
             connection
                 .execute(sql)
@@ -207,6 +233,25 @@ mod tests {
             assert!(query.step_row().unwrap());
             assert_eq!(query.column_text(0).unwrap(), "LOGGED_IN");
             assert_eq!(query.column_text(1).unwrap(), "identityA");
+            initialize_schema(connection).unwrap();
+        });
+    }
+
+    #[test]
+    fn exact_four_table_schema_migrates_preserving_instance_and_cap() {
+        fixture(|connection| {
+            for (_, sql) in &SCHEMA[..4] { connection.execute(sql).unwrap(); }
+            connection.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','1','INSTALLED','LOGGED_IN',1)").unwrap();
+            connection.execute("INSERT INTO main.gogoke_v37_instance_caps VALUES('instanceA',3)").unwrap();
+            assert_eq!(observed_schema(connection).unwrap(), pre_history_schema());
+            initialize_schema(connection).unwrap();
+            assert_eq!(observed_schema(connection).unwrap(), expected_schema());
+            assert_eq!(read_instance_concurrency_cap(connection, "instanceA").unwrap(), 3);
+            let query = Statement::prepare(connection.as_ptr(),
+                "SELECT home_identity,login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+            assert!(query.step_row().unwrap());
+            assert_eq!(query.column_text(0).unwrap(), "identityA");
+            assert_eq!(query.column_text(1).unwrap(), "LOGGED_IN");
             initialize_schema(connection).unwrap();
         });
     }

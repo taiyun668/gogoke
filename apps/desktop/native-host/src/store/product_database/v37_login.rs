@@ -83,6 +83,7 @@ pub(super) struct PreparedOwnerLogin {
     pub(super) runtime_identity: RootIdentity,
     pub(super) registered_driver: String,
     pub(super) registered_home_identity: RootIdentity,
+    pub(super) credential_custody: Option<std::sync::Arc<crate::process::CredentialBinding>>,
 }
 
 /// In-memory Owner action state. ProductDatabase owns one of these beside its
@@ -124,6 +125,8 @@ struct PendingAccountCustody {
     abort_prepared: bool,
     released: bool,
     frame: Option<OriginBoundFrame>,
+    backend_source: Option<instance::BackendSource>,
+    credential_custody: Option<std::sync::Arc<crate::process::CredentialBinding>>,
     request: Option<V37Request>,
 }
 
@@ -171,7 +174,8 @@ fn account_prepare_failure(launch: &PreparedOwnerLogin, error: ProcessCustodyErr
             runtime_home: Some(launch.runtime_home.clone()), runtime_identity: Some(launch.runtime_identity.clone()),
             registered_driver: Some(launch.registered_driver.clone()),
             registered_home_identity: Some(launch.registered_home_identity.clone()),
-            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, request: None,
+            proof: None, durable_revision: None, abort_prepared: false, released: false, frame: None, backend_source: None,
+            credential_custody: launch.credential_custody.clone(), request: None,
         }),
     }
 }
@@ -384,6 +388,106 @@ pub(super) fn is_owner_instance_list_frame(frame: &[u8]) -> bool {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn credential_instance_is_quiescent(&self,instance_id:&str)->Result<bool> {
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_coordination_process_custody c
+             WHERE c.state<>'STOPPED' AND
+               ((c.domain_id='global' AND c.profile_id=?1) OR c.operation_id IN
+                (SELECT process_operation_id FROM main.gogoke_v37_h_claim WHERE instance_id=?1
+                 UNION SELECT process_operation_id FROM main.gogoke_v37_h_process_episode WHERE instance_id=?1)) LIMIT 1")?;
+        query.bind_text(1,instance_id)?;
+        if query.step_row()? {return Ok(false);}
+        Ok(instance::read_credential_profiles(&self.connection,instance_id)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("credential quiescent profiles: {error:?}")))?
+            .iter().all(|profile|profile.state=="REVOKED"))
+    }
+
+    fn migrate_owner_account_scope(&self,profile:&AppContainerProfile,instance_id:&str,
+        home:&instance::ResolvedDirectory,credential:Option<(&crate::process::CredentialBinding,
+            &[crate::process::CredentialAliasScope])>)->Result<()> {
+        if !profile.has_legacy_owner_login_grant(&home.path,&home.identity)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("legacy observer scope: {error:?}")))? {
+            return Ok(());
+        }
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_coordination_process_custody
+             WHERE domain_id='global' AND profile_id=?1 AND
+               (state<>'STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1")?;
+        query.bind_text(1,instance_id)?;
+        if query.step_row()? {return Err(OrchestrationError::Invalid("legacy account scope requires original stopped observer custody"));}
+        profile.migrate_legacy_owner_login_grant(self.root,&home.path,&home.identity,credential)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("legacy account scope migration: {error:?}")))
+    }
+
+    fn grant_registered_account_observer(&mut self,profile:&AppContainerProfile,
+        instance_id:&str,home:&instance::ResolvedDirectory,runtime:&Path,
+        runtime_identity:&RootIdentity,program:&Path)
+        ->Result<Option<std::sync::Arc<crate::process::CredentialBinding>>> {
+        use crate::process::{CredentialAliasScope,CredentialBinding,CredentialError};
+        let source=home.path.join("auth.json");
+        let observed=CredentialBinding::observe_source_metadata(self.root,&source,&home.identity);
+        let held=match observed {
+            Err(CredentialError::Io {source,..}) if source.raw_os_error()==Some(2)=>{
+                self.migrate_owner_account_scope(profile,instance_id,home,None)?;
+                profile.grant_bound_owner_account_empty(self.root,&home.path,&home.identity,
+                    runtime,runtime_identity).map_err(|error|OrchestrationError::V37StoreFailure(
+                        format!("empty account observer scope: {error:?}")))?;
+                None
+            },
+            Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!("account source metadata: {error:?}"))),
+            Ok((identity,_))=>{
+                let registered=instance::read_credential_object(&self.connection,instance_id)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account source registration: {error:?}")))?;
+                let aliases=instance::read_credential_aliases(&self.connection,instance_id)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account alias registration: {error:?}")))?;
+                let mut scopes=Vec::new();
+                for alias in aliases.iter().filter(|alias|alias.state!="REMOVED") {
+                    if !matches!(alias.state.as_str(),"ACTIVE"|"DORMANT")
+                        || alias.source_file_identity!=identity {
+                        return Err(OrchestrationError::Invalid("account alias intent unresolved or source changed"));
+                    }
+                    let directory=instance::resolve_private_history_directory(&self.connection,self.root,&alias.history_id)
+                        .map_err(|error|OrchestrationError::V37StoreFailure(format!("account alias scope: {error:?}")))?;
+                    if directory.identity!=alias.directory_identity {
+                        return Err(OrchestrationError::AccessDenied);
+                    }
+                    scopes.push(CredentialAliasScope {root:directory.path,root_identity:directory.identity});
+                }
+                if let Some(registered)=registered {
+                    if registered.home_identity!=home.identity || registered.source_parent_identity!=home.identity {
+                        return Err(OrchestrationError::AccessDenied);
+                    }
+                    if registered.file_identity!=identity
+                        && (!scopes.is_empty() || !self.credential_instance_is_quiescent(instance_id)?) {
+                        return Err(OrchestrationError::Invalid("account source replacement is not quiescent"));
+                    }
+                } else if !scopes.is_empty() {return Err(OrchestrationError::AccessDenied);}
+                let binding=CredentialBinding::open_registered(self.root,&source,&home.identity,&identity,&scopes)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account source custody: {error:?}")))?;
+                self.migrate_owner_account_scope(profile,instance_id,home,Some((&binding,&scopes)))?;
+                if scopes.is_empty() && !binding.acl_prepared_in_this_holder()
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account source ACL witness: {error:?}")))? {
+                    if !self.credential_instance_is_quiescent(instance_id)? {
+                        return Err(OrchestrationError::Invalid("account source baseline requires stopped instance"));
+                    }
+                    AppContainerProfile::prepare_quiescent_owner_account_source(self.root,&home.path,&home.identity,&binding)
+                        .map_err(|error|OrchestrationError::V37StoreFailure(format!("quiescent account source: {error:?}")))?;
+                }
+                profile.grant_bound_owner_account_observer(self.root,&home.path,&home.identity,
+                    runtime,runtime_identity,&binding,&scopes).map_err(|error|OrchestrationError::V37StoreFailure(
+                        format!("registered account observer scope: {error:?}")))?;
+                Some(binding)
+            },
+        };
+        let program_identity=AppContainerProfile::capture_program_identity(program)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("account program identity: {error:?}")))?;
+        profile.grant_bound_program(program,&program_identity)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("account program scope: {error:?}")))?;
+        profile.verify_bound_program_grant(program,&program_identity)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("account program scope readback: {error:?}")))?;
+        Ok(held)
+    }
+
     /// Read the durable F.1 instance registry after the parent verifies User
     /// origin. The list exposes no account data, credential path or home path.
     pub(super) fn dispatch_owner_instance_list_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
@@ -706,39 +810,6 @@ fn owner_login_profile_name(instance_id: &str, home_identity: &RootIdentity) -> 
     format!("Gogoke37.OwnerLogin.{}", &digest[..40])
 }
 
-fn grant_owner_login_scope(profile: &AppContainerProfile, home: &instance::ResolvedDirectory,
-    runtime: &Path, runtime_identity: &RootIdentity, program: &Path) -> Result<()> {
-    // The runtime is a child of the exact F home. Its inherited ACE is
-    // verified with the rest of that tree; granting it an extra explicit ACE
-    // would make the bound-tree witness ambiguous.
-    let actual_runtime = inspect_root(runtime).map_err(|error|
-        OrchestrationError::V37StoreFailure(format!("login runtime scope: {error:?}")))?;
-    if &actual_runtime.identity != runtime_identity || runtime.parent() != Some(home.path.as_path()) {
-        return Err(OrchestrationError::AccessDenied);
-    }
-    let program_identity = AppContainerProfile::capture_program_identity(program)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login program identity: {error}")))?;
-    profile.grant_bound_tree(&home.path, &home.identity, true)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login instance scope: {error}")))?;
-    profile.grant_bound_program(program, &program_identity)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login program scope: {error}")))?;
-    profile.verify_bound_tree_grant(&home.path, &home.identity, true)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login instance scope verification: {error}")))?;
-    profile.verify_bound_program_grant(program, &program_identity)
-        .map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "login program scope verification: {error}")))?;
-    let actual_runtime = inspect_root(runtime).map_err(|error|
-        OrchestrationError::V37StoreFailure(format!("login runtime verification: {error:?}")))?;
-    if &actual_runtime.identity != runtime_identity {
-        return Err(OrchestrationError::AccessDenied);
-    }
-    Ok(())
-}
-
 impl<'root> ProductDatabase<'root> {
     fn prior_owner_login_custody(&self, command: &OwnerLoginCommand) -> Result<bool> {
         let query = Statement::prepare(self.connection.as_ptr(),
@@ -907,6 +978,10 @@ impl<'root> ProductDatabase<'root> {
         if row.driver_id != "codex" {
             return self.begin_registered_provider_login(command);
         }
+        crate::store::session_transport::credential_launch::quiescent_cleanup(&mut self.connection,
+            self.root,&command.instance_id,&command.request_id)
+            .map_err(|error|self.settle_owner_login_preflight_error(command,
+                OrchestrationError::V37StoreFailure(format!("ordinary login credential aliases: {error}"))))?;
         let launch = self.prepare_owner_codex_login(&command.instance_id)
             .map_err(|error| self.settle_owner_login_preflight_error(command, error))?;
         self.start_owner_device_login(command, launch, |custodian, prepared| custodian.activate(prepared))
@@ -925,7 +1000,8 @@ impl<'root> ProductDatabase<'root> {
             runtime_home:Some(launch.runtime_home.clone()),runtime_identity:Some(launch.runtime_identity.clone()),
             registered_driver:Some(launch.registered_driver.clone()),
             registered_home_identity:Some(launch.registered_home_identity.clone()),
-            proof,durable_revision:None,abort_prepared,released:false,frame:None,request:None,
+            proof,durable_revision:None,abort_prepared,released:false,frame:None,backend_source:None,
+            credential_custody:None,request:None,
         };
         if let Err(error) = authority::record_prepared_process(
             &mut self.connection, &operation_id, &prepared,
@@ -1369,7 +1445,7 @@ impl<'root> ProductDatabase<'root> {
         let state = match (&pending.custody.request, &pending.custody.prepared,
             &pending.custody.frame) {
             (Some(request), Some(prepared), Some(frame)) => {
-                match self.record_trusted_account_read(request, prepared, frame)
+                match self.record_account_and_credential_backend(request, prepared, frame, pending.custody.backend_source.as_ref())
                     .and_then(|receipt| owner_login_state_from_receipt(&receipt)) {
                     Ok(state) => state,
                     Err(error) => {
@@ -1636,6 +1712,8 @@ impl<'root> ProductDatabase<'root> {
                     abort_prepared: false,
                     released: true,
                     frame: None,
+                    backend_source: None,
+                    credential_custody: None,
                     request: None,
                 },
                 continuation: Some(ConfirmedLoginContinuation {
@@ -1715,7 +1793,7 @@ impl<'root> ProductDatabase<'root> {
             expected_revision: command.expected_revision,
             payload: BTreeMap::new(),
         };
-        let receipt = match self.dispatch_owner_login_observation_inner(&observation) {
+        let receipt = match self.dispatch_owner_login_observation_inner(&observation, false) {
             Ok(receipt) => receipt,
             Err(failure) => {
                 if let Some(custody) = failure.pending {
@@ -1771,14 +1849,15 @@ impl<'root> ProductDatabase<'root> {
         let scope = (|| -> Result<_> {
             let mut environment = clean_environment(&home.path, &runtime)?;
             let login_environment = ordinary_login_environment(&home.path, &runtime)?;
-            grant_owner_login_scope(&profile, &home, &runtime, &runtime_identity, &program)?;
+            let credential_custody = self.grant_registered_account_observer(&profile,
+                instance_id,&home,&runtime,&runtime_identity,&program)?;
             let module = CompatModule::prepare(self.root, &home.path, &home.identity,
                 &profile, &profile_name).map_err(|source|
                     OrchestrationError::V37StoreFailure(format!("login path compatibility: {source}")))?;
             module.extend_environment(&mut environment);
-            Ok((login_environment, environment, module))
+            Ok((login_environment, environment, module, credential_custody))
         })();
-        let (login_environment, environment, module) = match scope {
+        let (login_environment, environment, module, credential_custody) = match scope {
             Ok(prepared) => prepared,
             Err(error) => {
                 let cleanup = remove_owned_runtime(&runtime, &runtime_identity);
@@ -1824,6 +1903,7 @@ impl<'root> ProductDatabase<'root> {
         account_read.app_container_cli_identity_services = true;
         account_read.path_compat = Some(module);
         Ok(PreparedOwnerLogin {
+            credential_custody,
             login: PrepareRequest { launch: login, binding: binding.clone() },
             account_read: PrepareRequest { launch: account_read, binding },
             runtime_home: runtime,
@@ -1913,11 +1993,78 @@ impl<'root> ProductDatabase<'root> {
     /// UserOriginProof; it never accepts a process path, argv, or account
     /// contents from the wire. No model request is made.
     pub(super) fn dispatch_owner_login_observation(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_owner_login_observation_selected(request, false)
+    }
+
+    /// Native-only binding of a new observer to the original instance's File
+    /// configuration. The wire has no selector, and other modes are not converted.
+    pub(super) fn dispatch_owner_file_backend_observation(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        let configured = instance::read_configured_credential_backend(&self.connection, &request.target_id)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential configured source: {error:?}")))?;
+        if configured.backend != instance::CredentialBackend::File {
+            return Err(OrchestrationError::Invalid("original instance is not configured for File credentials"));
+        }
+        self.dispatch_owner_login_observation_selected(request, true)
+    }
+
+    /// Host composition only: an existing signed-in instance is observed by
+    /// the same fixed binary before selecting File for a new process. No login
+    /// or credential parsing is performed, and non-File modes are not changed.
+    pub(super) fn ensure_native_credential_backend(&mut self,instance_id:&str,
+        original_request:&V37Request)->Result<()> {
+        let registered=self.read_registered_instance(instance_id)?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if registered.driver_id!="codex" || registered.login_state!="LOGGED_IN" {return Ok(());}
+        match instance::read_usable_credential_backend(&self.connection,instance_id) {
+            Ok(_)=>return Ok(()),
+            Err(instance::CredentialRegistryError::Unusable)=>(),
+            Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!("credential startup source: {error:?}"))),
+        }
+        for file_bound in [false,true] {
+            if !file_bound {
+                match instance::read_configured_credential_backend(&self.connection,instance_id) {
+                    Ok(configured) if configured.backend==instance::CredentialBackend::File=>continue,
+                    Ok(_)=>return Err(OrchestrationError::Invalid("registered instance credential backend is not File")),
+                    Err(instance::CredentialRegistryError::Unusable)=>(),
+                    Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!("credential configuration source: {error:?}"))),
+                }
+            }
+            let revision=self.user_instance_revision(instance_id)?;
+            let selector=if file_bound {"file-startup"} else {"original-config"};
+            let id=format!("credential-observe-{}",crate::store::digest::sha256_hex(
+                format!("{}\n{instance_id}\n{selector}\n{revision}",
+                    crate::store::digest::sha256_hex(&original_request.raw_bytes)).as_bytes()));
+            let text=|value:&str|Json::String(JsonString::from_str(value));
+            let fields=BTreeMap::from([
+                (JsonString::from_str("schema"),text("gogoke.37.operations.v1")),
+                (JsonString::from_str("family"),text("K-INSTANCE")),
+                (JsonString::from_str("operation"),text("login-state")),
+                (JsonString::from_str("requestId"),text(&id)),
+                (JsonString::from_str("targetId"),text(instance_id)),
+                (JsonString::from_str("domainId"),text("global")),
+                (JsonString::from_str("expectedRevision"),text(&revision.to_string())),
+                (JsonString::from_str("payload"),Json::Object(BTreeMap::new())),
+            ]);
+            let raw=Json::Object(fields).canonical().into_bytes();
+            let request=decode_request(&raw).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native credential observation request: {error:?}")))?;
+            let receipt=if file_bound {self.dispatch_owner_file_backend_observation(&request)?}
+                else {self.dispatch_owner_login_observation(&request)?};
+            if owner_login_state_from_receipt(&receipt)?!="LOGGED_IN" {
+                return Err(OrchestrationError::Invalid("native credential observation did not confirm account presence"));
+            }
+        }
+        instance::read_usable_credential_backend(&self.connection,instance_id)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("native File startup qualification: {error:?}")))?;
+        Ok(())
+    }
+
+    fn dispatch_owner_login_observation_selected(&mut self, request: &V37Request, file_bound: bool) -> Result<Vec<u8>> {
         if matches!(self.owner_login, Some(OwnerLoginSession::Active(_) |
             OwnerLoginSession::PendingFirstStop(_) | OwnerLoginSession::PendingAccount(_))) {
             return Err(OrchestrationError::OperationConflict);
         }
-        match self.dispatch_owner_login_observation_inner(request) {
+        match self.dispatch_owner_login_observation_inner(request, file_bound) {
             Ok(receipt) => Ok(receipt),
             Err(failure) => {
                 if let Some(custody) = failure.pending {
@@ -1936,7 +2083,7 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
-    fn dispatch_owner_login_observation_inner(&mut self, request: &V37Request)
+    fn dispatch_owner_login_observation_inner(&mut self, request: &V37Request, file_bound: bool)
         -> std::result::Result<Vec<u8>, AccountObservationFailure> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         let current = self.user_instance_revision(&request.target_id)?;
@@ -1954,7 +2101,21 @@ impl<'root> ProductDatabase<'root> {
                 Default::default()));
         }
         // This resolves the pin/home and scopes only; no process is prepared.
-        let prepared_login = self.prepare_owner_codex_login(&request.target_id)?;
+        let observed_version = self.read_registered_instance(&request.target_id)?
+            .ok_or(OrchestrationError::AccessDenied)?.version;
+        let mut prepared_login = self.prepare_owner_codex_login(&request.target_id)?;
+        if file_bound {
+            let args = &mut prepared_login.account_read.launch.arguments;
+            if args.last().map(String::as_str) != Some("app-server") {
+                let cleanup = remove_owned_runtime(&prepared_login.runtime_home,
+                    &prepared_login.runtime_identity);
+                return Err(retain_primary_cleanup_error(OrchestrationError::Invalid(
+                    "credential observer is not the original app-server launch"), cleanup,
+                    "credential observer selection").into());
+            }
+            let position = args.len() - 1;
+            args.splice(position..position, ["-c".to_owned(), "cli_auth_credentials_store=\"file\"".to_owned()]);
+        }
         let operation_hash = crate::store::digest::sha256_hex(&request.raw_bytes);
         let operation_id = format!("login-observe-{}", &operation_hash[..40]);
         let prepared = match self.process_custodian.prepare(&prepared_login.account_read) {
@@ -1967,7 +2128,8 @@ impl<'root> ProductDatabase<'root> {
                 runtime_home: Some(prepared_login.runtime_home.clone()),
                 runtime_identity: Some(prepared_login.runtime_identity.clone()),
                 registered_driver: None, registered_home_identity: None,
-                proof, durable_revision, abort_prepared, released: false, frame: None,
+                proof, durable_revision, abort_prepared, released: false, frame: None, backend_source: None,
+                credential_custody:prepared_login.credential_custody.clone(),
                 request: Some(V37Request {
                     raw_bytes: request.raw_bytes.clone(), family: request.family.clone(),
                     operation: request.operation.clone(), request_id: request.request_id.clone(),
@@ -2021,7 +2183,22 @@ impl<'root> ProductDatabase<'root> {
                 "login active record: {error:?}; stop: {stop:?}; unknown record: {unknown:?}")),
                 pending: Some(pending(stop.ok(), None, false)) });
         }
-        let execution = self.observe_account_via_active_cli(&prepared, &prepared_login.runtime_home);
+        let mut configured_backend = instance::CredentialBackend::Unknown;
+        let execution = self.observe_account_with_credential_configuration(&prepared,
+            &prepared_login.runtime_home, &mut configured_backend, file_bound);
+        let backend_source = if execution.as_ref().is_ok_and(|frame|
+            parse_account_read(frame.bytes()) == NativeAccountState::CredentialPresent) {
+            Some(instance::BackendSource {
+                request_id: request.request_id.clone(), instance_id: request.target_id.clone(),
+                home_identity: prepared_login.registered_home_identity.clone(),
+                program_digest: prepared.binding.binary_digest_sha256.clone(), version: observed_version,
+                backend: configured_backend,
+                startup_selector: if file_bound { instance::CredentialStartupSelector::FileBound }
+                    else { instance::CredentialStartupSelector::Unknown },
+                operation_id: operation_id.clone(), ticket: prepared.ticket.opaque().into(),
+                nonce: prepared.custodian_nonce.clone(), generation: prepared.binding.generation.clone(),
+            })
+        } else { None };
         let close = self.process_custodian.close_child_input(&prepared.ticket)
             .map_err(|error| format!("account/read stdin close: {error}"));
         let stop = self.process_custodian.stop(&prepared.ticket,
@@ -2036,6 +2213,7 @@ impl<'root> ProductDatabase<'root> {
                     execution.as_ref().err()));
                 let mut custody = pending(None, None, false);
                 custody.frame = execution.ok();
+                custody.backend_source = backend_source;
                 return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
             }
         };
@@ -2051,6 +2229,7 @@ impl<'root> ProductDatabase<'root> {
                     execution.as_ref().err()));
                 let mut custody = pending(Some(proof), None, false);
                 custody.frame = execution.ok();
+                custody.backend_source = backend_source;
                 return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
             }
         };
@@ -2068,27 +2247,73 @@ impl<'root> ProductDatabase<'root> {
             };
             let mut custody = pending(Some(proof), Some(revision), false);
             custody.frame = execution.ok();
+            custody.backend_source = backend_source;
             return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
         }
-        self.finish_confirmed_account_observation(request, &prepared,
-            &prepared_login.runtime_home, &prepared_login.runtime_identity, execution)
-            .map_err(Into::into)
+        // Keep the original frame/source if settling either durable receipt
+        // fails. Reconciliation uses this same stopped process, not a new read.
+        let retained_frame = execution.as_ref().ok().cloned();
+        match self.finish_confirmed_account_observation(request, &prepared,
+            &prepared_login.runtime_home, &prepared_login.runtime_identity, execution, backend_source.clone()) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                let mut custody = pending(Some(proof), Some(revision), false);
+                custody.released = true;
+                custody.frame = retained_frame;
+                custody.backend_source = backend_source;
+                // Cleanup is reconciled only while the original directory still
+                // exists; a completed cleanup must not be attempted a second time.
+                if !prepared_login.runtime_home.try_exists().map_err(|source|
+                    OrchestrationError::V37StoreFailure(format!("account runtime existence: {source}")))? {
+                    custody.runtime_home = None;
+                    custody.runtime_identity = None;
+                }
+                Err(AccountObservationFailure { error, pending: Some(custody) })
+            }
+        }
     }
 
     fn finish_confirmed_account_observation(&mut self, request: &V37Request,
         prepared: &PreparedCustody, runtime: &Path, identity: &RootIdentity,
-        execution: Result<OriginBoundFrame>) -> Result<Vec<u8>> {
+        execution: Result<OriginBoundFrame>, backend_source: Option<instance::BackendSource>) -> Result<Vec<u8>> {
         let cleanup = remove_owned_runtime(runtime, identity);
         let frame = match execution {
             Ok(frame) => { cleanup?; frame }
             Err(error) => return Err(retain_primary_cleanup_error(error, cleanup,
                 "account/read execution")),
         };
-        self.record_trusted_account_read(request, prepared, &frame)
+        self.record_account_and_credential_backend(request, prepared, &frame, backend_source.as_ref())
+    }
+
+    fn record_account_and_credential_backend(&mut self, request: &V37Request,
+        prepared: &PreparedCustody, frame: &OriginBoundFrame,
+        backend_source: Option<&instance::BackendSource>) -> Result<Vec<u8>> {
+        let receipt = match self.prior_login_state_request(request)? {
+            Some(receipt) => receipt,
+            None => self.record_trusted_account_read(request, prepared, frame)?,
+        };
+        if let Some(source) = backend_source.filter(|_| owner_login_state_from_receipt(&receipt)
+            .is_ok_and(|state| state == "LOGGED_IN")) {
+            if frame.custody() != prepared || source.request_id != request.request_id
+                || source.instance_id != request.target_id || source.ticket != prepared.ticket.opaque()
+                || source.nonce != prepared.custodian_nonce
+                || parse_account_read(frame.bytes()) != NativeAccountState::CredentialPresent {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            instance::record_credential_backend(&mut self.connection, source)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential backend source: {error:?}")))?;
+        }
+        Ok(receipt)
     }
 
     fn observe_account_via_active_cli(&self, prepared: &PreparedCustody, cwd: &Path)
         -> Result<OriginBoundFrame> {
+        let mut ignored = instance::CredentialBackend::Unknown;
+        self.observe_account_with_credential_configuration(prepared, cwd, &mut ignored, false)
+    }
+
+    fn observe_account_with_credential_configuration(&self, prepared: &PreparedCustody, cwd: &Path,
+        configured_backend: &mut instance::CredentialBackend, file_bound: bool) -> Result<OriginBoundFrame> {
         use crate::store::session_transport::codex_rpc::{self, Command, RpcId, Reply};
         let process = self.process_custodian.active(&prepared.ticket)
             .ok_or(OrchestrationError::Invalid("login process absent"))?;
@@ -2124,6 +2349,11 @@ impl<'root> ProductDatabase<'root> {
         match codex_rpc::decode(config.bytes(), Some((&config_id, &config_command))) {
             Ok(Reply::MemoryOff { .. }) => (),
             result => return Err(OrchestrationError::V37StoreFailure(format!("native effective memory observation: {result:?}"))),
+        }
+        *configured_backend = configured_credential_backend(config.bytes())?;
+        if file_bound && *configured_backend != instance::CredentialBackend::File {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "File-bound observer effective credential configuration: {configured_backend:?}")));
         }
         process.write_persistent_frame(ACCOUNT_READ)
             .map_err(|error| OrchestrationError::Process(
@@ -2213,6 +2443,37 @@ fn owner_login_state_from_receipt(receipt: &[u8]) -> Result<String> {
             _ => "UNKNOWN".into(),
         },
         _ => "UNKNOWN".into(),
+    })
+}
+
+/// Read only the non-secret selector in the already custody/codec-checked id3
+/// frame. A missing key is not the fixed version's explicit default null.
+fn configured_credential_backend(frame: &[u8]) -> Result<instance::CredentialBackend> {
+    configured_credential_backend_for_id(frame,"3")
+}
+
+pub(super) fn configured_credential_backend_for_id(frame:&[u8],expected_id:&str)
+    ->Result<instance::CredentialBackend> {
+    let text = std::str::from_utf8(frame).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("credential configuration UTF8: {error}")))?;
+    let parsed = Parser::parse(text.trim_end()).map_err(OrchestrationError::Atomic)?;
+    let mut envelope = object(parsed).ok_or(OrchestrationError::Invalid("credential config envelope"))?;
+    if !matches!(envelope.get(&JsonString::from_str("id")), Some(Json::Number(id)) if id == expected_id)
+        || envelope.contains_key(&JsonString::from_str("error")) {
+        return Err(OrchestrationError::Invalid("credential config original RPC identity"));
+    }
+    let mut result = envelope.remove(&JsonString::from_str("result")).and_then(object)
+        .ok_or(OrchestrationError::Invalid("credential config result"))?;
+    let mut config = result.remove(&JsonString::from_str("config")).and_then(object)
+        .ok_or(OrchestrationError::Invalid("credential config object"))?;
+    Ok(match config.remove(&JsonString::from_str("cli_auth_credentials_store")) {
+        Some(Json::Null) => instance::CredentialBackend::File,
+        Some(Json::String(value)) => match value.to_well_formed_string().as_deref() {
+            Some("file") => instance::CredentialBackend::File,
+            Some("keyring" | "auto" | "ephemeral") => instance::CredentialBackend::Other,
+            _ => instance::CredentialBackend::Unknown,
+        },
+        _ => instance::CredentialBackend::Unknown,
     })
 }
 
@@ -2588,6 +2849,21 @@ exit 0
     }
 
     #[test]
+    fn credential_configuration_preserves_missing_default_and_non_file_sources() {
+        for value in ["null", "\"file\""] {
+            let frame = format!("{{\"id\":3,\"result\":{{\"config\":{{\"cli_auth_credentials_store\":{value}}}}}}}");
+            assert_eq!(configured_credential_backend(frame.as_bytes()).unwrap(), instance::CredentialBackend::File);
+        }
+        for value in ["\"keyring\"", "\"auto\"", "\"ephemeral\""] {
+            let frame = format!("{{\"id\":3,\"result\":{{\"config\":{{\"cli_auth_credentials_store\":{value}}}}}}}");
+            assert_eq!(configured_credential_backend(frame.as_bytes()).unwrap(), instance::CredentialBackend::Other);
+        }
+        assert_eq!(configured_credential_backend(br#"{"id":3,"result":{"config":{}}}"#).unwrap(),
+            instance::CredentialBackend::Unknown);
+        assert!(configured_credential_backend(br#"{"id":"3","result":{"config":{"cli_auth_credentials_store":"file"}}}"#).is_err());
+    }
+
+    #[test]
     fn account_read_does_not_accept_other_rpc_or_unrecognized_account_type() {
         assert_eq!(parse_account_read(br#"{"id":1,"result":{"account":{"type":"chatgpt"}}}"#),
             NativeAccountState::Unknown);
@@ -2937,7 +3213,7 @@ exit 0
         let held = fs::OpenOptions::new().read(true).share_mode(0x1).open(&sentinel).unwrap();
         let observation = request("login-state", "cleanupControl", 1, "{}");
         let error = product.finish_confirmed_account_observation(&observation,
-            &prepared, &launch.runtime_home, &launch.runtime_identity, execution).unwrap_err();
+            &prepared, &launch.runtime_home, &launch.runtime_identity, execution, None).unwrap_err();
         let diagnostic = format!("{error:?}");
         assert!(diagnostic.contains("unexpected argument"), "CLI's original execution error was lost");
         assert!(diagnostic.contains("runtime cleanup"), "actual Windows delete failure was lost");
@@ -3106,6 +3382,7 @@ exit 0
                 profile_id: "instanceA".into(), domain_id: "global".into(),
                 generation: "1".into() } };
         let launch = PreparedOwnerLogin { login: login.clone(), account_read: login.clone(),
+            credential_custody:None,
             runtime_home: runtime.clone(), runtime_identity: runtime_identity.clone(),
             registered_driver: "opencode".into(),
             registered_home_identity: home.identity.clone() };
@@ -3383,6 +3660,19 @@ exit 0
             &request("login-state", "observeSyntheticPresence", 1, "{}")).unwrap();
         assert!(String::from_utf8(observed).unwrap().contains("\"state\":\"LOGGED_IN\""),
             "CLI presence observation is distinct from authentication validity");
+        let original=instance::read_configured_credential_backend(&product.connection,"instanceA").unwrap();
+        assert_eq!(original.backend,instance::CredentialBackend::File);
+        assert_eq!(original.startup_selector,instance::CredentialStartupSelector::Unknown,
+            "the prior CLI was not started with an explicit File selector");
+        assert!(instance::read_usable_credential_backend(&product.connection,"instanceA").is_err());
+        let bound=product.dispatch_owner_file_backend_observation(
+            &request("login-state","observeSyntheticFileStartup",2,"{}")).unwrap();
+        assert_eq!(owner_login_state_from_receipt(&bound).unwrap(),"LOGGED_IN");
+        let qualified=instance::read_usable_credential_backend(&product.connection,"instanceA").unwrap();
+        assert_eq!(qualified.startup_selector,instance::CredentialStartupSelector::FileBound);
+        assert_ne!(original.operation_id,qualified.operation_id,
+            "File-bound evidence must come from the subsequent actual CLI, not backstamp the old process");
+        assert_ne!(original.ticket,qualified.ticket);
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();

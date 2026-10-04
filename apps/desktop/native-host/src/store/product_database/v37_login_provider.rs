@@ -266,6 +266,7 @@ impl<'root> ProductDatabase<'root> {
         let (runtime, runtime_identity) = runtime_home(&provider.home.path)
             .map_err(|error| self.settle_owner_login_preflight_error(command, error))?;
         let launch = PreparedOwnerLogin {
+            credential_custody:None,
             login: provider.login.clone(),
             account_read: provider.login.clone(), // unused for this CLI
             runtime_home: runtime,
@@ -393,6 +394,8 @@ impl<'root> ProductDatabase<'root> {
             abort_prepared,
             released: false,
             frame: None,
+            backend_source: None,
+            credential_custody:None,
             request: None,
         };
         if let Err(error) =

@@ -37,6 +37,9 @@ pub(crate) struct LaunchEvidence {
     claim: ClaimObservation,
     pin: InstancePin,
     homes: InstanceLaunchHomes,
+    private_history: Option<instance::PrivateHistoryReceipt>,
+    credential: Option<super::credential_launch::CredentialLaunch>,
+    launch_request_id: String,
     repository_id: String,
     worktree: ResolvedBinding,
     worktree_group: Vec<ResolvedBinding>,
@@ -116,31 +119,34 @@ impl LaunchEvidence {
         db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         domain_id: &str, seat_id: &str, session_id: &str,
         repository_id: &str, worktree_id: &str,
+        request_id: &str,
     ) -> Result<Self, String> {
         Self::observe_with_origin(db,root,owner,&NativeOrigin::user(owner),
-            domain_id,seat_id,session_id,repository_id,worktree_id)
+            domain_id,seat_id,session_id,repository_id,worktree_id,request_id)
     }
 
     pub(crate) fn observe_with_origin(
         db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,host:&OwnerIssuer,
         origin:&NativeOrigin<'_>,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,
+        request_id:&str,
     )->Result<Self,String> {
         Self::observe_with_guard(db,root,host,origin,domain_id,seat_id,session_id,
-            repository_id,worktree_id,None)
+            repository_id,worktree_id,request_id,None)
     }
 
     pub(crate) fn observe_host(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
         owner:&OwnerIssuer,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,proof:&HostEscalationProof,
-        choice:&HostRecipient)->Result<Self,String> {
+        choice:&HostRecipient,request_id:&str)->Result<Self,String> {
         Self::observe_with_guard(db,root,owner,&NativeOrigin::user(owner),domain_id,seat_id,
-            session_id,repository_id,worktree_id,Some((proof,choice)))
+            session_id,repository_id,worktree_id,request_id,Some((proof,choice)))
     }
 
     fn observe_with_guard(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
         host:&OwnerIssuer,origin:&NativeOrigin<'_>,domain_id:&str,seat_id:&str,session_id:&str,
         repository_id:&str,worktree_id:&str,
+        request_id:&str,
         guard:Option<(&HostEscalationProof,&HostRecipient)>)->Result<Self,String> {
         verify_host_guard(db,host,guard)?;
         let identity = evidence(authority::read_product_identity(db, host))?;
@@ -156,7 +162,7 @@ impl LaunchEvidence {
             NativeOrigin::Lead(admission)=>Some((*admission).clone()),
             NativeOrigin::User(_)=>None,
         };
-        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission,guard)
+        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission,guard,request_id)
     }
 
     pub(crate) fn observe_resume(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -232,14 +238,14 @@ impl LaunchEvidence {
         let candidate=ClaimObservation {generation,home_id,binding_id,instance_id,
             phase:SessionPhase::Committed,process_operation_id:None,..old.clone()};
         Self::build(db,root,owner,identity,seat,candidate,repository_id,worktree_id,
-            Some(old),Some(request_id.to_owned()),None,guard)
+            Some(old),Some(request_id.to_owned()),None,guard,request_id)
     }
 
     fn build(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         identity: ProductIdentitySnapshot, seat: Seat, claim: ClaimObservation,
         repository_id: &str, worktree_id: &str, resume_old: Option<ClaimObservation>,
         resume_request_id: Option<String>,launch_admission:Option<seat::NativeLeadAdmission>,
-        host_guard:Option<(&HostEscalationProof,&HostRecipient)>) -> Result<Self,String> {
+        host_guard:Option<(&HostEscalationProof,&HostRecipient)>,request_id:&str) -> Result<Self,String> {
         verify_host_guard(db,owner,host_guard)?;
         let domain_id=&claim.domain_id;
         let session_id=&claim.session_id;
@@ -257,6 +263,47 @@ impl LaunchEvidence {
         let profile = evidence(AppContainerProfile::ensure_for_cli(&profile_name,
             tier == PermissionTier::NetworkedWrite))?;
         let homes = launch_homes(db, root, &profile, &claim, &pin)?;
+        let private_history = if pin.driver_id == "codex" {
+            let input = instance::PrivateHistoryLaunch {
+                instance_id:&claim.instance_id,domain_id:&claim.domain_id,
+                session_id:&claim.session_id,seat_id:&seat.seat_id,
+                seat_incarnation:&seat.incarnation,binding_id:&claim.binding_id,
+                generation:&claim.generation,request_id,
+            };
+            Some(if let Some(old)=&resume_old {
+                let prior=evidence(instance::read_private_history_generation(db,
+                    &old.binding_id,&old.generation))?
+                    .ok_or("native resume: original private history absent; preserve legacy history")?;
+                let source=prior.source.as_ref()
+                    .ok_or("native resume: original private history source absent")?;
+                if old.process_operation_id.as_deref()!=Some(source.process_operation_id.as_str()) {
+                    return Err("native resume: private history custody changed".into());
+                }
+                let stopped_source=crate::store::atomic::Statement::prepare(db.as_ptr(),
+                    "SELECT 1 FROM main.gogoke_coordination_process_custody
+                      WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3
+                        AND domain_id=?4 AND generation=?5 AND state='STOPPED'
+                        AND stop_proof_hash IS NOT NULL AND stop_proof_hash<>''")
+                    .map_err(|error|format!("native history original custody: {error:?}"))?;
+                for (index,value) in [source.process_operation_id.as_str(),source.ticket.as_str(),
+                    source.custodian_nonce.as_str(),old.domain_id.as_str(),old.generation.as_str()].iter().enumerate() {
+                    stopped_source.bind_text((index+1) as i32,value)
+                        .map_err(|error|format!("native history original custody bind: {error:?}"))?;
+                }
+                if !stopped_source.step_row().map_err(|error|format!("native history original custody read: {error:?}"))?
+                    || stopped_source.step_row().map_err(|error|format!("native history duplicate custody: {error:?}"))? {
+                    return Err("native history: original stopped custody absent".into());
+                }
+                drop(stopped_source);
+                let stopped=instance::StoppedPrivateHistory {history_id:&prior.history_id,
+                    binding_id:&prior.binding_id,generation:&prior.generation,
+                    request_id:&prior.request_id,source};
+                evidence(instance::resume_private_history(db,root,&input,&stopped))?
+            } else {evidence(instance::create_initial_private_history(db,root,&input))?})
+        } else {None};
+        let credential=if let Some(history)=&private_history {
+            super::credential_launch::CredentialLaunch::prepare(db,root,&profile,history,request_id)?
+        } else {None};
         let worktree = evidence(worktree::resolve_for_launch(db, root, worktree_id,
             repository_id, domain_id, seat_id, &seat.incarnation, seat.generation))?;
         let worktree_group = evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
@@ -268,7 +315,13 @@ impl LaunchEvidence {
         // Runtime home writes are separate from workspace permission. No
         // public parent, other session, source tree or common Git dir is granted.
         verify_host_guard(db,owner,host_guard)?;
-        evidence(profile.grant_bound_tree(&homes.instance.path, &homes.instance.identity, true))?;
+        let model_home=private_history.as_ref().map(|history|&history.directory).unwrap_or(&homes.instance);
+        if let Some(credential)=&credential {
+            evidence(profile.grant_bound_credential_tree(&model_home.path,&model_home.identity,
+                &credential.binding,&credential.alias,true))?;
+        } else {
+            evidence(profile.grant_bound_tree(&model_home.path, &model_home.identity, true))?;
+        }
         verify_host_guard(db,owner,host_guard)?;
         evidence(profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
@@ -283,7 +336,7 @@ impl LaunchEvidence {
             Some(super::codex_component::BoundCodexComponent::prepare(&program, &profile)?)
         } else { None };
         let mut roots = vec![
-            (homes.instance.path.clone(), homes.instance.identity.clone()),
+            (model_home.path.clone(), model_home.identity.clone()),
             (homes.session.path.clone(), homes.session.identity.clone()),
         ];
         roots.extend(worktree_group.iter().map(|member|
@@ -295,7 +348,9 @@ impl LaunchEvidence {
             verify_host_guard(db,owner,host_guard)?;
             (None, Some(Arc::new(evidence(DirectoryRoots::prepare(root, &roots))?)))
         };
-        let observed = Self { identity, seat, claim, pin, homes, repository_id: repository_id.into(),
+        let observed = Self { identity, seat, claim, pin, homes, private_history,
+            credential,
+            launch_request_id:request_id.into(),repository_id: repository_id.into(),
             worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id,launch_admission,
             host_guard:host_guard.map(|(proof,choice)|(proof.clone(),choice.clone())) };
@@ -410,6 +465,22 @@ impl LaunchEvidence {
         }
         let homes = launch_homes(db, root, &self.profile, &claim, &self.pin)?;
         if homes != self.homes { return Err("native session launch: physical homes changed".into()); }
+        if let Some(history)=&self.private_history {
+            evidence(instance::verify_private_history(db,root,history,&self.history_input()))?;
+        }
+        if let Some(credential)=&self.credential {credential.verify(db,root,&self.profile)?;}
+        // A owns immutable purpose and session membership. First open creates
+        // this registration before activation; absence must never imply WORK.
+        if expected_operation.is_some() {
+            let registration=evidence(crate::store::ledger::read_registered_session(db,
+                &self.claim.session_id))?.ok_or("native session launch: A registration absent")?;
+            if registration.domain_id!=self.claim.domain_id || registration.seat_id!=self.seat.seat_id {
+                return Err("native session launch: A registration binding changed".into());
+            }
+            if self.resume_old.is_some() && registration.purpose==crate::store::ledger::SessionPurpose::FormalReview {
+                return Err("native resume: formal review continuation refused".into());
+            }
+        }
         let worktree = evidence(worktree::resolve_for_launch(db, root, &self.worktree.worktree_id,
             &self.repository_id, &self.seat.domain_id, &self.seat.seat_id,
             &self.seat.incarnation, self.seat.generation))?;
@@ -429,10 +500,26 @@ impl LaunchEvidence {
         }
         let program = evidence(instance::locate_pinned_program(&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
         if program != self.program { return Err("native session launch: program path changed".into()); }
-        for (path, identity, writable) in [
-            (&self.homes.instance.path, &self.homes.instance.identity, true),
-            (&self.homes.session.path, &self.homes.session.identity, true),
-        ] {
+        if let Some(credential)=&self.credential {
+            match phase {
+                VerificationPhase::PreActivation=>{
+                    evidence(self.profile.verify_bound_credential_tree_grant(&self.model_home().path,
+                        &self.model_home().identity,&credential.binding,&credential.alias,true))?;
+                },
+                VerificationPhase::Active=>{
+                    evidence(self.profile.verify_bound_directory_grant(&self.model_home().path,
+                        &self.model_home().identity,true))?;
+                },
+            }
+        } else {
+            match phase {
+                VerificationPhase::PreActivation=>{evidence(self.profile.verify_bound_tree_grant(
+                    &self.model_home().path,&self.model_home().identity,true))?;},
+                VerificationPhase::Active=>{evidence(self.profile.verify_bound_directory_grant(
+                    &self.model_home().path,&self.model_home().identity,true))?;},
+            }
+        }
+        for (path, identity, writable) in [(&self.homes.session.path, &self.homes.session.identity, true)] {
             match phase {
                 VerificationPhase::PreActivation =>
                     evidence(self.profile.verify_bound_tree_grant(path, identity, writable))?,
@@ -462,6 +549,42 @@ impl LaunchEvidence {
     }
 
     pub(crate) fn cwd(&self) -> &Path { &self.worktree.path }
+
+    fn model_home(&self)->&instance::ResolvedDirectory {
+        self.private_history.as_ref().map(|history|&history.directory).unwrap_or(&self.homes.instance)
+    }
+
+    pub(crate) fn file_credentials_bound(&self)->bool {self.credential.is_some()}
+
+    pub(crate) fn revoke_stopped_credential(&self,db:&mut VerifiedDatabaseConnection<'_>,
+        root:&RootLock,operation:&str,custody:&crate::process::PreparedCustody)->Result<(),String> {
+        if let Some(credential)=&self.credential {
+            credential.revoke(db,root,&self.profile,operation,custody)?;
+        }
+        Ok(())
+    }
+
+    fn history_input(&self)->instance::PrivateHistoryLaunch<'_> {
+        instance::PrivateHistoryLaunch {instance_id:&self.claim.instance_id,
+            domain_id:&self.claim.domain_id,session_id:&self.claim.session_id,
+            seat_id:&self.seat.seat_id,seat_incarnation:&self.seat.incarnation,
+            binding_id:&self.claim.binding_id,generation:&self.claim.generation,
+            request_id:&self.launch_request_id}
+    }
+
+    pub(crate) fn bind_original_history_source(&self,db:&VerifiedDatabaseConnection<'_>,
+        custody:&crate::process::PreparedCustody,operation:&str)->Result<(),String> {
+        if let Some(history)=&self.private_history {
+            if custody.binding.domain_id!=self.claim.domain_id
+                || custody.binding.generation!=self.claim.generation {
+                return Err("native history: original custody binding changed".into());
+            }
+            evidence(instance::bind_private_history_continuation_in_transaction(db,history,
+                &instance::PrivateHistorySource {process_operation_id:operation.into(),
+                    ticket:custody.ticket.opaque().into(),custodian_nonce:custody.custodian_nonce.clone()}))?;
+        }
+        Ok(())
+    }
     pub(crate) fn clear_host_guard(&mut self) {self.host_guard=None;}
     pub(crate) fn seat_id(&self) -> &str { &self.seat.seat_id }
 
@@ -513,7 +636,7 @@ impl LaunchEvidence {
         }
         let mut environment = vec![("SystemRoot".into(), system_root.clone()), ("WINDIR".into(), system_root)];
         let runtime = self.homes.session.path.to_string_lossy().into_owned();
-        let instance_home = self.homes.instance.path.to_string_lossy().into_owned();
+        let instance_home = self.model_home().path.to_string_lossy().into_owned();
         if self.pin.driver_id == "codex" {
             for name in ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"] {
                 environment.push((name.into(), runtime.clone()));
@@ -600,6 +723,9 @@ impl LaunchEvidence {
                 },
                 _ => return Err("native session launch: unsupported pinned driver/version".into()),
             }};
+        if self.file_credentials_bound() {
+            launch.arguments.splice(0..0,["-c".to_owned(),"cli_auth_credentials_store=\"file\"".to_owned()]);
+        }
         launch.current_directory = Some(self.worktree.path.clone());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;

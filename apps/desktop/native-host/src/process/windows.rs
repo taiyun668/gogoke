@@ -431,6 +431,7 @@ pub struct PreparedCustody {
 /// Output bytes read from the exact process pipe owned under this custody.
 /// This binds output provenance only. A seat's host-operation request needs
 /// its own native-origin channel; stdout alone cannot authorize that request.
+#[derive(Clone)]
 pub(crate) struct OriginBoundFrame {
     custody: PreparedCustody,
     bytes: Vec<u8>,

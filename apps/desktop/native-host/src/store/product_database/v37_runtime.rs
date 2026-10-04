@@ -348,6 +348,7 @@ impl<'root> ProductDatabase<'root> {
         })();
         self.finish_native_transaction(intended)?;
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
+        self.ensure_native_credential_backend(&old.instance_id,request)?;
         let evidence=if let Some((proof,choice))=host {
             failure(LaunchEvidence::observe_host_resume(&mut self.connection,self.root,
                 &self.owner,&request.domain_id,&seat_id,&request.target_id,&repository_id,
@@ -441,8 +442,7 @@ impl<'root> ProductDatabase<'root> {
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
-            self.native_rpc(&key,&format!("{operation_id}-config-read"),Some(2),
-                &Command::ConfigRead {cwd:cwd.clone()})?;
+            self.native_credential_config_read(&key,&format!("{operation_id}-config-read"),cwd.clone())?;
             let response=self.native_rpc(&key,&format!("{operation_id}-thread-resume"),
                 Some(3),&Command::ThreadResume {thread_id:thread_id.clone(),cwd,model})?;
             let Some(Reply::Thread {thread_id:observed,..})=response else {
@@ -487,6 +487,7 @@ impl<'root> ProductDatabase<'root> {
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,
                 &self.owner,Some(&operation_id)))?;
+            failure(run.evidence.bind_original_history_source(&self.connection,&custody,&operation_id))?;
             failure(h::promote_resume(&self.connection,&request.domain_id,&request.target_id,
                 &request.request_id,&operation_id,old.revision))
         })();
@@ -1550,14 +1551,17 @@ impl<'root> ProductDatabase<'root> {
         }
         drop(fenced);
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
+        let credential_claim=failure(runtime::observe_claim_bound(&self.connection,
+            &request.domain_id,&seat_id,&request.target_id))?.ok_or(OrchestrationError::AccessDenied)?;
+        self.ensure_native_credential_backend(&credential_claim.instance_id,request)?;
         let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
         let evidence = if let Some((proof,choice))=host {
             failure(LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,
                 &request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,
-                proof,choice))?
+                proof,choice,&request.request_id))?
         } else {
             failure(LaunchEvidence::observe_with_origin(&mut self.connection, self.root,
-                &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id))?
+                &self.owner,&origin,&request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,&request.request_id))?
         };
         let (model, effort) = failure(evidence.settings())?;
         let current = failure(runtime::observe_claim(&self.connection, &NativeOrigin::user(&self.owner),
@@ -1645,7 +1649,7 @@ impl<'root> ProductDatabase<'root> {
                         else {Command::Initialize {client_version:"0.1.0".into()}};
                     self.native_rpc(&key,"initialize",Some(1),&initialize)?;
                     self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
-                    self.native_rpc(&key,"config-read",Some(2),&Command::ConfigRead {cwd:cwd.clone()})?;
+                    self.native_credential_config_read(&key,"config-read",cwd.clone())?;
                     let start=if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
                     let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
@@ -1720,6 +1724,7 @@ impl<'root> ProductDatabase<'root> {
             }
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
+            failure(run.evidence.bind_original_history_source(&self.connection,&custody,&operation_id))?;
             let next=current.revision.checked_add(1).ok_or(OrchestrationError::Invalid("native open revision overflow"))?;
             let advance=Statement::prepare(self.connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_claim SET revision=?1 WHERE domain_id=?2 AND session_id=?3 AND state='COMMITTED' AND revision=?4 AND process_operation_id=?5")?;
@@ -2045,6 +2050,8 @@ impl<'root> ProductDatabase<'root> {
         let revision = row.column_text(0)?.parse::<u64>().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native stop durable revision: {error}")))?;
         drop(row);
+        failure(run.evidence.revoke_stopped_credential(&mut self.connection,self.root,
+            &run.operation_id,&run.custody))?;
         if self.process_custodian.active(&run.custody.ticket).is_some() {
             self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
                 ticket: run.custody.ticket.clone(), custodian_nonce: run.custody.custodian_nonce.clone(),
@@ -2840,6 +2847,17 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn native_rpc(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<Reply>> {
         self.native_rpc_observation(key, step_id, number, command).map(|result| result.map(|result| result.reply))
+    }
+
+    fn native_credential_config_read(&mut self,key:&(String,String),step:&str,cwd:String)->Result<()> {
+        let configured=self.native_rpc_observation(key,step,Some(2),&Command::ConfigRead {cwd})?
+            .ok_or(OrchestrationError::Invalid("native config response absent"))?;
+        if self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?.evidence.file_credentials_bound()
+            && super::v37_login::configured_credential_backend_for_id(configured.frame.bytes(),"2")?
+                !=instance::CredentialBackend::File {
+            return Err(OrchestrationError::Invalid("model startup effective credential backend is not File"));
+        }
+        Ok(())
     }
 
     fn native_rpc_observation(&mut self, key: &(String, String), step_id: &str,
