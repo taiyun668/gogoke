@@ -435,6 +435,39 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         result["worktree"]["mergeRequestId"] = merges[0][0]
         result["worktree"]["mergeParents"] = parents
 
+    result["providerWorktrees"] = []
+    if phase == "final":
+        provider_plan = journal.get("providerWorktreePlan")
+        if not isinstance(provider_plan, list) or len(provider_plan) != 3 or \
+                {row.get("driverId") for row in provider_plan} != {"claude", "opencode", "grok"} or \
+                len({row.get("worktreeId") for row in provider_plan}) != 3 or \
+                len({row.get("seatId") for row in provider_plan}) != 3:
+            raise RuntimeError("Original provider F selection is not three distinct fixed seats/worktrees")
+        for selection in provider_plan:
+            expected = (domain, journal["repositoryId"], selection["seatId"], selection["instanceId"])
+            provider_tree = one(db,
+                "SELECT w.domain_id,w.repository_id,w.seat_id,w.instance_id,w.worktree_path,"
+                "w.worktree_identity,w.state,l.state,o.phase "
+                "FROM gogoke_v37_worktrees w JOIN gogoke_v37_worktree_lifecycle l USING(worktree_id) "
+                "JOIN gogoke_v37_worktree_operations o USING(worktree_id) WHERE w.worktree_id=?",
+                (selection["worktreeId"],))
+            if provider_tree[:4] != expected or provider_tree[6:] != ("REGISTERED", "REGISTERED", "REGISTERED"):
+                raise RuntimeError("Original F provider worktree registration differs from selected seat/instance")
+            original_path = Path(local_spelling(provider_tree[4]))
+            if original_path.is_symlink():
+                raise RuntimeError("Original provider F worktree root is a link")
+            observed_path = original_path.resolve(strict=True)
+            if not beneath(root, observed_path) or not provider_tree[5]:
+                raise RuntimeError("Original provider F physical worktree escaped candidate root or lacks identity")
+            instance_driver = one(db, "SELECT driver_id FROM gogoke_v37_instances WHERE instance_id=?",
+                                  (selection["instanceId"],))[0]
+            if instance_driver != selection["driverId"]:
+                raise RuntimeError("Original provider F instance does not match fixed driver")
+            result["providerWorktrees"].append({**selection, "path": str(observed_path),
+                                               "nativeOpaqueIdentity": provider_tree[5]})
+        if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) != 3:
+            raise RuntimeError("Original provider F physical worktrees overlap")
+
     result["worktrees"] = []
     plan = journal.get("sideChatPlan")
     if plan:

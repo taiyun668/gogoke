@@ -54,7 +54,9 @@ const journal = { schema: 'gogoke.37.m2-win11-e2e.v1', caseId: id('m2'),
   authenticationActions: false, modelPermissionByUser: false,
   marker: id('M2_MARKER'), markerFile: `${id('m2-marker')}.json`,
   launches: [], closes: [], operations: [], sessions: [], subscriptions: [], snapshots: {},
-  providerCases: [], sideChatCases: [], v12: 'NOT_RUN_NOT_CONFIGURED',
+  providerCases: [], providerWorktreePlan: config.providerCases.map(row => ({
+    driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId, worktreeId: row.worktreeId })),
+  sideChatCases: [], v12: 'NOT_RUN_NOT_CONFIGURED',
   assertions: [], nativeCards: [], readbacks: [] };
 const product = new ActualProduct(config, journal);
 delete journal.driverBytes['m1-win11.mjs'];
@@ -104,6 +106,34 @@ async function readback(phase) {
   journal.readbacks.push({ phase, file: path.basename(output), sha256: sha256(output),
     worktreeId: value.worktree?.id ?? null }); product.save();
   check(value.measurementPreservedDatabaseBytes && value.directCaseEvidence, `${phase}: immutable direct evidence`);
+  return value;
+}
+async function providerBoundaryReadback() {
+  const file = 'm2-provider-readback-final.json';
+  const output = path.join(config.evidenceDirectory, file);
+  if (fs.existsSync(output)) throw Error('Provider boundary readback already exists');
+  await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-provider-readback.py'),
+      config.stateRoot, output, config.result],
+      { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = ''; child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() :
+      reject(Error(`Original provider boundary readback exit=${code}: ${stderr}`)));
+  });
+  const value = readJson(output);
+  check(value.measurementPreservedDatabaseBytes && value.acceptance === false &&
+    value.databaseWrites === false && value.credentialReads === false,
+    'Provider boundary immutable measurement preserved actual database bytes');
+  journal.readbacks.push({ phase: 'provider-boundaries', file, sha256: sha256(output),
+    checks: value.checks }); product.save();
+  const original = journal.providerBoundaryCases.find(row => row.driverId === 'claude');
+  if (original?.state === 'CLAUDE_QUESTION_FLOW_DIRECT_READBACK_REQUIRED') {
+    check(value.checks.V03b === 'DIRECT_CLAUDE_EVIDENCE_REQUIRES_INDEPENDENT_REVIEW' &&
+      value.cases.some(row => row.caseId === original.caseId && row.directQuestion &&
+        row.directQuestion.hostTurnId === original.sendRequestId),
+      'Original Claude question answer continuation read back from C/H/A and actual F marker');
+  }
   return value;
 }
 async function seatCard(seatId) {
@@ -492,7 +522,20 @@ try {
   const final = await readback('final');
   check(final.worktree.id === captured.worktree.id && final.worktree.mergeTargetCommit === graph.result.mergeTargetCommit,
     'Original final F/Git merge receipt and graph agree');
+  check(Array.isArray(final.providerWorktrees) && final.providerWorktrees.length === 3,
+    'Three provider paths come from normally closed original F registrations');
+  const boundaryRows = config.providerCases.map(row => {
+    const tree = final.providerWorktrees.find(value => value.worktreeId === row.worktreeId);
+    check(tree && tree.driverId === row.driverId && tree.instanceId === row.instanceId &&
+      tree.seatId === row.seatId, `${row.driverId}: closed original F provider worktree identity`);
+    return { ...row, worktreeRoot: tree.path };
+  });
+  await product.launch();
+  const { runProviderBoundaryCases } = await import('./m2-provider-cases.mjs');
+  await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows } }, journal);
+  await product.closeNormally();
   await snapshot('after');
+  await providerBoundaryReadback();
   for (const observer of config.observers) {
     const before = snapshotValue(observer.name, 'before'), after = snapshotValue(observer.name, 'after');
     check(Array.isArray(observer.equalFields) && observer.equalFields.length > 0,

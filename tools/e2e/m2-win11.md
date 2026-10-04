@@ -117,9 +117,9 @@ Smart App Control, browser and account outcomes are **NOT_RUN**.
 
 Keep the existing `providerCase` loop and `journal.providerCases` unchanged:
 `m2-readback.py` binds their real User send and stopped H/A session for the
-private provider golden source. After that loop, a distinct call to
+private provider golden source. After that loop and its normal-close golden readback, the runner calls
 `runProviderBoundaryCases(product, {...config, providerBoundary:{cases}}, journal)`
-may open separate H sessions on the same already logged-in provider rows.
+to open separate H sessions on the same already logged-in provider rows.
 The caller supplies each fixed row's `instanceId`, `seatId`, `worktreeId`,
 `version`, and SHA-256; Claude additionally receives its `worktreeRoot` from
 the prior normally closed F reader, not an Owner-typed path. Optional
@@ -128,9 +128,14 @@ the module's `providerBoundaryCases` beside the old `providerCases` rather
 than replacing the golden source or treating a second case as replay of the
 first request.
 
-After the final ordinary caption close, invoke signed Python
+After the boundary flow's final ordinary caption close, the runner invokes signed Python
 `m2-provider-readback.py STATE_ROOT NEW_PRIVATE_OUTPUT ORIGINAL_JOURNAL`
 once with a fresh output path under the same private evidence directory.
+The normal-close golden reader exports all three provider F registrations;
+the runner supplies their physical paths automatically and the boundary
+reader checks them again against the original F identities. The old golden
+reader runs before these distinct sessions, preserving its original
+send/capture contract.
 Record its basename and SHA-256 in the journal and retain it for independent
 review. Its Claude direct case requires the real C/H/A answer-to-Result and
 marker chain; `SOURCE_PRESENT_NATIVE_ASK_USER_BEHAVIOUR_NOT_RUN` and the
