@@ -171,6 +171,8 @@ fn synthetic_history_acl_child() {
     let report_path = PathBuf::from(std::env::var_os("GOGOKE_TEST_HISTORY_ACL_REPORT").expect("report"));
     let a = path_for(&root, &layout, "a");
     let b = path_for(&root, &layout, "b");
+    let a_grand = path_for(&root, &layout, "a-grand");
+    let b_grand = path_for(&root, &layout, "b-grand");
     let auth = root.join("synthetic-auth.txt");
     let mut report = Vec::new();
     match role.as_str() {
@@ -182,6 +184,7 @@ fn synthetic_history_acl_child() {
                 record(&mut report, "B_write_A", OpenOptions::new().write(true)
                     .open(other).map(|_| ()));
                 record(&mut report, "B_dac_A", try_write_dac(other));
+                record(&mut report, "B_read_A_grand", fs::read(&a_grand).map(|_| ()));
             }
             record(&mut report, &format!("{prefix}_auth_read"), fs::read(&auth).map(|_| ()));
             record(&mut report, &format!("{prefix}_auth_append"), OpenOptions::new()
@@ -211,13 +214,22 @@ fn synthetic_history_acl_child() {
             if role == "a_check" {
                 record(&mut report, "A_read_B", fs::read(&b).map(|_| ()));
                 record(&mut report, "A_dac_B", try_write_dac(&b));
+                record(&mut report, "A_read_B_grand", fs::read(&b_grand).map(|_| ()));
                 record(&mut report, "A_reopen_later", fs::read(&a).map(|_| ()));
             } else {
                 let (own, other, prefix) = if role == "a_grand" { (&a, &b, "A") }
                     else { (&b, &a, "B") };
+                let grand_own = if role == "a_grand" { &a_grand } else { &b_grand };
                 record(&mut report, &format!("{prefix}_grand_own"), fs::read(own).map(|_| ()));
+                record(&mut report, &format!("{prefix}_grand_create"), fs::write(grand_own,
+                    format!("synthetic {prefix} descendant history").as_bytes()));
+                record(&mut report, &format!("{prefix}_grand_reopen"), fs::read(grand_own).and_then(|bytes|
+                    if bytes == format!("synthetic {prefix} descendant history").as_bytes() { Ok(()) }
+                    else { Err(io::Error::new(io::ErrorKind::InvalidData,
+                        "wrong synthetic descendant history bytes")) }));
                 if role == "b_grand" {
                     record(&mut report, "B_grand_read_A", fs::read(other).map(|_| ()));
+                    record(&mut report, "B_grand_read_A_grand", fs::read(&a_grand).map(|_| ()));
                 }
                 record(&mut report, &format!("{prefix}_grand_auth"), fs::read(&auth).map(|_| ()));
             }
@@ -324,22 +336,31 @@ fn synthetic_history_acl_creation_time_qualification() {
         reports.extend(run_child(&a_profile, &a_name, &exe_a, &runner_a, &root, layout, "a_check"));
         let a_leaf = path_for(&root, layout, "a");
         let b_leaf = path_for(&root, layout, "b");
+        let a_grand_leaf = path_for(&root, layout, "a-grand");
+        let b_grand_leaf = path_for(&root, layout, "b-grand");
         let a_dacl = if a_leaf.is_file() { Some((leaf_aces(&a_leaf, &a_profile), leaf_aces(&a_leaf, &b_profile))) }
             else { None };
         let b_dacl = if b_leaf.is_file() { Some((leaf_aces(&b_leaf, &b_profile), leaf_aces(&b_leaf, &a_profile))) }
             else { None };
+        let a_grand_dacl = if a_grand_leaf.is_file() { Some((leaf_aces(&a_grand_leaf, &a_profile),
+            leaf_aces(&a_grand_leaf, &b_profile))) } else { None };
+        let b_grand_dacl = if b_grand_leaf.is_file() { Some((leaf_aces(&b_grand_leaf, &b_profile),
+            leaf_aces(&b_grand_leaf, &a_profile))) } else { None };
         let expected = ["A_auth_read", "A_auth_append", "A_mkdir", "A_create", "A_reopen",
-            "A_grandchild", "A_grand_own", "A_grand_auth", "B_auth_read", "B_auth_append",
-            "B_mkdir", "B_create", "B_reopen", "B_grandchild", "B_grand_own", "B_grand_auth",
+            "A_grandchild", "A_grand_own", "A_grand_create", "A_grand_reopen", "A_grand_auth",
+            "B_auth_read", "B_auth_append", "B_mkdir", "B_create", "B_reopen", "B_grandchild",
+            "B_grand_own", "B_grand_create", "B_grand_reopen", "B_grand_auth",
             "A_reopen_later"];
-        let denied = ["B_read_A", "B_write_A", "B_dac_A", "B_grand_read_A", "A_read_B", "A_dac_B"];
-        let dacl_private = [a_dacl.as_ref(), b_dacl.as_ref()].into_iter().all(|value|
+        let denied = ["B_read_A", "B_write_A", "B_dac_A", "B_read_A_grand", "B_grand_read_A",
+            "B_grand_read_A_grand", "A_read_B", "A_dac_B", "A_read_B_grand"];
+        let dacl_private = [a_dacl.as_ref(), b_dacl.as_ref(), a_grand_dacl.as_ref(),
+            b_grand_dacl.as_ref()].into_iter().all(|value|
             matches!(value, Some((own, other)) if own.iter().any(|(mode, _, flags)|
                 *mode == GRANT_ACCESS && *flags & INHERITED_ACE == 0) && other.is_empty()));
         let qualified = expected.iter().all(|key| reports.get(*key).is_some_and(|value| value == "OK"))
             && denied.iter().all(|key| reports.get(*key).is_some_and(|value| value.starts_with("ERR:Some(5);")))
             && dacl_private;
-        println!("HISTORY_ACL_QUALIFICATION layout={layout} verdict={} reports={reports:?} a_leaf_dacl={a_dacl:?} b_leaf_dacl={b_dacl:?}",
+        println!("HISTORY_ACL_QUALIFICATION layout={layout} verdict={} reports={reports:?} a_leaf_dacl={a_dacl:?} b_leaf_dacl={b_dacl:?} a_grand_dacl={a_grand_dacl:?} b_grand_dacl={b_grand_dacl:?}",
             if qualified { "CANDIDATE_QUALIFIED" } else { "CANDIDATE_REJECTED" });
         // A rejected variant is a valid experiment, never a product ISO PASS.
     }
