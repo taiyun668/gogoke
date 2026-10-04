@@ -248,12 +248,20 @@ fn permit_new_grant(db: &VerifiedDatabaseConnection<'_>, binding: &CredentialBin
             return Err(denied("fresh holder cannot rebuild an old active profile DACL"));
         }
         let query = evidence(Statement::prepare(db.as_ptr(),
-            "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND state<>'STOPPED' LIMIT 1"))?;
+            "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1
+               AND (state<>'STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1"))?;
         evidence(query.bind_text(1, instance))?;
         if evidence(query.step_row())? { return Err(denied("fresh holder requires stopped instance custody")); }
         let query = evidence(Statement::prepare(db.as_ptr(),
-            "SELECT 1 FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND
-             (state='UNKNOWN' OR (process_operation_id IS NOT NULL AND state<>'STOPPED')) LIMIT 1"))?;
+            "SELECT 1 FROM main.gogoke_v37_h_claim a
+               LEFT JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=a.process_operation_id AND c.profile_id=a.instance_id
+                   AND c.domain_id=a.domain_id AND c.generation=a.generation
+              WHERE a.instance_id=?1 AND (a.state='UNKNOWN'
+                OR (a.process_operation_id IS NOT NULL AND
+                  (a.state NOT IN ('STOPPED','RELEASED') OR c.state IS NULL OR c.state<>'STOPPED'
+                    OR a.stop_fact_id IS NULL OR a.stop_fact_id='' OR c.stop_proof_hash IS NULL
+                    OR a.stop_fact_id<>c.stop_proof_hash))) LIMIT 1"))?;
         evidence(query.bind_text(1, instance))?;
         if evidence(query.step_row())? { return Err(denied("fresh holder requires resolved stopped H objects")); }
     }
