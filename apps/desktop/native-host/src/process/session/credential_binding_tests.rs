@@ -16,6 +16,23 @@ const CHILD: &str = "process::session::credential_binding::tests::credential_chi
 fn credential_child() {
     let Some(path) = std::env::var_os("GOGOKE_TEST_CREDENTIAL_ALIAS") else { return; };
     let report = std::env::var_os("GOGOKE_TEST_CREDENTIAL_REPORT").expect("synthetic report path");
+    if std::env::var_os("GOGOKE_TEST_CREDENTIAL_CREATE").is_some() {
+        let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME")
+            .expect("actual account initialization HOME"));
+        let target = std::path::PathBuf::from(&path);
+        assert_eq!(target.parent().and_then(Path::parent), Some(home.as_path()),
+            "initialization target is in the fresh HOME runtime");
+        let create = OpenOptions::new().write(true).create_new(true).open(&target)
+            .and_then(|mut file| file.write_all(b"synthetic-account-init"));
+        let reopen = fs::read(&target).map(|bytes| bytes == b"synthetic-account-init");
+        let describe = |result: std::io::Result<()>| match result {
+            Ok(()) => "OK".to_owned(),
+            Err(error) => format!("ERR:{:?};{error}", error.raw_os_error()),
+        };
+        fs::write(report, format!("create={} reopen={:?}", describe(create), reopen))
+            .expect("child account initialization result report");
+        return;
+    }
     let write = std::env::var_os("GOGOKE_TEST_CREDENTIAL_WRITE").is_some();
     // This is the CLI-equivalent child operating on a synthetic nonsecret
     // fixture. The Host's binding code never requests or reads data access.
@@ -62,6 +79,11 @@ fn run_child(profile_name: &str, exe: &Path, alias: &CredentialAlias,
 
 fn run_child_path(profile_name: &str, exe: &Path, target: &Path,
     write: bool) -> String {
+    run_child_path_with_home(profile_name, exe, target, write, None)
+}
+
+fn run_child_path_with_home(profile_name: &str, exe: &Path, target: &Path,
+    write: bool, home: Option<&Path>) -> String {
     let runner = exe.parent().expect("child runner");
     let report = runner.join("actual-result.txt");
     if report.exists() { fs::remove_file(&report).expect("remove old synthetic report"); }
@@ -80,6 +102,12 @@ fn run_child_path(profile_name: &str, exe: &Path, target: &Path,
     ]);
     if write { launch.environment.as_mut().unwrap().push((
         "GOGOKE_TEST_CREDENTIAL_WRITE".into(), "1".into())); }
+    if let Some(home) = home {
+        launch.environment.as_mut().unwrap().extend([
+            ("CODEX_HOME".into(), home.to_string_lossy().into_owned()),
+            ("GOGOKE_TEST_CREDENTIAL_CREATE".into(), "1".into()),
+        ]);
+    }
     launch.arguments = vec!["--exact".into(), CHILD.into(), "--nocapture".into()];
     let digest = crate::store::digest::sha256_hex(&fs::read(exe).expect("cloud fixture image bytes"));
     let request = PrepareRequest { launch, binding: NativeBinding {
@@ -250,6 +278,46 @@ fn owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime() 
         &instance_id, &runtime, &runtime_id, &binding, &[scope]).is_err(),
         "a residual observer ACE on history must invalidate the exact witness");
     drop((observer, binding));
+    drop(root);
+    fs::remove_dir_all(requested).unwrap();
+    #[link(name = "userenv")]
+    extern "system" { fn DeleteAppContainerProfile(name: *const u16) -> i32; }
+    let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
+    assert!(unsafe { DeleteAppContainerProfile(wide.as_ptr()) } >= 0);
+}
+
+#[test]
+fn empty_owner_account_observer_initializes_only_fresh_runtime() {
+    let (root, requested) = test_root();
+    let base = root.canonical_root().canonical_path.clone();
+    let home = base.join("empty-instance");
+    let history_dir = home.join("sessions").join("2026");
+    let runtime = home.join("gogoke-login-runtime");
+    fs::create_dir_all(&history_dir).unwrap();
+    fs::create_dir(&runtime).unwrap();
+    let history = history_dir.join("synthetic-history.jsonl");
+    fs::write(&history, b"synthetic-history-not-for-account-observer").unwrap();
+    let home_id = inspect_root(&home).unwrap().identity;
+    let runtime_id = inspect_root(&runtime).unwrap().identity;
+    let name = format!("Gogoke37.EmptyOwnerAccountObserver.{}", std::process::id());
+    let observer = AppContainerProfile::ensure_for_cli(&name, true).unwrap();
+    observer.grant_bound_owner_account_empty(&root, &home, &home_id, &runtime, &runtime_id)
+        .expect("empty HOME admits only traverse and fresh runtime");
+    let runner = prepare_runner(&observer, &base.join("empty-observer-runner"));
+    let initialized = runtime.join("synthetic-account-init.json");
+    let result = run_child_path_with_home(&name, &runner, &initialized, false, Some(&home));
+    assert_eq!(result, "create=OK reopen=Ok(true)",
+        "actual LPAC creates and reopens only in its HOME runtime: {result}");
+    let private_read = run_child_path(&name, &runner, &history, false);
+    assert!(private_read.starts_with("read=ERR:Some(5);") && private_read.ends_with(" write=OK"),
+        "actual LPAC history access denied: {private_read}");
+    observer.verify_bound_owner_account_empty(&root, &home, &home_id, &runtime, &runtime_id)
+        .expect("no auth source and no observer SID elsewhere");
+    fs::write(home.join(AUTH_NAME), b"synthetic-new-source").unwrap();
+    assert!(matches!(observer.verify_bound_owner_account_empty(&root, &home,
+        &home_id, &runtime, &runtime_id), Err(CredentialError::Invalid(
+            "empty account auth object exists"))), "present source requires binding path");
+    drop(observer);
     drop(root);
     fs::remove_dir_all(requested).unwrap();
     #[link(name = "userenv")]
