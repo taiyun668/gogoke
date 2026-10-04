@@ -258,8 +258,9 @@ pub(crate) struct AclWitness {
 }
 
 impl AppContainerProfile {
-    #[cfg(test)]
-    pub(crate) fn derived_for_test(name: &str) -> Result<Self, IsolationError> {
+    /// Recover the exact historical package SID for metadata-only revocation.
+    /// Derivation creates no profile and enables no capabilities or grants.
+    pub(crate) fn derive_for_revocation(name: &str) -> Result<Self, IsolationError> {
         if !valid_profile_name(name) { return Err(IsolationError::InvalidProfileName); }
         let wide: Vec<u16> = std::ffi::OsStr::new(name).encode_wide().chain(Some(0)).collect();
         let mut sid = ptr::null_mut();
@@ -269,6 +270,11 @@ impl AppContainerProfile {
         Ok(Self { sid, internet_sid: None, internet_capability: None,
             registry_sids: None, registry_capability: None, identity_services_sids: None,
             combined_capabilities: Vec::new() })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn derived_for_test(name: &str) -> Result<Self, IsolationError> {
+        Self::derive_for_revocation(name)
     }
 
     pub(crate) fn ensure(name: &str, internet_client: bool) -> Result<Self, IsolationError> {
