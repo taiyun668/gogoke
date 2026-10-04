@@ -547,6 +547,49 @@ impl<'root> ProductDatabase<'root> {
                 self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.turn_id=Some(turn_id);
             }
         }
+        self.reconcile_retained_terminal_turn(key)?;
+        Ok(())
+    }
+
+    // The turn/start ACK can arrive after the same turn's terminal source was
+    // already normalized. Re-read that original physical source instead of
+    // allowing a late InProgress reply to resurrect an ended turn.
+    fn reconcile_retained_terminal_turn(&mut self,key:&(String,String))->Result<()> {
+        use crate::store::session_transport::codex_rpc::{self,Reply,TurnStatus};
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="codex" {return Ok(());}
+        let (Some(thread),Some(turn))=(run.thread_id.clone(),run.turn_id.clone()) else {return Ok(());};
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT r.source_cursor FROM main.v37_ledger_raw_source r
+               JOIN main.v37_ledger_index i ON i.source_kind='v37'
+                 AND i.source_event_id=r.resolved_event_id AND i.domain_id=r.domain_id
+                 AND i.session_id=r.session_id AND i.source_epoch=r.source_epoch
+              WHERE r.operation_id=?1 AND r.source_epoch=?2 AND r.domain_id=?3
+                AND r.session_id=?4 AND r.process_ticket=?5 AND r.custodian_nonce=?2
+                AND r.generation=?6 AND r.state='RESOLVED' AND r.no_event_reason IS NULL
+                AND i.tier='SESSION' AND i.side_id IS NULL
+              ORDER BY CAST(r.source_cursor AS INTEGER)")?;
+        for (index,value) in [run.operation_id.as_str(),run.custody.custodian_nonce.as_str(),
+            key.0.as_str(),key.1.as_str(),run.custody.ticket.opaque(),run.custody.binding.generation.as_str()]
+            .iter().enumerate() {query.bind_text((index+1) as i32,value)?;}
+        let mut ended=false;
+        while query.step_row()? {
+            let source=ledger::read_captured_raw_source(&self.connection,&run.operation_id,
+                &run.custody.custodian_nonce,&query.column_text(0)?)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if matches!(codex_rpc::decode(&source.raw_bytes,None).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native retained turn terminal: {error:?}")))?,
+                Reply::TurnNotification {thread_id,turn_id,status,..}
+                    if thread_id==thread&&turn_id==turn&&status!=TurnStatus::InProgress) {
+                ended=true;
+                break;
+            }
+        }
+        drop(query);
+        if ended {
+            let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+            if run.turn_id.as_deref()==Some(turn.as_str()) {run.turn_id=None;}
+        }
         Ok(())
     }
 
