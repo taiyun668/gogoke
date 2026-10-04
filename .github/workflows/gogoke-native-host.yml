@@ -38,10 +38,9 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     name: Native host Windows real process axes
-    # Full real-process/library gates and twelve compiled mutation/restore pairs.
-    # R10 adds three independent pairs to the measured eight-pair job workload.
-    # A cold Windows run exhausted 75 minutes during the second R10 restore;
-    # Retain those pairs and the exact Code Mode component grant pair below.
+    # Real-process/focused/full-library and shim evidence stays in this job.
+    # Compile-heavy security mutations run independently below: the combined
+    # exact-source run exhausted 105 minutes after the library had passed.
     timeout-minutes: 105
     runs-on: windows-latest
     env:
@@ -454,6 +453,103 @@ jobs:
           }
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
+      - name: Test production LPAC path shim behavior in cloud
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml -p gogoke-lpac-path-compat --lib -- --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath (Join-Path $evidenceRoot 'lpac-path-shim.log') | Write-Host
+          $text = $output -join "`n"
+          $summary = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+          $valid = $summary.Success -and [int]$summary.Groups[2].Value -eq 2 -and [int]$summary.Groups[3].Value -eq 0 -and [int]$summary.Groups[4].Value -eq 0 -and [int]$summary.Groups[6].Value -eq 0
+          $state = if ($exitCode -eq 0 -and $valid) { 'PASS' } else { 'FAIL' }
+          [ordered]@{ axis = 'lpac_path_same_source_shim'; state = $state; exit_code = $exitCode; passed = if ($summary.Success) { [int]$summary.Groups[2].Value } else { 0 }; failed = if ($summary.Success) { [int]$summary.Groups[3].Value } else { 0 }; skipped = if ($summary.Success) { [int]$summary.Groups[4].Value } else { 0 } } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lpac-path-shim-result.json') -Encoding utf8NoBOM
+          if ($state -ne 'PASS') { throw "Production LPAC shim tests failed or did not execute: $exitCode" }
+      - name: Upload native-host machine evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-native-host-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  native-host-windows-security-mutations:
+    name: Native host Windows security mutations
+    # Same fixed CLIs, unchanged behavioral assertions and exact source restore.
+    # The preceding combined run measured 49 minutes through F.1/R10;
+    # a separate 90-minute job includes the remaining R7/R9/R8 pairs.
+    timeout-minutes: 90
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - name: Bind native-host build to controlled Node runtime
+        shell: pwsh
+        run: |
+          $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
+      - name: Bind F tests to the installed Git backend image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $entry = Get-Command git.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $execPath = & $entry --exec-path
+          if ($LASTEXITCODE -ne 0 -or @($execPath).Count -ne 1) { throw 'Git backend discovery failed' }
+          $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+          $backend = Join-Path $mingw 'bin/git.exe'
+          if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_GIT_PATH=$backend"
+          Write-Output "Git backend SHA256=$((Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash)"
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Pin Codex CLI for native instance registration tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@openai/codex@0.160.0'
+          if ($LASTEXITCODE -ne 0) { throw "Codex CLI install failed: $LASTEXITCODE" }
+          $binary = Join-Path $prefix 'node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Pinned Codex CLI image missing' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
+      - name: Pin fixed Claude CLI for native provider output controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@anthropic-ai/claude-code@2.1.196'
+          if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed: $LASTEXITCODE" }
+          $package = Join-Path $prefix 'node_modules\@anthropic-ai\claude-code'
+          $platform = Join-Path $package 'node_modules\@anthropic-ai\claude-code-win32-x64'
+          foreach ($fact in @(@{ path=$package; name='@anthropic-ai/claude-code' }, @{ path=$platform; name='@anthropic-ai/claude-code-win32-x64' })) {
+            $metadata = Get-Content -LiteralPath (Join-Path $fact.path 'package.json') -Raw | ConvertFrom-Json
+            if ($metadata.name -ne $fact.name -or $metadata.version -ne '2.1.196') { throw 'Fixed Claude package identity mismatch' }
+          }
+          $original = Join-Path $platform 'claude.exe'
+          if (-not (Test-Path -LiteralPath $original -PathType Leaf)) { throw 'Fixed Claude platform image missing' }
+          # The product catalog uses the installed package's bin image. Keep
+          # the official bytes identical without running npm postinstall code.
+          $bin = Join-Path $package 'bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          $binary = Join-Path $bin 'claude.exe'
+          Copy-Item -LiteralPath $original -Destination $binary
+          $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
+          Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Verify fixed CLI component grant with a compiled behavioral mutation
         if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.private_history_fixture_only }}
         shell: pwsh
@@ -559,11 +655,11 @@ jobs:
                 $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
               } else {
                 $start = $source.IndexOf('    fn finish_confirmed_account_observation(')
-                $end = $source.IndexOf('    fn observe_account_via_active_cli(', $start)
+                $end = $source.IndexOf('    fn record_account_and_credential_backend(', $start)
                 if ($start -lt 0 -or $end -le $start) { throw 'R7 production fix locator missing' }
                 $method = $source.Substring($start,$end-$start)
                 $fixedStart = $method.IndexOf('        let frame = match execution {')
-                $fixedEnd = $method.IndexOf('        self.record_trusted_account_read(', $fixedStart)
+                $fixedEnd = $method.IndexOf('        self.record_account_and_credential_backend(', $fixedStart)
                 if ($fixedStart -lt 0 -or $fixedEnd -le $fixedStart) { throw 'R7 primary/cleanup fix locator missing' }
                 $method = $method.Substring(0,$fixedStart) + '        cleanup?; let frame = execution?;' + "`n" + $method.Substring($fixedEnd)
                 $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
@@ -659,31 +755,6 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
             throw 'R8 unchanged test must pass after exact restoration'
           }
-      - name: Test production LPAC path shim behavior in cloud
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
-          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
-          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml -p gogoke-lpac-path-compat --lib -- --nocapture 2>&1
-          $exitCode = $LASTEXITCODE
-          $output | Tee-Object -FilePath (Join-Path $evidenceRoot 'lpac-path-shim.log') | Write-Host
-          $text = $output -join "`n"
-          $summary = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
-          $valid = $summary.Success -and [int]$summary.Groups[2].Value -eq 2 -and [int]$summary.Groups[3].Value -eq 0 -and [int]$summary.Groups[4].Value -eq 0 -and [int]$summary.Groups[6].Value -eq 0
-          $state = if ($exitCode -eq 0 -and $valid) { 'PASS' } else { 'FAIL' }
-          [ordered]@{ axis = 'lpac_path_same_source_shim'; state = $state; exit_code = $exitCode; passed = if ($summary.Success) { [int]$summary.Groups[2].Value } else { 0 }; failed = if ($summary.Success) { [int]$summary.Groups[3].Value } else { 0 }; skipped = if ($summary.Success) { [int]$summary.Groups[4].Value } else { 0 } } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lpac-path-shim-result.json') -Encoding utf8NoBOM
-          if ($state -ne 'PASS') { throw "Production LPAC shim tests failed or did not execute: $exitCode" }
-      - name: Upload native-host machine evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/gogoke-native-host-evidence
-          if-no-files-found: error
-          retention-days: 30
 
   gogoke-server-tests:
     if: ${{ !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only }}
