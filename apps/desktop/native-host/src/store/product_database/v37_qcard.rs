@@ -295,8 +295,8 @@ fn recovered_card_present(db:&VerifiedDatabaseConnection<'_>,key:&(String,String
         return Ok(false);
     }
     if matches!(Parser::parse(&payload),Ok(Json::Object(ref fields))
-        if fields.get(&JsonString::from_str("provider"))
-            ==Some(&Json::String(JsonString::from_str("claude")))) {
+        if matches!(fields.get(&JsonString::from_str("provider")),
+            Some(Json::String(provider)) if provider.to_well_formed_string().as_deref()==Some("claude"))) {
         if !claude_send_present(db,&binding).map_err(|error|
             InboxError::InvalidEvidence(format!("Claude original H send: {error:?}")))? {
             return Ok(false);
@@ -754,8 +754,8 @@ impl<'root> ProductDatabase<'root> {
         while cards.step_row()? {
             let payload=cards.column_text(1)?;
             if matches!(Parser::parse(&payload),Ok(Json::Object(ref fields))
-                if fields.get(&JsonString::from_str("provider"))
-                    ==Some(&Json::String(JsonString::from_str("claude")))) {
+                if matches!(fields.get(&JsonString::from_str("provider")),
+                    Some(Json::String(provider)) if provider.to_well_formed_string().as_deref()==Some("claude"))) {
                 ids.push(cards.column_text(0)?);
             }
         }

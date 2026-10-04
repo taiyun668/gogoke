@@ -1,6 +1,7 @@
 //! C's durable rows on the verified product connection. Registration and the
 //! native issuer are owned by the product entry, outside this module's scope.
 use super::atomic::{AtomicError, Json, JsonString, Parser, Statement};
+use super::ledger;
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 pub(crate) mod host_rule;
@@ -1097,8 +1098,8 @@ fn validate_native_question(question: &NativeQuestion<'_>) -> Result<(), InboxEr
     }
     vendor_nonempty(question.question_payload,"question payload")?;
     let claude_payload=matches!(Parser::parse(question.question_payload),Ok(Json::Object(ref fields))
-        if fields.get(&JsonString::from_str("provider"))
-            ==Some(&Json::String(JsonString::from_str("claude"))));
+        if matches!(fields.get(&JsonString::from_str("provider")),
+            Some(Json::String(provider)) if provider.to_well_formed_string().as_deref()==Some("claude")));
     for (value,name) in [(question.question_id,"question id"),
         (question.header,"question header"),(question.question,"question"),
         (question.turn_id,"turn")] { vendor_nonempty(value,name)?; }

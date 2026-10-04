@@ -10,8 +10,8 @@ fn claude_card(card:&NativeQuestionCard)->Result<bool> {
     let Json::Object(payload)=Parser::parse(&card.question_payload)? else {
         return Err(OrchestrationError::OperationConflict);
     };
-    Ok(payload.get(&JsonString::from_str("provider"))
-        ==Some(&Json::String(JsonString::from_str("claude"))))
+    Ok(matches!(payload.get(&JsonString::from_str("provider")),
+        Some(Json::String(provider)) if provider.to_well_formed_string().as_deref()==Some("claude")))
 }
 
 impl<'root> ProductDatabase<'root> {

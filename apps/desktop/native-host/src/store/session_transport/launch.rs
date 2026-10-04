@@ -63,7 +63,7 @@ fn verify_host_guard(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
         let checked=evidence(host_rule::revalidate_host_recipient_in_transaction(db,owner,proof,choice));
         if own_transaction {
             match checked {
-                Ok(())=>evidence(db.execute("COMMIT"))?,
+                Ok(_)=>evidence(db.execute("COMMIT"))?,
                 Err(primary)=>{
                     if let Err(rollback)=db.execute("ROLLBACK") {
                         return Err(format!("{primary}; host guard rollback: {rollback:?}"));
