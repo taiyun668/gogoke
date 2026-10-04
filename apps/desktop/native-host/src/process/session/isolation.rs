@@ -257,6 +257,9 @@ pub(crate) struct AclWitness {
     pub(crate) inheritance: u32,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ExistingCredentialScopeAce { Inherited, Explicit, Missing }
+
 impl AppContainerProfile {
     /// Recover the exact historical package SID for metadata-only revocation.
     /// Derivation creates no profile and enables no capabilities or grants.
@@ -531,9 +534,61 @@ impl AppContainerProfile {
         require_bound_path(path, expected, true)?;
         let after = collect_tree_with_credential(path, binding, alias)?;
         if before != after { return Err(IsolationError::AclWitnessMismatch.into()); }
+        // SetSecurityInfo's parent inheritance is not a sufficient witness for
+        // every already-existing ordinary leaf. The fixed CLI's renamed
+        // .sandbox_migration leaf was physically single-link and unprotected,
+        // yet had no new SID ACE after the parent grant. Apply the same scoped
+        // rights explicitly only to such missing, unprotected descendants.
+        let rights = directory_rights(writable);
+        for (child, identity, directory, credential) in &after {
+            if *credential { continue; }
+            let object = open_physical_object(child, *directory, READ_CONTROL)?;
+            if &file_identity(object.0)? != identity { return Err(CredentialError::IdentityChanged); }
+            if self.credential_scope_child_ace(object.0, child, *directory, rights)?
+                == ExistingCredentialScopeAce::Missing {
+                drop(object);
+                let writable_object = open_bound_object(child, identity, *directory)?;
+                grant_exact_acl(writable_object.0, self.sid, identity, rights,
+                    if *directory { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE })?;
+                if self.credential_scope_child_ace(writable_object.0, child, *directory, rights)?
+                    == ExistingCredentialScopeAce::Missing {
+                    return Err(IsolationError::AclWitnessMismatch.into());
+                }
+            }
+        }
+        if after != collect_tree_with_credential(path, binding, alias)? {
+            return Err(IsolationError::AclWitnessMismatch.into());
+        }
         let witness = self.verify_bound_credential_tree_grant(path, expected, binding, alias, writable)?;
         if witness.identity != result { return Err(IsolationError::AclWitnessMismatch.into()); }
         Ok(witness)
+    }
+
+    fn credential_scope_child_ace(&self, handle: Handle, child: &Path,
+        directory: bool, rights: u32) -> Result<ExistingCredentialScopeAce, IsolationError> {
+        let observed = package_aces(handle, self.sid)?;
+        if observed.is_empty() {
+            if dacl_protected(handle)? {
+                return Err(IsolationError::AclWitnessDetail { object: child.to_path_buf(),
+                    sid: self.package_sid_string()?,
+                    expected: "unprotected missing descendant eligible for exact scoped grant".into(),
+                    observed });
+            }
+            return Ok(ExistingCredentialScopeAce::Missing);
+        }
+        if observed.len() == 1 && observed[0].0 == GRANT_ACCESS && observed[0].1 == rights
+            && observed[0].2 & INHERITED_ACE != 0 && observed[0].2 & INHERIT_ONLY_ACE == 0 {
+            return Ok(ExistingCredentialScopeAce::Inherited);
+        }
+        let explicit_flags = if directory { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE };
+        if observed.as_slice() == &[(GRANT_ACCESS, rights, explicit_flags)]
+            && !dacl_protected(handle)? {
+            return Ok(ExistingCredentialScopeAce::Explicit);
+        }
+        Err(IsolationError::AclWitnessDetail { object: child.to_path_buf(),
+            sid: self.package_sid_string()?, expected: format!(
+                "one inherited effective or exact explicit unprotected grant, rights={rights:#x}"),
+            observed })
     }
 
     pub(crate) fn verify_bound_credential_tree_grant(&self, path: &Path,
@@ -561,23 +616,9 @@ impl AppContainerProfile {
             }
             let object = open_physical_object(&child, directory, READ_CONTROL)?;
             if file_identity(object.0)? != identity { return Err(IsolationError::AclWitnessMismatch.into()); }
-            let entries = package_aces(object.0, self.sid)?;
-            if entries.len() != 1 || entries[0].0 != GRANT_ACCESS || entries[0].1 != rights
-                || entries[0].2 & INHERITED_ACE == 0 || entries[0].2 & INHERIT_ONLY_ACE != 0 {
-                #[cfg(test)]
-                {
-                    let parent = child.parent().map(|path|
-                        open_physical_object(path, true, READ_CONTROL).and_then(|object|
-                            Ok((file_identity(object.0)?, dacl_protected(object.0)?,
-                                package_aces(object.0, self.sid)?))));
-                    let leaf = file_information(object.0).and_then(|info|
-                        Ok((info.attributes, info.links, dacl_protected(object.0)?)));
-                    eprintln!("GOGOKE_H_EXISTING_LEAF_ACL name={:?} identity={:?} leaf={leaf:?} parent={parent:?} current_sid_aces={entries:?}",
-                        child.file_name(), identity);
-                }
-                return Err(IsolationError::AclWitnessDetail { object: child.to_path_buf(),
-                    sid: self.package_sid_string()?, expected: format!(
-                        "one inherited effective grant, rights={rights:#x}"), observed: entries }.into());
+            if self.credential_scope_child_ace(object.0, &child, directory, rights)?
+                == ExistingCredentialScopeAce::Missing {
+                return Err(IsolationError::AclWitnessMismatch.into());
             }
             require_bound_path(&child, &identity, directory)?;
         }
