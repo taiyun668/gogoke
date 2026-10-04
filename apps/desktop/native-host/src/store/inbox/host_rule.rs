@@ -145,6 +145,29 @@ pub(crate) fn failed_host_preparations(db:&VerifiedDatabaseConnection<'_>)
     Ok(out)
 }
 
+pub(crate) fn verify_failed_host_preparation_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,candidate:&HostCleanupCandidate,
+)->Result<(),InboxError> {
+    if failed_host_preparations(db)?.iter().any(|value|
+        value.domain_id==candidate.domain_id &&value.message_id==candidate.message_id
+        &&value.seat_id==candidate.seat_id &&value.choice==candidate.choice) {
+        Ok(())
+    } else {Err(InboxError::Denied)}
+}
+
+pub(crate) fn verify_frozen_host_cleanup_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,candidate:&HostCleanupCandidate,
+    stage:&str,request:&[u8],
+)->Result<(),InboxError> {
+    verify_failed_host_preparation_in_transaction(db,candidate)?;
+    let basis=candidate.message_id.replacen("hostmsg-","hostcleanup-",1);
+    let id=format!("{basis}-{stage}");
+    let operation=read_operation(db,&candidate.domain_id,&id)?.ok_or(InboxError::Denied)?;
+    if operation.message_id!=candidate.message_id ||operation.phase!="PREPARED"
+        ||operation.request_hex!=raw_hex(request) {return Err(InboxError::Denied);}
+    Ok(())
+}
+
 fn recipient_id(ids: &HostMessageIds) -> String {
     ids.enqueue_request_id.replacen("hostenqueue-", "hostrecipient-", 1)
 }
@@ -424,11 +447,7 @@ pub(crate) fn freeze_host_cleanup(db:&mut VerifiedDatabaseConnection<'_>,owner:&
     let request_id=format!("{id}-{stage}");
     transact(db,|db| {
         check_owner_in_current_transaction(db,owner).map_err(InboxError::Authority)?;
-        if !failed_host_preparations(db)?.iter().any(|value|
-            value.domain_id==candidate.domain_id &&value.message_id==candidate.message_id
-            &&value.seat_id==candidate.seat_id &&value.choice==candidate.choice) {
-            return Err(InboxError::Denied);
-        }
+        verify_failed_host_preparation_in_transaction(db,candidate)?;
         let prior=read_operation(db,&candidate.domain_id,&request_id)?;
         let fresh=prior.is_none();
         let bytes=if let Some(prior)=prior {

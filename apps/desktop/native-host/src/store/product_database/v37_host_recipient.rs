@@ -451,10 +451,28 @@ impl<'root> ProductDatabase<'root> {
             if !held.step_row()? ||held.step_row()? {return Err(OrchestrationError::AccessDenied);}
             drop(held);
             let proposed=cleanup_request(candidate,"stop",revision)?;
-            let (bytes,fresh)=c::freeze_host_cleanup(&mut self.connection,&self.owner,
+            let (bytes,_fresh)=c::freeze_host_cleanup(&mut self.connection,&self.owner,
                 candidate,"stop",&proposed.raw_bytes).map_err(recipient_error)?;
             let request=h::decode_request(&bytes).map_err(recipient_error)?;
-            if fresh {
+            let prior=Statement::prepare(self.connection.as_ptr(),
+                "SELECT raw_hex,status FROM main.gogoke_v37_h_operation
+                  WHERE domain_id=?1 AND request_id=?2 AND operation='stop' AND session_id=?3")?;
+            prior.bind_text(1,&candidate.domain_id)?;prior.bind_text(2,&request.request_id)?;
+            prior.bind_text(3,&choice.session_id)?;
+            let (h_intended,h_applied)=if prior.step_row()? {
+                let expected:String=bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+                if prior.column_text(0)?!=expected {return Err(OrchestrationError::OperationConflict);}
+                let status=prior.column_text(1)?;
+                if prior.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                (true,status=="APPLIED")
+            } else {(false,false)};
+            drop(prior);
+            // H records stop intent before touching the Job. A frozen C
+            // request with no H intent can still enter its first OS stop;
+            // an uncertain H stop is held for its original proof.
+            if !h_intended && !h_applied {
+                c::verify_frozen_host_cleanup_in_transaction(&self.connection,candidate,
+                    "stop",&bytes).map_err(recipient_error)?;
                 match self.dispatch_native_stop(&request) {
                     Ok(raw)=>{
                         let receipt=h::decode_receipt(&raw).map_err(recipient_error)?;
@@ -494,11 +512,8 @@ impl<'root> ProductDatabase<'root> {
             request_id:&request.request_id,raw_bytes:&bytes,instance_id:&claim.instance_id,
             home_id:&claim.home_id,generation:&choice.generation,
             expected_revision:i64::try_from(request.expected_revision).map_err(recipient_error)?};
-        let result=if claim.phase==runtime::SessionPhase::Committed {
-            runtime::release_unstarted_host_native(&mut self.connection,&self.owner,&input)
-        } else {
-            runtime::release_native(&mut self.connection,&seat::NativeOrigin::user(&self.owner),&input)
-        };
+        let result=runtime::release_failed_host_native(&mut self.connection,&self.owner,
+            candidate,&input,claim.phase==runtime::SessionPhase::Committed);
         let (status,reason)=match result {
             Ok(h::AdmissionResult::Applied(_))=>(V37Status::Applied,String::new()),
             Ok(h::AdmissionResult::Replayed(_))=>(V37Status::Replayed,String::new()),
