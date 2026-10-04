@@ -198,6 +198,59 @@ fn unknown_link_and_replaced_alias_fail_complete_metadata_registration() {
 }
 
 #[test]
+fn quiescent_alias_removal_preserves_source_and_other_registered_alias() {
+    let (root, requested) = test_root();
+    let base = root.canonical_root().canonical_path.clone();
+    let home = base.join("instanceA");
+    let scope_a = home.join("private-history").join("scopeA");
+    let scope_b = home.join("private-history").join("scopeB");
+    fs::create_dir_all(&scope_a).unwrap();
+    fs::create_dir_all(&scope_b).unwrap();
+    let source = home.join(AUTH_NAME);
+    fs::write(&source, b"synthetic-nonsecret-auth").unwrap();
+    let source_id = AppContainerProfile::capture_program_identity(&source).unwrap();
+    let home_id = inspect_root(&home).unwrap().identity;
+    let a = scope(&scope_a);
+    let b = scope(&scope_b);
+    let binding = CredentialBinding::open_registered(&root, &source, &home_id,
+        &source_id, &[]).unwrap();
+    binding.create_alias(&root, a.clone(), &[]).unwrap();
+    let alias_b = binding.create_alias(&root, b.clone(), &[a.clone()]).unwrap();
+    let complete = [a.clone(), b.clone()];
+    assert!(matches!(CredentialBinding::remove_quiescent_alias(binding.clone(),
+        &root, &alias_b, &complete), Err(CredentialError::Invalid(
+            "credential holder is still shared"))), "live Arc must prevent unlink");
+    let other = home.join("synthetic-other-object");
+    fs::write(&other, b"other-synthetic-file").unwrap();
+    let wrong = CredentialAlias { scope: b.clone(),
+        file_identity: AppContainerProfile::capture_program_identity(&other).unwrap() };
+    assert!(matches!(CredentialBinding::remove_quiescent_alias(binding,
+        &root, &wrong, &complete), Err(CredentialError::IdentityChanged)),
+        "wrong file ID witness must not unlink the registered name");
+    assert!(alias_b.path().is_file(), "failed removal leaves exact alias intact");
+    let binding = CredentialBinding::open_registered(&root, &source, &home_id,
+        &source_id, &complete).unwrap();
+    let alias_b = binding.alias(&b, &complete).unwrap();
+    let receipt = CredentialBinding::remove_quiescent_alias(binding,
+        &root, &alias_b, &complete).expect("one quiescent alias disposition");
+    assert_eq!(receipt.source_identity, source_id);
+    assert_eq!(receipt.removed, b);
+    assert_eq!(receipt.remaining_aliases, vec![a.clone()]);
+    assert_eq!(receipt.remaining_links, 2);
+    assert!(!alias_b.path().exists() && a.root.join(AUTH_NAME).is_file());
+    let observed = CredentialBinding::verify_removed_alias(&root, &source,
+        &home_id, &source_id, &b, &[a.clone()]).expect("read-only recovery receipt");
+    assert_eq!(observed.remaining_links, 2);
+    fs::write(alias_b.path(), b"different-synthetic-object").unwrap();
+    assert!(matches!(CredentialBinding::verify_removed_alias(&root, &source,
+        &home_id, &source_id, &b, &[a]), Err(CredentialError::Invalid(
+            "removed alias name still exists"))),
+        "replacement cannot be mistaken for a completed remove intent");
+    drop(root);
+    fs::remove_dir_all(requested).unwrap();
+}
+
+#[test]
 fn owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime() {
     let (root, requested) = test_root();
     let base = root.canonical_root().canonical_path.clone();
