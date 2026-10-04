@@ -245,8 +245,9 @@ fn check_backend_source(db: &VerifiedDatabaseConnection<'_>, source: &BackendSou
     let query = Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_coordination_process_custody
           WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3 AND generation=?4
-            AND binary_digest_sha256=?5 AND state='STOPPED' AND stop_proof_hash IS NOT NULL AND stop_proof_hash<>''")?;
-    bind(&query, &[&source.operation_id, &source.ticket, &source.nonce, &source.generation, &source.program_digest])?;
+            AND binary_digest_sha256=?5 AND profile_id=?6 AND domain_id='global'
+            AND state='STOPPED' AND stop_proof_hash IS NOT NULL AND stop_proof_hash<>''")?;
+    bind(&query, &[&source.operation_id, &source.ticket, &source.nonce, &source.generation, &source.program_digest, &source.instance_id])?;
     if !query.step_row()? { return Err(CredentialRegistryError::Unusable); }
     if query.step_row()? { return Err(CredentialRegistryError::Conflict); }
     Ok(())
@@ -643,7 +644,7 @@ mod tests {
         let instance = Statement::prepare(db.as_ptr(),
             "INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA',?1,'sha256:fixture','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
         instance.bind_text(1, &identity(1).opaque()).unwrap(); instance.step_done().unwrap();
-        db.execute("INSERT INTO main.gogoke_coordination_process_custody VALUES('accountRead','ticketA','nonceA','1','1','fixture-image','sha256:fixture','ordinary','domainA','1','STOPPED','fixture-stop-proof')").unwrap();
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody VALUES('accountRead','ticketA','nonceA','1','1','fixture-image','sha256:fixture','instanceA','global','1','STOPPED','fixture-stop-proof')").unwrap();
         let history = Statement::prepare(db.as_ptr(),
             "INSERT INTO main.gogoke_v37_instance_histories VALUES('historyA','instanceA',?1,?2,?2,'domainA','sessionA','seatA','1','bindingA','1','openA','history-historyA',?3,'READY',1)").unwrap();
         bind(&history, &[&db.root_identity().opaque(), &identity(1).opaque(), &identity(2).opaque()]).unwrap(); history.step_done().unwrap();
@@ -690,6 +691,9 @@ mod tests {
             let unregistered_links = CredentialObjectInput { observed_nlink: 2, ..object(db) };
             assert!(matches!(bind_credential_object(db, &unregistered_links), Err(CredentialRegistryError::Conflict)));
             assert!(read_credential_object(db, "instanceA").unwrap().is_none());
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET domain_id='project' WHERE operation_id='accountRead'").unwrap();
+            assert!(matches!(read_configured_credential_backend(db, "instanceA"), Err(CredentialRegistryError::Unusable)));
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET domain_id='global' WHERE operation_id='accountRead'").unwrap();
             db.execute("UPDATE main.gogoke_coordination_process_custody SET state='UNKNOWN'").unwrap();
             assert!(matches!(read_usable_credential_backend(db, "instanceA"), Err(CredentialRegistryError::Unusable)));
             db.execute("UPDATE main.gogoke_coordination_process_custody SET state='STOPPED',custodian_nonce='other'").unwrap();

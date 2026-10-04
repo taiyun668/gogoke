@@ -13,6 +13,9 @@ F's existing six-table schema and migration remain unchanged.
 
 Backend evidence retains the original STOPPED process operation, ticket, nonce,
 generation, F home/pin/version and non-secret backend enum. Usability additionally
+binds the original account/config observer to global custody with profile equal
+to the registered instance; a stopped project model process is not that source.
+Usability additionally
 requires a separately verified `FILE_BOUND` startup selector. A configuration
 response containing File alone is insufficient. Other/Unknown never converts to
 File. `read_configured_credential_backend` returns the original enum/selector after
