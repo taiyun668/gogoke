@@ -413,11 +413,7 @@ impl<'root> ProductDatabase<'root> {
         if matches!(driver.as_str(),"opencode"|"grok") {
             self.complete_pending_native_acp_send(key)?;
         }
-        if driver=="claude" {self.complete_pending_native_claude_send(key)?;}
-        let thread_id=if driver=="claude" {
-            self.native_sessions.get(key).and_then(|run|run.thread_id.clone())
-        } else {thread_id};
-        let Some(thread_id)=thread_id else {return Ok(());};
+        if driver!="claude" && thread_id.is_none() {return Ok(());}
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;
         query.bind_text(1,&operation)?; query.bind_text(2,&nonce)?;
@@ -425,11 +421,25 @@ impl<'root> ProductDatabase<'root> {
         while query.step_row()? { cursors.push(query.column_text(0)?); }
         drop(query);
         for raw_cursor in cursors {
+            if driver=="claude" {
+                // H may consume this cursor's original echo/result, but it
+                // cannot see a later captured cursor before C handles the
+                // current provider question or resolution fact.
+                self.complete_pending_native_claude_send_through(key,&raw_cursor)?;
+            }
             let Some(raw)=ledger::read_pending_raw_source(&self.connection,&operation,&nonce,&raw_cursor)? else {continue;};
             if raw.process_ticket!=ticket || raw.custodian_nonce!=nonce || raw.domain_id!=key.0
                 || raw.session_id!=key.1 || raw.generation!=generation {
                 return Err(OrchestrationError::OperationConflict);
             }
+            let current_thread=if driver=="claude" {
+                self.native_sessions.get(key).and_then(|run|run.thread_id.clone())
+            } else {thread_id.clone()};
+            let Some(thread_id)=current_thread else {
+                // A's original frame remains pending until its real native
+                // session identity arrives; no placeholder thread is used.
+                continue;
+            };
             // A captured response without an OBSERVED association remains
             // an unresolved original outcome. It is not a notification and
             // must not block later, independently captured notifications.
@@ -565,6 +575,7 @@ impl<'root> ProductDatabase<'root> {
                 self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.turn_id=Some(turn_id);
             }
         }
+        if driver=="claude" {self.reconcile_completed_native_claude_send(key)?;}
         self.reconcile_retained_terminal_turn(key)?;
         Ok(())
     }

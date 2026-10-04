@@ -2337,7 +2337,11 @@ impl<'root> ProductDatabase<'root> {
             BTreeMap::from([(JsonString::from_str("deliveryBasis"),text("CLAUDE_ORIGINAL_RESPONSE_PENDING"))])))
     }
 
-    pub(super) fn complete_pending_native_claude_send(&mut self,key:&(String,String)) -> Result<()> {
+    /// Advance the original H User/echo/result only through the A cursor
+    /// currently being projected by C. A later captured result must not
+    /// clear the current send before an earlier AskUserQuestion is raised.
+    pub(super) fn complete_pending_native_claude_send_through(&mut self,key:&(String,String),
+        through_cursor:&str) -> Result<()> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         let Some((bytes,identity))=run.pending_claude.clone() else {return Ok(());};
         let custody=run.custody.clone();let operation=run.operation_id.clone();
@@ -2348,9 +2352,11 @@ impl<'root> ProductDatabase<'root> {
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2
                AND process_ticket=?3 AND custodian_nonce=?2 AND domain_id=?4 AND session_id=?5
-               AND generation=?6 ORDER BY CAST(source_cursor AS INTEGER)")?;
+               AND generation=?6 AND CAST(source_cursor AS INTEGER)<=CAST(?7 AS INTEGER)
+               ORDER BY CAST(source_cursor AS INTEGER)")?;
         for (index,value) in [operation.as_str(),custody.custodian_nonce.as_str(),custody.ticket.opaque(),
             key.0.as_str(),key.1.as_str(),custody.binding.generation.as_str()].iter().enumerate() {query.bind_text((index+1) as i32,value)?;}
+        query.bind_text(7,through_cursor)?;
         let mut cursors=Vec::new();while query.step_row()? {cursors.push(query.column_text(0)?);}drop(query);
         let mut echoed=false;
         for cursor in cursors {
@@ -2371,6 +2377,29 @@ impl<'root> ProductDatabase<'root> {
                     run.thread_id=Some(session_id);echoed=true;
                 },
                 stream_json::ClaudeData::Result {..} if echoed=>{
+                    // Even if an earlier question could not yet be projected
+                    // into C, this later result may not consume its H send.
+                    // Both facts remain in A for the next ordered pass.
+                    let prior=Statement::prepare(self.connection.as_ptr(),
+                        "SELECT source_cursor FROM main.v37_ledger_raw_source
+                          WHERE operation_id=?1 AND source_epoch=?2 AND state='PENDING'
+                            AND CAST(source_cursor AS INTEGER)<CAST(?3 AS INTEGER)
+                          ORDER BY CAST(source_cursor AS INTEGER)")?;
+                    prior.bind_text(1,&operation)?;
+                    prior.bind_text(2,&custody.custodian_nonce)?;
+                    prior.bind_text(3,&raw.key.source_cursor)?;
+                    let mut earlier=Vec::new();while prior.step_row()? {earlier.push(prior.column_text(0)?);}
+                    drop(prior);
+                    for cursor in earlier {
+                        let source=ledger::read_pending_raw_source(&self.connection,&operation,
+                            &custody.custodian_nonce,&cursor)?
+                            .ok_or(OrchestrationError::OperationConflict)?;
+                        if crate::store::session_transport::provider_evidence::claude_question::decode(
+                            &source.raw_bytes).map_err(|error|OrchestrationError::V37StoreFailure(
+                                format!("Claude original question before result: {error:?}")))?.is_some() {
+                            return Ok(());
+                        }
+                    }
                     let completed=failure(h::complete_claude_send_from_source(&mut self.connection,&self.owner,&input,&raw.key))?;
                     if completed.user.record.receipt_bytes.is_none() {return Err(OrchestrationError::OperationConflict);}
                     self.expire_claude_terminal_cards(key,&raw.key)?;
@@ -2380,6 +2409,60 @@ impl<'root> ProductDatabase<'root> {
                 _=>{},
             }
         }
+        Ok(())
+    }
+
+    /// A prior pass may have committed H's original result before C finished
+    /// an earlier raw question. Reconcile only the already receipted H/A
+    /// result after the ordered C projection; this performs no stdin write.
+    pub(super) fn reconcile_completed_native_claude_send(&mut self,key:&(String,String))
+        ->Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let Some((bytes,_))=run.pending_claude.clone() else {return Ok(());};
+        let custody=run.custody.clone();
+        let input=h::StdinRequest {domain_id:&key.0,session_id:&key.1,
+            ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
+            request_bytes:&bytes};
+        let Some(completed)=failure(h::read_original_claude_send_completed(
+            &self.connection,&input))? else {return Ok(());};
+        // An original question not yet represented in C must retain the H
+        // send identity. A later terminal cannot make that source disappear.
+        let pending=Statement::prepare(self.connection.as_ptr(),
+            "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1
+             AND source_epoch=?2 AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;
+        pending.bind_text(1,&run.operation_id)?;
+        pending.bind_text(2,&custody.custodian_nonce)?;
+        let mut cursors=Vec::new();while pending.step_row()? {cursors.push(pending.column_text(0)?);}
+        drop(pending);
+        for cursor in cursors {
+            let raw=ledger::read_pending_raw_source(&self.connection,&run.operation_id,
+                &custody.custodian_nonce,&cursor)?.ok_or(OrchestrationError::OperationConflict)?;
+            if crate::store::session_transport::provider_evidence::claude_question::decode(
+                &raw.raw_bytes).map_err(|error|OrchestrationError::V37StoreFailure(
+                    format!("Claude retained original question: {error:?}")))?.is_some() {
+                return Ok(());
+            }
+        }
+        let receipt=completed.user.record.receipt_bytes.as_ref()
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let fields=h::decode_receipt(receipt).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("Claude original result receipt: {error:?}")))?
+            .into_result();
+        let field=|name:&str|->Result<String> {
+            let Some(Json::String(value))=fields.get(&JsonString::from_str(name)) else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            value.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)
+        };
+        let source=ledger::RawSourceKey {operation_id:run.operation_id.clone(),
+            source_epoch:field("sourceEpoch")?,source_cursor:field("sourceCursor")?};
+        if source.source_epoch!=custody.custodian_nonce {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        self.expire_claude_terminal_cards(key,&source)?;
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        run.thread_id=Some(completed.vendor_session_id);
+        run.pending_claude=None;
         Ok(())
     }
 
