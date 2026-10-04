@@ -721,6 +721,67 @@ impl AppContainerProfile {
         Ok(())
     }
 
+    /// Initial account/read with no registered auth object. Existing history
+    /// is never granted to this SID; only HOME traverse and a fresh runtime
+    /// are admitted. A present auth object must use the registered binding.
+    pub(crate) fn grant_bound_owner_account_empty(&self, root: &RootLock,
+        home: &Path, home_identity: &RootIdentity, runtime: &Path,
+        runtime_identity: &RootIdentity) -> Result<(), CredentialError> {
+        if runtime.parent() != Some(home) || runtime == home.join("auth.json") {
+            return Err(CredentialError::Invalid("empty account runtime is not an exact HOME child"));
+        }
+        require_absent_owner_auth(root, home, home_identity)?;
+        let home_object = open_bound_object(home, home_identity, true)?;
+        grant_exact_acl(home_object.0, self.sid, home_identity,
+            FILE_GENERIC_EXECUTE, NO_INHERITANCE)?;
+        let fresh_runtime = Self::open_fresh_directory(runtime)?;
+        if &fresh_runtime.identity != runtime_identity {
+            return Err(CredentialError::IdentityChanged);
+        }
+        self.grant_held_fresh_directory(&fresh_runtime, true, true)?;
+        self.verify_bound_owner_account_empty(root, home, home_identity,
+            runtime, runtime_identity)
+    }
+
+    pub(crate) fn verify_bound_owner_account_empty(&self, root: &RootLock,
+        home: &Path, home_identity: &RootIdentity, runtime: &Path,
+        runtime_identity: &RootIdentity) -> Result<(), CredentialError> {
+        if runtime.parent() != Some(home) || runtime == home.join("auth.json") {
+            return Err(CredentialError::Invalid("empty account runtime escaped HOME"));
+        }
+        require_absent_owner_auth(root, home, home_identity)?;
+        let home_object = open_physical_object(home, true, READ_CONTROL)?;
+        if &file_identity(home_object.0)? != home_identity
+            || package_aces(home_object.0, self.sid)?.as_slice() !=
+                &[(GRANT_ACCESS, FILE_GENERIC_EXECUTE, NO_INHERITANCE)] {
+            return Err(IsolationError::AclWitnessMismatch.into());
+        }
+        self.verify_bound_tree_grant(runtime, runtime_identity, true)?;
+        let mut pending = vec![home.to_path_buf()];
+        while let Some(parent) = pending.pop() {
+            for entry in std::fs::read_dir(&parent).map_err(|error|
+                CredentialError::Io { operation: "enumerate empty account HOME", source: error })? {
+                let child = entry.map_err(|error| CredentialError::Io {
+                    operation: "read empty account entry", source: error })?.path();
+                if child == runtime { continue; }
+                let metadata = std::fs::symlink_metadata(&child).map_err(|error|
+                    CredentialError::Io { operation: "read empty account object metadata", source: error })?;
+                let directory = metadata.is_dir();
+                let object = open_physical_object(&child, directory, READ_CONTROL)?;
+                if !package_aces(object.0, self.sid)?.is_empty() {
+                    return Err(IsolationError::AclWitnessDetail {
+                        object: child.strip_prefix(home).unwrap_or(&child).to_path_buf(),
+                        sid: self.package_sid_string()?,
+                        expected: "no observer package ACE outside fresh runtime".into(),
+                        observed: package_aces(object.0, self.sid)?,
+                    }.into());
+                }
+                if directory { pending.push(child); }
+            }
+        }
+        require_absent_owner_auth(root, home, home_identity)
+    }
+
     /// The program path must come from F's fixed native catalog. Its object
     /// identity is captured before the grant and rechecked by process custody
     /// at suspended creation; an arbitrary caller-supplied path is insufficient.
@@ -860,6 +921,19 @@ fn file_identity(handle: Handle) -> Result<RootIdentity, IsolationError> {
         return Err(IsolationError::Acl(io::Error::last_os_error()));
     }
     Ok(RootIdentity { volume_serial: info.volume_serial_number, file_id: info.file_id })
+}
+
+fn require_absent_owner_auth(root: &RootLock, home: &Path,
+    home_identity: &RootIdentity) -> Result<(), CredentialError> {
+    require_bound_path(home, home_identity, true)?;
+    match CredentialBinding::observe_source_metadata(root, &home.join("auth.json"), home_identity) {
+        Err(CredentialError::Io { operation: "observe source metadata", source })
+            if source.raw_os_error() == Some(2) => {},
+        Err(error) => return Err(error),
+        Ok(_) => return Err(CredentialError::Invalid("empty account auth object exists")),
+    }
+    require_bound_path(home, home_identity, true)?;
+    Ok(())
 }
 
 fn open_physical_object(path: &Path, directory: bool, access: u32)
