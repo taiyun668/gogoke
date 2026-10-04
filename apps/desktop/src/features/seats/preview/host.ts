@@ -6,6 +6,7 @@ import {
 } from "../../../../../../third_party/t3code/apps/server/src/gogoke/contracts/v37/protocol";
 import type { JsonObject } from "../../../../../../third_party/t3code/apps/server/src/gogoke/contracts/model";
 import { DESIGN37_INSTANCES_SCHEMA, DESIGN37_TEST_INSTANCE_ID, type Design37InstanceState } from "../design37Instances";
+import { DESIGN37_OWNER_NOTICES_PROJECTION, type Design37OwnerNoticesRequest } from "../design37OwnerNotices";
 
 /** Browser-only K-UI fixture. It never opens a browser, CLI, credential or native bridge. */
 export function createPreviewHost() {
@@ -16,6 +17,8 @@ export function createPreviewHost() {
   let login: Record<string, unknown> | undefined;
   let showNewVersion = false;
   let showRuntimeIssues = false;
+  let ownerNoticeVisible = false;
+  let ownerNoticeCause = 1;
   const caller: V37TrustedCaller = {
     principalId: "previewUser", seatId: "previewUser", domainId: "preview",
     role: "user", policyRevision: "1", revocationHead: "preview",
@@ -68,6 +71,27 @@ export function createPreviewHost() {
     } },
   });
   return {
+    /** Explicit synthetic User source response, not native delivery or acknowledgement. */
+    async executeUserSourceOperation(input: Design37OwnerNoticesRequest) {
+      const request = decodeV37Request(encodeV37Request(input as V37Request));
+      if (request.family !== "K-INBOX" || request.operation !== "check-unknown" ||
+          request.domainId !== "global" || request.targetId !== "OWNER" || request.expectedRevision !== "0" ||
+          Object.keys(request.payload).length !== 1 || request.payload.projection !== DESIGN37_OWNER_NOTICES_PROJECTION) {
+        throw new Error("PREVIEW_UNSUPPORTED_OWNER_SOURCE_OPERATION");
+      }
+      return decodeV37Receipt(encodeV37Receipt({ schema: V37_SCHEMA,
+        family: request.family, operation: request.operation, requestId: request.requestId,
+        targetId: request.targetId, status: "APPLIED", previousRevision: "0", revision: "0",
+        result: { projection: DESIGN37_OWNER_NOTICES_PROJECTION, notices: ownerNoticeVisible ? [{
+          domainId: "preview", messageId: `previewOwnerMessage${ownerNoticeCause}`, revision: "1", state: "PENDING",
+          sourceSeatId: "previewSeatA", causeEventId: `previewCause${ownerNoticeCause}`, triggerId: "REJECT_CAP",
+          body: `REJECT_CAP: 席位 previewSeatA 的宿主操作已被拒绝。\n升级目标：OWNER。\n原因事件：previewCause${ownerNoticeCause}。`,
+        }] : [] } }));
+    },
+    setOwnerNotice(visible: boolean, newCause = false) {
+      if (newCause) ownerNoticeCause += 1;
+      ownerNoticeVisible = visible;
+    },
     async invoke(command: string, args?: Record<string, unknown>) {
       if (!["gogoke_design37_instances", "gogoke_design37_instance_register",
         "gogoke_design37_instance_login", "gogoke_design37_instance_cancel"].includes(command)) {
