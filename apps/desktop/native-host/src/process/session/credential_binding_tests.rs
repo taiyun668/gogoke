@@ -1,5 +1,6 @@
 use super::*;
-use crate::process::{prepare_and_activate, AppContainerProfile, ProcessLaunch};
+use crate::process::{AppContainerProfile, NativeBinding, PrepareRequest,
+    ProcessCustodian, ProcessLaunch};
 use crate::root::{inspect_root, RootLock};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
@@ -75,13 +76,22 @@ fn run_child(profile_name: &str, exe: &Path, alias: &CredentialAlias,
     if write { launch.environment.as_mut().unwrap().push((
         "GOGOKE_TEST_CREDENTIAL_WRITE".into(), "1".into())); }
     launch.arguments = vec!["--exact".into(), CHILD.into(), "--nocapture".into()];
-    let managed = prepare_and_activate(&launch, |_| Ok(())).expect("prepared exact LPAC child");
+    let digest = crate::store::digest::sha256_hex(&fs::read(exe).expect("cloud fixture image bytes"));
+    let request = PrepareRequest { launch, binding: NativeBinding {
+        binary_digest_sha256: format!("sha256:{digest}"),
+        profile_id: "credential-fixture".into(), domain_id: "synthetic".into(),
+        generation: "1".into(),
+    } };
+    let mut custody = ProcessCustodian::new().expect("exact process custodian");
+    let prepared = custody.prepare(&request).expect("prepared exact LPAC child");
+    custody.activate(&prepared).expect("activated exact LPAC child");
+    let managed = custody.active(&prepared.ticket).expect("active exact child");
     assert!(managed.wait(Duration::from_secs(20)).expect("native child wait"),
         "LPAC child did not finish; stderr={:?}", managed.stderr_tail());
     assert_eq!(managed.exit_code().expect("native child exit"), Some(0),
         "LPAC child stderr={:?}", managed.stderr_tail());
     let result = fs::read_to_string(&report).expect("original child access result");
-    drop(managed);
+    drop(custody);
     result
 }
 
