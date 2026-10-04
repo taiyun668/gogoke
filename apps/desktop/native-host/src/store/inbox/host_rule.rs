@@ -712,6 +712,14 @@ pub(crate) fn reserve_host_delivery(db: &mut VerifiedDatabaseConnection<'_>,
         let message = original_host_message(db, proof, &ids)?;
         if let Some(prior) = replay(db, proof.domain_id(), &ids.delivery_request_id,
             &ids.message_id, &bytes)? { return Ok((prior, None)); }
+        if host_recipient_failure_recorded(db,proof)? {return Err(InboxError::Conflict);}
+        // A cleanup intent is frozen before its H stop/release effect. It
+        // fences a racing C delivery of that same original Host message.
+        let cleanup=ids.message_id.replacen("hostmsg-","hostcleanup-",1);
+        if read_operation(db,proof.domain_id(),&format!("{cleanup}-stop"))?.is_some()
+            ||read_operation(db,proof.domain_id(),&format!("{cleanup}-release"))?.is_some() {
+            return Err(InboxError::Conflict);
+        }
         if message.state != "PENDING" || !message.turn_id.is_empty() ||
             !message.generation.is_empty() { return Err(InboxError::Conflict); }
         original_target(db, proof.domain_id(), proof.destination_seat_id(), target, false)?;
