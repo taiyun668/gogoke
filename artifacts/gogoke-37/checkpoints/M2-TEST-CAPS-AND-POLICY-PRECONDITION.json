@@ -1,0 +1,31 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "stage": "M2_IN_PROGRESS",
+  "acceptance": false,
+  "changes": [
+    "Owner confirmed Claude, OpenCode and Grok test-instance concurrency caps as 4; actual User configuration and readback completed.",
+    "Owner authorized future newly created test instances to default to 4 without repeated questions. This is test preparation authority; real-use instance caps remain Owner choices in the instance page.",
+    "Closed original M2 readback found no policy head in the fresh test domain and no child seat. Add explicit one-time test-domain policy initialization before a new original model request.",
+    "After original child stop and closed readback, permit only the single committed marker change in the private testbed. Configure only the exact parent-to-MAIN merge grant by the actual policy revision; the original model performs the native merge."
+  ],
+  "result": [
+    "Four test instances LOGGED_IN; no additional authentication action.",
+    "Original self-state, native question, answer and cited takeover completed. Child creation DENIED; fixture omitted required policy initialization.",
+    "Original failed session stopped and released with native proof; product normally closed with exit 0. Immutable failure capture preserved database bytes and is capture-only, not a passing M2 readback.",
+    "Five formal protection groups, candidate memory fields and ledger identity compared unchanged after normal close.",
+    "Standalone three-provider fixtures prepared through actual User ingress without model calls. Their development driver has five independently identified measurement issues being corrected in its exclusive worktree."
+  ],
+  "next": "Continue the fresh Codex M2 case after focused helper review, and run actual standalone provider sessions after the five helper corrections are reviewed. No new candidate for measurement corrections.",
+  "reference": {
+    "checked": [
+      "Existing M2 fixture and m2-rules.mjs User policy configuration",
+      "Installed-source store/seat/policy.rs head_revision and derive_new_child_dispatch_grant",
+      "Existing immutable m2-readback.py and actual closed candidate policy rows"
+    ],
+    "adopted": "Existing native User configuration and policy CAS; original Model dispatch/stop/merge remain authoritative.",
+    "difference": "Add the omitted explicit fixture prerequisite and a narrow Controller testbed merge decision after original closed evidence, instead of changing product permissions or replacing a native model call."
+  },
+  "original_failure": "Original completed dynamic-tool H send ACK lacks one child/worktree selector; model prose is not a substitute",
+  "underlying_original_result": "DENIED",
+  "publicRelease": false
+}

@@ -354,6 +354,16 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
     committed_bytes = git_bytes(git_program, tree_path, "show", f"HEAD:{marker_file}")
     if fingerprint(committed_bytes) != marker_hash:
         raise RuntimeError("Actual Git commit does not contain marker bytes")
+    if phase == "capture":
+        source = Path(local_spelling(tree[11])).resolve(strict=True)
+        source_head = git(git_program, source, "rev-parse", "--verify", "HEAD^{commit}")
+        changed = git(git_program, tree_path, "diff", "--name-only", source_head, tree_head).splitlines()
+        if changed != [marker_file] or git(git_program, tree_path, "merge-base", source_head, tree_head) != source_head:
+            raise RuntimeError("Controller testbed merge requires only the new marker on the original source HEAD")
+        policy_head = one(db, "SELECT revision,current_stage FROM gogoke_v37_seat_policy_head WHERE domain_id=?", (domain,))
+        result["controllerMergeDecision"] = {"decision": "MERGE_EXACT_PRIVATE_TEST_MARKER_ONLY",
+            "sourceHead": source_head, "childHead": tree_head, "changedPaths": changed,
+            "policyRevision": str(policy_head[0]), "scope": "gogokeSeatTestbed"}
     result["worktree"] = {"id": worktree_id, "childSessionId": child_session,
         "requestId": worktree_op[0], "requestHash": worktree_op[1],
         "path": str(tree_path), "revision": tree[8], "state": tree[7],

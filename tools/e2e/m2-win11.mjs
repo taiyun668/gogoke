@@ -646,6 +646,19 @@ try {
   check(instances.instances.some(row => row.instanceId === config.childInstanceId &&
     row.driverId === 'codex' && row.state === 'LOGGED_IN'),
   'Actual child Codex instance pre-admitted without any login action');
+  if (config.policyInitialization) {
+    check(config.policyInitialization.stage === 'OPEN' && config.policyInitialization.expectedRevision === '0',
+      'Explicit fresh test-domain policy initialization only');
+    const request = { schema: 'gogoke.37.owner-configuration.v1', command: 'policy-initialize',
+      domainId: config.domainId, requestId: id('m2PolicyInit'), stage: 'OPEN', expectedRevision: '0' };
+    const entry = { kind: 'CONTROLLER_TEST_DOMAIN_POLICY_INITIALIZATION', request,
+      rawFrame: JSON.stringify(request), receipt: null };
+    journal.operations.push(entry); product.save();
+    entry.rawReceipt = await product.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(entry.rawFrame)}})`);
+    entry.receipt = JSON.parse(entry.rawReceipt); product.save();
+    check(entry.receipt.status === 'APPLIED' && entry.receipt.requestId === request.requestId &&
+      entry.receipt.revision === '1', 'Original fresh test-domain policy initialized once');
+  }
   const lead = config.retainedPrelaunchFailure ? await openRetainedLead() :
     await openUserSession(config.seatId, config.instanceId, config.worktreeId, 'lead');
   const leadControl = await seatCard(config.seatId);
@@ -683,6 +696,23 @@ try {
   await product.launch();
   check(Boolean(product.tester) && journal.connectionBackend?.agentActs === 0,
     'Resumed original e2e hard locator without agent.act');
+  const decision = captured.controllerMergeDecision;
+  check(decision?.decision === 'MERGE_EXACT_PRIVATE_TEST_MARKER_ONLY' &&
+    decision.scope === config.repositoryId && decision.childHead === captured.worktree.childCommit &&
+    JSON.stringify(decision.changedPaths) === JSON.stringify([journal.markerFile]) &&
+    /^[1-9][0-9]*$/.test(decision.policyRevision), 'Controller narrow private testbed merge decision');
+  const grant = { schema: 'gogoke.37.owner-configuration.v1', command: 'policy-call-grant',
+    domainId: config.domainId, requestId: id('m2MergeGrant'), callerSeatId: config.seatId,
+    targetId: 'MAIN', action: 'MERGE', expiresAtMs: String(Date.now() + 3600000),
+    expectedRevision: decision.policyRevision };
+  const entry = { kind: 'CONTROLLER_TESTBED_MERGE_CONFIGURATION', request: grant,
+    rawFrame: JSON.stringify(grant), decision, receipt: null };
+  journal.operations.push(entry); product.save();
+  entry.rawReceipt = await product.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(entry.rawFrame)}})`);
+  entry.receipt = JSON.parse(entry.rawReceipt); product.save();
+  check(entry.receipt.status === 'APPLIED' && entry.receipt.requestId === grant.requestId &&
+    entry.receipt.command === grant.command && entry.receipt.revision ===
+    (BigInt(decision.policyRevision) + 1n).toString(), 'Original narrow MERGE grant CAS receipt');
   const resumed = await sessionOp(lead, 'resume');
   check(resumed.result.state === 'RUNNING' && resumed.result.newGeneration,
     'Original lead H session resumed after normal close');
