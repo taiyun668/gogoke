@@ -285,6 +285,7 @@ jobs:
             @{ id = 'ipc-dacl'; filter = 'applies_current_user_only_dacl_and_first_instance_guard' },
             @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
             @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
+            @{ id = 'holder-gone-job-close'; filter = 'holder_gone_requires_job_close_to_remove_live_descendant_before_root_recovery' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
             @{ id = 'protocol-input-close'; filter = 'native_input_close_delivers_eof_and_preserves_graceful_stop_proof' },
             @{ id = 'lpac-file-lifecycle'; filter = 'app_container_child_writes_only_granted_fresh_directory' },
@@ -318,7 +319,7 @@ jobs:
             @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
           if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') {
-            $probes = @($probes | Where-Object { $_.id -in @('job-descendant', 'job-second-stop') })
+            $probes = @($probes | Where-Object { $_.id -in @('job-descendant', 'job-second-stop', 'holder-gone-job-close') })
             Write-Host 'Focused changed Job fixture only; full library and mutation suites NOT_RUN.'
           } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') {
             $probes = @($probes | Where-Object { $_.id -eq 'stop-124-negative' })
@@ -605,6 +606,19 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
           Write-Output "Fixed Claude CLI SHA256=$digest"
+      - name: Verify holder-gone Job lifetime with compiled production mutation
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          ./tools/ci/gogoke37-holder-gone-job-mutation.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'holder-gone-security')
+      - name: Upload holder-gone Job lifetime originals
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: holder-gone-security-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/holder-gone-security
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Verify catalog program and unchanged data boundaries with compiled mutations
         if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' }}
         shell: pwsh

@@ -1,0 +1,24 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "date": "2026-10-05",
+  "changed": [
+    "Owner declined an additional login and authorized one same-instance holder-disappearance recovery round. This supersedes the pending login request in M2-V08-CLOSE-AND-CODEX-COLD-START.json.",
+    "Independently reviewed detail amendment PR #68 was merged; trusted main scope digest still matches the existing v2 authorization receipt.",
+    "Separate native exact-process proof, immutable F metadata journal, narrow one-SID ACL removal and H resource RELEASED composition are implemented. Original custody, NULL stop proof, episode and history are preserved; no STOPPED is invented.",
+    "The first implementation review found stale post-release validation and a nested Owner transaction. Both are fixed; cloud compiler API/visibility errors were also fixed, and the focused independent source review found no new confirmed blocker.",
+    "Real descendant/Job-close test and compiled kill-on-close mutation are integrated; composed two-ACTIVE recovery tests are being integrated."
+  ],
+  "results": {
+    "plan_authorization": "EXACT_READBACK_AND_SCOPE_DIGEST_MATCH",
+    "first_cloud_compile": "FAILED_ORIGINAL_E0308_AND_E0624_PRESERVED",
+    "fixed_source_review": "NO_CONFIRMED_NEW_BLOCKER_NOT_BEHAVIOR_ACCEPTANCE",
+    "fixed_cloud_library": "IN_PROGRESS_OR_QUEUED",
+    "composed_recovery_and_mutations": "NOT_RUN",
+    "same_instance_owner_win11_recovery": "NOT_RUN",
+    "additional_login": "NOT_AUTHORIZED_THIS_ROUND"
+  },
+  "next": "Finish cloud composition and production mutations, then fresh final all-axis review and one stable candidate chain. Verify recovery on the original logged-in Codex instance with formal protection snapshots. Before every candidate close, execute actual H stop for all live test sessions and read back original StopFacts.",
+  "precedents": "PR #66 kernel PID/creation-time queries; existing H suspended Job, RootLock and close_checked lifetime; F metadata binding, exact ACL and intent journals; H admission CAS. gogo-party close and P07 are behavior references, not evidence for this installed product.",
+  "failure_original": "E0308: Owner snapshot and seat setter require mutable connection; E0624: finish_native_transaction was private to a sibling module. Source review: cached COMMITTED claim cannot validate an APPLIED RELEASED result; a transaction-opening Owner helper cannot be called inside BEGIN IMMEDIATE.",
+  "acceptance": false
+}
