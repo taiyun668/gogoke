@@ -17,6 +17,7 @@ pub use windows::*;
 pub(crate) use session::{AppContainerProfile, CompatModule, DirectoryRoots, IsolationError,
     CredentialAlias, CredentialAliasScope, CredentialBinding, CredentialError,
     NativeBootIdentity, NativeBootIdentityError,
+    native_boot_start, NativeLegacyHoldersGone, NativeLegacyHoldersGoneError,
     LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt};
 
 #[cfg(not(windows))]
