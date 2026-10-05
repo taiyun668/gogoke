@@ -3,7 +3,9 @@
 //! The persisted boot-environment GUID names a BCD entry, not a reboot. Here
 //! class 3 returns the kernel's boot FILETIME, in the same epoch and units as
 //! GetProcessTimes creation time. Both the process-object check and the strict
-//! boot boundary are necessary for a holder-gone observation.
+//! boot boundary are necessary for a legacy holder-gone migration observation.
+//! The independent NativeProcessHoldersGone below proves only the named exact
+//! process identities are gone, including processes created during this boot.
 
 use std::ffi::c_void;
 use std::fmt;
@@ -70,6 +72,42 @@ struct OwnedHandle(Handle);
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// Sealed native observation of the listed exact process identities only.
+/// It is independent of the legacy migration boot boundary. It proves neither
+/// Job descendants nor credential revocation, StopFact or admission release;
+/// callers must establish those facts separately before changing durable state.
+pub(crate) struct NativeProcessHoldersGone {
+    original_pairs: Vec<(u32, u64)>,
+}
+
+impl NativeProcessHoldersGone {
+    pub(crate) fn observe(
+        original_pairs: &[(u32, u64)],
+    ) -> Result<Self, NativeLegacyHoldersGoneError> {
+        let original_pairs = canonical_pairs(original_pairs)?;
+        check_holders(&original_pairs)?;
+        Ok(Self { original_pairs })
+    }
+
+    /// Bind the observation to the same complete original list, then recheck
+    /// actual kernel process objects. A prior observation cannot authorize a
+    /// changed list or suppress a current access/query failure or live holder.
+    pub(crate) fn validate(
+        &self,
+        original_pairs: &[(u32, u64)],
+    ) -> Result<(), NativeLegacyHoldersGoneError> {
+        if canonical_pairs(original_pairs)? != self.original_pairs {
+            return Err(NativeLegacyHoldersGoneError::OriginalPairsChanged);
+        }
+        check_holders(&self.original_pairs)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(original_pairs: &[(u32, u64)]) -> Self {
+        Self { original_pairs: canonical_pairs(original_pairs).expect("valid fixture holder pairs") }
     }
 }
 
@@ -379,6 +417,97 @@ fn check_holders(pairs: &[(u32, u64)]) -> Result<(), NativeLegacyHoldersGoneErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn actual_creation_time(handle: Handle) -> u64 {
+        let mut creation = FileTime::default();
+        let mut exit = FileTime::default();
+        let mut kernel = FileTime::default();
+        let mut user = FileTime::default();
+        assert_ne!(unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) },
+            0, "actual process creation query: {}", std::io::Error::last_os_error());
+        creation.as_u64()
+    }
+
+    #[test]
+    fn same_boot_process_proof_rejects_exact_live_holder_and_rechecks_kernel() {
+        let pid = std::process::id();
+        let handle = OwnedHandle(unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid)
+        });
+        assert!(!handle.0.is_null(), "current process open: {}", std::io::Error::last_os_error());
+        let created = actual_creation_time(handle.0);
+        assert!(created >= query_boot_start().unwrap());
+        let pairs = [(pid, created)];
+        assert!(matches!(NativeProcessHoldersGone::observe(&pairs),
+            Err(NativeLegacyHoldersGoneError::ExactHolderAlive {
+                pid: observed, creation_time_100ns: time
+            }) if observed == pid && time == created));
+        let unobserved_fixture = NativeProcessHoldersGone::for_test(&pairs);
+        assert!(matches!(unobserved_fixture.validate(&pairs),
+            Err(NativeLegacyHoldersGoneError::ExactHolderAlive { .. })),
+            "even the test constructor cannot bypass validate's kernel recheck");
+    }
+
+    #[test]
+    fn same_boot_process_proof_observes_real_exited_child_without_relaxing_legacy_boot() {
+        use std::os::windows::io::AsRawHandle;
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit", "/B", "0"])
+            .spawn().expect("ordinary cloud child");
+        let pid = child.id();
+        child.wait().expect("actual child exit");
+        let handle = child.as_raw_handle() as Handle;
+        let created = actual_creation_time(handle);
+        assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_OBJECT_0);
+        assert!(created >= query_boot_start().unwrap());
+        let proof = NativeProcessHoldersGone::observe(&[(pid, created)])
+            .expect("same-boot exact exited identity is gone");
+        proof.validate(&[(pid, created)]).unwrap();
+        assert!(matches!(NativeLegacyHoldersGone::observe(&[(pid, created)]),
+            Err(NativeLegacyHoldersGoneError::HolderCreatedThisBoot { .. })),
+            "legacy migration remains a distinct preboot proof");
+        assert!(matches!(proof.validate(&[(pid, created + 1)]),
+            Err(NativeLegacyHoldersGoneError::OriginalPairsChanged)));
+    }
+
+    #[test]
+    fn same_boot_process_proof_handles_missing_and_different_creation_but_rejects_mixed_live() {
+        let pid = std::process::id();
+        let handle = OwnedHandle(unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid)
+        });
+        assert!(!handle.0.is_null());
+        let created = actual_creation_time(handle.0);
+        let different_creation = created.checked_add(1).unwrap();
+        let absent = (u32::MAX, 1);
+        let missing = NativeProcessHoldersGone::observe(&[absent]).expect("kernel absent PID");
+        missing.validate(&[absent]).unwrap();
+        assert_eq!(unsafe { WaitForSingleObject(handle.0, 0) }, WAIT_TIMEOUT);
+        let pairs = [absent, (pid, different_creation)];
+        let proof = NativeProcessHoldersGone::observe(&pairs)
+            .expect("live process with different creation is not the original identity");
+        proof.validate(&[(pid, different_creation), absent]).unwrap();
+        assert!(matches!(proof.validate(&[absent]),
+            Err(NativeLegacyHoldersGoneError::OriginalPairsChanged)));
+        assert!(matches!(proof.validate(&[absent, (pid, created)]),
+            Err(NativeLegacyHoldersGoneError::OriginalPairsChanged)));
+        assert!(matches!(NativeProcessHoldersGone::observe(&[absent, (pid, created)]),
+            Err(NativeLegacyHoldersGoneError::ExactHolderAlive { .. })),
+            "one gone identity cannot conceal another exact live holder");
+    }
+
+    #[test]
+    fn same_boot_process_proof_requires_a_complete_valid_exact_pair_list() {
+        for pairs in [&[][..], &[(0, 1)][..], &[(1, 0)][..], &[(7, 8), (7, 8)][..]] {
+            assert!(matches!(NativeProcessHoldersGone::observe(pairs),
+                Err(NativeLegacyHoldersGoneError::InvalidOriginalPairs(_))));
+        }
+        let proof = NativeProcessHoldersGone::observe(&[(u32::MAX, 1)]).unwrap();
+        assert!(matches!(proof.validate(&[]),
+            Err(NativeLegacyHoldersGoneError::InvalidOriginalPairs("empty"))));
+        assert!(matches!(proof.validate(&[(u32::MAX, 1), (u32::MAX, 1)]),
+            Err(NativeLegacyHoldersGoneError::InvalidOriginalPairs("duplicate exact pair"))));
+    }
 
     #[test]
     fn class_three_requires_exact_length_positive_boot_and_preserves_status() {
