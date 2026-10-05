@@ -1,0 +1,44 @@
+{
+  "schema": "gogoke.37.stage-checkpoint.v1",
+  "state": "READY_SAME_OT4B_OPENCODE_ONLY_INSTALLED_29_CLOUD_LOCK_FAILURE_RETAINED",
+  "changed": "Corrected the host OpenCode URL and device-code guards to the same accounts.x.ai portal constant. The fixed CLI, token API issuer, native H implementation, instance credentials, model LPAC and lpacIdentityServices are unchanged. Existing boundary test now drives the host opener using the actual redacted Go to/Open output shape and checks one open plus same-request short-code retention. Version 0.1.29.",
+  "result": "Actual installed 0.1.28 readback: original OpenCode login PENDING and unsettled; browserState NOT_REQUESTED, authorizationHost null; original CLI output uses accounts.x.ai with BULLET plus two spaces. The old host permitted only auth.x.ai and therefore rejected the correct browser portal. This was a Controller assumption defect, not a CLI version or Owner-account failure. Original Owner request was cancelled through its exact live instance card and confirmed CANCELLED/settled=true, no new login. Actual app normal caption close exit 0 with retained process handle; related product inventory empty.",
+  "references": "gogo-party PROVIDER_LOGIN host URL handoff; existing provider login references; pinned OpenCode 1.18.32 xai.ts selects verification_uri_complete or verification_uri from the server, distinct from auth.x.ai device/token APIs; actual Owner-initiated fixed CLI output and native broker readback. API issuer is not proof of the browser portal hostname. Keep the original server URL unchanged, bounded to the directly observed HTTPS portal. No external authentication page was controlled.",
+  "review": "Same independent Sol focused audit found no blocker. HTTPS, userinfo, port, fragment, exact Clack prefix and complete-LF guards retain their conditions; Codex and CLI-owned browser branches unchanged. Tauri boundary test count remains seven. Native Rust, its build inputs and workflow are byte-identical to b893b1a0; only the reference Markdown changed and is not included by code.",
+  "cloud": {
+    "sourceCommit": "bff227a072387d1cd89be9d47ef679325c93014c",
+    "desktop": 37324302547,
+    "hygiene": 37324312159,
+    "native29FullLibrary": "NOT_RUN; unaffected 691+2 evidence remains explicitly at b893b1a0 / run 37313852416",
+    "desktopResult": "PASS all five jobs including independent executable byte comparison; seven login boundary tests passed with cancellation mutation and restoration",
+    "signing": 37331226596,
+    "signingResult": "PASS trusted main; local purpose-bound P256 and seven frozen member matches",
+    "signedArtifact": 11353793694,
+    "frozenArtifact": 11352939962,
+    "sameByteInstalledSmoke": 37331656180,
+    "smokeFirstResult": "FAIL at registration busy-lock assertion; actual service positive and poisoned-module negative PASS. First fixture discarded TimedOut/ExitCode/StdErr; exact cause unestablished, no pass claimed.",
+    "diagnosticSmoke": 37333291071,
+    "diagnosticSmokeResult": "Rejected before product execution: workflow source 650fd533 differs from frozen product source bff227a0. Source identity guard retained, not relaxed or bypassed; no product result claimed."
+  },
+  "next": "Owner: actual installed gogoke -> Settings -> Instances -> opencodeTestM2 one-click login; authorize at the xAI page. Other three logins preserved. Then native automatic login readback and actual xAI Grok model M2 E2E/golden protocol capture. Continue investigating the retained cloud lock assertion through direct evidence at the next applicable exact-source cloud run. B5 UNSUPPORTED/NOT_RUN.",
+  "acceptance": false,
+  "public_release": false,
+  "artifactArchiveSha256": {
+    "frozen": "10e32761ca6112089b77b8001f0553d4f4bae28d5db9583b1fba046595456ca2",
+    "signed": "083df95b46a4b733a2e0aef22e335ea4e338ac6dead74962b388fe1fbf239ecb"
+  },
+  "g4": "Independent ordinary audit: 1117 exact empty directories, 1116 closure edges, zero files/reparse/mismatch. Controller removed each literal empty directory nonrecursively and read every item ABSENT; filesDeleted=0. Data and formal objects preserved. Eight completed owned helper registrations removed after exact script/action/state/result checks and individually read back ABSENT; original private evidence and actual app preserved.",
+  "ordinaryResult": "Actual frozen .29 install exit 0; hashes/root/six instance homes/three prior unresolved custody rows preserved. Actual instance UI has Codex/Claude/Grok LOGGED_IN with disabled login buttons and only OpenCode NOT_LOGGED_IN/enabled. Post-UI formal five groups unchanged. No Controller login/model call; browser auth on corrected bytes NOT_RUN.",
+  "decision": "Owner immediately-effective cadence says exit-code and measurement details must not block the Owner step when the installed version can complete it. Installed .29 exact-source build, signature, preserved root/home/formal groups and actual login UI are verified. Proceed with remaining same-batch OpenCode authorization, retain cloud busy-lock failure unclassified and unpassed; no new candidate for the measurement-only change.",
+  "measurement": "Same independent Sol reviewed exact diagnostic commit 194d4966: only original timedOut/exitCode/processId/stderrReadState/stderr saved before both existing assertions; bounds, guards and lock restoration unchanged. Integrated as 650fd533. Its ordinary cloud checks run; no local native build or test. Original failure generic text cannot establish whether timeout or a different product result occurred.",
+  "privateEvidenceSha256": {
+    "verified-new-input.json": "05168031a26295ac97e1f1b08ce6217e5222bf1a4e5326ad2734bb9b9b5e5d60",
+    "replacement-installation-result.json": "5fcc02486941b8642915593a31661ef80f719c5bee37f163bf49f6610d1ceafe",
+    "ot4b-final-ui-ready.json": "8f9aeae7328067e9637a4150b90ddca853c1dd2de8555aae7f6244d8c6014c2f",
+    "post-ui-formal-result.json": "20c677916dd22ee53cc565c6c8f25d2cd107530b37a0c1185fc522756aab6f25",
+    "empty-directory-audit.json": "714d2938f0b2c14a223d2ed168e028f51392fc2769123d5f0eb1e7a22107332e",
+    "empty-directory-cleanup-result.json": "812a327d703ce1f98842ba56fbda6f3f71b05699f21a976157e9571ec81d8604",
+    "completed-helper-task-cleanup.json": "1c6147ae8ee87a0425c754f3737a44fd7408d1cb0126886a63b647803d2869a1",
+    "smoke-failure-evidence-1/gogoke-r2-06-candidate-smoke-37331656180-1.json": "9725c355d9a827a4fb469a114b594b0899a3c63825bfc2c52d83202fc5ba66ac"
+  }
+}
