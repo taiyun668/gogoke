@@ -671,7 +671,7 @@ try {
     `Ask exactly that question via native request_user_input, with non-secret option ${JSON.stringify(config.takeoverOption)}, then use gogoke_takeover takeover-answers with the original nativeAnswerSources. ` +
     `When takeoverReady, call gogoke_seat create-from-template for direct child ${config.childSeatId}, template ${config.templateId}, approved instance ${config.childInstanceId}; ` +
     `then gogoke_seat dispatch that child to repository ${config.repositoryId}, SINGLE layout. ` +
-    `Child instruction: create only new relative file ${journal.markerFile} in its host-created worktree, JSON marker exactly ${journal.marker}; commit that file locally. No remote, push, other path, credential or authentication action. ` +
+    `Child instruction: create only new relative file ${journal.markerFile} in its host-created worktree. Its exact UTF-8 bytes must be ${JSON.stringify(JSON.stringify({ marker: journal.marker }) + '\n')}. Do not run Git or touch .git; the host seals the stopped child's file. No remote, push, other path, credential or authentication action. ` +
     `Do not call User-origin operations for any model-authorized step. Do not stop the child yet. ` +
     `Finish only after the native dispatch tool returns. Report its original error if it fails; do not invent an ID or success.`;
   const firstEvents = await leadTurn(lead, firstPrompt, true);
@@ -698,7 +698,8 @@ try {
     'Resumed original e2e hard locator without agent.act');
   const decision = captured.controllerMergeDecision;
   check(decision?.decision === 'MERGE_EXACT_PRIVATE_TEST_MARKER_ONLY' &&
-    decision.scope === config.repositoryId && decision.childHead === captured.worktree.childCommit &&
+    decision.scope === config.repositoryId && decision.childHead === captured.worktree.childHeadBeforeSeal &&
+    decision.markerSha256 === captured.worktree.markerSha256 &&
     JSON.stringify(decision.changedPaths) === JSON.stringify([journal.markerFile]) &&
     /^[1-9][0-9]*$/.test(decision.policyRevision), 'Controller narrow private testbed merge decision');
   const grant = { schema: 'gogoke.37.owner-configuration.v1', command: 'policy-call-grant',
@@ -739,6 +740,10 @@ try {
   await recordProviderGoldens(final);
   check(final.worktree.id === captured.worktree.id && final.worktree.mergeTargetCommit === graph.result.mergeTargetCommit,
     'Original final F/Git merge receipt and graph agree');
+  check(final.worktree.childHeadBeforeSeal === captured.worktree.childHeadBeforeSeal &&
+    final.worktree.markerSha256 === captured.worktree.markerSha256 &&
+    /^[a-f0-9]{40}$/.test(final.worktree.childCommit),
+    'Host sealed the exact captured original marker and child HEAD');
   check(Array.isArray(final.providerWorktrees) && final.providerWorktrees.length === config.providerCases.length,
     'Configured provider paths come from normally closed original F registrations');
   const boundaryRows = config.providerCases.map(row => {
