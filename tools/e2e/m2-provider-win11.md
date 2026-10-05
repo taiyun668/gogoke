@@ -46,10 +46,23 @@ follow-up. The normal path requires the original H `APPLIED` input receipt,
 acquires the real stop fact, releases the admission, and closes the installed
 product through its normal window close.
 
+Model provenance is reported by source: Claude's original H capability carries
+the requested seat model and effort, and a read-only Windows process observer
+captures only the model/effort argv values from the exact SHA-pinned CLI process
+inside this installed product's process tree. Grok uses the same pinned-child
+argv observation with its `--model` and `--reasoning-effort` values. OpenCode
+requires the original H-recorded ACP `session/set_config_option` model and
+effort commands plus their typed-ID-matched A acknowledgements, with the exact
+current and offered values in order. These facts establish the requested/acknowledged
+settings; they do not claim provider-side model behavior beyond the captured
+protocol evidence.
+
 Only after normal product close does
 `m2-provider-capture-readback.py` open the actual candidate database as
 `mode=ro&immutable=1`. It refuses a nonempty WAL and verifies unchanged DB
-bytes. The readback independently checks the original H request/receipt,
+bytes. The outer journal distinguishes read-only observers from the expected
+candidate database writes caused by real H admissions, provider input, stop,
+and release. The readback itself independently checks the original H request/receipt,
 physical stop and release facts, configured E settings and H binding, fixed
 binary custody, and registered F database path/identity. It exports the
 original A frames, confirmed H commands, and normalized ledger rows. Claude

@@ -3,14 +3,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id, delay } from './product-cdp.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const drivers = ['claude', 'opencode', 'grok'];
 const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
-const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
 const config = readJson(process.argv[2]);
 const required = ['installed', 'installedSha256', 'version', 'sourceCommit', 'registryKey', 'pwsh',
@@ -23,6 +21,7 @@ if (process.platform !== 'win32' || !process.argv[2] || required.some(key => con
     new Set(config.cases.map(row => row.seatId)).size !== 3 ||
     new Set(config.cases.map(row => row.worktreeId)).size !== 3 ||
     !drivers.every(driverId => config.cases.some(row => row.driverId === driverId)) ||
+    new Set(config.cases.map(row => row.instanceId)).size !== 3 ||
     config.cases.some(row => ![row.instanceId, row.seatId, row.worktreeId].every(atom) ||
       typeof row.version !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256) ||
       typeof row.model !== 'string' || !row.model.trim() || typeof row.effort !== 'string' || !row.effort.trim()) ||
@@ -34,6 +33,7 @@ if (process.platform !== 'win32' || !process.argv[2] || required.some(key => con
     !['formal', 'registeredFormal', 'formalData', 'formalRegistry', 'shortcuts']
       .every(field => config.observers.find(row => row.name === 'formal').equalFields.includes(field)) ||
     fs.existsSync(config.result) || !fs.existsSync(config.evidenceDirectory) ||
+    ![config.installed, config.stateRoot, config.evidenceDirectory, config.result].every(path.isAbsolute) ||
     !inside(path.resolve(config.result), path.resolve(config.evidenceDirectory)) ||
     [config.installed, config.stateRoot, path.resolve(here, '..', '..')]
       .some(root => inside(path.resolve(config.evidenceDirectory), path.resolve(root)))) {
@@ -46,11 +46,12 @@ if (config.cases.find(row => row.driverId === 'opencode')?.model.toLowerCase().i
 
 const journal = { schema: 'gogoke.37.m2-provider-win11-e2e.v1', caseId: id('m2ProviderE2E'),
   sourceCommit: config.sourceCommit, domainId: config.domainId, repositoryId: config.repositoryId,
-  state: 'RUNNING', acceptance: false, authenticationActions: false, databaseWrites: false,
-  credentialReads: false, b5: 'NOT_RUN_UNSUPPORTED', marker: id('M2_PROVIDER_MARKER'), cases: [], operations: [], sessions: [],
+  installedVersion: config.version, installedSha256: config.installedSha256,
+  state: 'RUNNING', acceptance: false, authenticationActions: false, observerDatabaseWrites: false,
+  hostOperationsWriteCandidateDatabase: true, credentialReads: false, b5: 'NOT_RUN_UNSUPPORTED',
+  marker: id('M2_PROVIDER_MARKER'), cases: [], operations: [], sessions: [],
   snapshots: {}, readbacks: [], goldens: [], assertions: [] };
 const product = new ActualProduct(config, journal);
-journal.driverBytes = {};
 const check = (condition, reason) => {
   if (!condition) throw Error(reason);
   if (!journal.assertions.includes(reason)) { journal.assertions.push(reason); product.save(); }
@@ -115,6 +116,71 @@ async function output(session) {
   if (reply.result.sourceError) throw Error(`Original ${session.id} A source error: ${JSON.stringify(reply.result.sourceError)}`);
   return reply.result;
 }
+async function captureArgv(row) {
+  const script = String.raw`$ErrorActionPreference = 'Stop'
+$inputJson = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$processes = @(Get-CimInstance Win32_Process)
+$byId = @{}
+foreach ($item in $processes) { $byId[[string]$item.ProcessId] = $item }
+function Test-ChildOfProduct($item, $rootPid, $map) {
+  $parent = [string]$item.ParentProcessId
+  for ($depth = 0; $depth -lt 32 -and $parent; $depth++) {
+    if ($parent -eq [string]$rootPid) { return $true }
+    if (-not $map.ContainsKey($parent)) { return $false }
+    $parent = [string]$map[$parent].ParentProcessId
+  }
+  return $false
+}
+function ArgValue($line, $name) {
+  $pattern = '(?:^|\s)' + [regex]::Escape($name) + '(?:=|\s+)(?:"([^"]*)"|''([^'']*)''|([^\s"'']+))'
+  $match = [regex]::Match($line, $pattern)
+  if (-not $match.Success) { return $null }
+  foreach ($index in 1..3) { if ($match.Groups[$index].Success) { return $match.Groups[$index].Value } }
+  return $null
+}
+$matchingProcesses = @()
+foreach ($item in $processes) {
+  if (-not $item.ExecutablePath -or -not (Test-ChildOfProduct $item $inputJson.productPid $byId)) { continue }
+  $hash = (Get-FileHash -LiteralPath $item.ExecutablePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($hash -ne $inputJson.sha256) { continue }
+  $line = [string]$item.CommandLine
+  $effortFlag = if ($inputJson.driverId -eq 'grok') { '--reasoning-effort' } else { '--effort' }
+  $matchingProcesses += [pscustomobject]@{
+    processId = [string]$item.ProcessId
+    parentProcessId = [string]$item.ParentProcessId
+    imageSha256 = $hash
+    model = ArgValue $line '--model'
+    effort = ArgValue $line $effortFlag
+    modelArgCount = [regex]::Matches($line, '(?:^|\s)--model(?:=|\s+)').Count
+    effortArgCount = [regex]::Matches($line, '(?:^|\s)' + [regex]::Escape($effortFlag) + '(?:=|\s+)').Count
+    modelFlag = '--model'
+    effortFlag = $effortFlag
+    commandLineSha256 = -join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::Unicode.GetBytes($line)) | ForEach-Object { $_.ToString('x2') })
+  }
+}
+ConvertTo-Json -InputObject @($matchingProcesses) -Compress`;
+  const payload = JSON.stringify({ productPid: product.endpoint.pid, driverId: row.driverId,
+    sha256: row.sha256, model: row.model, effort: row.effort });
+  const captured = await new Promise((resolve, reject) => {
+    const child = spawn(config.pwsh, ['-NoProfile', '-NonInteractive', '-Command', script],
+      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', bytes => { stdout = (stdout + bytes).slice(-8192); });
+    child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve(stdout.trim()) : reject(Error(`Readonly process argv observer exit=${code}: ${stderr}`)));
+    child.stdin.end(payload);
+  });
+  const rows = JSON.parse(captured);
+  const matches = Array.isArray(rows) ? rows : [rows];
+  check(matches.length === 1 && matches[0].imageSha256 === row.sha256 &&
+    matches[0].model === row.model && matches[0].effort === row.effort &&
+    matches[0].modelArgCount === 1 && matches[0].effortArgCount === 1 &&
+    typeof matches[0].commandLineSha256 === 'string' && /^[a-f0-9]{64}$/.test(matches[0].commandLineSha256),
+    `${row.driverId}: actual pinned child argv binds configured model and effort`);
+  return { basis: 'ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED',
+    productRootPid: String(product.endpoint.pid), ...matches[0] };
+}
 async function observeReceipt(session, row) {
   const deadline = Date.now() + 600000;
   while (Date.now() < deadline) {
@@ -141,6 +207,8 @@ async function runCase(row, instances) {
     record.result = 'NOT_RUN_NOT_LOGGED_IN'; product.save();
     throw Error(`${row.driverId}: configured instance not logged in; no login or fallback attempted`);
   }
+  record.loggedInInstance = { instanceId: instance.instanceId, driverId: instance.driverId,
+    version: instance.version, state: instance.state };
   check(instance.version === row.version, `${row.driverId}: actual logged-in instance version pin`);
   const seat = await seatCard(row.seatId);
   check(seat.result.state === 'IDLE' && seat.result.instanceId === row.instanceId,
@@ -149,9 +217,10 @@ async function runCase(row, instances) {
     `${row.driverId}: configured seat model and effort match private fixture`);
   if (row.driverId === 'opencode') check(/(grok|xai)/i.test(seat.result.settings.model) &&
     !/gpt/i.test(seat.result.settings.model), 'OpenCode seat card confirms xAI/Grok and not GPT');
-  record.seatSettings = seat.result.settings; product.save();
+  record.seatSettings = { model: seat.result.settings.model, effort: seat.result.settings.effort };
+  product.save();
   record.graph = await graph(row); product.save();
-  const session = { id: id('m2ProviderSession'), caseId: record.caseId ?? journal.caseId,
+  const session = { id: id('m2ProviderSession'), caseId: journal.caseId,
     seatId: row.seatId, instanceId: row.instanceId, worktreeId: row.worktreeId,
     generation: (BigInt(seat.result.generation) + 1n).toString(), revision: '0', cursor: '0', events: [], turns: [] };
   record.sessionId = session.id; journal.sessions.push(session); product.save();
@@ -163,8 +232,26 @@ async function runCase(row, instances) {
   check(capability.result.driverId === row.driverId && capability.result.version === row.version &&
     capability.result.binaryDigest === `sha256:${row.sha256}` && capability.result.evidenceBasis !== undefined,
     `${row.driverId}: original H/F fixed executable pin`);
+  check(capability.result.evidenceBasis === (row.driverId === 'claude'
+    ? 'ORIGINAL_CLAUDE_INITIALIZE_ACK' : 'NATIVE_ACP_INITIALIZE_DECLARATION'),
+    `${row.driverId}: original provider initialization evidence basis`);
   record.capability = { driverId: capability.result.driverId, version: capability.result.version,
     binaryDigest: capability.result.binaryDigest, evidenceBasis: capability.result.evidenceBasis };
+  if (row.driverId === 'claude') {
+    check(capability.result.requestedModel === row.model && capability.result.requestedEffort === row.effort,
+      'Claude H capability records model and effort from the bound seat');
+    record.modelEffortEvidence = { basis: 'ORIGINAL_H_CLAUDE_CAPABILITY',
+      model: capability.result.requestedModel, effort: capability.result.requestedEffort };
+  } else if (row.driverId === 'opencode') {
+    record.modelEffortEvidence = { basis: 'REQUIRES_ORIGINAL_ACP_MODEL_EFFORT_ACK_READBACK',
+      model: seat.result.settings.model, effort: seat.result.settings.effort };
+  } else {
+    record.modelEffortEvidence = { basis: 'REQUIRES_CAPTURED_ACTUAL_PROCESS_ARGV',
+      model: seat.result.settings.model, effort: seat.result.settings.effort };
+  }
+  if (row.driverId === 'claude' || row.driverId === 'grok') {
+    record.modelEffortEvidence.argv = await captureArgv(row);
+  }
   product.save();
   const marker = `${journal.marker}_${row.driverId}_${id('answer')}`;
   record.marker = marker;
@@ -235,8 +322,9 @@ async function readbackAndGolden() {
 }
 
 try {
-  journal.driverBytes = Object.fromEntries(['product-cdp.mjs', 'e2e-webview.mjs', 'cli-protocol-golden.mjs',
-    'm2-provider-win11.mjs', 'm2-provider-capture-readback.py'].map(name => [name, sha256(path.join(here, name))]));
+  journal.driverBytes = { ...journal.driverBytes,
+    ...Object.fromEntries(['cli-protocol-golden.mjs', 'm2-provider-win11.mjs',
+      'm2-provider-capture-readback.py'].map(name => [name, sha256(path.join(here, name))])) };
   await snapshot('before');
   await product.launch();
   check(Boolean(product.tester) && journal.connectionBackend?.name === 'tester-army/e2e' &&

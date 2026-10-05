@@ -33,9 +33,20 @@ if output.exists():
 journal = json.loads(journal_path.read_text(encoding="utf-8-sig"))
 if journal.get("schema") != "gogoke.37.m2-provider-win11-e2e.v1" or \
         journal.get("state") != "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED" or \
-        journal.get("acceptance") is not False or journal.get("databaseWrites") is not False or \
-        journal.get("credentialReads") is not False or len(journal.get("cases", [])) != 3:
+        journal.get("acceptance") is not False or journal.get("observerDatabaseWrites") is not False or \
+        journal.get("hostOperationsWriteCandidateDatabase") is not True or \
+        journal.get("credentialReads") is not False or len(journal.get("cases", [])) != 3 or \
+        len(journal.get("launches", [])) != 1 or len(journal.get("closes", [])) != 1:
     fail("Original standalone provider journal is incomplete or not at its readback phase")
+launch = journal["launches"][0]
+close = journal["closes"][0]
+if launch.get("sourceCommit") != journal["sourceCommit"] or \
+        launch.get("bootstrap", {}).get("version") != journal.get("installedVersion") or \
+        not all(name in journal.get("installedSha256", {}) for name in
+                ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
+        close.get("exitCode") != 0 or close.get("forceKill") is not False or \
+        close.get("pid") != launch.get("pid"):
+    fail("Actual installed candidate identity or normal-close receipt differs")
 database = root / "state.sqlite"
 wal = Path(str(database) + "-wal")
 if not database.is_file():
@@ -135,10 +146,28 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 open_payload.get("repositoryId") != journal["repositoryId"] or \
                 open_payload.get("worktreeId") != case["worktreeId"]:
             fail(f"{driver}: original H open does not bind the configured E/F objects")
+        capability_entry = by_action.get("capability-probe")
+        if not capability_entry:
+            fail(f"{driver}: original H capability-probe request is absent")
+        capability_bytes = exact_one(db,
+            "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+            "WHERE family='K-SESSION' AND domain_id=? AND request_id=?",
+            (domain, capability_entry["request"]["requestId"]))
+        if bytes(capability_bytes[0]) != capability_entry["rawFrame"].encode():
+            fail(f"{driver}: original H capability request wire bytes differ")
+        capability_receipt = json.loads(capability_bytes[1])
+        cap_result = capability_receipt.get("result", {})
+        expected_basis = "ORIGINAL_CLAUDE_INITIALIZE_ACK" if driver == "claude" else "NATIVE_ACP_INITIALIZE_DECLARATION"
+        if capability_receipt.get("status") != "APPLIED" or cap_result.get("driverId") != driver or \
+                cap_result.get("version") != case["fixedVersion"] or \
+                cap_result.get("binaryDigest") != "sha256:" + case["fixedSha256"] or \
+                cap_result.get("evidenceBasis") != expected_basis:
+            fail(f"{driver}: original H capability receipt does not match the fixed executable")
         claim = exact_one(db,
             "SELECT state,stop_fact_id,instance_id,generation FROM gogoke_v37_h_claim "
             "WHERE domain_id=? AND session_id=?", (domain, session_id))
-        if claim[0] != "RELEASED" or not claim[1] or claim[2] != case["instanceId"]:
+        if claim[0] != "RELEASED" or not claim[1] or claim[1] != case.get("stopFact") or \
+                claim[2] != case["instanceId"]:
             fail(f"{driver}: original H claim lacks normal STOPPED then RELEASED facts")
         seat = exact_one(db,
             "SELECT s.incarnation,s.instance_id,s.state,settings.settings_json "
@@ -151,16 +180,28 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 seat_settings.get("model") != expected_settings.get("model") or \
                 seat_settings.get("effort") != expected_settings.get("effort"):
             fail(f"{driver}: direct E row is not normally released with its original model/effort")
+        instance = exact_one(db,
+            "SELECT driver_id,version,program_digest,install_state,login_state "
+            "FROM gogoke_v37_instances WHERE instance_id=?", (case["instanceId"],))
+        observed_instance = case.get("loggedInInstance", {})
+        if instance[:2] != (driver, case["fixedVersion"]) or \
+                instance[2] != "sha256:" + case["fixedSha256"] or instance[3:] != ("INSTALLED", "LOGGED_IN") or \
+                observed_instance != {"instanceId": case["instanceId"], "driverId": driver,
+                    "version": case["fixedVersion"], "state": "LOGGED_IN"}:
+            fail(f"{driver}: original configured instance was not the logged-in fixed executable")
+        if driver == "claude" and (cap_result.get("requestedModel") != expected_settings.get("model") or
+                cap_result.get("requestedEffort") != expected_settings.get("effort")):
+            fail("Claude original H capability settings differ from bound E model/effort")
         binding = exact_one(db,
             "SELECT seat_id,seat_incarnation,generation FROM gogoke_v37_h_seat_binding "
             "WHERE domain_id=? AND session_id=?", (domain, session_id))
         if binding[0] != case["seatId"] or binding[2] != send[4]:
             fail(f"{driver}: original H episode is not bound to the configured E generation")
         episodes = db.execute(
-            "SELECT generation,process_operation_id,phase,stop_fact_id,seat_id,seat_incarnation,instance_id "
+            "SELECT generation,process_operation_id,phase,stop_fact_id,seat_id,seat_incarnation,instance_id,request_id "
             "FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? ORDER BY rowid",
             (domain, session_id)).fetchall()
-        if not episodes or not all(row[2] == "STOPPED" and row[3] for row in episodes) or \
+        if not episodes or not all(row[2] == "STOPPED" and row[3] == claim[1] for row in episodes) or \
                 any(row[4] != case["seatId"] or row[5] != seat[0] or row[6] != case["instanceId"] for row in episodes):
             fail(f"{driver}: original physical H episode stop facts are absent")
         pins = db.execute(
@@ -209,6 +250,13 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             result["frames"].append(row); records.append((row, frame)); parsed.append(frame)
             if state == "PENDING": result["unknownFrames"].append({"sessionId": session_id,
                 "sourceEpoch": epoch, "sourceCursor": cursor, "method": frame.get("method"), "state": state})
+        cursor_groups = {}
+        for row, _ in records:
+            cursor_groups.setdefault((row["operationId"], row["sourceEpoch"]), []).append(int(row["sourceCursor"]))
+        if any(sorted(values) != list(range(1, max(values) + 1)) for values in cursor_groups.values() if values):
+            fail(f"{driver}: original A source cursors are not continuous within the recorded process epochs")
+        if any(row["state"] == "PENDING" for row, _ in records):
+            fail(f"{driver}: original A source contains unresolved raw frames")
         outgoing = db.execute(
             "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor,ticket,custodian_nonce "
             "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? ORDER BY rowid",
@@ -226,9 +274,13 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if not scoped or any(row["state"] == "PENDING" for row, _ in scoped):
             fail(f"{driver}: original H operation has missing or unresolved A source rows")
         marker_output = False
+        provider_output = ""
         vendor_end = False
         prompt_echo = False
         terminal_session = None
+        claude_terminals = []
+        claude_echoes = []
+        acp_end_candidates = []
         prompt_commands = []
         for command_row in result["commands"]:
             if command_row["sessionId"] != session_id or not command_row["confirmedWrite"]:
@@ -246,20 +298,22 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             fail(f"{driver}: original provider prompt appears in more than one confirmed A command")
         for row, frame in scoped:
             if driver == "claude":
+                provider_output += claude_text(frame)
+                marker_output = marker in provider_output
                 if frame.get("type") == "user" and prompt in json.dumps(frame, ensure_ascii=False):
-                    prompt_echo = True
-                if marker in claude_text(frame):
-                    marker_output = True
+                    claude_echoes.append(frame)
                 if frame.get("type") == "result" and frame.get("subtype") == "success" and \
                         frame.get("is_error") is False and isinstance(frame.get("session_id"), str):
                     if marker_output:
-                        vendor_end = True; terminal_session = frame["session_id"]
+                        claude_terminals.append(frame)
                 if any(isinstance(part, dict) and part.get("type") == "tool_use"
                        for part in nested_text(frame, ("message", "content")) or []):
                     fail("Claude produced a tool-use frame despite the no-tool prompt")
             elif driver in ("opencode", "grok"):
-                if marker in acp_text(frame):
-                    marker_output = True
+                provider_output += acp_text(frame)
+                marker_output = marker in provider_output
+                if frame.get("result", {}).get("stopReason") == "end_turn":
+                    acp_end_candidates.append((frame, marker_output))
                 if frame.get("method") == "session/request_permission":
                     fail(f"{driver} produced a permission request despite the no-tool prompt")
                 if frame.get("method") == "session/update" and nested_text(frame,
@@ -268,8 +322,26 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if driver == "claude":
             inits = [frame for _, frame in scoped if frame.get("type") == "system" and
                      frame.get("subtype") == "init" and isinstance(frame.get("session_id"), str)]
-            prompt_echo = prompt_echo and len(inits) == 1 and inits[0]["session_id"] == terminal_session
-            vendor_end = vendor_end and prompt_echo
+            if len(claude_terminals) == 1:
+                terminal_session = claude_terminals[0]["session_id"]
+            prompt_echo = len(claude_echoes) == 1 and len(inits) == 1 and \
+                inits[0]["session_id"] == terminal_session
+            vendor_end = len(claude_terminals) == 1 and prompt_echo
+            evidence = case.get("modelEffortEvidence", {})
+            argv = evidence.get("argv", {})
+            if evidence.get("basis") != "ORIGINAL_H_CLAUDE_CAPABILITY" or \
+                    argv.get("basis") != "ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED" or \
+                    argv.get("imageSha256") != case["fixedSha256"] or \
+                    not argv.get("processId") or argv.get("modelArgCount") != 1 or argv.get("effortArgCount") != 1 or \
+                    not isinstance(argv.get("commandLineSha256"), str) or len(argv["commandLineSha256"]) != 64 or \
+                    argv.get("modelFlag") != "--model" or argv.get("effortFlag") != "--effort" or \
+                    argv.get("model") != expected_settings.get("model") or \
+                    argv.get("effort") != expected_settings.get("effort") or \
+                    argv.get("productRootPid") != str(journal.get("currentEndpoint", {}).get("pid")):
+                fail("Claude model/effort lacks original capability and actual pinned child argv evidence")
+            if evidence.get("model") != expected_settings.get("model") or \
+                    evidence.get("effort") != expected_settings.get("effort"):
+                fail("Claude H capability does not match original bound E model/effort")
         else:
             outbound_prompts = []
             for command_row in result["commands"]:
@@ -285,10 +357,90 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                     outbound_prompts.append(command_frame)
             terminal_ids = {json.dumps(frame.get("id"), separators=(",", ":")) for frame in outbound_prompts}
             prompt_echo = len(outbound_prompts) == 1
-            vendor_end = any(frame.get("result", {}).get("stopReason") == "end_turn" and
-                json.dumps(frame.get("id"), separators=(",", ":")) in terminal_ids
-                for _, frame in scoped if isinstance(frame, dict))
-            vendor_end = vendor_end and marker_output
+            matching_ends = [frame for frame, saw_marker in acp_end_candidates if saw_marker and isinstance(frame, dict) and
+                frame.get("result", {}).get("stopReason") == "end_turn" and
+                json.dumps(frame.get("id"), separators=(",", ":")) in terminal_ids]
+            vendor_end = len(matching_ends) == 1 and marker_output
+            if driver == "opencode":
+                evidence = case.get("modelEffortEvidence", {})
+                if evidence.get("basis") != "REQUIRES_ORIGINAL_ACP_MODEL_EFFORT_ACK_READBACK":
+                    fail("OpenCode model/effort must be established by original ACP acknowledgements")
+                open_request_id = episodes[0][7]
+                process_operation = episodes[0][1]
+                vendor_sessions = []
+                for row, frame in scoped:
+                    if frame.get("method") is None:
+                        # session/new is a response and shares the original H/A custody scope.
+                        for command_row in result["commands"]:
+                            if command_row["sessionId"] != session_id or command_row["phase"] not in ("WRITTEN", "OBSERVED"):
+                                continue
+                            try:
+                                sent_frame = json.loads(command_row["originalFrame"])
+                            except json.JSONDecodeError:
+                                continue
+                            if sent_frame.get("method") == "session/new" and sent_frame.get("id") == frame.get("id"):
+                                candidate = nested_text(frame, ("result", "sessionId"))
+                                if isinstance(candidate, str): vendor_sessions.append(candidate)
+                if len(set(vendor_sessions)) != 1:
+                    fail("OpenCode has no unique original ACP vendor session id")
+                vendor_session = vendor_sessions[0]
+                acknowledged = []
+                for config_id in ("model", "effort"):
+                    step_id = f"{process_operation}-setting-{config_id}"
+                    ack = exact_one(db,
+                        "SELECT s.command_hex,r.raw_bytes,s.source_epoch,s.source_cursor "
+                        "FROM gogoke_v37_rpc_steps s JOIN v37_ledger_raw_source r "
+                        "ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch "
+                        "AND r.source_cursor=s.source_cursor AND r.process_ticket=s.ticket "
+                        "AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id "
+                        "AND r.session_id=s.session_id AND r.generation=s.generation "
+                        "WHERE s.domain_id=? AND s.session_id=? AND s.process_operation_id=? "
+                        "AND s.generation=? AND s.open_request_id=? AND s.ticket=? AND s.custodian_nonce=? "
+                        "AND s.step_id=? AND s.phase='OBSERVED' AND s.requires_response=1 "
+                        "AND r.state='NO_EVENT' AND r.no_event_reason='ACP_RPC_RESPONSE'",
+                        (domain, session_id, process_operation, send[4], open_request_id,
+                         send[5], send[7], step_id))
+                    command_frame = json.loads(bytes.fromhex(ack[0]).decode("utf-8").rstrip("\n"))
+                    response_frame = json.loads(bytes(ack[1]).decode("utf-8"))
+                    wanted = expected_settings.get(config_id)
+                    if command_frame.get("jsonrpc") != "2.0" or command_frame.get("method") != "session/set_config_option" or \
+                            command_frame.get("params", {}).get("sessionId") != vendor_session or \
+                            command_frame.get("params", {}).get("configId") != config_id or \
+                            command_frame.get("params", {}).get("value") != wanted or \
+                            type(response_frame.get("id")) is not type(command_frame.get("id")) or \
+                            response_frame.get("id") != command_frame.get("id") or "error" in response_frame:
+                        fail(f"OpenCode original ACP {config_id} command/response identity differs")
+                    options = nested_text(response_frame, ("result", "configOptions"))
+                    matches = [value for value in options or []
+                               if isinstance(value, dict) and value.get("id") == config_id]
+                    if len(matches) != 1 or matches[0].get("type") != "select" or \
+                            matches[0].get("currentValue") != wanted or not any(
+                                isinstance(option, dict) and option.get("value") == wanted
+                                for option in matches[0].get("options", [])):
+                        fail(f"OpenCode original ACP {config_id} acknowledgement did not confirm the exact value")
+                    acknowledged.append({"configId": config_id, "stepId": step_id,
+                        "requestId": command_frame["id"], "sourceEpoch": ack[2], "sourceCursor": ack[3]})
+                if acknowledged[0]["sourceEpoch"] != acknowledged[1]["sourceEpoch"] or \
+                        int(acknowledged[0]["sourceCursor"]) >= int(acknowledged[1]["sourceCursor"]):
+                    fail("OpenCode model/effort ACP acknowledgements are not ordered in one original epoch")
+                record_model_evidence = {"basis": "ORIGINAL_ACP_MODEL_EFFORT_ACKS",
+                    "vendorSessionId": vendor_session, "acknowledgements": acknowledged}
+            else:
+                evidence = case.get("modelEffortEvidence", {})
+                argv = evidence.get("argv", {})
+                if evidence.get("basis") != "REQUIRES_CAPTURED_ACTUAL_PROCESS_ARGV" or \
+                        argv.get("basis") != "ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED" or \
+                        argv.get("imageSha256") != case["fixedSha256"] or \
+                        not argv.get("processId") or argv.get("modelArgCount") != 1 or argv.get("effortArgCount") != 1 or \
+                        not isinstance(argv.get("commandLineSha256"), str) or len(argv["commandLineSha256"]) != 64 or \
+                        argv.get("modelFlag") != "--model" or argv.get("effortFlag") != "--reasoning-effort" or \
+                        argv.get("model") != expected_settings.get("model") or \
+                        argv.get("effort") != expected_settings.get("effort") or \
+                        argv.get("productRootPid") != str(journal.get("currentEndpoint", {}).get("pid")):
+                    fail("Grok model/effort lacks actual pinned child argv evidence")
+                record_model_evidence = {"basis": "ACTUAL_PINNED_GROK_PROCESS_ARGV",
+                    "processId": argv.get("processId"), "commandLineSha256": argv.get("commandLineSha256"),
+                    "model": argv.get("model"), "effort": argv.get("effort")}
         if not prompt_echo or not marker_output or not vendor_end:
             fail(f"{driver}: matching original A prompt, provider marker output, and vendor end-turn are not all present")
         normalized = db.execute(
@@ -308,9 +460,13 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "driverId": pins[0][0], "version": pins[0][1], "binarySha256": pins[0][2],
             "episodes": episodes, "normalized": updates, "missingNormalized": False,
             "rawFrameCount": len(incoming), "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
-            "allEpisodesStopped": True, "claimState": claim[0], "providerPromptEcho": prompt_echo,
+            "allEpisodesStopped": True, "claimState": claim[0], "providerPromptObserved": prompt_echo,
             "providerEndTurn": vendor_end, "markerObserved": marker_output,
-            "vendorSessionId": terminal_session})
+            "vendorSessionId": terminal_session,
+            "modelEffortEvidence": record_model_evidence if driver in ("opencode", "grok") else
+                {"basis": "ACTUAL_PINNED_CLAUDE_PROCESS_ARGV", "processId": argv.get("processId"),
+                 "commandLineSha256": argv.get("commandLineSha256"), "model": argv.get("model"),
+                 "effort": argv.get("effort")}})
 
 if len(result["providerWorktrees"]) != 3 or len(result["sessions"]) != 3:
     fail("All three fixed provider F/H sessions must have direct readback")
