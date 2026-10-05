@@ -214,7 +214,7 @@ impl<'root> ProductDatabase<'root> {
         for (n,v) in [&get(capture,"operation")?,&get(capture,"claimBinding")?,&get(capture,"claimHome")?,
             &instance,&generation].iter().enumerate(){q.bind_text((n+5) as i32,v)?;}
         q.step_done()?;drop(q);
-        if rows(&self.connection,"SELECT changes()",&[],1)?!=vec![vec!["1".into()]] {
+        if rows(&self.connection,"SELECT changes()",&[],1)?!=vec![vec![String::from("1")]] {
             return Err(refused("holder release claim CAS"));
         }
         fail(crate::store::seat::set_dispatch_state_in_transaction(&mut self.connection,&seat,false))?;

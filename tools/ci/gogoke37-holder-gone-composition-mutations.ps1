@@ -18,18 +18,20 @@ $testHash = (Get-FileHash -LiteralPath $testPath -Algorithm SHA256).Hash
 $cases = @(
     @{
         axis = 'stale-final-facts'
+        expectedReason = 'holder frozen claim receipt changed'
         needle = '                self.gone_validate_capture(&self.gone_original(&fresh_profile)?,'
         replacement = '                self.gone_validate_capture(originals.get(&record.input.binding_id).ok_or_else(||refused("holder completed original absent"))?,'
     },
     @{
         axis = 'nested-owner-transaction'
+        expectedReason = 'cannot start a transaction within a transaction'
         needle = '                    self.gone_scope_in_current_transaction(instance_id,&allowed,incoming)?;'
         replacement = '                    self.gone_scope(instance_id,&allowed,incoming)?;'
     }
 )
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
 $records = @()
-function Invoke-Composition([string]$Phase, [bool]$ExpectFailure) {
+function Invoke-Composition([string]$Phase, [bool]$ExpectFailure, [string]$ExpectedReason = '') {
     $output = & cargo test --locked --manifest-path $manifest $testName --lib -- --exact --nocapture 2>&1
     $code = $LASTEXITCODE
     $text = ($output | ForEach-Object { $_.ToString() }) -join "`n"
@@ -38,9 +40,13 @@ function Invoke-Composition([string]$Phase, [bool]$ExpectFailure) {
     $executed = [regex]::IsMatch($text, '(?m)^running 1 test\s*$')
     $summary = if ($ExpectFailure) { 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' }
                else { 'test result: ok\. 1 passed; 0 failed; 0 ignored;' }
+    $firstCall = $text.Contains('FIRST composed recovery must revoke both grants and release both H claims')
+    $causeMatches = $ExpectFailure -and -not [string]::IsNullOrEmpty($ExpectedReason) -and
+        $firstCall -and $text.Contains($ExpectedReason)
     $valid = $compiled -and $executed -and [regex]::IsMatch($text, $summary) -and
-        $(if ($ExpectFailure) { $null -ne $code -and $code -ne 0 } else { $code -eq 0 })
+        $(if ($ExpectFailure) { $null -ne $code -and $code -ne 0 -and $causeMatches } else { $code -eq 0 })
     $script:records += [ordered]@{ phase=$Phase; exit_code=$code; compiled=$compiled;
+        first_recovery_assertion=$firstCall; expected_reason=$ExpectedReason; cause_matches=$causeMatches;
         exact_one_test=$executed; state=$(if($valid){'PASS'}else{'FAIL'}); original_log="holder-gone-composition-$Phase.log" }
     if (-not $valid) { throw "Composition $Phase must compile and execute the unchanged exact behavioral result." }
 }
@@ -56,7 +62,7 @@ try {
         try {
             [IO.File]::WriteAllText($path, $source.Replace($case.needle, $case.replacement), [Text.UTF8Encoding]::new($false))
             if ((Get-FileHash -LiteralPath $testPath -Algorithm SHA256).Hash -cne $testHash) { throw 'Composition test changed.' }
-            Invoke-Composition "mutation-$($case.axis)" $true
+            Invoke-Composition "mutation-$($case.axis)" $true $case.expectedReason
         } finally {
             [IO.File]::WriteAllBytes($path, $original)
             if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $sourceHash -or
