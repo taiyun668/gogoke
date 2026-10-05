@@ -49,7 +49,10 @@ product through its normal window close.
 Model provenance is reported by source: Claude's original H capability carries
 the requested seat model and effort, and a read-only Windows process observer
 captures only the model/effort argv values from the exact SHA-pinned CLI process
-inside this installed product's process tree. Grok uses the same pinned-child
+inside this installed product's process tree. The selected PID's exact
+100-nanosecond creation time comes from `GetProcessTimes`, then readback binds
+it to the same stopped H custody row. The process observer does not store the
+full command line. Grok uses the same pinned-child
 argv observation with its `--model` and `--reasoning-effort` values. OpenCode
 requires the original H-recorded ACP `session/set_config_option` model and
 effort commands plus their typed-ID-matched A acknowledgements, with the exact
@@ -62,15 +65,29 @@ Only after normal product close does
 `mode=ro&immutable=1`. It refuses a nonempty WAL and verifies unchanged DB
 bytes. The outer journal distinguishes read-only observers from the expected
 candidate database writes caused by real H admissions, provider input, stop,
-and release. The readback itself independently checks the original H request/receipt,
+and release. The five formal protection facts and configured observers are
+captured and compared before readback or golden import, so their evidence
+remains if later capture work fails. The readback itself independently checks the original H request/receipt,
 physical stop and release facts, configured E settings and H binding, fixed
-binary custody, and registered F database path/identity. It exports the
+binary custody, and registered F identity by opening the path without following
+a reparse point and matching Win32 `FileIdInfo` to the native opaque identity.
+Raw pending frames retain their original state with an explicit classification;
+a pending row alone does not fail the case. Completion still requires the H
+receipt, matching provider end-turn and marker, and the fixed identity/stop
+facts above. It exports the
 original A frames, confirmed H commands, and normalized ledger rows. Claude
 requires its exact original User echo, same vendor session, marker-bearing
 assistant output and successful original `type: result`; OpenCode and Grok
 require the original `session/prompt` write, its typed-ID matched `end_turn`
 response and marker-bearing `agent_message_chunk`. Unexpected provider tool or
 permission activity fails the capture.
+
+Reference: path spelling and containment follow the existing M2 readback;
+physical F identity follows the native `RootIdentity::opaque()` encoding and
+Win32 `FILE_ID_INFO` layout; process creation identity uses the native Win32
+`GetProcessTimes` 100-nanosecond value. The independent reader keeps these
+checks beside its original H/A/F evidence because they must bind to each of
+the three provider sessions in this standalone journal.
 
 The existing `cli-protocol-golden.mjs import` consumes that raw readback
 directly once per provider. It writes private bundles marked

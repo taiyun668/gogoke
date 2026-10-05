@@ -10,14 +10,119 @@ import sqlite3
 import sys
 from pathlib import Path
 
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+def local_spelling(value):
+    text = str(value)
+    if text.startswith("\\\\?\\UNC\\"):
+        raise RuntimeError("Network or UNC candidate path is outside this Win11 case")
+    return text[4:] if text.startswith("\\\\?\\") else text
+
+def same_local_path(left, right):
+    return os.path.normcase(os.path.normpath(local_spelling(left))) == \
+           os.path.normcase(os.path.normpath(local_spelling(right)))
+
+def beneath(parent, child):
+    parent_text, child_text = local_spelling(parent), local_spelling(child)
+    return same_local_path(os.path.commonpath((parent_text, child_text)), parent_text)
+
+def capture_process_identity(pid_text, expected_sha):
+    if os.name != "nt" or not pid_text.isdecimal() or len(expected_sha) != 64:
+        raise RuntimeError("Exact Win32 process identity requires a decimal PID and SHA-256")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                                         ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                    wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    pid = int(pid_text)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        creation, exit_time, kernel_time, user_time = (FileTime(), FileTime(), FileTime(), FileTime())
+        if not kernel32.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time),
+                                        ctypes.byref(kernel_time), ctypes.byref(user_time)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        image = ctypes.create_unicode_buffer(32768)
+        image_size = wintypes.DWORD(len(image))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(image_size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        image_path = Path(image.value)
+        image_sha = sha(image_path.read_bytes())
+        if image_sha != expected_sha:
+            raise RuntimeError("Exact live process image SHA-256 differs from the fixed provider pin")
+        creation_100ns = (int(creation.high) << 32) | int(creation.low)
+        return {"processId": str(pid), "creationTime100ns": str(creation_100ns),
+                "imageSha256": image_sha}
+    finally:
+        kernel32.CloseHandle(handle)
+
+def native_directory_identity(value):
+    if os.name != "nt":
+        raise RuntimeError("Native F identity requires Win32 FileIdInfo")
+    import ctypes
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [("file_attributes", wintypes.DWORD), ("reparse_tag", wintypes.DWORD)]
+
+    class FileIdInfo(ctypes.Structure):
+        _fields_ = [("volume_serial", ctypes.c_ulonglong), ("file_id", ctypes.c_ubyte * 16)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                       wintypes.LPVOID, wintypes.DWORD]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(str(value), 0x80, 0x1 | 0x2 | 0x4, None, 3,
+                                  0x00200000 | 0x02000000, None)  # READ_ATTRIBUTES, OPEN_REPARSE_POINT | BACKUP_SEMANTICS
+    invalid = ctypes.c_void_p(-1).value
+    handle_value = handle if isinstance(handle, int) else getattr(handle, "value", None)
+    if handle_value is None or handle_value == invalid:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        attributes = FileAttributeTagInfo()
+        if not kernel32.GetFileInformationByHandleEx(handle, 9, ctypes.byref(attributes),
+                                                      ctypes.sizeof(attributes)):  # FileAttributeTagInfo
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not attributes.file_attributes & 0x10 or attributes.file_attributes & 0x400:
+            raise RuntimeError("F worktree root is not a plain directory or is a reparse point")
+        identity = FileIdInfo()
+        if not kernel32.GetFileInformationByHandleEx(handle, 18, ctypes.byref(identity),
+                                                      ctypes.sizeof(identity)):  # FileIdInfo
+            raise ctypes.WinError(ctypes.get_last_error())
+        return f"volume:{identity.volume_serial:016x}/file:{bytes(identity.file_id).hex()}"
+    finally:
+        kernel32.CloseHandle(handle)
+
+if len(sys.argv) == 4 and sys.argv[1] == "--process-identity":
+    observed = capture_process_identity(sys.argv[2], sys.argv[3])
+    print(json.dumps(observed, separators=(",", ":")))
+    raise SystemExit(0)
+
 if len(sys.argv) != 4:
     raise RuntimeError("Expected state root, fresh private output, and original provider journal")
 
 def fail(message):
     raise RuntimeError(message)
-
-def sha(data):
-    return hashlib.sha256(data).hexdigest()
 
 def exact_one(db, sql, args=()):
     values = db.execute(sql, args).fetchall()
@@ -25,7 +130,7 @@ def exact_one(db, sql, args=()):
         fail(f"Expected exactly one original database row; found {len(values)}")
     return values[0]
 
-root = Path(sys.argv[1]).resolve(strict=True)
+root = Path(local_spelling(sys.argv[1])).resolve(strict=True)
 output = Path(sys.argv[2])
 journal_path = Path(sys.argv[3]).resolve(strict=True)
 if output.exists():
@@ -146,6 +251,10 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 open_payload.get("repositoryId") != journal["repositoryId"] or \
                 open_payload.get("worktreeId") != case["worktreeId"]:
             fail(f"{driver}: original H open does not bind the configured E/F objects")
+        for lifecycle in ("stop", "admission-release"):
+            payload = by_action[lifecycle]["request"].get("payload", {})
+            if payload.get("generation") != send[4] or payload.get("seatId") != case["seatId"]:
+                fail(f"{driver}: original H {lifecycle} does not bind the sent generation and E seat")
         capability_entry = by_action.get("capability-probe")
         if not capability_entry:
             fail(f"{driver}: original H capability-probe request is absent")
@@ -204,6 +313,31 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if not episodes or not all(row[2] == "STOPPED" and row[3] == claim[1] for row in episodes) or \
                 any(row[4] != case["seatId"] or row[5] != seat[0] or row[6] != case["instanceId"] for row in episodes):
             fail(f"{driver}: original physical H episode stop facts are absent")
+        bound_episodes = [row for row in episodes if row[0] == send[4] and row[1] == send[6]]
+        if len(bound_episodes) != 1 or \
+                bound_episodes[0][7] != by_action["open"]["request"]["requestId"]:
+            fail(f"{driver}: original send is not bound to exactly one physical H episode")
+        episode = bound_episodes[0]
+        stop_receipt = by_action["stop"].get("receipt") or {}
+        if stop_receipt.get("status") != "APPLIED" or \
+                stop_receipt.get("result", {}).get("stopFact") != claim[1]:
+            fail(f"{driver}: original User stop receipt does not match the H claim StopFact")
+        custody = exact_one(db,
+            "SELECT ticket,custodian_nonce,pid,creation_time_100ns,binary_digest_sha256,profile_id,"
+            "domain_id,generation,state,stop_proof_hash FROM gogoke_coordination_process_custody "
+            "WHERE operation_id=?", (send[6],))
+        process_identity = case.get("processIdentity", {})
+        if custody[0] != send[5] or custody[1] != send[7] or \
+                custody[2] != process_identity.get("processId") or \
+                custody[3] != process_identity.get("creationTime100ns") or \
+                custody[4] != "sha256:" + case["fixedSha256"] or \
+                custody[5] != case["instanceId"] or \
+                custody[6] != domain or custody[7] != send[4] or \
+                custody[8] != "STOPPED" or not custody[9] or \
+                process_identity.get("basis") != "ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED" or \
+                process_identity.get("imageSha256") != case["fixedSha256"] or \
+                process_identity.get("productRootPid") != str(journal.get("currentEndpoint", {}).get("pid")):
+            fail(f"{driver}: original process PID/creation/ticket/nonce/domain/generation/STOPPED proof differs")
         pins = db.execute(
             "SELECT DISTINCT i.driver_id,i.version,i.program_digest,e.instance_id,c.binary_digest_sha256 "
             "FROM gogoke_v37_h_process_episode e JOIN gogoke_v37_instances i ON i.instance_id=e.instance_id "
@@ -223,23 +357,33 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if tree[:4] != (domain, journal["repositoryId"], case["seatId"], case["instanceId"]) or \
                 tree[6:] != ("REGISTERED", "REGISTERED", "REGISTERED") or not tree[5]:
             fail(f"{driver}: original F registration is not bound to the exact E/H identity")
-        tree_path = Path(tree[4])
-        if tree_path.is_symlink() or not tree_path.is_dir():
-            fail(f"{driver}: registered original F worktree is absent or a link")
-        resolved_tree = tree_path.resolve(strict=True)
-        if os.path.normcase(os.path.commonpath((str(root), str(resolved_tree)))) != os.path.normcase(str(root)):
+        native_tree_path = Path(str(tree[4]))
+        tree_path = Path(local_spelling(tree[4]))
+        if not beneath(root, tree_path):
             fail(f"{driver}: actual F worktree escaped the private candidate state root")
+        stat_before = tree_path.lstat()
+        if getattr(stat_before, "st_file_attributes", 0) & 0x400:
+            fail(f"{driver}: registered original F worktree root is a reparse point")
+        actual_identity = native_directory_identity(native_tree_path)
+        if not tree[5] or actual_identity != tree[5]:
+            fail(f"{driver}: actual F FileIdInfo differs from the recorded native opaque identity")
+        stat_after = tree_path.lstat()
+        if getattr(stat_after, "st_file_attributes", 0) & 0x400 or \
+                (stat_before.st_dev, stat_before.st_ino) != (stat_after.st_dev, stat_after.st_ino):
+            fail(f"{driver}: actual F stat identity changed during no-follow readback")
+        resolved_tree = tree_path.resolve(strict=True)
+        if not beneath(root, resolved_tree):
+            fail(f"{driver}: resolved original F worktree escaped the private candidate state root")
         result["providerWorktrees"].append({"driverId": driver, "worktreeId": case["worktreeId"],
             "domainId": domain, "repositoryId": journal["repositoryId"], "seatId": case["seatId"],
             "instanceId": case["instanceId"], "path": str(resolved_tree),
-            "nativeOpaqueIdentity": tree[5], "rootIdentity": [str(resolved_tree.stat().st_dev),
-            str(resolved_tree.stat().st_ino)]})
+            "nativeOpaqueIdentity": tree[5], "fileIdInfoIdentity": actual_identity,
+            "rootIdentity": [str(stat_after.st_dev), str(stat_after.st_ino)]})
         incoming = db.execute(
             "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state,process_ticket,custodian_nonce,no_event_reason "
             "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? ORDER BY rowid",
             (domain, session_id)).fetchall()
         records = []
-        parsed = []
         for generation, operation_id, epoch, cursor, raw, state, ticket, nonce, reason in incoming:
             data = bytes(raw)
             frame = json.loads(data.decode("utf-8"))
@@ -247,16 +391,20 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 "operationId": operation_id, "sourceEpoch": epoch, "sourceCursor": cursor,
                 "processTicket": ticket, "custodianNonce": nonce, "state": state,
                 "noEventReason": reason, "originalFrame": data.decode("utf-8")}
-            result["frames"].append(row); records.append((row, frame)); parsed.append(frame)
-            if state == "PENDING": result["unknownFrames"].append({"sessionId": session_id,
-                "sourceEpoch": epoch, "sourceCursor": cursor, "method": frame.get("method"), "state": state})
+            result["frames"].append(row); records.append((row, frame))
+            if state == "PENDING":
+                classification = "CLAUDE_INITIALIZATION_METADATA" if driver == "claude" and \
+                    frame.get("type") == "system" and frame.get("subtype") == "init" else \
+                    "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"
+                row["pendingClassification"] = classification
+                result["unknownFrames"].append({"sessionId": session_id, "sourceEpoch": epoch,
+                    "sourceCursor": cursor, "method": frame.get("method", frame.get("type")),
+                    "state": state, "classification": classification})
         cursor_groups = {}
         for row, _ in records:
             cursor_groups.setdefault((row["operationId"], row["sourceEpoch"]), []).append(int(row["sourceCursor"]))
         if any(sorted(values) != list(range(1, max(values) + 1)) for values in cursor_groups.values() if values):
             fail(f"{driver}: original A source cursors are not continuous within the recorded process epochs")
-        if any(row["state"] == "PENDING" for row, _ in records):
-            fail(f"{driver}: original A source contains unresolved raw frames")
         outgoing = db.execute(
             "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor,ticket,custodian_nonce "
             "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? ORDER BY rowid",
@@ -271,8 +419,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         scoped = [(row, frame) for row, frame in records
                   if row["operationId"] == send[6] and row["generation"] == send[4] and
                   row["processTicket"] == send[5] and row["custodianNonce"] == send[7]]
-        if not scoped or any(row["state"] == "PENDING" for row, _ in scoped):
-            fail(f"{driver}: original H operation has missing or unresolved A source rows")
+        if not scoped:
+            fail(f"{driver}: original H operation has no A source rows")
         marker_output = False
         provider_output = ""
         vendor_end = False

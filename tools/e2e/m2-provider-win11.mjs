@@ -116,10 +116,10 @@ async function output(session) {
   if (reply.result.sourceError) throw Error(`Original ${session.id} A source error: ${JSON.stringify(reply.result.sourceError)}`);
   return reply.result;
 }
-async function captureArgv(row) {
+async function captureProcess(row) {
   const script = String.raw`$ErrorActionPreference = 'Stop'
 $inputJson = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$processes = @(Get-CimInstance Win32_Process)
+$processes = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath)
 $byId = @{}
 foreach ($item in $processes) { $byId[[string]$item.ProcessId] = $item }
 function Test-ChildOfProduct($item, $rootPid, $map) {
@@ -143,7 +143,8 @@ foreach ($item in $processes) {
   if (-not $item.ExecutablePath -or -not (Test-ChildOfProduct $item $inputJson.productPid $byId)) { continue }
   $hash = (Get-FileHash -LiteralPath $item.ExecutablePath -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($hash -ne $inputJson.sha256) { continue }
-  $line = [string]$item.CommandLine
+  $processDetails = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [string]$item.ProcessId) -Property ProcessId,CommandLine
+  $line = [string]$processDetails.CommandLine
   $effortFlag = if ($inputJson.driverId -eq 'grok') { '--reasoning-effort' } else { '--effort' }
   $matchingProcesses += [pscustomobject]@{
     processId = [string]$item.ProcessId
@@ -173,13 +174,30 @@ ConvertTo-Json -InputObject @($matchingProcesses) -Compress`;
   });
   const rows = JSON.parse(captured);
   const matches = Array.isArray(rows) ? rows : [rows];
+  const requiresModelArgv = row.driverId !== 'opencode';
   check(matches.length === 1 && matches[0].imageSha256 === row.sha256 &&
-    matches[0].model === row.model && matches[0].effort === row.effort &&
-    matches[0].modelArgCount === 1 && matches[0].effortArgCount === 1 &&
+    (!requiresModelArgv || (matches[0].model === row.model && matches[0].effort === row.effort &&
+    matches[0].modelArgCount === 1 && matches[0].effortArgCount === 1)) &&
     typeof matches[0].commandLineSha256 === 'string' && /^[a-f0-9]{64}$/.test(matches[0].commandLineSha256),
-    `${row.driverId}: actual pinned child argv binds configured model and effort`);
+    `${row.driverId}: actual product descendant is the fixed CLI process`);
+  const identityText = await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-provider-capture-readback.py'),
+      '--process-identity', String(matches[0].processId), row.sha256],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', bytes => { stdout = (stdout + bytes).slice(-4096); });
+    child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve(stdout.trim()) :
+      reject(Error(`Exact provider process identity exit=${code}: ${stderr}`)));
+  });
+  const identity = JSON.parse(identityText);
+  check(identity.processId === String(matches[0].processId) && identity.imageSha256 === row.sha256 &&
+    /^[0-9]+$/.test(identity.creationTime100ns),
+    `${row.driverId}: exact process creation time and pinned image`);
   return { basis: 'ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED',
-    productRootPid: String(product.endpoint.pid), ...matches[0] };
+    productRootPid: String(product.endpoint.pid), ...matches[0],
+    creationTime100ns: identity.creationTime100ns };
 }
 async function observeReceipt(session, row) {
   const deadline = Date.now() + 600000;
@@ -249,9 +267,8 @@ async function runCase(row, instances) {
     record.modelEffortEvidence = { basis: 'REQUIRES_CAPTURED_ACTUAL_PROCESS_ARGV',
       model: seat.result.settings.model, effort: seat.result.settings.effort };
   }
-  if (row.driverId === 'claude' || row.driverId === 'grok') {
-    record.modelEffortEvidence.argv = await captureArgv(row);
-  }
+  record.processIdentity = await captureProcess(row);
+  if (row.driverId === 'claude' || row.driverId === 'grok') record.modelEffortEvidence.argv = record.processIdentity;
   product.save();
   const marker = `${journal.marker}_${row.driverId}_${id('answer')}`;
   record.marker = marker;
@@ -334,7 +351,6 @@ try {
   for (const row of config.cases) await runCase(row, instances);
   journal.state = 'DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED'; product.save();
   await product.closeNormally();
-  await readbackAndGolden();
   await snapshot('after');
   for (const observer of config.observers) {
     const before = observerValue(observer.name, 'before'), after = observerValue(observer.name, 'after');
@@ -346,6 +362,7 @@ try {
     check(memory.memoryDataUnchangedByRead === true && memory.stage1OutputCount === 0 &&
       memory.memoryJobCount === 0, `memory ${phase}: existing read-only observer facts`);
   }
+  await readbackAndGolden();
   journal.state = 'REVIEW_REQUIRED'; journal.acceptance = false; product.save();
 } catch (error) {
   journal.state = 'FAIL'; journal.error = String(error.stack ?? error);
