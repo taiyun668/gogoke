@@ -241,6 +241,7 @@ async function stopUser(session, release) {
   check(typeof stopped.result.stopFact === 'string' && stopped.result.stopFact.length > 0,
     `${session.id}: durable actual process stop fact`);
   if (release) await sessionOp(session, 'admission-release', { seatId: session.seatId });
+  return stopped;
 }
 
 async function prepareRulesWorktree(selection, label) {
@@ -296,7 +297,7 @@ async function runRules() {
       session.cursor = '0';
       product.save();
     },
-    stopRulesSession: session => stopUser(session, true),
+    stopRulesSession: session => stopUser(session, false),
     releaseStoppedRulesSession: session => sessionOp(session, 'admission-release', { seatId: session.seatId }),
   } }, journal);
   check(record.state === 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED',

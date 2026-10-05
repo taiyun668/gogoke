@@ -526,6 +526,62 @@ def verify_final_source(db, domain, initial, current, journal_operations):
             "originalStop": stop["rawFrame"], "originalRelease": release["rawFrame"]}
 
 
+def verify_checkpoint_stops(db, domain, case, host, operations, claims):
+    stops = host.get("checkpointStops", [])
+    target = host["autoObservation"]["sessionId"] if host["kind"] == "DELIVERED" else host["busy"]["binding"]["id"]
+    check(len(stops) == 3 and [row["binding"]["id"] for row in stops] ==
+          [case["submitterSession"], case["reviewerSession"], target],
+          "Checkpoint needs the two original sources and one actual recipient H stop")
+    evidence = []
+    for row in stops:
+        bound = row["binding"]
+        read, stopped = operations[row["readRequestId"]], operations[row["stopRequestId"]]
+        request, receipt = stopped["request"], stopped["receipt"]
+        observed = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt WHERE family='K-SESSION' "
+                       "AND domain_id=? AND request_id=?", (domain, row["readRequestId"]))
+        check(bytes(observed["request_bytes"]).decode() == read["rawFrame"] and
+              json.loads(bytes(observed["receipt_bytes"])) == read["receipt"] and
+              read["request"]["operation"] == "output-stream" and read["request"]["targetId"] == bound["id"] and
+              read["request"]["payload"]["generation"] == read["receipt"]["result"]["generation"] == bound["generation"] and
+              read["receipt"]["status"] == "APPLIED" and
+              request["expectedRevision"] == read["receipt"]["revision"],
+              "Checkpoint stop revision lacks its original live User H read")
+        operation = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                        (domain, row["stopRequestId"]))
+        episode = one(db, "SELECT * FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? AND generation=?",
+                      (domain, bound["id"], bound["generation"]))
+        custody = one(db, "SELECT * FROM gogoke_coordination_process_custody WHERE operation_id=?",
+                      (episode["process_operation_id"],))
+        matched = [claim for claim in claims if claim["session_id"] == bound["id"]]
+        check(len(matched) == 1, "Exact stopped claim missing from original immutable checkpoint")
+        claim = matched[0]
+        check(json.loads(stopped["rawFrame"]) == request and
+              bytes.fromhex(operation["raw_hex"]).decode() == stopped["rawFrame"] and
+              request["family"] == receipt["family"] == "K-SESSION" and request["domainId"] == domain and
+              request["operation"] == receipt["operation"] == operation["operation"] == "stop" and
+              request["targetId"] == receipt["targetId"] == operation["session_id"] == bound["id"] and
+              request["payload"] == {"seatId": bound["seatId"], "generation": bound["generation"]} and
+              receipt["requestId"] == request["requestId"] == row["stopRequestId"] and
+              receipt["status"] == operation["status"] == "APPLIED" and
+              receipt["previousRevision"] == request["expectedRevision"] == str(operation["previous_revision"]) and
+              receipt["revision"] == row["revision"] == str(operation["revision"]) ==
+              str(int(request["expectedRevision"]) + 1) and
+              episode["seat_id"] == bound["seatId"] and episode["instance_id"] == bound["instanceId"] and
+              episode["phase"] == custody["state"] == claim["state"] == "STOPPED" and
+              episode["stop_request_id"] == row["stopRequestId"] and
+              episode["stop_fact_id"] == custody["stop_proof_hash"] == claim["stop_fact_id"] ==
+              receipt["result"]["stopFact"] == row["stopFact"] and row["stopFact"] and
+              custody["domain_id"] == claim["domain_id"] == domain and
+              custody["generation"] == claim["generation"] == bound["generation"] and
+              claim["instance_id"] == bound["instanceId"] and str(claim["revision"]) == row["revision"] and
+              claim["process_operation_id"] == episode["process_operation_id"],
+              "Normal close cannot substitute for the original receipted H stop and physical StopFact")
+        evidence.append({"binding": bound, "originalRead": bytes(observed["receipt_bytes"]).decode(),
+                         "originalStop": stopped["rawFrame"], "receipt": receipt,
+                         "claim": claim, "episode": episode, "custody": custody})
+    return evidence
+
+
 def verify_host(db, domain, case, host, operations, result):
     reference = host["checkpoint"]
     check(Path(reference["file"]).name == reference["file"], "Original checkpoint basename required")
@@ -539,6 +595,8 @@ def verify_host(db, domain, case, host, operations, result):
           queued["readerSha256"] == case["readerSha256"] == result["readerSha256"], "Queued artifact is another subject")
     prior = [row for row in queued["hostSnapshots"] if row["caseId"] == host["caseId"]]
     check(len(prior) == 1, "Original Host checkpoint cause missing")
+    check(queued["checkpointStops"] == verify_checkpoint_stops(db, domain, case, host, operations, queued["stoppedClaims"]),
+          "Original checkpoint H stop evidence changed")
     if host["kind"] == "DELIVERED":
         check(prior[0]["message"]["state"] == "DELIVERED" and prior[0]["autoBinding"] and
               len(prior[0]["deliveries"]) == len(prior[0]["sends"]) == len(prior[0]["commands"]) == 1,
@@ -570,6 +628,21 @@ def verify_host(db, domain, case, host, operations, result):
               "A cause has a missing or second original logical C/H/RPC send")
         delivery = final["deliveries"][0]
         target = host["targetSessions"][0]
+        live = operations[host["autoObservation"]["outputReadRequestId"]]
+        stored_live = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt WHERE family='K-SESSION' "
+                          "AND domain_id=? AND request_id=?", (domain, host["autoObservation"]["outputReadRequestId"]))
+        native_input = host["autoObservation"]["nativeInputReceipt"]
+        check(bytes(stored_live["request_bytes"]).decode() == live["rawFrame"] and
+              json.loads(bytes(stored_live["receipt_bytes"])) == live["receipt"] and
+              live["request"]["operation"] == "output-stream" and live["request"]["targetId"] == target["id"] and
+              live["request"]["payload"]["generation"] == live["receipt"]["result"]["generation"] == target["generation"] and
+              live["receipt"]["status"] == "APPLIED" and
+              native_input in live["receipt"]["result"]["nativeInputReceipts"] and native_input["phase"] == "RECEIPTED" and
+              native_input["receipt"] == json.loads(bytes.fromhex(final["sends"][0]["receipt_hex"])) and
+              native_input["receipt"]["targetId"] == target["id"] and
+              native_input["receipt"]["result"]["turnId"] == host["observedTurnId"] and
+              native_input["receipt"]["result"]["generation"] == target["generation"],
+              "Automatic stop subject was not observed through its original live H output/send ACK")
         observed_card = operations[host["autoObservation"]["seatCardRequestId"]]
         stored_card = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt WHERE family='K-SEAT' "
                           "AND domain_id=? AND request_id=?",
@@ -1090,8 +1163,12 @@ try:
             case = journal["rulesCases"][0]
             identifiers = {case["submitterSession"], case["reviewerSession"]}
             identifiers.update(row["busy"]["binding"]["id"] for row in case["hostCases"] if row.get("busy"))
+            identifiers.update(row["autoObservation"]["sessionId"] for row in case["hostCases"] if row.get("autoObservation"))
             result["stoppedClaims"] = [one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
                                           (journal["domainId"], session)) for session in sorted(identifiers)]
+            operations = {row["request"].get("requestId"): row for row in journal["operations"]}
+            result["checkpointStops"] = verify_checkpoint_stops(db, journal["domainId"], case, case["hostCases"][-1],
+                                                               operations, result["stoppedClaims"])
             result["state"] = "ORIGINAL_HOST_SNAPSHOT_NOT_A_FINAL_V08_RESULT"
         else:
             result["state"] = "BASELINE_ONLY_NOT_A_V08_RESULT"

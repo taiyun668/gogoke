@@ -133,7 +133,8 @@ export async function runRulesCase(product, config, journal) {
         reply = await product.operation('K-SESSION', 'output-stream', session.id,
           { generation: session.generation, afterCursor: session.cursor }, session.revision);
       }
-      requireFact(decimal(reply.result.cursor) && BigInt(reply.result.cursor) >= BigInt(session.cursor),
+      requireFact(reply.result.generation === session.generation && decimal(reply.result.cursor) &&
+        BigInt(reply.result.cursor) >= BigInt(session.cursor),
         'V08 original output cursor monotonic');
       session.cursor = reply.result.cursor; session.revision = reply.revision;
       session.events.push(...reply.result.events); product.save();
@@ -246,6 +247,31 @@ export async function runRulesCase(product, config, journal) {
         return session;
       };
       const checkpoint = async host => {
+        const target = host.kind === 'DELIVERED' ?
+          journal.sessions.find(row => row.id === host.autoObservation?.sessionId) :
+          journal.sessions.find(row => row.id === host.busy?.binding.id);
+        requireFact(target, 'Checkpoint requires the original live observed recipient before any close');
+        const stopped = [submitter, reviewer, target];
+        host.checkpointStops = []; product.save();
+        for (const session of stopped) {
+          await output(session, Boolean(host.busy && session.id === target.id));
+          const readRequestId = journal.operations.at(-1).request.requestId;
+          const revision = session.revision;
+          const receipt = await c.stopRulesSession(session);
+          const entry = journal.operations.at(-1);
+          requireFact(entry.request.family === 'K-SESSION' && entry.request.operation === 'stop' &&
+            entry.request.targetId === session.id && entry.request.expectedRevision === revision &&
+            entry.request.payload.generation === session.generation &&
+            entry.request.payload.seatId === session.seatId && receipt === entry.receipt &&
+            receipt.status === 'APPLIED' && receipt.previousRevision === revision &&
+            receipt.revision === (BigInt(revision) + 1n).toString() &&
+            receipt.revision === session.revision && typeof receipt.result.stopFact === 'string' &&
+            receipt.result.stopFact.length > 0,
+          'Checkpoint needs one original H stop-only receipt and genuine StopFact at the observed revision');
+          host.checkpointStops.push({ binding: binding(session), revision: session.revision,
+            readRequestId, stopRequestId: entry.request.requestId, stopFact: receipt.result.stopFact });
+          product.save();
+        }
         const reference = await c.hostCheckpoint();
         requireFact(reference && path.basename(reference.file) === reference.file &&
           /^[a-f0-9]{64}$/.test(reference.sha256), 'Host checkpoint original artifact required');
@@ -273,28 +299,27 @@ export async function runRulesCase(product, config, journal) {
             original.message.generation === '' && original.deliveries.length === 0 &&
             original.sends.length === 0 && original.recipient === null),
         'Actual Host checkpoint must contain the original automatic delivery or genuinely blocked queue');
-        const stopped = [submitter, reviewer, ...(host.busy ? [journal.sessions.find(row => row.id === host.busy.binding.id)] : [])];
         for (const session of stopped) {
           const claim = snapshot.stoppedClaims.find(row => row.session_id === session?.id);
           requireFact(claim?.state === 'STOPPED' && claim.generation === session.generation &&
-            claim.instance_id === session.instanceId && claim.stop_fact_id && Number.isSafeInteger(claim.revision),
-          'Normal close must leave this exact case-owned H generation physically stopped');
-          session.revision = String(claim.revision);
+            claim.instance_id === session.instanceId &&
+            claim.stop_fact_id === host.checkpointStops.find(row => row.binding.id === session.id).stopFact &&
+            String(claim.revision) === session.revision,
+          'Immutable checkpoint must read the original H stop-only claim/StopFact without inventing a stop');
         }
         host.checkpoint = reference; host.messageId = original.message.message_id;
         host.enqueueRequestId = original.enqueue.request_id;
         host.triggerId = original.intent.trigger_id; host.escalationRequestId = original.intent.request_id;
         host.queuedRevision = original.message.revision; product.save();
         if (host.kind === 'DELIVERED') {
-          const target = { ...original.autoBinding, cursor: '0', events: [], turns: [] };
           requireFact(target.seatId === h.destination.seatId &&
             target.instanceId === h.destination.instanceId && target.worktreeId === h.destination.worktreeId &&
             target.id === host.autoObservation.sessionId &&
             target.threadId === host.autoObservation.threadId &&
             original.message.turn_id === host.autoObservation.turnId &&
-            !journal.sessions.some(row => row.id === target.id),
+            ['id', 'seatId', 'instanceId', 'worktreeId', 'generation', 'threadId'].every(name =>
+              original.autoBinding[name] === target[name]) && original.autoBinding.revision === target.revision,
           'Automatic recipient must be the unique original Host-created H session');
-          journal.sessions.push(target);
           host.targetSessions.push(binding(target)); host.observedTurnId = original.message.turn_id;
           product.save();
         }
@@ -372,16 +397,36 @@ export async function runRulesCase(product, config, journal) {
         product.save();
         let completed;
         while (Date.now() < deadline) {
-          await output(target);
+          const page = await output(target);
+          requireFact(page.generation === target.generation, 'Automatic output must bind the actual live H generation');
+          host.autoObservation.outputReadRequestId = journal.operations.at(-1).request.requestId;
+          const inputs = page.nativeInputReceipts.filter(row => row.phase === 'RECEIPTED' &&
+            row.receipt?.family === 'K-SESSION' && row.receipt.operation === 'send' &&
+            row.receipt.targetId === target.id && row.receipt.status === 'APPLIED' &&
+            row.receipt.result?.createdTurn === true);
+          if (inputs.length === 0) {
+            await delay(300); continue; // Observe this original Host send; never resend or substitute.
+          }
+          if (!(inputs.length === 1 && inputs[0].receipt.result.generation === target.generation &&
+              decimal(inputs[0].receipt.revision))) {
+            host.state = 'NOT_RUN_NO_ORIGINAL_LIVE_AUTOMATIC_BINDING'; product.save();
+            throw Error('V08 automatic recipient NOT_RUN: no unique original live H send ACK; preserve without stop or close');
+          }
+          host.autoObservation.nativeInputReceipt = inputs[0];
           completed = target.events.find(row => row._meta?.codexMethod === 'turn/completed' &&
-            row._meta.turnStatus === 'completed');
+            row._meta.turnStatus === 'completed' && row._meta.turnId === inputs[0].receipt.result.turnId);
           if (completed) break;
           await delay(300);
         }
-        requireFact(completed?._meta?.turnId && completed._meta.threadId,
-          'Original automatic recipient CLI turn did not complete before normal close');
+        if (!(completed?._meta?.turnId && completed._meta.threadId)) {
+          host.state = 'NOT_RUN_NO_ORIGINAL_LIVE_AUTOMATIC_COMPLETION'; product.save();
+          throw Error('V08 automatic recipient NOT_RUN: original live H binding/CLI completion unavailable; preserve without stop or close');
+        }
         host.autoObservation = { ...host.autoObservation, generation: target.generation,
           threadId: completed._meta.threadId, turnId: completed._meta.turnId };
+        target.threadId = completed._meta.threadId; target.turns = [];
+        requireFact(!journal.sessions.some(row => row.id === target.id), 'Automatic live recipient must be unique');
+        journal.sessions.push(target);
         product.save();
       };
       for (const kind of ['DELIVERED', 'BUSY_QUEUED', 'ROUTE_CHANGED', 'CANCELLED']) {
@@ -428,7 +473,7 @@ export async function runRulesCase(product, config, journal) {
       }
       record.notRun = record.notRun.filter(row => row.caseId !== 'V08_REJECT_CAP_DELIVERY');
       record.notRun.push({ caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'No real deterministic UNKNOWN/late-ACK occurrence is available here; synthetic ACK/faults and input replay are not used.' },
-        { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Busy is proved by the native unanswered question; normal close and User cancellation clean up that separate cause. Its old vendor turn is never presumed idle on resume.' });
+        { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Busy is proved by the native unanswered question; original H stop-only, immutable checkpoint, User cancellation and release preserve that separate cause. Its old vendor turn is never presumed idle on resume.' });
     }
     record.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();
     return record;
