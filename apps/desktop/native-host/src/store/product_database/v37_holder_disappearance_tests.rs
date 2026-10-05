@@ -544,6 +544,27 @@ fn actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_b
             let mut product = ProductDatabase::open(root, &cold.database).unwrap();
             assert_eq!(resource_snapshot(&product), cut_rows, "{cut}: actual cold opener preserved partial metadata");
             assert_eq!(holder_gone_acl_write_count_for_test() - writes, partial_writes);
+            if cut=="AFTER_RELEASE" {
+                // One APPLIED label must not authorize an effect on the other
+                // still-active resource when its actual H receipt changed.
+                let raw=rows(&product,"SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE request_id=?1",
+                    &[&first.input.request_id],1)[0][0].clone();
+                let set_raw=|product:&ProductDatabase<'_>,value:&str| {
+                    let q=Statement::prepare(product.connection.as_ptr(),
+                        "UPDATE main.gogoke_v37_h_operation SET raw_hex=?1 WHERE request_id=?2").unwrap();
+                    q.bind_text(1,value).unwrap();q.bind_text(2,&first.input.request_id).unwrap();q.step_done().unwrap();
+                };
+                set_raw(&product,"00");
+                let rejected_rows=resource_snapshot(&product);let rejected_acl=source_acl_digest(&product,root,cold);
+                let error=product.recover_disappeared_credential_resources(INSTANCE,None)
+                    .expect_err("APPLIED without its exact H release receipt must reject before remaining effects");
+                assert!(format!("{error:?}").contains("holder frozen H release receipt changed"),"original refusal: {error:?}");
+                assert_eq!(resource_snapshot(&product),rejected_rows);
+                assert_eq!(source_acl_digest(&product,root,cold),rejected_acl);
+                assert_eq!(holder_gone_acl_write_count_for_test()-writes,partial_writes);
+                set_raw(&product,&raw);
+                assert_eq!(resource_snapshot(&product),cut_rows,"negative instrument restores exact original receipt");
+            }
             // Do not clear the hook here: its one-shot consumption must itself
             // permit this ONE cold recovery call. Never retry a failed recovery.
             product.recover_disappeared_credential_resources(INSTANCE, None)

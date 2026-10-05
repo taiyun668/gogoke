@@ -309,12 +309,25 @@ impl<'root> ProductDatabase<'root> {
                 originals.insert(profile.binding_id.clone(),self.gone_original(profile)?);
             }
         }
+        // A phase label alone is not a completed fact. Validate its immutable
+        // original and the actual F/H receipts before excluding it from OS
+        // observation or performing any remaining resource effect.
+        for (id,record) in records.iter().filter(|(_,r)|r.phase==Phase::Applied) {
+            self.gone_validate_capture(originals.get(id).ok_or_else(||refused("holder completed original absent"))?,
+                &decode(record)?,&object,&home.identity,&alias_physical,record)?;
+        }
         let allowed:Vec<String>=originals.values().map(|f|get(f,"operation")).collect::<Result<_>>()?;
         self.gone_scope(instance_id,&allowed,incoming,retained)?;
-        let all_pairs=originals.values().map(|f|Ok((get(f,"pid")?.parse::<u32>().map_err(|e|
+        // APPLIED is the durable conclusion of the original disappearance,
+        // F revoke and H release. PID reuse cannot invalidate that completed
+        // fact. Observe the OS only for resources which still need an effect;
+        // completed captures and receipts remain verified below.
+        let all_pairs=originals.iter().filter(|(id,_)|!records.get(*id)
+            .is_some_and(|r|r.phase==Phase::Applied)).map(|(_,f)|Ok((get(f,"pid")?.parse::<u32>().map_err(|e|
             OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,get(f,"creation")?.parse::<u64>().map_err(|e|
             OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?))).collect::<Result<Vec<_>>>()?;
-        let all_gone=fail(NativeProcessHoldersGone::observe(&all_pairs))?;
+        let all_gone=if all_pairs.is_empty() {None}
+            else {Some(fail(NativeProcessHoldersGone::observe(&all_pairs))?)};
         let known:Vec<(String,u32)>=members.iter().map(|id| {
             let profile=profiles.iter().find(|p|&p.binding_id==id).ok_or_else(||refused("holder capture member absent"))?;
             Ok((profile.profile_sid.clone(),CREDENTIAL_RIGHTS))
@@ -325,7 +338,8 @@ impl<'root> ProductDatabase<'root> {
             let original=originals.get(member).ok_or_else(||refused("holder original absent"))?;
             let pair=(get(original,"pid")?.parse::<u32>().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,
                 get(original,"creation")?.parse::<u64>().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?);
-            let proof=fail(NativeProcessHoldersGone::observe(&[pair]))?;
+            let proof=if records.get(member).is_some_and(|r|r.phase==Phase::Applied) {None}
+                else {Some(fail(NativeProcessHoldersGone::observe(&[pair]))?)};
             let (mut record,capture,step)=if let Some(record)=records.get(member) {
                 let capture=decode(record)?;
                 self.gone_validate_capture(original,&capture,&object,&home.identity,&alias_physical,record)?;
@@ -349,14 +363,16 @@ impl<'root> ProductDatabase<'root> {
                     process_operation_id:get(original,"operation")?,
                     request_id:format!("holder-gone-{}",sha256_hex(&bytes)),pid:pair.0.to_string(),
                     creation_time_100ns:pair.1.to_string(),snapshot_hex:bytes_hex(&bytes),snapshot_digest:sha256_hex(&bytes)};
-                let record=fail(gone::begin_holder_disappearance(&mut self.connection,&input,&proof))?;
+                let record=fail(gone::begin_holder_disappearance(&mut self.connection,&input,
+                    proof.as_ref().ok_or_else(||refused("holder initial capture lacks disappearance proof"))?))?;
                 (record,capture,step)
             };
             #[cfg(test)]
             holder_gone_cut_for_test("AFTER_CAPTURE")?;
             if record.phase==Phase::Preparing {
+                let proof=proof.as_ref().ok_or_else(||refused("holder revoke lacks disappearance proof"))?;
                 self.gone_scope(instance_id,&allowed,incoming,retained)?;
-                fail(all_gone.validate(&all_pairs))?;
+                if let Some(all_gone)=&all_gone {fail(all_gone.validate(&all_pairs))?;}
                 let intent=fail(instance::begin_credential_profile(&mut self.connection,&instance::CredentialProfileIntent{
                     request_id:format!("{}-revoke",record.input.request_id),instance_id:instance_id.into(),
                     history_id:profile.history_id.clone(),binding_id:member.clone(),generation:profile.generation.clone(),
@@ -366,7 +382,7 @@ impl<'root> ProductDatabase<'root> {
                     return Err(refused("holder recovery retains ambiguous original revoke"));
                 }
                 self.gone_scope(instance_id,&allowed,incoming,retained)?;
-                fail(all_gone.validate(&all_pairs))?;
+                if let Some(all_gone)=&all_gone {fail(all_gone.validate(&all_pairs))?;}
                 let observed=if intent.disposition==instance::CredentialIntentDisposition::Applied {
                     if intent.profile.state!="REVOKED" {return Err(refused("holder applied revoke profile changed"));}
                     fail(step.readback_target(&binding,&proof,&[pair]))?
@@ -389,8 +405,9 @@ impl<'root> ProductDatabase<'root> {
                 holder_gone_cut_for_test("AFTER_REVOKED")?;
             }
             if record.phase==Phase::Revoked {
+                let proof=proof.as_ref().ok_or_else(||refused("holder release lacks disappearance proof"))?;
                 self.gone_scope(instance_id,&allowed,incoming,retained)?;
-                fail(all_gone.validate(&all_pairs))?;
+                if let Some(all_gone)=&all_gone {fail(all_gone.validate(&all_pairs))?;}
                 fail(step.readback_target(&binding,&proof,&[pair]))?;
                 fail(self.connection.execute("BEGIN IMMEDIATE"))?;
                 let released=self.gone_release_in_transaction(&capture,&record,&proof);
@@ -410,6 +427,7 @@ impl<'root> ProductDatabase<'root> {
         // On later cold starts its immutable last step still supplies the same
         // expected baseline; subsequent legitimate stopped histories add no ACE.
         for record in records.values() {
+                if record.phase!=Phase::Applied {return Err(refused("holder original resource recovery incomplete"));}
                 let capture=decode(record)?;let group=get(&capture,"members")?;
                 if final_digest.is_none() && group.split(',').last()==Some(record.input.binding_id.as_str()) {
                     let ids:Vec<_>=group.split(',').collect();
@@ -422,14 +440,9 @@ impl<'root> ProductDatabase<'root> {
                     .ok_or_else(||refused("holder completed original absent"))?;
                 self.gone_validate_capture(&self.gone_original(&fresh_profile)?,
                     &capture,&object,&home.identity,&alias_physical,record)?;
-                let proof=fail(NativeProcessHoldersGone::observe(&[(record.input.pid.parse().map_err(|e|
-                    OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,record.input.creation_time_100ns.parse().map_err(|e|
-                    OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?)]))?;
-                fail(proof.validate(&[(record.input.pid.parse().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,
-                    record.input.creation_time_100ns.parse().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?)]))?;
         }
         self.gone_scope(instance_id,&allowed,incoming,retained)?;
-        fail(all_gone.validate(&all_pairs))?;
+        if let Some(all_gone)=&all_gone {fail(all_gone.validate(&all_pairs))?;}
         if fail(instance::read_credential_profiles(&self.connection,instance_id))?.iter().any(|p|p.state!="REVOKED") {
             return Err(refused("holder cold adoption retains a profile"));
         }

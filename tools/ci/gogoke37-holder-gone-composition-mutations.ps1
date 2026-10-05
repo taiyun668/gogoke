@@ -25,8 +25,8 @@ $cases = @(
     @{
         axis = 'nested-owner-transaction'
         expectedReason = 'cannot start a transaction within a transaction'
-        needle = '                    self.gone_scope_in_current_transaction(instance_id,&allowed,incoming)?;'
-        replacement = '                    self.gone_scope(instance_id,&allowed,incoming)?;'
+        needle = '                    self.gone_scope_in_current_transaction(instance_id,&allowed,incoming,retained)?;'
+        replacement = '                    self.gone_scope(instance_id,&allowed,incoming,retained)?;'
     }
 )
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
