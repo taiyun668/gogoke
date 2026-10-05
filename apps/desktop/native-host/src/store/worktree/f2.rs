@@ -1201,6 +1201,9 @@ mod tests {
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openB',?1,'open','sessionB','APPLIED',1,2)").unwrap();
             q.bind_text(1,&original.bytes().map(|b|format!("{b:02x}")).collect::<String>()).unwrap();q.step_done().unwrap();drop(q);
             let writer=seat::get(db,"projectA","seatA").unwrap().unwrap();
+            // sessionA already owns the prior incarnation/generation binding.
+            // A new admission uses E's next generation, never a duplicate slot.
+            let writer=seat::set_dispatch_state(db,&writer,true).unwrap();
             with_actual_h_episode(db,root,pin,custodian,&writer,"sessionB","openB","processB",|db| {
                 assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)),
                     "live sibling reservation covers target through original H group");
