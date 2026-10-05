@@ -66,7 +66,7 @@
 | **C 收件箱与问题卡** | C.1（M1） |
 | **D 旁聊** | D.1（M2）：包括原生存储 |
 | **E 席位、编排与规则原语** | E.1（M1）：登记、分层、绑定；E.2（M2）：编排范围、上限、模板、接手问答、状态卡、健康信号、调用权限表、关口和阶段、升级链；E.3（M3）：秘书长的触发器 |
-| **F 实例与工作树** | F.1（M1）：登记、独立目录（关闭记忆）、登录状态；F.2（M2）：版本、升级后重新固定、并发、工作树、图谱、合并、清理 |
+| **F 实例与工作树** | F.1（M1）：登记、独立目录（关闭记忆）、登录状态；F.2（M2）：版本、升级后重新固定、并发、工作树、图谱、合并、清理。席位只在宿主创建并授权的工作树里改文件；停止事实与无占用条件满足后，由 F 用原注册 Git pin 封装席位改动并执行已有合并。 |
 | **G 界面** | G.0（M1）：浏览器预览（本机 vite，Tauri 桥背后接 K-UI 假实现，改界面几秒可见，不用原生构建、签名、装机）；最小实例页，含实例列表和 Codex 测试实例的四种状态（未安装、未登录、已登录、出错），从实例页一键登录；新版本提示和通用额度耗尽仍在 M2；G.1（M3）：其余页面和卡片，复用现有的问题卡组件 |
 
 ## 5. 汇合点
@@ -94,7 +94,7 @@
   - 关口"通过"和"打回附理由"、合法的阶段流转（V08）；
   - 旁聊保留后重新打开、归档后恢复、主控上下文不存第二份（V12）；
   - 手动升级后重新固定身份（V13）；
-  - 保证不了的权限档位被拒绝、主树不能直接写（V11）；
+  - 保证不了的权限档位被拒绝、主树不能直接写（V11）；V11 同时核对席位只改宿主工作树文件、不要求 CLI 调用 Git 或访问 `.git`，以及 F 在原 StopFact/无占用约束下封装的本地提交身份和绑定原 MERGE request 的封装 intent、child commit 原 hash 读回。
   - 界面验收明确列出全部 25 个状态，每个状态下的禁用操作和恢复都要验，**缺一个就记为没跑，整项不能算通过**（V15）。
 - **证据沿用**：每个结果都绑定它所用的源码提交和组件哈希。M1、M2 的结果，只有在候选上涉及的组件和配置逐字节不变时，才能沿用到 M3，否则在候选上重跑。V16 给出逐项的来源表。结果只有三种：通过、失败、没跑。
 - **故障注入**：在真实的边界上注入故障，不用替身后端，也不为了测试去耗尽真实的订阅额度。
@@ -240,3 +240,11 @@ F/H 在原注册根的既有排他协调和元数据 custody 下，沿用已持�
 
 参照：先查 gogo-party 的 accounts.ts、席位运行时，以及 NaveHQ、LoomOS 的 boot/fence 实现，未发现可照搬的旧持有者迁移；再查仓库 `process/windows.rs` 的 `GetProcessTimes`/`WaitForSingleObject`、`process_custody.rs` 的 PID 与创建时间记录，以及 parts/substrate teardown、execution-layer-capability-table、kernel-parts-harvest、reuse-blueprint、upstream-reference-map，沿用“原 custody、单写方、未知保留、按物理对象迁移”的规则。最后核对上述 Microsoft 文档与 System Informer 的直接 BootTime 调用。不采用 BCD GUID、lease、等待时长或 elapsed 推断。本次只修订一轮实现细节；独立审计须复核真实来源、恢复前提、云端与实机证据边界。若仍无法干净恢复，停止此恢复路径并保全现场，先报告，再把新增实例登录并入 OT4b 同一次 Owner 触点；不把 fallback 自动视作本轮通过。不替换 ProcessCustodian 停止事实，不改变范围摘要、权限档位、持久写方、写入范围或既有 Owner 决定。
 
+
+## F.2 席位工作树提交封装（2026-10-05）
+
+M2 的“隔开写和合并”由宿主封住 Git 边界：席位仅在授权的宿主工作树内修改文件，不需要模型 CLI 执行 Git 命令或访问 `.git`；不向 H 的 LPAC profile 增加 Git 可执行文件、PATH 或 common Git 目录权限。E.2 当前调用者仍须授权既有 `K-WORKTREE merge`；F 仅在原 F worktree/repository 物理绑定有效、原 H StopFact 已确认且没有占用中的 admission reservation 后，使用 Owner 注册的固定 Git pin，将停止后的 child 改动封装为本地提交，再执行原 source merge。提交保留 project、seat、instance 和授权该次执行的 native turn 身份；source clean 约束、原 incoming tree 重解析与属性/外部 driver 拒绝、正式数据保护、固定 CLI、凭据不读均保持。
+
+F 在原 MERGE intent 下先持久化与原请求绑定的 child-seal intent；提交成功后记录 child commit 原 hash。child commit 已发生但后续 merge 或数据库回执无法证明时，原请求进入 `MERGE_UNKNOWN`，原请求和新请求都不得重做该效果。历史 `APPLIED` merge receipt 继续按原记录只读回读，不补造 child receipt。这里补的是 F.2/K-WORKTREE merge 的描述性细节：wire family、写入范围、阶段、Owner 触点和持久写方归属不变。
+
+参照：gogo-party 的 `packages/room/src/server.ts:411-425,1848` 由 room 的 `commitForSeat` 代表席位提交，席位只改文件、不触碰 `.git`；当前 Rust F2 已持有固定 Git pin 并负责 merge commit，但还没有 child 改动的宿主封装步骤。
