@@ -51,6 +51,7 @@ mod v37_ledger_user;
 mod v37_inbox;
 mod v37_capability;
 mod v37_login;
+mod v37_holder_disappearance;
 mod v37_side;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
@@ -163,6 +164,10 @@ pub struct ProductDatabase<'root> {
     // no cold holder can silently rebuild an active source DACL.
     recovered_credential_holders: BTreeMap<(String, String),
         std::sync::Arc<crate::process::CredentialBinding>>,
+    // A different native qualification from the legacy boot fence. Keeping
+    // this metadata holder preserves its read-only baseline adoption witness.
+    disappeared_credential_holders: BTreeMap<(String, String),
+        std::sync::Arc<crate::process::CredentialBinding>>,
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -187,7 +192,8 @@ impl<'root> ProductDatabase<'root> {
         Ok(Self { root, connection, owner, process_custodian, owner_login: None,
             native_sessions: BTreeMap::new(), pending_native_launches: BTreeMap::new(),
             pending_credential_preparations: BTreeMap::new(),
-            recovered_credential_holders: BTreeMap::new() })
+            recovered_credential_holders: BTreeMap::new(),
+            disappeared_credential_holders: BTreeMap::new() })
     }
 
     pub fn serve_pipe(&mut self, pipe: &PrivatePipeConnection) -> Result<()> {
@@ -747,7 +753,8 @@ impl<'root> ProductDatabase<'root> {
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
         let Self { root: _, connection, owner: _, process_custodian, owner_login, native_sessions,
-            pending_native_launches, pending_credential_preparations, recovered_credential_holders } = self;
+            pending_native_launches, pending_credential_preparations, recovered_credential_holders,
+            disappeared_credential_holders } = self;
         drop(owner_login);
         // Closing the Job first prevents a child from outliving the active
         // coordination database. Unresolved rows stay UNKNOWN on recovery.
@@ -756,6 +763,7 @@ impl<'root> ProductDatabase<'root> {
         drop(pending_native_launches);
         drop(pending_credential_preparations);
         drop(recovered_credential_holders);
+        drop(disappeared_credential_holders);
         connection.close_checked()
     }
 

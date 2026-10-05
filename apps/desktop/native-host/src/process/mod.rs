@@ -18,7 +18,9 @@ pub(crate) use session::{AppContainerProfile, CompatModule, DirectoryRoots, Isol
     CredentialAlias, CredentialAliasScope, CredentialBinding, CredentialError,
     NativeBootIdentity, NativeBootIdentityError,
     native_boot_start, NativeLegacyHoldersGone, NativeLegacyHoldersGoneError,
-    LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt};
+    LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
+    NativeProcessHoldersGone, NativeCredentialAclRecoveryStep,
+    adopt_holder_gone_source_baseline};
 
 #[cfg(not(windows))]
 compile_error!("gogoke native process custody is Windows-only");

@@ -7,10 +7,11 @@ mod boot_identity;
 mod legacy_holders_gone;
 
 pub(crate) use isolation::{AppContainerProfile, IsolationError, SecurityCapabilities,
-    LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt};
+    LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
+    NativeCredentialAclRecoveryStep, adopt_holder_gone_source_baseline};
 pub(crate) use compat_module::{CompatModule, DirectoryRoots};
 pub(crate) use credential_binding::{CredentialAlias, CredentialAliasScope,
     CredentialBinding, CredentialError};
 pub(crate) use boot_identity::{NativeBootIdentity, NativeBootIdentityError};
 pub(crate) use legacy_holders_gone::{native_boot_start, NativeLegacyHoldersGone,
-    NativeLegacyHoldersGoneError};
+    NativeLegacyHoldersGoneError, NativeProcessHoldersGone};

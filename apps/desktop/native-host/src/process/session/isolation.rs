@@ -15,7 +15,8 @@ use super::credential_binding::{CredentialAlias, CredentialAliasScope,
 
 #[path = "legacy_acl.rs"]
 mod legacy_acl;
-pub(crate) use legacy_acl::{LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt};
+pub(crate) use legacy_acl::{LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
+    NativeCredentialAclRecoveryStep, adopt_holder_gone_source_baseline};
 
 type Handle = *mut c_void;
 const TOKEN_QUERY: u32 = 0x0008;

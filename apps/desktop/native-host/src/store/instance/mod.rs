@@ -12,6 +12,7 @@ mod temporary;
 mod private_history;
 mod credential_registry;
 mod legacy_fence;
+pub(crate) mod holder_disappearance;
 
 pub(crate) use legacy_fence::{initialize_legacy_fence_schema, capture_legacy_fence,
     read_legacy_fence, read_legacy_step, begin_legacy_acl_step, validate_legacy_acl_write, finish_legacy_acl_step,
@@ -43,6 +44,7 @@ pub(crate) use credential_registry::{initialize_credential_schema, record_creden
     read_credential_aliases, begin_credential_alias, complete_credential_alias,
     recover_pending_credential_remove,
     read_credential_profiles, begin_credential_profile, complete_credential_profile,
+    read_completed_profile_revoke,
     CredentialRegistryError, CredentialBackend, CredentialStartupSelector, BackendSource,
     CredentialObjectInput, CredentialObjectRecord, CredentialIntentDisposition,
     CredentialAliasAction, CredentialAliasResult, CredentialAliasIntent,

@@ -682,6 +682,30 @@ pub(crate) fn complete_credential_profile(db: &mut VerifiedDatabaseConnection<'_
     })
 }
 
+/// Read-only qualification for the exact already completed revoke. Holder
+/// disappearance/resource release does not replace this physical F receipt.
+pub(crate) fn read_completed_profile_revoke(db: &VerifiedDatabaseConnection<'_>,
+    input: &CredentialProfileIntent) -> Result<CredentialProfileRecord> {
+    if input.action != CredentialProfileAction::Revoke || input.expected_revision < 1 {
+        return Err(CredentialRegistryError::Invalid("completed revoke input"));
+    }
+    let fingerprint=framed(&["credential-profile-v1",&input.instance_id,&input.history_id,&input.binding_id,
+        &input.generation,&input.profile_sid,&input.source_file_identity.opaque(),&input.request_id,
+        input.action.text(),&input.expected_revision.to_string()]);
+    let key=journal_key("profile",&input.instance_id,&input.request_id);
+    let Some((CredentialIntentDisposition::Applied,result))=journal(db,&key,&fingerprint,
+        &journal_target(&input.instance_id))? else{return Err(CredentialRegistryError::Unknown);};
+    let row=profile(db,&input.instance_id,&input.binding_id)?.ok_or(CredentialRegistryError::Unknown)?;
+    check_profile_source(db,&row,false)?;
+    let revision=input.expected_revision.checked_add(2).ok_or(CredentialRegistryError::Invalid("revoke revision overflow"))?;
+    if result!="REVOKED" || row.state!="REVOKED" || row.intent_request!=key || row.revision!=revision
+        || row.history_id!=input.history_id || row.generation!=input.generation
+        || row.profile_sid!=input.profile_sid || row.source_file_identity!=input.source_file_identity {
+        return Err(CredentialRegistryError::Conflict);
+    }
+    Ok(row)
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

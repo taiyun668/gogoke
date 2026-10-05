@@ -297,6 +297,23 @@ impl NativeCredentialAclRecoveryStep {
     pub(crate) fn target_digest(&self) -> String { canonical_dacl_digest(&self.target) }
     pub(crate) fn encode_snapshot(&self) -> String { hex(&self.bytes()) }
 
+    /// A durable applied F revoke permits only readback, never another ACL
+    /// effect when the source has drifted back to the old before image.
+    pub(crate) fn readback_target(&self, binding: &CredentialBinding,
+        proof: &NativeProcessHoldersGone, pairs: &[(u32, u64)]) -> Result<String, CredentialError> {
+        validate_recovery_holders(proof,pairs)?;
+        if binding.identity()!=&self.source_identity {return Err(CredentialError::IdentityChanged);}
+        let digest=binding.with_source_metadata_acl(|handle| {
+            if file_identity(handle)?!=self.source_identity {return Err(CredentialError::IdentityChanged);}
+            let actual=read_dacl(handle)?;
+            if !acl_equal(&actual,&self.target) {return Err(mismatch());}
+            validate_recovery_holders(proof,pairs)?;
+            Ok(canonical_dacl_digest(&actual))
+        })?;
+        validate_recovery_holders(proof,pairs)?;
+        Ok(digest)
+    }
+
     /// The supplied digest is the canonical before-DACL digest. F independently
     /// verifies the whole snapshot hash; the caller's binding rechecks FileID.
     pub(crate) fn restore(snapshot: &str, before_digest: &str, target_sid: &str,
