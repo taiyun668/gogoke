@@ -51,11 +51,15 @@ requires both a documented exit code and matching boolean `loggedIn`; any
 mismatch is Unknown. OpenCode's fixed `auth list --pure` lists local credentials.
 The observed empty-home output, exit 0 and `0 credentials`, establishes
 LOGGED_OUT without a host read of `auth.json`. A nonempty inventory is only
-classified for the exact one-entry source-formatted row `xAI oauth` and total
-`1 credentials`; this uses the tagged formatter's display-name/type/count
-fields and the fixed binary's cached xAI catalog name. Other output, including
-additional credentials, stays Unknown. This positive inventory shape is
-source-derived and has not been observed after a real login. The original
+classified for the exact one-entry source-formatted row `•  xAI oauth` or
+`●  xAI oauth` and total `1 credentials`; this uses the tagged formatter's
+display-name/type/count fields, Clack's two fixed info-symbol renderings, and
+the fixed binary's cached xAI catalog name. The retained cancelled-process
+evidence independently confirms the bullet prefix; the public record retains
+only the prefix, host and state, with no authorization URL or device code. It
+is not a login observation. Other output, including additional credentials,
+stays Unknown. This positive inventory shape has not been observed after a
+real login. The original
 pinned `xai` device-code callback returns OAuth tokens to the CLI, which
 persists the entry before printing Clack's complete LF-terminated `Login
 successful` line. Only that original custodied line together with durable
@@ -192,6 +196,7 @@ displayed but do not become process frames, status evidence, or durable facts.
   [Auth.Service](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/auth/index.ts),
   [xAI auth plugin](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/xai.ts),
   [plugin loader](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/index.ts),
+  [CLI prompt wrapper](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/cli/effect/prompt.ts),
   and [CLI flag parser](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/index.ts).
   `providers.ts` skips provider/method prompts for exact selector labels,
   prints `Go to:` and formats each local credential as model display name plus
@@ -201,6 +206,11 @@ displayed but do not become process frames, status evidence, or durable facts.
   line. Fixed-binary model-cache evidence identifies provider ID `xai` with
   display name `xAI`. The fixed plugin loader retains built-in plugins under
   `--pure`, including `XaiAuthPlugin`.
+  The pinned [Clack log formatter](https://github.com/bombshell-dev/clack/blob/aece08386ee630a3b5d888460fe0028fc05dfe05/packages/prompts/src/log.ts)
+  prefixes info messages with its info symbol, and [Clack symbols](https://github.com/bombshell-dev/clack/blob/aece08386ee630a3b5d888460fe0028fc05dfe05/packages/prompts/src/common.ts)
+  define that symbol as `●` or `•` according to Unicode support. A private
+  redacted record of output from the cancelled attempt confirms the
+  `•` prefix in this environment; that evidence was not a login observation.
   A fixed-binary isolated cache observation identified provider ID `xai` with
   display name `xAI` (catalog SHA-256
   `51341a757543a141e9619f04bd6c993421a223d9cf8653edc2fb5ffa57fdd3e4`). This
@@ -213,7 +223,8 @@ displayed but do not become process frames, status evidence, or durable facts.
   credentials` and no host credential read. This proves a negative local
   inventory only; no login, positive OAuth entry, model turn, or browser flow
   was exercised.
-  The fixed source's browser callback calls `Auth.set(openai, oauth)` before
+  The fixed xAI callback returns an OAuth result; the generic handler calls
+  `Auth.set(xai, oauth)` before
   printing `Login successful`. `Auth.Service.set` awaits `writeJson` to the
   CLI's own local data path before returning; the host never reads that file.
   The pinned `@clack/prompts@1.0.0-alpha.1`
@@ -224,9 +235,9 @@ displayed but do not become process frames, status evidence, or durable facts.
   process after STOPPED exit 0 and no cancellation/capture failure. It records
   the same local-presence semantics as Codex's
   `CREDENTIAL_PRESENT_NO_VALIDITY_CHECK`, not remote token validity. An
-  independent `auth list` positive parser remains Unknown because its display
-  name does not identify the provider ID. Actual Owner Windows positive
-  output and browser/SAC outcome remain NOT_RUN at the stable point.
+  independent `auth list` positive parsing requires the exact single xAI OAuth
+  row and total count described above. Actual post-login inventory and
+  browser/SAC outcome remain NOT_RUN at the stable point.
 - Grok official source snapshot:
   [authentication guide](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
   and [`models` implementation](https://github.com/xai-org/grok-build/blob/b13fa526f5112c0b20dad5f1f2300d3d3b127895/crates/codegen/xai-grok-pager/src/models.rs)

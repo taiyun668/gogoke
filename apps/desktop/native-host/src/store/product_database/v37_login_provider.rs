@@ -84,10 +84,12 @@ fn classify_opencode_credential_list(stdout: &[u8], exit: Option<u32>) -> Native
         .map(str::trim_end)
         .filter(|line| !line.is_empty())
         .collect();
-    // The fixed 1.18.32 formatter prints each local credential as its model
-    // catalog display name plus credential type. Its xAI catalog entry is
-    // named "xAI". Classify only the exact one-entry inventory; additional
-    // credentials, duplicates, other types, or any extra output stay UNKNOWN.
+    // The fixed 1.18.32 formatter prints each local credential through
+    // prompts.log.info as its info symbol plus model display name and type.
+    // Clack's pinned info symbols are exactly "●" or "•". Its xAI catalog
+    // entry is named "xAI". Classify only the exact one-entry inventory;
+    // additional credentials, duplicates, other types, or extra output stay
+    // UNKNOWN.
     if lines.len() == 3
         && lines[0].starts_with("T  Credentials ")
         && lines[1] == "|"
@@ -97,7 +99,7 @@ fn classify_opencode_credential_list(stdout: &[u8], exit: Option<u32>) -> Native
     } else if lines.len() == 4
         && lines[0].starts_with("T  Credentials ")
         && lines[1] == "|"
-        && lines[2] == "|  xAI oauth"
+        && matches!(lines[2], "●  xAI oauth" | "•  xAI oauth")
         && lines[3] == "—  1 credentials"
     {
         NativeAccountState::CredentialPresent
@@ -707,8 +709,18 @@ mod tests {
                 b"T  Credentials isolated\n|\n|  xAI oauth\n\xe2\x80\x94  1 credentials\n",
                 Some(0)
             ),
-            NativeAccountState::CredentialPresent
+            NativeAccountState::Unknown
         );
+        for output in [
+            &"T  Credentials isolated\n|\n•  xAI oauth\n—  1 credentials\n".as_bytes()[..],
+            &"T  Credentials isolated\n|\n●  xAI oauth\n—  1 credentials\n".as_bytes()[..],
+            &"T  Credentials isolated\n|\n\x1b[34m•\x1b[39m  xAI oauth\n—  1 credentials\n".as_bytes()[..],
+        ] {
+            assert_eq!(
+                classify_opencode_credential_list(output, Some(0)),
+                NativeAccountState::CredentialPresent
+            );
+        }
         assert_eq!(
             classify_opencode_credential_list(
                 b"T  Credentials isolated\n|\n|  OpenAI oauth\n\xe2\x80\x94  0 credentials\n",
