@@ -36,6 +36,17 @@ pub(super) fn hold_directory(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+pub(super) fn reject_worktree_config(binding: &ResolvedBinding) -> Result<()> {
+    let bytes=fs::read(binding.path.join(".git"))?;
+    if content_hash(&bytes)!=binding.pointer_hash || bytes.len() as u64!=binding.pointer_len ||
+        !bytes.starts_with(b"gitdir: ") { return Err(WorktreeError::Denied); }
+    let path=std::str::from_utf8(&bytes[8..])
+        .map_err(|error|WorktreeError::Utf8("child Git pointer",error))?.trim_end_matches(['\r','\n']);
+    // Git's per-linked-tree configuration lives beside that tree's HEAD, not
+    // at common/config.worktree. Never let it enlarge attributes or includes.
+    require_absent(&Path::new(path).join("config.worktree"))
+}
+
 struct Entry { path: PathBuf, metadata: File, data: Option<File>, fact: String }
 pub(super) struct Snapshot { entries: Vec<Entry>, pub(super) digest: String }
 
@@ -206,4 +217,30 @@ pub(super) fn read_record(record: &str, merge: &str,
 
 fn sha(value: &str) -> bool {
     value.len()==64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[cfg(all(test,windows))]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn snapshot_holds_exact_files_and_refuses_new_names_or_git_links() {
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-f2-snapshot-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap(); fs::write(path.join("file.txt"),b"pinned bytes").unwrap();
+        let path=fs::canonicalize(path).unwrap();
+        let mut snapshot=Snapshot::capture(&path).unwrap();
+        assert!(fs::write(path.join("file.txt"),b"changed bytes").is_err(),"write sharing must be denied");
+        assert!(fs::rename(path.join("file.txt"),path.join("other.txt")).is_err(),"delete sharing must be denied");
+        snapshot.recheck(&path).unwrap();
+        fs::write(path.join("new.txt"),b"inserted name").unwrap();
+        assert!(matches!(snapshot.recheck(&path),Err(WorktreeError::Denied)));
+        drop(snapshot);
+        let commit="a".repeat(40);
+        assert!(ordinary_git_entries(&format!("100644 {commit} 0\tfile.txt\n"),true).is_ok());
+        assert!(ordinary_git_entries(&format!("120000 {commit} 0\toutside\n"),true).is_err());
+        assert!(ordinary_git_entries(&format!("160000 commit {commit}\tnested\n"),false).is_err());
+        fs::remove_dir_all(path).unwrap();
+    }
 }
