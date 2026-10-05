@@ -29,6 +29,10 @@ fn evidence<T, E: std::fmt::Debug>(value: Result<T, E>) -> Result<T, String> {
     value.map_err(|error| format!("native session launch: {error:?}"))
 }
 
+fn evidence_at<T, E: std::fmt::Debug>(stage: &str, value: Result<T, E>) -> Result<T, String> {
+    value.map_err(|error| format!("native session launch [{stage}]: {error:?}"))
+}
+
 /// Only this module can construct the witness. Retain it through stop; the
 /// compatibility roots and F's .git file guard must outlive the actual child.
 pub(crate) struct LaunchEvidence {
@@ -320,26 +324,28 @@ impl LaunchEvidence {
         // Current execution authority comes from the E seat and H claim;
         // a legitimate idle instance rebind does not change the worktree.
         let program = evidence(instance::locate_pinned_program(&pin.driver_id, &pin.digest, &pin.version))?;
-        let program_identity = evidence(AppContainerProfile::capture_program_identity(&program))?;
+        let program_identity = evidence_at("capture-pinned-program-identity",
+            AppContainerProfile::capture_program_identity(&program))?;
         // Runtime home writes are separate from workspace permission. No
         // public parent, other session, source tree or common Git dir is granted.
         verify_host_guard(db,owner,host_guard)?;
         let model_home=private_history.as_ref().map(|history|&history.directory).unwrap_or(&homes.instance);
         if let Some(credential)=&credential {
-            evidence(profile.grant_registered_credential_tree(&model_home.path,&model_home.identity,
+            evidence_at("grant-registered-credential-tree", profile.grant_registered_credential_tree(&model_home.path,&model_home.identity,
                 &credential.binding,&credential.alias,true))?;
         } else {
-            evidence(profile.grant_bound_tree(&model_home.path, &model_home.identity, true))?;
+            evidence_at("grant-model-home", profile.grant_bound_tree(&model_home.path, &model_home.identity, true))?;
         }
         verify_host_guard(db,owner,host_guard)?;
-        evidence(profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
+        evidence_at("grant-session-home", profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
-        for member in &worktree_group {
+        for (member_index, member) in worktree_group.iter().enumerate() {
             verify_host_guard(db,owner,host_guard)?;
-            evidence(profile.grant_bound_tree(&member.path, &member.identity, writable))?;
+            evidence_at(&format!("grant-worktree-member-{member_index}"),
+                profile.grant_bound_tree(&member.path, &member.identity, writable))?;
         }
         verify_host_guard(db,owner,host_guard)?;
-        evidence(profile.grant_bound_program(&program, &program_identity))?;
+        evidence_at("grant-pinned-program", profile.grant_bound_program(&program, &program_identity))?;
         let code_mode = if pin.driver_id == "codex" {
             verify_host_guard(db,owner,host_guard)?;
             Some(super::codex_component::BoundCodexComponent::prepare(&program, &profile)?)
@@ -355,7 +361,7 @@ impl LaunchEvidence {
             (Some(evidence(CompatModule::prepare_with_roots(root, &roots, &profile, &profile_name))?), None)
         } else {
             verify_host_guard(db,owner,host_guard)?;
-            (None, Some(Arc::new(evidence(DirectoryRoots::prepare(root, &roots))?)))
+            (None, Some(Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?)))
         };
         Ok((worktree, worktree_group, program, program_identity, code_mode, module, directory_roots))
         })();
