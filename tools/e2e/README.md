@@ -46,9 +46,11 @@ reader compares DB/WAL bytes and row counts; a pre-existing DB is not evidence
 that memories are enabled. `m1-readback.py STATE_ROOT OUTPUT` supplies the actual
 initial ledger epoch/cursor while the product is closed. This is a measurement
 bootstrap: the current product API does not expose an initial epoch lookup.
+The memory observer's root must be the configured instance's actual native home.
 
-The script reads `codexTestM1` login status, derives the next generation from the
-actual seat, opens S1, asks/answers a real native question, steers its same turn,
+The script reads the configured native Codex instance's login status and version,
+derives the next generation from the actual seat, opens S1, asks/answers a real
+native question, steers its same turn,
 checks a new JSON file and marker, compacts/renews, normally closes/restarts the
 product, resumes the same logical thread and ledger subscription, and completes
 a distinct S2. It then stops/releases and repeats the protection snapshots.

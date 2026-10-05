@@ -5,10 +5,11 @@ import { spawn } from 'node:child_process';
 import { ActualProduct, readJson, id, delay } from './product-cdp.mjs';
 
 const config = readJson(process.argv[2]);
-if (process.platform !== 'win32' || config.instanceId !== 'codexTestM1' ||
+const instanceId = value => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value);
+if (process.platform !== 'win32' || !instanceId(config.instanceId) ||
     config.domainId !== 'gogokeSeatTestbedM1' || config.repositoryId !== 'gogokeSeatTestbed' ||
     !/^[a-f0-9]{40}$/.test(config.sourceCommit) || fs.existsSync(config.result)) {
-  throw Error('New Win11 case, exact candidate source and codexTestM1 required; existing journals are not replayed');
+  throw Error('New Win11 case, exact candidate source and configured Codex instance required; existing journals are not replayed');
 }
 const journal = { schema: 'gogoke.37.win11-e2e.v1', sourceCommit: config.sourceCommit,
   version: config.version, domainId: config.domainId, instanceId: config.instanceId,
@@ -235,7 +236,8 @@ try {
   await product.launch();
   const instances = await product.instances(); journal.instances = instances; product.save();
   const instance = instances.instances.find(row => row.instanceId === config.instanceId);
-  check(instance?.state === 'LOGGED_IN', 'Original instance automatically detected LOGGED_IN; no login/logout');
+  check(instance?.driverId === 'codex' && instance.state === 'LOGGED_IN' && instance.version === config.cliVersion,
+    'Configured fixed Codex instance automatically detected LOGGED_IN; no login/logout');
   await instancePage();
   const first = await openSession();
   await ledger(first, true);
