@@ -90,6 +90,7 @@ jobs:
           $version = & $binary --version
           if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
       - name: Pin fixed Claude CLI for native provider output controls
+        id: fixed-claude
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -109,8 +110,13 @@ jobs:
           $bin = Join-Path $package 'bin'
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           $binary = Join-Path $bin 'claude.exe'
-          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
           $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if (Test-Path -LiteralPath $binary) {
+            $existing = Get-Item -LiteralPath $binary -Force
+            if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Existing cloud catalog leaf is not the identical ordinary fixed program' }
+            Remove-Item -LiteralPath $binary -ErrorAction Stop
+          }
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
           if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
           $version = & $binary --version
           if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
@@ -418,14 +424,14 @@ jobs:
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
       - name: Retain original focused logs before the full library run
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.trace_canonicalize && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
         uses: actions/upload-artifact@v4
         with:
           name: native-host-focused-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/gogoke-native-host-evidence/focused-*
           if-no-files-found: error
       - name: Run all native-host library unit tests
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -557,6 +563,7 @@ jobs:
           $version = & $binary --version
           if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
       - name: Pin fixed Claude CLI for native provider output controls
+        id: fixed-claude
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -576,15 +583,20 @@ jobs:
           $bin = Join-Path $package 'bin'
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           $binary = Join-Path $bin 'claude.exe'
-          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
           $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if (Test-Path -LiteralPath $binary) {
+            $existing = Get-Item -LiteralPath $binary -Force
+            if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Existing cloud catalog leaf is not the identical ordinary fixed program' }
+            Remove-Item -LiteralPath $binary -ErrorAction Stop
+          }
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
           if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
           $version = & $binary --version
           if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
           Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Verify catalog program and unchanged data boundaries with compiled mutations
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -599,9 +611,9 @@ jobs:
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           $machine = [ordered]@{ schema='gogoke.catalog-program-security.v1'; sourceCommit='${{ github.sha }}'; runId='${{ github.run_id }}'; acceptance=$false; sourceHash=$sourceHash; testHash=$testHash; cases=@() }
           function Invoke-CatalogTest([string]$label, [string]$filter, [int]$passed, [int]$failed) {
-            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1 | Tee-Object -FilePath (Join-Path $evidence "$label.log")
             $code = $LASTEXITCODE
-            $output | Tee-Object -FilePath (Join-Path $evidence "$label.log") | Out-Host
+            $output | Out-Host
             $summaries = [regex]::Matches(($output -join "`n"), 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
             $valid = $summaries.Count -eq 1 -and [int]$summaries[0].Groups[2].Value -eq $passed -and [int]$summaries[0].Groups[3].Value -eq $failed -and [int]$summaries[0].Groups[4].Value -eq 0 -and [int]$summaries[0].Groups[5].Value -eq 0 -and (($failed -eq 0 -and $code -eq 0) -or ($failed -gt 0 -and $code -ne 0))
             $script:machine.cases += [ordered]@{ label=$label; filter=$filter; exitCode=$code; expectedPassed=$passed; expectedFailed=$failed; state=$(if($valid){'PASS'}else{'FAIL_INSTRUMENT_OR_BEHAVIOR'}); originalLog="$label.log" }
@@ -650,7 +662,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Verify fixed CLI component grant with a compiled behavioral mutation
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -683,7 +695,7 @@ jobs:
             throw 'Unchanged helper behavior test must pass after exact production restoration'
           }
       - name: Verify F.1 production fixes with compiled failing mutations
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -781,7 +793,7 @@ jobs:
             }
           }
       - name: Verify legacy credential recovery with compiled failing mutations
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -841,7 +853,7 @@ jobs:
             }
           }
       - name: Verify native installation facts with independent compiled mutations
-        if: ${{ !cancelled() && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -886,7 +898,7 @@ jobs:
             }
           }
       - name: Verify confirmed forced Job stop with a compiled failing mutation
-        if: ${{ !cancelled() && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
