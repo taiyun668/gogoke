@@ -713,7 +713,7 @@ pub(crate) fn merge_worktree_request(
         Some(&binding.path), &["ls-files".into(), "--stage".into()], true)?, true)?;
     require_clean_source(db, root, custodian, pin, &source_path)?;
     let dirty = git(db, root, custodian, pin, "f2_status", Some(&binding.path), &[
-        "status".into(), "--porcelain=v1".into(), "--untracked-files=all".into(),
+        "--no-optional-locks".into(), "status".into(), "--porcelain=v1".into(), "--untracked-files=all".into(),
     ], true)?;
     let changed = !dirty.is_empty();
     let before = git(db, root, custodian, pin, "merge_before", Some(&source_path), &[
@@ -803,7 +803,7 @@ pub(crate) fn merge_worktree_request(
                 "-c".into(), "commit.gpgsign=false".into(),
                 "-c".into(), "user.name=Gogoke Host".into(),
                 "-c".into(), "user.email=host@gogoke.invalid".into(),
-                "commit".into(), "--quiet".into(), "-m".into(), message,
+                "commit".into(), "--quiet".into(), "--cleanup=verbatim".into(), "-m".into(), message,
             ], false)?;
             let result = git(db, root, custodian, pin, "child_result", Some(&binding.path), &[
                 "rev-list".into(), "--parents".into(), "-n".into(), "1".into(), "HEAD".into(),
@@ -838,7 +838,7 @@ pub(crate) fn merge_worktree_request(
             "-c".into(), "commit.gpgsign=false".into(),
             "-c".into(), "user.name=Gogoke Host".into(),
             "-c".into(), "user.email=host@gogoke.invalid".into(),
-            "commit".into(), "--quiet".into(), "-m".into(), message,
+            "commit".into(), "--quiet".into(), "--cleanup=verbatim".into(), "-m".into(), message,
         ], false)?;
         let result = git(db, root, custodian, pin, "merge_result", Some(&source_path), &[
             "rev-list".into(), "--parents".into(), "-n".into(), "1".into(), "HEAD".into(),
@@ -905,7 +905,7 @@ fn ensure_no_pending_merge(db: &VerifiedDatabaseConnection<'_>, target: &str) ->
 fn require_clean_source(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
     custodian: &mut ProcessCustodian, pin: &GitProgramPin, path: &Path) -> Result<()> {
     if !git(db,root,custodian,pin,"f2_status",Some(path),&[
-        "status".into(),"--porcelain=v1".into(),"--untracked-files=all".into(),
+        "--no-optional-locks".into(),"status".into(),"--porcelain=v1".into(),"--untracked-files=all".into(),
     ],true)?.is_empty() { return Err(WorktreeError::Denied); }
     Ok(())
 }
@@ -1018,6 +1018,13 @@ mod tests {
     #[test]
     fn host_seal_original_dirty_child_has_bound_receipt_and_safe_replay() {
         with_real_child("seal-success",|db,root,pin,custodian,binding,source| {
+            // An Owner's ordinary Git cleanup preference must not remove the
+            // identity trailers the host is responsible for recording.
+            for (key,value) in [("commit.cleanup","strip"),("core.commentChar","G")] {
+                git(db,root,custodian,pin,"fixture_cleanup",Some(source),&[
+                    "config".into(),"--local".into(),key.into(),value.into(),
+                ],false).unwrap();
+            }
             fs::write(binding.path.join("seat.txt"),b"seat only wrote this file\n").unwrap();
             let receipt=merge_worktree(db,root,pin,custodian,MERGE_RAW,permit).unwrap();
             let child=receipt.child_commit.as_ref().unwrap();
@@ -1099,10 +1106,17 @@ mod tests {
     #[test]
     fn host_seal_requires_persisted_original_intent_before_child_effect() {
         with_real_child("seal-intent-failure",|db,root,pin,custodian,binding,_| {
+            let pointer=fs::read_to_string(binding.path.join(".git")).unwrap();
+            let index=Path::new(pointer.strip_prefix("gitdir: ").unwrap().trim()).join("index");
+            let index_before=fs::read(&index).unwrap();
+            // Unchanged contents with fresh metadata would allow ordinary
+            // status to refresh the index before the MERGE reservation.
+            fs::write(binding.path.join("README.md"),b"original stopped-seat baseline\n").unwrap();
             fs::write(binding.path.join("seat.txt"),b"stopped child change\n").unwrap();
             db.execute("CREATE TRIGGER fail_seal_intent BEFORE INSERT ON gogoke_v37_worktree_lifecycle_ops WHEN NEW.operation='MERGE' BEGIN SELECT RAISE(ABORT,'fixture seal intent unavailable'); END").unwrap();
             let error=merge_worktree(db,root,pin,custodian,MERGE_RAW,permit).unwrap_err();
             assert!(format!("{error:?}").contains("fixture seal intent unavailable"));
+            assert_eq!(fs::read(index).unwrap(),index_before,"preflight must not refresh child index");
             assert_eq!(head(db,root,pin,custodian,&binding.path),binding.baseline_commit);
             let q=Statement::prepare(db.as_ptr(),"SELECT count(*) FROM main.gogoke_coordination_process_custody WHERE operation_id LIKE 'f_git_child_stage_%' OR operation_id LIKE 'f_git_child_commit_%'").unwrap();
             assert!(q.step_row().unwrap()); assert_eq!(q.column_text(0).unwrap(),"0");
