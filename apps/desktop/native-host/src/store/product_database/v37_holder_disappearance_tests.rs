@@ -463,3 +463,142 @@ fn composed_disappearance_rejects_actual_live_identity_and_wrong_physical_source
         product.close_checked().unwrap();
     });
 }
+
+#[test]
+fn actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_boundary() {
+    use super::v37_holder_disappearance::set_holder_gone_cut_for_test;
+    for cut in ["AFTER_CAPTURE", "AFTER_ACL", "AFTER_F_REVOKE", "AFTER_REVOKED", "AFTER_RELEASE"] {
+        cold_two_grants(|mut product, root, cold| {
+            let original_rows = resource_snapshot(&product);
+            let original_acl = source_acl_digest(&product, root, cold);
+            let writes = holder_gone_acl_write_count_for_test();
+            set_holder_gone_cut_for_test(Some(cut));
+            let error = product.recover_disappeared_credential_resources(INSTANCE, None)
+                .expect_err("real first-member recovery must reach the requested controlled cut");
+            assert!(matches!(error, OrchestrationError::Invalid("controlled holder-gone cut")),
+                "{cut}: original failure was not the controlled boundary: {error:?}");
+            let partial = journal_rows(&product);
+            assert_eq!(partial.len(), 1, "{cut}: no second member was captured before the cut");
+            let first = gone::read_holder_disappearance(&product.connection, &partial[0][0]).unwrap().unwrap();
+            let original_profile = cold.profiles.iter().find(|p| p.binding_id == first.input.binding_id).unwrap();
+            let expected_phase = match cut {
+                "AFTER_REVOKED" => HolderDisappearancePhase::Revoked,
+                "AFTER_RELEASE" => HolderDisappearancePhase::Applied,
+                _ => HolderDisappearancePhase::Preparing,
+            };
+            assert_eq!(first.phase, expected_phase, "{cut}");
+            assert_eq!(first.revision, match expected_phase {
+                HolderDisappearancePhase::Preparing => 1,
+                HolderDisappearancePhase::Revoked => 2,
+                HolderDisappearancePhase::Applied => 3,
+                HolderDisappearancePhase::Unknown => panic!("controlled cuts must never invent UNKNOWN"),
+            });
+            let partial_writes = if cut == "AFTER_CAPTURE" { 0 } else { 1 };
+            assert_eq!(holder_gone_acl_write_count_for_test() - writes, partial_writes,
+                "{cut}: actual original ACL effects before host retirement");
+            let profiles = instance::read_credential_profiles(&product.connection, INSTANCE).unwrap();
+            for profile in &profiles {
+                let old = cold.profiles.iter().find(|p| p.binding_id == profile.binding_id).unwrap();
+                if profile.binding_id != first.input.binding_id {
+                    assert_eq!(profile, old, "{cut}: untouched second original grant");
+                } else {
+                    let (state, extra_revision) = match cut {
+                        "AFTER_CAPTURE" => ("ACTIVE", 0),
+                        "AFTER_ACL" => ("REVOKE_PENDING", 1),
+                        _ => ("REVOKED", 2),
+                    };
+                    assert_eq!(profile.state, state, "{cut}");
+                    assert_eq!(profile.revision, old.revision + extra_revision, "{cut}");
+                }
+            }
+            let first_generation = instance::read_private_history_generation(&product.connection,
+                &original_profile.binding_id, &original_profile.generation).unwrap().unwrap();
+            let mut expected_claims = cold.claims.clone();
+            if cut == "AFTER_RELEASE" {
+                let claim = expected_claims.iter_mut().find(|r|
+                    r[0] == first_generation.domain_id && r[1] == first_generation.session_id).unwrap();
+                claim[6] = "RELEASED".into(); claim[7] = (claim[7].parse::<u64>().unwrap() + 1).to_string();
+            }
+            assert_eq!(claim_rows(&product), expected_claims, "{cut}: exact partial claim effect, no StopFact");
+            let cut_rows = resource_snapshot(&product);
+            for index in [0, 1, 5, 8, 10, 11] {
+                assert_eq!(cut_rows[index], original_rows[index],
+                    "{cut}: original custody/episode/alias/object/history/generation preserved");
+            }
+            if cut == "AFTER_CAPTURE" {
+                assert_eq!(source_acl_digest(&product, root, cold), original_acl);
+            } else {
+                assert_ne!(source_acl_digest(&product, root, cold), original_acl);
+            }
+            eprintln!("holder_partial_cut boundary={cut} binding={} journal_phase={:?} journal_revision={} actual_acl_writes={partial_writes}",
+                first.input.binding_id, first.phase, first.revision);
+            product.close_checked().unwrap();
+            let mut product = ProductDatabase::open(root, &cold.database).unwrap();
+            assert_eq!(resource_snapshot(&product), cut_rows, "{cut}: actual cold opener preserved partial metadata");
+            assert_eq!(holder_gone_acl_write_count_for_test() - writes, partial_writes);
+            // Do not clear the hook here: its one-shot consumption must itself
+            // permit this ONE cold recovery call. Never retry a failed recovery.
+            product.recover_disappeared_credential_resources(INSTANCE, None)
+                .expect("ONE cold recovery must finish both original resources after the controlled cut");
+            assert_eq!(holder_gone_acl_write_count_for_test() - writes, 2,
+                "{cut}: exactly two original SID writes total across both holders");
+            let resumed_first = gone::read_holder_disappearance(&product.connection, &first.input.binding_id).unwrap().unwrap();
+            assert_eq!(resumed_first.input, first.input, "{cut}: reuse exact original request/capture/digest/process tuple");
+            assert_eq!(resumed_first.phase, HolderDisappearancePhase::Applied);
+            assert_eq!(resumed_first.revision, 3);
+            let journals = journal_rows(&product);
+            assert_eq!(journals.len(), 2);
+            let final_rows = resource_snapshot(&product);
+            for index in [0, 1, 5, 8, 10, 11] {
+                assert_eq!(final_rows[index], original_rows[index], "{cut}: resource reconciliation created no STOPPED/history rewrite");
+            }
+            for old_profile in &cold.profiles {
+                let record = gone::read_holder_disappearance(&product.connection, &old_profile.binding_id).unwrap().unwrap();
+                assert_eq!(record.phase, HolderDisappearancePhase::Applied); assert_eq!(record.revision, 3);
+                let receipt = instance::read_completed_profile_revoke(&product.connection, &instance::CredentialProfileIntent {
+                    request_id: format!("{}-revoke", record.input.request_id), instance_id: old_profile.instance_id.clone(),
+                    history_id: old_profile.history_id.clone(), binding_id: old_profile.binding_id.clone(), generation: old_profile.generation.clone(),
+                    profile_sid: old_profile.profile_sid.clone(), source_file_identity: old_profile.source_file_identity.clone(),
+                    expected_revision: old_profile.revision, action: instance::CredentialProfileAction::Revoke,
+                }).expect("completed original F revoke receipt after cold recovery");
+                assert_eq!(receipt.state, "REVOKED");
+                if old_profile.binding_id == first.input.binding_id && cut != "AFTER_CAPTURE" {
+                    assert_eq!(receipt.intent_request, profiles.iter().find(|p| p.binding_id == old_profile.binding_id).unwrap().intent_request,
+                        "{cut}: cold holder must not replace the original F revoke intent");
+                }
+            }
+            let mut final_claims = cold.claims.clone();
+            for claim in &mut final_claims {
+                claim[6] = "RELEASED".into(); claim[7] = (claim[7].parse::<u64>().unwrap() + 1).to_string();
+            }
+            assert_eq!(claim_rows(&product), final_claims, "{cut}: both original H claims released with null StopFact");
+            for (domain, seat_id, _, _) in SCOPES {
+                assert_eq!(seat::get(&product.connection, domain, seat_id).unwrap().unwrap().state, seat::State::Idle);
+            }
+            assert_eq!(CredentialBinding::observe_source_metadata(root, &cold.home.join("auth.json"),
+                &cold.home_identity).unwrap(), (cold.source.clone(), 3));
+            // Reuse the main fixture's minimal actual cold-admission shape:
+            // fixed CLI initialize/config/thread-start only, no model turn.
+            let generation = seat::get(&product.connection, "projectA", "seatA").unwrap().unwrap().generation + 1;
+            for (verb, revision) in [("admission-reserve", 0), ("admission-commit", 1)] {
+                applied(&mut product, &operation("projectA", "K-SESSION", verb, &format!("partial-cold-{verb}"),
+                    "sessionC", revision, &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
+            }
+            applied(&mut product, &operation("projectA", "K-SESSION", "open", "partial-cold-open", "sessionC", 2,
+                &format!(r#"{{"seatId":"seatA","generation":"{generation}","repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#)));
+            let native = product.native_sessions.get(&("projectA".into(), "sessionC".into())).unwrap();
+            assert!(native.evidence.file_credentials_bound()); assert!(native.thread_id.is_some());
+            assert_eq!(journal_rows(&product), journals, "{cut}: new admission cannot overwrite old capture");
+            assert_eq!(holder_gone_acl_write_count_for_test() - writes, 2);
+            applied(&mut product, &operation("projectA", "K-SESSION", "stop", "partial-cold-stop", "sessionC", 3,
+                &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
+            applied(&mut product, &operation("projectA", "K-SESSION", "admission-release", "partial-cold-release", "sessionC", 4,
+                &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
+            for old in &cold.custody {
+                assert_eq!(custody_rows(&product).into_iter().find(|r| r[0] == old[0]).unwrap(), *old);
+            }
+            assert_eq!(journal_rows(&product), journals); assert_eq!(holder_gone_acl_write_count_for_test() - writes, 2);
+            product.close_checked().unwrap();
+        });
+    }
+}
