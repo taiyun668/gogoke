@@ -140,6 +140,8 @@ fn device_code(text: &str) -> Option<String> {
         } else { None }
     })
 }
+// Actual fixed CLI device response uses this browser portal; auth.x.ai is the API issuer.
+const OPENCODE_VERIFICATION_HOST: &str = "accounts.x.ai";
 fn opencode_cli_line(line: &str) -> Option<&str> {
     let line = line.trim();
     // The pinned Clack info symbols are ● and its • fallback. The installed
@@ -151,7 +153,7 @@ fn opencode_device_code(text: &str) -> Option<String> {
         let (address, code) = opencode_cli_line(line)?.strip_prefix("Open ")?
             .split_once(" on any device and enter code: ")?;
         let url = reqwest::Url::parse(address).ok()?;
-        if url.scheme() != "https" || url.host_str() != Some("auth.x.ai")
+        if url.scheme() != "https" || url.host_str() != Some(OPENCODE_VERIFICATION_HOST)
             || !url.username().is_empty() || url.password().is_some()
             || url.port().is_some_and(|port| port != 443) || url.fragment().is_some() { return None; }
         if (1..=128).contains(&code.len()) && code.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
@@ -172,7 +174,7 @@ fn authorization_url(text: &str, driver_id: &str) -> Option<String> {
             opencode_cli_line(line)?.strip_prefix("Go to: ")?.trim()
         } else { line.trim() };
         let url = reqwest::Url::parse(candidate).ok()?;
-        let expected_host = if driver_id == "opencode" { "auth.x.ai" } else { "auth.openai.com" };
+        let expected_host = if driver_id == "opencode" { OPENCODE_VERIFICATION_HOST } else { "auth.openai.com" };
         if url.scheme() != "https" || url.host_str() != Some(expected_host)
             || !url.username().is_empty() || url.password().is_some()
             || url.port().is_some_and(|port| port != 443) || url.fragment().is_some()
@@ -181,7 +183,7 @@ fn authorization_url(text: &str, driver_id: &str) -> Option<String> {
         }
         // The fixed xAI plugin uses the verification URI returned by xAI's
         // device endpoint. Its path is not specified by OIDC discovery; keep
-        // the exact original complete URL, bounded to the known issuer origin.
+        // the exact original complete URL, bounded to the observed verification portal origin, not the token issuer.
         if driver_id == "opencode" || url.path() == "/oauth/authorize" || (driver_id=="codex" && candidate == AUTHORIZATION_URL) {
             Some(candidate.to_owned())
         } else {
@@ -519,26 +521,44 @@ mod tests {
             assert!(authorization_url(invalid,"codex").is_none(), "must not open: {invalid}");
         }
         assert_eq!(authorization_url(&format!("{AUTHORIZATION_URL}\n"),"codex").as_deref(), Some(AUTHORIZATION_URL));
-        let oauth="https://auth.x.ai/device?user_code=ABCD-EFGH";
+        let oauth="https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH";
         assert_eq!(authorization_url(&format!("•  Go to: {oauth}\n"),"opencode").as_deref(),Some(oauth));
         assert_eq!(authorization_url(&format!("●  Go to: {oauth}\n"),"opencode").as_deref(),Some(oauth));
         assert!(authorization_url(&format!("•  Go to: {oauth}"),"opencode").is_none());
         assert!(authorization_url(&format!("│  Go to: {oauth}\n"),"opencode").is_none());
         assert!(authorization_url(&format!("{oauth}\n"),"opencode").is_none());
-        assert_eq!(opencode_device_code("•  Open https://auth.x.ai/device on any device and enter code: ABCD-EFGH\n").as_deref(),Some("ABCD-EFGH"));
-        assert_eq!(opencode_device_code("•  Open https://auth.x.ai/device on any device and enter code: ABCDEFGH\n").as_deref(),Some("ABCDEFGH"));
+        assert_eq!(opencode_device_code("•  Open https://accounts.x.ai/oauth2/device on any device and enter code: ABCD-EFGH\n").as_deref(),Some("ABCD-EFGH"));
+        assert_eq!(opencode_device_code("•  Open https://accounts.x.ai/oauth2/device on any device and enter code: ABCDEFGH\n").as_deref(),Some("ABCDEFGH"));
         assert!(opencode_device_code("•  Open https://other.example/device on any device and enter code: ABCD-EFGH\n").is_none());
-        assert!(opencode_device_code("•  Open https://auth.x.ai/device on any device and enter code: ABCD-EF").is_none());
+        assert!(opencode_device_code("•  Open https://accounts.x.ai/oauth2/device on any device and enter code: ABCD-EF").is_none());
         assert!(authorization_url("•  Go to: https://auth.openai.com/oauth/authorize?state=wrong-provider\n","opencode").is_none());
         for invalid in [
-            "http://auth.x.ai/device", "https://auth.x.ai.other.example/device",
-            "https://other.example@auth.x.ai/device", "https://auth.x.ai@other.example/device",
-            "https://auth.x.ai:444/device", "https://auth.x.ai/device#fragment",
+            "https://auth.x.ai/oauth2/device", "http://accounts.x.ai/oauth2/device", "https://accounts.x.ai.other.example/device",
+            "https://other.example@accounts.x.ai/oauth2/device", "https://accounts.x.ai@other.example/device",
+            "https://accounts.x.ai:444/device", "https://accounts.x.ai/oauth2/device#fragment",
         ] { assert!(authorization_url(&format!("•  Go to: {invalid}\n"),"opencode").is_none()); }
         for driver in ["claude","grok","antigravity","unknown"] {
             assert!(authorization_url(&format!("{oauth}\n"),driver).is_none());
             assert!(authorization_url(&format!("•  Go to: {oauth}\n"),driver).is_none());
         }
+        // Shape redacted from the actual Owner-initiated fixed CLI response.
+        // Exercise the host opener, not only a matching parser predicate.
+        runtime().block_on(async {
+            let sessions = broker();
+            let original = reserve_login(&sessions,"instanceA",2,"opencode").unwrap().unwrap();
+            let environment = fake(vec![
+                Ok(("PENDING", "•  Go to: https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH\n•  Open https://accounts.x.ai/oauth2/device on any device and enter code: ABCD-EFGH\n", false)),
+                Ok(("PENDING", "•  Waiting for authorization\n", false)),
+                Ok(("LOGGED_IN", "Login successful\n", true)),
+            ]);
+            drive(Arc::clone(&environment), Arc::clone(&sessions), "instanceA".into(), original.clone()).await.unwrap();
+            assert_eq!(environment.opened_urls.lock().unwrap().as_slice(), &[oauth.to_owned()]);
+            let map = sessions.lock().unwrap();
+            let view = &map["instanceA"].view;
+            assert_eq!(view.request_id, original.request_id);
+            assert_eq!(view.device_code.as_deref(), Some("ABCD-EFGH"));
+            assert_eq!(view.browser_state, "OPENED");
+        });
         assert!(decode_login(r#"{"schema":"gogoke.37.owner-login.v1","instanceId":"other","requestId":"r","state":"PENDING","output":"","settled":false}"#,"instanceA","r").is_err());
     }
 }

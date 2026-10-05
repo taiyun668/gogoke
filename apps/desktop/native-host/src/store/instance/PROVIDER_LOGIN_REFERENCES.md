@@ -223,6 +223,11 @@ displayed but do not become process frames, status evidence, or durable facts.
   credentials` and no host credential read. This proves a negative local
   inventory only; no login, positive OAuth entry, model turn, or browser flow
   was exercised.
+  The Owner-initiated installed 0.1.28 attempt directly printed its browser verification URL
+  on `accounts.x.ai/oauth2/device`, including the complete user-code query.
+  `auth.x.ai` is the device/token API issuer, not that browser portal. The host
+  guards the observed HTTPS portal, retains the original URL unchanged and opens
+  it once; this observation is pending authorization, not a positive login.
   The fixed xAI callback returns an OAuth result; the generic handler calls
   `Auth.set(xai, oauth)` before
   printing `Login successful`. `Auth.Service.set` awaits `writeJson` to the
