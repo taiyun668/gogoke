@@ -333,7 +333,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 custody[4] != "sha256:" + case["fixedSha256"] or \
                 custody[5] != case["instanceId"] or \
                 custody[6] != domain or custody[7] != send[4] or \
-                custody[8] != "STOPPED" or not custody[9] or \
+                custody[8] != "STOPPED" or not custody[9] or custody[9] != claim[1] or \
                 process_identity.get("basis") != "ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED" or \
                 process_identity.get("imageSha256") != case["fixedSha256"] or \
                 process_identity.get("productRootPid") != str(journal.get("currentEndpoint", {}).get("pid")):
