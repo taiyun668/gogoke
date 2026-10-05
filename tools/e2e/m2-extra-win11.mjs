@@ -261,6 +261,7 @@ async function runRules() {
   await product.closeNormally();
   const baselineReadback = await rulesReadback('before');
   await product.launch();
+  await product.instances();
   const submitterSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
     .map(name => rules.submitter[name]), 'V08 submitter');
   const reviewerSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
@@ -272,6 +273,7 @@ async function runRules() {
       await product.closeNormally();
       const reference = await rulesReadback('checkpoint');
       await product.launch();
+      await product.instances();
       return reference;
     },
     openHostSession: row => openUserSession(row.seatId, row.instanceId, row.worktreeId, 'V08 Host recipient'),
