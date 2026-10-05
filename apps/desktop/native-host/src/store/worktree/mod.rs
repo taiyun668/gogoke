@@ -168,7 +168,7 @@ fn append_error(primary: &mut Option<WorktreeError>, phase: &'static str, error:
     *primary = Some(next);
 }
 fn git_stdout_shape(tag: &str, output: bool, frames: usize) -> bool {
-    if tag == "source_attrs" || tag == "f2_status" {
+    if tag == "source_attrs" || tag == "f2_status" || tag == "child_index" || tag == "child_tree" {
         output
     } else if !output {
         frames == 0

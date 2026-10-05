@@ -272,13 +272,23 @@ impl<'root> ProductDatabase<'root> {
                 })
         })();
         Ok(match result {
-            Ok(receipt) => encode_receipt(request,
-                if receipt.replayed { V37Status::Replayed } else { V37Status::Applied },
-                request.expected_revision, receipt.revision as u64,
-                BTreeMap::from([
+            Ok(receipt) => {
+                let mut result = BTreeMap::from([
                     (JsonString::from_str("worktreeId"), text(&receipt.worktree_id)),
                     (JsonString::from_str("targetCommit"), text(&receipt.target_commit)),
-                ])),
+                ]);
+                // Legacy receipts have neither field. Preserve their original
+                // projection instead of inventing a child seal or null facts.
+                if let Some(intent) = &receipt.child_seal_intent {
+                    result.insert(JsonString::from_str("childSealIntent"), text(intent));
+                }
+                if let Some(commit) = &receipt.child_commit {
+                    result.insert(JsonString::from_str("childCommit"), text(commit));
+                }
+                encode_receipt(request,
+                    if receipt.replayed { V37Status::Replayed } else { V37Status::Applied },
+                    request.expected_revision, receipt.revision as u64, result)
+            },
             Err(error) => worktree_failure(request, error),
         })
     }
