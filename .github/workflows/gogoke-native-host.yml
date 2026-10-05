@@ -531,7 +531,7 @@ jobs:
           retention-days: 30
 
   native-host-windows-security-mutations:
-    if: ${{ !inputs.full_library_only }}
+    if: ${{ !inputs.full_library_only || inputs.security_remainder_source }}
     name: Native host Windows security mutations (${{ matrix.group }})
     # Keep unchanged mutation commands, but separate compile-heavy groups.
     # A remainder run tests the explicitly checked-out ancestor, not workflow SHA.
