@@ -52,6 +52,8 @@ mod v37_inbox;
 mod v37_capability;
 mod v37_login;
 mod v37_holder_disappearance;
+#[cfg(all(test, windows))]
+mod v37_holder_disappearance_tests;
 mod v37_side;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {

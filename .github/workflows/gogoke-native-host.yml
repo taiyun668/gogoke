@@ -286,6 +286,8 @@ jobs:
             @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
             @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
             @{ id = 'holder-gone-job-close'; filter = 'holder_gone_requires_job_close_to_remove_live_descendant_before_root_recovery' },
+            @{ id = 'holder-gone-composed'; filter = 'actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_and_admit_cold_source' },
+            @{ id = 'holder-gone-live-and-source-negative'; filter = 'composed_disappearance_rejects_actual_live_identity_and_wrong_physical_source_without_resource_effects' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
             @{ id = 'protocol-input-close'; filter = 'native_input_close_delivers_eof_and_preserves_graceful_stop_proof' },
             @{ id = 'lpac-file-lifecycle'; filter = 'app_container_child_writes_only_granted_fresh_directory' },
@@ -611,7 +613,12 @@ jobs:
         shell: pwsh
         run: |
           ./tools/ci/gogoke37-holder-gone-job-mutation.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'holder-gone-security')
-      - name: Upload holder-gone Job lifetime originals
+      - name: Verify holder-gone composed recovery with compiled production mutations
+        if: ${{ !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          ./tools/ci/gogoke37-holder-gone-composition-mutations.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'holder-gone-security')
+      - name: Upload holder-gone recovery originals
         if: always()
         uses: actions/upload-artifact@v4
         with:
