@@ -83,14 +83,34 @@ fn product_merge_history_rechecks_current_grant_without_git_and_preserves_unknow
     assert_eq!(h::decode_receipt(&bytes).unwrap().status, V37Status::Unknown);
     let wire = String::from_utf8(bytes).unwrap();
     assert!(wire.contains("original Windows error 5") && wire.contains(&partial_hash));
+    let fresh = decode_request(std::str::from_utf8(raw).unwrap()
+        .replace("mergeA", "mergeNewUnknown").as_bytes()).unwrap();
+    for missing_pin in [false, true] {
+        if missing_pin {
+            product.connection.execute("DELETE FROM main.gogoke_v37_worktree_programs WHERE repository_id='repoA'").unwrap();
+        }
+        let bytes = product.dispatch_native_worktree(&fresh, &caller).unwrap();
+        assert_eq!(h::decode_receipt(&bytes).unwrap().status, V37Status::Unknown,
+            "new request must retain pending UNKNOWN before changed or missing Git");
+        let wire = String::from_utf8(bytes).unwrap();
+        assert!(wire.contains("original Windows error 5") && wire.contains(&partial_hash));
+        assert_eq!(count_custody(&product), before, "pending UNKNOWN cannot resolve or launch Git");
+        let absent = Statement::prepare(product.connection.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id='mergeNewUnknown'").unwrap();
+        assert!(absent.step_row().unwrap());
+        assert_eq!(absent.column_text(0).unwrap(), "0", "new intent must not be synthesized");
+    }
     let unchanged = Statement::prepare(product.connection.as_ptr(),
         "SELECT phase,cause,result_commit FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id='mergeA'").unwrap();
     assert!(unchanged.step_row().unwrap());
     assert_eq!(unchanged.column_text(0).unwrap(), "UNKNOWN");
     assert_eq!(unchanged.column_text(1).unwrap(), original_cause);
     assert_eq!(unchanged.column_text(2).unwrap(), commit); drop(unchanged);
-    product.connection.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED',cause='' WHERE request_id='mergeA'").unwrap();
     product.connection.execute("DELETE FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA'").unwrap();
+    let denied = h::decode_receipt(&product.dispatch_native_worktree(&fresh, &caller).unwrap()).unwrap();
+    assert!(!matches!(denied.status, V37Status::Applied | V37Status::Replayed | V37Status::Unknown),
+        "pending cause cannot bypass the current E.2 grant");
+    product.connection.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED',cause='' WHERE request_id='mergeA'").unwrap();
     let denied = h::decode_receipt(&product.dispatch_native_worktree(&request, &caller).unwrap()).unwrap();
     assert!(!matches!(denied.status, V37Status::Applied | V37Status::Replayed),
         "historical success cannot bypass the current E.2 grant");

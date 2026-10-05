@@ -661,7 +661,8 @@ fn validate_merge_request(request: &crate::store::session_transport::V37Request)
 
 /// First product entry: no Git pin, process custodian, or physical paths.
 /// An existing request always terminates here, including invalid/UNKNOWN
-/// history; only an absent history permits the normal effect path.
+/// history. A pending original operation also terminates a new request here;
+/// only absent history and absent pending work permit the normal effect path.
 pub(crate) fn readback_merge_receipt_request(
     db: &mut VerifiedDatabaseConnection<'_>, request: &crate::store::session_transport::V37Request,
     mut authorize: impl FnMut(&VerifiedDatabaseConnection<'_>, &str, &str, &str)->Result<Option<String>>,
@@ -671,7 +672,11 @@ pub(crate) fn readback_merge_receipt_request(
     let existing = Statement::prepare(db.as_ptr(),
         "SELECT request_hash,worktree_id,operation,phase,COALESCE(result_commit,''),cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
     existing.bind_text(1, &request.request_id)?;
-    if existing.step_row()? {
+    let has_history = existing.step_row()?;
+    let pending = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1")?;
+    pending.bind_text(1, &request.target_id)?;
+    if has_history || pending.step_row()? {
         return transaction(db, |db| {
             // Read only native ownership metadata. A CLEANED physical tree no
             // longer exists, so replay must not resolve it or invoke any Git.
@@ -686,6 +691,12 @@ pub(crate) fn readback_merge_receipt_request(
             let turn = authorize(db, &request.domain_id, &seat_id, &request.target_id)?
                 .ok_or(WorktreeError::Denied)?;
             if !atom(&turn) { return Err(WorktreeError::Denied); }
+            if !has_history {
+                // Current native authority was checked before disclosing the
+                // original cause. Do this before any pin or physical lookup.
+                ensure_no_pending_merge(db, &request.target_id)?;
+                return Ok(None);
+            }
             if existing.column_text(0)? != fingerprint || existing.column_text(1)? != request.target_id ||
                 existing.column_text(2)? != "MERGE" { return Err(WorktreeError::Conflict); }
             if existing.column_text(3)? != "APPLIED" {
@@ -1298,6 +1309,11 @@ mod tests {
             assert!(is_unknown(&original));assert!(format!("{original:?}").contains(&child));
             let raw=std::str::from_utf8(MERGE_RAW).unwrap().replace("mergeA","mergeB");
             let fresh=merge_worktree(db,root,pin,custodian,raw.as_bytes(),authorize_fixture_merger).unwrap_err();
+            assert!(is_unknown(&fresh));assert!(format!("{fresh:?}").contains(&child));
+            let inert=GitProgramPin { path:source.join("missing-git.exe"),digest:"changed digest".into(),version:"changed version".into(),
+                _file:File::open(source.join("README.md")).unwrap(),profile_id:"unused".into(),
+                owner_seat_id:"unused".into(),policy_revision:"unused".into() };
+            let fresh=merge_worktree(db,root,&inert,custodian,raw.as_bytes(),authorize_fixture_merger).unwrap_err();
             assert!(is_unknown(&fresh));assert!(format!("{fresh:?}").contains(&child));
             assert_eq!(head(db,root,pin,custodian,&binding.path),child);
             assert_eq!(head(db,root,pin,custodian,source),merged);
