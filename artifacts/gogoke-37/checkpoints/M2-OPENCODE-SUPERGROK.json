@@ -1,11 +1,47 @@
 {
   "schema": "gogoke.37.stage-checkpoint.v1",
-  "state": "OPENCODE_SUPERGROK_CLOUD_PENDING_M1_ACTUAL_FLOW_RUNNING",
+  "state": "READY_SAME_OT4B_OPENCODE_SUPERGROK_ONLY_THREE_LOGINS_PRESERVED",
   "changed": "Owner selected Grok for OpenCode. The unchanged pinned OpenCode 1.18.32 login recipe now selects xai / SuperGrok Subscription with --pure; local auth inventory recognizes only one xAI OAuth credential. Removed the old generic LOGGED_IN cache fallback. Host parses the actual Clack info prefix, opens the original HTTPS auth.x.ai verification URL once, and retains the original device code within the same durable request. Codex and the independent Grok provider are unchanged.",
-  "result": "Actual installed 0.1.27 host reports Claude, codexTestM2Ready and Grok LOGGED_IN revision 3; OpenCode is NOT_LOGGED_IN revision 2 with its old request already CANCELLED and settled. Controller dispatched no replacement authentication. Fresh independent read-only source review found no blocker. Native release/library/LPAC and independent desktop builds for 0.1.28 source b893b1a0 are pending; hygiene passed. The actual M1 fixture is registered to the new already-logged-in Codex instance; actual 0.1.27 E2E is running without a new Owner login.",
+  "result": "Exact-source 0.1.28 desktop independent byte comparison, public hygiene, native release plus 691 library tests and 2 LPAC shim tests PASS. Trusted-main purpose signing, local P256 verification and seven unchanged frozen member matches PASS. Same signed bytes installed-product/uninstall smoke and five negative axes PASS on first attempt. Ordinary actual installation exit 0 and installed hashes match. Root, all six instance home identities, three prior unresolved custody rows and three completed logins preserved. Actual instance UI: Codex, Claude and Grok LOGGED_IN, login buttons disabled; only OpenCode NOT_LOGGED_IN with enabled login. No Controller authentication or model call in 0.1.28. Formal five groups unchanged through retirement, installation and actual UI.",
   "references": "Compared gogo-party PROVIDER_LOGIN and provider login references; pinned OpenCode providers.ts, plugin/index.ts, plugin/xai.ts, CLI effect prompt and Clack formatter; official OpenCode xAI provider documentation and xAI announcement. Built-in xAI remains active under --pure. Actual pinned CLI output uses BULLET plus two spaces before Go to:, not a pipe. Its original URL may use verification_uri_complete and must not have a guessed verification path. Public isolated model catalog identifies xAI and current Grok models. Login is ordinary same-user with instance home, while model sessions remain LPAC plus lpacIdentityServices. No CLI changes or API-key path.",
   "measurement": "Fresh fixture setup initially read graph revision 0 after register advanced it to 2; STALE result contains no members. Re-read once at the native observed revision 2 returned the exact registered member; no mutation was replayed. Normal caption close was witnessed by the original child handle with exit 0. A direct packaged-view attach failed because HKCU candidate registration is redirected; the ordinary Interactive/Limited task supplied the required real view and passed. Original failures retained privately.",
-  "next": "Finish exact-source 0.1.28 cloud and candidate chain while running actual M1 against installed 0.1.27. Preserve the three completed logins and all unresolved old records. After installed 0.1.28 readiness, request only the remaining OpenCode SuperGrok authorization in the same OT4b batch. Browser success, xAI credential detection and real OpenCode model calls remain NOT_RUN.",
+  "next": "Owner completes only opencodeTestM2 SuperGrok authorization from actual installed Settings -> Instances -> one-click login, as the remaining same OT4b batch. Then Controller reads native detected xAI login, explicitly selects a supported xAI Grok model and records real M2 protocol/E2E. No additional Codex, Claude or Grok login requested. B5 UNSUPPORTED/NOT_RUN. Owner xAI browser authorization, credential detection and actual OpenCode model call remain NOT_RUN until performed.",
   "acceptance": false,
-  "public_release": false
+  "public_release": false,
+  "sourceCommit": "b893b1a04be8c989d15e687bd7d338199ac79fae",
+  "version": "0.1.28",
+  "cloud": {
+    "trustedMainSigner": 37318971965,
+    "nativeLibrary": 37313852416,
+    "sameByteInstalledSmoke": 37319362805,
+    "attempt": 1,
+    "separateNativeProcessAndSecurityMutationAndServer": "NOT_RUN in full_library_only mode",
+    "desktop": 37313857003,
+    "positiveArtifact": 11350890263,
+    "negativeArtifact": 11350680450,
+    "frozenArtifact": 11348960680,
+    "tauriLoginTests": "7 passed / 0 failed / 0 ignored; cancellation mutation compiled, failed, restored exact source and passed",
+    "signedArtifact": 11349087563,
+    "hygiene": 37313862760
+  },
+  "authorization": {
+    "receiptIntroduction": "e43f1ac0b1492dce0f9ef5d469df4a240e11e7c9",
+    "verification": "Trusted main verifier recomputed candidate data; exact receipt and introduction ancestry matched.",
+    "scopeDigest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+    "receiptBlob": "fae816fb4e43f55623ffcee4c008d3febd63d7ad",
+    "main": "82ede44aad5f59499138444e973dd5bf5360b97a"
+  },
+  "g4": "Independent actual ordinary audit: 1117 directories, 1116 closure edges, zero files/reparse/identity mismatch. Controller deleted each exact empty directory non-recursively and read back ABSENT; filesDeleted=0. Eleven completed owned helper task registrations removed with identity checks; original failure evidence retained. Candidate data and formal objects not deleted.",
+  "artifactArchiveSha256": {
+    "signed": "a1fe851cecbb809e48eb2c43f215784f3fbab8c2b6d6c20879061437f85390a4",
+    "frozen": "2ef0f4298ff0d2e87e536af907808f94fd9145d931c9c333bc5bcab9c80bd441"
+  },
+  "privateEvidenceSha256": {
+    "empty-directory-audit.json": "090b033d4b3c2bf49301d2baa21fefa767cfb0b1076a335de80060bbbd865cc0",
+    "replacement-installation-result.json": "fcc9ee85a2fcc862ea668f54d448a6f6b8a02a7a748dc187a8c99b6ed489f9b0",
+    "post-ui-formal-result.json": "24bce405dbee19d2e58d2dc5104f171fe4866c68c18557e413c5e6cfd27ed0a1",
+    "ot4b-final-ui-ready.json": "d5b2211916715a6176fe3255b88d61a8f4280cc40a7271f55739949a9a4364a3",
+    "verified-new-input.json": "75906a0285d65505d590024fe51db175d5d4e2924b517236a6e645e74b37f4a9",
+    "empty-directory-cleanup-result.json": "19b7033a91f63e2ccd6434f51aca4b9d53850b5c50b717788b79d0cb6e13518a"
+  }
 }
