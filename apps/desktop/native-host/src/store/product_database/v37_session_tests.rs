@@ -67,9 +67,10 @@ fn product_merge_history_rechecks_current_grant_without_git_and_preserves_unknow
         let receipt = h::decode_receipt(&bytes).unwrap();
         assert_eq!(receipt.status, V37Status::Replayed);
         assert_eq!(receipt.revision, 3);
-        assert_eq!(receipt.result.get(&JsonString::from_str("targetCommit")), Some(&text(&commit)));
-        assert!(!receipt.result.contains_key(&JsonString::from_str("childSealIntent")));
-        assert!(!receipt.result.contains_key(&JsonString::from_str("childCommit")));
+        let result = receipt.into_result();
+        assert_eq!(result.get(&JsonString::from_str("targetCommit")), Some(&text(&commit)));
+        assert!(!result.contains_key(&JsonString::from_str("childSealIntent")));
+        assert!(!result.contains_key(&JsonString::from_str("childCommit")));
         assert_eq!(count_custody(&product), before, "product replay must not resolve or launch Git");
     }
     let partial_hash = "b".repeat(40);
