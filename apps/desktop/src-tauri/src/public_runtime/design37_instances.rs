@@ -140,27 +140,49 @@ fn device_code(text: &str) -> Option<String> {
         } else { None }
     })
 }
+fn opencode_cli_line(line: &str) -> Option<&str> {
+    let line = line.trim();
+    // The pinned Clack info symbols are ● and its • fallback. The installed
+    // Windows output directly confirms •; a pipe is not an info prefix.
+    line.strip_prefix("•  ").or_else(|| line.strip_prefix("●  "))
+}
+fn opencode_device_code(text: &str) -> Option<String> {
+    text.split_inclusive('\n').filter(|line| line.ends_with('\n')).find_map(|line| {
+        let (address, code) = opencode_cli_line(line)?.strip_prefix("Open ")?
+            .split_once(" on any device and enter code: ")?;
+        let url = reqwest::Url::parse(address).ok()?;
+        if url.scheme() != "https" || url.host_str() != Some("auth.x.ai")
+            || !url.username().is_empty() || url.password().is_some()
+            || url.port().is_some_and(|port| port != 443) || url.fragment().is_some() { return None; }
+        if (1..=128).contains(&code.len()) && code.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+            Some(code.to_owned())
+        } else { None }
+    })
+}
 // The fixed CLI prints its ordinary OAuth URL as a complete stderr line.
 // Follow Room's login pattern: use the URL from this login process. A partial
 // line must never open a syntactically valid but incomplete OAuth request.
 fn authorization_url(text: &str, driver_id: &str) -> Option<String> {
     // Browser ownership follows the original registered fixed CLI, never a
     // URL in generic output. Claude/Grok own their browser launch. OpenCode's
-    // builtin OpenAI browser flow prints its URL but does not open a browser.
+    // builtin xAI flow prints its verification URL but does not open a browser.
     if !matches!(driver_id,"codex"|"opencode") { return None; }
     text.split_inclusive('\n').filter(|line| line.ends_with('\n')).find_map(|line| {
         let candidate = if driver_id=="opencode" {
-            line.trim().trim_start_matches(|ch:char|matches!(ch,'│'|' '| '\t'))
-                .strip_prefix("Go to: ")?.trim()
+            opencode_cli_line(line)?.strip_prefix("Go to: ")?.trim()
         } else { line.trim() };
         let url = reqwest::Url::parse(candidate).ok()?;
-        if url.scheme() != "https" || url.host_str() != Some("auth.openai.com")
+        let expected_host = if driver_id == "opencode" { "auth.x.ai" } else { "auth.openai.com" };
+        if url.scheme() != "https" || url.host_str() != Some(expected_host)
             || !url.username().is_empty() || url.password().is_some()
             || url.port().is_some_and(|port| port != 443) || url.fragment().is_some()
         {
             return None;
         }
-        if url.path() == "/oauth/authorize" || (driver_id=="codex" && candidate == AUTHORIZATION_URL) {
+        // The fixed xAI plugin uses the verification URI returned by xAI's
+        // device endpoint. Its path is not specified by OIDC discovery; keep
+        // the exact original complete URL, bounded to the known issuer origin.
+        if driver_id == "opencode" || url.path() == "/oauth/authorize" || (driver_id=="codex" && candidate == AUTHORIZATION_URL) {
             Some(candidate.to_owned())
         } else {
             None
@@ -174,7 +196,11 @@ fn apply_reply(sessions: &Sessions, id: &str, request: &str, action: &str, reply
     if record.view.authorization_url.is_none() {
         record.view.authorization_url = authorization_url(&record.view.output,&record.driver_id);
     }
-    record.view.device_code = if record.view.authorization_url.as_deref()==Some(AUTHORIZATION_URL) {
+    record.view.device_code = if record.driver_id == "opencode" {
+        // A rolling CLI output window may later omit its initial instructions.
+        // Keep the original request's short code with its host-owned URL.
+        opencode_device_code(&record.view.output).or_else(|| record.view.device_code.take())
+    } else if record.view.authorization_url.as_deref()==Some(AUTHORIZATION_URL) {
         device_code(&record.view.output)
     } else { None };
     record.settled = reply.settled;
@@ -493,13 +519,25 @@ mod tests {
             assert!(authorization_url(invalid,"codex").is_none(), "must not open: {invalid}");
         }
         assert_eq!(authorization_url(&format!("{AUTHORIZATION_URL}\n"),"codex").as_deref(), Some(AUTHORIZATION_URL));
-        let oauth="https://auth.openai.com/oauth/authorize?state=original-state";
-        assert_eq!(authorization_url(&format!("│  Go to: {oauth}\n"),"opencode").as_deref(),Some(oauth));
-        assert!(authorization_url(&format!("│  Go to: {oauth}"),"opencode").is_none());
+        let oauth="https://auth.x.ai/device?user_code=ABCD-EFGH";
+        assert_eq!(authorization_url(&format!("•  Go to: {oauth}\n"),"opencode").as_deref(),Some(oauth));
+        assert_eq!(authorization_url(&format!("●  Go to: {oauth}\n"),"opencode").as_deref(),Some(oauth));
+        assert!(authorization_url(&format!("•  Go to: {oauth}"),"opencode").is_none());
+        assert!(authorization_url(&format!("│  Go to: {oauth}\n"),"opencode").is_none());
         assert!(authorization_url(&format!("{oauth}\n"),"opencode").is_none());
+        assert_eq!(opencode_device_code("•  Open https://auth.x.ai/device on any device and enter code: ABCD-EFGH\n").as_deref(),Some("ABCD-EFGH"));
+        assert_eq!(opencode_device_code("•  Open https://auth.x.ai/device on any device and enter code: ABCDEFGH\n").as_deref(),Some("ABCDEFGH"));
+        assert!(opencode_device_code("•  Open https://other.example/device on any device and enter code: ABCD-EFGH\n").is_none());
+        assert!(opencode_device_code("•  Open https://auth.x.ai/device on any device and enter code: ABCD-EF").is_none());
+        assert!(authorization_url("•  Go to: https://auth.openai.com/oauth/authorize?state=wrong-provider\n","opencode").is_none());
+        for invalid in [
+            "http://auth.x.ai/device", "https://auth.x.ai.other.example/device",
+            "https://other.example@auth.x.ai/device", "https://auth.x.ai@other.example/device",
+            "https://auth.x.ai:444/device", "https://auth.x.ai/device#fragment",
+        ] { assert!(authorization_url(&format!("•  Go to: {invalid}\n"),"opencode").is_none()); }
         for driver in ["claude","grok","antigravity","unknown"] {
             assert!(authorization_url(&format!("{oauth}\n"),driver).is_none());
-            assert!(authorization_url(&format!("│  Go to: {oauth}\n"),driver).is_none());
+            assert!(authorization_url(&format!("•  Go to: {oauth}\n"),driver).is_none());
         }
         assert!(decode_login(r#"{"schema":"gogoke.37.owner-login.v1","instanceId":"other","requestId":"r","state":"PENDING","output":"","settled":false}"#,"instanceA","r").is_err());
     }
