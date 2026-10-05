@@ -648,8 +648,13 @@ try {
   'Actual child Codex instance pre-admitted without any login action');
   const lead = config.retainedPrelaunchFailure ? await openRetainedLead() :
     await openUserSession(config.seatId, config.instanceId, config.worktreeId, 'lead');
+  const leadControl = await seatCard(config.seatId);
+  check(leadControl.result.instanceId === config.instanceId && leadControl.result.state === 'BUSY',
+    'Original lead control facts identify this admitted seat');
   const firstPrompt = `Owner-authorized M2 case ${journal.caseId} in the private gogoke-seat-testbed. ` +
-    `Use the real native gogoke_seat state-card for your own seat. Its takeoverQuestions include ${config.takeoverQuestionId}. ` +
+    `Your actual native seat ID is ${config.seatId}. Call gogoke_seat state-card with targetId ${JSON.stringify(config.seatId)}, ` +
+    `expectedRevision ${JSON.stringify(leadControl.revision)}, payload {}. The literal "self" is not a seat ID. ` +
+    `Read later seat revisions from the actual native state-card; session revisions are different. Its takeoverQuestions include ${config.takeoverQuestionId}. ` +
     `Ask exactly that question via native request_user_input, with non-secret option ${JSON.stringify(config.takeoverOption)}, then use gogoke_takeover takeover-answers with the original nativeAnswerSources. ` +
     `When takeoverReady, call gogoke_seat create-from-template for direct child ${config.childSeatId}, template ${config.templateId}, approved instance ${config.childInstanceId}; ` +
     `then gogoke_seat dispatch that child to repository ${config.repositoryId}, SINGLE layout. ` +
