@@ -37,6 +37,15 @@ if (process.platform !== 'win32' || !/^\d+\.\d+\.\d+$/.test(config.version ?? ''
 }
 
 const rules = config.rules;
+if (rules.foreignProject !== undefined && (
+    !atom(rules.foreignProject?.domainId) || !atom(rules.foreignProject?.gateId) ||
+    rules.foreignProject.domainId === config.domainId ||
+    typeof rules.foreignProject.ownerGate?.rawFrame !== 'string' ||
+    typeof rules.foreignProject.ownerGate?.rawReceipt !== 'string' ||
+    Object.keys(rules.foreignProject).length !== 3 ||
+    Object.keys(rules.foreignProject.ownerGate).length !== 2)) {
+  throw Error('Foreign fixture requires a distinct real domain/gate and original NativeUser Owner gate bytes');
+}
 if (rules.lifecycleOwnership !== 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' ||
     rules.policyOwnership !== 'EXCLUSIVE_V08_POLICY_DOMAIN') {
   throw Error('V08 requires the two explicit exclusive ownership values');
@@ -94,6 +103,7 @@ const journal = {
   providerWorktreePlan: [],
   sideChatCases: [],
   rulesCases: [],
+  foreignProject: rules.foreignProject ?? null,
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };

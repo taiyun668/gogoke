@@ -5,6 +5,7 @@ No product launch, model invocation, credential read or database mutation.
 """
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from contextlib import closing
@@ -44,6 +45,48 @@ def policy(db, domain):
     return {name: select(db, f"SELECT * FROM gogoke_v37_seat_policy_{name} "
                         "WHERE domain_id=? ORDER BY rowid", (domain,))
             for name in ("head", "grants", "gates", "routes", "triggers", "escalations", "events")}
+
+
+def foreign_snapshot(db, domain, configuration):
+    if configuration is None:
+        return None
+    check(isinstance(configuration, dict) and set(configuration) == {"domainId", "gateId", "ownerGate"} and
+          all(isinstance(configuration.get(key), str) and
+              re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", configuration[key])
+              for key in ("domainId", "gateId")) and configuration["domainId"] != domain,
+          "Foreign fixture needs exact distinct atomic domain/gate selections")
+    foreign_domain, gate_id = configuration["domainId"], configuration["gateId"]
+    owner = configuration["ownerGate"]
+    check(isinstance(owner, dict) and set(owner) == {"rawFrame", "rawReceipt"} and
+          all(isinstance(owner[key], str) for key in owner), "Original NativeUser Owner gate bytes required")
+    request, receipt = json.loads(owner["rawFrame"]), json.loads(owner["rawReceipt"])
+    check(set(request) == {"schema", "command", "domainId", "requestId", "gateId", "submitterSeatId",
+                           "reviewerSeatId", "fromStage", "toStage", "rejectCap", "expectedRevision"} and
+          request["schema"] == receipt["schema"] == "gogoke.37.owner-configuration.v1" and
+          request["command"] == receipt["command"] == "policy-gate" and
+          request["domainId"] == foreign_domain and request["gateId"] == gate_id and
+          receipt["requestId"] == request["requestId"] and receipt["status"] == "APPLIED" and
+          re.fullmatch(r"[1-9][0-9]*", request["expectedRevision"]) and
+          receipt["revision"] == str(int(request["expectedRevision"]) + 1),
+          "Foreign gate lacks its original NativeUser Owner CAS request/receipt")
+    current = policy(db, foreign_domain)
+    gates = [row for row in current["gates"] if row["gate_id"] == gate_id]
+    events = [row for row in current["events"] if row["event_id"] == request["requestId"]]
+    check(len(current["head"]) == len(gates) == len(events) == 1 and
+          not select(db, "SELECT gate_id FROM gogoke_v37_seat_policy_gates WHERE domain_id=? AND gate_id=?",
+                     (domain, gate_id)), "Actual foreign gate/head/event must exist only in B")
+    gate, event = gates[0], events[0]
+    check(gate == {"domain_id": foreign_domain, "gate_id": gate_id,
+                   "submitter_seat_id": request["submitterSeatId"], "reviewer_seat_id": request["reviewerSeatId"],
+                   "from_stage": request["fromStage"], "to_stage": request["toStage"],
+                   "reject_cap": request["rejectCap"], "reject_count": 0, "state": "READY", "reason": "", "revision": 1} and
+          current["head"][0]["revision"] >= int(receipt["revision"]) and
+          event["domain_id"] == event["target_id"] == foreign_domain and
+          event["operation"] == "policy-gate" and event["state"] == "APPLIED" and event["detail"] == "" and
+          event["policy_revision"] == int(receipt["revision"]) and
+          event["fingerprint"] == original_owner_fingerprint("policy-gate", foreign_domain, owner["rawFrame"]),
+          "B gate is not the original NativeUser-created READY object with its bound Owner event")
+    return {"configuration": configuration, "gate": gate, "ownerEvent": event, "policy": current}
 
 
 def typed_id(value):
@@ -659,6 +702,9 @@ def verify_case(db, journal, case, result):
     check(case["domainId"] == domain and case["sourceCommit"] == journal["sourceCommit"], "Case byte identity differs")
     check(case["driverSha256"] == digest(Path(__file__).with_name("m2-rules.mjs").read_bytes()),
           "Actual loaded V08 module bytes differ from the reader's module")
+    foreign = journal.get("foreignProject")
+    check(case.get("foreignProject") == foreign and before.get("foreignProject") == result["foreignProject"],
+          "Foreign fixture configuration or original B policy bytes changed since baseline")
     sessions = {s["id"]: s for s in journal["sessions"]}
     submitter, reviewer = case["initialSessions"]
     check([submitter["id"], reviewer["id"]] == [case["submitterSession"], case["reviewerSession"]] and
@@ -755,7 +801,12 @@ def verify_case(db, journal, case, result):
         ("V08_MODEL_CAP_BLOCKS_SUBMIT", submitter, "gate-submit", reject, "5", {}, "DENIED", None, "", initial_revision),
         ("V08_MODEL_EXPIRED_GRANT", submitter, "gate-submit", passed, "1", {}, "DENIED", None, "", initial_revision + 1),
         ("V08_SUBMIT_PASS_GATE", submitter, "gate-submit", passed, "1", {}, "APPLIED", "SUBMITTED", "", initial_revision + 2),
+        ("V08_MODEL_FORGED_SENDER", submitter, "gate-decide", passed, "2",
+         {"decision": "PASS", "callerSeatId": reviewer["seatId"]}, "DENIED", None, "", initial_revision + 2),
         ("V08_MODEL_WRONG_REVIEWER", submitter, "gate-decide", passed, "2", {"decision": "PASS"}, "DENIED", None, "", initial_revision + 2),
+        *([("V08_MODEL_CROSS_PROJECT", submitter, "gate-submit", foreign["gateId"],
+            str(before["foreignProject"]["gate"]["revision"]), {}, "DENIED", None, "", initial_revision + 2)]
+          if foreign else []),
         ("V08_MODEL_EMPTY_REJECT_REASON", reviewer, "gate-decide", passed, "2", {"decision": "REJECT", "reason": ""}, "INVALID_INPUT", None, "", initial_revision + 2),
         ("V08_APPROVE", reviewer, "gate-decide", passed, "2", {"decision": "PASS"}, "APPLIED", "PASSED", "", initial_revision + 2),
         ("V08_LEGAL_STAGE", submitter, "stage-transition", passed, "3", {}, "APPLIED", "ADVANCED", case["toStage"], initial_revision + 3),
@@ -882,6 +933,20 @@ def verify_case(db, journal, case, result):
             started["params"]["item"]["tool"] == "gogoke_policy" and
             started["params"]["item"]["arguments"] == arguments
             for _, started in tool_starts), "Original CLI tool start includes an additional tool")
+        completed_item = tool_completions[0][1]["params"]["item"]
+        # Retain the same original output field precedence as native codex_output.
+        completed_output = next((completed_item[name] for name in
+                                 ("aggregatedOutput", "result", "error", "contentItems")
+                                 if completed_item.get(name) is not None), None)
+        completed_content = (completed_output if isinstance(completed_output, list) else
+                             completed_output.get("contentItems") if isinstance(completed_output, dict) else None)
+        check(completed_item["status"] == action["cliToolStatus"] ==
+              ("completed" if status == "APPLIED" else "failed") and
+              completed_content == content,
+              "Original CLI tool completion does not preserve the actual H result/failure")
+        if status == "DENIED":
+            check(receipt["result"] == {} and written["result"]["success"] is False,
+                  "Denied native boundary must preserve empty result and success=false")
         events = select(db, "SELECT * FROM gogoke_v37_seat_policy_events WHERE domain_id=? AND event_id=?",
                         (domain, request_id))
         if status == "APPLIED":
@@ -966,7 +1031,9 @@ def verify_case(db, journal, case, result):
     result["userBoundaries"].append({"rawFrame": user["rawFrame"], "receipt": user["receipt"],
                                     "persistedNativeDenialRow": False, "authority": boundary["authority"]})
     result["notRun"] = case["notRun"]
-    required_not_run = {"V08_MODEL_FORGED_SENDER", "V08_MODEL_CROSS_PROJECT", "V08_MODEL_SUBORDINATE_OWNER", "V08_STALL_CHAIN"}
+    required_not_run = {"V08_MODEL_SUBORDINATE_OWNER", "V08_STALL_CHAIN"}
+    if not foreign:
+        required_not_run.add("V08_MODEL_CROSS_PROJECT")
     required_not_run |= {"V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE", "V08_HOST_BUSY_TO_IDLE_DELIVERY"} if host_cases else {"V08_REJECT_CAP_DELIVERY"}
     check({row["caseId"] for row in result["notRun"]} == required_not_run, "Unimplemented boundaries must remain explicit")
     result["verifiedCaseId"] = case["caseId"]
@@ -1007,6 +1074,7 @@ try:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA query_only=ON")
         result["policy"] = policy(db, journal["domainId"])
+        result["foreignProject"] = foreign_snapshot(db, journal["domainId"], journal.get("foreignProject"))
         result["inbox"] = inbox_rows(db, journal["domainId"])
         check(len(result["policy"]["head"]) == 1, "Existing real Owner-initialized policy head required")
         if sys.argv[4] == "final":

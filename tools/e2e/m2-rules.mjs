@@ -36,11 +36,10 @@ export async function runRulesCase(product, config, journal) {
     readerSha256: hash(fs.readFileSync(fileURLToPath(new URL('./m2-rules-readback.py', import.meta.url)))),
     ownership: { lifecycle: c.lifecycleOwnership, policy: c.policyOwnership },
     ownerConfigurations: [], seatCards: [], initialSessions: [], userBoundaries: [], actions: [], hostCases: [], notRun: [
-      { caseId: 'V08_MODEL_FORGED_SENDER', reason: 'The advertised tool accepts no sender/caller field; a real malformed caller A frame is required. User bytes cannot substitute.' },
-      { caseId: 'V08_MODEL_CROSS_PROJECT', reason: 'The native tool derives domain from H; it exposes no cross-domain selector. A genuine reachable cross-project model call is required.' },
-      { caseId: 'V08_MODEL_SUBORDINATE_OWNER', reason: 'A distinct admitted subordinate and its real reachable MESSAGE/Owner operation are required; gate target text is not that operation.' },
+      ...(!c.foreignProject ? [{ caseId: 'V08_MODEL_CROSS_PROJECT', reason: 'No actual NativeUser-created foreign domain/gate and immutable baseline supplied; an invented target cannot prove the boundary.' }] : []),
+      { caseId: 'V08_MODEL_SUBORDINATE_OWNER', reason: 'The four dynamic tools and H allowlist expose no Model MESSAGE/Owner operation; CallAction::Message alone is not reachable, and User K-INBOX fixes sender to User.' },
       { caseId: 'V08_REJECT_CAP_DELIVERY', reason: 'Host recipient/checkpoint context not supplied; gate state alone cannot prove original E/C/H delivery.' },
-      { caseId: 'V08_STALL_CHAIN', reason: 'The sealed producer is present in source. This installed flow has not observed an original failed WORK followed by its definite Unsupported repair and unchanged custody with no successor work; synthetic cloud controls cannot substitute.' },
+      { caseId: 'V08_STALL_CHAIN', reason: 'No original failed WORK with contextWindowExceeded/typed retry followed by original compact -32601 Unsupported, same custody and no successor work was observed. Interrupted turns and synthetic cloud associations cannot substitute.' },
     ], readbackRequired: true };
   journal.rulesCases ??= []; journal.rulesCases.push(record); product.save();
   try {
@@ -57,6 +56,17 @@ export async function runRulesCase(product, config, journal) {
       before.readerSha256 === record.readerSha256,
     'V08 baseline must be the same candidate/domain immutable native readback');
     record.baselineReadback = baseline;
+    const foreign = c.foreignProject ?? null;
+    requireFact(JSON.stringify(foreign) === JSON.stringify(journal.foreignProject ?? null) &&
+      JSON.stringify(foreign) === JSON.stringify(before.foreignProject?.configuration ?? null),
+    'Foreign fixture must match the original normally closed reader baseline');
+    if (foreign) {
+      requireFact(foreign.domainId !== config.domainId && before.foreignProject.policy.head.length === 1 &&
+        before.foreignProject.gate.gate_id === foreign.gateId &&
+        !before.policy.gates.some(row => row.gate_id === foreign.gateId),
+      'Foreign target must actually exist in B and be absent from A');
+      record.foreignProject = foreign;
+    }
     let policyRevision = String(before.policy.head[0].revision);
     const fromStage = before.policy.head[0].current_stage, toStage = id('v08Stage');
     const submitter = c.submitterSession, reviewer = c.reviewerSession;
@@ -177,6 +187,9 @@ export async function runRulesCase(product, config, journal) {
       }
       action.receipt = JSON.parse(content[0].text); product.save();
       const receipt = action.receipt;
+      requireFact(tools[0].status === (status === 'APPLIED' ? 'completed' : 'failed') &&
+        (status !== 'DENIED' || JSON.stringify(receipt.result) === '{}'),
+      'Original CLI tool outcome must match the native policy result');
       requireFact(receipt.schema === 'gogoke.37.operations.v1' && receipt.family === 'K-POLICY' &&
         receipt.operation === operation && receipt.targetId === gate && receipt.status === status &&
         receipt.previousRevision === revision && receipt.revision ===
@@ -200,7 +213,11 @@ export async function runRulesCase(product, config, journal) {
     await call('V08_MODEL_EXPIRED_GRANT', submitter, 'gate-submit', pass, '1', {}, 'DENIED');
     await grant(null);
     await call('V08_SUBMIT_PASS_GATE', submitter, 'gate-submit', pass, '1', {}, 'APPLIED', 'SUBMITTED');
+    await call('V08_MODEL_FORGED_SENDER', submitter, 'gate-decide', pass, '2',
+      { decision: 'PASS', callerSeatId: reviewer.seatId }, 'DENIED');
     await call('V08_MODEL_WRONG_REVIEWER', submitter, 'gate-decide', pass, '2', { decision: 'PASS' }, 'DENIED');
+    if (foreign) await call('V08_MODEL_CROSS_PROJECT', submitter, 'gate-submit', foreign.gateId,
+      String(before.foreignProject.gate.revision), {}, 'DENIED');
     await call('V08_MODEL_EMPTY_REJECT_REASON', reviewer, 'gate-decide', pass, '2',
       { decision: 'REJECT', reason: '' }, 'INVALID_INPUT');
     await call('V08_APPROVE', reviewer, 'gate-decide', pass, '2', { decision: 'PASS' }, 'APPLIED', 'PASSED');
