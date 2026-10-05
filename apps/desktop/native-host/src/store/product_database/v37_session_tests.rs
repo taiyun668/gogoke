@@ -107,9 +107,13 @@ fn product_merge_history_rechecks_current_grant_without_git_and_preserves_unknow
     assert_eq!(unchanged.column_text(1).unwrap(), original_cause);
     assert_eq!(unchanged.column_text(2).unwrap(), commit); drop(unchanged);
     product.connection.execute("DELETE FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA'").unwrap();
-    let denied = h::decode_receipt(&product.dispatch_native_worktree(&fresh, &caller).unwrap()).unwrap();
-    assert!(!matches!(denied.status, V37Status::Applied | V37Status::Replayed | V37Status::Unknown),
+    let denied_bytes = product.dispatch_native_worktree(&fresh, &caller).unwrap();
+    let denied = h::decode_receipt(&denied_bytes).unwrap();
+    assert!(!matches!(denied.status, V37Status::Applied | V37Status::Replayed),
         "pending cause cannot bypass the current E.2 grant");
+    let denial = String::from_utf8(denied_bytes).unwrap();
+    assert!(denial.contains("Denied") && !denial.contains(&partial_hash) &&
+        !denial.contains("original Windows error 5"), "read the authority refusal, not the pending result");
     product.connection.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED',cause='' WHERE request_id='mergeA'").unwrap();
     let denied = h::decode_receipt(&product.dispatch_native_worktree(&request, &caller).unwrap()).unwrap();
     assert!(!matches!(denied.status, V37Status::Applied | V37Status::Replayed),
