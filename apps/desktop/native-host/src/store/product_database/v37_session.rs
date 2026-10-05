@@ -259,17 +259,22 @@ impl<'root> ProductDatabase<'root> {
                 request.expected_revision, request.expected_revision, Default::default()));
         }
         let result = (|| {
+            let mut authorize = |db: &VerifiedDatabaseConnection<'_>,
+                domain: &str, writer_seat: &str, target: &str| {
+                if target != request.target_id { return Err(f::WorktreeError::Denied); }
+                seat::authorize_merge_for_f2(db, caller, domain, writer_seat)
+                    .map_err(f::WorktreeError::Seat)
+            };
+            if let Some(receipt) = f::readback_merge_receipt_request(
+                &mut self.connection, request, &mut authorize)? {
+                return Ok(receipt);
+            }
             let repository = f::repository_for_worktree(&self.connection,
                 &request.domain_id, &request.target_id)?;
             let pin = f::resolve_registered_git(&mut self.connection, self.root,
                 &self.owner, &repository, &mut self.process_custodian)?;
             f::merge_worktree_request(&mut self.connection, self.root, &pin,
-                &mut self.process_custodian, request,
-                |db, domain, writer_seat, target| {
-                    if target != request.target_id { return Err(f::WorktreeError::Denied); }
-                    seat::authorize_merge_for_f2(db, caller, domain, writer_seat)
-                        .map_err(f::WorktreeError::Seat)
-                })
+                &mut self.process_custodian, request, &mut authorize)
         })();
         Ok(match result {
             Ok(receipt) => {

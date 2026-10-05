@@ -142,21 +142,23 @@ fn object(fields: impl IntoIterator<Item = (&'static str, String)>) -> Json {
 }
 
 pub(super) fn intent(request: &crate::store::session_transport::V37Request,
-    repository: &str, seat: &str, instance: &str, turn: &str, binding: &ResolvedBinding,
+    repository: &str, seat: &str, instances: &[String], turn: &str, binding: &ResolvedBinding,
     source_before: &str, child_before: &str, snapshot: &str, changed: bool,
     stops: &[ExactStopFact]) -> String {
     object([
-        ("schema", "gogoke.37.child-seal-intent.v1".into()),
+        ("schema", "gogoke.37.child-seal-intent.v2".into()),
         ("requestId", request.request_id.clone()), ("requestHash", sha256_hex(&request.raw_bytes)),
         ("domainId", request.domain_id.clone()), ("worktreeId", request.target_id.clone()),
-        ("repositoryId", repository.into()), ("seatId", seat.into()), ("instanceId", instance.into()),
+        ("repositoryId", repository.into()), ("seatId", seat.into()),
+        ("instanceIds", Json::Array(instances.iter().map(|id|Json::String(JsonString::from_str(id))).collect()).canonical()),
         ("turnId", turn.into()), ("worktreeIdentity", binding.identity.opaque()),
         ("pointerHash", binding.pointer_hash.clone()), ("commonIdentity", binding.common_identity.opaque()),
         ("baselineCommit", binding.baseline_commit.clone()), ("sourceBefore", source_before.into()),
         ("childBefore", child_before.into()), ("snapshotHash", snapshot.into()),
         ("changed", if changed { "true" } else { "false" }.into()),
         ("stopFacts", Json::Array(stops.iter().map(|s| object([
-            ("processOperationId", s.process_operation_id.clone()), ("stopFactId", s.stop_fact_id.clone())
+            ("processOperationId", s.process_operation_id.clone()), ("stopFactId", s.stop_fact_id.clone()),
+            ("instanceId",s.instance_id.clone()),("generation",s.generation.clone())
         ])).collect()).canonical()),
     ]).canonical()
 }
@@ -185,7 +187,8 @@ pub(super) fn read_record(record: &str, merge: &str,
     let intent = get(&fields,"childSealIntent")?;
     let child = get(&fields,"childCommit")?;
     let Json::Object(seal) = Parser::parse(&intent)? else { return Err(WorktreeError::Unknown); };
-    if seal.len() != 18 || get(&seal,"schema")? != "gogoke.37.child-seal-intent.v1" ||
+    let schema=get(&seal,"schema")?;
+    if seal.len() != 18 || !matches!(schema.as_str(),"gogoke.37.child-seal-intent.v1"|"gogoke.37.child-seal-intent.v2") ||
         get(&seal,"requestId")? != request.request_id || get(&seal,"requestHash")? != sha256_hex(&request.raw_bytes) ||
         get(&seal,"domainId")? != request.domain_id || get(&seal,"worktreeId")? != request.target_id ||
         !hex_commit(&child) || !hex_commit(&get(&seal,"childBefore")?) ||
@@ -193,16 +196,31 @@ pub(super) fn read_record(record: &str, merge: &str,
         !sha(&get(&seal,"snapshotHash")?) ||
         !get(&seal,"pointerHash")?.strip_prefix("sha256:").is_some_and(sha) ||
         ["worktreeIdentity","commonIdentity"].iter().any(|k| !get(&seal,k).is_ok_and(|v| !v.is_empty())) ||
-        ["repositoryId","seatId","instanceId","turnId"].iter().any(|k| !get(&seal,k).is_ok_and(|v| atom(&v))) {
+        ["repositoryId","seatId","turnId"].iter().any(|k| !get(&seal,k).is_ok_and(|v| atom(&v))) {
         return Err(WorktreeError::Unknown);
     }
     let Json::Array(stops) = Parser::parse(&get(&seal,"stopFacts")?)? else { return Err(WorktreeError::Unknown); };
     if stops.is_empty() { return Err(WorktreeError::Unknown); }
+    let mut writer_instances=std::collections::BTreeSet::new();
     for stop in stops {
         let Json::Object(fact) = stop else { return Err(WorktreeError::Unknown); };
-        if fact.len()!=2 || !atom(&get(&fact,"processOperationId")?) || get(&fact,"stopFactId")?.is_empty() {
+        let expected_fields=if schema.ends_with(".v1") {2} else {4};
+        if fact.len()!=expected_fields ||
+            !atom(&get(&fact,"processOperationId")?) || get(&fact,"stopFactId")?.is_empty() {
             return Err(WorktreeError::Unknown);
         }
+        if schema.ends_with(".v2") {
+            let instance=get(&fact,"instanceId")?;
+            if !atom(&instance) || !atom(&get(&fact,"generation")?) { return Err(WorktreeError::Unknown); }
+            writer_instances.insert(instance);
+        }
+    }
+    if schema.ends_with(".v1") {
+        if !atom(&get(&seal,"instanceId")?) {return Err(WorktreeError::Unknown);}
+    } else {
+        let instances=get(&seal,"instanceIds")?;
+        let expected=Json::Array(writer_instances.into_iter().map(|id|Json::String(JsonString::from_str(&id))).collect()).canonical();
+        if expected!=instances {return Err(WorktreeError::Unknown);}
     }
     let changed = get(&seal,"changed")?;
     if (changed == "true" && child == get(&seal,"childBefore")?) ||
