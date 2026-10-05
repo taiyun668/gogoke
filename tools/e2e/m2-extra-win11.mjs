@@ -15,8 +15,7 @@ const unique = values => new Set(values).size === values.length;
 const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
 const formalFields = ['formal', 'registeredFormal', 'formalData', 'formalRegistry', 'shortcuts'];
 
-if (process.platform !== 'win32' || config.version !== '0.1.29' ||
-    config.sourceCommit !== 'bff227a072387d1cd89be9d47ef679325c93014c' ||
+if (process.platform !== 'win32' || !/^\d+\.\d+\.\d+$/.test(config.version ?? '') ||
     config.repositoryId !== 'gogokeSeatTestbed' ||
     !/^[a-f0-9]{40}$/.test(config.sourceCommit ?? '') ||
     !atom(config.domainId) || !atom(config.instanceId) ||
@@ -127,8 +126,8 @@ const check = (condition, message) => {
   }
 };
 
-async function snapshot(phase) {
-  for (const observer of config.observers) {
+async function snapshot(phase, names = null) {
+  for (const observer of config.observers.filter(row => names === null || names.includes(row.name))) {
     const file = `m2-extra-${observer.name}-${phase}-${id('snapshot')}.json`;
     const output = path.join(evidencePath, file);
     if (fs.existsSync(output)) throw Error(`Original ${observer.name} ${phase} snapshot exists`);
@@ -323,4 +322,17 @@ try {
     journal.preserveError = String(preserveError?.stack ?? preserveError);
     product.save();
   }
+  // Formal objects are outside the active candidate. Observe them even when
+  // the original model/stop failed; never close or replay that request here.
+  try {
+    await snapshot('failure-after', ['formal']);
+    const before = snapshotValue('formal', 'before'), after = snapshotValue('formal', 'failure-after');
+    for (const field of formalFields) check(Object.hasOwn(before, field) && Object.hasOwn(after, field) &&
+      JSON.stringify(before[field]) === JSON.stringify(after[field]), `failure: formal unchanged ${field}`);
+    journal.failureFormalProtection = 'FIVE_GROUPS_UNCHANGED';
+  } catch (observerError) {
+    journal.failureFormalProtection = 'FAILED_OR_UNAVAILABLE';
+    journal.failureFormalObservationError = String(observerError?.stack ?? observerError);
+  }
+  product.save();
 }
