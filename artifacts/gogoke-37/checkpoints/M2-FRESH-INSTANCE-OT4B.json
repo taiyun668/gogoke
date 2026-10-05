@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.stage-checkpoint.v1",
-  "state": "FRESH_INSTANCE_REGISTERED_STATUS_PROTOCOL_DIAGNOSTICS_CLOUD_PENDING",
+  "state": "FRESH_STATUS_CLOUD_COLD_PASS_WIN11_DIAGNOSTIC_CANDIDATE_PREPARATION",
   "changed": "Owner authorized a fresh Codex instance and one combined OT4b. Actual installed 0.1.25 registered codexTestM2Fresh with the same pinned Codex 0.160.0. Source now retains initialize/config-read/account-read response failure phases and original Windows post-termination/final wait and exit-code errors. A separate real fixed-CLI cold LPAC account observer test starts directly after native registration without an earlier preparation warmup. CLI bytes, capabilities and wait budgets are unchanged; no UNKNOWN is cleared or STOPPED manufactured.",
   "result": "Ordinary Win11 registration, installed identity and normal close PASS; original instances/root/home and five formal protection groups preserved. Fresh instance has no legacy fence/custody/ACL step, credential object/alias/profile or model claim; no auth source exists. Non-login host refresh passed scope preparation and activated the exact fixed CLI, so the old profile's rejection did not occur. It then failed with persistent frame deadline and incomplete stop proof. Which RPC response timed out is not recorded by 0.1.25; the root cause is UNKNOWN. Stop refusal correctly retained one new UNKNOWN/null-proof custody row. Normal caption close exited 0; old 35 captured identities, fence and committed claim remained exact, and formal groups remained unchanged. Other provider status calls were NOT_RUN because the first original failure stopped that script.",
   "failure_original": "ProtocolEvidence { cause: ProtocolPipe(Custom { kind: TimedOut, error: persistent frame deadline }), stderr_tail: empty }; process stop proof incomplete: parent_exited=false, parent_grace_exited=false, active_job_processes=0, identity exact, handles present, kill_attempted=true, kill_succeeded=true, writer_fence_verified=true, exit_code=137, deadline_exceeded=false, errors empty; unknown record Ok.",
@@ -16,8 +16,22 @@
     "B2_B3_B4": "Existing native registrations reread on installed 0.1.25; fixed binaries match prior pins, login qualification NOT_RUN. Registrations persist across binary replacement; no recreation is needed.",
     "B5": "UNSUPPORTED/NOT_RUN per Owner's current decision. Current fixed catalog path is absent; existing agy 1.2.11 recipe rejects shared Windows-user keyring with no evidenced login-only flow. No installation, first launch or keyring access performed."
   },
-  "next": "Run cloud qualification of the diagnostic and cold-observer changes; obtain the actual failure phase before choosing a root-cause fix. Keep installed 0.1.25 and both original/new failed requests preserved. Do not request separate Codex login or resume the stopped old-instance recovery route. Notify one combined four-provider OT4b only when the stable product is ready, then verify automatic native login and real LPAC sessions.",
-  "route_reflection": "The first real new-instance status exposed a separate protocol failure before any login. Reuse the already available host refresh and real CLI cold boundary rather than asking Owner for authentication to diagnose it. Keep stage pushes to cloud checks, with no diagnostic installer or new candidate yet; retain exact failure evidence and avoid resending uncertain requests.",
+  "cloud": {
+    "source": "214e10026bdb06ba50421fb4581bd898002fcdb1",
+    "native_run": 37280164287,
+    "hygiene_run": 37280163902,
+    "state": "PASS_RELEASE_BUILD_34_FOCUSED_AND_2_SHIM_CASES",
+    "cold_case": "Actual pinned CLI on first native LPAC account observer: LOGGED_OUT and one durable STOPPED, no earlier preparation warmup; 1 passed, 0 failed, 0 ignored, exit 0.",
+    "not_run": "Full library, security mutations and server tests are NOT_RUN under private_history_fixture_only; green no-op mutation job does not count as executed mutations.",
+    "evidence_artifact": 11332072950,
+    "evidence_archive_sha256": "d84c4365934edb7940eff9e0473009084a406365f3aa8643d08662671d3065c9"
+  },
+  "next": "The cloud cold case did not reproduce the Win11 timeout. Prepare one 0.1.26 candidate carrying original RPC-phase and Windows-wait evidence through the trusted frozen/sign/smoke chain, then obtain this machine's actual failure phase before choosing a root-cause fix. This is the stage-blocking platform-only diagnostic exception, not a root-cause fix or stable milestone PASS. Keep installed 0.1.25 and both original/new failed requests preserved; no separate Codex login or old-instance recovery. Notify one combined four-provider OT4b only when ready.",
+  "upstream_references": [
+    "https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/config/src/types.rs",
+    "https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/app-server/src/request_processors/account_processor.rs"
+  ],
+  "route_reflection": "The first real new-instance status exposed a separate protocol failure before any login. Reused the already available host refresh and real CLI cold boundary rather than asking Owner for authentication. The cloud release/focused/shim checks passed but did not reproduce the platform failure. The installed release omitted RPC phase and raw wait results, so new frozen diagnostic bytes are necessary to investigate this stage blocker on the actual Win11 installation. Use that one exception to stage-light rules; do not add general probes or repeat uncertain original requests.",
   "acceptance": false,
   "public_release": false
 }
