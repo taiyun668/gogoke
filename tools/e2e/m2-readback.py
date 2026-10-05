@@ -76,6 +76,14 @@ def git_bytes(program, cwd, *args):
         raise RuntimeError(f"Read-only Git {args[0]} exit={observed.returncode}: {observed.stderr[-2048:]!r}")
     return observed.stdout
 
+def ordinary(path):
+    metadata = path.lstat()
+    return path.is_file() and not path.is_symlink() and metadata.st_nlink == 1 and \
+        not (getattr(metadata, "st_file_attributes", 0) & 0x400)
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
 result = {"schema": "gogoke.37.private-m2-readback.v1", "phase": phase,
           "caseId": journal["caseId"], "sourceCommit": journal["sourceCommit"],
           "databaseWrites": False, "credentialReads": False,
@@ -332,42 +340,45 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             or not same_local_path(Path(local_spelling(tree[11])).resolve(strict=True),
                                    Path(local_spelling(journal["testbedSource"])).resolve(strict=True)):
         raise RuntimeError("Original F registration or testbed source changed")
-    tree_path = Path(local_spelling(tree[0])).resolve(strict=True)
-    if not beneath(root, tree_path):
+    registered_path = Path(local_spelling(tree[0]))
+    tree_path = registered_path.resolve(strict=True)
+    if not same_local_path(registered_path, tree_path) or not beneath(root, tree_path) or \
+            (getattr(registered_path.lstat(), "st_file_attributes", 0) & 0x400):
         raise RuntimeError("Registered worktree is outside candidate state root")
     marker_file = journal["markerFile"]
     if Path(marker_file).name != marker_file or not marker_file.endswith(".json"):
         raise RuntimeError("Invalid original marker filename")
     marker_path = tree_path / marker_file
-    if marker_path.is_symlink() or not marker_path.is_file() or marker_path.stat().st_nlink != 1:
+    if not ordinary(marker_path):
         raise RuntimeError("Original tool marker is not an ordinary worktree file")
     marker_bytes = marker_path.read_bytes()
-    if json.loads(marker_bytes)["marker"] != journal["marker"]:
+    if marker_bytes != (canonical({"marker": journal["marker"]}) + "\n").encode("utf-8"):
         raise RuntimeError("Actual worktree marker content differs")
     marker_hash = fingerprint(marker_bytes)
     git_program = Path(local_spelling(tree[12])).resolve(strict=True)
     if "sha256:" + fingerprint(git_program.read_bytes()) != tree[13]:
         raise RuntimeError("Readback Git executable bytes differ from F registered pin")
     tree_head = git(git_program, tree_path, "rev-parse", "--verify", "HEAD^{commit}")
-    if len(tree_head) != 40 or git(git_program, tree_path, "status", "--porcelain=v1", "--untracked-files=all"):
-        raise RuntimeError("Child did not leave a clean committed worktree")
-    committed_bytes = git_bytes(git_program, tree_path, "show", f"HEAD:{marker_file}")
-    if fingerprint(committed_bytes) != marker_hash:
-        raise RuntimeError("Actual Git commit does not contain marker bytes")
+    if len(tree_head) != 40:
+        raise RuntimeError("Original child Git HEAD is invalid")
+    source = Path(local_spelling(tree[11])).resolve(strict=True)
     if phase == "capture":
-        source = Path(local_spelling(tree[11])).resolve(strict=True)
         source_head = git(git_program, source, "rev-parse", "--verify", "HEAD^{commit}")
-        changed = git(git_program, tree_path, "diff", "--name-only", source_head, tree_head).splitlines()
-        if changed != [marker_file] or git(git_program, tree_path, "merge-base", source_head, tree_head) != source_head:
-            raise RuntimeError("Controller testbed merge requires only the new marker on the original source HEAD")
+        child_status = git(git_program, tree_path, "status", "--porcelain=v1", "--untracked-files=all")
+        source_status = git(git_program, source, "status", "--porcelain=v1", "--untracked-files=all")
+        if tree_head != source_head or child_status != f"?? {marker_file}" or source_status or \
+                (source / marker_file).exists():
+            raise RuntimeError("Stopped child must leave only the uncommitted marker on a clean original source HEAD")
         policy_head = one(db, "SELECT revision,current_stage FROM gogoke_v37_seat_policy_head WHERE domain_id=?", (domain,))
         result["controllerMergeDecision"] = {"decision": "MERGE_EXACT_PRIVATE_TEST_MARKER_ONLY",
-            "sourceHead": source_head, "childHead": tree_head, "changedPaths": changed,
+            "sourceHead": source_head, "childHead": tree_head, "markerSha256": marker_hash,
+            "changedPaths": [marker_file],
             "policyRevision": str(policy_head[0]), "scope": "gogokeSeatTestbed"}
     result["worktree"] = {"id": worktree_id, "childSessionId": child_session,
         "requestId": worktree_op[0], "requestHash": worktree_op[1],
-        "path": str(tree_path), "revision": tree[8], "state": tree[7],
-        "markerFile": marker_file, "markerSha256": marker_hash, "childCommit": tree_head,
+        "path": str(tree_path), "physicalIdentity": [tree_path.stat().st_dev, tree_path.stat().st_ino],
+        "revision": tree[8], "state": tree[7],
+        "markerFile": marker_file, "markerSha256": marker_hash, "childHeadBeforeSeal": tree_head,
         "mergeTargetCommit": tree[9]}
     result["providerSessions"] = []
     for case in journal["providerCases"]:
@@ -404,8 +415,25 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if tree[7] != "REGISTERED" or tree[8] < 2 or tree[9] is not None:
             raise RuntimeError("Capture stage did not retain registered unmerged worktree")
     else:
+        capture_ref = next((row for row in journal["readbacks"] if row["phase"] == "capture"), None)
+        if not capture_ref:
+            raise RuntimeError("Original normally closed premerge capture missing")
+        capture_path = output.parent / capture_ref["file"]
+        if fingerprint(capture_path.read_bytes()) != capture_ref["sha256"]:
+            raise RuntimeError("Original premerge capture bytes changed")
+        captured = json.loads(capture_path.read_text(encoding="utf-8"))
+        premerge = captured.get("worktree", {})
+        if captured.get("phase") != "capture" or captured.get("caseId") != journal["caseId"] or \
+                premerge.get("id") != worktree_id or premerge.get("path") != str(tree_path) or \
+                premerge.get("physicalIdentity") != result["worktree"]["physicalIdentity"] or \
+                premerge.get("markerSha256") != marker_hash:
+            raise RuntimeError("Original premerge physical tree or marker capture differs")
+        before = premerge.get("childHeadBeforeSeal")
+        source_before = captured.get("controllerMergeDecision", {}).get("sourceHead")
+        if not isinstance(before, str) or before != source_before or len(before) != 40:
+            raise RuntimeError("Original source and child preseal HEAD were not bound")
         merges = rows(db,
-            "SELECT request_id,request_hash,phase,result_commit FROM gogoke_v37_worktree_lifecycle_ops "
+            "SELECT request_id,request_hash,phase,result_commit,cause FROM gogoke_v37_worktree_lifecycle_ops "
             "WHERE worktree_id=? AND operation='MERGE'", (worktree_id,))
         merge_calls = [(record, frame, data) for record, frame, data in originals[lead["id"]]
                        if frame.get("method") == "item/tool/call" and
@@ -427,6 +455,106 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "\n" + merge_typed).encode())[:40]
         if merges[0][0] != merge_id:
             raise RuntimeError("F merge request ID differs from original A/H model call")
+        receipt = json.loads(merges[0][4])
+        if receipt.get("schema") != "gogoke.37.worktree-merge-result.v2" or \
+                set(receipt) != {"schema", "mergeReceipt", "childSealIntent", "childCommit", "error"} or \
+                receipt["error"] != "" or canonical(receipt) != merges[0][4]:
+            raise RuntimeError("Original F APPLIED seal receipt absent or noncanonical")
+        intent = json.loads(receipt["childSealIntent"])
+        binding = one(db,
+            "SELECT w.worktree_identity,w.git_pointer_hash,w.common_identity,w.baseline_commit,"
+            "s.common_path,s.common_identity,w.git_pointer_len "
+            "FROM gogoke_v37_worktrees w JOIN gogoke_v37_worktree_sources s USING(repository_id) "
+            "WHERE w.worktree_id=?", (worktree_id,))
+        pointer = tree_path / ".git"
+        common = Path(local_spelling(binding[4])).resolve(strict=True)
+        if not ordinary(pointer) or fingerprint(pointer.read_bytes()) != binding[1].removeprefix("sha256:") or \
+                pointer.stat().st_size != binding[6] or not same_local_path(source / ".git", common) or \
+                binding[2] != binding[5]:
+            raise RuntimeError("Original F pointer, common directory or source binding differs")
+        stop_facts = json.loads(intent.get("stopFacts", "null"))
+        instance_ids = json.loads(intent.get("instanceIds", "null"))
+        if intent.get("schema") != "gogoke.37.child-seal-intent.v2" or len(intent) != 18 or \
+                canonical(intent) != receipt["childSealIntent"] or \
+                any(intent.get(key) != expected for key, expected in {
+                    "requestId": merge_id, "requestHash": merges[0][1], "domainId": domain,
+                    "worktreeId": worktree_id, "repositoryId": journal["repositoryId"],
+                    "seatId": journal["childSeatId"],
+                    "turnId": merge_frame["params"]["turnId"],
+                    "worktreeIdentity": binding[0], "pointerHash": binding[1],
+                    "commonIdentity": binding[2], "baselineCommit": binding[3],
+                    "sourceBefore": source_before, "childBefore": before,
+                    "changed": "true"}.items()) or \
+                not isinstance(intent.get("snapshotHash"), str) or len(intent["snapshotHash"]) != 64 or \
+                any(c not in "0123456789abcdef" for c in intent["snapshotHash"]) or \
+                not isinstance(stop_facts, list) or not stop_facts or \
+                not isinstance(instance_ids, list):
+            raise RuntimeError("Original F child seal intent does not bind request, snapshot and physical registration")
+        stop_instances = set()
+        for fact in stop_facts:
+            if set(fact) != {"processOperationId", "stopFactId", "instanceId", "generation"}:
+                raise RuntimeError("Original seal stop fact shape differs")
+            episode = one(db, "SELECT e.phase,e.stop_fact_id,e.instance_id,e.generation,c.state,c.stop_proof_hash "
+                "FROM gogoke_v37_h_process_episode e JOIN gogoke_coordination_process_custody c "
+                "ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id "
+                "AND c.generation=e.generation WHERE e.process_operation_id=? AND e.domain_id=?",
+                (fact["processOperationId"], domain))
+            if episode != ("STOPPED", fact["stopFactId"], fact["instanceId"],
+                           fact["generation"], "STOPPED", fact["stopFactId"]):
+                raise RuntimeError("F seal stop fact differs from original H/custody rows")
+            stop_instances.add(fact["instanceId"])
+        if instance_ids != sorted(stop_instances) or \
+                not any(fact["instanceId"] == journal["childInstanceId"] for fact in stop_facts):
+            raise RuntimeError("F seal writer instance set lacks original child")
+        child_processes = {row[0] for row in rows(db,
+            "SELECT process_operation_id FROM gogoke_v37_h_process_episode "
+            "WHERE domain_id=? AND session_id=? AND process_operation_id IS NOT NULL",
+            (domain, child_session))}
+        if not child_processes or not child_processes.issubset(
+                {fact["processOperationId"] for fact in stop_facts}):
+            raise RuntimeError("F seal stop facts omit an original child H process")
+        child_commit = receipt["childCommit"]
+        if not isinstance(child_commit, str) or len(child_commit) != 40 or tree_head != child_commit or \
+                git(git_program, tree_path, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise RuntimeError("F child seal commit or stopped worktree differs")
+        child_parents = git(git_program, tree_path, "show", "-s", "--format=%P", child_commit).split()
+        child_message = git(git_program, tree_path, "show", "-s", "--format=%B", child_commit)
+        child_paths = git(git_program, tree_path, "diff-tree", "--no-commit-id", "--name-only", "-r", child_commit).splitlines()
+        if child_parents != [before] or child_paths != [marker_file] or \
+                fingerprint(git_bytes(git_program, tree_path, "show", f"{child_commit}:{marker_file}")) != marker_hash or \
+                any(label not in child_message for label in (
+                    f"Gogoke-Project: {domain}", f"Gogoke-Seat: {journal['childSeatId']}",
+                    f"Gogoke-Instance: {journal['childInstanceId']}",
+                    f"Gogoke-Turn: {merge_frame['params']['turnId']}",
+                    f"Gogoke-Merge-Request: {merge_id}",
+                    f"Gogoke-Merge-Request-Hash: {merges[0][1]}")):
+            raise RuntimeError("Actual host child commit ancestry, marker or authority trailers differ")
+        native = one(db, "SELECT phase,command_hex FROM gogoke_v37_rpc_steps "
+            "WHERE domain_id=? AND session_id=? AND step_id=?", (domain, lead["id"], merge_id))
+        if native[0] not in ("WRITTEN", "OBSERVED"):
+            raise RuntimeError("Original H merge native reply was not written")
+        native_frame = json.loads(bytes.fromhex(native[1]).decode("utf-8"))
+        native_items = native_frame.get("result", {}).get("contentItems", [])
+        if len(native_items) != 1 or native_items[0].get("type") != "inputText":
+            raise RuntimeError("Original H merge native reply shape differs")
+        native_receipt = json.loads(native_items[0]["text"])
+        if native_receipt.get("status") not in ("APPLIED", "REPLAYED") or \
+                native_receipt.get("result", {}).get("childCommit") != child_commit or \
+                native_receipt.get("result", {}).get("childSealIntent") != receipt["childSealIntent"] or \
+                native_receipt.get("result", {}).get("targetCommit") != tree[9]:
+            raise RuntimeError("Original native merge reply and F child seal receipt differ")
+        merge_receipt = json.loads(receipt["mergeReceipt"])
+        if merge_receipt.get("schema") != "gogoke.37.worktree-merge-result.v1" or \
+                merge_receipt.get("requestId") != merge_id or \
+                merge_receipt.get("requestHash") != merges[0][1] or \
+                merge_receipt.get("rawHex") != merge_calls[0][2].hex() or \
+                merge_receipt.get("family") != "K-WORKTREE" or \
+                merge_receipt.get("operation") != "merge" or \
+                merge_receipt.get("targetCommit") != tree[9] or \
+                merge_receipt.get("revision") != str(tree[8]) or \
+                merge_receipt.get("domainId") != domain or \
+                merge_receipt.get("worktreeId") != worktree_id:
+            raise RuntimeError("Original merge intent and APPLIED request receipt differ")
         source = Path(local_spelling(tree[11])).resolve(strict=True)
         source_marker = source / marker_file
         if source_marker.is_symlink() or not source_marker.is_file() \
@@ -435,13 +563,17 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         source_head = git(git_program, source, "rev-parse", "--verify", "HEAD^{commit}")
         parents = git(git_program, source, "show", "-s", "--format=%P", "HEAD").split()
         message = git(git_program, source, "show", "-s", "--format=%B", "HEAD")
-        if source_head != tree[9] or len(parents) != 2 or parents[1] != tree_head \
+        if source_head != tree[9] or parents != [source_before, child_commit] \
                 or any(label not in message for label in (
                     f"Gogoke-Project: {domain}", f"Gogoke-Seat: {journal['childSeatId']}",
                     f"Gogoke-Instance: {journal['childInstanceId']}",
                     f"Gogoke-Turn: {merge_calls[0][1]['params']['turnId']}")):
             raise RuntimeError("Actual Git merge ancestry or provenance differs")
         result["worktree"]["sourceHead"] = source_head
+        result["worktree"]["childHeadBeforeSeal"] = before
+        result["worktree"]["childCommit"] = child_commit
+        result["worktree"]["childSealIntent"] = receipt["childSealIntent"]
+        result["worktree"]["snapshotHash"] = intent["snapshotHash"]
         result["worktree"]["mergeRequestId"] = merges[0][0]
         result["worktree"]["mergeParents"] = parents
 

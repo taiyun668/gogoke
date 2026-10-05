@@ -69,16 +69,21 @@ worktrees are not synthesized in that mode.
    only that exact native question. It never sends a User-origin equivalent of
    a model-authorized create, dispatch, stop or merge.
 3. The native tool's original H send receipt supplies a child session locator
-   when the fixed CLI exposes it. A model text locator is rejected. The child's real `output-stream`
-   must carry an original completed turn. The lead then invokes its own native
+   when the fixed CLI exposes it. A model text locator is rejected. The child
+   writes only the exact UTF-8 JSON marker in its host-created worktree and
+   does not run Git or access `.git`. Its real `output-stream` must carry an
+   original completed turn. The lead then invokes its own native
    `gogoke_seat stop`; the driver observes the child Idle fact. It stops the
    lead without releasing its admission and closes the product normally.
 4. `m2-readback.py ... capture` refuses a nonempty WAL and opens the closed
    candidate with `mode=ro&immutable=1`. It binds the original A `item/tool/call`
    bytes, physical custody and RPC ID to F's registered worktree request,
    the H child reservation/send/stop/release and the E direct-child operation.
-   It hashes the actual marker file and its local Git commit. Its worktree ID
-   is the sole merge target for the next phase.
+   It verifies that the original child HEAD equals the clean source HEAD and
+   that the only child difference is the uncommitted marker. It hashes the
+   exact marker bytes and records the physical tree identity and source HEAD.
+   The worktree ID is the sole merge target for the next phase; the Controller
+   decision binds the current HEAD and marker hash, not a future child commit.
 5. Restart the same installed candidate and resume the same lead session.
    Only the lead model invokes `gogoke_worktree merge` for the verified ID.
    A User graph query may observe its state, then H stops/releases the lead.
@@ -90,8 +95,12 @@ worktrees are not synthesized in that mode.
 6. Close normally, run the final immutable readback, then compare the
    original formal/memory/ledger protection snapshots. The final readback
    verifies original model call bytes, H RPC writes and send receipts, E
-   takeover/child facts, F lifecycle/graph, actual marker hashes and Git merge
-   ancestry/provenance. It exports raw frames, RPC commands, pending/unknown
+   takeover/child facts, F lifecycle/graph, the APPLIED child-seal intent and
+   child commit paired with the original MERGE request, the exact marker bytes,
+   H/custody STOPPED facts, and child/source Git ancestry and trailers. Missing
+   or UNKNOWN seal facts cannot pass. Older APPLIED receipts without a seal
+   remain historical readbacks; this case does not invent their child fields.
+   It exports raw frames, RPC commands, pending/unknown
    frame methods and provider session IDs privately. A script `FLOW_COMPLETE`
    state still requires independent evidence review and Owner acceptance.
 
