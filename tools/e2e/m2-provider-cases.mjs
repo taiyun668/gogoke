@@ -25,7 +25,7 @@ export async function runProviderBoundaryCases(product, config, journal) {
     V04b: 'NOT_RUN_NOT_CONFIGURED', V10: 'NOT_RUN_NOT_CONFIGURED', acceptance: false };
   if (!plan) { product.save(); return journal.providerBoundarySummary; }
   if (process.platform !== 'win32' || config.repositoryId !== 'gogokeSeatTestbed' ||
-      config.domainId !== product.config.domainId || config.instanceId !== 'codexTestM1' ||
+      config.domainId !== product.config.domainId || !atom(config.instanceId) ||
       !product.tester || product.tester.page.url() !== product.endpoint.url ||
       journal.connectionBackend?.agentActs !== 0 ||
       journal.connectionBackend?.telemetryDisabled !== true ||
