@@ -696,7 +696,8 @@ try {
   await runRules();
   const latest = await product.instances();
   for (const row of config.providerCases) await providerCase(row, latest);
-  journal.providerCases.push({ driverId: 'antigravity', result: 'NOT_RUN_OWNER_DECISION_PENDING' }); product.save();
+  journal.providerCases.push({ driverId: 'antigravity', result: 'NOT_RUN_UNSUPPORTED_INSTANCE_LOGIN',
+    reason: 'Shared Windows-user keyring with no evidenced login-only flow; Owner deferred B5 from this OT4b batch' }); product.save();
   await product.closeNormally();
   const final = await readback('final');
   await recordProviderGoldens(final);

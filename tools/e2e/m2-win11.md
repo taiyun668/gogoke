@@ -23,7 +23,9 @@ Each supplied row identifies the previously admitted seat/instance/worktree
 plus its fixed version and SHA-256. An omitted provider is recorded
 `NOT_RUN_NOT_CONFIGURED`; a supplied provider not already `LOGGED_IN` remains
 `NOT_RUN_NOT_LOGGED_IN`.
-Antigravity remains `NOT_RUN_OWNER_DECISION_PENDING` regardless of status.
+Antigravity remains `NOT_RUN_UNSUPPORTED_INSTANCE_LOGIN`: its shared Windows-user
+keyring has no evidenced login-only flow. Owner deferred B5 from the current
+combined Codex/Claude/OpenCode/Grok OT4b batch; this is not a passing B5 case.
 
 The config's `result` and observer outputs must be fresh paths under a private
 `evidenceDirectory`, outside the repository, installed candidate, state root
