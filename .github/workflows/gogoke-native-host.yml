@@ -274,6 +274,7 @@ jobs:
             @{ id = 'lpac-file-lifecycle'; filter = 'app_container_child_writes_only_granted_fresh_directory' },
             @{ id = 'bound-instance-acl'; filter = 'bound_nonempty_tree_grants_only_its_recorded_instance_identity' },
             @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
+            @{ id = 'pinned-codex-cold-account-read'; filter = 'cold_pinned_codex_account_observer_reports_logout_and_durable_stop' },
             @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
             @{ id = 'single-opener-real-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
             @{ id = 'login-rpc-ordered-completion'; filter = 'owned_login_rpc_completion_closes_stdin_and_reads_real_lpac_account' },
@@ -349,6 +350,7 @@ jobs:
               @{ id = 'credential-owner-observer'; filter = 'owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime' }
               @{ id = 'credential-empty-observer'; filter = 'empty_owner_account_observer_initializes_only_fresh_runtime' }
               @{ id = 'credential-real-empty-cli'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' }
+              @{ id = 'credential-real-cold-cli'; filter = 'cold_pinned_codex_account_observer_reports_logout_and_durable_stop' }
               @{ id = 'credential-quiescent-remove'; filter = 'quiescent_alias_removal_preserves_source_and_other_registered_alias' }
               @{ id = 'credential-legacy-migration'; filter = 'legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer' }
               @{ id = 'credential-real-file-startup'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' }

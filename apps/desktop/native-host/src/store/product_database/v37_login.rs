@@ -2579,7 +2579,9 @@ impl<'root> ProductDatabase<'root> {
             .map_err(|error| OrchestrationError::Process(
                 self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
                     ProcessCustodyError::ProtocolPipe(error))))?;
-        let initialize = self.read_rpc_response(prepared, "1")?;
+        let initialize = self.read_rpc_response(prepared, "1").map_err(|error|
+            OrchestrationError::V37StoreFailure(format!(
+                "account observer initialize response: {error:?}")))?;
         let init_command = Command::Initialize { client_version: "0.1.0".into() };
         let init_id = RpcId::client(1).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native initialize ID: {error:?}")))?;
@@ -2603,7 +2605,9 @@ impl<'root> ProductDatabase<'root> {
         process.write_persistent_frame(&config_bytes).map_err(|error|
             OrchestrationError::Process(self.process_custodian.protocol_error_with_stderr(
                 &prepared.ticket, ProcessCustodyError::ProtocolPipe(error))))?;
-        let config = self.read_rpc_response(prepared, "3")?;
+        let config = self.read_rpc_response(prepared, "3").map_err(|error|
+            OrchestrationError::V37StoreFailure(format!(
+                "account observer config/read response: {error:?}")))?;
         match codex_rpc::decode(config.bytes(), Some((&config_id, &config_command))) {
             Ok(Reply::MemoryOff { .. }) => (),
             result => return Err(OrchestrationError::V37StoreFailure(format!("native effective memory observation: {result:?}"))),
@@ -2617,7 +2621,9 @@ impl<'root> ProductDatabase<'root> {
             .map_err(|error| OrchestrationError::Process(
                 self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
                     ProcessCustodyError::ProtocolPipe(error))))?;
-        self.read_rpc_response(prepared, "2")
+        self.read_rpc_response(prepared, "2").map_err(|error|
+            OrchestrationError::V37StoreFailure(format!(
+                "account observer account/read response: {error:?}")))
     }
 
     fn read_rpc_response(&self, prepared: &PreparedCustody, expected_id: &str)
@@ -4080,6 +4086,33 @@ exit 0
         assert!(product.owner_login.is_none());
         product.close_checked().unwrap();
         drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn cold_pinned_codex_account_observer_reports_logout_and_durable_stop() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gogoke-v37-cold-account-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let database = path.join("state.sqlite");
+        let mut product = ProductDatabase::open(&root, &database).unwrap();
+        let register = request("register", "registerColdA", 0, r#"{"driverId":"codex"}"#);
+        let registered = decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap();
+        assert_eq!(registered.status, V37Status::Applied);
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+        // Exercise the first real LPAC account observer directly after native
+        // registration. No earlier preparation may mutate or warm its scopes.
+        let observation = request("login-state", "coldAccountReadA", 1, "{}");
+        let observed = product.dispatch_owner_login_observation(&observation).unwrap();
+        assert_eq!(owner_login_state_from_receipt(&observed).unwrap(), "LOGGED_OUT");
+        assert_eq!(scalar(&product,
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        assert_eq!(scalar(&product,
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state<>'STOPPED'"), "0");
+        drop(product); drop(root);
         fs::remove_dir_all(path).unwrap();
     }
 

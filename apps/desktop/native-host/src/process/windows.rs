@@ -1904,7 +1904,7 @@ impl ManagedProcess {
             }
         }
 
-        let _ = wait_bounded(
+        let terminate_wait = wait_bounded(
             self.process.raw(),
             budgets.terminate_ms,
             budgets.host_deadline_ms,
@@ -1938,8 +1938,29 @@ impl ManagedProcess {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        proof.parent_exited = wait_handle(self.process.raw(), 0).unwrap_or(false);
-        proof.exit_code = process_exit_code(self.process.raw()).ok().flatten();
+        proof.parent_exited = match wait_handle(self.process.raw(), 0) {
+            Ok(signaled) => signaled,
+            Err(error) => {
+                proof.errors.push(format!(
+                    "PARENT_EXIT_WAIT_FAILED: {error}; raw_os_error={:?}", error.raw_os_error()));
+                false
+            }
+        };
+        if !proof.parent_exited {
+            proof.errors.push(format!(
+                "PARENT_NOT_SIGNALED_AFTER_JOB_EMPTY: terminate_wait={terminate_wait:?}"));
+        } else if let Err(error) = terminate_wait {
+            proof.errors.push(format!(
+                "POST_TERMINATE_WAIT_FAILED: {error}; raw_os_error={:?}", error.raw_os_error()));
+        }
+        proof.exit_code = match process_exit_code(self.process.raw()) {
+            Ok(code) => code,
+            Err(error) => {
+                proof.errors.push(format!(
+                    "PROCESS_EXIT_CODE_FAILED: {error}; raw_os_error={:?}", error.raw_os_error()));
+                None
+            }
+        };
         // Active Job termination uses a distinct code. A natural 124 can occur
         // after the grace observation, so sampling cannot authorize an exception.
         if proof.exit_code == Some(STOP_TIMEOUT_EXIT_CODE) {
