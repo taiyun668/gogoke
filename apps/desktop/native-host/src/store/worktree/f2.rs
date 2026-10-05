@@ -1231,6 +1231,7 @@ mod tests {
             assert!(matches!(&error,WorktreeError::Multiple {primary,..} if matches!(primary.as_ref(),WorktreeError::Unknown)));
             assert!(format!("{error:?}").contains("Denied"));
             let child=head(db,root,pin,custodian,&binding.path);
+            assert!(format!("{error:?}").contains(&child),"first UNKNOWN response must retain the original child hash");
             let q=Statement::prepare(db.as_ptr(),"SELECT phase,cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id='mergeA'").unwrap();
             assert!(q.step_row().unwrap());assert_eq!(q.column_text(0).unwrap(),"UNKNOWN");
             assert!(q.column_text(1).unwrap().contains(&child));
