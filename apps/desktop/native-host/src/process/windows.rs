@@ -4013,6 +4013,17 @@ mod tests {
         // No explicit stop or TerminateJobObject: dropping the actual product
         // custodian closes its sole non-inheritable KILL_ON_JOB_CLOSE handle.
         drop(custodian);
+        // Reopen the original physical root before any process-exit wait,
+        // matching the production release/reacquire order. The zero wait is
+        // recorded separately; the bounded observation is not product policy.
+        drop(root);
+        let reacquired = RootLock::acquire(&root_path).expect("exclusive same physical root reacquisition");
+        assert_eq!(reacquired.canonical_root().identity, root_identity);
+        let at_reacquire = unsafe { WaitForSingleObject(child.raw(), 0) };
+        assert!(matches!(at_reacquire, WAIT_OBJECT_0 | WAIT_TIMEOUT),
+            "exact child readback at reacquire: {}", io::Error::last_os_error());
+        eprintln!("holder_gone_child_at_root_reacquire pid={} creation={} wait0={}",
+            child_pair.0, child_pair.1, at_reacquire);
         let child_finished = wait_handle(child.raw(), STOP_OBSERVE_MS)
             .expect("observe the same exact child handle after original Job close");
         let observed_exit = process_exit_code(child.raw()).expect("exact child exit observation");
@@ -4027,11 +4038,6 @@ mod tests {
                 .expect("both exact process identities are gone after actual Job close");
             complete_gone.validate(&[parent_pair, child_pair]).unwrap();
         }
-        // The root release is separate from the exact process observation;
-        // its handles are not inherited by this independently pinned child.
-        drop(root);
-        let reacquired = RootLock::acquire(&root_path).expect("exclusive same physical root reacquisition");
-        assert_eq!(reacquired.canonical_root().identity, root_identity);
         drop(reacquired);
         drop(child);
         fs::remove_file(marker).expect("remove child PID fixture");

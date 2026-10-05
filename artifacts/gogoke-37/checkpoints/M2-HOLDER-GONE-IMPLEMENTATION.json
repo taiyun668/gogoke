@@ -6,14 +6,16 @@
     "Independently reviewed detail amendment PR #68 was merged; trusted main scope digest still matches the existing v2 authorization receipt.",
     "Separate native exact-process proof, immutable F metadata journal, narrow one-SID ACL removal and H resource RELEASED composition are implemented. Original custody, NULL stop proof, episode and history are preserved; no STOPPED is invented.",
     "The first implementation review found stale post-release validation and a nested Owner transaction. Both are fixed; cloud compiler API/visibility errors were also fixed, and the focused independent source review found no new confirmed blocker.",
-    "Real descendant/Job-close test and compiled kill-on-close mutation are integrated; composed two-ACTIVE recovery tests are being integrated."
+    "Real descendant/Job-close test, compiled kill-on-close mutation and composed two-ACTIVE recovery tests are integrated. Five test-only durable cutpoints verify cold recovery at capture, ACL effect, F revoke, journal Revoked and H release boundaries.",
+    "The fresh all-axis source review found no new confirmed production defect; dynamic qualification remains pending. The root-reacquire test now performs reacquisition before its child-exit observation and records Wait(0) separately rather than claiming instant termination.",
+    "GitHub reported degraded hosted-runner assignment during this phase. Exact-source workflows remain submitted; cloud hygiene at 9be9e19e passed."
   ],
   "results": {
     "plan_authorization": "EXACT_READBACK_AND_SCOPE_DIGEST_MATCH",
     "first_cloud_compile": "FAILED_ORIGINAL_E0308_AND_E0624_PRESERVED",
     "fixed_source_review": "NO_CONFIRMED_NEW_BLOCKER_NOT_BEHAVIOR_ACCEPTANCE",
     "fixed_cloud_library": "IN_PROGRESS_OR_QUEUED",
-    "composed_recovery_and_mutations": "NOT_RUN",
+    "composed_recovery_and_mutations": "NOT_RUN_PENDING_CLOUD",
     "same_instance_owner_win11_recovery": "NOT_RUN",
     "additional_login": "NOT_AUTHORIZED_THIS_ROUND"
   },

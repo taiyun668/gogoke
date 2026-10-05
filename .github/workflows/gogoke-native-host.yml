@@ -288,6 +288,7 @@ jobs:
             @{ id = 'holder-gone-job-close'; filter = 'holder_gone_requires_job_close_to_remove_live_descendant_before_root_recovery' },
             @{ id = 'holder-gone-composed'; filter = 'actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_and_admit_cold_source' },
             @{ id = 'holder-gone-live-and-source-negative'; filter = 'composed_disappearance_rejects_actual_live_identity_and_wrong_physical_source_without_resource_effects' },
+            @{ id = 'holder-gone-partial-cold'; filter = 'actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_boundary' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
             @{ id = 'protocol-input-close'; filter = 'native_input_close_delivers_eof_and_preserves_graceful_stop_proof' },
             @{ id = 'lpac-file-lifecycle'; filter = 'app_container_child_writes_only_granted_fresh_directory' },

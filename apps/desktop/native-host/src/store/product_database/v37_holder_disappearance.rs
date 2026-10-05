@@ -13,6 +13,22 @@ use crate::root::RootIdentity;
 type Fields = BTreeMap<String, String>;
 const CREDENTIAL_RIGHTS: u32 = 0x0012_019f;
 
+#[cfg(test)]
+std::thread_local! {
+    static HOLDER_GONE_CUT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn set_holder_gone_cut_for_test(stage: Option<&'static str>) {
+    HOLDER_GONE_CUT.with(|cut| cut.set(stage));
+}
+#[cfg(test)]
+fn holder_gone_cut_for_test(stage: &'static str) -> Result<()> {
+    if HOLDER_GONE_CUT.with(|cut| {
+        if cut.get()==Some(stage) {cut.set(None);true} else {false}
+    }) {return Err(refused("controlled holder-gone cut"));}
+    Ok(())
+}
+
 fn fail<T>(value: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
     value.map_err(|error| OrchestrationError::V37StoreFailure(
         format!("disappeared credential holder: {error:?}")))
@@ -313,6 +329,8 @@ impl<'root> ProductDatabase<'root> {
                 let record=fail(gone::begin_holder_disappearance(&mut self.connection,&input,&proof))?;
                 (record,capture,step)
             };
+            #[cfg(test)]
+            holder_gone_cut_for_test("AFTER_CAPTURE")?;
             if record.phase==Phase::Preparing {
                 self.gone_scope(instance_id,&allowed,incoming)?;
                 fail(all_gone.validate(&all_pairs))?;
@@ -331,7 +349,11 @@ impl<'root> ProductDatabase<'root> {
                     fail(step.readback_target(&binding,&proof,&[pair]))?
                 } else {fail(step.apply_or_readback(&binding,&proof,&[pair]))?};
                 if observed!=get(&capture,"aclTarget")? {return Err(refused("holder actual revoke target changed"));}
+                #[cfg(test)]
+                holder_gone_cut_for_test("AFTER_ACL")?;
                 fail(instance::complete_credential_profile(&mut self.connection,&intent,instance::CredentialProfileResult::Revoked))?;
+                #[cfg(test)]
+                holder_gone_cut_for_test("AFTER_F_REVOKE")?;
                 fail(self.connection.execute("BEGIN IMMEDIATE"))?;
                 let advanced=(||->Result<HolderDisappearanceRecord>{
                     fail(authority::check_owner_in_current_transaction(&self.connection,&self.owner))?;
@@ -340,6 +362,8 @@ impl<'root> ProductDatabase<'root> {
                 })();
                 record=match advanced {Ok(r)=>{self.finish_native_transaction(Ok(()))?;r},
                     Err(e)=>{self.finish_native_transaction(Err(e))?;unreachable!()}};
+                #[cfg(test)]
+                holder_gone_cut_for_test("AFTER_REVOKED")?;
             }
             if record.phase==Phase::Revoked {
                 self.gone_scope(instance_id,&allowed,incoming)?;
@@ -350,6 +374,8 @@ impl<'root> ProductDatabase<'root> {
                 self.finish_native_transaction(released)?;
                 record=fail(gone::read_holder_disappearance(&self.connection,member))?
                     .ok_or_else(||refused("holder release journal absent"))?;
+                #[cfg(test)]
+                holder_gone_cut_for_test("AFTER_RELEASE")?;
             }
             if record.phase!=Phase::Applied {return Err(refused("holder resource recovery incomplete"));}
             self.gone_validate_capture(&self.gone_original(&fail(instance::read_credential_profiles(&self.connection,instance_id))?
