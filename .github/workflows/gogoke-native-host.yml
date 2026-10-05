@@ -262,7 +262,7 @@ jobs:
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $probes = @(
             @{ id = 'job-second-stop'; filter = 'actual_kernel_rejects_invalid_job_handle_and_second_stop_retains_custody' },
-            @{ id = 'legacy-product-recovery'; filter = 'legacy_original_home_capture_refuses_same_boot_preserves_unknown_and_reopens_exact_fence' },
+            @{ id = 'legacy-product-recovery'; filter = 'legacy_original_home_preserves_unknown_and_reopens_exact_holder_fence' },
             @{ id = 'legacy-partial-physical'; filter = 'two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback' },
             @{ id = 'legacy-snapshot-negative'; filter = 'snapshot_rejects_tampering_and_unknown_package_grants' },
             @{ id = 'stalled-new-generation-original'; filter = 'stalled_health_new_generation_suppresses_original_physical_cause' },
@@ -323,6 +323,15 @@ jobs:
           if ('${{ inputs.private_history_fixture_only }}' -eq 'true') {
             if (@('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}') -contains 'true') { throw 'Directed scopes cannot be combined' }
             $probes = @(
+              @{ id = 'legacy-holder-query'; filter = 'class_three_requires_exact_length_positive_boot_and_preserves_status' },
+              @{ id = 'legacy-holder-seal'; filter = 'exact_boundary_and_canonical_seal_reject_changes' },
+              @{ id = 'legacy-holder-reuse'; filter = 'reused_pid_requires_a_different_creation_time' },
+              @{ id = 'legacy-holder-open-error'; filter = 'only_invalid_parameter_proves_absent_pid' },
+              @{ id = 'legacy-holder-alive'; filter = 'current_process_cannot_be_a_legacy_holder' },
+              @{ id = 'legacy-holder-current-boot'; filter = 'stopped_process_created_this_boot_still_cannot_pass' },
+              @{ id = 'legacy-holder-boot-query'; filter = 'native_boot_query_is_stable_within_one_boot' },
+              @{ id = 'legacy-original-product'; filter = 'legacy_original_home_preserves_unknown_and_reopens_exact_holder_fence' },
+              @{ id = 'legacy-original-store'; filter = 'exact_schema_reopen_and_two_persistent_intents' },
               @{ id = 'private-history-owner'; filter = 'initial_is_fresh_resume_selects_exact_source_and_cross_scope_is_refused' },
               @{ id = 'private-history-intent'; filter = 'absent_physical_commit_preserves_existing_or_missing_leaf_without_recreation' },
               @{ id = 'private-history-replaced'; filter = 'replaced_leaf_is_refused_and_original_history_is_preserved' },
@@ -702,7 +711,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $productTest = 'legacy_original_home_capture_refuses_same_boot_preserves_unknown_and_reopens_exact_fence'
+          $productTest = 'legacy_original_home_preserves_unknown_and_reopens_exact_holder_fence'
           $cases = @(
             @{ axis='legacy-R4-partial'; path='apps/desktop/native-host/src/process/session/legacy_acl.rs';
                filter='two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback' },
@@ -722,7 +731,7 @@ jobs:
                 '    acl_equal(observed, original) || acl_equal(observed, &home_target(original, historical))' + "`n" + '}' + "`n"
               $mutated = $source.Substring(0,$start) + $stale + $source.Substring($end)
             } elseif ($case.axis -ceq 'legacy-R5-prewrite') {
-              $needle = '            failure(instance::validate_legacy_acl_write(&self.connection, &home_step, &boot, &proof))?;'
+              $needle = '            failure(instance::validate_legacy_acl_write(&self.connection, &home_step, &proof))?;'
               if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) { throw 'Legacy pending HOME validator must match once' }
               $mutated = $source.Replace($needle,'')
             } elseif ($case.axis -ceq 'legacy-R6-cold-model') {
