@@ -180,9 +180,15 @@ fn host_directory_value(name: &str) -> Result<String, ProviderLoginPreparationEr
 fn login_environment(home: &Path, provider: LoginProvider)
     -> Result<Vec<(String, String)>, ProviderLoginPreparationError> {
     let system_root = host_directory_value("SystemRoot")?;
+    // Fixed Windows CLIs resolve their browser helper with where.exe. Supply
+    // only the system executable directory, never the caller's search path.
+    let system_executables = Path::new(&system_root).join("System32");
+    let system_executables = system_executables.to_str()
+        .ok_or(ProviderLoginPreparationError::denied("system directory is not Unicode"))?;
     let home_text = home.to_str().ok_or(ProviderLoginPreparationError::denied("instance home is not Unicode"))?;
     let mut environment = vec![
         ("SystemRoot".into(), system_root.clone()), ("WINDIR".into(), system_root),
+        ("PATH".into(), system_executables.into()), ("PATHEXT".into(), ".EXE".into()),
         ("TEMP".into(), home_text.into()), ("TMP".into(), home_text.into()),
     ];
     for intent in recipe(provider).environment {
@@ -292,4 +298,45 @@ pub(crate) fn prepare_registered_provider_login(db: &mut VerifiedDatabaseConnect
     Ok(LoginPreparation::Ready(PreparedProviderLogin { instance_id: instance_id.to_owned(),
         driver_id: pin.driver_id, version: pin.version, program_digest: pin.digest,
         application, home, login, status, browser: recipe.browser }))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_provider_login_system_lookup_is_explicit_and_not_inherited() {
+        let home = std::env::temp_dir().join(format!("gogoke-login-lookup-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&home).unwrap();
+        let environment = login_environment(&home, LoginProvider::Claude).unwrap();
+        let system = Path::new(&host_directory_value("SystemRoot").unwrap()).join("System32");
+        assert_eq!(environment.iter().find(|(key, _)| key == "PATH").unwrap().1,
+            system.to_str().unwrap());
+        assert_eq!(environment.iter().find(|(key, _)| key == "PATHEXT").unwrap().1, ".EXE");
+        assert!(environment.iter().all(|(key, _)| !matches!(key.as_str(),
+            "BROWSER" | "NODE_OPTIONS" | "ANTHROPIC_API_KEY" | "CLAUDE_CODE_OAUTH_TOKEN")));
+        for key in ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR"] {
+            assert_eq!(environment.iter().find(|(name, _)| name == key).unwrap().1,
+                home.to_str().unwrap());
+        }
+        // This is the exact inner command used by the fixed Claude image,
+        // not a browser launch or an account/network authentication attempt.
+        let lookup = |entries: &[(String, String)]| std::process::Command::new(system.join("where.exe"))
+            .arg("rundll32").current_dir(&home).env_clear()
+            .envs(entries.iter().map(|(key, value)| (key, value)))
+            .output().unwrap();
+        let original: Vec<_> = environment.iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "PATH" | "PATHEXT"))
+            .cloned().collect();
+        let rejected = lookup(&original);
+        assert!(!rejected.status.success(), "lookup unexpectedly inherited system search state");
+        let found = lookup(&environment);
+        assert!(found.status.success(), "system lookup: {}", String::from_utf8_lossy(&found.stderr));
+        let actual = String::from_utf8(found.stdout).unwrap();
+        assert_eq!(std::fs::canonicalize(actual.trim()).unwrap(),
+            std::fs::canonicalize(system.join("rundll32.exe")).unwrap());
+        std::fs::remove_dir(home).unwrap();
+    }
 }

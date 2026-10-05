@@ -93,7 +93,7 @@ does not establish their launch result.
 
 | CLI pin | Recipe | Environment intent | Browser and completion |
 | --- | --- | --- | --- |
-| Claude Code `2.1.196` | `claude auth login`. Anthropic's official `v2.1.41` release introduced `auth login` and `auth status`, before the fixed `2.1.196` pin. The prior Room `--claudeai` flag is omitted because the fixed-version source did not verify it. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status --json` is the independent read; only matching documented exit 0/`loggedIn:true` or 1/`loggedIn:false` is classified. Do not parse other account fields. |
+| Claude Code `2.1.196` | `claude auth login`. The actual fixed image's help confirms `--claudeai` selects Claude subscription and is the default, so this argv already selects that same Room login type. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status --json` is the independent read; only matching documented exit 0/`loggedIn:true` or 1/`loggedIn:false` is classified. Do not parse other account fields. |
 | OpenCode `1.18.32` | `opencode auth login --pure --provider openai --method "ChatGPT Pro/Plus (browser)"`. Fixed help and tagged source show both selectors skip terminal menus. `--pure` skips external plugins while retaining the built-in OpenAI auth plugin. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | The selected built-in method prints a complete `Go to:` authorization URL, waits on localhost:1455, and does not call a browser opener. The User host may open that exact printed URL once. The fixed callback stores the local OAuth entry before its exact complete success line. That original line plus durable successful stop proves local credential presence; `auth list --pure` independently proves the observed empty inventory. No remote token validity is claimed. |
 | Grok Build `1.0.41` | `grok login --oauth`. Exact fixed-binary `--help` evidence confirms this command and OAuth option. `grok models` is the separate CLI-owned status observation. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home for login and status, matching H's model launch selector; preserve original AppData for browser context. | Browser-opening behavior and login completion remain unknown. The help exposes no `--no-browser` flag. H must not auto-open an output URL or infer login success from process exit or model listing. Reconcile only from the independent authentication heading, and retain UNKNOWN for unqualified output. |
 | Antigravity CLI `1.2.11` | The exact official tag says first launch of `agy` authenticates through system keyring and opens the browser if needed. **Unsupported as an instance login**: it exposes no documented login-only command, and the system keyring is shared across this Windows user. | Local home bindings cannot isolate the system keyring identity. | The CLI owns first-launch browser behavior; H must not open a duplicate URL. Account status stays `UNKNOWN`; do not turn a shared keyring session into per-instance readiness. |
@@ -105,6 +105,19 @@ the final explicit environment from its approved source; these descriptors do
 not authorize inheriting arbitrary parent variables. The login process uses
 the logged-in user token, while every model process continues to require its
 existing LPAC route.
+
+The ordinary provider login/status environment also supplies `PATH` containing
+only `%SystemRoot%\System32` and `PATHEXT=.EXE`; it never copies the caller's
+search path. On Owner Win11, the exact fixed Claude `2.1.196` image calls
+`where.exe rundll32` before opening its automatic OAuth callback URL. Its printed
+URL is the manual alternative, not the URL used by its browser launcher. The
+original explicit environment made that inner command fail with
+`Environment variable "PATH" is not found`; adding the system directory alone
+still failed, and adding `.EXE` resolved the system helper. This restores the
+helper lookup needed by the CLI's browser and callback without changing its bytes,
+credential home, permissions or model LPAC environment. The ordinary system
+helper is a Windows component subject to the same Smart App Control; actual
+browser and callback qualification still requires the installed Owner product.
 
 ## Home-selector reconciliation
 
