@@ -104,7 +104,7 @@ jobs:
           $bin = Join-Path $package 'bin'
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           $binary = Join-Path $bin 'claude.exe'
-          Copy-Item -LiteralPath $original -Destination $binary
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
           $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
           if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
           $version = & $binary --version
@@ -571,7 +571,7 @@ jobs:
           $bin = Join-Path $package 'bin'
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           $binary = Join-Path $bin 'claude.exe'
-          Copy-Item -LiteralPath $original -Destination $binary
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
           $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
           if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
           $version = & $binary --version

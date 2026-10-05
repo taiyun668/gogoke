@@ -1034,9 +1034,7 @@ impl AppContainerProfile {
         Ok(())
     }
 
-    /// The program path must come from F's fixed native catalog. Its object
-    /// identity is captured before the grant and rechecked by process custody
-    /// at suspended creation; an arbitrary caller-supplied path is insufficient.
+    /// Single-link identity for compatibility modules and other bound assets.
     pub(crate) fn capture_program_identity(path: &Path) -> Result<RootIdentity, IsolationError> {
         let object = open_physical_object(path, false, READ_CONTROL)?;
         let identity = file_identity(object.0)?;
@@ -1064,6 +1062,46 @@ impl AppContainerProfile {
             return Err(IsolationError::AclWitnessMismatch);
         }
         require_bound_path(path, expected, false)?;
+        Ok(AclWitness { identity: expected.clone(), package_sid: self.package_sid_string()?,
+            rights, inheritance: NO_INHERITANCE })
+    }
+
+    /// Only LaunchEvidence uses this path for F's fixed catalog program after
+    /// verifying its stored digest and version. Installed CLI names may be hard
+    /// links to the same ordinary file; the grant follows that physical FileID.
+    /// This does not apply to modules, credential aliases or writable data.
+    pub(crate) fn capture_catalog_program_identity(path: &Path)
+        -> Result<RootIdentity, IsolationError> {
+        let object = open_catalog_program(path, READ_CONTROL)?;
+        let identity = file_identity(object.0)?;
+        require_catalog_program_path(path, &identity)?;
+        Ok(identity)
+    }
+
+    pub(crate) fn grant_bound_catalog_program(&self, path: &Path, expected: &RootIdentity)
+        -> Result<AclWitness, IsolationError> {
+        let object = open_catalog_program(path, READ_CONTROL | WRITE_DAC)?;
+        if &file_identity(object.0)? != expected {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        require_catalog_program_path(path, expected)?;
+        let result = grant_exact_acl(object.0, self.sid, expected,
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, NO_INHERITANCE)?;
+        require_catalog_program_path(path, expected)?;
+        let witness = self.verify_bound_catalog_program_grant(path, expected)?;
+        if witness.identity != result { return Err(IsolationError::AclWitnessMismatch); }
+        Ok(witness)
+    }
+
+    pub(crate) fn verify_bound_catalog_program_grant(&self, path: &Path,
+        expected: &RootIdentity) -> Result<AclWitness, IsolationError> {
+        let object = open_catalog_program(path, READ_CONTROL)?;
+        let rights = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        if &file_identity(object.0)? != expected ||
+            package_aces(object.0, self.sid)?.as_slice() != &[(GRANT_ACCESS, rights, NO_INHERITANCE)] {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        require_catalog_program_path(path, expected)?;
         Ok(AclWitness { identity: expected.clone(), package_sid: self.package_sid_string()?,
             rights, inheritance: NO_INHERITANCE })
     }
@@ -1203,6 +1241,35 @@ fn open_physical_object(path: &Path, directory: bool, access: u32)
         return Err(IsolationError::DirectoryNotPhysical);
     }
     Ok(object)
+}
+
+// A deliberately separate opener: the ordinary object and handle checks are
+// retained, but a catalog program can have multiple names for one FileID.
+// No generic option can relax physical_file for any other asset or data tree.
+fn open_catalog_program(path: &Path, access: u32) -> Result<Token, IsolationError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| IsolationError::AclObject {
+        object: path.to_path_buf(), operation: "read catalog program metadata", error })?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_file() {
+        return Err(IsolationError::DirectoryNotPhysical);
+    }
+    let object = open_directory(path, access)?;
+    let info = file_information(object.0)
+        .map_err(|error| acl_object(error, path, "read catalog program attributes"))?;
+    if info.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        info.links == 0 {
+        return Err(IsolationError::DirectoryNotPhysical);
+    }
+    Ok(object)
+}
+
+fn require_catalog_program_path(path: &Path, expected: &RootIdentity)
+    -> Result<(), IsolationError> {
+    let object = open_catalog_program(path, READ_CONTROL)?;
+    if &file_identity(object.0)
+        .map_err(|error| acl_object(error, path, "read bound catalog program identity"))? != expected {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    Ok(())
 }
 
 fn require_bound_path(path: &Path, expected: &RootIdentity, directory: bool)
@@ -1659,6 +1726,10 @@ fn valid_profile_name(name: &str) -> bool {
     name.len() <= 64 && name.starts_with("Gogoke37.") && name[9..].bytes().all(|byte|
         byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')) && name.len() > 9
 }
+
+#[cfg(test)]
+#[path = "catalog_program_tests.rs"]
+mod catalog_program_tests;
 
 #[cfg(test)]
 mod tests {

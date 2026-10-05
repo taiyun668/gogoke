@@ -325,7 +325,7 @@ impl LaunchEvidence {
         // a legitimate idle instance rebind does not change the worktree.
         let program = evidence(instance::locate_pinned_program(&pin.driver_id, &pin.digest, &pin.version))?;
         let program_identity = evidence_at("capture-pinned-program-identity",
-            AppContainerProfile::capture_program_identity(&program))?;
+            AppContainerProfile::capture_catalog_program_identity(&program))?;
         // Runtime home writes are separate from workspace permission. No
         // public parent, other session, source tree or common Git dir is granted.
         verify_host_guard(db,owner,host_guard)?;
@@ -345,7 +345,7 @@ impl LaunchEvidence {
                 profile.grant_bound_tree(&member.path, &member.identity, writable))?;
         }
         verify_host_guard(db,owner,host_guard)?;
-        evidence_at("grant-pinned-program", profile.grant_bound_program(&program, &program_identity))?;
+        evidence_at("grant-pinned-program", profile.grant_bound_catalog_program(&program, &program_identity))?;
         let code_mode = if pin.driver_id == "codex" {
             verify_host_guard(db,owner,host_guard)?;
             Some(super::codex_component::BoundCodexComponent::prepare(&program, &profile)?)
@@ -567,7 +567,7 @@ impl LaunchEvidence {
                     &member.path, &member.identity, writable))?,
             };
         }
-        evidence(self.profile.verify_bound_program_grant(&self.program, &self.program_identity))?;
+        evidence(self.profile.verify_bound_catalog_program_grant(&self.program, &self.program_identity))?;
         if let Some(code_mode) = &self.code_mode { code_mode.verify(&self.profile)?; }
         if let Some(module) = &self.module {
             let mut mapping = Vec::new();
