@@ -111,9 +111,14 @@ jobs:
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           $binary = Join-Path $bin 'claude.exe'
           $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ($digest -cne '180D7B279455E8B89D4353A5146447BE2F80B80FB0DB14BDC6DD9CB98C0AEF09') { throw "Official fixed Claude platform digest differs: $digest" }
           if (Test-Path -LiteralPath $binary) {
             $existing = Get-Item -LiteralPath $binary -Force
-            if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Existing cloud catalog leaf is not the identical ordinary fixed program' }
+            Write-Output "Existing cloud catalog leaf: directory=$($existing.PSIsContainer) attributes=$($existing.Attributes) linkType=$($existing.LinkType)"
+            if ($existing.PSIsContainer) { throw 'Cloud catalog leaf unexpectedly became a directory' }
+            Write-Output "Existing cloud catalog leaf SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)"
+            # This is the cloud fixture's package leaf, not an Owner installation.
+            # Remove only that name; a file symlink's target is never removed.
             Remove-Item -LiteralPath $binary -ErrorAction Stop
           }
           New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
@@ -584,9 +589,14 @@ jobs:
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           $binary = Join-Path $bin 'claude.exe'
           $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ($digest -cne '180D7B279455E8B89D4353A5146447BE2F80B80FB0DB14BDC6DD9CB98C0AEF09') { throw "Official fixed Claude platform digest differs: $digest" }
           if (Test-Path -LiteralPath $binary) {
             $existing = Get-Item -LiteralPath $binary -Force
-            if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Existing cloud catalog leaf is not the identical ordinary fixed program' }
+            Write-Output "Existing cloud catalog leaf: directory=$($existing.PSIsContainer) attributes=$($existing.Attributes) linkType=$($existing.LinkType)"
+            if ($existing.PSIsContainer) { throw 'Cloud catalog leaf unexpectedly became a directory' }
+            Write-Output "Existing cloud catalog leaf SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)"
+            # This is the cloud fixture's package leaf, not an Owner installation.
+            # Remove only that name; a file symlink's target is never removed.
             Remove-Item -LiteralPath $binary -ErrorAction Stop
           }
           New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
