@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.37.stage-checkpoint.v1",
+  "state": "READY_FOR_ONE_BATCH_OT4B_ON_INSTALLED_0_1_26",
+  "changed": "Installed frozen diagnostic candidate 0.1.26 through the trusted candidate chain. Registered codexTestM2Ready through the actual installed User ingress without login or model execution. Development M1/M2 drivers now select their configured native Codex instance instead of requiring the old instance literal; actual host driver/login checks and existing version, digest and graph checks remain.",
+  "result": "Trusted-main candidate signing and same-byte cloud installed smoke PASS. Independent G4 read-only audit verified 1117 exact empty directories, zero files/reparse points/identity mismatches; ordinary cleanup rechecked every physical identity and read back all 1117 as ABSENT, filesDeleted=0. Ordinary actual installer exited 0; installed shell/native-host/resource-index hashes and candidate registration matched frozen inputs. Five original homes and instance metadata, native data-root identity and three unresolved custody rows were retained exactly. Fresh registration and normal caption close exited 0; all five formal protection groups remained unchanged. Fresh fixed Codex pin is 0.160.0. Each of the four original non-login refresh requests returned LOGGED_OUT; each native process has durable STOPPED with a nonempty proof hash, and all four native instance revisions advanced to 2. Original fence, 35 captured identities and committed claim remain exact; the three older unresolved rows remain unchanged. Fresh Codex has zero legacy fences/custody/steps, credential objects/aliases/profiles and model claims. No auth source exists. The previous timeout was not reproduced on this new instance; its root cause remains unknown, not claimed fixed.",
+  "measurement": "Initial UI fixture counted the instance card before the asynchronous list had loaded and failed without any login. The same actual product then showed all six instance titles and four enabled login buttons under hard locators. Corrected the fixture to await the actual visible card. Normal caption close exited 0 and released its measurement observer; final finite UI preparation leaves the detached product owned by the host, not by a timed development observer. One overlong scheduled-task case name was rejected before execution; used the same read-only script with a valid shorter name.",
+  "references": "Reused reviewed Interactive/Limited tasks, exact-object G4 consumer, frozen candidate verification/install scripts, native K-INSTANCE registration and version/install/login-state readbacks, ActualProduct hard CDP bridge and ordinary caption close. Existing fresh-status failure remains preserved. E2E changes reuse configured-instance selection already used by ActualProduct and native host instance view; no new permission tier/schema, provider completeness gate or model substitute was introduced.",
+  "cloud": {
+    "source": "e80c6e3ba1209952d5d624f5d099f54ebfc58d25",
+    "trusted_main": "82ede44aad5f59499138444e973dd5bf5360b97a",
+    "desktop_run": 37282760989,
+    "native_run": 37282761866,
+    "hygiene_run": 37282761406,
+    "native_result": "690 passed, zero failed/ignored; two production LPAC shim cases passed. Separate focused/mutation/server runs NOT_RUN in full_library_only mode; prior directed source check is recorded in M2-FRESH-INSTANCE-OT4B.json.",
+    "frozen_artifact": 11334557776,
+    "frozen_archive_sha256": "39e04d94a3af4b80097be8707efc7ed208333e2dd98c201b23a4933e7ae9492b",
+    "signing_run": 37288123070,
+    "signed_artifact": 11335635735,
+    "signed_archive_sha256": "0e082ed9e96c4aa4576993ce0e9abe0c0a12a765f7656780cf4dcd2a39f1b5ad",
+    "installed_smoke_run": 37288447072,
+    "installed_smoke_result": "PASS actual installed product/service, poisoned-module rejection, uninstall and separate CI-only installer negative axes; cloud result does not establish Owner Win11 model-session behavior.",
+    "positive_evidence_artifact": 11336049854,
+    "positive_evidence_file_sha256": "3fd8573b865884c50087d8988cd871977cca247318d49caf7367a68669ee9ce1",
+    "negative_evidence_artifact": 11337006049,
+    "negative_evidence_file_sha256": "c4428467af8d7aab887464b4bf28963d4d6eafe729f1ba7c6faf4c7743020a46"
+  },
+  "g4": {
+    "inventory_sha256": "ba18805019130ee20a591c5a97805986865301f1dbb9be69ac0ac3d80f7a3324",
+    "independent_audit_sha256": "fe380994152eed53ae2122049e5d4e9497c41c3e307f86e3d0f83ea26b4279cf",
+    "directories_absent": 1117,
+    "files_deleted": 0
+  },
+  "ot4b": {
+    "owner_decision": "One batch: Codex, Claude, OpenCode and Grok; B5 UNSUPPORTED/NOT_RUN.",
+    "ready": true,
+    "authentication_actions": false,
+    "model_calls": 0,
+    "codex_separate_login_requested": false,
+    "instances": [
+      "codexTestM2Ready",
+      "claudeTestM2",
+      "opencodeTestM2",
+      "grokTestM2"
+    ],
+    "ui_readback": "Four unique actual instance cards; native NOT_LOGGED_IN; every one-click login button enabled. Finite ordinary UI task exited 0, actual installed product remains running independently."
+  },
+  "next": "Owner OT4b: in Settings > Instances, authorize codexTestM2Ready, claudeTestM2, opencodeTestM2 and grokTestM2 sequentially in the host-opened browser. After each automatic LOGGED_IN result, continue to the next. Then Controller verifies original host results and runs fresh-instance M1/M2 real E2E. B5 remains UNSUPPORTED/NOT_RUN. No milestone acceptance claimed.",
+  "acceptance": false,
+  "public_release": false
+}
