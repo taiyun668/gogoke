@@ -27,7 +27,8 @@ const SOURCE_REMOTE_SSH: &str = "git@github.com:taiyun668/gogoke-seat-testbed.gi
 
 mod f2;
 pub(crate) use f2::{cleanup_stop_gate, cleanup_worktree, graph_query, merge_worktree,
-    merge_worktree_request, readback_create_receipt, register_created_worktree,
+    merge_worktree_request, readback_create_receipt, readback_merge_receipt_request,
+    register_created_worktree,
     register_created_worktree_request, repository_for_worktree,
     resolve_group_for_launch, CleanupReceipt, CreateHistory, ExactStopFact, GraphMember,
     MergeReceipt, RegisterReceipt, WorktreeGraph};
@@ -168,7 +169,7 @@ fn append_error(primary: &mut Option<WorktreeError>, phase: &'static str, error:
     *primary = Some(next);
 }
 fn git_stdout_shape(tag: &str, output: bool, frames: usize) -> bool {
-    if tag == "source_attrs" || tag == "f2_status" {
+    if tag == "source_attrs" || tag == "f2_status" || tag == "child_index" || tag == "child_tree" {
         output
     } else if !output {
         frames == 0
