@@ -49,7 +49,7 @@ const journal = { schema: 'gogoke.37.m2-provider-win11-e2e.v1', caseId: id('m2Pr
   installedVersion: config.version, installedSha256: config.installedSha256,
   state: 'RUNNING', acceptance: false, authenticationActions: false, observerDatabaseWrites: false,
   hostOperationsWriteCandidateDatabase: true, credentialReads: false, b5: 'NOT_RUN_UNSUPPORTED',
-  marker: id('M2_PROVIDER_MARKER'), cases: [], operations: [], sessions: [],
+  marker: id('M2_PROVIDER_MARKER'), cases: [], operations: [], sessions: [], launches: [], closes: [],
   snapshots: {}, readbacks: [], goldens: [], assertions: [] };
 const product = new ActualProduct(config, journal);
 const check = (condition, reason) => {
