@@ -3,7 +3,7 @@
 //! This module is data-only. The native host owns process creation, raw output
 //! custody, visible progress, and reconciliation. This module never opens a
 //! browser. Its explicit browser behavior distinguishes the fixed OpenCode
-//! printed-URL handoff from CLI-owned and unknown browser flows.
+//! xAI device-code URL handoff from CLI-owned and unknown browser flows.
 
 use std::path::Path;
 
@@ -182,8 +182,8 @@ const OPENCODE: ProviderLoginRecipe = ProviderLoginRecipe {
     provider: LoginProvider::OpenCode,
     pinned_version: "1.18.32",
     executable: "opencode",
-    argv: &["auth", "login", "--pure", "--provider", "openai", "--method", "ChatGPT Pro/Plus (browser)"],
-    instructions: "The fixed OpenAI browser method prints a complete authorization URL and waits on localhost:1455. The host opens that exact printed URL once for the User; no CLI selection, device code, or API key entry is required.",
+    argv: &["auth", "login", "--pure", "--provider", "xai", "--method", "SuperGrok Subscription"],
+    instructions: "The fixed built-in xAI OAuth method prints its verification URL and device-code instructions. The host opens the exact printed verification URL once for the User; the CLI polls xAI's device authorization flow and stores the returned OAuth credential.",
     availability: RecipeAvailability::Supported,
     environment: OPENCODE_ENV,
     browser: BrowserBehavior::HostOpensPrintedAuthorization,

@@ -50,15 +50,20 @@ Final is emitted only after that continuation resolves.
 requires both a documented exit code and matching boolean `loggedIn`; any
 mismatch is Unknown. OpenCode's fixed `auth list --pure` lists local credentials.
 The observed empty-home output, exit 0 and `0 credentials`, establishes
-LOGGED_OUT without a host read of `auth.json`. Nonempty output alone stays
-Unknown because its display name does not identify the provider ID. The
-original pinned `openai` browser callback instead stores the OAuth entry
-before printing Clack's complete LF-terminated `Login successful` line. Only
-that original custodied line together with durable STOPPED exit 0, no
-cancellation/capture failure, and the same F pin/home records
-`CREDENTIAL_PRESENT_NO_VALIDITY_CHECK`; exit zero alone never does. A later
-ambiguous inventory leaves that durable observation intact, while the exact
-empty `0 credentials` inventory records LOGGED_OUT. Grok's fixed `models`
+LOGGED_OUT without a host read of `auth.json`. A nonempty inventory is only
+classified for the exact one-entry source-formatted row `xAI oauth` and total
+`1 credentials`; this uses the tagged formatter's display-name/type/count
+fields and the fixed binary's cached xAI catalog name. Other output, including
+additional credentials, stays Unknown. This positive inventory shape is
+source-derived and has not been observed after a real login. The original
+pinned `xai` device-code callback returns OAuth tokens to the CLI, which
+persists the entry before printing Clack's complete LF-terminated `Login
+successful` line. Only that original custodied line together with durable
+STOPPED exit 0, no cancellation/capture failure, and the same F pin/home
+records establishes local credential presence without claiming remote token
+validity; exit zero alone never does. A later ambiguous inventory remains
+Unknown, while the exact empty `0 credentials` inventory records LOGGED_OUT.
+Grok's fixed `models`
 command prints an independent authentication heading: the exact complete
 `You are not authenticated.` heading classifies LOGGED_OUT on exit 0; a
 complete `You are logged in with ...` heading is a conservative positive
@@ -94,7 +99,7 @@ does not establish their launch result.
 | CLI pin | Recipe | Environment intent | Browser and completion |
 | --- | --- | --- | --- |
 | Claude Code `2.1.196` | `claude auth login`. The actual fixed image's help confirms `--claudeai` selects Claude subscription and is the default, so this argv already selects that same Room login type. | `HOME`, `USERPROFILE`, and `CLAUDE_CONFIG_DIR` use the registered instance home, matching H's model launch selector. `APPDATA` and `LOCALAPPDATA` retain the Owner user's original values for the same-user browser context. | Official docs say login may open the default browser. No account-login browser-suppression switch is evidenced; `mcp login --no-browser` is for MCP OAuth and does not apply. H must not auto-open an output URL. `claude auth status --json` is the independent read; only matching documented exit 0/`loggedIn:true` or 1/`loggedIn:false` is classified. Do not parse other account fields. |
-| OpenCode `1.18.32` | `opencode auth login --pure --provider openai --method "ChatGPT Pro/Plus (browser)"`. Fixed help and tagged source show both selectors skip terminal menus. `--pure` skips external plugins while retaining the built-in OpenAI auth plugin. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | The selected built-in method prints a complete `Go to:` authorization URL, waits on localhost:1455, and does not call a browser opener. The User host may open that exact printed URL once. The fixed callback stores the local OAuth entry before its exact complete success line. That original line plus durable successful stop proves local credential presence; `auth list --pure` independently proves the observed empty inventory. No remote token validity is claimed. |
+| OpenCode `1.18.32` | `opencode auth login --pure --provider xai --method "SuperGrok Subscription"`. Fixed help and tagged source show both selectors skip terminal menus. `--pure` skips external plugins while retaining the built-in XaiAuthPlugin. | `HOME` and `USERPROFILE` use the registered instance home. Set `XDG_CONFIG_HOME=.config`, `XDG_DATA_HOME=.local/share`, `XDG_CACHE_HOME=.cache`, `XDG_STATE_HOME=.local/state`, `OPENCODE_CONFIG_DIR=.opencode`, and `OPENCODE_CONFIG=.opencode/opencode.json`, all beneath that home, matching H's model launch selectors. Preserve original `APPDATA` and `LOCALAPPDATA` for the browser context. | The selected built-in method returns `verification_uri_complete` when available, otherwise the verification URI, and uses xAI's device-code flow. The CLI prints that URL and the short-code instructions; the host may open the exact printed URL once. The callback returns OAuth tokens and the CLI persists them before its complete success line. The original line plus durable successful stop proves local credential presence; `auth list --pure` independently reports the local inventory without a host read. No remote token validity is claimed. |
 | Grok Build `1.0.41` | `grok login --oauth`. Exact fixed-binary `--help` evidence confirms this command and OAuth option. `grok models` is the separate CLI-owned status observation. | `HOME`, `USERPROFILE`, and `GROK_HOME` use the registered instance home for login and status, matching H's model launch selector; preserve original AppData for browser context. | Browser-opening behavior and login completion remain unknown. The help exposes no `--no-browser` flag. H must not auto-open an output URL or infer login success from process exit or model listing. Reconcile only from the independent authentication heading, and retain UNKNOWN for unqualified output. |
 | Antigravity CLI `1.2.11` | The exact official tag says first launch of `agy` authenticates through system keyring and opens the browser if needed. **Unsupported as an instance login**: it exposes no documented login-only command, and the system keyring is shared across this Windows user. | Local home bindings cannot isolate the system keyring identity. | The CLI owns first-launch browser behavior; H must not open a duplicate URL. Account status stays `UNKNOWN`; do not turn a shared keyring session into per-instance readiness. |
 | Codex `0.160` | Out of scope; existing Codex login path stays unchanged. | This module makes no Codex launch or environment change. | Existing `v37_login` owns its Codex browser URL and callback flow. |
@@ -185,13 +190,22 @@ displayed but do not become process frames, status evidence, or durable facts.
   `opencode auth login` and terminal-auth metadata. More direct fixed-tag
   sources are [providers.ts](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/cli/cmd/providers.ts),
   [Auth.Service](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/auth/index.ts),
-  [OpenAI browser plugin](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/openai/codex.ts),
+  [xAI auth plugin](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/xai.ts),
   [plugin loader](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/plugin/index.ts),
   and [CLI flag parser](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/index.ts).
   `providers.ts` skips provider/method prompts for exact selector labels,
-  prints `Go to:` and locally lists credential display names and types;
-  `codex.ts` uses localhost:1455 callback and contains no browser opener;
-  the fixed plugin loader retains the built-in OpenAI plugin under `--pure`.
+  prints `Go to:` and formats each local credential as model display name plus
+  type before the total count. `xai.ts` selects the xAI device-code flow, uses
+  the server's complete verification URI when supplied, and returns OAuth
+  tokens; `providers.ts` persists those tokens before its complete success
+  line. Fixed-binary model-cache evidence identifies provider ID `xai` with
+  display name `xAI`. The fixed plugin loader retains built-in plugins under
+  `--pure`, including `XaiAuthPlugin`.
+  A fixed-binary isolated cache observation identified provider ID `xai` with
+  display name `xAI` (catalog SHA-256
+  `51341a757543a141e9619f04bd6c993421a223d9cf8653edc2fb5ffa57fdd3e4`). This
+  supports the source-formatted single-entry status row; it is not a positive
+  credential inventory or login observation.
   Ordinary-view fixed executable SHA-256
   `cf664aa1da32b788f9b2699b84a9bb9be30b7e025693b90f9b85829d5fe4e252`
   independently showed `--provider`, `--method`, and `--pure` in `auth login

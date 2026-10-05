@@ -84,26 +84,33 @@ fn classify_opencode_credential_list(stdout: &[u8], exit: Option<u32>) -> Native
         .map(str::trim_end)
         .filter(|line| !line.is_empty())
         .collect();
-    // The fixed 1.18.32 executable's empty-home output, after removing only
-    // CSI color escapes. A nonzero credential count does not identify the
-    // provider ID: the CLI prints its display name, so keep it UNKNOWN until
-    // a positive fixed-byte observation establishes an unambiguous shape.
+    // The fixed 1.18.32 formatter prints each local credential as its model
+    // catalog display name plus credential type. Its xAI catalog entry is
+    // named "xAI". Classify only the exact one-entry inventory; additional
+    // credentials, duplicates, other types, or any extra output stay UNKNOWN.
     if lines.len() == 3
         && lines[0].starts_with("T  Credentials ")
         && lines[1] == "|"
         && lines[2] == "—  0 credentials"
     {
         NativeAccountState::LoggedOut
+    } else if lines.len() == 4
+        && lines[0].starts_with("T  Credentials ")
+        && lines[1] == "|"
+        && lines[2] == "|  xAI oauth"
+        && lines[3] == "—  1 credentials"
+    {
+        NativeAccountState::CredentialPresent
     } else {
         NativeAccountState::Unknown
     }
 }
 
-/// The pinned OpenCode browser callback stores the OpenAI OAuth credential
-/// before Clack prints this complete, LF-terminated spinner stop line. The
-/// caller must separately prove the original prepared process stopped at zero
-/// without cancellation or capture failure. A fragment or generic exit zero
-/// never establishes account state.
+/// The pinned OpenCode xAI OAuth callback returns tokens to the CLI, which
+/// persists them before printing this complete, LF-terminated spinner stop
+/// line. The caller must separately prove the original prepared xAI process
+/// stopped at zero without cancellation or capture failure. A fragment or
+/// generic exit zero never establishes account state.
 pub(super) fn opencode_login_success_frame(frame: &[u8]) -> bool {
     [
         b"o  Login successful\n".as_slice(),
@@ -353,21 +360,8 @@ impl<'root> ProductDatabase<'root> {
                 state
             }
         }};
-        if state == NativeAccountState::Unknown && fresh.driver_id == "opencode" {
-            let row = self.read_registered_instance(&command.instance_id)?
-                .ok_or(OrchestrationError::AccessDenied)?;
-            if row.revision == command.expected_revision
-                && row.driver_id == fresh.driver_id
-                && row.version == fresh.version
-                && row.program_digest == fresh.program_digest
-                && row.login_state == "LOGGED_IN"
-                && self.current_login_observation(&command.instance_id, row.revision,
-                    &row.login_state)? {
-                return Ok("LOGGED_IN".into());
-            }
-        }
         let source = if original_completion && fresh.driver_id == "opencode" {
-            "owner-login-opencode-cli-completion"
+            "owner-login-opencode-xai-cli-completion"
         } else { "owner-login-provider-status" };
         self.record_provider_state(command, &fresh, state, source)
     }
@@ -710,10 +704,24 @@ mod tests {
         );
         assert_eq!(
             classify_opencode_credential_list(
+                b"T  Credentials isolated\n|\n|  xAI oauth\n\xe2\x80\x94  1 credentials\n",
+                Some(0)
+            ),
+            NativeAccountState::CredentialPresent
+        );
+        assert_eq!(
+            classify_opencode_credential_list(
                 b"T  Credentials isolated\n|\n|  OpenAI oauth\n\xe2\x80\x94  0 credentials\n",
                 Some(0)
             ),
             NativeAccountState::Unknown
         );
+        for output in [
+            &b"T  Credentials isolated\n|\n|  xAI api\n\xe2\x80\x94  1 credentials\n"[..],
+            &b"T  Credentials isolated\n|\n|  xAI oauth\n|  xAI oauth\n\xe2\x80\x94  2 credentials\n"[..],
+            &b"T  Credentials isolated\n|\n|  xAI oauth\n\xe2\x80\x94  2 credentials\n"[..],
+        ] {
+            assert_eq!(classify_opencode_credential_list(output, Some(0)), NativeAccountState::Unknown);
+        }
     }
 }
