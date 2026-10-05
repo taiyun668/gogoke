@@ -944,7 +944,8 @@ pub(crate) fn merge_worktree_request(
         Err(error) => {
             let cause = host_seal::record("", &seal_intent, child_commit.as_deref(), Some(&format!("{error:?}")));
             match record_merge_unknown(db, request, &cause) {
-                Ok(()) => Err(joined("merge UNKNOWN original cause",WorktreeError::Unknown,error)),
+                Ok(()) => Err(joined("merge UNKNOWN original cause",WorktreeError::Unknown,
+                    joined("merge original receipt",error,WorktreeError::Git(cause)))),
                 Err(persist) => { RootLock::poison_identity(&root.canonical_root().identity);
                     Err(joined("merge UNKNOWN persistence", error, persist)) }
             }
