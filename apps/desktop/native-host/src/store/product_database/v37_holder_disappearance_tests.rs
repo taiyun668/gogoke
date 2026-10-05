@@ -363,9 +363,17 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         }
         assert_eq!(journal_rows(&product), journals, "new admission does not rewrite old recovery capture");
         assert_eq!(CredentialBinding::observe_source_metadata(root, &cold.home.join("auth.json"), &cold.home_identity).unwrap().0, cold.source);
-        applied(&mut product, &operation("projectA", "K-SESSION", "stop", "holder-cold-stop", "sessionC", 3,
+        // The same recovered metadata holder survives a real internal H stop
+        // and fixed-CLI thread resume. This exercises the credential boundary
+        // at OLD_STOPPED, not a synthetic accepted generation-change row.
+        applied(&mut product, &operation("projectA", "K-SESSION", "renew-session", "holder-cold-renew", "sessionC", 3,
             &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
-        applied(&mut product, &operation("projectA", "K-SESSION", "admission-release", "holder-cold-release", "sessionC", 4,
+        let generation=generation+1;
+        assert_eq!(journal_rows(&product), journals, "real continuation preserves original recovery receipts");
+        assert!(product.native_sessions.get(&("projectA".into(),"sessionC".into())).unwrap().evidence.file_credentials_bound());
+        applied(&mut product, &operation("projectA", "K-SESSION", "stop", "holder-cold-stop", "sessionC", 4,
+            &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
+        applied(&mut product, &operation("projectA", "K-SESSION", "admission-release", "holder-cold-release", "sessionC", 5,
             &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
         assert_eq!(journal_rows(&product), journals);
         product.close_checked().unwrap();

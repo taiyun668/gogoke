@@ -142,13 +142,13 @@ impl<'root> ProductDatabase<'root> {
     // H's original unique ACTIVE writer used noninheritable kill-on-close Jobs;
     // close_checked drops those Jobs before DB/RootLock release. This is not
     // a caller-provided hostGone flag or an invented historical Job receipt.
-    fn gone_scope(&mut self, instance: &str, allowed: &[String], incoming: Option<&V37Request>) -> Result<()> {
+    fn gone_scope(&mut self, instance: &str, allowed: &[String], incoming: Option<&V37Request>, retained: bool) -> Result<()> {
         fail(self.connection.execute("BEGIN IMMEDIATE"))?;
-        let checked=self.gone_scope_in_current_transaction(instance,allowed,incoming);
+        let checked=self.gone_scope_in_current_transaction(instance,allowed,incoming,retained);
         self.finish_native_transaction(checked)
     }
 
-    fn gone_scope_in_current_transaction(&self, instance: &str, allowed: &[String], incoming: Option<&V37Request>) -> Result<()> {
+    fn gone_scope_in_current_transaction(&self, instance: &str, allowed: &[String], incoming: Option<&V37Request>, retained: bool) -> Result<()> {
         fail(authority::check_owner_in_current_transaction(&self.connection,&self.owner))?;
         if self.owner_login.is_some() || !self.pending_native_launches.is_empty()
             || !self.pending_credential_preparations.is_empty()
@@ -172,11 +172,26 @@ impl<'root> ProductDatabase<'root> {
                    WHERE domain_id=?1 AND session_id=?2 AND operation='open'",&[&r[0],&r[1]],1)?.is_empty();
             if !admitted || !no_effect {return Err(refused("holder recovery retains another claim or open intent"));}
         }
-        if !rows(&self.connection,
-            "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e
-               ON e.process_operation_id=g.old_process_operation_id WHERE e.instance_id=?1
-               AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED')",&[instance],1)?.is_empty() {
-            return Err(refused("holder recovery retains a generation change"));
+        for r in rows(&self.connection,
+            "SELECT g.domain_id,g.request_id,g.session_id,g.raw_hex,g.operation,g.stage,
+                    CAST(g.owner_stop_request_id IS NULL AS TEXT),e.phase,COALESCE(e.stop_fact_id,''),
+                    COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),
+                    COALESCE(CAST(c.profile_id=e.instance_id AND c.domain_id=e.domain_id
+                      AND c.generation=e.generation AND e.domain_id=g.domain_id
+                      AND e.session_id=g.session_id AND e.generation=g.old_generation
+                      AND c.ticket=g.old_ticket AND c.custodian_nonce=g.old_nonce AS TEXT),'0')
+               FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e
+               ON e.process_operation_id=g.old_process_operation_id
+               LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+              WHERE e.instance_id=?1
+               AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED')",&[instance],12)? {
+            let original=retained && incoming.is_some_and(|q|q.domain_id==r[0] && q.request_id==r[1]
+                && q.target_id==r[2] && bytes_hex(&q.raw_bytes)==r[3] && q.operation==r[4]
+                && matches!(q.operation.as_str(),"compact"|"renew-session"));
+            if !original || r[5]!="OLD_STOPPED" || r[6]!="1" || r[7]!="STOPPED"
+                || r[8].is_empty() || r[9]!="STOPPED" || r[8]!=r[10] || r[11]!="1" {
+                return Err(refused("holder recovery retains a generation change"));
+            }
         }
         Ok(())
     }
@@ -280,6 +295,14 @@ impl<'root> ProductDatabase<'root> {
         if profiles.iter().any(|p|p.state!="REVOKED" && !members.contains(&p.binding_id)) {
             return Err(refused("holder recovery capture would expand"));
         }
+        // Reuse only this host's already adopted physical metadata holder.
+        // A genuine internally stopped continuation is not another cold
+        // retirement. Pending recovery members never receive this exception.
+        let retained=members.is_empty() && !records.is_empty()
+            && records.values().all(|r|r.phase==Phase::Applied)
+            && self.disappeared_credential_holders.get(&(instance_id.into(),object.file_identity.opaque()))
+                .is_some_and(|prior|std::sync::Arc::ptr_eq(prior,&binding));
+        let retained=retained && fail(binding.acl_prepared_in_this_holder())?;
         let mut originals=BTreeMap::new();
         for profile in &profiles {
             if members.contains(&profile.binding_id) || records.contains_key(&profile.binding_id) {
@@ -287,7 +310,7 @@ impl<'root> ProductDatabase<'root> {
             }
         }
         let allowed:Vec<String>=originals.values().map(|f|get(f,"operation")).collect::<Result<_>>()?;
-        self.gone_scope(instance_id,&allowed,incoming)?;
+        self.gone_scope(instance_id,&allowed,incoming,retained)?;
         let all_pairs=originals.values().map(|f|Ok((get(f,"pid")?.parse::<u32>().map_err(|e|
             OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,get(f,"creation")?.parse::<u64>().map_err(|e|
             OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?))).collect::<Result<Vec<_>>>()?;
@@ -332,7 +355,7 @@ impl<'root> ProductDatabase<'root> {
             #[cfg(test)]
             holder_gone_cut_for_test("AFTER_CAPTURE")?;
             if record.phase==Phase::Preparing {
-                self.gone_scope(instance_id,&allowed,incoming)?;
+                self.gone_scope(instance_id,&allowed,incoming,retained)?;
                 fail(all_gone.validate(&all_pairs))?;
                 let intent=fail(instance::begin_credential_profile(&mut self.connection,&instance::CredentialProfileIntent{
                     request_id:format!("{}-revoke",record.input.request_id),instance_id:instance_id.into(),
@@ -342,7 +365,7 @@ impl<'root> ProductDatabase<'root> {
                 if !matches!(intent.disposition,instance::CredentialIntentDisposition::New|instance::CredentialIntentDisposition::Pending|instance::CredentialIntentDisposition::Applied) {
                     return Err(refused("holder recovery retains ambiguous original revoke"));
                 }
-                self.gone_scope(instance_id,&allowed,incoming)?;
+                self.gone_scope(instance_id,&allowed,incoming,retained)?;
                 fail(all_gone.validate(&all_pairs))?;
                 let observed=if intent.disposition==instance::CredentialIntentDisposition::Applied {
                     if intent.profile.state!="REVOKED" {return Err(refused("holder applied revoke profile changed"));}
@@ -357,7 +380,7 @@ impl<'root> ProductDatabase<'root> {
                 fail(self.connection.execute("BEGIN IMMEDIATE"))?;
                 let advanced=(||->Result<HolderDisappearanceRecord>{
                     fail(authority::check_owner_in_current_transaction(&self.connection,&self.owner))?;
-                    self.gone_scope_in_current_transaction(instance_id,&allowed,incoming)?;
+                    self.gone_scope_in_current_transaction(instance_id,&allowed,incoming,retained)?;
                     fail(gone::advance_in_transaction(&self.connection,&record,Phase::Preparing,Phase::Revoked,&proof))
                 })();
                 record=match advanced {Ok(r)=>{self.finish_native_transaction(Ok(()))?;r},
@@ -366,7 +389,7 @@ impl<'root> ProductDatabase<'root> {
                 holder_gone_cut_for_test("AFTER_REVOKED")?;
             }
             if record.phase==Phase::Revoked {
-                self.gone_scope(instance_id,&allowed,incoming)?;
+                self.gone_scope(instance_id,&allowed,incoming,retained)?;
                 fail(all_gone.validate(&all_pairs))?;
                 fail(step.readback_target(&binding,&proof,&[pair]))?;
                 fail(self.connection.execute("BEGIN IMMEDIATE"))?;
@@ -405,7 +428,7 @@ impl<'root> ProductDatabase<'root> {
                 fail(proof.validate(&[(record.input.pid.parse().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,
                     record.input.creation_time_100ns.parse().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?)]))?;
         }
-        self.gone_scope(instance_id,&allowed,incoming)?;
+        self.gone_scope(instance_id,&allowed,incoming,retained)?;
         fail(all_gone.validate(&all_pairs))?;
         if fail(instance::read_credential_profiles(&self.connection,instance_id))?.iter().any(|p|p.state!="REVOKED") {
             return Err(refused("holder cold adoption retains a profile"));
