@@ -68,7 +68,8 @@ fn product_merge_history_rechecks_current_grant_without_git_and_preserves_unknow
         assert_eq!(receipt.status, V37Status::Replayed);
         assert_eq!(receipt.revision, 3);
         let result = receipt.into_result();
-        assert_eq!(result.get(&JsonString::from_str("targetCommit")), Some(&text(&commit)));
+        assert_eq!(result.get(&JsonString::from_str("targetCommit")).map(Json::canonical),
+            Some(text(&commit).canonical()));
         assert!(!result.contains_key(&JsonString::from_str("childSealIntent")));
         assert!(!result.contains_key(&JsonString::from_str("childCommit")));
         assert_eq!(count_custody(&product), before, "product replay must not resolve or launch Git");
