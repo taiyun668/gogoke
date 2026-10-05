@@ -3,6 +3,7 @@
 //! never reconstructed from the possibly partially changed live DACL.
 
 use super::*;
+use super::super::legacy_holders_gone::NativeProcessHoldersGone;
 use crate::store::digest::sha256_hex;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -268,6 +269,155 @@ fn relative_path(home: &Path, path: &Path) -> Result<PathBuf, CredentialError> {
 
 fn source_acl(binding: &CredentialBinding) -> Result<Dacl, CredentialError> {
     binding.with_source_metadata_acl(|handle| Ok(read_dacl(handle)?))
+}
+
+/// One immutable, metadata-only removal from a protected credential DACL.
+/// F separately binds this snapshot and its digest to the durable recovery
+/// journal. Only the named exact RW SID may be removed; all other ACEs survive.
+pub(crate) struct NativeCredentialAclRecoveryStep {
+    source_identity: RootIdentity,
+    target_sid: String,
+    known_profiles: Vec<(String, u32)>,
+    before: Dacl,
+    target: Dacl,
+}
+
+impl NativeCredentialAclRecoveryStep {
+    pub(crate) fn capture(binding: &CredentialBinding, target_sid: &str,
+        complete_known_profiles: &[(String, u32)]) -> Result<Self, CredentialError> {
+        let known_profiles = recovery_profiles(target_sid, complete_known_profiles)?;
+        let before = source_acl(binding)?;
+        verify_permitted_current(&before, &baseline_target()?, &known_profiles)?;
+        let target = remove_recovery_sid(&before, target_sid);
+        Ok(Self { source_identity: binding.identity().clone(), target_sid: target_sid.into(),
+            known_profiles, before, target })
+    }
+
+    pub(crate) fn before_digest(&self) -> String { canonical_dacl_digest(&self.before) }
+    pub(crate) fn target_digest(&self) -> String { canonical_dacl_digest(&self.target) }
+    pub(crate) fn encode_snapshot(&self) -> String { hex(&self.bytes()) }
+
+    /// The supplied digest is the canonical before-DACL digest. F independently
+    /// verifies the whole snapshot hash; the caller's binding rechecks FileID.
+    pub(crate) fn restore(snapshot: &str, before_digest: &str, target_sid: &str,
+        complete_known_profiles: &[(String, u32)]) -> Result<Self, CredentialError> {
+        const DOMAIN: &[u8] = b"gogoke-credential-acl-remove-v1\0";
+        let bytes = unhex(snapshot)?;
+        let mut reader = Reader { bytes: &bytes, index: 0 };
+        if reader.take(DOMAIN.len())? != DOMAIN { return Err(mismatch()); }
+        let source_identity = reader.identity()?;
+        let saved_sid = reader.string()?;
+        let count = reader.u32()? as usize;
+        if count == 0 || count > 4096 { return Err(mismatch()); }
+        let mut known_profiles = Vec::with_capacity(count);
+        for _ in 0..count { known_profiles.push((reader.string()?, reader.u32()?)); }
+        let before = reader.dacl()?;
+        let target = reader.dacl()?;
+        if reader.index != bytes.len() || saved_sid != target_sid
+            || known_profiles != recovery_profiles(target_sid, complete_known_profiles)?
+            || canonical_dacl_digest(&before) != before_digest
+            || target != remove_recovery_sid(&before, target_sid) {
+            return Err(mismatch());
+        }
+        verify_permitted_current(&before, &baseline_target()?, &known_profiles)?;
+        let step = Self { source_identity, target_sid: saved_sid, known_profiles, before, target };
+        if step.bytes() != bytes { return Err(mismatch()); }
+        Ok(step)
+    }
+
+    /// F persists the immutable intent before calling. A retry accepts only the
+    /// captured before ACL or its exact one-SID-removal target. The target path
+    /// is read-only; neither branch prepares or resets the source baseline.
+    pub(crate) fn apply_or_readback(&self, binding: &CredentialBinding,
+        holders_gone: &NativeProcessHoldersGone, exact_pairs: &[(u32, u64)])
+        -> Result<String, CredentialError> {
+        self.apply_or_readback_inner(binding, holders_gone, exact_pairs,
+            &mut revoke_exact_credential_ace)
+    }
+
+    fn apply_or_readback_inner(&self, binding: &CredentialBinding,
+        holders_gone: &NativeProcessHoldersGone, exact_pairs: &[(u32, u64)],
+        revoke: &mut impl FnMut(Handle, *mut c_void, &RootIdentity) -> Result<(), IsolationError>)
+        -> Result<String, CredentialError> {
+        validate_recovery_holders(holders_gone, exact_pairs)?;
+        if binding.identity() != &self.source_identity { return Err(CredentialError::IdentityChanged); }
+        let observed = binding.with_source_metadata_acl(|handle| {
+            if file_identity(handle)? != self.source_identity { return Err(CredentialError::IdentityChanged); }
+            let actual = read_dacl(handle)?;
+            if !acl_equal(&actual, &self.target) {
+                if !acl_equal(&actual, &self.before) { return Err(mismatch()); }
+                let sid = well_known_sid(&self.target_sid)?;
+                validate_recovery_holders(holders_gone, exact_pairs)?;
+                revoke(handle, sid.0, &self.source_identity)?;
+            }
+            let after = read_dacl(handle)?;
+            if file_identity(handle)? != self.source_identity || !acl_equal(&after, &self.target) {
+                return Err(mismatch());
+            }
+            validate_recovery_holders(holders_gone, exact_pairs)?;
+            Ok(canonical_dacl_digest(&after))
+        })?;
+        validate_recovery_holders(holders_gone, exact_pairs)?;
+        if observed != self.target_digest() { return Err(mismatch()); }
+        Ok(observed)
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut bytes = b"gogoke-credential-acl-remove-v1\0".to_vec();
+        encode_identity(&mut bytes, &self.source_identity);
+        put_str(&mut bytes, &self.target_sid);
+        put_u32(&mut bytes, self.known_profiles.len() as u32);
+        for (sid, rights) in &self.known_profiles { put_str(&mut bytes, sid); put_u32(&mut bytes, *rights); }
+        encode_dacl(&mut bytes, &self.before);
+        encode_dacl(&mut bytes, &self.target);
+        bytes
+    }
+}
+
+fn recovery_profiles(target_sid: &str, profiles: &[(String, u32)])
+    -> Result<Vec<(String, u32)>, CredentialError> {
+    if profiles.is_empty() || profiles.len() > 4096
+        || !profiles.iter().any(|(sid, rights)| sid == target_sid && *rights == CREDENTIAL_FILE_RIGHTS) {
+        return Err(mismatch());
+    }
+    let baseline = baseline_target()?;
+    verify_permitted_current(&baseline, &baseline, profiles)?;
+    for (sid, _) in profiles {
+        let parsed = well_known_sid(sid)?;
+        if sid_text(parsed.0)? != *sid { return Err(mismatch()); }
+    }
+    let mut ordered = profiles.to_vec();
+    ordered.sort();
+    Ok(ordered)
+}
+
+fn remove_recovery_sid(before: &Dacl, target_sid: &str) -> Dacl {
+    Dacl { protected: before.protected, aces: before.aces.iter()
+        .filter(|ace| ace.sid != target_sid).cloned().collect() }
+}
+
+fn validate_recovery_holders(proof: &NativeProcessHoldersGone, pairs: &[(u32, u64)])
+    -> Result<(), CredentialError> {
+    proof.validate(pairs).map_err(|error| CredentialError::Io {
+        operation: "validate exact gone process holders",
+        source: io::Error::new(io::ErrorKind::Other, error) })
+}
+
+/// Read-only adoption after F has settled every captured recovery grant and
+/// separately revalidated holder facts. This marks the held source prepared
+/// only after its exact current protected baseline/permitted ACEs are checked.
+pub(crate) fn adopt_holder_gone_source_baseline(binding: &CredentialBinding,
+    expected_digest: &str, permitted_remaining: &[(String, u32)])
+    -> Result<String, CredentialError> {
+    let baseline = baseline_target()?;
+    binding.with_source_acl(|handle, _prepared| {
+        if &file_identity(handle)? != binding.identity() { return Err(CredentialError::IdentityChanged); }
+        let actual = read_dacl(handle)?;
+        verify_permitted_current(&actual, &baseline, permitted_remaining)?;
+        let observed = canonical_dacl_digest(&actual);
+        if observed != expected_digest { return Err(mismatch()); }
+        Ok(observed)
+    })
 }
 
 fn observe_object(path: &Path, identity: &RootIdentity, directory: bool,
@@ -820,6 +970,187 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recovery_fixture(other_rights: u32) -> (RootLock, PathBuf, PathBuf, RootIdentity,
+        std::sync::Arc<CredentialBinding>, AppContainerProfile, AppContainerProfile) {
+        use crate::root::inspect_root;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let requested = std::env::temp_dir().join(format!(
+            "gogoke-holder-acl-recovery-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&requested).unwrap();
+        let root = RootLock::acquire(&requested).unwrap();
+        let home = root.canonical_root().canonical_path.join("home");
+        std::fs::create_dir(&home).unwrap();
+        let home_identity = inspect_root(&home).unwrap().identity;
+        let source = home.join("auth.json");
+        std::fs::File::create(&source).unwrap(); // Metadata-only empty synthetic file.
+        let (identity, _) = CredentialBinding::observe_source_metadata(&root, &source, &home_identity).unwrap();
+        let binding = CredentialBinding::open_registered(&root, &source, &home_identity, &identity, &[]).unwrap();
+        protect_credential_source_acl(&binding).unwrap();
+        let target = AppContainerProfile::derive_for_revocation(&format!("Gogoke37.RecoveryA.{nonce}")).unwrap();
+        let other = AppContainerProfile::derive_for_revocation(&format!("Gogoke37.RecoveryB.{nonce}")).unwrap();
+        binding.with_source_metadata_acl(|handle| {
+            grant_exact_acl(handle, target.sid, &identity, CREDENTIAL_FILE_RIGHTS, NO_INHERITANCE)?;
+            grant_exact_acl(handle, other.sid, &identity, other_rights, NO_INHERITANCE)?;
+            Ok(())
+        }).unwrap();
+        // A new holder must recover without invoking the fresh-baseline writer.
+        drop(binding);
+        let binding = CredentialBinding::open_registered(&root, &source, &home_identity, &identity, &[]).unwrap();
+        assert!(!binding.acl_prepared_in_this_holder().unwrap());
+        (root, requested, home, home_identity, binding, target, other)
+    }
+
+    #[test]
+    fn holder_gone_recovery_removes_one_real_rw_sid_preserves_other_and_reads_target_without_write() {
+        let (root, requested, home, home_identity, binding, target, other) = recovery_fixture(FILE_GENERIC_READ);
+        let target_sid = target.package_sid_string().unwrap();
+        let other_sid = other.package_sid_string().unwrap();
+        let known = [(target_sid.clone(), CREDENTIAL_FILE_RIGHTS), (other_sid.clone(), FILE_GENERIC_READ)];
+        let captured = NativeCredentialAclRecoveryStep::capture(&binding, &target_sid, &known).unwrap();
+        let before = source_acl(&binding).unwrap();
+        let snapshot = captured.encode_snapshot();
+        let step = NativeCredentialAclRecoveryStep::restore(&snapshot, &captured.before_digest(),
+            &target_sid, &known).unwrap();
+        let pairs = [(u32::MAX, 1)];
+        let proof = NativeProcessHoldersGone::observe(&pairs).unwrap();
+        assert_eq!(step.apply_or_readback(&binding, &proof, &pairs).unwrap(), step.target_digest());
+        let after = source_acl(&binding).unwrap();
+        assert_eq!(after.aces, before.aces.iter().filter(|ace| ace.sid != target_sid)
+            .cloned().collect::<Vec<_>>(), "every other ACE and its order is preserved");
+        assert!(after.aces.iter().any(|ace| ace.sid == other_sid && ace.mask == FILE_GENERIC_READ));
+        assert!(!binding.acl_prepared_in_this_holder().unwrap(), "removal never adopts/resets a baseline");
+        step.apply_or_readback_inner(&binding, &proof, &pairs, &mut |_, _, _|
+            panic!("an already exact target must not call the DACL writer")).unwrap();
+        assert_eq!(source_acl(&binding).unwrap(), after);
+        assert!(adopt_holder_gone_source_baseline(&binding, &step.before_digest(),
+            &[(other_sid.clone(), FILE_GENERIC_READ)]).is_err());
+        assert!(!binding.acl_prepared_in_this_holder().unwrap());
+        assert_eq!(adopt_holder_gone_source_baseline(&binding, &step.target_digest(),
+            &[(other_sid, FILE_GENERIC_READ)]).unwrap(), step.target_digest());
+        assert!(binding.acl_prepared_in_this_holder().unwrap());
+        assert_eq!(source_acl(&binding).unwrap(), after, "adoption is read-only");
+        // Capture from the already-target shape is a legitimate no-write step.
+        let absent = NativeCredentialAclRecoveryStep::capture(&binding, &target_sid, &known).unwrap();
+        assert_eq!(absent.before_digest(), absent.target_digest());
+        absent.apply_or_readback_inner(&binding, &proof, &pairs, &mut |_, _, _|
+            panic!("absent target SID must not rewrite the DACL")).unwrap();
+        binding.verify_registered_aliases(&[]).unwrap();
+        assert_eq!(CredentialBinding::observe_source_metadata(&root, &home.join("auth.json"),
+            &home_identity).unwrap().0, *binding.identity());
+        drop(binding); drop(root);
+        std::fs::remove_dir_all(requested).unwrap();
+    }
+
+    #[test]
+    fn holder_gone_recovery_rejects_unknown_sid_wrong_rights_and_changed_full_acl() {
+        let (root, requested, _home, _home_identity, binding, target, other) = recovery_fixture(CREDENTIAL_FILE_RIGHTS);
+        let target_sid = target.package_sid_string().unwrap();
+        let other_sid = other.package_sid_string().unwrap();
+        let known = [(target_sid.clone(), CREDENTIAL_FILE_RIGHTS), (other_sid.clone(), CREDENTIAL_FILE_RIGHTS)];
+        assert!(NativeCredentialAclRecoveryStep::capture(&binding, &target_sid,
+            &[(target_sid.clone(), FILE_GENERIC_READ), (other_sid.clone(), CREDENTIAL_FILE_RIGHTS)]).is_err(),
+            "the new recovery must not target an old READ observer");
+        assert!(NativeCredentialAclRecoveryStep::capture(&binding, &target_sid,
+            &[(other_sid.clone(), CREDENTIAL_FILE_RIGHTS)]).is_err());
+        assert!(NativeCredentialAclRecoveryStep::capture(&binding, &target_sid,
+            &[(target_sid.clone(), FILE_ALL_ACCESS), (other_sid.clone(), CREDENTIAL_FILE_RIGHTS)]).is_err());
+        let step = NativeCredentialAclRecoveryStep::capture(&binding, &target_sid, &known).unwrap();
+        let before = source_acl(&binding).unwrap();
+        let unknown = AppContainerProfile::derive_for_revocation("Gogoke37.UnknownRecoverySid").unwrap();
+        binding.with_source_metadata_acl(|handle| {
+            grant_exact_acl(handle, unknown.sid, binding.identity(), CREDENTIAL_FILE_RIGHTS, NO_INHERITANCE)?;
+            Ok(())
+        }).unwrap();
+        let polluted = source_acl(&binding).unwrap();
+        assert!(NativeCredentialAclRecoveryStep::capture(&binding, &target_sid, &known).is_err());
+        assert!(adopt_holder_gone_source_baseline(&binding, &canonical_dacl_digest(&polluted), &known).is_err());
+        assert!(!binding.acl_prepared_in_this_holder().unwrap());
+        let pairs = [(u32::MAX, 1)];
+        let proof = NativeProcessHoldersGone::observe(&pairs).unwrap();
+        assert!(step.apply_or_readback_inner(&binding, &proof, &pairs, &mut |_, _, _|
+            panic!("an unknown current ACE must reject before any write")).is_err());
+        assert_eq!(source_acl(&binding).unwrap(), polluted, "failure cannot reset the unknown SID");
+        binding.with_source_metadata_acl(|handle| {
+            revoke_exact_credential_ace(handle, unknown.sid, binding.identity())?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(source_acl(&binding).unwrap(), before);
+        // Removing a different captured SID is neither this step's before nor
+        // target, even though every remaining ACE is independently permitted.
+        let mut changed = before.clone();
+        changed.aces.retain(|ace| ace.sid != other_sid);
+        binding.with_source_metadata_acl(|handle| {
+            revoke_exact_credential_ace(handle, other.sid, binding.identity())?;
+            Ok(())
+        }).unwrap();
+        assert!(acl_equal(&source_acl(&binding).unwrap(), &changed));
+        assert!(step.apply_or_readback_inner(&binding, &proof, &pairs, &mut |_, _, _|
+            panic!("an unrelated ACE removal cannot authorize this write")).is_err());
+        assert!(acl_equal(&source_acl(&binding).unwrap(), &changed));
+        drop(binding); drop(root);
+        std::fs::remove_dir_all(requested).unwrap();
+    }
+
+    #[test]
+    fn holder_gone_recovery_snapshot_and_current_proof_remain_bound() {
+        let (root, requested, home, _home_identity, binding, target, other) = recovery_fixture(FILE_GENERIC_READ);
+        let target_sid = target.package_sid_string().unwrap();
+        let other_sid = other.package_sid_string().unwrap();
+        let known = [(target_sid.clone(), CREDENTIAL_FILE_RIGHTS), (other_sid.clone(), FILE_GENERIC_READ)];
+        let mut step = NativeCredentialAclRecoveryStep::capture(&binding, &target_sid, &known).unwrap();
+        let snapshot = step.encode_snapshot();
+        let before_digest = step.before_digest();
+        assert!(NativeCredentialAclRecoveryStep::restore(&snapshot, &"0".repeat(64), &target_sid, &known).is_err());
+        assert!(NativeCredentialAclRecoveryStep::restore(&snapshot, &before_digest, &other_sid, &known).is_err());
+        assert!(NativeCredentialAclRecoveryStep::restore(&snapshot, &before_digest, &target_sid,
+            &[(target_sid.clone(), CREDENTIAL_FILE_RIGHTS)]).is_err());
+        for change in 0..4 {
+            let mut malformed = NativeCredentialAclRecoveryStep::restore(&snapshot, &before_digest,
+                &target_sid, &known).unwrap();
+            let target_ace = malformed.before.aces.iter_mut().find(|ace| ace.sid == target_sid).unwrap();
+            match change {
+                0 => target_ace.flags = OBJECT_AND_CONTAINER_INHERIT as u8,
+                1 => target_ace.mask = FILE_GENERIC_READ,
+                2 => target_ace.kind = ACCESS_DENIED_ACE_TYPE,
+                _ => malformed.before.protected = false,
+            }
+            malformed.target = remove_recovery_sid(&malformed.before, &target_sid);
+            assert!(NativeCredentialAclRecoveryStep::restore(&malformed.encode_snapshot(),
+                &malformed.before_digest(), &target_sid, &known).is_err(),
+                "even a matching digest cannot qualify altered rights/inheritance/protection");
+        }
+        step.target.aces.retain(|ace| ace.sid != other_sid);
+        assert!(NativeCredentialAclRecoveryStep::restore(&step.encode_snapshot(), &before_digest,
+            &target_sid, &known).is_err(), "snapshot must encode exactly one removal");
+        let step = NativeCredentialAclRecoveryStep::restore(&snapshot, &before_digest, &target_sid, &known).unwrap();
+        let before = source_acl(&binding).unwrap();
+        let proof = NativeProcessHoldersGone::observe(&[(u32::MAX, 1)]).unwrap();
+        assert!(step.apply_or_readback(&binding, &proof, &[(u32::MAX, 2)]).is_err());
+        #[link(name = "kernel32")]
+        extern "system" { fn GetProcessTimes(process: Handle, creation: *mut FileTime,
+            exit: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime) -> i32; }
+        let [mut creation, mut exit, mut kernel, mut user] = [FileTime { low: 0, high: 0 }; 4];
+        assert_ne!(unsafe { GetProcessTimes(GetCurrentProcess(), &mut creation, &mut exit,
+            &mut kernel, &mut user) }, 0);
+        let exact = [(std::process::id(), (u64::from(creation.high) << 32) | u64::from(creation.low))];
+        let live = NativeProcessHoldersGone::for_test(&exact);
+        let error = step.apply_or_readback(&binding, &live, &exact).unwrap_err();
+        assert!(format!("{error}").contains("exact holder remains alive"), "native failure preserved: {error}");
+        assert_eq!(source_acl(&binding).unwrap(), before, "live proof cannot authorize writing");
+        let mut different = NativeCredentialAclRecoveryStep::restore(&snapshot, &before_digest, &target_sid, &known).unwrap();
+        different.source_identity.file_id[0] ^= 1;
+        assert!(matches!(different.apply_or_readback(&binding, &proof, &[(u32::MAX, 1)]),
+            Err(CredentialError::IdentityChanged)));
+        // A namespace alias absent from F's complete registry fails closed.
+        std::fs::hard_link(home.join("auth.json"), home.join("unregistered.json")).unwrap();
+        assert!(NativeCredentialAclRecoveryStep::capture(&binding, &target_sid, &known).is_err());
+        assert!(step.apply_or_readback(&binding, &proof, &[(u32::MAX, 1)]).is_err());
+        assert!(adopt_holder_gone_source_baseline(&binding, &before_digest, &known).is_err());
+        drop(binding); drop(root);
+        std::fs::remove_dir_all(requested).unwrap();
+    }
 
     #[test]
     fn snapshot_rejects_tampering_and_unknown_package_grants() {
