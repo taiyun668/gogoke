@@ -17,6 +17,8 @@ use super::credential_binding::{CredentialAlias, CredentialAliasScope,
 mod legacy_acl;
 pub(crate) use legacy_acl::{LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
     NativeCredentialAclRecoveryStep, adopt_holder_gone_source_baseline};
+#[cfg(test)]
+pub(crate) use legacy_acl::holder_gone_acl_write_count_for_test;
 
 type Handle = *mut c_void;
 const TOKEN_QUERY: u32 = 0x0008;

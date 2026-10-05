@@ -3,6 +3,16 @@
 //! never reconstructed from the possibly partially changed live DACL.
 
 use super::*;
+
+#[cfg(test)]
+std::thread_local! {
+    static HOLDER_GONE_ACL_WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn holder_gone_acl_write_count_for_test() -> usize {
+    HOLDER_GONE_ACL_WRITES.with(std::cell::Cell::get)
+}
 use super::super::legacy_holders_gone::NativeProcessHoldersGone;
 use crate::store::digest::sha256_hex;
 
@@ -349,7 +359,11 @@ impl NativeCredentialAclRecoveryStep {
         holders_gone: &NativeProcessHoldersGone, exact_pairs: &[(u32, u64)])
         -> Result<String, CredentialError> {
         self.apply_or_readback_inner(binding, holders_gone, exact_pairs,
-            &mut revoke_exact_credential_ace)
+            &mut |handle, sid, identity| {
+                #[cfg(test)]
+                HOLDER_GONE_ACL_WRITES.with(|count| count.set(count.get() + 1));
+                revoke_exact_credential_ace(handle, sid, identity)
+            })
     }
 
     fn apply_or_readback_inner(&self, binding: &CredentialBinding,

@@ -13,6 +13,8 @@ mod session;
 
 #[cfg(windows)]
 pub use windows::*;
+#[cfg(all(windows, test))]
+pub(crate) use session::holder_gone_acl_write_count_for_test;
 #[cfg(windows)]
 pub(crate) use session::{AppContainerProfile, CompatModule, DirectoryRoots, IsolationError,
     CredentialAlias, CredentialAliasScope, CredentialBinding, CredentialError,

@@ -1855,7 +1855,7 @@ impl<'root> ProductDatabase<'root> {
             result))
     }
 
-    fn finish_native_transaction(&mut self, result: Result<()>) -> Result<()> {
+    pub(super) fn finish_native_transaction(&mut self, result: Result<()>) -> Result<()> {
         match result {
             Ok(()) => self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause),
             Err(primary) => match self.connection.execute("ROLLBACK") {

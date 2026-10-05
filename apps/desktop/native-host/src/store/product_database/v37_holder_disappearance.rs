@@ -126,8 +126,14 @@ impl<'root> ProductDatabase<'root> {
     // H's original unique ACTIVE writer used noninheritable kill-on-close Jobs;
     // close_checked drops those Jobs before DB/RootLock release. This is not
     // a caller-provided hostGone flag or an invented historical Job receipt.
-    fn gone_scope(&self, instance: &str, allowed: &[String], incoming: Option<&V37Request>) -> Result<()> {
-        fail(authority::read_product_identity(&self.connection,&self.owner))?;
+    fn gone_scope(&mut self, instance: &str, allowed: &[String], incoming: Option<&V37Request>) -> Result<()> {
+        fail(self.connection.execute("BEGIN IMMEDIATE"))?;
+        let checked=self.gone_scope_in_current_transaction(instance,allowed,incoming);
+        self.finish_native_transaction(checked)
+    }
+
+    fn gone_scope_in_current_transaction(&self, instance: &str, allowed: &[String], incoming: Option<&V37Request>) -> Result<()> {
+        fail(authority::check_owner_in_current_transaction(&self.connection,&self.owner))?;
         if self.owner_login.is_some() || !self.pending_native_launches.is_empty()
             || !self.pending_credential_preparations.is_empty()
             || self.native_sessions.values().any(|r|r.custody.binding.profile_id==instance) {
@@ -195,7 +201,7 @@ impl<'root> ProductDatabase<'root> {
         if rows(&self.connection,"SELECT changes()",&[],1)?!=vec![vec!["1".into()]] {
             return Err(refused("holder release claim CAS"));
         }
-        fail(crate::store::seat::set_dispatch_state_in_transaction(&self.connection,&seat,false))?;
+        fail(crate::store::seat::set_dispatch_state_in_transaction(&mut self.connection,&seat,false))?;
         let raw=encoded(capture);
         let op=Statement::prepare(self.connection.as_ptr(),
             "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,
@@ -329,7 +335,7 @@ impl<'root> ProductDatabase<'root> {
                 fail(self.connection.execute("BEGIN IMMEDIATE"))?;
                 let advanced=(||->Result<HolderDisappearanceRecord>{
                     fail(authority::check_owner_in_current_transaction(&self.connection,&self.owner))?;
-                    self.gone_scope(instance_id,&allowed,incoming)?;
+                    self.gone_scope_in_current_transaction(instance_id,&allowed,incoming)?;
                     fail(gone::advance_in_transaction(&self.connection,&record,Phase::Preparing,Phase::Revoked,&proof))
                 })();
                 record=match advanced {Ok(r)=>{self.finish_native_transaction(Ok(()))?;r},
@@ -362,8 +368,11 @@ impl<'root> ProductDatabase<'root> {
                         final_digest=Some(get(&capture,"aclTarget")?);
                     }
                 }
-                self.gone_validate_capture(originals.get(&record.input.binding_id)
-                    .ok_or_else(||refused("holder completed original absent"))?,&capture,&object,&home.identity,&alias_physical,record)?;
+                let fresh_profile=fail(instance::read_credential_profiles(&self.connection,instance_id))?
+                    .into_iter().find(|p|p.binding_id==record.input.binding_id)
+                    .ok_or_else(||refused("holder completed original absent"))?;
+                self.gone_validate_capture(&self.gone_original(&fresh_profile)?,
+                    &capture,&object,&home.identity,&alias_physical,record)?;
                 let proof=fail(NativeProcessHoldersGone::observe(&[(record.input.pid.parse().map_err(|e|
                     OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,record.input.creation_time_100ns.parse().map_err(|e|
                     OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?)]))?;

@@ -9,6 +9,8 @@ mod legacy_holders_gone;
 pub(crate) use isolation::{AppContainerProfile, IsolationError, SecurityCapabilities,
     LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
     NativeCredentialAclRecoveryStep, adopt_holder_gone_source_baseline};
+#[cfg(test)]
+pub(crate) use isolation::holder_gone_acl_write_count_for_test;
 pub(crate) use compat_module::{CompatModule, DirectoryRoots};
 pub(crate) use credential_binding::{CredentialAlias, CredentialAliasScope,
     CredentialBinding, CredentialError};
