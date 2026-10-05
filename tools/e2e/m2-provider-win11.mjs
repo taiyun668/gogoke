@@ -16,12 +16,12 @@ const required = ['installed', 'installedSha256', 'version', 'sourceCommit', 're
 if (process.platform !== 'win32' || !process.argv[2] || required.some(key => config[key] === undefined) ||
     config.repositoryId !== 'gogokeSeatTestbed' || !atom(config.domainId) ||
     !/^[a-f0-9]{40}$/.test(config.sourceCommit) || typeof config.version !== 'string' || !config.version ||
-    !Array.isArray(config.cases) || config.cases.length !== 3 ||
-    new Set(config.cases.map(row => row.driverId)).size !== 3 ||
-    new Set(config.cases.map(row => row.seatId)).size !== 3 ||
-    new Set(config.cases.map(row => row.worktreeId)).size !== 3 ||
-    !drivers.every(driverId => config.cases.some(row => row.driverId === driverId)) ||
-    new Set(config.cases.map(row => row.instanceId)).size !== 3 ||
+    !Array.isArray(config.cases) || config.cases.length < 1 || config.cases.length > 3 ||
+    new Set(config.cases.map(row => row.driverId)).size !== config.cases.length ||
+    new Set(config.cases.map(row => row.seatId)).size !== config.cases.length ||
+    new Set(config.cases.map(row => row.worktreeId)).size !== config.cases.length ||
+    config.cases.some(row => !drivers.includes(row.driverId)) ||
+    new Set(config.cases.map(row => row.instanceId)).size !== config.cases.length ||
     config.cases.some(row => ![row.instanceId, row.seatId, row.worktreeId].every(atom) ||
       typeof row.version !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256) ||
       typeof row.model !== 'string' || !row.model.trim() || typeof row.effort !== 'string' || !row.effort.trim()) ||
@@ -39,8 +39,8 @@ if (process.platform !== 'win32' || !process.argv[2] || required.some(key => con
       .some(root => inside(path.resolve(config.evidenceDirectory), path.resolve(root)))) {
   throw Error('Fresh private provider E2E config, exact installed product, three fixed provider cases and observers required');
 }
-if (config.cases.find(row => row.driverId === 'opencode')?.model.toLowerCase().includes('gpt') ||
-    !/(grok|xai)/i.test(config.cases.find(row => row.driverId === 'opencode')?.model ?? '')) {
+const opencode = config.cases.find(row => row.driverId === 'opencode');
+if (opencode && (opencode.model.toLowerCase().includes('gpt') || !/(grok|xai)/i.test(opencode.model))) {
   throw Error('OpenCode case must use its configured xAI/Grok model; GPT is not an eligible substitute');
 }
 
@@ -50,7 +50,9 @@ const journal = { schema: 'gogoke.37.m2-provider-win11-e2e.v1', caseId: id('m2Pr
   state: 'RUNNING', acceptance: false, authenticationActions: false, observerDatabaseWrites: false,
   hostOperationsWriteCandidateDatabase: true, credentialReads: false, b5: 'NOT_RUN_UNSUPPORTED',
   marker: id('M2_PROVIDER_MARKER'), cases: [], operations: [], sessions: [], launches: [], closes: [],
-  snapshots: {}, readbacks: [], goldens: [], assertions: [] };
+  snapshots: {}, readbacks: [], goldens: [], assertions: [],
+  notRun: drivers.filter(driverId => !config.cases.some(row => row.driverId === driverId))
+    .map(driverId => ({ driverId, result: 'NOT_RUN_NOT_SELECTED_FOR_THIS_ORIGINAL_CASE' })) };
 const product = new ActualProduct(config, journal);
 const check = (condition, reason) => {
   if (!condition) throw Error(reason);

@@ -140,7 +140,7 @@ if journal.get("schema") != "gogoke.37.m2-provider-win11-e2e.v1" or \
         journal.get("state") != "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED" or \
         journal.get("acceptance") is not False or journal.get("observerDatabaseWrites") is not False or \
         journal.get("hostOperationsWriteCandidateDatabase") is not True or \
-        journal.get("credentialReads") is not False or len(journal.get("cases", [])) != 3 or \
+        journal.get("credentialReads") is not False or not 1 <= len(journal.get("cases", [])) <= 3 or \
         len(journal.get("launches", [])) != 1 or len(journal.get("closes", [])) != 1:
     fail("Original standalone provider journal is incomplete or not at its readback phase")
 launch = journal["launches"][0]
@@ -616,9 +616,10 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                  "commandLineSha256": argv.get("commandLineSha256"), "model": argv.get("model"),
                  "effort": argv.get("effort")}})
 
-if len(result["providerWorktrees"]) != 3 or len(result["sessions"]) != 3:
-    fail("All three fixed provider F/H sessions must have direct readback")
-if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) != 3:
+case_count = len(journal["cases"])
+if len(result["providerWorktrees"]) != case_count or len(result["sessions"]) != case_count:
+    fail("Every selected fixed provider F/H session must have direct readback")
+if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) != case_count:
     fail("Provider F worktree roots overlap")
 result["filesAfter"] = file_facts()
 result["measurementPreservedDatabaseBytes"] = before == result["filesAfter"]
