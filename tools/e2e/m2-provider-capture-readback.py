@@ -1,0 +1,326 @@
+"""Immutable direct readback for the standalone real Win11 M2 provider E2E.
+
+Run only after the exact installed product exited normally. This exports the
+original A/H/F bytes; it never opens credential stores or writes the database.
+"""
+import hashlib
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+if len(sys.argv) != 4:
+    raise RuntimeError("Expected state root, fresh private output, and original provider journal")
+
+def fail(message):
+    raise RuntimeError(message)
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+def exact_one(db, sql, args=()):
+    values = db.execute(sql, args).fetchall()
+    if len(values) != 1:
+        fail(f"Expected exactly one original database row; found {len(values)}")
+    return values[0]
+
+root = Path(sys.argv[1]).resolve(strict=True)
+output = Path(sys.argv[2])
+journal_path = Path(sys.argv[3]).resolve(strict=True)
+if output.exists():
+    fail("Private provider readback output already exists")
+journal = json.loads(journal_path.read_text(encoding="utf-8-sig"))
+if journal.get("schema") != "gogoke.37.m2-provider-win11-e2e.v1" or \
+        journal.get("state") != "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED" or \
+        journal.get("acceptance") is not False or journal.get("databaseWrites") is not False or \
+        journal.get("credentialReads") is not False or len(journal.get("cases", [])) != 3:
+    fail("Original standalone provider journal is incomplete or not at its readback phase")
+database = root / "state.sqlite"
+wal = Path(str(database) + "-wal")
+if not database.is_file():
+    fail("Actual installed candidate database is absent")
+if wal.exists() and wal.stat().st_size:
+    fail("Actual product must be normally closed and checkpointed; refuse nonempty WAL")
+
+def file_facts():
+    return {item.name: {"length": item.stat().st_size, "sha256": sha(item.read_bytes())}
+            for item in (database, wal, Path(str(database) + "-shm")) if item.exists()}
+
+before = file_facts()
+result = {"schema": "gogoke.37.private-m2-readback.v1", "phase": "provider-final",
+          "caseId": journal["caseId"], "sourceCommit": journal["sourceCommit"],
+          "domainId": journal["domainId"], "databaseWrites": False, "credentialReads": False,
+          "acceptance": False, "rootIdentity": [str(root.stat().st_dev), str(root.stat().st_ino)],
+          "filesBefore": before, "frames": [], "commands": [], "unknownFrames": [],
+          "sessions": [], "providerWorktrees": [], "directProviderEvidence": False}
+domain = journal["domainId"]
+
+def nested_text(value, parts):
+    found = value
+    for part in parts:
+        if not isinstance(found, dict):
+            return None
+        found = found.get(part)
+    return found
+
+def claude_text(frame):
+    if frame.get("type") != "assistant":
+        return ""
+    content = nested_text(frame, ("message", "content"))
+    if not isinstance(content, list):
+        return ""
+    return "".join(part.get("text", "") for part in content
+                    if isinstance(part, dict) and part.get("type") == "text")
+
+def acp_text(frame):
+    update = nested_text(frame, ("params", "update"))
+    if frame.get("method") != "session/update" or not isinstance(update, dict) or \
+            update.get("sessionUpdate") != "agent_message_chunk":
+        return ""
+    content = update.get("content")
+    if isinstance(content, dict) and content.get("type") == "text" and isinstance(content.get("text"), str):
+        return content["text"]
+    return ""
+
+with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
+    db.execute("PRAGMA query_only=ON")
+    result["epoch"] = exact_one(db, "SELECT epoch FROM v37_ledger_meta WHERE singleton=1")[0]
+    result["cursor"] = str(exact_one(db, "SELECT COALESCE(MAX(cursor),0) FROM v37_ledger_index")[0])
+    for case in journal["cases"]:
+        if case.get("result") != "DIRECT_H_RECEIPT_A_READBACK_REQUIRED":
+            fail(f"{case.get('driverId')}: not all configured provider turns reached original H receipt")
+        driver = case["driverId"]
+        session_id = case["sessionId"]
+        send_id = case["sendRequestId"]
+        prompt = case["prompt"]
+        marker = case["marker"]
+        operation_record = next((row for row in journal["operations"]
+                                 if row.get("request", {}).get("requestId") == send_id), None)
+        request = operation_record.get("request") if operation_record else None
+        original_wire = operation_record.get("rawFrame") if operation_record else None
+        if not isinstance(request, dict) or request.get("operation") != "send" or \
+                request.get("targetId") != session_id or request.get("domainId") != domain or \
+                request.get("payload", {}).get("body") != prompt or original_wire != json.dumps(
+                    request, ensure_ascii=False, separators=(",", ":")):
+            fail(f"{driver}: exact original H User request bytes are absent or changed")
+        send = exact_one(db,
+            "SELECT phase,receipt_status,request_hex,session_id,generation,ticket,process_operation_id,custodian_nonce "
+            "FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND request_id=? AND operation='send'",
+            (domain, send_id))
+        if send[:4] != ("RECEIPTED", "APPLIED", original_wire.encode().hex(), session_id) or \
+                send[4] != request["payload"]["generation"]:
+            fail(f"{driver}: original H send was not durably receipted APPLIED")
+        opened = journal["sessions"]
+        session = next((row for row in opened if row.get("id") == session_id), None)
+        if session is None or session.get("seatId") != case["seatId"] or \
+                session.get("instanceId") != case["instanceId"] or session.get("worktreeId") != case["worktreeId"]:
+            fail(f"{driver}: original H session differs from configured E/F identity")
+        operations = [row for row in journal["operations"]
+                      if row.get("request", {}).get("targetId") == session_id]
+        by_action = {row["request"]["operation"]: row for row in operations
+                     if row.get("request", {}).get("family") == "K-SESSION"}
+        if not all(action in by_action for action in ("open", "stop", "admission-release")):
+            fail(f"{driver}: original H open/stop/release requests are incomplete")
+        for action in ("open", "stop", "admission-release"):
+            record = by_action[action]
+            stored = exact_one(db,
+                "SELECT raw_hex,status FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=? "
+                "AND operation=? AND session_id=?",
+                (domain, record["request"]["requestId"], action, session_id))
+            if stored[0].lower() != record["rawFrame"].encode().hex() or stored[1] != "APPLIED":
+                fail(f"{driver}: original H {action} bytes/receipt differ")
+        open_payload = by_action["open"]["request"].get("payload", {})
+        if open_payload.get("seatId") != case["seatId"] or \
+                open_payload.get("repositoryId") != journal["repositoryId"] or \
+                open_payload.get("worktreeId") != case["worktreeId"]:
+            fail(f"{driver}: original H open does not bind the configured E/F objects")
+        claim = exact_one(db,
+            "SELECT state,stop_fact_id,instance_id,generation FROM gogoke_v37_h_claim "
+            "WHERE domain_id=? AND session_id=?", (domain, session_id))
+        if claim[0] != "RELEASED" or not claim[1] or claim[2] != case["instanceId"]:
+            fail(f"{driver}: original H claim lacks normal STOPPED then RELEASED facts")
+        seat = exact_one(db,
+            "SELECT s.incarnation,s.instance_id,s.state,settings.settings_json "
+            "FROM gogoke_v37_seats s JOIN gogoke_v37_seat_settings settings "
+            "USING(domain_id,seat_id) WHERE s.domain_id=? AND s.seat_id=?",
+            (domain, case["seatId"]))
+        seat_settings = json.loads(seat[3])
+        expected_settings = case.get("seatSettings", {})
+        if seat[1:3] != (case["instanceId"], "IDLE") or \
+                seat_settings.get("model") != expected_settings.get("model") or \
+                seat_settings.get("effort") != expected_settings.get("effort"):
+            fail(f"{driver}: direct E row is not normally released with its original model/effort")
+        binding = exact_one(db,
+            "SELECT seat_id,seat_incarnation,generation FROM gogoke_v37_h_seat_binding "
+            "WHERE domain_id=? AND session_id=?", (domain, session_id))
+        if binding[0] != case["seatId"] or binding[2] != send[4]:
+            fail(f"{driver}: original H episode is not bound to the configured E generation")
+        episodes = db.execute(
+            "SELECT generation,process_operation_id,phase,stop_fact_id,seat_id,seat_incarnation,instance_id "
+            "FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? ORDER BY rowid",
+            (domain, session_id)).fetchall()
+        if not episodes or not all(row[2] == "STOPPED" and row[3] for row in episodes) or \
+                any(row[4] != case["seatId"] or row[5] != seat[0] or row[6] != case["instanceId"] for row in episodes):
+            fail(f"{driver}: original physical H episode stop facts are absent")
+        pins = db.execute(
+            "SELECT DISTINCT i.driver_id,i.version,i.program_digest,e.instance_id,c.binary_digest_sha256 "
+            "FROM gogoke_v37_h_process_episode e JOIN gogoke_v37_instances i ON i.instance_id=e.instance_id "
+            "LEFT JOIN gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id "
+            "WHERE e.domain_id=? AND e.session_id=? AND e.process_operation_id IS NOT NULL",
+            (domain, session_id)).fetchall()
+        if len(pins) != 1 or pins[0][0] != driver or pins[0][1] != case["fixedVersion"] or \
+                pins[0][2] != "sha256:" + case["fixedSha256"] or pins[0][3] != case["instanceId"] or \
+                pins[0][2] != pins[0][4]:
+            fail(f"{driver}: original H/F executable pin or custody digest differs")
+        tree = exact_one(db,
+            "SELECT w.domain_id,w.repository_id,w.seat_id,w.instance_id,w.worktree_path,w.worktree_identity,"
+            "w.state,l.state,o.phase FROM gogoke_v37_worktrees w "
+            "JOIN gogoke_v37_worktree_lifecycle l USING(worktree_id) "
+            "JOIN gogoke_v37_worktree_operations o USING(worktree_id) WHERE w.worktree_id=?",
+            (case["worktreeId"],))
+        if tree[:4] != (domain, journal["repositoryId"], case["seatId"], case["instanceId"]) or \
+                tree[6:] != ("REGISTERED", "REGISTERED", "REGISTERED") or not tree[5]:
+            fail(f"{driver}: original F registration is not bound to the exact E/H identity")
+        tree_path = Path(tree[4])
+        if tree_path.is_symlink() or not tree_path.is_dir():
+            fail(f"{driver}: registered original F worktree is absent or a link")
+        resolved_tree = tree_path.resolve(strict=True)
+        if os.path.normcase(os.path.commonpath((str(root), str(resolved_tree)))) != os.path.normcase(str(root)):
+            fail(f"{driver}: actual F worktree escaped the private candidate state root")
+        result["providerWorktrees"].append({"driverId": driver, "worktreeId": case["worktreeId"],
+            "domainId": domain, "repositoryId": journal["repositoryId"], "seatId": case["seatId"],
+            "instanceId": case["instanceId"], "path": str(resolved_tree),
+            "nativeOpaqueIdentity": tree[5], "rootIdentity": [str(resolved_tree.stat().st_dev),
+            str(resolved_tree.stat().st_ino)]})
+        incoming = db.execute(
+            "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state,process_ticket,custodian_nonce,no_event_reason "
+            "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? ORDER BY rowid",
+            (domain, session_id)).fetchall()
+        records = []
+        parsed = []
+        for generation, operation_id, epoch, cursor, raw, state, ticket, nonce, reason in incoming:
+            data = bytes(raw)
+            frame = json.loads(data.decode("utf-8"))
+            row = {"direction": "in", "sessionId": session_id, "generation": generation,
+                "operationId": operation_id, "sourceEpoch": epoch, "sourceCursor": cursor,
+                "processTicket": ticket, "custodianNonce": nonce, "state": state,
+                "noEventReason": reason, "originalFrame": data.decode("utf-8")}
+            result["frames"].append(row); records.append((row, frame)); parsed.append(frame)
+            if state == "PENDING": result["unknownFrames"].append({"sessionId": session_id,
+                "sourceEpoch": epoch, "sourceCursor": cursor, "method": frame.get("method"), "state": state})
+        outgoing = db.execute(
+            "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor,ticket,custodian_nonce "
+            "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? ORDER BY rowid",
+            (domain, session_id)).fetchall()
+        for generation, operation_id, step_id, command, phase, epoch, cursor, ticket, nonce in outgoing:
+            result["commands"].append({"direction": "out", "sessionId": session_id,
+                "generation": generation, "operationId": operation_id, "stepId": step_id,
+                "phase": phase, "sourceEpoch": epoch, "sourceCursor": cursor,
+                "processTicket": ticket, "custodianNonce": nonce,
+                "originalFrame": bytes.fromhex(command).decode("utf-8"),
+                "confirmedWrite": phase in ("WRITTEN", "OBSERVED")})
+        scoped = [(row, frame) for row, frame in records
+                  if row["operationId"] == send[6] and row["generation"] == send[4] and
+                  row["processTicket"] == send[5] and row["custodianNonce"] == send[7]]
+        if not scoped or any(row["state"] == "PENDING" for row, _ in scoped):
+            fail(f"{driver}: original H operation has missing or unresolved A source rows")
+        marker_output = False
+        vendor_end = False
+        prompt_echo = False
+        terminal_session = None
+        prompt_commands = []
+        for command_row in result["commands"]:
+            if command_row["sessionId"] != session_id or not command_row["confirmedWrite"]:
+                continue
+            try:
+                command_frame = json.loads(command_row["originalFrame"])
+            except json.JSONDecodeError:
+                continue
+            raw_command = json.dumps(command_frame, ensure_ascii=False)
+            if marker in raw_command or prompt in raw_command:
+                prompt_commands.append(command_frame)
+        if not prompt_commands:
+            fail(f"{driver}: original H write journal does not contain the one configured prompt")
+        if len(prompt_commands) != 1:
+            fail(f"{driver}: original provider prompt appears in more than one confirmed A command")
+        for row, frame in scoped:
+            if driver == "claude":
+                if frame.get("type") == "user" and prompt in json.dumps(frame, ensure_ascii=False):
+                    prompt_echo = True
+                if marker in claude_text(frame):
+                    marker_output = True
+                if frame.get("type") == "result" and frame.get("subtype") == "success" and \
+                        frame.get("is_error") is False and isinstance(frame.get("session_id"), str):
+                    if marker_output:
+                        vendor_end = True; terminal_session = frame["session_id"]
+                if any(isinstance(part, dict) and part.get("type") == "tool_use"
+                       for part in nested_text(frame, ("message", "content")) or []):
+                    fail("Claude produced a tool-use frame despite the no-tool prompt")
+            elif driver in ("opencode", "grok"):
+                if marker in acp_text(frame):
+                    marker_output = True
+                if frame.get("method") == "session/request_permission":
+                    fail(f"{driver} produced a permission request despite the no-tool prompt")
+                if frame.get("method") == "session/update" and nested_text(frame,
+                        ("params", "update", "sessionUpdate")) in ("tool_call", "tool_call_update"):
+                    fail(f"{driver} produced a tool-call frame despite the no-tool prompt")
+        if driver == "claude":
+            inits = [frame for _, frame in scoped if frame.get("type") == "system" and
+                     frame.get("subtype") == "init" and isinstance(frame.get("session_id"), str)]
+            prompt_echo = prompt_echo and len(inits) == 1 and inits[0]["session_id"] == terminal_session
+            vendor_end = vendor_end and prompt_echo
+        else:
+            outbound_prompts = []
+            for command_row in result["commands"]:
+                if command_row["sessionId"] != session_id or not command_row["confirmedWrite"]:
+                    continue
+                try:
+                    command_frame = json.loads(command_row["originalFrame"])
+                except json.JSONDecodeError:
+                    continue
+                if command_frame.get("method") == "session/prompt" and \
+                        any(isinstance(item, dict) and item.get("type") == "text" and
+                            prompt in item.get("text", "") for item in command_frame.get("params", {}).get("prompt", [])):
+                    outbound_prompts.append(command_frame)
+            terminal_ids = {json.dumps(frame.get("id"), separators=(",", ":")) for frame in outbound_prompts}
+            prompt_echo = len(outbound_prompts) == 1
+            vendor_end = any(frame.get("result", {}).get("stopReason") == "end_turn" and
+                json.dumps(frame.get("id"), separators=(",", ":")) in terminal_ids
+                for _, frame in scoped if isinstance(frame, dict))
+            vendor_end = vendor_end and marker_output
+        if not prompt_echo or not marker_output or not vendor_end:
+            fail(f"{driver}: matching original A prompt, provider marker output, and vendor end-turn are not all present")
+        normalized = db.execute(
+            "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,r.generation,"
+            "r.process_ticket,r.custodian_nonce FROM v37_ledger_index i LEFT JOIN v37_ledger_raw_source r "
+            "ON r.resolved_event_id=i.source_event_id AND r.domain_id=i.domain_id AND r.session_id=i.session_id "
+            "WHERE i.source_kind='v37' AND i.domain_id=? AND i.session_id=? ORDER BY i.cursor",
+            (domain, session_id)).fetchall()
+        updates = [{"cursor": str(cursor), "sourceEpoch": epoch, "ledgerSourceCursor": source_cursor,
+            "operationId": operation_id, "generation": generation, "processTicket": ticket,
+            "custodianNonce": nonce, "update": json.loads(update)}
+            for cursor, epoch, source_cursor, update, operation_id, generation, ticket, nonce in normalized]
+        if not updates:
+            fail(f"{driver}: original normalized provider output is absent")
+        result["sessions"].append({"sessionId": session_id, "seatId": case["seatId"],
+            "instanceId": case["instanceId"], "worktreeId": case["worktreeId"],
+            "driverId": pins[0][0], "version": pins[0][1], "binarySha256": pins[0][2],
+            "episodes": episodes, "normalized": updates, "missingNormalized": False,
+            "rawFrameCount": len(incoming), "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
+            "allEpisodesStopped": True, "claimState": claim[0], "providerPromptEcho": prompt_echo,
+            "providerEndTurn": vendor_end, "markerObserved": marker_output,
+            "vendorSessionId": terminal_session})
+
+if len(result["providerWorktrees"]) != 3 or len(result["sessions"]) != 3:
+    fail("All three fixed provider F/H sessions must have direct readback")
+if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) != 3:
+    fail("Provider F worktree roots overlap")
+result["filesAfter"] = file_facts()
+result["measurementPreservedDatabaseBytes"] = before == result["filesAfter"]
+result["directProviderEvidence"] = result["measurementPreservedDatabaseBytes"] and \
+    all(row["allEpisodesStopped"] and row["providerEndTurn"] and row["markerObserved"]
+        for row in result["sessions"])
+output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+if not result["directProviderEvidence"]:
+    fail("Direct provider readback incomplete; preserve original private artifact")
