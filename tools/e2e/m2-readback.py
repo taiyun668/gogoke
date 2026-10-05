@@ -369,6 +369,17 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if tree_head != source_head or child_status != f"?? {marker_file}" or source_status or \
                 (source / marker_file).exists():
             raise RuntimeError("Stopped child must leave only the uncommitted marker on a clean original source HEAD")
+        for claim_domain, claim_session, claim_seat, claim_incarnation in rows(db,
+                "SELECT a.domain_id,a.session_id,COALESCE(s.seat_id,''),COALESCE(s.seat_incarnation,'') "
+                "FROM gogoke_v37_h_claim a LEFT JOIN gogoke_v37_h_seat_binding s "
+                "ON s.domain_id=a.domain_id AND s.session_id=a.session_id WHERE a.state!='RELEASED'"):
+            opened = rows(db, "SELECT raw_hex FROM gogoke_v37_h_operation "
+                "WHERE domain_id=? AND session_id=? AND operation='open'", (claim_domain, claim_session))
+            targets = {json.loads(bytes.fromhex(row[0]).decode("utf-8")).get("payload", {}).get("worktreeId")
+                       for row in opened}
+            if worktree_id in targets or (not opened and claim_domain == domain and
+                    claim_seat == journal["childSeatId"] and claim_incarnation == child_seat[4]):
+                raise RuntimeError("Original stopped child worktree still has an admission reservation")
         policy_head = one(db, "SELECT revision,current_stage FROM gogoke_v37_seat_policy_head WHERE domain_id=?", (domain,))
         result["controllerMergeDecision"] = {"decision": "MERGE_EXACT_PRIVATE_TEST_MARKER_ONLY",
             "sourceHead": source_head, "childHead": tree_head, "markerSha256": marker_hash,
