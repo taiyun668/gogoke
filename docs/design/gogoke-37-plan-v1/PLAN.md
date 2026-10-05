@@ -248,3 +248,17 @@ M2 的“隔开写和合并”由宿主封住 Git 边界：席位仅在授权的
 F 在原 MERGE intent 下先持久化与原请求绑定的 child-seal intent；提交成功后记录 child commit 原 hash。child commit 已发生但后续 merge 或数据库回执无法证明时，原请求进入 `MERGE_UNKNOWN`，原请求和新请求都不得重做该效果。历史 `APPLIED` merge receipt 继续按原记录只读回读，不补造 child receipt。这里补的是 F.2/K-WORKTREE merge 的描述性细节：wire family、写入范围、阶段、Owner 触点和持久写方归属不变。
 
 参照：gogo-party 的 `packages/room/src/server.ts:411-425,1848` 由 room 的 `commitForSeat` 代表席位提交，席位只改文件、不触碰 `.git`；当前 Rust F2 已持有固定 Git pin 并负责 merge commit，但还没有 child 改动的宿主封装步骤。
+
+## 同次开机内的原持有者消失与资源恢复（2026-10-05）
+
+Owner 已裁定：正常退出或崩溃丢失原 custodian 后，产品应在同一已登录实例自行恢复，不要求重新登录。本路径是 F/H 资源结算，独立于前述 PR #66 旧权限迁移的系统重启资格；原 `NativeLegacyHoldersGone` 的启动时间条件、旧栅栏和旧 UNKNOWN 集合保持原样。新 native-only 证明复用同一 `OpenProcess`、创建 FILETIME 和已结束句柄检查，确认捕获集合中每个确切 PID/创建时间身份已消失；PID 复用须核对原创建时间，AccessDenied、查询失败、不确定或任一原身份仍活均拒绝并保留原始错误，不用等待时长推断。
+
+父进程消失不能单独授权恢复。当前 verified DB 必须仍绑定原物理 root，并在同根排他协调下确认原 custodian 不属于当前 live runtime。原 H 的唯一启动/ACTIVE 写方在受检 suspended launch 中完成非继承 Job 绑定、无 breakaway、kill-on-close；原 `ProductDatabase` 在关闭 DB、释放 RootLock 前丢弃全部 custodian/Job。由同一物理根重新取得排他 custody 和原封存 operation/ticket/nonce、episode/F generation 组合原持有者已退出的资格。它是代码与原实际安装来源绑定后的结构依据，不是旧记录中不存在的逐 Job 实测字段，也不是调用者传入的 `hostGone`。云端须实测父进程先退而后代仍活、原宿主关闭后同根重开时后代不再活；撤销 kill-on-close 的生产变异必须使断言失败。同权限 Owner 主动保留句柄不被当作跨主体攻击阻断此路径。
+
+F 先持久保存不可扩充的独立 holder-disappearance capture 和 revision CAS：原物理 DB/root/home/认证 FileID、完整受控别名及 link count、原 profile/history/SID、H claim/episode/custody 绑定、状态与修订号，以及 ACL 原值和精确目标。该记录不能构造 StopFact。后续只撤销列明的原 SID 精确 ACE，保留 Owner、系统和其他合法 SID；不重置整个 DACL、不删除别名或历史、不读写凭据内容。每个 begin、prewrite、finish 都重验原捕获、内核消失事实及物理对象；未知 holder/intent、对象替换、未知 link/SID、重解析或原值漂移均拒绝。崩溃后的同一原 intent 只允许两种确定分支：实际 ACL 为封存原值时执行尚未完成的原精确步骤；实际 ACL 为目标时仅读回完成。其他状态保留 UNKNOWN，不用新请求重做副作用。第二条 SID 的原值必须匹配第一条精确步骤完成后的值。
+
+实际撤权回执与独立恢复记录齐全后，由 H 在同一事务核当前 Owner、原 claim 修订号/绑定/seat incarnation、无未决 generation change，将确切原资源占用结算为 RELEASED、对应席位置为 IDLE，并写明独立 holder-gone 依据；不经过 STOPPED、不填写停止 hash。原 custody、episode、RPC 和业务历史保留，新宿主既有 ACTIVE/PREPARED→UNKNOWN 初始化也不得冒充停止事实。F 的冷 source holder 仅对精确 APPLIED 恢复集合核实既有 protected DACL 残余并取得只读 adoption witness，不修改通用 `stopped_instance`；后来新 holder/intent 仍按原规则拒绝。旧 continuation、worktree merge/delete 和任何需要原 StopFact 的操作仍拒绝。三个更早的 UNKNOWN 和原 legacy fences 不在此恢复集合中。
+
+在 Owner Win11 本体用原实例及原认证物理对象验证两条恢复、原并发占用释放和新真实模型会话；保留原失败、旧三条 UNKNOWN、认证元数据及正式版五组保护快照。每次关闭候选前必须先对本次所有 live 会话执行原 H stop，并读回确切 StopFact，再正常关闭；测量失败先保全原请求，不能仅关闭窗口后把进程缺席记为停止。本次限定一轮恢复施工和实测；若仍不能干净恢复，保全现场、报告后才进入 Owner 允许的一次新 Codex 登录。
+
+参照：gogo-party 席位 close 的 PID/创建时间约束与 P07 supervisor 实验（仅行为参考，不作为本体证明）、仓库 runtime/parts 调研、PR #66 的既有内核查询、原 H Job/RootLock 生命周期、F metadata/journal/精确撤权及 H admission CAS。采用这些既有做法，不另建探测框架；新通道仅区分“持有者消失后的资源释放”与“真实停止事实”。本节只修订 F/H 已授权实现细节，不改范围摘要、wire family、持久写方、权限档位、固定 CLI 或 Owner 触点。
