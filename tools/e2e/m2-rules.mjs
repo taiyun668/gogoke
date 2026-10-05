@@ -165,7 +165,17 @@ export async function runRulesCase(product, config, journal) {
       const content = Array.isArray(tools[0].rawOutput) ? tools[0].rawOutput : tools[0].rawOutput?.contentItems;
       requireFact(Array.isArray(content) && content.length === 1 && content[0].type === 'inputText' &&
         typeof content[0].text === 'string', 'V08 original native receipt text missing');
-      action.rawToolReceipt = content[0].text; action.receipt = JSON.parse(content[0].text); product.save();
+      action.rawToolReceipt = content[0].text; product.save();
+      if (caseId === 'V08_MODEL_EMPTY_REJECT_REASON') {
+        requireFact(status === 'INVALID_INPUT' && tools[0].status === 'failed' &&
+          content[0].text === 'Native host operation failed: Invalid("reason")',
+        'Empty reason must preserve the exact original native input refusal');
+        action.nativeRefusal = { kind: 'INVALID_INPUT', original: content[0].text };
+        action.state = 'OBSERVED_NATIVE_REFUSAL_READBACK_REQUIRED';
+        session.turns.push({ turnId: action.turnId, sendRequestId: action.sendRequestId });
+        product.save(); return action;
+      }
+      action.receipt = JSON.parse(content[0].text); product.save();
       const receipt = action.receipt;
       requireFact(receipt.schema === 'gogoke.37.operations.v1' && receipt.family === 'K-POLICY' &&
         receipt.operation === operation && receipt.targetId === gate && receipt.status === status &&
@@ -192,7 +202,7 @@ export async function runRulesCase(product, config, journal) {
     await call('V08_SUBMIT_PASS_GATE', submitter, 'gate-submit', pass, '1', {}, 'APPLIED', 'SUBMITTED');
     await call('V08_MODEL_WRONG_REVIEWER', submitter, 'gate-decide', pass, '2', { decision: 'PASS' }, 'DENIED');
     await call('V08_MODEL_EMPTY_REJECT_REASON', reviewer, 'gate-decide', pass, '2',
-      { decision: 'REJECT', reason: '' }, 'DENIED');
+      { decision: 'REJECT', reason: '' }, 'INVALID_INPUT');
     await call('V08_APPROVE', reviewer, 'gate-decide', pass, '2', { decision: 'PASS' }, 'APPLIED', 'PASSED');
     policyRevision = (BigInt(policyRevision) + 1n).toString();
     await call('V08_LEGAL_STAGE', submitter, 'stage-transition', pass, '3', {}, 'APPLIED', 'ADVANCED', toStage);

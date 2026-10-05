@@ -756,7 +756,7 @@ def verify_case(db, journal, case, result):
         ("V08_MODEL_EXPIRED_GRANT", submitter, "gate-submit", passed, "1", {}, "DENIED", None, "", initial_revision + 1),
         ("V08_SUBMIT_PASS_GATE", submitter, "gate-submit", passed, "1", {}, "APPLIED", "SUBMITTED", "", initial_revision + 2),
         ("V08_MODEL_WRONG_REVIEWER", submitter, "gate-decide", passed, "2", {"decision": "PASS"}, "DENIED", None, "", initial_revision + 2),
-        ("V08_MODEL_EMPTY_REJECT_REASON", reviewer, "gate-decide", passed, "2", {"decision": "REJECT", "reason": ""}, "DENIED", None, "", initial_revision + 2),
+        ("V08_MODEL_EMPTY_REJECT_REASON", reviewer, "gate-decide", passed, "2", {"decision": "REJECT", "reason": ""}, "INVALID_INPUT", None, "", initial_revision + 2),
         ("V08_APPROVE", reviewer, "gate-decide", passed, "2", {"decision": "PASS"}, "APPLIED", "PASSED", "", initial_revision + 2),
         ("V08_LEGAL_STAGE", submitter, "stage-transition", passed, "3", {}, "APPLIED", "ADVANCED", case["toStage"], initial_revision + 3),
     ]
@@ -851,13 +851,24 @@ def verify_case(db, journal, case, result):
         check(reply["phase"] in ("WRITTEN", "OBSERVED"), "H tool reply not written for the original A source")
         content = written["result"]["contentItems"]
         check(len(content) == 1 and content[0]["type"] == "inputText", "Original H tool response shape differs")
-        receipt = json.loads(content[0]["text"])
-        check(content[0]["text"] == action["rawToolReceipt"] and receipt == action["receipt"] and
-              reply["step_id"] == receipt["requestId"] and written["result"]["success"] == (status == "APPLIED") and
-              receipt["schema"] == "gogoke.37.operations.v1" and receipt["family"] == "K-POLICY" and
-              receipt["operation"] == operation and receipt["targetId"] == gate and receipt["status"] == status and
-              receipt["previousRevision"] == gate_rev and receipt["revision"] == str(int(gate_rev) + (status == "APPLIED")),
-              "Actual H policy receipt differs from observation/required outcome")
+        if status == "INVALID_INPUT":
+            original = 'Native host operation failed: Invalid("reason")'
+            check(key == "V08_MODEL_EMPTY_REJECT_REASON" and content[0]["text"] ==
+                  action["rawToolReceipt"] == original and written["result"]["success"] is False and
+                  action["nativeRefusal"] == {"kind": "INVALID_INPUT", "original": original} and
+                  "receipt" not in action,
+                  "Malformed reason must retain the exact native refusal, not an invented policy receipt")
+            request_id = reply["step_id"]
+            receipt = None
+        else:
+            receipt = json.loads(content[0]["text"])
+            check(content[0]["text"] == action["rawToolReceipt"] and receipt == action["receipt"] and
+                  reply["step_id"] == receipt["requestId"] and written["result"]["success"] == (status == "APPLIED") and
+                  receipt["schema"] == "gogoke.37.operations.v1" and receipt["family"] == "K-POLICY" and
+                  receipt["operation"] == operation and receipt["targetId"] == gate and receipt["status"] == status and
+                  receipt["previousRevision"] == gate_rev and receipt["revision"] == str(int(gate_rev) + (status == "APPLIED")),
+                  "Actual H policy receipt differs from observation/required outcome")
+            request_id = receipt["requestId"]
         tool_completions = [(row, value) for row, value in tool_items if value["method"] == "item/completed"]
         tool_starts = [(row, value) for row, value in tool_items if value["method"] == "item/started"]
         check(len(tool_completions) == 1 and tool_completions[0][1]["params"]["threadId"] == session["threadId"] and
@@ -872,7 +883,7 @@ def verify_case(db, journal, case, result):
             started["params"]["item"]["arguments"] == arguments
             for _, started in tool_starts), "Original CLI tool start includes an additional tool")
         events = select(db, "SELECT * FROM gogoke_v37_seat_policy_events WHERE domain_id=? AND event_id=?",
-                        (domain, receipt["requestId"]))
+                        (domain, request_id))
         if status == "APPLIED":
             check(len(events) == 1 and events[0]["operation"] == operation and events[0]["target_id"] == gate and
                   events[0]["state"] == state and events[0]["detail"] == reason and events[0]["policy_revision"] == policy_rev and
