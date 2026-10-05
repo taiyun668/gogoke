@@ -37,6 +37,15 @@ if (process.platform !== 'win32' || !/^\d+\.\d+\.\d+$/.test(config.version ?? ''
 }
 
 const rules = config.rules;
+if (rules.foreignProject !== undefined && (
+    !atom(rules.foreignProject?.domainId) || !atom(rules.foreignProject?.gateId) ||
+    rules.foreignProject.domainId === config.domainId ||
+    typeof rules.foreignProject.ownerGate?.rawFrame !== 'string' ||
+    typeof rules.foreignProject.ownerGate?.rawReceipt !== 'string' ||
+    Object.keys(rules.foreignProject).length !== 3 ||
+    Object.keys(rules.foreignProject.ownerGate).length !== 2)) {
+  throw Error('Foreign fixture requires a distinct real domain/gate and original NativeUser Owner gate bytes');
+}
 if (rules.lifecycleOwnership !== 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' ||
     rules.policyOwnership !== 'EXCLUSIVE_V08_POLICY_DOMAIN') {
   throw Error('V08 requires the two explicit exclusive ownership values');
@@ -94,6 +103,7 @@ const journal = {
   providerWorktreePlan: [],
   sideChatCases: [],
   rulesCases: [],
+  foreignProject: rules.foreignProject ?? null,
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };
@@ -231,6 +241,7 @@ async function stopUser(session, release) {
   check(typeof stopped.result.stopFact === 'string' && stopped.result.stopFact.length > 0,
     `${session.id}: durable actual process stop fact`);
   if (release) await sessionOp(session, 'admission-release', { seatId: session.seatId });
+  return stopped;
 }
 
 async function prepareRulesWorktree(selection, label) {
@@ -286,7 +297,7 @@ async function runRules() {
       session.cursor = '0';
       product.save();
     },
-    stopRulesSession: session => stopUser(session, true),
+    stopRulesSession: session => stopUser(session, false),
     releaseStoppedRulesSession: session => sessionOp(session, 'admission-release', { seatId: session.seatId }),
   } }, journal);
   check(record.state === 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED',

@@ -36,11 +36,10 @@ export async function runRulesCase(product, config, journal) {
     readerSha256: hash(fs.readFileSync(fileURLToPath(new URL('./m2-rules-readback.py', import.meta.url)))),
     ownership: { lifecycle: c.lifecycleOwnership, policy: c.policyOwnership },
     ownerConfigurations: [], seatCards: [], initialSessions: [], userBoundaries: [], actions: [], hostCases: [], notRun: [
-      { caseId: 'V08_MODEL_FORGED_SENDER', reason: 'The advertised tool accepts no sender/caller field; a real malformed caller A frame is required. User bytes cannot substitute.' },
-      { caseId: 'V08_MODEL_CROSS_PROJECT', reason: 'The native tool derives domain from H; it exposes no cross-domain selector. A genuine reachable cross-project model call is required.' },
-      { caseId: 'V08_MODEL_SUBORDINATE_OWNER', reason: 'A distinct admitted subordinate and its real reachable MESSAGE/Owner operation are required; gate target text is not that operation.' },
+      ...(!c.foreignProject ? [{ caseId: 'V08_MODEL_CROSS_PROJECT', reason: 'No actual NativeUser-created foreign domain/gate and immutable baseline supplied; an invented target cannot prove the boundary.' }] : []),
+      { caseId: 'V08_MODEL_SUBORDINATE_OWNER', reason: 'The four dynamic tools and H allowlist expose no Model MESSAGE/Owner operation; CallAction::Message alone is not reachable, and User K-INBOX fixes sender to User.' },
       { caseId: 'V08_REJECT_CAP_DELIVERY', reason: 'Host recipient/checkpoint context not supplied; gate state alone cannot prove original E/C/H delivery.' },
-      { caseId: 'V08_STALL_CHAIN', reason: 'The sealed producer is present in source. This installed flow has not observed an original failed WORK followed by its definite Unsupported repair and unchanged custody with no successor work; synthetic cloud controls cannot substitute.' },
+      { caseId: 'V08_STALL_CHAIN', reason: 'No original failed WORK with contextWindowExceeded/typed retry followed by original compact -32601 Unsupported, same custody and no successor work was observed. Interrupted turns and synthetic cloud associations cannot substitute.' },
     ], readbackRequired: true };
   journal.rulesCases ??= []; journal.rulesCases.push(record); product.save();
   try {
@@ -57,6 +56,17 @@ export async function runRulesCase(product, config, journal) {
       before.readerSha256 === record.readerSha256,
     'V08 baseline must be the same candidate/domain immutable native readback');
     record.baselineReadback = baseline;
+    const foreign = c.foreignProject ?? null;
+    requireFact(JSON.stringify(foreign) === JSON.stringify(journal.foreignProject ?? null) &&
+      JSON.stringify(foreign) === JSON.stringify(before.foreignProject?.configuration ?? null),
+    'Foreign fixture must match the original normally closed reader baseline');
+    if (foreign) {
+      requireFact(foreign.domainId !== config.domainId && before.foreignProject.policy.head.length === 1 &&
+        before.foreignProject.gate.gate_id === foreign.gateId &&
+        !before.policy.gates.some(row => row.gate_id === foreign.gateId),
+      'Foreign target must actually exist in B and be absent from A');
+      record.foreignProject = foreign;
+    }
     let policyRevision = String(before.policy.head[0].revision);
     const fromStage = before.policy.head[0].current_stage, toStage = id('v08Stage');
     const submitter = c.submitterSession, reviewer = c.reviewerSession;
@@ -123,7 +133,8 @@ export async function runRulesCase(product, config, journal) {
         reply = await product.operation('K-SESSION', 'output-stream', session.id,
           { generation: session.generation, afterCursor: session.cursor }, session.revision);
       }
-      requireFact(decimal(reply.result.cursor) && BigInt(reply.result.cursor) >= BigInt(session.cursor),
+      requireFact(reply.result.generation === session.generation && decimal(reply.result.cursor) &&
+        BigInt(reply.result.cursor) >= BigInt(session.cursor),
         'V08 original output cursor monotonic');
       session.cursor = reply.result.cursor; session.revision = reply.revision;
       session.events.push(...reply.result.events); product.save();
@@ -177,6 +188,9 @@ export async function runRulesCase(product, config, journal) {
       }
       action.receipt = JSON.parse(content[0].text); product.save();
       const receipt = action.receipt;
+      requireFact(tools[0].status === (status === 'APPLIED' ? 'completed' : 'failed') &&
+        (status !== 'DENIED' || JSON.stringify(receipt.result) === '{}'),
+      'Original CLI tool outcome must match the native policy result');
       requireFact(receipt.schema === 'gogoke.37.operations.v1' && receipt.family === 'K-POLICY' &&
         receipt.operation === operation && receipt.targetId === gate && receipt.status === status &&
         receipt.previousRevision === revision && receipt.revision ===
@@ -200,7 +214,11 @@ export async function runRulesCase(product, config, journal) {
     await call('V08_MODEL_EXPIRED_GRANT', submitter, 'gate-submit', pass, '1', {}, 'DENIED');
     await grant(null);
     await call('V08_SUBMIT_PASS_GATE', submitter, 'gate-submit', pass, '1', {}, 'APPLIED', 'SUBMITTED');
+    await call('V08_MODEL_FORGED_SENDER', submitter, 'gate-decide', pass, '2',
+      { decision: 'PASS', callerSeatId: reviewer.seatId }, 'DENIED');
     await call('V08_MODEL_WRONG_REVIEWER', submitter, 'gate-decide', pass, '2', { decision: 'PASS' }, 'DENIED');
+    if (foreign) await call('V08_MODEL_CROSS_PROJECT', submitter, 'gate-submit', foreign.gateId,
+      String(before.foreignProject.gate.revision), {}, 'DENIED');
     await call('V08_MODEL_EMPTY_REJECT_REASON', reviewer, 'gate-decide', pass, '2',
       { decision: 'REJECT', reason: '' }, 'INVALID_INPUT');
     await call('V08_APPROVE', reviewer, 'gate-decide', pass, '2', { decision: 'PASS' }, 'APPLIED', 'PASSED');
@@ -229,6 +247,31 @@ export async function runRulesCase(product, config, journal) {
         return session;
       };
       const checkpoint = async host => {
+        const target = host.kind === 'DELIVERED' ?
+          journal.sessions.find(row => row.id === host.autoObservation?.sessionId) :
+          journal.sessions.find(row => row.id === host.busy?.binding.id);
+        requireFact(target, 'Checkpoint requires the original live observed recipient before any close');
+        const stopped = [submitter, reviewer, target];
+        host.checkpointStops = []; product.save();
+        for (const session of stopped) {
+          await output(session, Boolean(host.busy && session.id === target.id));
+          const readRequestId = journal.operations.at(-1).request.requestId;
+          const revision = session.revision;
+          const receipt = await c.stopRulesSession(session);
+          const entry = journal.operations.at(-1);
+          requireFact(entry.request.family === 'K-SESSION' && entry.request.operation === 'stop' &&
+            entry.request.targetId === session.id && entry.request.expectedRevision === revision &&
+            entry.request.payload.generation === session.generation &&
+            entry.request.payload.seatId === session.seatId && receipt === entry.receipt &&
+            receipt.status === 'APPLIED' && receipt.previousRevision === revision &&
+            receipt.revision === (BigInt(revision) + 1n).toString() &&
+            receipt.revision === session.revision && typeof receipt.result.stopFact === 'string' &&
+            receipt.result.stopFact.length > 0,
+          'Checkpoint needs one original H stop-only receipt and genuine StopFact at the observed revision');
+          host.checkpointStops.push({ binding: binding(session), revision: session.revision,
+            readRequestId, stopRequestId: entry.request.requestId, stopFact: receipt.result.stopFact });
+          product.save();
+        }
         const reference = await c.hostCheckpoint();
         requireFact(reference && path.basename(reference.file) === reference.file &&
           /^[a-f0-9]{64}$/.test(reference.sha256), 'Host checkpoint original artifact required');
@@ -256,28 +299,27 @@ export async function runRulesCase(product, config, journal) {
             original.message.generation === '' && original.deliveries.length === 0 &&
             original.sends.length === 0 && original.recipient === null),
         'Actual Host checkpoint must contain the original automatic delivery or genuinely blocked queue');
-        const stopped = [submitter, reviewer, ...(host.busy ? [journal.sessions.find(row => row.id === host.busy.binding.id)] : [])];
         for (const session of stopped) {
           const claim = snapshot.stoppedClaims.find(row => row.session_id === session?.id);
           requireFact(claim?.state === 'STOPPED' && claim.generation === session.generation &&
-            claim.instance_id === session.instanceId && claim.stop_fact_id && Number.isSafeInteger(claim.revision),
-          'Normal close must leave this exact case-owned H generation physically stopped');
-          session.revision = String(claim.revision);
+            claim.instance_id === session.instanceId &&
+            claim.stop_fact_id === host.checkpointStops.find(row => row.binding.id === session.id).stopFact &&
+            String(claim.revision) === session.revision,
+          'Immutable checkpoint must read the original H stop-only claim/StopFact without inventing a stop');
         }
         host.checkpoint = reference; host.messageId = original.message.message_id;
         host.enqueueRequestId = original.enqueue.request_id;
         host.triggerId = original.intent.trigger_id; host.escalationRequestId = original.intent.request_id;
         host.queuedRevision = original.message.revision; product.save();
         if (host.kind === 'DELIVERED') {
-          const target = { ...original.autoBinding, cursor: '0', events: [], turns: [] };
           requireFact(target.seatId === h.destination.seatId &&
             target.instanceId === h.destination.instanceId && target.worktreeId === h.destination.worktreeId &&
             target.id === host.autoObservation.sessionId &&
             target.threadId === host.autoObservation.threadId &&
             original.message.turn_id === host.autoObservation.turnId &&
-            !journal.sessions.some(row => row.id === target.id),
+            ['id', 'seatId', 'instanceId', 'worktreeId', 'generation', 'threadId'].every(name =>
+              original.autoBinding[name] === target[name]) && original.autoBinding.revision === target.revision,
           'Automatic recipient must be the unique original Host-created H session');
-          journal.sessions.push(target);
           host.targetSessions.push(binding(target)); host.observedTurnId = original.message.turn_id;
           product.save();
         }
@@ -355,16 +397,36 @@ export async function runRulesCase(product, config, journal) {
         product.save();
         let completed;
         while (Date.now() < deadline) {
-          await output(target);
+          const page = await output(target);
+          requireFact(page.generation === target.generation, 'Automatic output must bind the actual live H generation');
+          host.autoObservation.outputReadRequestId = journal.operations.at(-1).request.requestId;
+          const inputs = page.nativeInputReceipts.filter(row => row.phase === 'RECEIPTED' &&
+            row.receipt?.family === 'K-SESSION' && row.receipt.operation === 'send' &&
+            row.receipt.targetId === target.id && row.receipt.status === 'APPLIED' &&
+            row.receipt.result?.createdTurn === true);
+          if (inputs.length === 0) {
+            await delay(300); continue; // Observe this original Host send; never resend or substitute.
+          }
+          if (!(inputs.length === 1 && inputs[0].receipt.result.generation === target.generation &&
+              decimal(inputs[0].receipt.revision))) {
+            host.state = 'NOT_RUN_NO_ORIGINAL_LIVE_AUTOMATIC_BINDING'; product.save();
+            throw Error('V08 automatic recipient NOT_RUN: no unique original live H send ACK; preserve without stop or close');
+          }
+          host.autoObservation.nativeInputReceipt = inputs[0];
           completed = target.events.find(row => row._meta?.codexMethod === 'turn/completed' &&
-            row._meta.turnStatus === 'completed');
+            row._meta.turnStatus === 'completed' && row._meta.turnId === inputs[0].receipt.result.turnId);
           if (completed) break;
           await delay(300);
         }
-        requireFact(completed?._meta?.turnId && completed._meta.threadId,
-          'Original automatic recipient CLI turn did not complete before normal close');
+        if (!(completed?._meta?.turnId && completed._meta.threadId)) {
+          host.state = 'NOT_RUN_NO_ORIGINAL_LIVE_AUTOMATIC_COMPLETION'; product.save();
+          throw Error('V08 automatic recipient NOT_RUN: original live H binding/CLI completion unavailable; preserve without stop or close');
+        }
         host.autoObservation = { ...host.autoObservation, generation: target.generation,
           threadId: completed._meta.threadId, turnId: completed._meta.turnId };
+        target.threadId = completed._meta.threadId; target.turns = [];
+        requireFact(!journal.sessions.some(row => row.id === target.id), 'Automatic live recipient must be unique');
+        journal.sessions.push(target);
         product.save();
       };
       for (const kind of ['DELIVERED', 'BUSY_QUEUED', 'ROUTE_CHANGED', 'CANCELLED']) {
@@ -411,7 +473,7 @@ export async function runRulesCase(product, config, journal) {
       }
       record.notRun = record.notRun.filter(row => row.caseId !== 'V08_REJECT_CAP_DELIVERY');
       record.notRun.push({ caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'No real deterministic UNKNOWN/late-ACK occurrence is available here; synthetic ACK/faults and input replay are not used.' },
-        { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Busy is proved by the native unanswered question; normal close and User cancellation clean up that separate cause. Its old vendor turn is never presumed idle on resume.' });
+        { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Busy is proved by the native unanswered question; original H stop-only, immutable checkpoint, User cancellation and release preserve that separate cause. Its old vendor turn is never presumed idle on resume.' });
     }
     record.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();
     return record;
