@@ -3863,12 +3863,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree() {
-        let marker = unique_marker("descendant");
-        let entry_marker = unique_marker("descendant-entry");
-        let error_marker = unique_marker("descendant-error");
-        let child_output = unique_marker("descendant-output");
+    struct LiveJobDescendantFixture {
+        custodian: ProcessCustodian,
+        prepared: PreparedCustody,
+        child: OwnedHandle,
+        child_identity: ProcessIdentity,
+        marker: PathBuf,
+        entry_marker: PathBuf,
+        error_marker: PathBuf,
+        child_output: PathBuf,
+    }
+
+    fn live_job_descendant_fixture(tag: &str) -> LiveJobDescendantFixture {
+        let marker = unique_marker(&format!("{tag}-descendant"));
+        let entry_marker = unique_marker(&format!("{tag}-descendant-entry"));
+        let error_marker = unique_marker(&format!("{tag}-descendant-error"));
+        let child_output = unique_marker(&format!("{tag}-descendant-output"));
         let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
             .expect("cloud-bound Node runtime path"));
         assert!(node.is_file(), "cloud-bound Node runtime must exist");
@@ -3877,7 +3887,7 @@ mod tests {
         // Node's non-detached Windows children belong to its own kill-on-close
         // Job. unref() alone cannot establish this fixture's surviving child.
         // Fixed libuv does not request CREATE_BREAKAWAY_FROM_JOB for detached.
-        let script = r#"const fs=require('fs');const cp=require('child_process');try{fs.writeFileSync(process.argv[1],'parent-started');const output=fs.openSync(process.argv[4],'wx');const child=cp.spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:['ignore',output,output],windowsHide:true,detached:true});child.on('error',error=>fs.writeFileSync(process.argv[3],String(error)));child.unref();fs.closeSync(output);fs.writeFileSync(process.argv[2],String(child.pid));}catch(error){fs.writeFileSync(process.argv[3],String(error));process.exit(17)}"#;
+        let script = r#"const fs=require('fs');const cp=require('child_process');try{fs.writeFileSync(process.argv[1],'parent-started');const output=fs.openSync(process.argv[4],'wx');const child=cp.spawn(process.execPath,['-e','setTimeout(()=>{},120000)'],{stdio:['ignore',output,output],windowsHide:true,detached:true});child.on('error',error=>fs.writeFileSync(process.argv[3],String(error)));child.unref();fs.closeSync(output);fs.writeFileSync(process.argv[2],String(child.pid));}catch(error){fs.writeFileSync(process.argv[3],String(error));process.exit(17)}"#;
         let mut launch = ProcessLaunch::new(node);
         launch.arguments = vec![
             "-e".to_owned(), script.to_owned(),
@@ -3886,13 +3896,10 @@ mod tests {
             error_marker.to_string_lossy().into_owned(),
             child_output.to_string_lossy().into_owned(),
         ];
-        let captured = Arc::new(Mutex::new(None));
-        let captured_for_callback = Arc::clone(&captured);
-        let process = prepare_and_activate(&launch, move |identity| {
-            *captured_for_callback.lock().expect("identity lock") = Some(identity.clone());
-            Ok(())
-        })
-        .expect("prepare and activate controlled process tree");
+        let mut custodian = ProcessCustodian::new().expect("actual native process custodian");
+        let prepared = custodian.prepare(&request(launch)).expect("same production suspended Job creation");
+        custodian.activate(&prepared).expect("activate exact native custody");
+        let process = custodian.active(&prepared.ticket).expect("actual active process");
         assert!(process
             .handles_are_non_inheritable()
             .expect("handle policy"));
@@ -3913,8 +3920,9 @@ mod tests {
             .parse().expect("actual spawned child pid");
         assert!(child_pid > 0);
         const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+        const PROCESS_TERMINATE_ACCESS: u32 = 1;
         let child = OwnedHandle::new(unsafe {
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS, 0, child_pid)
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS | PROCESS_TERMINATE_ACCESS, 0, child_pid)
         }).unwrap_or_else(|| {
             let source = io::Error::last_os_error();
             panic!("open actual descendant pid={child_pid} win32={:?}: {source}", source.raw_os_error());
@@ -3939,10 +3947,16 @@ mod tests {
             fs::read_to_string(&error_marker).ok(),
             fs::read_to_string(&child_output).ok()
         );
-        assert_eq!(
-            captured.lock().expect("identity lock").as_ref(),
-            Some(process.identity())
-        );
+        assert_eq!(&prepared.identity, process.identity());
+        LiveJobDescendantFixture { custodian, prepared, child, child_identity,
+            marker, entry_marker, error_marker, child_output }
+    }
+
+    #[test]
+    fn real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree() {
+        let LiveJobDescendantFixture { custodian, prepared, child, child_identity,
+            marker, entry_marker, error_marker, child_output } = live_job_descendant_fixture("explicit-stop");
+        let process = custodian.active(&prepared.ticket).expect("original active Job");
 
         let budgets = StopBudgets {
             grace_ms: 50,
@@ -3971,6 +3985,64 @@ mod tests {
         let _ = fs::remove_file(entry_marker);
         let _ = fs::remove_file(error_marker);
         fs::remove_file(child_output).expect("remove controlled child output");
+    }
+
+    #[test]
+    fn holder_gone_requires_job_close_to_remove_live_descendant_before_root_recovery() {
+        use crate::process::{NativeProcessHoldersGone, NativeLegacyHoldersGoneError};
+        use crate::root::{RootLock, RootLockError};
+        let root_path = unique_marker("holder-gone-job-root");
+        fs::create_dir(&root_path).expect("fresh synthetic coordination root");
+        let root = RootLock::acquire(&root_path).expect("original physical RootLock");
+        assert!(root.handles_are_non_inheritable().expect("actual root handle inheritance"));
+        let root_identity = root.canonical_root().identity.clone();
+        let LiveJobDescendantFixture { custodian, prepared, child, child_identity,
+            marker, entry_marker, error_marker, child_output } = live_job_descendant_fixture("holder-close");
+        let parent_pair = (prepared.identity.pid, prepared.identity.creation_time_100ns);
+        let child_pair = (child_identity.pid, child_identity.creation_time_100ns);
+        let parent_gone = NativeProcessHoldersGone::observe(&[parent_pair])
+            .expect("the exact parent really exited");
+        parent_gone.validate(&[parent_pair]).unwrap();
+        assert!(custodian.active(&prepared.ticket).unwrap().active_job_processes().unwrap() > 0);
+        assert!(matches!(NativeProcessHoldersGone::observe(&[parent_pair, child_pair]),
+            Err(NativeLegacyHoldersGoneError::ExactHolderAlive { pid, creation_time_100ns })
+                if pid == child_pair.0 && creation_time_100ns == child_pair.1),
+            "parent disappearance alone does not prove its live descendant is gone");
+        assert!(matches!(RootLock::acquire(&root_path), Err(RootLockError::AlreadyLocked { .. })),
+            "the original host still excludes a second root owner after parent exit");
+        // No explicit stop or TerminateJobObject: dropping the actual product
+        // custodian closes its sole non-inheritable KILL_ON_JOB_CLOSE handle.
+        drop(custodian);
+        let child_finished = wait_handle(child.raw(), STOP_OBSERVE_MS)
+            .expect("observe the same exact child handle after original Job close");
+        let observed_exit = process_exit_code(child.raw()).expect("exact child exit observation");
+        if !child_finished {
+            // A compiled mutation deliberately leaves this controlled child
+            // alive. Clean it through the same pinned handle before failing.
+            assert_ne!(unsafe { TerminateProcess(child.raw(), STOP_REFUSED_EXIT_CODE) }, 0,
+                "controlled mutation cleanup: {}", io::Error::last_os_error());
+            assert!(wait_handle(child.raw(), STOP_TERMINATE_MS).unwrap(), "mutation child cleanup");
+        } else {
+            let complete_gone = NativeProcessHoldersGone::observe(&[parent_pair, child_pair])
+                .expect("both exact process identities are gone after actual Job close");
+            complete_gone.validate(&[parent_pair, child_pair]).unwrap();
+        }
+        // The root release is separate from the exact process observation;
+        // its handles are not inherited by this independently pinned child.
+        drop(root);
+        let reacquired = RootLock::acquire(&root_path).expect("exclusive same physical root reacquisition");
+        assert_eq!(reacquired.canonical_root().identity, root_identity);
+        drop(reacquired);
+        drop(child);
+        fs::remove_file(marker).expect("remove child PID fixture");
+        fs::remove_file(entry_marker).expect("remove parent entry fixture");
+        assert!(!error_marker.exists(), "controlled child fixture had no spawn error");
+        fs::remove_file(child_output).expect("remove controlled child output");
+        fs::remove_dir(root_path).expect("remove synthetic coordination root");
+        assert!(child_finished,
+            "HOLDER_GONE_KILL_ON_CLOSE_DESCENDANT_SURVIVED: exact child={child_identity:?} exit_before_cleanup={observed_exit:?}");
+        // Do not convert this kernel/RootLock evidence into a durable STOPPED,
+        // credential revocation, or admission-release fact.
     }
 
     #[test]
