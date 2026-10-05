@@ -367,7 +367,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         // and fixed-CLI thread resume. This exercises the credential boundary
         // at OLD_STOPPED, not a synthetic accepted generation-change row.
         applied(&mut product, &operation("projectA", "K-SESSION", "renew-session", "holder-cold-renew", "sessionC", 3,
-            &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
+            &format!(r#"{{"generation":"{generation}"}}"#)));
         let generation=generation+1;
         assert_eq!(journal_rows(&product), journals, "real continuation preserves original recovery receipts");
         assert!(product.native_sessions.get(&("projectA".into(),"sessionC".into())).unwrap().evidence.file_credentials_bound());
