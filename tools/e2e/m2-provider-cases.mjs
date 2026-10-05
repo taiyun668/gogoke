@@ -71,6 +71,9 @@ export async function runProviderBoundaryCases(product, config, journal) {
     return reply;
   }
   const instances = await product.instances();
+  checked(instances.instances.some(value => value.instanceId === config.instanceId &&
+    value.driverId === 'codex' && value.state === 'LOGGED_IN'),
+  'Configured M2 lead must be the actual logged-in Codex instance');
   for (const driverId of drivers) {
     const row = plan.cases.find(value => value.driverId === driverId);
     const observed = instances.instances.find(value => value.instanceId === row.instanceId);

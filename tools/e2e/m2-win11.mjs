@@ -19,7 +19,7 @@ const required = ['installed', 'version', 'sourceCommit', 'installedSha256', 're
 if (process.platform !== 'win32' || !process.argv[2] ||
     config.testerArmy === false ||
     required.some(name => config[name] === undefined) ||
-    config.instanceId !== 'codexTestM1' || config.repositoryId !== 'gogokeSeatTestbed' ||
+    !atom(config.instanceId) || config.repositoryId !== 'gogokeSeatTestbed' ||
     !atom(config.domainId) || !atom(config.seatId) || !atom(config.childSeatId) ||
     !atom(config.templateId) || !atom(config.childInstanceId) ||
     !atom(config.takeoverQuestionId) || config.seatId === config.childSeatId ||
@@ -640,7 +640,8 @@ try {
     journal.connectionBackend?.telemetryDisabled === true,
   'Original e2e hard locator with telemetry off and no agent.act');
   const instances = await product.instances(); journal.instances = instances; product.save();
-  check(instances.instances.some(row => row.instanceId === config.instanceId && row.state === 'LOGGED_IN'),
+  check(instances.instances.some(row => row.instanceId === config.instanceId &&
+    row.driverId === 'codex' && row.state === 'LOGGED_IN'),
     'Actual Codex lead login status already qualified');
   check(instances.instances.some(row => row.instanceId === config.childInstanceId &&
     row.driverId === 'codex' && row.state === 'LOGGED_IN'),

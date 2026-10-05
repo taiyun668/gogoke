@@ -11,7 +11,9 @@ The private `config.providerBoundary.cases` contains exactly one fixed
 `claude`, `opencode`, and `grok` row with `instanceId`, `seatId`, `worktreeId`,
 `version`, and executable `sha256`. Claude also needs `worktreeRoot`, obtained
 automatically from a prior normally closed F worktree readback. The driver
-checks that root is local under the private candidate state root and that its
+selects the M2 Codex lead from `config.instanceId` and requires its actual host
+instance readback to identify a logged-in Codex. It checks that root is local
+under the private candidate state root and that its
 random new marker filename is absent from both F's worktree and the testbed
 source before the model prompt. The final reader independently compares the
 configured root with F's persisted `worktree_path` and identity. These are

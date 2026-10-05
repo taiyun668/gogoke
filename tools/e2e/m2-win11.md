@@ -15,10 +15,12 @@ The Controller prepares a new private JSON config in an ordinary Interactive
 `repositoryId`, `worktreeId`, and `observers`), plus `python`, `stateRoot`,
 `testbedSource`, `templateId`, `childSeatId`, `childInstanceId`,
 `takeoverQuestionId`, `takeoverPrompt`, `takeoverOption`, and `providerCases`.
-The test repository must be the private `gogokeSeatTestbed`; the real lead
-instance is `codexTestM1`; the main child uses an already admitted Codex
-instance so its native turn completion can be read through A. `providerCases`
-may contain any subset of Claude, OpenCode and Grok, including an empty array.
+The test repository must be the private `gogokeSeatTestbed`; the lead instance
+is selected by `config.instanceId` and its original host instance readback must
+show `driverId: codex` and `state: LOGGED_IN`. For a fresh M2 run, that is the
+newly registered M2 Codex instance. The main child uses an already admitted
+Codex instance so its native turn completion can be read through A.
+`providerCases` may contain any subset of Claude, OpenCode and Grok, including an empty array.
 Each supplied row identifies the previously admitted seat/instance/worktree
 plus its fixed version and SHA-256. An omitted provider is recorded
 `NOT_RUN_NOT_CONFIGURED`; a supplied provider not already `LOGGED_IN` remains
@@ -34,8 +36,9 @@ and testbed source. The mandatory `formal` observer compares `formal`,
 and `ledger` retain the M1 read-only measurement contract. No file here
 contains a real local path, account name, credential or token.
 
-When the original lead admission is already COMMITTED and its open failed at
-the definite legacy-account prelaunch guard, optional `retainedPrelaunchFailure`
+Historical recovery route: an earlier run could continue when the original lead
+admission was already COMMITTED and its open failed at the definite legacy-account
+prelaunch guard. Optional `retainedPrelaunchFailure`
 contains the original private journal's `result` path and `sha256`. The path
 must stay inside the private evidence directory. The driver checks that failed
 journal, the original empty model session and exact open frame, and the live
@@ -43,7 +46,9 @@ BUSY seat's instance and generation. It sends the original frame once per
 invocation without another reserve, commit or release. This is not a replay of
 an uncertain model request or a continuation licensed by the boot fence; native
 same-request fencing remains authoritative. It requires no manually copied ID.
-Any further error stops that invocation and preserves its original frame.
+Any further error stops that invocation and preserves its original frame. The
+fresh-instance M2 run omits `retainedPrelaunchFailure` and uses its new lead seat
+and worktree; the old route remains only as historical recovery behavior.
 
 The private fixture helper accepts `fixtureSetup.providerFixtureSelection`
 `DEFER_ALL` to create only the authorized Codex lead and three history E/F
