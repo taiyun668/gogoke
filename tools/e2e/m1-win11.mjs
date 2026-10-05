@@ -102,7 +102,8 @@ async function instancePage() {
   await page.getByRole('button', { name: /^(Open settings|打开设置)$/ }).click();
   await page.locator('.settings-sidebar').getByRole('button', { name: /^(Instances|实例)$/ }).click();
   const card = page.locator('.settings-toggle-row').filter({
-    has: page.getByText('Codex 测试实例', { exact: true }),
+    has: page.getByText(config.instanceId === 'codexTestM1' ? 'Codex 测试实例' : config.instanceId,
+      { exact: true }),
   });
   await card.getByRole('status').filter({ hasText: '状态：已登录' }).waitFor({ state: 'visible', timeout: 15000 });
   check(await card.count() === 1, 'Actual instance UI contains exactly the original test instance');
