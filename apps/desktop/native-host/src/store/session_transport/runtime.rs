@@ -283,7 +283,7 @@ pub(crate) fn release_native(
     let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
     let identity = authority::read_product_identity(db, owner)
         .map_err(AdmissionError::Identity)?;
-    admission::release_admission(db, request, |db| check_owner_current(db, &identity))
+    admission::release_unstarted_owner_commit(db, request, |db| check_owner_current(db, &identity))
 }
 
 /// Private cleanup of C's frozen failed Host FRESH recipe. The caller has

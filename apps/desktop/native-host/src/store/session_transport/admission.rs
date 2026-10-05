@@ -597,6 +597,22 @@ pub(crate) fn release_admission(
     release_admission_inner(connection,input,authorize,false)
 }
 
+/// The native Owner may release its exact COMMITTED admission when H proves
+/// that process launch never crossed the durable open-intent boundary. This
+/// releases admission only; credential or history preparation custody follows
+/// its own lifecycle and is neither settled nor changed here. This is still the
+/// ordinary Owner release operation: authorization, claim identity, generation,
+/// revision, home, seat binding and active-generation checks are performed by
+/// the same transaction below. Model-originated release keeps using
+/// `release_admission` and cannot take this branch.
+pub(crate) fn release_unstarted_owner_commit(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &AdmissionRequest<'_>,
+    authorize: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<(), AdmissionError>,
+) -> Result<AdmissionResult, AdmissionError> {
+    release_admission_inner(connection,input,authorize,true)
+}
+
 /// C's original failed FRESH preparation can return an unstarted COMMITTED
 /// reservation only when H proves no launch intent or physical custody exists.
 /// The private caller must bind this to its frozen Host recipient first.
@@ -611,7 +627,7 @@ fn release_admission_inner(
     connection: &mut VerifiedDatabaseConnection<'_>,
     input: &AdmissionRequest<'_>,
     authorize: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<(), AdmissionError>,
-    unstarted_host_commit: bool,
+    allow_unstarted_commit: bool,
 ) -> Result<AdmissionResult, AdmissionError> {
     in_transaction(connection, |connection| {
         authorize(connection)?;
@@ -632,7 +648,7 @@ fn release_admission_inner(
             return Ok(AdmissionResult::Stale);
         }
         if state != "RESERVED" && state != "STOPPED" &&
-            !(unstarted_host_commit && state=="COMMITTED") {
+            !(allow_unstarted_commit && state=="COMMITTED") {
             return Ok(AdmissionResult::Conflict);
         }
         if state=="COMMITTED" {
@@ -994,6 +1010,160 @@ mod tests {
 
     fn authorized(_: &mut VerifiedDatabaseConnection<'_>) -> Result<(), AdmissionError> {
         Ok(())
+    }
+
+    fn owner_unstarted_fixture(
+        run: impl FnOnce(
+            &RootLock,
+            &mut VerifiedDatabaseConnection<'_>,
+            &crate::store::authority::OwnerIssuer,
+            &crate::store::seat::Seat,
+        ),
+    ) {
+        use crate::store::same_open::create_new;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!(
+            "gogoke-h-owner-unstarted-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let root = RootLock::acquire(&folder).unwrap();
+        let database = folder.join("state.sqlite");
+        let mut db = create_new(&root, &database).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        let owner = crate::store::authority::initialize_profile(&mut db, &root).unwrap();
+        crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
+        crate::store::instance::initialize_schema(&mut db).unwrap();
+        crate::store::seat::initialize_schema(&mut db).unwrap();
+        initialize_admission_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeRefA','homeIdentityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,directory_ref,directory_identity,state,revision) VALUES('homeA','instanceA','projectA','SESSION','sessionA','2',NULL,NULL,'ACTIVE',1)").unwrap();
+        crate::store::seat::store_template(&mut db,
+            crate::store::seat::NativeOrigin::user(&owner),
+            crate::store::seat::StoreTemplate {
+                domain_id: "projectA", template_id: "templateA",
+                settings_json: br#"{"instruction":"default"}"#,
+            }).unwrap();
+        let created = crate::store::seat::create(&mut db,
+            crate::store::seat::NativeOrigin::user(&owner),
+            crate::store::seat::CreateSeat {
+                domain_id: "projectA", seat_id: "seatA", template_id: "templateA",
+                instance_id: Some("instanceA"), kind: crate::store::seat::Kind::Long,
+                request_id: "createA", request_bytes: b"create seat A",
+            }).unwrap().seat;
+        let busy = crate::store::seat::set_dispatch_state(&mut db, &created, true).unwrap();
+        in_transaction(&mut db, |connection| {
+            bind_owner_in_transaction(connection, &OwnerBinding {
+                binding_id: "bindingA", instance_id: "instanceA", domain_id: "projectA",
+                kind: "SESSION", owner_id: "sessionA", generation: "2",
+            })?;
+            bind_seat_in_transaction(connection, &busy, "sessionA")?;
+            Ok(())
+        }).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA','sessionA','instanceA','homeA','bindingA','2','COMMITTED',3,NULL)").unwrap();
+
+        run(&root, &mut db, &owner, &busy);
+        db.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(&database).unwrap();
+        std::fs::remove_dir(&folder).unwrap();
+    }
+
+    fn owner_release_request(expected_revision: i64) -> AdmissionRequest<'static> {
+        AdmissionRequest {
+            domain_id: "projectA", session_id: "sessionA", request_id: "ownerReleaseA",
+            raw_bytes: b"owner admission release", instance_id: "instanceA", home_id: "homeA",
+            generation: "2", expected_revision,
+        }
+    }
+
+    #[test]
+    fn owner_release_settles_only_an_unstarted_committed_claim_without_a_stop_fact() {
+        owner_unstarted_fixture(|_root, db, owner, busy| {
+            let request = owner_release_request(3);
+            assert_eq!(release_admission(db, &request, authorized).unwrap(),
+                AdmissionResult::Conflict,
+                "the ordinary admission release path remains closed for COMMITTED claims");
+            let released_admission = super::super::runtime::release_native(
+                db, &crate::store::seat::NativeOrigin::user(owner), &request).unwrap();
+            assert_eq!(released_admission, AdmissionResult::Applied(4));
+            assert_eq!(claim(db, &request).unwrap().unwrap().0, "RELEASED");
+            assert_eq!(count(db,
+                "SELECT COUNT(*) FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2 AND stop_fact_id IS NOT NULL",
+                &["projectA", "sessionA"]).unwrap(), 0);
+            assert_eq!(count(db,
+                "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2",
+                &["projectA", "sessionA"]).unwrap(), 0);
+            assert_eq!(count(db,
+                "SELECT COUNT(*) FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='stop'",
+                &["projectA", "sessionA"]).unwrap(), 0);
+            let released = crate::store::seat::get(db, "projectA", "seatA").unwrap().unwrap();
+            assert_eq!(released.state, crate::store::seat::State::Idle);
+            assert_eq!(released.generation, busy.generation + 1);
+            let replayed_admission = super::super::runtime::release_native(
+                db, &crate::store::seat::NativeOrigin::user(owner), &request).unwrap();
+            assert_eq!(replayed_admission, AdmissionResult::Replayed(4));
+            assert_eq!(crate::store::seat::get(db, "projectA", "seatA").unwrap().unwrap().generation,
+                released.generation);
+        });
+    }
+
+    #[test]
+    fn owner_release_refuses_started_unknown_stale_and_revoked_claims() {
+        for scenario in ["open", "episode", "process", "unknown", "generation", "stale",
+            "revoked", "wrong-generation", "wrong-home", "wrong-seat-binding"] {
+            owner_unstarted_fixture(|_root, db, owner, _busy| {
+                match scenario {
+                    "open" => db.execute("INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA','00','open','sessionA','UNKNOWN',3,3)").unwrap(),
+                    "episode" => db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,phase) VALUES('projectA','openA','sessionA','2',NULL,'00',3,NULL,NULL,'instanceA','homeA','bindingA','INTENT')").unwrap(),
+                    "process" => db.execute("UPDATE main.gogoke_v37_h_claim SET process_operation_id='processA' WHERE domain_id='projectA' AND session_id='sessionA'").unwrap(),
+                    "unknown" => db.execute("UPDATE main.gogoke_v37_h_claim SET state='UNKNOWN' WHERE domain_id='projectA' AND session_id='sessionA'").unwrap(),
+                    "generation" => db.execute("INSERT INTO main.gogoke_v37_h_generation_change(domain_id,request_id,raw_hex,operation,session_id,old_generation,old_process_operation_id,old_ticket,old_nonce,thread_id,seat_id,previous_revision,source_watermark,stage) VALUES('projectA','changeA','00','renew-session','sessionA','1','oldProcess','ticket','nonce','thread','seatA',3,0,'INTENT')").unwrap(),
+                    "wrong-seat-binding" => db.execute("UPDATE main.gogoke_v37_h_seat_binding SET seat_incarnation='changed-incarnation' WHERE domain_id='projectA' AND session_id='sessionA'").unwrap(),
+                    "stale" | "revoked" | "wrong-generation" | "wrong-home" => (),
+                    _ => unreachable!(),
+                }
+                if scenario == "revoked" {
+                    db.execute("UPDATE main.gogoke_authority_profile SET issuer_id='revoked-issuer' WHERE singleton=1").unwrap();
+                }
+                let mut request = owner_release_request(if scenario == "stale" { 2 } else { 3 });
+                if scenario == "wrong-generation" { request.generation = "1"; }
+                if scenario == "wrong-home" { request.home_id = "homeB"; }
+                let outcome = super::super::runtime::release_native(
+                    db, &crate::store::seat::NativeOrigin::user(owner), &request);
+                match scenario {
+                    "stale" => assert_eq!(outcome.unwrap(), AdmissionResult::Stale),
+                    "revoked" | "wrong-seat-binding" => assert!(outcome.is_err()),
+                    _ => assert_eq!(outcome.unwrap(), AdmissionResult::Conflict),
+                }
+                let current = claim(db, &owner_release_request(3)).unwrap().unwrap();
+                assert_eq!(current.0, if scenario == "unknown" { "UNKNOWN" } else { "COMMITTED" });
+                assert_eq!(current.1, 3);
+                assert_eq!(count(db,
+                    "SELECT COUNT(*) FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='admission-release'",
+                    &["projectA", "sessionA"]).unwrap(), 0);
+                assert_eq!(count(db,
+                    "SELECT COUNT(*) FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open'",
+                    &["projectA", "sessionA"]).unwrap(), if scenario == "open" { 1 } else { 0 });
+                assert_eq!(count(db,
+                    "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2",
+                    &["projectA", "sessionA"]).unwrap(), if scenario == "episode" { 1 } else { 0 });
+                let process = Statement::prepare(db.as_ptr(),
+                    "SELECT COALESCE(process_operation_id,'') FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2").unwrap();
+                process.bind_text(1, "projectA").unwrap();
+                process.bind_text(2, "sessionA").unwrap();
+                assert!(process.step_row().unwrap());
+                assert_eq!(process.column_text(0).unwrap(),
+                    if scenario == "process" { "processA" } else { "" });
+                assert_eq!(count(db,
+                    "SELECT COUNT(*) FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2 AND stop_fact_id IS NOT NULL",
+                    &["projectA", "sessionA"]).unwrap(), 0);
+                let unchanged = crate::store::seat::get(db, "projectA", "seatA").unwrap().unwrap();
+                assert_eq!(unchanged.state, crate::store::seat::State::Busy);
+                assert_eq!(unchanged.generation, 2);
+            });
+        }
     }
 
     #[test]
