@@ -366,6 +366,13 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         // The same recovered metadata holder survives a real internal H stop
         // and fixed-CLI thread resume. This exercises the credential boundary
         // at OLD_STOPPED, not a synthetic accepted generation-change row.
+        // Reuse the runtime fixture's actual no-model history materialization:
+        // an empty fixed-CLI thread can defer its cross-process history file.
+        let key=("projectA".to_owned(),"sessionC".to_owned());
+        let thread=product.native_sessions.get(&key).unwrap().thread_id.clone().unwrap();
+        let history=product.native_append_rpc(&key,"holder-cold-materialize-history",&thread,
+            "cloud no-model durable history marker".into()).unwrap();
+        assert!(matches!(history,Some(Reply::Ack {..})),"actual original history injection ACK: {history:?}");
         applied(&mut product, &operation("projectA", "K-SESSION", "renew-session", "holder-cold-renew", "sessionC", 3,
             &format!(r#"{{"generation":"{generation}"}}"#)));
         let generation=generation+1;
