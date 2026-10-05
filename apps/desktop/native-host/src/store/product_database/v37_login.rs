@@ -3187,9 +3187,10 @@ exit 0
         let custody = product.legacy_account_custody("instanceA").unwrap();
         instance::initialize_legacy_fence_schema(&mut product.connection).unwrap();
         let db_identity = product.connection.identity().clone();
+        let root_identity = product.connection.root_identity().clone();
         let original = instance::capture_legacy_fence(&mut product.connection, &instance::LegacyFenceCapture {
             instance_id: "instanceA".into(), original_boot: "existing-bcd-entry".into(),
-            database_identity: db_identity, root_identity: root.identity().clone(),
+            database_identity: db_identity, root_identity,
             home_identity: home.identity.clone(), source_identity: before_source.0.clone(), source_parent_identity: home.identity.clone(),
             source_revision: None, source_link_count: u64::from(before_source.1), registered_alias_count: 0, custody,
             home_acl_digest: inventory.home_original_digest(), source_acl_digest: inventory.source_original_digest(),
