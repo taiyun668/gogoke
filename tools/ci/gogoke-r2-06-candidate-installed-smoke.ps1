@@ -508,6 +508,15 @@ try {
     $heldLock = [IO.File]::Open($registrationLock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
         $busy = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
+        # Preserve the real child result before the assertion can fail. A
+        # timeout and a different product error are distinct observations.
+        $script:result.registrationBusyProbe = [ordered]@{
+            timedOut = $busy.TimedOut
+            exitCode = $busy.ExitCode
+            processId = $busy.Process.Id
+            stderrReadState = if ($busy.TimedOut) { $busy.ErrorTask.Status.ToString() } else { 'COMPLETED' }
+            stderr = if (-not $busy.TimedOut) { $busy.StdErr } elseif ($busy.ErrorTask.IsCompletedSuccessfully) { $busy.ErrorTask.GetAwaiter().GetResult() } else { $null }
+        }
         if ($busy.TimedOut -or $busy.ExitCode -ne 1 -or
             $busy.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY') {
             throw 'Actual installed shell did not propagate Win32 32 as the exact domain-busy code'
@@ -521,6 +530,13 @@ try {
     try {
         [void](New-Item -ItemType Directory -Path $registrationLock -ErrorAction Stop)
         $non32 = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
+        $script:result.registrationNon32Probe = [ordered]@{
+            timedOut = $non32.TimedOut
+            exitCode = $non32.ExitCode
+            processId = $non32.Process.Id
+            stderrReadState = if ($non32.TimedOut) { $non32.ErrorTask.Status.ToString() } else { 'COMPLETED' }
+            stderr = if (-not $non32.TimedOut) { $non32.StdErr } elseif ($non32.ErrorTask.IsCompletedSuccessfully) { $non32.ErrorTask.GetAwaiter().GetResult() } else { $null }
+        }
         if ($non32.TimedOut -or $non32.ExitCode -ne 1 -or
             $non32.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5') {
             throw 'Actual installed shell did not propagate non-32 CreateFileW error 5'
