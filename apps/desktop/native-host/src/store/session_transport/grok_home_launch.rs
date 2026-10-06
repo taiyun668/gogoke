@@ -879,7 +879,7 @@ mod tests {
         let root_before=grok_root_acl(&profile,&home.path,&home_id).unwrap();
         let root_intent=effect(&grant,"GRANT_ROOT",&home_id,".",&root_before);
         apply(&mut db,root_intent,||evidence("test root ACL",grok_root_acl(&profile,&home.path,&home_id)),||
-            grant_grok_home_root(&profile,&home.path,&home_id)).unwrap();
+            evidence("test root grant",grant_grok_home_root(&profile,&home.path,&home_id))).unwrap();
         std::fs::write(home.path.join("auth.json"),b"synthetic non-secret fixture").unwrap();
         let auth=observe_grok_auth_candidate(&home.path,&home_id).unwrap();
         let before=auth.candidate_acl(&profile).unwrap();
