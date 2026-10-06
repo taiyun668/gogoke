@@ -123,6 +123,51 @@ function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMil
     }
 }
 
+function Protect-DiagnosticText([object]$Value, [int]$Limit = 6000) {
+    if ($null -eq $Value) { return $null }
+    $text = [string]$Value
+    $text = $text -replace '(?i)(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+', '[redacted-token]'
+    $text = $text -replace '(?i)Bearer\s+\S+', 'Bearer [redacted-token]'
+    foreach ($privatePath in @($env:USERPROFILE, $env:RUNNER_TEMP, $env:GITHUB_WORKSPACE,
+        $env:TEMP, $env:TMP, $ArtifactDirectory, $script:targetRoot, $script:appDataRoot)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$privatePath)) {
+            $text = $text.Replace([string]$privatePath, '[private-path]')
+        }
+    }
+    if ($text.Length -gt $Limit) { return $text.Substring(0, $Limit) + '[truncated]' }
+    return $text
+}
+
+function Get-FailureDiagnostic([System.Management.Automation.ErrorRecord]$Record) {
+    $exceptionChain = @()
+    $exception = $Record.Exception
+    for ($depth = 0; $null -ne $exception -and $depth -lt 4; $depth++) {
+        $properties = $exception.PSObject.Properties
+        $entry = [ordered]@{
+            type = Protect-DiagnosticText $exception.GetType().FullName 256
+            message = Protect-DiagnosticText $exception.Message 6000
+            hresult = ('0x{0:X8}' -f [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$exception.HResult), 0))
+            code = if ($properties['Code']) { Protect-DiagnosticText $properties['Code'].Value 256 } else { $null }
+            syscall = if ($properties['Syscall']) { Protect-DiagnosticText $properties['Syscall'].Value 256 } else { $null }
+            path = if ($properties['Path']) { Protect-DiagnosticText $properties['Path'].Value 1024 } elseif ($properties['FileName']) { Protect-DiagnosticText $properties['FileName'].Value 1024 } else { $null }
+            stack = Protect-DiagnosticText $exception.StackTrace 6000
+        }
+        if ($exception -is [System.ComponentModel.Win32Exception]) {
+            $entry.nativeErrorCode = $exception.NativeErrorCode
+        }
+        $exceptionChain += $entry
+        $exception = $exception.InnerException
+    }
+    return [ordered]@{
+        phase = Protect-DiagnosticText $script:stage 256
+        fullyQualifiedErrorId = Protect-DiagnosticText $Record.FullyQualifiedErrorId 1024
+        category = Protect-DiagnosticText ([string]$Record.CategoryInfo) 1024
+        message = Protect-DiagnosticText $Record.Exception.Message 6000
+        exceptionChain = $exceptionChain
+        scriptStackTrace = Protect-DiagnosticText $Record.ScriptStackTrace 6000
+    }
+}
+
 function Assert-RegistryRegistration {
     $uninstallPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate'
     $registration = Get-RegistryKey $uninstallPath
@@ -405,7 +450,7 @@ try {
     if ($serviceSmoke.ExitCode -ne 0 -or
         -not (Test-Path -LiteralPath $script:serviceEvidencePath -PathType Leaf)) {
         if ($serviceSmoke.StdErr) {
-            $script:result.productServiceStderr = $serviceSmoke.StdErr.Substring(0, [Math]::Min(1500, $serviceSmoke.StdErr.Length))
+            $script:result.productServiceStderr = Protect-DiagnosticText $serviceSmoke.StdErr 24000
         }
         throw "Candidate installed service smoke failed with exit code $($serviceSmoke.ExitCode); retain install"
     }
@@ -634,11 +679,13 @@ try {
     $script:result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:evidencePath -Encoding utf8
     Write-Output ($script:result | ConvertTo-Json -Depth 6 -Compress)
 } catch {
-    $message = [string]$_.Exception.Message
+    $failureRecord = $_
+    $message = [string]$failureRecord.Exception.Message
     if ($message.Length -gt 320) { $message = $message.Substring(0, 320) }
     $script:result.state = 'FAIL'
     $script:result.stage = $script:stage
     $script:result.error = $message
+    $script:result.failureDiagnostic = Get-FailureDiagnostic $failureRecord
     $script:result.installInvoked = $script:installInvoked
     $script:result.uninstallInvoked = $script:uninstallInvoked
     $script:result.retainedCandidateRoot = if ($script:installInvoked) { $script:targetRoot } else { $null }
