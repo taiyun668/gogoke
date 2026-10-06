@@ -112,7 +112,18 @@ function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMil
     $process.StartInfo = $start
     if (-not $process.Start()) { throw "Process did not start: $FilePath" }
     $errorTask = if ($CaptureError) { $process.StandardError.ReadToEndAsync() } else { $null }
-    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+    # Zero means observe the original process completion. The cloud job still
+    # has its outer timeout. Uninstall verifies the entire signed resource tree
+    # before its separately bounded finalizer handshake; that preflight has no
+    # fixed 30-second product contract. Do not turn its elapsed time into an
+    # error-code assertion or release the negative-test lock while it is alive.
+    $completed = if ($TimeoutMilliseconds -eq 0) {
+        $process.WaitForExit()
+        $true
+    } else {
+        $process.WaitForExit($TimeoutMilliseconds)
+    }
+    if (-not $completed) {
         return [pscustomobject]@{ Process = $process; TimedOut = $true; ExitCode = $null; ErrorTask = $errorTask }
     }
     return [pscustomobject]@{
@@ -505,7 +516,7 @@ try {
     }
     $heldLock = [IO.File]::Open($registrationLock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
-        $busy = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
+        $busy = Start-OneShot $productExe @('--uninstall', '--quiet') 0 $true $true
         if ($busy.TimedOut -or $busy.ExitCode -ne 1 -or
             $busy.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY') {
             throw 'Actual installed shell did not propagate Win32 32 as the exact domain-busy code'
@@ -518,7 +529,7 @@ try {
     Move-Item -LiteralPath $registrationLock -Destination $lockBackup -ErrorAction Stop
     try {
         [void](New-Item -ItemType Directory -Path $registrationLock -ErrorAction Stop)
-        $non32 = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true $true
+        $non32 = Start-OneShot $productExe @('--uninstall', '--quiet') 0 $true $true
         if ($non32.TimedOut -or $non32.ExitCode -ne 1 -or
             $non32.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5') {
             throw 'Actual installed shell did not propagate non-32 CreateFileW error 5'
@@ -542,7 +553,7 @@ try {
         candidateRegistration='UNCHANGED'; candidateShell='UNCHANGED'; receipts='NONE'
     }
     $script:uninstallInvoked = $true
-    $uninstall = Start-OneShot $productExe @('--uninstall', '--quiet') 30000 $true
+    $uninstall = Start-OneShot $productExe @('--uninstall', '--quiet') 0 $true
     if ($uninstall.TimedOut) { throw "Installed uninstall exceeded parent bound; retain candidate state under: $script:targetRoot" }
     if ($uninstall.ExitCode -ne 0) {
         $script:result.uninstallExitCode = $uninstall.ExitCode
