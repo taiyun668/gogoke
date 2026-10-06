@@ -34,7 +34,12 @@ fn effect(grant:&GrokGrant, action:&str, identity:&RootIdentity, relative:&str,
         after_aces:if action.starts_with("GRANT") {
             format!("1:{RIGHTS}:{}",if action.ends_with("ROOT"){3}else{0})
         }else{String::new()},
-        before_control:before.dacl_control,after_control:before.dacl_control,
+        before_control:before.dacl_control,
+        // The existing Win32 ROOT setter applies automatic inheritance. Its
+        // exact-target no-op does not write a descriptor or add this bit.
+        after_control:if action=="GRANT_ROOT" && before.target_aces.is_empty() {
+            before.dacl_control|0x0400
+        }else{before.dacl_control},
         other_aces_sha256:sha256_hex(&before.other_aces_bytes()),
         phase:"INTENT".into(),revision:1}
 }
