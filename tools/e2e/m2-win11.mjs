@@ -531,6 +531,7 @@ async function runSideChat() {
     worktrees: original.worktrees, ledgerEpoch: snapshotValue('ledger', 'before').epoch,
     sourceCursor: '0', restartProduct: async () => {
       await product.closeNormally(); await product.launch();
+      await product.instances();
       check(Boolean(product.tester) && journal.connectionBackend?.agentActs === 0,
         'V12 restart retained original hard locator');
     } };
@@ -695,6 +696,8 @@ try {
     'Original native ACK logical worktree ID agrees with A/F');
   journal.worktreeId = captured.worktree.id; product.save();
   await product.launch();
+  // A reopened WebView does not imply that its lazy native User host exists.
+  await product.instances();
   check(Boolean(product.tester) && journal.connectionBackend?.agentActs === 0,
     'Resumed original e2e hard locator without agent.act');
   const decision = captured.controllerMergeDecision;
