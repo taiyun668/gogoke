@@ -159,6 +159,10 @@ impl<'root> ProductDatabase<'root> {
         if &home.identity != expected_home || runtime.parent() != Some(home.path.as_path()) {
             return Err(OrchestrationError::AccessDenied);
         }
+        // The original login Job and writers are durably stopped before this
+        // path runs. Remove only the Windows-generated cache junction from F's
+        // unchanged registered home; the target is never opened or traversed.
+        login_cache::remove_generated_cache_junction(self.root, &home)?;
         remove_owned_runtime(runtime, runtime_identity)
     }
 
@@ -328,7 +332,7 @@ impl<'root> ProductDatabase<'root> {
         } else { match &fresh.status {
             StatusObservation::Unknown(_) => NativeAccountState::Unknown,
             StatusObservation::Documented(status) => {
-                let (bytes, exit, stderr) = self.observe_provider_status(command, &status.request)?;
+                let (bytes, exit, stderr) = self.observe_provider_status(command, &fresh, &status.request)?;
                 let state = classify_status(&bytes, exit, status.logged_in_exit, status.logged_out_exit);
                 if state == NativeAccountState::Unknown
                     && (stderr.len() > 0 || (exit != u32::try_from(status.logged_in_exit).ok()
@@ -339,7 +343,7 @@ impl<'root> ProductDatabase<'root> {
                 state
             }
             StatusObservation::OpenCodeCredentialList(request) => {
-                let (bytes, exit, stderr) = self.observe_provider_status(command, request)?;
+                let (bytes, exit, stderr) = self.observe_provider_status(command, &fresh, request)?;
                 let state = classify_opencode_credential_list(&bytes, exit);
                 if state == NativeAccountState::Unknown && (!stderr.is_empty() || exit != Some(0)) {
                     return Err(OrchestrationError::V37StoreFailure(format!(
@@ -348,7 +352,7 @@ impl<'root> ProductDatabase<'root> {
                 state
             }
             StatusObservation::GrokModelsAuthenticationHeading(request) => {
-                let (bytes,exit,stderr)=self.observe_provider_status(command,request)?;
+                let (bytes,exit,stderr)=self.observe_provider_status(command,&fresh,request)?;
                 use instance::provider_login::GrokModelsAccountState;
                 let state=match instance::provider_login::classify_grok_models_status(&bytes,exit) {
                     GrokModelsAccountState::CredentialPresent=>NativeAccountState::CredentialPresent,
@@ -371,6 +375,7 @@ impl<'root> ProductDatabase<'root> {
     fn observe_provider_status(
         &mut self,
         command: &OwnerLoginCommand,
+        provider: &PreparedProviderLogin,
         request: &PrepareRequest,
     ) -> Result<(Vec<u8>, Option<u32>, String)> {
         let operation_id = status_operation_id(command);
@@ -553,6 +558,21 @@ impl<'root> ProductDatabase<'root> {
             }));
             return Err(cause);
         }
+        // Status may run for an already logged-in instance without a new
+        // login. Bind cleanup to its original F home only after this status
+        // child's own Job/writer stop is durably confirmed.
+        if provider.instance_id != command.instance_id {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let home = instance::provider_login::resolve_registered_login_home(
+            &mut self.connection, self.root, &self.owner,
+            &provider.instance_id, &provider.driver_id,
+        ).map_err(|error| OrchestrationError::V37StoreFailure(format!(
+            "provider status cleanup registered home: {error:?}")))?;
+        if home.path != provider.home.path || home.identity != provider.home.identity {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        login_cache::remove_generated_cache_junction(self.root, &home)?;
         let bytes = stdout.map_err(|error| OrchestrationError::V37StoreFailure(format!(
             "provider status stdout: {error:?}; CLI exit={:?}; STDERR_TAIL: {stderr}",
             proof.exit_code)))?;
