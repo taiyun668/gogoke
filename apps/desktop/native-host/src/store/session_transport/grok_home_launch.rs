@@ -392,6 +392,26 @@ pub(crate) fn cold_inventory(db:&VerifiedDatabaseConnection<'_>,instance_id:&str
     instance::read_grok_grants(db,instance_id)
 }
 
+/// Read only: expose the original H operation and exact process pair so Root
+/// can qualify its real holder-gone scope. None is not a NoAttempt receipt.
+pub(crate) fn prepared_holder_for_recovery(db:&VerifiedDatabaseConnection<'_>,
+    original:&GrokGrant)->Result<Option<(String,u32,u64)>,String>{
+    let grant=one(db,&original.instance_id,&original.binding_id)?;
+    if grant!=*original ||grant.phase!="GRANTED_UNCREATED" ||
+        grant.process_operation_id.is_some() {
+        return Err("Grok private HOME: uncreated recovery row changed".into());
+    }
+    let Some(h)=original_h(db,&grant)? else{return Ok(None);};
+    if h.digest!=grant.program_digest ||h.custody_stop.is_some() ||h.claim_stop.is_some() ||
+        h.episode_stop.is_some() ||
+        !matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
+        !matches!(h.episode_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
+        !matches!(h.claim_state.as_str(),"COMMITTED"|"UNKNOWN") {
+        return Err("Grok private HOME: original prepared H tuple ineligible".into());
+    }
+    Ok(Some((h.operation,h.pid,h.creation)))
+}
+
 /// Crash after H persisted its exact process but before F copied that tuple.
 /// A genuine kernel holder-gone proof permits adoption of the original H row
 /// only; no NULL process row is interpreted as NoAttempt.
@@ -422,15 +442,17 @@ pub(crate) fn adopt_original_holder_gone(db:&mut VerifiedDatabaseConnection<'_>,
 pub(crate) fn resume_stopped_revoke(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
     original:&GrokGrant)->Result<(),String>{
     let grant=one(db,&original.instance_id,&original.binding_id)?;
-    if grant!=*original ||grant.phase!="REVOKE_PENDING" ||
-        grant.stop_fact_id.is_none() {
+    if grant!=*original ||!matches!(grant.phase.as_str(),"ACTIVE"|"REVOKE_PENDING") ||
+        (grant.phase=="ACTIVE" && grant.stop_fact_id.is_some()) {
         return Err("Grok private HOME: stopped revoke original F row changed".into());
     }
     let h=original_h(db,&grant)?.ok_or("Grok private HOME: original stopped H tuple absent")?;
     if !matches_bound_original(&grant,&h) ||h.custody_state!="STOPPED" ||
         h.claim_state!="STOPPED" ||h.episode_state!="STOPPED" ||
-        h.custody_stop!=grant.stop_fact_id ||h.claim_stop!=grant.stop_fact_id ||
-        h.episode_stop!=grant.stop_fact_id {
+        h.custody_stop.as_deref()!=h.claim_stop.as_deref() ||
+        h.custody_stop.as_deref()!=h.episode_stop.as_deref() ||
+        h.custody_stop.as_deref().map_or(true,str::is_empty) ||
+        (grant.phase=="REVOKE_PENDING" &&grant.stop_fact_id!=h.custody_stop) {
         return Err("Grok private HOME: original StopFact/F tuple disagrees".into());
     }
     let home=evidence("resolve-F-HOME",instance::resolve_grok_original_home(db,root,&grant.instance_id))?;
@@ -444,7 +466,7 @@ pub(crate) fn resume_stopped_revoke(db:&mut VerifiedDatabaseConnection<'_>,root:
     let held=if ids.contains(&current.identity){vec![current]}else{Vec::new()};
     let recovered=GrokHomeLaunch{instance_id:grant.instance_id.clone(),binding_id:grant.binding_id.clone(),
         home,auth:Mutex::new(held)};
-    recovered.revoke_effects(db,&profile,&grant,grant.stop_fact_id.as_deref(),None)
+    recovered.revoke_effects(db,&profile,&grant,h.custody_stop.as_deref(),None)
 }
 
 /// F revoked the original root and recorded auth FileIDs first, then H release
