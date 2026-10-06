@@ -173,11 +173,40 @@ impl GrokHomeLaunch {
     /// Explicit H safe boundary only, never called from verify/verify_live.
     /// An atomic CLI replacement can rotate FileID inside the same F HOME.
     pub(crate) fn refresh_readiness(&self,db:&mut VerifiedDatabaseConnection<'_>,
-        profile:&AppContainerProfile)->Result<(),String>{
+        profile:&AppContainerProfile,custody:Option<&PreparedCustody>)->Result<(),String>{
         let grant=self.grant(db)?;
         if !matches!(grant.phase.as_str(),"GRANTED_UNCREATED"|"ACTIVE") {
             return Err("Grok private HOME: no live original grant".into());
         }
+        match (grant.phase.as_str(),custody) {
+            ("GRANTED_UNCREATED",None)=>{},
+            ("ACTIVE",Some(c)) if grant.ticket.as_deref()==Some(c.ticket.opaque()) &&
+                grant.custodian_nonce.as_deref()==Some(&c.custodian_nonce) &&
+                grant.pid==Some(c.identity.pid) &&
+                grant.creation_time_100ns==Some(c.identity.creation_time_100ns) &&
+                grant.image_path.as_deref()==Some(c.identity.image_path.to_string_lossy().as_ref()) &&
+                grant.program_digest==c.binding.binary_digest_sha256 &&
+                grant.instance_id==c.binding.profile_id &&
+                grant.domain_id==c.binding.domain_id &&
+                grant.generation==c.binding.generation =>{},
+            _=>return Err("Grok private HOME: refresh original custody missing or changed".into()),
+        }
+        let current=instance::current_grok_home_domain(db,&grant.instance_id)?;
+        if current.root_identity!=*db.root_identity() ||current.home_identity!=self.home.identity ||
+            current.program_digest!=grant.program_digest ||current.version!="1.0.41" {
+            return Err("Grok private HOME: current F registration changed".into());
+        }
+        let h=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation JOIN main.gogoke_v37_seats s ON s.domain_id=b.domain_id AND s.seat_id=b.seat_id WHERE h.domain_id=?1 AND h.session_id=?2 AND h.binding_id=?3 AND h.instance_id=?4 AND h.generation=?5 AND h.state='COMMITTED' AND COALESCE(h.process_operation_id,'')=?6 AND b.seat_id=?7 AND b.seat_incarnation=?8 AND s.incarnation=b.seat_incarnation AND s.instance_id=h.instance_id AND s.state='BUSY' LIMIT 1")
+            .map_err(|e|format!("Grok private HOME refresh H guard: {e:?}"))?;
+        let values:[&str;8]=[&grant.domain_id,&grant.session_id,&grant.binding_id,
+            &grant.instance_id,&grant.generation,grant.process_operation_id.as_deref().unwrap_or(""),
+            &grant.seat_id,&grant.seat_incarnation];
+        for (i,value) in values.iter().enumerate(){h.bind_text(i as i32+1,value)
+            .map_err(|e|format!("Grok private HOME refresh H bind: {e:?}"))?;}
+        if !h.step_row().map_err(|e|format!("Grok private HOME refresh H read: {e:?}"))? {
+            return Err("Grok private HOME: original H/E authority changed".into());
+        }
+        drop(h);
         let auth=evidence("observe-successor",observe_grok_auth(&self.home.path,&self.home.identity))?;
         let ids=recorded_auth(db,&grant)?;
         if !ids.contains(&auth.identity) {
@@ -244,7 +273,7 @@ impl GrokHomeLaunch {
             return Err("Grok private HOME: original StopFact absent".into());
         }
         let stop=row.column_text(0).map_err(|e|format!("Grok private HOME stop proof: {e:?}"))?;
-        if row.step_row().map_err(|e|format!("Grok private HOME duplicate stop: {e:?}"))? {
+        if stop.is_empty() ||row.step_row().map_err(|e|format!("Grok private HOME duplicate stop: {e:?}"))? {
             return Err("Grok private HOME: ambiguous StopFact".into());
         }
         self.revoke_effects(db,profile,&grant,Some(&stop),None)
@@ -252,6 +281,9 @@ impl GrokHomeLaunch {
 
     fn revoke_effects(&self,db:&mut VerifiedDatabaseConnection<'_>,profile:&AppContainerProfile,
         grant:&GrokGrant,stop:Option<&str>,gone:Option<&NativeProcessHoldersGone>)->Result<(),String>{
+        if grant.phase=="REVOKE_PENDING" && grant.stop_fact_id.as_deref()!=stop {
+            return Err("Grok private HOME: original retirement proof changed".into());
+        }
         let pair=grant.pid.zip(grant.creation_time_100ns)
             .map(|(pid,creation)|vec![(pid,creation)]);
         let validate_gone=||->Result<(),String>{
