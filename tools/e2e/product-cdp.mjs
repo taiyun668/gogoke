@@ -70,6 +70,10 @@ export class ActualProduct {
     for (const required of ['gogoke.exe', 'gogoke-native-host.exe', 'resource-index.json']) {
       if (!Object.hasOwn(this.config.installedSha256, required)) throw Error(`Missing byte binding: ${required}`);
     }
+    const index = readJson(path.join(this.config.installed, 'resource-index.json'));
+    if (index.sourceCommit !== this.config.sourceCommit || index.version !== this.config.version) {
+      throw Error('Actual installed source/version differs from the private fixture');
+    }
   }
   async launch() {
     await this.custody(true); this.verifyBytes();

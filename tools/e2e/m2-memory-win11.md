@@ -6,7 +6,9 @@ candidate. It is an independent entry: it does not run the M2 main/child case,
 V12, login, native builds, or a vendor CLI outside the product. The existing
 module opens two original H sessions on one instance before either project
 marker turn. Its immutable reader binds each original H input, native response,
-A source, F registration and physical history object to the real candidate.
+A source and F registration to the real candidate. Physical vendor history
+objects count as evidence only when their individual readback succeeds;
+missing or unqualified objects remain `NOT_RUN`, even if the H/A/F flow completes.
 The module also performs its existing side/formal sequence because its reader
 requires that baseline and refusal chain. These are fresh sessions for the
 cross-project condition; earlier M2 results cannot be relabelled as this run.
