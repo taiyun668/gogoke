@@ -944,6 +944,10 @@ pub(crate) fn merge_worktree_request(
             "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
         ], true)? != before { return Err(WorktreeError::Denied); }
         git(db, root, custodian, pin, "merge_apply", Some(&source_path), &[
+            // Git checks the committer even with --no-commit. Keep the same
+            // explicit host identity as child sealing and merge_commit.
+            "-c".into(), "user.name=Gogoke Host".into(),
+            "-c".into(), "user.email=host@gogoke.invalid".into(),
             "merge".into(), "--no-ff".into(), "--no-commit".into(), "--quiet".into(), incoming.clone(),
         ], false)?;
         let message = format!("Merge worktree {}\n\n{}\n\n{}", request.target_id, reason, provenance);
@@ -1019,9 +1023,20 @@ fn ensure_no_pending_merge(db: &VerifiedDatabaseConnection<'_>, target: &str) ->
 
 fn require_clean_source(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
     custodian: &mut ProcessCustodian, pin: &GitProgramPin, path: &Path) -> Result<()> {
-    if !git(db,root,custodian,pin,"f2_status",Some(path),&[
+    let status = git(db,root,custodian,pin,"f2_status",Some(path),&[
         "--no-optional-locks".into(),"status".into(),"--porcelain=v1".into(),"--untracked-files=all".into(),
-    ],true)?.is_empty() { return Err(WorktreeError::Denied); }
+    ],true)?;
+    if !status.is_empty() {
+        let original_bytes = status.len();
+        let mut detail = status;
+        if original_bytes > 8192 {
+            let mut end = 8192;
+            while !detail.is_char_boundary(end) { end -= 1; }
+            detail.truncate(end);
+            detail.push_str(&format!("\n[porcelain truncated; original bytes={original_bytes}]"));
+        }
+        return Err(WorktreeError::Denied.at_with_detail("git.source_status.not_clean", detail));
+    }
     Ok(())
 }
 
@@ -1304,6 +1319,13 @@ mod tests {
     #[test]
     fn host_seal_original_dirty_child_has_bound_receipt_and_safe_replay() {
         with_real_child("seal-success",|db,root,pin,custodian,binding,source,_owner| {
+            // Real registered sources need not have a local committer. The
+            // host merge must work without the fixture's identity settings.
+            for key in ["user.name", "user.email"] {
+                git(db,root,custodian,pin,"fixture_unset_identity",Some(source),&[
+                    "config".into(),"--local".into(),"--unset".into(),key.into(),
+                ],false).unwrap();
+            }
             // An Owner's ordinary Git cleanup preference must not remove the
             // identity trailers the host is responsible for recording.
             for (key,value) in [("commit.cleanup","strip"),("core.commentChar","G")] {
@@ -1445,7 +1467,12 @@ mod tests {
             fs::remove_file(attributes).unwrap();
             fs::write(binding.path.join("seat.txt"),b"stopped child change\n").unwrap();
             fs::write(source.join("dirty-source.txt"),b"source must remain clean\n").unwrap();
-            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.source_status");
+            let denied = merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap_err();
+            assert!(matches!(denied.without_context(), WorktreeError::Denied));
+            let original = format!("{denied:?}");
+            assert!(original.contains("merge.source_status"), "{original}");
+            assert!(original.contains("git.source_status.not_clean"), "{original}");
+            assert!(original.contains("?? dirty-source.txt"), "{original}");
             fs::remove_file(source.join("dirty-source.txt")).unwrap();
             let original_proof=cleanup_stop_gate(db,root,"treeA").unwrap()[0].stop_fact_id.clone();
             db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='differentStop' WHERE operation_id='processA'").unwrap();

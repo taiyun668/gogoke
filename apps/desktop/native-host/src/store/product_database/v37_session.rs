@@ -213,7 +213,7 @@ impl<'root> ProductDatabase<'root> {
                     0, 1, result))
             }
             Err(error) => {
-                let status = match &error {
+                let status = match error.without_context() {
                     WorktreeError::Denied | WorktreeError::Invalid(_) => V37Status::Denied,
                     WorktreeError::Conflict => V37Status::Conflict,
                     _ => V37Status::Unknown,

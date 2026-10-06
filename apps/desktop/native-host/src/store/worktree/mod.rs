@@ -99,6 +99,7 @@ pub(crate) enum WorktreeError {
     Context {
         stage: &'static str,
         source: Box<WorktreeError>,
+        detail: Option<String>,
     },
     Multiple {
         phase: &'static str,
@@ -108,7 +109,11 @@ pub(crate) enum WorktreeError {
 }
 impl WorktreeError {
     pub(crate) fn at(self, stage: &'static str) -> Self {
-        Self::Context { stage, source: Box::new(self) }
+        Self::Context { stage, source: Box::new(self), detail: None }
+    }
+
+    pub(crate) fn at_with_detail(self, stage: &'static str, detail: String) -> Self {
+        Self::Context { stage, source: Box::new(self), detail: Some(detail) }
     }
 
     // Receipt classification uses the original error. Diagnostic context must
@@ -484,13 +489,13 @@ fn git(
     args: &[String],
     output: bool,
 ) -> Result<String> {
-    pin.repin()?;
+    pin.repin().map_err(|error| error.at("git.program_repin"))?;
     let custody_home = &root.canonical_root().canonical_path;
-    for attributes in [
-        custody_home.join("git").join("attributes"),
-        custody_home.join(".config").join("git").join("attributes"),
+    for (attributes, stage) in [
+        (custody_home.join("git").join("attributes"), "git.home_attributes"),
+        (custody_home.join(".config").join("git").join("attributes"), "git.xdg_attributes"),
     ] {
-        require_absent(&attributes)?;
+        require_absent(&attributes).map_err(|error| error.at(stage))?;
     }
     let mut launch = ProcessLaunch::new(&pin.path);
     launch.arguments = vec![
