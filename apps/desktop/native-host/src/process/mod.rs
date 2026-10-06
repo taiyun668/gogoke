@@ -22,6 +22,12 @@ pub(crate) use session::{AppContainerProfile, CompatModule, DirectoryRoots, Isol
     native_boot_start, NativeLegacyHoldersGone, NativeLegacyHoldersGoneError,
     LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
     NativeProcessHoldersGone, NativeCredentialAclRecoveryStep,
+    GrokAuthMetadata, GrokAclSnapshot, GrokHomeObject,
+    grok_root_acl, grok_residue_acl, observe_grok_auth,
+    observe_grok_recorded_auth,
+    grant_grok_home_root, grant_grok_auth, verify_grok_home_tree,
+    verify_grok_auth, revoke_grok_home_root, revoke_grok_auth,
+    inspect_grok_home_residue, revoke_grok_home_residue,
     adopt_holder_gone_source_baseline};
 
 #[cfg(not(windows))]

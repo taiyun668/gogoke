@@ -52,6 +52,7 @@ mod v37_inbox;
 mod v37_capability;
 mod v37_login;
 mod v37_holder_disappearance;
+mod v37_grok_home_recovery;
 #[cfg(all(test, windows))]
 mod v37_holder_disappearance_tests;
 mod v37_side;
@@ -191,6 +192,10 @@ impl<'root> ProductDatabase<'root> {
         let process_custodian = ProcessCustodian::new()?;
         super::session_transport::rpc_journal::initialize_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
+        // F owns the private Grok HOME ACL journal in this same verified DB.
+        // Opening the DB initializes records only; it is not holder retirement.
+        instance::initialize_grok_home_grant_schema(&mut connection)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("Grok HOME schema: {error}")))?;
         Ok(Self { root, connection, owner, process_custodian, owner_login: None,
             native_sessions: BTreeMap::new(), pending_native_launches: BTreeMap::new(),
             pending_credential_preparations: BTreeMap::new(),
