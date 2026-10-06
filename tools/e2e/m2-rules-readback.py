@@ -94,8 +94,9 @@ def typed_id(value):
     return type(value).__name__, value
 
 
-def turn_activity(decoded, thread, turn, allow_question=False):
+def turn_activity(decoded, thread, turn, allow_question=False, expected_input=None):
     items, calls, questions = [], [], []
+    input_echoes = []
     ordinary = {"item/agentMessage/delta", "item/reasoning/summaryTextDelta",
                 "item/reasoning/textDelta", "turn/started", "turn/completed",
                 "thread/tokenUsage/updated", "thread/status/changed"}
@@ -107,6 +108,12 @@ def turn_activity(decoded, thread, turn, allow_question=False):
         method = frame.get("method")
         if method in ("item/started", "item/completed"):
             item = params.get("item")
+            if isinstance(item, dict) and item.get("type") == "userMessage":
+                check(expected_input is not None and
+                      item.get("content") == [{"type": "text", "text": expected_input}],
+                      "Original User echo is not the exact authorized ask")
+                input_echoes.append((method, typed_id(item.get("id"))))
+                continue
             check(isinstance(item, dict) and item.get("type") in
                   ("agentMessage", "reasoning", "contextCompaction", "dynamicToolCall"),
                   "Original turn has unexplained item/tool activity")
@@ -118,6 +125,10 @@ def turn_activity(decoded, thread, turn, allow_question=False):
             questions.append((row, frame))
         else:
             check(method in ordinary, "Original turn has unexplained item/tool activity")
+    if expected_input is not None:
+        check(len(input_echoes) == 2 and input_echoes[0][0] == "item/started" and
+              input_echoes[1][0] == "item/completed" and input_echoes[0][1] == input_echoes[1][1],
+              "Original User ask lacks its unique matched started/completed echo")
     return items, calls, questions
 
 
@@ -768,8 +779,11 @@ def verify_case(db, journal, case, result):
           before["caseId"] == journal["caseId"] and before["sourceCommit"] == journal["sourceCommit"] and
           before["domainId"] == domain and before["databasePath"] == result["databasePath"] and
           before["rootIdentity"] == result["rootIdentity"] and before["measurementPreservedDatabaseBytes"] and
-          before["readerSha256"] == case["readerSha256"] == result["readerSha256"],
+          before["readerSha256"] == case["readerSha256"] ==
+          journal["driverBytes"]["m2-rules-readback.py"],
           "Original normally closed baseline is for another candidate/domain")
+    result["originalReaderSha256"] = case["readerSha256"]
+    result["readerChangedSinceOriginalRun"] = result["readerSha256"] != case["readerSha256"]
     check(case["ownership"] == {"lifecycle": "EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER",
                                 "policy": "EXCLUSIVE_V08_POLICY_DOMAIN"}, "Exclusive V08 ownership missing")
     check(case["domainId"] == domain and case["sourceCommit"] == journal["sourceCommit"], "Case byte identity differs")
@@ -940,7 +954,8 @@ def verify_case(db, journal, case, result):
                           "AND process_ticket=? AND custodian_nonce=? AND generation=? ORDER BY rowid",
                           (domain, session["id"], stdin["process_operation_id"], stdin["ticket"], stdin["custodian_nonce"], stdin["generation"]))
         decoded = [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming]
-        tool_items, calls, questions = turn_activity(decoded, session["threadId"], action["turnId"])
+        tool_items, calls, questions = turn_activity(decoded, session["threadId"], action["turnId"],
+                                                     expected_input=action["askBytes"])
         check(not questions, "Model turn has an unrelated question")
         check(len(calls) == 1, "Exactly one original model tool call is required, without retry/substitute")
         source, frame = calls[0]
