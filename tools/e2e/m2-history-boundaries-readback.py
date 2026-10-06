@@ -496,8 +496,8 @@ def main():
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
             verify_flow(db, journal, boundary, result)
-            result["verifiedVendorObjects"], result["vendorObjectNotRun"] = vendor_objects(root, result["cases"]) \
-                if boundary.get("peerReadRequested") else ([], [{"state": "NOT_RUN_PEER_READ_NOT_CONFIGURED"}])
+            # Original vendor metadata readback is independent of the optional peer-read control.
+            result["verifiedVendorObjects"], result["vendorObjectNotRun"] = vendor_objects(root, result["cases"])
             if sys.argv[4] == "final":
                 check(boundary["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED", "Actual history refusal flow incomplete")
                 reference = boundary["baselineReadback"]
