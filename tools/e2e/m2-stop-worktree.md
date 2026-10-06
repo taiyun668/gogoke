@@ -28,6 +28,8 @@ python m2-stop-worktree-readback.py STATE_ROOT OUTPUT JOURNAL stopped|final
 
 This is a prepared real-product E2E export, not a substitute host or a self-acceptance gate. It does not send model input. It reports acceptance false. Residual child-process cleanup and host restart stay `NOT_RUN`; no V07-wide claim follows. Configure private testbed IDs and the normal-close/restart callback only in the private runner; do not put credentials or authorization content in the journal.
 
+The User `DENIED` receipt does not identify the internal refusal stage. The active-stop-gate explanation is an inference from the same candidate and F graph revision refusing cleanup before H stop/release and accepting it afterward, together with the original H custody chain; the status alone is not a direct stage observation. The integrating runner must retain its outer error journal and `preserveFailure` handling without replaying writes.
+
 ## Producer basis
 
 The mechanism follows the original User `K-WORKTREE/cleanup` path in `worktree/f2.rs`: the stop gate checks overlapping non-released H claims and original H process episodes before writing F cleanup intent; after a valid StopFact it writes `CLEANUP` intent, removes the registered F worktree, verifies the path is absent, and records lifecycle `CLEANED` / operation `APPLIED`. The original H reserve/commit/open/stop/release operations and process custody StopFact are produced through the H operations recorded in `gogoke_v37_h_operation` and related ledger, claim, episode, and custody tables.

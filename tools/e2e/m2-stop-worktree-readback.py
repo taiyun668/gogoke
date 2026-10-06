@@ -131,10 +131,13 @@ def worktree_facts(db, journal, case, phase):
           request["targetId"] == case["worktreeId"] and request["domainId"] == case["domainId"] and
           request["expectedRevision"] == str(case["graphRevision"]) and request["payload"] == {} and
           denied["receipt"]["status"] == "DENIED" and
-          denied["receipt"]["revision"] == str(case["graphRevision"]) and not cleanup_rows,
-          "Original User cleanup attempt was not denied without writing F cleanup intent")
+          denied["receipt"]["revision"] == str(case["graphRevision"]) and
+          all(item["request_id"] != case["preStopCleanupRequestId"] for item in cleanup_rows),
+          "Original denied User cleanup request wrote an F cleanup intent or its receipt differs")
     if phase == "stopped":
-        check(exists and not lifecycle, "Stopped-only readback must retain the exact tree without a cleanup lifecycle row")
+        check(exists and not cleanup_rows and lifecycle == [{
+              "state": "REGISTERED", "revision": int(case["graphRevision"]), "stop_fact_id": ""}],
+              "Stopped-only readback must retain the registered tree and no cleanup intent")
         return {"worktreeId": case["worktreeId"], "repositoryId": row["repository_id"],
                 "domainId": row["domain_id"], "seatId": row["seat_id"], "instanceId": row["instance_id"],
                 "worktreeIdentity": row["worktree_identity"], "gitPointerHash": row["git_pointer_hash"],
@@ -151,6 +154,7 @@ def worktree_facts(db, journal, case, phase):
                      "WHERE request_id=?", (case["cleanupRequestId"],))
     graph = case["graphRevision"]
     check(not exists and cleanup["receipt"]["status"] == "APPLIED" and
+          len(cleanup_rows) == 1 and cleanup_rows[0]["request_id"] == case["cleanupRequestId"] and
           cleanup["receipt"]["result"].get("worktreeId") == case["worktreeId"] and
           cleanup["receipt"]["result"].get("stopFactId") == stop["stopFactId"] and
           lifecycle_row["state"] == "CLEANED" and lifecycle_row["revision"] == int(graph) + 1 and
@@ -180,6 +184,8 @@ def main():
     check(case and case["schema"] == "gogoke.37.m2-stop-worktree.v1" and
           case["acceptance"] is False and case["sourceCommit"] == journal["sourceCommit"] and
           Path(case["stateRoot"]).resolve(strict=True) == root, "Original stop-worktree case/root required")
+    reader_sha256 = digest(Path(__file__).read_bytes())
+    check(reader_sha256 == case["readerSha256"], "Executing reader bytes differ from the original case pin")
     evidence = Path(case["evidenceDirectory"]).resolve(strict=True)
     check(output.parent == journal_file.parent == evidence and Path(journal_file.parent).resolve(strict=True) == evidence,
           "Original journal/output must remain in the case evidence directory")
@@ -229,10 +235,14 @@ def main():
     if sys.argv[4] == "final":
         check(worktree.get("stopFactId") == case["session"]["stopFactId"] and
               worktree.get("lifecycleState") == "CLEANED", "Final worktree is not cleaned by its original StopFact")
+        identity_fields = ("worktreeId", "repositoryId", "domainId", "seatId", "instanceId",
+                           "worktreeIdentity", "gitPointerHash", "gitPointerIdentity", "commonIdentity", "baselineCommit")
+        check(all(worktree[key] == baseline["worktree"][key] for key in identity_fields),
+              "Final persistent F identity differs from the stopped baseline")
     proof = {"schema": "gogoke.37.private-m2-stop-worktree-readback.v1", "phase": sys.argv[4],
              "caseId": journal["caseId"], "sourceCommit": case["sourceCommit"], "domainId": case["domainId"],
              "stateRoot": str(root), "evidenceDirectory": str(evidence),
-             "readerSha256": case["readerSha256"], "candidateIdentity": candidate,
+             "readerSha256": reader_sha256, "candidateIdentity": candidate,
              "candidateInstalledSha256": installed, "rootIdentity": root_identity,
              "launch": {"pid": launch["pid"], "sourceCommit": launch["sourceCommit"]},
              "normalClose": {"pid": close["pid"], "exitCode": close["exitCode"], "forceKill": close["forceKill"]},
