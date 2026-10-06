@@ -354,6 +354,8 @@ mod tests {
         grant_grok_auth(&profile,&old).unwrap();
         grant_grok_auth(&peer,&old).unwrap();
         verify_grok_home_tree(&profile,&home,&root,&old,&[old.identity.clone()]).unwrap();
+        std::fs::write(home.join("auth.json"),b"in-place-fixture").unwrap();
+        assert_eq!(observe_grok_auth(&home,&root).unwrap().identity,old.identity);
         std::fs::write(home.join("auth-next"),b"fixture-only").unwrap();
         std::fs::remove_file(home.join("auth.json")).unwrap();
         std::fs::rename(home.join("auth-next"),home.join("auth.json")).unwrap();

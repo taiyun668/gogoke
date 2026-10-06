@@ -601,8 +601,14 @@ impl LaunchEvidence {
     /// Root calls this only outside an H transaction, after its original
     /// admission/custody guard and before the next pure in-transaction verify.
     pub(crate) fn refresh_grok_readiness(&self,db:&mut VerifiedDatabaseConnection<'_>,
-        _root:&RootLock,_owner:&OwnerIssuer)->Result<(),String>{
-        if let Some(grok)=&self.grok_home {grok.refresh_readiness(db,&self.profile)?;}
+        _root:&RootLock,owner:&OwnerIssuer,
+        custody:Option<&crate::process::PreparedCustody>)->Result<(),String>{
+        evidence(authority::read_product_identity(db,owner))?;
+        if let Some((proof,choice))=&self.host_guard {
+            verify_host_guard(db,owner,Some((proof,choice)))?;
+        }
+        if let Some(grok)=&self.grok_home {grok.refresh_readiness(db,&self.profile,custody)?;}
+        evidence(authority::read_product_identity(db,owner))?;
         Ok(())
     }
 
