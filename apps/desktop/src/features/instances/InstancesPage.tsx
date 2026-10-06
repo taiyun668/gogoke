@@ -4,11 +4,7 @@ import {
   PopoverMenuItem,
   PopoverSurface,
 } from "@/features/design-system/components/popover/PopoverPrimitives";
-import codexIcon from "./icons/ProviderIcon-codex.svg";
-import claudeIcon from "./icons/ProviderIcon-claude.svg";
-import opencodeIcon from "./icons/ProviderIcon-opencode.svg";
-import grokIcon from "./icons/ProviderIcon-grok.svg";
-import antigravityIcon from "./icons/ProviderIcon-antigravity.svg";
+import { VENDOR_ICONS as ICONS } from "./vendorIcons";
 import {
   VENDORS,
   cliSummary,
@@ -26,14 +22,6 @@ import {
   type VendorSection,
 } from "./instancePageModel";
 import "./instances.css";
-
-const ICONS: Record<VendorId, string> = {
-  codex: codexIcon,
-  claude: claudeIcon,
-  opencode: opencodeIcon,
-  grok: grokIcon,
-  antigravity: antigravityIcon,
-};
 
 /**
  * Host operations. A control is rendered only when its operation exists, so the
