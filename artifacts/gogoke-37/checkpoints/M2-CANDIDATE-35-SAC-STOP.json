@@ -1,0 +1,108 @@
+{
+  "schema": "gogoke.37.candidate-stop-checkpoint.v1",
+  "state": "STOPPED_REQUIRES_OWNER_SAC_DECISION",
+  "recordedUtc": "2026-10-06T14:03:05.6552861Z",
+  "sourceCommit": "190bffe17f601edbddcbc9d7540b8abaab0c8130",
+  "version": "0.1.35",
+  "changes": "Accumulated cache, RPC diagnostics, output pagination, side transcript and live Grok pin fixes qualified as one frozen candidate. Development provider subset and seat-management E2E scripts are independently reviewed and integrated; they have no new product bytes.",
+  "cloud": {
+    "signing": {
+      "artifact": 11414784705,
+      "publicSignatureVerified": true,
+      "sameFrozenProductBytes": true,
+      "zipSha256": "d03148c4f81049a9d601b7246210d9a128787b8b17ba8b64c10c31c3dde5a8c0",
+      "main": "c205070d05ffa12925108bc6792d079b20e85421",
+      "run": 37469155820
+    },
+    "sameByteInstalled": {
+      "state": "PASS_PRODUCT_AND_UNINSTALL_WITH_SEPARATE_NEGATIVE_AXES",
+      "ownerWindows": "NOT_RUN",
+      "negativeArtifact": 11418310739,
+      "run": 37469657936,
+      "smokeArtifact": 11418181057,
+      "acceptance": false
+    },
+    "desktop": {
+      "run": 37463109738,
+      "artifact": 11416070384,
+      "event": "workflow_dispatch",
+      "state": "PASS",
+      "zipSha256": "e5e8486ff831305e8ee5b70cf9bb157206d5a3124353cf005e6d7340e35330cc"
+    },
+    "native": {
+      "otherAxes": "SKIPPED",
+      "state": "PASS_EXACT_SOURCE_LIBRARY_AND_LPAC_SHIM",
+      "run": 37457865119,
+      "artifact": 11413548676,
+      "lpacShimPassed": 2,
+      "libraryPassed": 729,
+      "source": "190bffe17f601edbddcbc9d7540b8abaab0c8130",
+      "archiveSha256": "84e0a75ac8b7047a6d681484c1d06144928e8e8a634d2c122b19fd90ea152643"
+    }
+  },
+  "frozenMembers": {
+    "gogoke-0.1.35-windows-x64-unsigned-setup.exe": {
+      "length": 57813620,
+      "sha256": "5f530b298bf680d3fd62a1b74dac8dd77b313b5e01ad1a51064fa2a6029c4d88"
+    },
+    "gogoke-installed-shell.nsis.exe": {
+      "length": 27183616,
+      "sha256": "ee98751066f99cb115eb24c5e9542d0cb46bd1b62be6c93e3f48dc223404018a"
+    },
+    "gogoke-native-host.exe": {
+      "length": 11566080,
+      "sha256": "cd654495ad342c064d6692696acb2611bc814677e34e83bc7578ac67eeed02a9"
+    },
+    "gogoke-package-hashes.json": {
+      "length": 1851891,
+      "sha256": "3ed223cf3385a7272ff7c12e7ea37eaafdd50ffee82002bd7f3bb0fe835b12d0"
+    },
+    "gogoke-portable.exe": {
+      "length": 27183616,
+      "sha256": "c6e8a619c097dcf215124943eae417bd5cdf1941ab86a2b39e3084837b408468"
+    },
+    "gogoke-resources.windows.zip": {
+      "length": 49989754,
+      "sha256": "5640bbba30e315b25473aa1d50f8da508acf04d31c2307bb31e323aae218eba4"
+    },
+    "node.exe": {
+      "length": 91406496,
+      "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+    },
+    "resource-index.json": {
+      "length": 3042738,
+      "sha256": "150a56d72c2ba8bd9fe6a8577fa0eff22305a6e146d0dff8586190f4d65dbf6e"
+    }
+  },
+  "manifestSha256": "1b20a5773468e6caecaedce4b2114acdb71bbfd3f564ac5381c1ddfdce5babee",
+  "signatureSha256": "65c924cd780c298f9959feee2b28f74633bc1618402746b7cab3330fe138be7c",
+  "ordinaryWindows": {
+    "newProductAndProviderTests": "NOT_RUN",
+    "newInstaller": "BLOCKED_BEFORE_PROCESS_START",
+    "postStopPreservation": "PASS_FORMAL_FIVE_GROUPS_AND_ORIGINAL_SIX_HOMES_AND_UNRESOLVED_CUSTODY_UNCHANGED",
+    "newSetupSha256": "5f530b298bf680d3fd62a1b74dac8dd77b313b5e01ad1a51064fa2a6029c4d88",
+    "win32Error": 4551,
+    "emptyCleanup": {
+      "eachReadback": "ABSENT",
+      "independentAudit": "PASS",
+      "filesDeleted": 0,
+      "inventorySha256": "3208ae41f65d6e5119c1543e93e48c8fcd621c085511a058efc3146f254eff09",
+      "count": 1117
+    },
+    "oldVersion": "0.1.33",
+    "failureOriginal": "An Application Control policy has blocked this file.",
+    "oldCandidate": "UNINSTALLED_EXIT_0_DEFERRED_DELETED",
+    "candidateState": "NO_CANDIDATE_INSTALLED_OR_RUNNING",
+    "credentialContentsRead": false
+  },
+  "priorActualResults": {
+    "mainChildMerge": "DIRECT_PRODUCER_READBACK_COMPLETE",
+    "successfulOriginalSideTools": 3,
+    "V12": "ORIGINAL_FLOW_AND_IMMUTABLE_A_H_F_READBACK_PASSED_NOT_ACCEPTANCE",
+    "originalFailures": "RETAINED_NO_INPUT_REPLAY"
+  },
+  "references": "Original H stop and custody, ordinary-view five-group snapshots and exact native root/home metadata; frozen-build producer, trusted main P256 verifier and same-byte installed smoke; G4 exact empty-directory identity audit and per-item readback. E2E readers follow the real D/A/H producers and actual launch/normal-close records. OpenCode tagged source and Windows readonly AccessCheck were investigated; no ACL, CLI or security setting changed.",
+  "next": "Owner must decide the Smart App Control countermeasure. Preserve frozen artifacts, all original instance homes and unresolved records. Do not retry through another installer, repack, bypass policy or request another login. Claude/Grok real model and remaining M2 cases resume only after the authorized candidate can run.",
+  "publicRelease": false,
+  "acceptance": false
+}
