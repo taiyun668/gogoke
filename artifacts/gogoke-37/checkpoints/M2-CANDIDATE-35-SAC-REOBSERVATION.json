@@ -1,0 +1,31 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "recordedUtc": "2026-10-06T14:20:00Z",
+  "state": "WAITING_SAME_BYTES_SAC_REOBSERVATION_CLOUD_WORK_CONTINUES",
+  "changes": "Owner authorized two time-separated observations of the original frozen candidate. Prepared ordinary Limited one-shot installer wrappers with separate immutable attempt outputs and CodeIntegrity event capture. Added cloud syntax checks for development E2E scripts; parallel V06 entry and V07 cleanup-stop cases are in progress.",
+  "frozenCandidate": {
+    "version": "0.1.35",
+    "source": "190bffe17f601edbddcbc9d7540b8abaab0c8130",
+    "setupSha256": "5f530b298bf680d3fd62a1b74dac8dd77b313b5e01ad1a51064fa2a6029c4d88",
+    "qualificationCheckpoint": "artifacts/gogoke-37/checkpoints/M2-CANDIDATE-35-SAC-STOP.json",
+    "bytesChanged": false,
+    "additionalSigning": false
+  },
+  "results": {
+    "initialWin32Error": 4551,
+    "initialCodeIntegrity": [
+      {"id": 3077, "recordId": 20316, "utc": "2026-10-06T13:59:46.9695331Z", "flatSha256MatchesFrozenSetup": true},
+      {"id": 3033, "recordId": 20314, "utc": "2026-10-06T13:59:46.7182392Z", "exactNtPathMatchesHashBound3077": true}
+    ],
+    "measurementCorrection": "CodeIntegrity records native device paths, so a DOS path comparison alone did not correlate events. Retained original event XML, bound the 3077 SHA256 Flat Hash to the original installer, then matched the identical native path in 3033. No product execution was repeated.",
+    "newOwnerWindowsProductFlows": "NOT_RUN",
+    "originalSixHomesAndFormalFiveGroups": "PRESERVED_AT_ORIGINAL_STOP",
+    "candidateInstalled": false,
+    "openCodeAlternative": "SUBST can avoid Bun's first root lstat, but native realpath resolves the physical path and current H always supplies canonical cwd. Feasibility remains unproven; no mapping, ACL change or fixed CLI modification performed."
+  },
+  "next": "First observation 2026-10-06 11:10 America/Los_Angeles; only if still SAC blocked, second observation 2026-10-07 11:10. Recheck original bytes, ordinary identity and protected state before each attempt; retain raw 3077/3033 or explicitly record not observed. Disable the thread heartbeat after success or the second blocked observation. Continue cloud-only work while waiting.",
+  "references": "Reuse the qualified candidate transition installer, ordinary Interactive/Limited task wrapper and formal/native readbacks. Event correlation uses the CodeIntegrity producer's flat file hash and original native path. E2E work reuses ActualProduct, existing seat-management and stop/immutable-readback modules. OpenCode/Bun/libuv tagged sources explain root traversal and native realpath; alias behavior requires a real fixed-CLI cloud run, not a replacement probe.",
+  "reflection": "Wait for reputation reobservation without generating another candidate or adding a signing prerequisite; spend the waiting interval on disjoint reusable E2E work.",
+  "publicRelease": false,
+  "acceptance": false
+}
