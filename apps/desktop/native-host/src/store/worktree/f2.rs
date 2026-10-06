@@ -1194,7 +1194,7 @@ mod tests {
     }
 
     fn is_unknown(error:&WorktreeError)->bool {
-        match error { WorktreeError::Unknown=>true,
+        match error.without_context() { WorktreeError::Unknown=>true,
             WorktreeError::Multiple {primary,..}=>is_unknown(primary), _=>false }
     }
 
@@ -1337,7 +1337,8 @@ mod tests {
             let tampered=host_seal::record(&merge_receipt_record(&session_transport::decode_request(MERGE_RAW).unwrap(),2,&receipt.target_commit),
                 intent,Some(&binding.baseline_commit),None);
             q.bind_text(1,&tampered).unwrap(); q.step_done().unwrap(); drop(q);
-            assert!(matches!(merge_worktree(db,root,&inert,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Unknown)));
+            assert!(matches!(merge_worktree(db,root,&inert,custodian,MERGE_RAW,authorize_fixture_merger),
+                Err(error) if matches!(error.without_context(),WorktreeError::Unknown)));
         });
     }
 
@@ -1520,10 +1521,12 @@ mod tests {
             |_, _, _, _| panic!("different domain must be denied before reading receipt")), "merge.history_domain");
         let different_bytes = [raw.as_slice(), b" "].concat();
         assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, &different_bytes,
-            authorize), Err(WorktreeError::Conflict)), "same parsed request with changed raw bytes is not replay");
+            authorize), Err(error) if matches!(error.without_context(),WorktreeError::Conflict)),
+            "same parsed request with changed raw bytes is not replay");
         db.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET cause='{}'").unwrap();
         assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
-            authorize), Err(WorktreeError::Unknown)), "incomplete receipt is never inferred from lifecycle");
+            authorize), Err(error) if matches!(error.without_context(),WorktreeError::Unknown)),
+            "incomplete receipt is never inferred from lifecycle");
         // An exact older-schema APPLIED row keeps its original commit and uses
         // its hash-bound request's +1 revision, without rewriting evidence.
         db.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET cause=''").unwrap();
@@ -1556,7 +1559,7 @@ mod tests {
             &native, authorize).unwrap(), expected);
         native.raw_bytes.push(b' ');
         assert!(matches!(merge_worktree_request(&mut db, &root, &pin, &mut custodian,
-            &native, authorize), Err(WorktreeError::Conflict)));
+            &native, authorize), Err(error) if matches!(error.without_context(),WorktreeError::Conflict)));
         drop(pin); drop(custodian);
         db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
     }

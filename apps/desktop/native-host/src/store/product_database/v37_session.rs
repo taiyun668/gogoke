@@ -266,13 +266,16 @@ impl<'root> ProductDatabase<'root> {
                     .map_err(f::WorktreeError::Seat)
             };
             if let Some(receipt) = f::readback_merge_receipt_request(
-                &mut self.connection, request, &mut authorize)? {
+                &mut self.connection, request, &mut authorize)
+                .map_err(|error| error.at("native-merge.history"))? {
                 return Ok(receipt);
             }
             let repository = f::repository_for_worktree(&self.connection,
-                &request.domain_id, &request.target_id)?;
+                &request.domain_id, &request.target_id)
+                .map_err(|error| error.at("native-merge.repository"))?;
             let pin = f::resolve_registered_git(&mut self.connection, self.root,
-                &self.owner, &repository, &mut self.process_custodian)?;
+                &self.owner, &repository, &mut self.process_custodian)
+                .map_err(|error| error.at("native-merge.registered-git"))?;
             f::merge_worktree_request(&mut self.connection, self.root, &pin,
                 &mut self.process_custodian, request, &mut authorize)
         })();
