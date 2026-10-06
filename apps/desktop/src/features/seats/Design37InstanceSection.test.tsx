@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const invokeMock = vi.mocked(invoke);
 
-function instance(state: string, login?: Record<string, unknown>) {
+function instance(state: string, login?: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   return {
     instanceId: "codexTestM1",
     driverId: "codex",
@@ -18,6 +18,7 @@ function instance(state: string, login?: Record<string, unknown>) {
     revision: "7",
     state,
     ...(login === undefined ? {} : { login }),
+    ...extra,
   };
 }
 
@@ -49,77 +50,72 @@ describe("Design37InstanceSection", () => {
     vi.restoreAllMocks();
   });
 
-  it("starts one login using only the selected instance ID and shows the host PENDING result", async () => {
+  it("groups by vendor, shows plain state and hides internal identifiers", async () => {
+    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN")) as never);
+    render(<Design37InstanceSection />);
+
+    expect(await screen.findByText(/可以用 · 空闲/)).toBeTruthy();
+    expect(screen.getByText("Codex CLI")).toBeTruthy();
+    expect(screen.getByText("1 个可以用", { exact: false })).toBeTruthy();
+    expect(screen.queryByText(/修订/)).toBeNull();
+    expect(screen.queryByText("1.2.3")).toBeNull();
+    // Antigravity is listed as unsupported with no controls.
+    expect(screen.getByText(/暂不支持/)).toBeTruthy();
+  });
+
+  it("starts one login for the selected instance and shows the device code", async () => {
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "gogoke_design37_instances") return snapshot(instance("NOT_LOGGED_IN"));
       if (command === "gogoke_design37_instance_login") {
         return snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "ABCD-EFGH" })));
       }
-      return undefined;
+      const calls = invokeMock.mock.calls.filter(([name]) => name === "gogoke_design37_instance_login");
+      return calls.length
+        ? snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "ABCD-EFGH" })))
+        : snapshot(instance("NOT_LOGGED_IN"));
     });
 
     render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "一键登录" }));
+    fireEvent.click(await screen.findByRole("button", { name: "登录" }));
 
-    await screen.findByText(/登录：正在登录/);
-    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_login", {
-      instanceId: "codexTestM1",
-    });
-    expect(screen.getByText("ABCD-EFGH")).toBeTruthy();
+    expect(await screen.findByText("ABCD-EFGH")).toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_login", { instanceId: "codexTestM1" });
+    expect(screen.getByRole("button", { name: "取消登录" })).toBeTruthy();
     expect(screen.queryByText("host-owned-request-id")).toBeNull();
   });
 
-  it("shows the original host login failure reason", async () => {
-    invokeMock.mockResolvedValue(snapshot(instance("ERROR", login("ERROR", {
-      error: "codex exited 17: invalid_grant",
-    }))) as never);
-
+  it("keeps the CLI's original failure text behind 查看原话", async () => {
+    invokeMock.mockResolvedValue(
+      snapshot(instance("ERROR", login("ERROR", { error: "codex exited 17: invalid_grant" }))) as never,
+    );
     render(<Design37InstanceSection />);
 
-    expect((await screen.findByRole("alert")).textContent).toContain("codex exited 17: invalid_grant");
-    expect(screen.getByText(/状态：出错/)).toBeTruthy();
-  });
-
-  it("shows the host-detected successful login state without another user action", async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "gogoke_design37_instances") return snapshot(instance("NOT_LOGGED_IN"));
-      if (command === "gogoke_design37_instance_login") {
-        return snapshot(instance("LOGGED_IN", login("LOGGED_IN")));
-      }
-      return undefined;
-    });
-
-    render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "一键登录" }));
-
-    await screen.findByText(/状态：已登录/);
-    expect(screen.getByText("宿主已检测到登录成功。")).toBeTruthy();
+    expect(await screen.findByText(/这次没登上/)).toBeTruthy();
+    expect(screen.queryByText("codex exited 17: invalid_grant")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "查看原话" }));
+    expect(screen.getByText("codex exited 17: invalid_grant")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新登录" })).toBeTruthy();
   });
 
   it("cancels the pending host session for only the selected instance", async () => {
+    let cancelled = false;
     invokeMock.mockImplementation(async (command: string) => {
-      if (command === "gogoke_design37_instances") {
-        return snapshot(instance("NOT_LOGGED_IN", login("PENDING")));
-      }
-      if (command === "gogoke_design37_instance_cancel") {
-        return snapshot(instance("NOT_LOGGED_IN", login("CANCELLED")));
-      }
-      return undefined;
+      if (command === "gogoke_design37_instance_cancel") cancelled = true;
+      return cancelled
+        ? snapshot(instance("NOT_LOGGED_IN", login("CANCELLED")))
+        : snapshot(instance("NOT_LOGGED_IN", login("PENDING")));
     });
 
     render(<Design37InstanceSection />);
     fireEvent.click(await screen.findByRole("button", { name: "取消登录" }));
 
-    expect(await screen.findByText("此实例的登录请求已取消。")).toBeTruthy();
-    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_cancel", {
-      instanceId: "codexTestM1",
-    });
+    expect(await screen.findByText(/上次登录已取消/)).toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_cancel", { instanceId: "codexTestM1" });
   });
 
   it("reads the existing host session after remount without starting another login", async () => {
-    invokeMock.mockResolvedValue(snapshot(instance("NOT_LOGGED_IN", login("PENDING", {
-      deviceCode: "WXYZ-1234",
-    }))) as never);
+    invokeMock.mockResolvedValue(
+      snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "WXYZ-1234" }))) as never,
+    );
 
     const first = render(<Design37InstanceSection />);
     expect(await screen.findByText("WXYZ-1234")).toBeTruthy();
@@ -127,28 +123,24 @@ describe("Design37InstanceSection", () => {
 
     render(<Design37InstanceSection />);
     expect(await screen.findByText("WXYZ-1234")).toBeTruthy();
-    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instances");
     expect(invokeMock).not.toHaveBeenCalledWith("gogoke_design37_instance_login", expect.anything());
   });
 
-  it("copies the host device code and reports success", async () => {
+  it("copies the device code", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-    invokeMock.mockResolvedValue(snapshot(instance("NOT_LOGGED_IN", login("PENDING", {
-      deviceCode: "COPY-ME",
-    }))) as never);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    invokeMock.mockResolvedValue(
+      snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "COPY-ME" }))) as never,
+    );
 
     render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "复制设备码" }));
+    fireEvent.click(await screen.findByRole("button", { name: "复制代码" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("COPY-ME"));
-    expect(await screen.findByText("已复制 codexTestM1 的设备码。")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "已复制" })).toBeTruthy();
   });
 
-  it("can cancel an unsettled failed original request without allowing another login", async () => {
+  it("offers only cancel while a failed original request is still unsettled", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "gogoke_design37_instance_cancel") {
         return snapshot(instance("NOT_LOGGED_IN", login("CANCELLED")));
@@ -156,36 +148,58 @@ describe("Design37InstanceSection", () => {
       return snapshot(instance("ERROR", login("ERROR", { settled: false, error: "original transport failure" })));
     });
     render(<Design37InstanceSection />);
-    expect((await screen.findByRole("button", { name: "一键登录" })).hasAttribute("disabled")).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "取消登录" }));
-    await screen.findByText("此实例的登录请求已取消。");
-    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_cancel", { instanceId: "codexTestM1" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "取消登录" }));
+    expect(screen.queryByRole("button", { name: "重新登录" })).toBeNull();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_cancel", { instanceId: "codexTestM1" }),
+    );
     expect(invokeMock).not.toHaveBeenCalledWith("gogoke_design37_instance_login", expect.anything());
   });
 
-  it("reports an unexpected host schema as an error", async () => {
-    invokeMock.mockResolvedValue({ schema: "other.v1", instances: [] } as never);
-
+  it("does not offer actions the host cannot perform", async () => {
+    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN")) as never);
     render(<Design37InstanceSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "codexTestM1 的更多操作" }));
 
+    expect(screen.getByRole("menuitem", { name: "详情" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "删除实例" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "停用" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /新建 Claude Code 实例/ })).toBeNull();
+  });
+
+  it("reports an unexpected host schema", async () => {
+    invokeMock.mockResolvedValue({ schema: "other.v1", instances: [] } as never);
+    render(<Design37InstanceSection />);
     expect((await screen.findByRole("alert")).textContent).toContain("Instance page returned an unexpected schema.");
   });
 
-  it.each([true, false])("reads the same host login result after the page closes before completion (success=%s)", async (success) => {
-    const host = createPreviewHost();
-    invokeMock.mockImplementation((command, args) => host.invoke(command, args as Record<string, unknown>));
-    const first = render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "一键登录" }));
-    await screen.findByText(/登录：正在登录/);
-    const pending = await host.invoke("gogoke_design37_instances") as { instances: { login: { requestId: string } }[] };
-    first.unmount();
-    host.settle(success);
-    const settled = await host.invoke("gogoke_design37_instances") as { instances: { login: { requestId: string } }[] };
-    expect(settled.instances[0].login.requestId).toBe(pending.instances[0].login.requestId);
-    render(<Design37InstanceSection />);
-    if (success) await screen.findByText("宿主已检测到登录成功。");
-    else expect((await screen.findByRole("alert")).textContent).toContain("PREVIEW_CLI_FAILED: synthetic failure");
-    expect(await host.invoke("gogoke_design37_instances")).toEqual(settled);
-    expect(invokeMock.mock.calls.filter(([command]) => command === "gogoke_design37_instance_login")).toHaveLength(1);
-  });
+  it.each([true, false])(
+    "reads the same host login result after the page closes before completion (success=%s)",
+    async (success) => {
+      const host = createPreviewHost();
+      invokeMock.mockImplementation((command, args) => host.invoke(command, args as Record<string, unknown>));
+      const first = render(<Design37InstanceSection />);
+      fireEvent.click(await screen.findByRole("button", { name: "登录" }));
+      await screen.findByText(/正在登录/);
+      const pending = (await host.invoke("gogoke_design37_instances")) as {
+        instances: { login: { requestId: string } }[];
+      };
+      first.unmount();
+      host.settle(success);
+      const settled = (await host.invoke("gogoke_design37_instances")) as {
+        instances: { login: { requestId: string } }[];
+      };
+      expect(settled.instances[0].login.requestId).toBe(pending.instances[0].login.requestId);
+      render(<Design37InstanceSection />);
+      if (success) {
+        await screen.findByText(/可以用/);
+      } else {
+        await screen.findByText(/这次没登上/);
+        fireEvent.click(screen.getByRole("button", { name: "查看原话" }));
+        expect(screen.getByText(/PREVIEW_CLI_FAILED: synthetic failure/)).toBeTruthy();
+      }
+      expect(invokeMock.mock.calls.filter(([command]) => command === "gogoke_design37_instance_login")).toHaveLength(1);
+    },
+  );
 });
