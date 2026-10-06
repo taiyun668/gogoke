@@ -384,10 +384,17 @@ jobs:
               @{ id = 'credential-original-remove-recovery'; filter = 'credential_cleanup_new_login_recovers_original_pending_remove_without_delete_retry' }
               @{ id = 'credential-uncreated-attempt'; filter = 'credential_uncreated_cleanup_requires_this_attempt_and_preserves_alias_namespace' }
               @{ id = 'credential-real-dual-scope'; filter = 'actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_model' }
-              @{ id = 'grok-home-physical-acl'; filter = 'isolation::grok_home::tests' }
-              @{ id = 'grok-home-original-journal'; filter = 'session_transport::grok_home_launch::tests' }
+              @{ id = 'grok-inherited-directory'; filter = 'inherited_directory_residue_uses_its_exact_physical_type_and_preserves_peer' }
+              @{ id = 'grok-inherited-successor'; filter = 'inherited_auth_successor_is_normalized_without_changing_peer_aces' }
+              @{ id = 'grok-protected-peer'; filter = 'protected_original_auth_grant_replacement_and_peer_sid_survive_revoke' }
+              @{ id = 'grok-link-refusal'; filter = 'multiple_links_refuse_original_auth_binding' }
+              @{ id = 'grok-cold-original'; filter = 'cold_old_file_id_reacquires_only_inside_original_home' }
+              @{ id = 'grok-home-refusal'; filter = 'wrong_home_and_reparse_refuse_without_target_sid_write' }
+              @{ id = 'grok-intent-recovery'; filter = 'inherited_successor_intent_recovers_after_acl_write_before_finish' }
+              @{ id = 'grok-applied-peer'; filter = 'applied_root_effect_survives_later_authorized_peer_sid_revocation' }
+              @{ id = 'grok-resume-original'; filter = 'before_promote_resume_uses_old_stopped_claim_and_exact_new_episode' }
             )
-            Write-Host 'F private-history identity/schema boundary only; full library, compiled mutations and server suites NOT_RUN.'
+            Write-Host 'F private-history/credential and Grok exact HOME ACL/journal boundaries only; full library, compiled mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
