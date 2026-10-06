@@ -14,7 +14,7 @@
   },
   "plan": {
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "scope_digest": "4f3570d997e779ccd37b9988e0285ac29e505374aa6931c0977bc2eac6861df9",
+    "scope_digest": "aad8bf4d015a588b1882b4ff9d1c8ed4ac87e24474690fc4385923108f2c85a8",
     "digest_tool": "docs/design/gogoke-37-plan-v1/verify_plan.py --scope-digest PLAN.json, run from trusted main",
     "stale_when": "the scope digest of the plan in force differs from the value above"
   },
