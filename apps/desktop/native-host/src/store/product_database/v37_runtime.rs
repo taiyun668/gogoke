@@ -82,7 +82,6 @@ fn hex(bytes: &[u8]) -> String {
 // unfinished stdout frame without putting those bytes in the User error.
 fn rpc_read_failure_evidence(original: &str,
     fragment: std::result::Result<Vec<u8>, crate::process::ProcessCustodyError>) -> String {
-    const MAX_ERROR: usize = 16_384;
     const TAIL_BYTES: usize = 4096;
     let (detail, snapshot_error) = match fragment {
         Ok(bytes) => {
@@ -98,18 +97,7 @@ fn rpc_read_failure_evidence(original: &str,
         source.push_str("; incomplete_stdout_snapshot_error=");
         source.push_str(&error);
     }
-    let prefix = "original_read_error=";
-    let budget = MAX_ERROR.saturating_sub(prefix.len() + 2 + detail.len());
-    if source.len() > budget {
-        let omitted = format!("...[middle omitted; original bytes={}]...", source.len());
-        let kept = budget.saturating_sub(omitted.len());
-        let mut front = kept / 2;
-        while !source.is_char_boundary(front) { front -= 1; }
-        let mut back = source.len() - (kept - front);
-        while !source.is_char_boundary(back) { back += 1; }
-        source = format!("{}{}{}", &source[..front], omitted, &source[back..]);
-    }
-    format!("{prefix}{source}; {detail}")
+    format!("original_read_error={source}; {detail}")
 }
 
 #[cfg(test)]
@@ -117,14 +105,25 @@ fn rpc_read_failure_evidence(original: &str,
 fn rpc_read_failure_retains_only_bounded_incomplete_stdout_in_private_error() {
     let bytes: Vec<u8> = (0..5000).map(|index| (index % 251) as u8).collect();
     let expected_tail = hex(&bytes[bytes.len() - 4096..]);
-    let original = format!("PROCESS_PROTOCOL_PIPE_FAILED: os error 5; PROCESS_STDERR_TAIL: {}end",
-        "x".repeat(12_000));
+    // A 4096-byte stderr tail can expand to 12288 UTF-8 bytes when the
+    // existing lossy display replaces invalid bytes. Keep all of it.
+    let stderr = String::from_utf8_lossy(&vec![0xff; 4096]).into_owned();
+    let original = format!("PROCESS_PROTOCOL_PIPE_FAILED: os error 5; PROCESS_STDERR_TAIL: {stderr}end");
     let diagnostic = rpc_read_failure_evidence(&original, Ok(bytes));
-    assert!(diagnostic.len() <= 16_384);
-    assert!(diagnostic.starts_with("original_read_error=PROCESS_PROTOCOL_PIPE_FAILED: os error 5"));
+    assert!(diagnostic.len() <= 32_768);
+    assert!(diagnostic.starts_with(&format!("original_read_error={original}")));
     assert!(diagnostic.contains("end; incomplete_stdout_bytes=5000; incomplete_stdout_tail_hex="));
     assert!(diagnostic.ends_with(&expected_tail));
-    assert!(diagnostic.contains("middle omitted"));
+    let snapshot_error = crate::process::ProcessCustodyError::ProtocolEvidence {
+        cause: Box::new(crate::process::ProcessCustodyError::ProtocolPipe(
+            std::io::Error::from_raw_os_error(5))),
+        stderr_tail: stderr,
+    };
+    let missing = rpc_read_failure_evidence(&original, Err(snapshot_error));
+    assert!(missing.len() <= 32_768);
+    assert!(missing.starts_with(&format!("original_read_error={original}")));
+    assert!(missing.contains("incomplete_stdout_snapshot_error=PROCESS_PROTOCOL_PIPE_FAILED:"));
+    assert!(missing.ends_with("incomplete_stdout_bytes=unknown; incomplete_stdout_tail_hex="));
 }
 fn text(value:&str)->Json {Json::String(JsonString::from_str(value))}
 fn compact_method_missing(frame:&[u8])->bool {

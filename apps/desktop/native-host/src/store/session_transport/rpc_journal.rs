@@ -1251,7 +1251,7 @@ fn transition(
     let encoded = step.command.encode(step.rpc_id)?;
     // The private Codex failure slot can retain a 4096-byte unfinished stdout
     // tail as hex beside the original read error. No successful frame uses it.
-    if next == Phase::Unknown && error.map_or(true, |value| value.is_empty() || value.len() > 16_384)
+    if next == Phase::Unknown && error.map_or(true, |value| value.is_empty() || value.len() > 32_768)
     {
         return Err(RpcJournalError::Invalid("original error"));
     }
