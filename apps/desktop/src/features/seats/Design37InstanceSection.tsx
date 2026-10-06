@@ -170,17 +170,6 @@ export function Design37InstanceSection() {
                     {instance.login.error}
                   </div>
                 ) : null}
-                {instance.login?.authorizationUrl ? (
-                  <div className="settings-help" style={{ overflowWrap: "anywhere" }}>
-                    宿主授权地址：<code>{instance.login.authorizationUrl}</code>
-                  </div>
-                ) : null}
-                {instance.login?.output ? (
-                  <pre className="settings-help" aria-label={`${instance.instanceId} 登录输出`}
-                    style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", font: "inherit" }}>
-                    {instance.login.output}
-                  </pre>
-                ) : null}
                 {instance.login?.deviceCode ? (
                   <div className="settings-field-actions">
                     <span className="settings-help">设备码：<code>{instance.login.deviceCode}</code></span>
@@ -203,6 +192,22 @@ export function Design37InstanceSection() {
                     </button>
                   ) : null}
                 </div>
+                {instance.login?.authorizationUrl || instance.login?.output ? (
+                  <details className="settings-help">
+                    <summary>查看授权地址与 CLI 原始输出</summary>
+                    {instance.login.authorizationUrl ? (
+                      <div style={{ overflowWrap: "anywhere" }}>
+                        宿主授权地址：<code>{instance.login.authorizationUrl}</code>
+                      </div>
+                    ) : null}
+                    {instance.login.output ? (
+                      <pre aria-label={`${instance.instanceId} 登录输出`}
+                        style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", font: "inherit" }}>
+                        {instance.login.output}
+                      </pre>
+                    ) : null}
+                  </details>
+                ) : null}
               </div>
             </div>
           );
