@@ -299,10 +299,14 @@ pub(crate) fn set_grok_grant_phase(db:&mut VerifiedDatabaseConnection<'_>,grant:
             } else {("REVOKE_ROOT","REVOKE_AUTH")};
             let root_done=effects.iter().any(|e|e.action==root_action &&e.phase=="APPLIED" &&
                 e.object_identity==grant.home_identity);
-            let auth_ids=if next_phase=="GRANTED_UNCREATED" {vec![grant.auth_identity.clone()]}
-                else {effects.iter().filter(|e|e.action=="GRANT_AUTH" &&e.phase=="APPLIED")
-                    .map(|e|e.object_identity.clone()).collect::<Vec<_>>()};
-            if !root_done || !auth_ids.contains(&grant.auth_identity) ||
+            let mut auth_ids=vec![grant.auth_identity.clone()];
+            if next_phase!="GRANTED_UNCREATED" {
+                for id in effects.iter().filter(|e|e.action=="GRANT_AUTH" &&e.phase=="APPLIED")
+                    .map(|e|e.object_identity.clone()) {
+                    if !auth_ids.contains(&id){auth_ids.push(id);}
+                }
+            }
+            if !root_done ||
                 auth_ids.iter().any(|id|!effects.iter().any(|e|e.action==auth_action &&
                     e.phase=="APPLIED" && &e.object_identity==id)) ||
                 effects.iter().any(|e|e.phase!="APPLIED") {
@@ -383,6 +387,20 @@ mod tests {
         let pending=begin_grok_effect(&mut db,&auth_effect).unwrap();
         finish_grok_effect(&mut db,&pending).unwrap();
         set_grok_grant_phase(&mut db,&first,"GRANTED_UNCREATED",None).unwrap();
+        // A failure before the first auth grant has a positive NoAttempt
+        // settlement: exact root/auth revoke readbacks, without inventing a
+        // GRANT_AUTH effect or process tuple.
+        let failed=begin_grok_grant(&mut db,&domain,&grant("failedA","failedOpen","sid-failed")).unwrap();
+        set_grok_grant_phase(&mut db,&failed,"REVOKE_PENDING",None).unwrap();
+        for (action,id) in [("REVOKE_ROOT",identity(1)),("REVOKE_AUTH",identity(2))] {
+            let mut effect=acl_effect("failedA",action,id);
+            effect.after_aces.clear();
+            let pending=begin_grok_effect(&mut db,&effect).unwrap();
+            finish_grok_effect(&mut db,&pending).unwrap();
+        }
+        let pending=read_grok_grants(&db,"grokA").unwrap().into_iter()
+            .find(|row|row.binding_id=="failedA").unwrap();
+        set_grok_grant_phase(&mut db,&pending,"REVOKED",None).unwrap();
         db.execute("UPDATE main.gogoke_v37_instances SET revision=2 WHERE instance_id='grokA'").unwrap();
         let domain2=current_domain(&db,"grokA").unwrap();
         begin_grok_grant(&mut db,&domain2,&grant("bindingB","openB","sid-B")).unwrap();
