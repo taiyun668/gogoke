@@ -18,12 +18,12 @@ const inside = (child, parent) => child === parent || child.startsWith(parent + 
 const check = (condition, reason) => { if (!condition) throw Error(reason); };
 const required = ['installed', 'version', 'sourceCommit', 'installedSha256', 'registryKey',
   'pwsh', 'python', 'evidenceDirectory', 'result', 'stateRoot', 'testbedSource',
-  'domainId', 'repositoryId', 'instanceId', 'seatId', 'stopWorktreePrep'];
+  'domainId', 'repositoryId', 'instanceId', 'stopWorktreePrep'];
 
 if (process.platform !== 'win32' || required.some(key => config[key] === undefined) ||
     !/^\d+\.\d+\.\d+$/.test(config.version) || !/^[a-f0-9]{40}$/.test(config.sourceCommit) ||
     config.repositoryId !== 'gogokeSeatTestbed' || !atom(config.domainId) ||
-    !atom(config.instanceId) || !atom(config.seatId) ||
+    !atom(config.instanceId) ||
     c.lifecycleOwnership !== 'EXCLUSIVE_M2_STOP_WORKTREE_PREP' || !atom(c.templateId) ||
     typeof config.installedSha256 !== 'object' || config.installedSha256 === null ||
     !['gogoke.exe', 'gogoke-native-host.exe', 'resource-index.json']
@@ -150,7 +150,7 @@ const record = { schema: 'gogoke.37.m2-stop-worktree-prepare.v1', state: 'RUNNIN
   stateRoot: path.resolve(config.stateRoot), testbedSource: path.resolve(config.testbedSource),
   evidenceDirectory: path.resolve(config.evidenceDirectory), candidateVersion: config.version,
   candidateInstalledSha256: config.installedSha256, instanceId: config.instanceId,
-  originalSeatId: config.seatId, templateId: c.templateId,
+  templateId: c.templateId,
   seatId, worktreeId, readerSha256, createRequestId: null, bindRequestId: null,
   cardRequestId: null, worktreeCreateRequestId: null, worktreeRegisterRequestId: null,
   graphQueryRequestId: null, baseline: null, final: null };
@@ -250,9 +250,6 @@ try {
   check(ui.url === product.endpoint.url && ui.home && ui.tauri && journal.connectionBackend?.agentActs === 0 &&
     journal.connectionBackend?.telemetryDisabled === true, 'Original installed User bridge and no-agent preview backend required');
   await assertLoggedInInstance();
-  const rootSeat = await stateCard(config.seatId, ['APPLIED', 'DENIED']);
-  check(rootSeat.receipt.status === 'APPLIED' && rootSeat.receipt.result.domainId === config.domainId &&
-    rootSeat.receipt.result.seatId === config.seatId, 'Configured original seat/domain is not present');
   await product.custody(); product.verifyBytes();
   const baseline = await immutableReadback('baseline');
   check(baseline.proof.directCaseEvidence === false && baseline.proof.targetSeatAbsent === true &&
