@@ -1468,7 +1468,10 @@ mod tests {
                 "SELECT count(*) FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id='treeA' AND operation='MERGE'").unwrap();
             assert!(pending.step_row().unwrap());
             assert_eq!(pending.column_text(0).unwrap(), "0");
-            assert_eq!(lifecycle(db, "treeA").unwrap().unwrap().0, "REGISTERED");
+            // This M1 fixture creates an already registered tree without the
+            // optional F.2 lifecycle row. Refusal must preserve that shape.
+            assert!(lifecycle(db, "treeA").unwrap().is_none());
+            assert_eq!(graph_query(db, "treeA").unwrap().unwrap().state, "REGISTERED");
         });
     }
 
