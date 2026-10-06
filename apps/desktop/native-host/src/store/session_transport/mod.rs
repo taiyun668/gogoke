@@ -7,6 +7,7 @@ mod journal;
 mod seat_io;
 pub(crate) mod launch;
 pub(crate) mod credential_launch;
+pub(crate) mod grok_home_launch;
 mod codex_component;
 pub(crate) mod codex_rpc;
 pub(crate) mod codex_output;

@@ -11,6 +11,7 @@ mod reprobe;
 mod temporary;
 mod private_history;
 mod credential_registry;
+mod grok_home_grants;
 mod legacy_fence;
 pub(crate) mod holder_disappearance;
 
@@ -51,6 +52,17 @@ pub(crate) use credential_registry::{initialize_credential_schema, record_creden
     CredentialAliasRecord, CredentialAliasIntentReceipt, CredentialAliasPhysicalReceipt,
     CredentialProfileAction, CredentialProfileResult, CredentialProfileIntent,
     CredentialProfileRecord, CredentialProfileIntentReceipt};
+pub(crate) use grok_home_grants::{initialize_grok_home_grant_schema,
+    current_domain as current_grok_home_domain, begin_grok_grant, read_grok_grants,
+    begin_grok_effect, finish_grok_effect, read_grok_effects, set_grok_grant_phase,
+    bind_grok_original_process,
+    GrokDomain, GrokGrant, GrokEffect};
+
+pub(crate) fn resolve_grok_original_home(db:&VerifiedDatabaseConnection<'_>,
+    root:&crate::root::RootLock,instance_id:&str)->Result<ResolvedDirectory,registry::RegistryError>{
+    let (path,identity)=registry::resolve_registered_provider_home(db,root,instance_id,"grok")?;
+    Ok(ResolvedDirectory{path,identity})
+}
 
 use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
