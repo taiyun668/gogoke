@@ -6,11 +6,11 @@
     "mainAuthorizationReadback": "PASS_CURRENT_MAIN_VERIFIER_SCOPE_AND_FIXED_RECEIPT",
     "stageDiffWhitespace": "PASS",
     "nativeWindowsBuildAndTests": "NOT_RUN_YET",
-    "freshFocusedReview": "IN_PROGRESS",
+    "freshFocusedReview": "Three concrete gaps corrected; final static follow-up and Windows behavior checks pending",
     "originalInstalledProviderFlows": "FAIL_BEFORE_MODEL_SEND_RETAINED",
     "newCandidateOrOwnerLogin": "NOT_RUN"
   },
   "references": "Existing Grok exact-FileID custody, F ACL effect journal and H StopFact recovery; same-file native RPC private failure evidence; GOGO PARTY provider runtime and accounts; repository fixed-CLI command references and prior Claude injection research. The inherited successor differs from the older pre-protected fixture: the fixed CLI actually creates a new FileID inheriting HOME ACL. Existing registered FileIDs keep strict verification. Claude startup cause remains unknown: no complete stdout frame and empty stderr do not prove a protocol or permission cause.",
   "decision": "Controller repairs the existing same-user product boundary and error evidence within the authorized implementation. No CLI change, new permission tier, credential-content read or G interface work.",
-  "next": "Run cloud Windows checks, resolve concrete failures and focused review findings, then continue the original-instance real provider flows at a stable candidate point. PR #70's new smoke fixture still requires its own cloud exercise; the older successful smoke attempt is not evidence for that fixture."
+  "next": "Run the existing directed F credential/history Windows scope with both Grok security modules registered. The full library takes roughly one hour, so use the existing directed scope for iteration and retain full-library results as separate evidence. Resolve concrete failures, then continue the original-instance real provider flows at a stable candidate point. PR #70's new smoke fixture still requires its own cloud exercise; the older successful smoke attempt is not evidence for that fixture."
 }

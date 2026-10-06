@@ -444,6 +444,29 @@ impl GrokHomeLaunch {
             instance::set_grok_grant_phase(db,grant,"REVOKE_PENDING",stop)?;
             self.grant(db)?
         };
+        // The old holder is already stopped/gone. Finish only a previously
+        // authorized grant whose exact ACL AFTER state can be read back; never
+        // issue a grant during retirement or manufacture a stopped receipt.
+        for intent in instance::read_grok_effects(db,&pending.binding_id)?.into_iter()
+            .filter(|intent|intent.action=="GRANT_AUTH" &&intent.phase=="INTENT") {
+            validate_gone()?;
+            let mut held=self.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
+            if !held.iter().any(|auth|auth.identity==intent.object_identity) {
+                let auth=evidence("find-unfinished-grant-FileID",observe_grok_recorded_auth(
+                    &self.home.path,&self.home.identity,&intent.object_identity))?
+                    .ok_or("Grok private HOME: unfinished grant FileID not physically recoverable")?;
+                held.push(auth);
+            }
+            let auth=held.iter().find(|auth|auth.identity==intent.object_identity)
+                .ok_or("Grok private HOME: unfinished grant custody absent")?;
+            let after=evidence("unfinished-grant-AFTER",auth.acl(profile))?;
+            if after.identity!=intent.object_identity ||after.target_aces!=intent.after_aces ||
+                after.dacl_control!=intent.after_control ||
+                sha256_hex(&after.other_aces_bytes())!=intent.other_aces_sha256 {
+                return Err("Grok private HOME: unfinished grant lacks exact ACL AFTER proof".into());
+            }
+            instance::finish_grok_effect(db,&intent)?;
+        }
         let ids=recorded_auth(db,&pending)?;
         let prior_effects=instance::read_grok_effects(db,&pending.binding_id)?;
         {
@@ -851,9 +874,31 @@ mod tests {
         assert_eq!(recovered[0].revision,2);
         assert!(before.preserves_other_aces(&auth.acl(&profile).unwrap()));
         verify_grok_auth(&profile,&auth).unwrap();
-        revoke_grok_home_root(&profile,&home,&home_id).unwrap();
-        revoke_grok_auth(&profile,&auth).unwrap();
-        db.close_checked().unwrap();drop(auth);drop(profile);drop(root);
+        // A second physical successor stops before finish. Reopen with no
+        // metadata handles and run the actual retirement effect path, rather
+        // than replaying the active grant path after the holder has stopped.
+        std::fs::rename(home.join("auth.json"),home.join("auth-first.json")).unwrap();
+        std::fs::write(home.join("auth.json"),b"second synthetic non-secret fixture").unwrap();
+        let second=observe_grok_auth_candidate(&home,&home_id).unwrap();
+        let second_before=second.candidate_acl(&profile).unwrap();
+        let mut second_intent=effect(&grant,"GRANT_AUTH",&second.identity,"auth.json",&second_before);
+        second_intent.after_control=second_before.dacl_control|0x1000;
+        instance::begin_grok_effect(&mut db,&second_intent).unwrap();
+        grant_grok_auth_successor(&profile,&second).unwrap();
+        db.close_checked().unwrap();drop(auth);drop(second);
+        let mut db=crate::store::same_open::open_existing(&root,&path.join("state.sqlite")).unwrap();
+        let recovered=GrokHomeLaunch{instance_id:grant.instance_id.clone(),
+            binding_id:grant.binding_id.clone(),home:ResolvedDirectory{path:home.clone(),identity:home_id.clone()},
+            auth:Mutex::new(Vec::new())};
+        // The public cold entry checks the original H StopFact before calling
+        // this shared path. This fixture verifies its physical ACL/journal work.
+        recovered.revoke_effects(&mut db,&profile,&grant,Some("synthetic-stop-fact"),None).unwrap();
+        assert_eq!(one(&db,"grokA","bindingA").unwrap().phase,"REVOKED");
+        let effects=instance::read_grok_effects(&db,"bindingA").unwrap();
+        assert!(effects.iter().all(|effect|effect.phase=="APPLIED"));
+        assert_eq!(effects.iter().filter(|effect|effect.action=="REVOKE_AUTH").count(),2);
+        assert!(inspect_grok_home_residue(&profile,&home,&home_id,&[]).unwrap().is_empty());
+        db.close_checked().unwrap();drop(recovered);drop(profile);drop(root);
         std::fs::remove_dir_all(path).unwrap();
     }
 

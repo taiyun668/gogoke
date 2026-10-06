@@ -384,6 +384,8 @@ jobs:
               @{ id = 'credential-original-remove-recovery'; filter = 'credential_cleanup_new_login_recovers_original_pending_remove_without_delete_retry' }
               @{ id = 'credential-uncreated-attempt'; filter = 'credential_uncreated_cleanup_requires_this_attempt_and_preserves_alias_namespace' }
               @{ id = 'credential-real-dual-scope'; filter = 'actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_model' }
+              @{ id = 'grok-home-physical-acl'; filter = 'isolation::grok_home::tests' }
+              @{ id = 'grok-home-original-journal'; filter = 'session_transport::grok_home_launch::tests' }
             )
             Write-Host 'F private-history identity/schema boundary only; full library, compiled mutations and server suites NOT_RUN.'
           }

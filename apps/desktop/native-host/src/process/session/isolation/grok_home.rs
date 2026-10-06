@@ -17,6 +17,7 @@ extern "system" {
 pub(crate) struct GrokHomeObject {
     pub(crate) relative_name: PathBuf,
     pub(crate) identity: RootIdentity,
+    pub(crate) directory: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -223,16 +224,17 @@ pub(crate) fn grant_grok_auth(profile: &AppContainerProfile,
 pub(crate) fn grant_grok_auth_successor(profile:&AppContainerProfile,
     auth:&GrokAuthMetadata)->Result<(),IsolationError>{
     auth.verify_candidate_physical()?;
-    rewrite_grok_target(auth.handle(),profile,&auth.identity,true,true)?;
+    rewrite_grok_target(auth.handle(),profile,&auth.identity,false,true,true)?;
     verify_grok_auth(profile,auth)
 }
 
 fn rewrite_grok_target(handle:Handle,profile:&AppContainerProfile,identity:&RootIdentity,
-    grant:bool,protect:bool)->Result<(),IsolationError>{
+    directory:bool,grant:bool,protect:bool)->Result<(),IsolationError>{
     if file_identity(handle)?!=*identity {return Err(IsolationError::AclWitnessMismatch);}
     let entries=package_aces(handle,profile.sid)?;
+    let inherited_flags=INHERITED_ACE as u32|if directory{OBJECT_AND_CONTAINER_INHERIT}else{0};
     if !entries.is_empty() && entries.as_slice()!=&[(GRANT_ACCESS,directory_rights(true),NO_INHERITANCE)] &&
-        entries.as_slice()!=&[(GRANT_ACCESS,directory_rights(true),INHERITED_ACE as u32)] {
+        entries.as_slice()!=&[(GRANT_ACCESS,directory_rights(true),inherited_flags)] {
         return Err(IsolationError::AclWitnessMismatch);
     }
     let before=snapshot(handle,profile)?;
@@ -413,8 +415,7 @@ pub(crate) fn inspect_grok_home_residue(profile: &AppContainerProfile, home: &Pa
         if permitted == INHERITED_ACE {
             if entries.len() != 1 || entries[0].0 != GRANT_ACCESS ||
                 entries[0].1 != directory_rights(true) ||
-                entries[0].2 & INHERITED_ACE == 0 ||
-                entries[0].2 & INHERIT_ONLY_ACE != 0 {
+                entries[0].2 != INHERITED_ACE as u32|if directory{OBJECT_AND_CONTAINER_INHERIT}else{0} {
                 return Err(IsolationError::AclWitnessMismatch);
             }
             // A vendor-created child can retain this inherited ACE after the
@@ -423,7 +424,7 @@ pub(crate) fn inspect_grok_home_residue(profile: &AppContainerProfile, home: &Pa
         }
         touched.push(GrokHomeObject { relative_name: path.strip_prefix(home).map_err(|error|
             IsolationError::Acl(io::Error::new(io::ErrorKind::InvalidData,error.to_string())))?.to_path_buf(),
-            identity });
+            identity,directory });
     }
     require_bound_path(home, expected, true)?;
     Ok(touched)
@@ -437,11 +438,11 @@ pub(crate) fn revoke_grok_home_residue(profile: &AppContainerProfile, home: &Pat
         return Err(IsolationError::AclWitnessMismatch);
     }
     let path = home.join(&object.relative_name);
-    let held = open_bound_object(&path, &object.identity, false)?;
+    let held = open_bound_object(&path, &object.identity, object.directory)?;
     if dacl_protected(held.0)? {
         revoke_exact(held.0,profile.sid,&object.identity,true,NO_INHERITANCE)?;
     }else{
-        rewrite_grok_target(held.0,profile,&object.identity,false,false)?;
+        rewrite_grok_target(held.0,profile,&object.identity,object.directory,false,false)?;
     }
     require_bound_path(home, expected, true)
 }
@@ -453,7 +454,7 @@ pub(crate) fn grok_residue_acl(profile:&AppContainerProfile,home:&Path,
         !matches!(part,std::path::Component::Normal(_))) {
         return Err(IsolationError::AclWitnessMismatch);
     }
-    let held=open_bound_object(&home.join(&object.relative_name),&object.identity,false)?;
+    let held=open_bound_object(&home.join(&object.relative_name),&object.identity,object.directory)?;
     snapshot(held.0,profile)
 }
 
@@ -482,6 +483,33 @@ mod tests {
         let root=crate::root::inspect_root(&home).unwrap().identity;
         protect_file(&home.join("auth.json"));
         (home,root)
+    }
+
+    #[test]
+    fn inherited_directory_residue_uses_its_exact_physical_type_and_preserves_peer(){
+        let (home,root)=fixture();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokDirectoryResidue").unwrap();
+        let peer=AppContainerProfile::derived_for_test("Gogoke37.GrokDirectoryPeer").unwrap();
+        grant_grok_home_root(&profile,&home,&root).unwrap();
+        grant_grok_home_root(&peer,&home,&root).unwrap();
+        let cache=home.join("cache");std::fs::create_dir(&cache).unwrap();
+        let cache_id=crate::root::inspect_root(&cache).unwrap().identity;
+        let objects=inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap();
+        let directory=objects.iter().find(|object|object.identity==cache_id).unwrap();
+        assert!(directory.directory);
+        let before=grok_residue_acl(&profile,&home,&root,directory).unwrap();
+        assert_eq!(before.target_aces,format!("1:{}:{}",directory_rights(true),
+            INHERITED_ACE as u32|OBJECT_AND_CONTAINER_INHERIT));
+        revoke_grok_home_root(&profile,&home,&root).unwrap();
+        revoke_grok_home_residue(&profile,&home,&root,directory).unwrap();
+        let after=grok_residue_acl(&profile,&home,&root,directory).unwrap();
+        assert!(after.target_aces.is_empty());assert!(!after.dacl_protected);
+        assert!(before.preserves_other_aces(&after));
+        let peer_after=grok_residue_acl(&peer,&home,&root,directory).unwrap();
+        assert_eq!(peer_after.target_aces,format!("1:{}:{}",directory_rights(true),
+            INHERITED_ACE as u32|OBJECT_AND_CONTAINER_INHERIT));
+        revoke_grok_home_root(&peer,&home,&root).unwrap();
+        drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

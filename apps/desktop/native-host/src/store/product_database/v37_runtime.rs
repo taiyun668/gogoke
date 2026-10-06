@@ -2530,12 +2530,31 @@ impl<'root> ProductDatabase<'root> {
                 Err(error)=>{
                     // Retain the original producer's evidence in the private
                     // RPC journal. No new process, read, or protocol replay.
-                    let mut diagnostic=rpc_read_failure_evidence(&error.to_string(),
-                        self.process_custodian.persistent_stdout_fragment(&custody.ticket));
+                    let original=error.to_string();
+                    // Claude's original_error field is limited to 4096 bytes.
+                    // Keep the cause prefix and producer tail, explicitly
+                    // identifying any omitted middle, plus the stdout tail.
+                    let original=if original.len()>1800 {
+                        let mut head=900;while !original.is_char_boundary(head){head-=1;}
+                        let mut tail=original.len()-900;while !original.is_char_boundary(tail){tail+=1;}
+                        format!("{}; [original middle omitted; total_bytes={}]; {}",
+                            &original[..head],original.len(),&original[tail..])
+                    }else{original};
+                    let fragment=self.process_custodian.persistent_stdout_fragment(&custody.ticket);
+                    let detail=match fragment {
+                        Ok(bytes)=>format!("incomplete_stdout_bytes={}; incomplete_stdout_tail_hex={}; tail_limit_bytes=512",
+                            bytes.len(),hex(&bytes[bytes.len().saturating_sub(512)..])),
+                        Err(snapshot_error)=>format!("incomplete_stdout_snapshot_error={snapshot_error}"),
+                    };
+                    let mut diagnostic=format!("original_read_error={original}; {detail}");
                     if let Some(process)=self.process_custodian.active(&custody.ticket) {
                         diagnostic.push_str(&format!("; exact_process_exit={:?}; job_active={:?}",
                             process.exit_code(),process.active_job_processes()));
                     }else{diagnostic.push_str("; exact_process_handle=absent");}
+                    if diagnostic.len()>4096 {
+                        let mut end=4000;while !diagnostic.is_char_boundary(end){end-=1;}
+                        diagnostic.truncate(end);diagnostic.push_str("; [diagnostic tail omitted to journal byte limit]");
+                    }
                     let marked=rpc::mark_claude_unknown(&mut self.connection,&self.owner,&step,&diagnostic);
                     if let Err(record_error)=marked {
                         return Err(OrchestrationError::V37StoreFailure(format!(
