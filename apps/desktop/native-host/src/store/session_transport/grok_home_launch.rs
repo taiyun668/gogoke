@@ -42,6 +42,9 @@ fn apply(db:&mut VerifiedDatabaseConnection<'_>,expected:GrokEffect,
     mutate:impl FnOnce()->Result<(),String>)->Result<(),String>{
     let intent=instance::begin_grok_effect(db,&expected)?;
     let before=observe()?;
+    if intent.phase=="APPLIED" {
+        return applied_readback(&intent,&before);
+    }
     if before.identity!=intent.object_identity ||
         sha256_hex(&before.other_aces_bytes())!=intent.other_aces_sha256 ||
         before.dacl_control!=intent.before_control {
@@ -49,10 +52,9 @@ fn apply(db:&mut VerifiedDatabaseConnection<'_>,expected:GrokEffect,
     }
     if before.target_aces==intent.after_aces &&
         before.dacl_control==intent.after_control {
-        return if intent.phase=="APPLIED"{Ok(())}
-            else {instance::finish_grok_effect(db,&intent)};
+        return instance::finish_grok_effect(db,&intent);
     }
-    if intent.phase=="APPLIED" || before.target_aces!=intent.before_aces {
+    if before.target_aces!=intent.before_aces {
         return Err("Grok private HOME: original ACL effect diverged".into());
     }
     mutate()?;
@@ -63,6 +65,17 @@ fn apply(db:&mut VerifiedDatabaseConnection<'_>,expected:GrokEffect,
         return Err("Grok private HOME: ACL effect readback diverged".into());
     }
     instance::finish_grok_effect(db,&intent)
+}
+
+/// An APPLIED effect is historical. Later authorized peer-SID grants and
+/// revocations can change its non-target ACE set, so replay checks the exact
+/// target SID's final state and protected bit without issuing a second write.
+fn applied_readback(intent:&GrokEffect,current:&GrokAclSnapshot)->Result<(),String>{
+    if current.identity!=intent.object_identity ||current.target_aces!=intent.after_aces ||
+        current.dacl_protected!=(intent.after_control & 0x1000 !=0) {
+        return Err("Grok private HOME: APPLIED target SID or protection changed".into());
+    }
+    Ok(())
 }
 
 fn one(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,binding_id:&str)->Result<GrokGrant,String>{
@@ -675,4 +688,41 @@ pub(crate) fn finalize_quiescent(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
         instance::set_grok_grant_phase(db,&grant,"REVOKED",None)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn applied_root_effect_survives_later_authorized_peer_sid_revocation(){
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let home=std::env::temp_dir().join(format!("grok-applied-peer-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&home).unwrap();
+        let id=crate::root::inspect_root(&home).unwrap().identity;
+        let a=AppContainerProfile::derived_for_test("Gogoke37.GrokAppliedA").unwrap();
+        let b=AppContainerProfile::derived_for_test("Gogoke37.GrokAppliedB").unwrap();
+        let before=evidence("test root",grok_root_acl(&a,&home,&id)).unwrap();
+        let grant=GrokGrant{binding_id:"bindingA".into(),instance_id:"instanceA".into(),
+            domain_id:"domainA".into(),session_id:"sessionA".into(),seat_id:"seatA".into(),
+            seat_incarnation:"seat-incarnation-A".into(),generation:"1".into(),
+            request_id:"openA".into(),profile_name:"Gogoke37.GrokAppliedA".into(),
+            profile_sid:a.sid_identity().unwrap(),program_digest:"sha256:fixture".into(),
+            home_identity:id.clone(),auth_identity:id.clone(),phase:"ACTIVE".into(),
+            process_operation_id:None,ticket:None,custodian_nonce:None,pid:None,
+            creation_time_100ns:None,image_path:None,stop_fact_id:None,revision:1};
+        grant_grok_home_root(&a,&home,&id).unwrap();
+        grant_grok_home_root(&b,&home,&id).unwrap();
+        let before_revoke=grok_root_acl(&a,&home,&id).unwrap();
+        let historical=effect(&grant,"REVOKE_ROOT",&id,".",&before_revoke);
+        revoke_grok_home_root(&a,&home,&id).unwrap();
+        assert!(applied_readback(&historical,&grok_root_acl(&a,&home,&id).unwrap()).is_ok());
+        revoke_grok_home_root(&b,&home,&id).unwrap();
+        let later=grok_root_acl(&a,&home,&id).unwrap();
+        assert_ne!(sha256_hex(&later.other_aces_bytes()),historical.other_aces_sha256);
+        assert!(applied_readback(&historical,&later).is_ok());
+        assert!(before.target_aces.is_empty());
+        std::fs::remove_dir(home).unwrap();
+    }
 }
