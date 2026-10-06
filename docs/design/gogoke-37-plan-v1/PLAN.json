@@ -23,7 +23,7 @@
   },
   {
    "path": "AGENTS.md",
-   "blob": "bf73266b3b3c89fb395334a43c7f99fc71ab9617"
+   "blob": "c16ec04b268362cb406a03348ee36343de459d27"
   },
   {
    "path": "docs/model-routing.md",
@@ -118,7 +118,7 @@
   {
    "id": "R-INST",
    "source": "37 §13a, §9, App. A4",
-   "text": "Instances and the instance page: per-instance home, login state, version and new-version notice without auto-upgrade, concurrency; no quota integration in v1."
+   "text": "Instances and the instance page: per-instance home; gogoke-managed, fixed official CLI installation, explicit upgrade, rollback, doctor, update check and zero-instance uninstall without reading user global npm; login, display name, enablement, concurrency, seat/session counts, model and source-backed account/subscription/error/expiry/recovery/abnormal-close states; no quota integration or model-spending probe in v1."
   },
   {
    "id": "R-SESS",
@@ -153,7 +153,7 @@
   {
    "id": "R-FIVE",
    "source": "37 §13a",
-   "text": "Five CLIs in v1: Codex, Claude Code, OpenCode, Grok Build, Antigravity, each with a pinned version and an honest capability report."
+   "text": "Five CLIs in v1: Codex, Claude Code, OpenCode, Grok Build, Antigravity, each installed by gogoke from a verified fixed official version and reported with its measured capabilities; B5 unsupported account isolation is not promoted by installation."
   },
   {
    "id": "R-CALL",
@@ -318,7 +318,7 @@
   {
    "id": "A4-NOT-INSTALLED",
    "source": "37 App. A4",
-   "text": "Not installed: install guidance for the pinned version."
+   "text": "Not installed: gogoke offers installation of its pinned official CLI into its own managed root, with verified source and bytes; no user global npm or PATH lookup."
   },
   {
    "id": "A4-NOT-LOGGED-IN",
@@ -328,17 +328,17 @@
   {
    "id": "A4-LOGGED-IN",
    "source": "37 App. A4",
-   "text": "Logged in: concurrency cap set and enforced; seats served are listed; quota view not in v1."
+   "text": "Logged in: concurrency cap set and enforced; masked account and subscription, source-backed OpenCode credential origin, seats served and active session count, selected model and abnormal-close records shown when evidenced; unknown fields remain unknown, and quota view or model-spending probe is not in v1."
   },
   {
    "id": "A4-NEW-VERSION",
    "source": "37 App. A4",
-   "text": "New version: shown, upgraded only by the Owner's manual action."
+   "text": "New version: show a source-backed notice; the User explicitly requests host-managed upgrade or rollback, never automatic switching; active or UNKNOWN holder/session refuses version change."
   },
   {
    "id": "A4-EXHAUSTED-OR-ERROR",
    "source": "37 App. A4",
-   "text": "Exhausted or error, sourced from the CLI's own error in v1: reason and affected seats shown; no silent instance change."
+   "text": "Exhausted or error: show the CLI original reason, affected seats, expiry and recovery time only when directly evidenced; a detected wrong account is not adopted; no silent instance change or model-spending quota probe."
   }
  ],
  "shared_files": {
@@ -1056,12 +1056,14 @@
      "register",
      "install-state",
      "login-state",
+     "managed-cli-install-upgrade-rollback-doctor-check-uninstall",
      "version-and-new-version",
-     "repin-after-manual-upgrade",
+     "instance-create-rename-enable-disable-delete",
      "concurrency-input",
+     "account-and-runtime-observation",
      "home-lifecycle"
     ],
-    "seams": "Instance home persistent, per-session and per-call directories temporary, vendor memory off, credentials never read. F.1 settles registry, home, login state, the host-held login session with its result (failure with the CLI's raw reason, or success followed by the host's login-state detection) and the persisted concurrency cap at M1; versions and re-pin at M2. F owns persistent native-history subdirectories within the registered instance root, distinct from temporary SESSION/CALL homes. Credential custody is metadata-only; exact registered same-object aliases do not relax ordinary single-link checks. Login rebinding and alias cleanup require confirmed instance quiescence and no unresolved intent. Legacy ACL recovery preserves the immutable original fence, schema, boot_identity and captured custody pairs on the original physical database, registered root/home and credential object. Authority requires every exact fenced PID/creation_time_100ns to be gone and a directly queried kernel boot-start FILETIME strictly later than every fenced creation time, plus unchanged original identities and settled unlisted/current holders and intents. At each begin, prewrite and finish, the original custody pairs are rechecked against the fence and the same boot-start value and holder states are reobserved under the existing revision CAS and two-step ACL journal. A BCD BootIdentifier is retained only as old metadata, never as proof; new boot metadata, if needed, uses boot-start:<16hexFILETIME> and string inequality grants nothing. Missing/changed fence, failed or uncertain process query, live exact holder, insufficient boot-start time, unknown links, replaced roots/objects and unlisted UNKNOWN refuse with original errors. Original UNKNOWN/NULL stop proof, continuation STOPPED requirement, committed reservations and worktree cleanup remain unchanged. No credential content access, CLI/capability/home change, automatic reboot or new login; partial ACL work is reconciled by metadata before model launch. Native boot query failure retains original NTSTATUS. This is one detail revision: if the real legacy root still cannot recover cleanly, stop this path, preserve the original state, report first, then join new-instance login to the existing OT4b Owner touchpoint. The independent fence, with direct exact-holder-gone and boot-start-after-every-old-creation proof, separately authorizes exact legacy grant migration and exact unprotected source baseline DACL preparation under the existing Owner/SYSTEM/Administrators policy, only for the unchanged original single-link credential object without aliases, with complete captured old holder/ACL provenance and no unlisted or current holder/intent. Journal and read back both steps and the actual protected ACL before a holder prepared witness; no general instance-quiescence result or active-object reset is inferred. Unknown package grants refuse. Test unprotected source, HOME-only partial completion and baseline crash/refusal explicitly."
+    "seams": "Instance home persistent, per-session and per-call directories temporary, vendor memory off, credentials never read. F.1 settles registry, home, login state, the host-held login session with its result (failure with the CLI's raw reason, or success followed by the host's login-state detection) and the persisted concurrency cap at M1; F.2 adds gogoke-owned fixed official CLI installation, explicit upgrade/rollback, doctor/update check and zero-instance uninstall in a product-managed root; no user global npm/PATH discovery or mutation. Source archive integrity and actual executable digest/version are recorded; H revalidates the selected immutable program before launch. Any active or UNKNOWN holder/session or unresolved intent refuses version changes, and an instance prevents CLI uninstall. Existing home and credential bytes are unchanged; a quiescent legacy instance may use verified same bytes or the existing guarded re-pin and re-probe. F.2 also owns display-name, enable/disable, delete-with-in-use refusal and host-grounded instance observations; create immediately starts login through the existing login-only operation where the driver supports it. Unknown capability or data stays UNKNOWN; B5 unsupported account isolation is unchanged. F owns persistent native-history subdirectories within the registered instance root, distinct from temporary SESSION/CALL homes. Credential custody is metadata-only; exact registered same-object aliases do not relax ordinary single-link checks. Login rebinding and alias cleanup require confirmed instance quiescence and no unresolved intent. Legacy ACL recovery preserves the immutable original fence, schema, boot_identity and captured custody pairs on the original physical database, registered root/home and credential object. Authority requires every exact fenced PID/creation_time_100ns to be gone and a directly queried kernel boot-start FILETIME strictly later than every fenced creation time, plus unchanged original identities and settled unlisted/current holders and intents. At each begin, prewrite and finish, the original custody pairs are rechecked against the fence and the same boot-start value and holder states are reobserved under the existing revision CAS and two-step ACL journal. A BCD BootIdentifier is retained only as old metadata, never as proof; new boot metadata, if needed, uses boot-start:<16hexFILETIME> and string inequality grants nothing. Missing/changed fence, failed or uncertain process query, live exact holder, insufficient boot-start time, unknown links, replaced roots/objects and unlisted UNKNOWN refuse with original errors. Original UNKNOWN/NULL stop proof, continuation STOPPED requirement, committed reservations and worktree cleanup remain unchanged. No credential content access, CLI/capability/home change, automatic reboot or new login; partial ACL work is reconciled by metadata before model launch. Native boot query failure retains original NTSTATUS. This is one detail revision: if the real legacy root still cannot recover cleanly, stop this path, preserve the original state, report first, then join new-instance login to the existing OT4b Owner touchpoint. The independent fence, with direct exact-holder-gone and boot-start-after-every-old-creation proof, separately authorizes exact legacy grant migration and exact unprotected source baseline DACL preparation under the existing Owner/SYSTEM/Administrators policy, only for the unchanged original single-link credential object without aliases, with complete captured old holder/ACL provenance and no unlisted or current holder/intent. Journal and read back both steps and the actual protected ACL before a holder prepared witness; no general instance-quiescence result or active-object reset is inferred. Unknown package grants refuse. Test unprotected source, HOME-only partial completion and baseline crash/refusal explicitly."
    },
    {
     "id": "K-WORKTREE",
@@ -1092,7 +1094,7 @@
      "read-models",
      "actions"
     ],
-    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states. At M1 with G.0: instance read models for the four states not installed, not logged in, logged in and error (including a failed login's raw reason), and the login start, progress, result and cancel actions; the new-version and exhaustion read models settle at M2 and M3; the rest at M3."
+    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states. At M1 with G.0: instance read models for the four states not installed, not logged in, logged in and error (including a failed login's raw reason), and the login start, progress, result and cancel actions; at M2, the managed CLI/version and source-backed exhaustion read models settle with F.2 and V13; the remaining instance management presentation settles at M3. The instance read model may expose display name, enabled state, masked account/subscription and OpenCode source, seats and active session count, cap, selected model, original detection error, expiry, explicit CLI recovery time, wrong-account-not-adopted and abnormal-close records only from the responsible host observations. Missing or ambiguous values stay UNKNOWN, and no model call is made to measure quota. UI actions are gated by host capability: create immediately starts supported login-only, rename, enable/disable, delete with in-use refusal, cap, detect and open the controlled home; unsupported actions are hidden. Public UI does not display internal IDs, paths, hashes or revisions."
    }
   ]
  },
@@ -1450,7 +1452,8 @@
      "id": "F.2",
      "milestone": "M2",
      "deliverables": [
-      "versions, new-version notice, re-pin of program identity and re-probe of capabilities after the Owner's manual install or upgrade",
+      "gogoke-owned fixed official CLI lifecycle for all five drivers: install, explicit upgrade, rollback, doctor, update check, zero-instance uninstall, version/identity re-pin and capability re-probe. Pin expected official archive integrity in the trusted product catalog before activation; download, verify against that pin and record actual executable digest, install under a product-managed root and never read or change the user global npm/PATH installation. Refuse upgrade or rollback on any active or UNKNOWN holder/session or unresolved intent; refuse uninstall while any instance exists. Preserve existing home and credential bytes; quiescent legacy instances use verified matching bytes or guarded re-pin and re-probe. No automatic upgrade or model call for quota.",
+      "instance management: display name, rename, enable/disable, delete only when unused, concurrency cap, login-only start on create when supported, detect and open controlled home; record masked account/subscription and OpenCode credential source, seat/session counts, selected model, original detection error, expiry, CLI-reported recovery time, wrong-account-not-adopted and abnormal-close facts with UNKNOWN for unavailable evidence. Host capability controls action visibility; B5 account isolation remains UNSUPPORTED/NOT_RUN.",
       "worktrees under one standard, single and mixed trees, graph, merge with permission, cleanup only after the stop fact and with no active reservation; the seat edits files only in its host-created authorized worktree and does not run Git or access .git; after the original H StopFact and no-active-reservation gate, F uses the original registered Git pin to seal the stopped child changes into a local commit with project, seat, instance and authorizing native-turn identity, then performs the already-authorized merge; the source stays clean",
       "Legacy ACL recovery preserves the immutable original fence, schema, boot_identity and captured custody pairs on the original physical database, registered root/home and credential object. Authority requires every exact fenced PID/creation_time_100ns to be gone and a directly queried kernel boot-start FILETIME strictly later than every fenced creation time, plus unchanged original identities and settled unlisted/current holders and intents. At each begin, prewrite and finish, the original custody pairs are rechecked against the fence and the same boot-start value and holder states are reobserved under the existing revision CAS and two-step ACL journal. A BCD BootIdentifier is retained only as old metadata, never as proof; new boot metadata, if needed, uses boot-start:<16hexFILETIME> and string inequality grants nothing. Missing/changed fence, failed or uncertain process query, live exact holder, insufficient boot-start time, unknown links, replaced roots/objects and unlisted UNKNOWN refuse with original errors. Original UNKNOWN/NULL stop proof, continuation STOPPED requirement, committed reservations and worktree cleanup remain unchanged. No credential content access, CLI/capability/home change, automatic reboot or new login; partial ACL work is reconciled by metadata before model launch. Native boot query failure retains original NTSTATUS. This is one detail revision: if the real legacy root still cannot recover cleanly, stop this path, preserve the original state, report first, then join new-instance login to the existing OT4b Owner touchpoint."
      ]
@@ -1498,7 +1501,8 @@
       "pages and cards against K-UI fakes, then the real service",
       "question cards wrap the existing RequestUserInputMessage primitive",
       "instance section inside Settings through the opened slot",
-      "existing tokens and primitives only"
+      "existing tokens and primitives only",
+      "instance Settings view consumes host-backed managed CLI and instance capability/data only; create begins supported login, actions without host capability are hidden, and internal IDs, paths, hashes and revisions are not shown. Unknown account, subscription, OpenCode source, model, expiry or recovery data stays unknown; no quota-spending model probe."
      ]
     }
    ],
@@ -1871,7 +1875,7 @@
     "H"
    ],
    "milestone": "M2",
-   "observe": "Automatic compaction and session renewal from health signals through K-SESSION with a low-key record and no Owner prompt; install guidance for the pinned version; concurrency cap enforced; new version shown and never auto-upgraded; after the Owner's manual upgrade the program identity is re-pinned and capabilities re-probed; a CLI-reported exhaustion or error, injected at the real CLI boundary without spending real quota, marks affected seats and no instance changes silently.",
+   "observe": "Automatic compaction and session renewal from health signals through K-SESSION with a low-key record and no Owner prompt; host-managed fixed official CLI install, explicit upgrade, rollback, doctor, update check and zero-instance uninstall use verified official archive integrity and actual executable digest. Neither user global npm/PATH nor home/credential bytes are read or changed by installation; active or UNKNOWN holder/session and unresolved intent refuse version change, and any instance refuses uninstall. New-version notice does not switch bytes automatically. Quiescent existing instance rebinding preserves original home/custody and requires same-byte pin or guarded re-pin and capability re-probe. Create begins supported login-only; rename, enable/disable, in-use delete refusal, cap, detect and open-home operations are reflected by K-UI only when host capability exists. Source-backed masked account/subscription/OpenCode origin, seats and active sessions, model, original detection error, expiry, CLI-reported recovery time, wrong-account-not-adopted and abnormal-close record read back; unavailable data stays UNKNOWN and no model call measures quota. CLI exhaustion/error is injected at the real CLI boundary without spending real quota and marks affected seats without silently changing instances. B5 remains UNSUPPORTED/NOT_RUN.",
    "evidence": "REAL"
   },
   {
@@ -2031,11 +2035,6 @@
     "why_only_owner": "Credentials."
    },
    {
-    "id": "CT2",
-    "trigger": "A pinned CLI must be installed or upgraded manually",
-    "why_only_owner": "No automatic upgrade by design; the Owner performs it."
-   },
-   {
     "id": "CT3",
     "trigger": "Smart App Control blocks a new component",
     "why_only_owner": "Security settings and authorization boundaries are the Owner's; no signing, no disabling."
@@ -2058,27 +2057,27 @@
   "new_executable_components": [
    {
     "component": "Codex CLI",
-    "source": "Owner-installed, version pinned by the host",
+    "source": "Gogoke-managed exact @openai/codex and Windows platform package tarballs from the official npm registry; verify recorded dist.integrity and installed executable SHA-256; never use user global npm.",
     "observation": "Smart App Control result on the Owner's Win11 at that version"
    },
    {
     "component": "Claude Code CLI",
-    "source": "Owner-installed, version pinned by the host",
+    "source": "Gogoke-managed exact @anthropic-ai/claude-code and Windows platform package tarballs from the official npm registry; verify dist.integrity and executable SHA-256; disable vendor auto-update in managed launch.",
     "observation": "same"
    },
    {
     "component": "OpenCode CLI",
-    "source": "Owner-installed, version pinned by the host",
+    "source": "Gogoke-managed exact opencode-ai and Windows platform package tarballs from the official npm registry; verify dist.integrity and executable SHA-256; fixed version only.",
     "observation": "same"
    },
    {
     "component": "Grok Build CLI",
-    "source": "Owner-installed, version pinned by the host",
+    "source": "Gogoke-managed exact fixed official xAI Grok Build release asset derived from the x.ai installer/release source; require a trusted-catalog expected archive SHA-256 and verify downloaded archive and executable SHA-256; no remote installer script execution.",
     "observation": "same"
    },
    {
     "component": "Antigravity CLI",
-    "source": "Owner-installed, version pinned by the host",
+    "source": "Gogoke-managed exact fixed official Google Antigravity CLI release asset derived from the official installer/release source; require a trusted-catalog expected archive SHA-256, verified asset identity and executable SHA-256 before activation; installation does not qualify shared-keyring instance login (B5 UNSUPPORTED/NOT_RUN).",
     "observation": "same"
    },
    {
