@@ -1477,6 +1477,7 @@ impl<'root> ProductDatabase<'root> {
                 before_revision,Default::default()));
         }
         let key=(request.domain_id.clone(),request.target_id.clone());
+        if self.native_sessions.contains_key(&key){self.refresh_native_grok_boundary(&key)?;}
         let Some(run)=self.native_sessions.get(&key) else {
             return Ok(encode_receipt(request,V37Status::Unknown,before_revision,
                 before_revision,Default::default()));

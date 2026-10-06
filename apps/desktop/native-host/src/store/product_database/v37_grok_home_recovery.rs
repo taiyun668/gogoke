@@ -27,14 +27,20 @@ impl<'root> ProductDatabase<'root> {
             return Ok(true);
         }
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT state,generation,binding_id FROM main.gogoke_v37_h_claim
+            "SELECT state,generation,binding_id,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim
              WHERE instance_id=?1 AND domain_id=?2 AND session_id=?3")?;
         for (index,value) in [grant.instance_id.as_str(),&grant.domain_id,&grant.session_id].iter().enumerate(){
             q.bind_text(index as i32+1,value)?;
         }
         if !q.step_row()?{return Err(denied("Grok retired original claim absent"));}
         let same=q.column_text(1)?==grant.generation &&q.column_text(2)?==grant.binding_id;
-        if same{return Ok(q.column_text(0)?=="RELEASED");}
+        if same{
+            let state=q.column_text(0)?;
+            if state=="RELEASED"{return Ok(true);}
+            let original_stop=q.column_text(3)?;
+            return Ok(state=="STOPPED" &&grant.stop_fact_id.as_deref()
+                .is_some_and(|stop|!stop.is_empty() &&original_stop==stop));
+        }
         drop(q);
         // H may have legitimately advanced this logical session. Its old
         // real stop, or our original resource-release journal, remains bound
