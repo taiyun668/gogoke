@@ -459,7 +459,22 @@ pub(crate) fn revoke_grok_home_root(profile: &AppContainerProfile, home: &Path,
 pub(crate) fn revoke_grok_auth(profile: &AppContainerProfile,
     auth: &GrokAuthMetadata) -> Result<(), IsolationError> {
     auth.verify_retired_physical()?;
-    revoke_exact(auth.handle(), profile.sid, &auth.identity, true, NO_INHERITANCE)
+    revoke_protected_auth_exact(auth.handle(),profile,&auth.identity)
+}
+
+fn revoke_protected_auth_exact(handle:Handle,profile:&AppContainerProfile,
+    expected:&RootIdentity)->Result<(),IsolationError>{
+    if file_identity(handle)?!=*expected || !dacl_protected(handle)? {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    let entries=package_aces(handle,profile.sid)?;
+    if entries.is_empty(){return Ok(());}
+    if entries.as_slice()!=&[(GRANT_ACCESS,directory_rights(true),NO_INHERITANCE)] {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    // Preserve the protected auth object's exact peer bytes/order, using the
+    // same held-object Native writer already used for successor transitions.
+    rewrite_grok_target(handle,profile,expected,false,false,true)
 }
 
 /// Called only after the caller's durable revoke intent. This readback catches
@@ -507,7 +522,7 @@ pub(crate) fn revoke_grok_home_residue(profile: &AppContainerProfile, home: &Pat
     let path = home.join(&object.relative_name);
     let held = open_bound_object(&path, &object.identity, object.directory)?;
     if dacl_protected(held.0)? {
-        revoke_exact(held.0,profile.sid,&object.identity,true,NO_INHERITANCE)?;
+        revoke_protected_auth_exact(held.0,profile,&object.identity)?;
     }else{
         rewrite_grok_target(held.0,profile,&object.identity,object.directory,false,false)?;
     }

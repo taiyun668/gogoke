@@ -398,7 +398,7 @@ jobs:
               @{ id = 'grok-intent-recovery'; filter = 'inherited_successor_intent_recovers_after_acl_write_before_finish' }
               @{ id = 'grok-applied-peer'; filter = 'applied_root_effect_survives_later_authorized_peer_sid_revocation' }
               @{ id = 'grok-resume-original'; filter = 'before_promote_resume_uses_old_stopped_claim_and_exact_new_episode' }
-              @{ id = 'grok-deleted-revoked'; filter = 'deleted_revoked_old_auth_cold_recovery_retires_inherited_successor_residue' }
+              @{ id = 'grok-deleted-revoked'; filter = 'deleted_revoked_old_auth_cold_recovery_preserves_original_receipts' }
               @{ id = 'grok-deleted-unrevoked'; filter = 'deleted_unrevoked_old_auth_cold_recovery_rejects_without_acl_or_journal_write' }
             )
             Write-Host 'F private-history/credential and Grok exact HOME ACL/journal boundaries only; full library, compiled mutations and server suites NOT_RUN.'

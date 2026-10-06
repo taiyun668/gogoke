@@ -1157,7 +1157,8 @@ mod tests {
             ||evidence("test root revoke readback",grok_root_acl(&profile,&home.path,&home_id)),||
             evidence("test root revoke",revoke_grok_home_root(&profile,&home.path,&home_id))).unwrap();
         assert!(grok_root_acl(&profile,&home.path,&home_id).unwrap().target_aces.is_empty());
-        assert!(!successor.candidate_acl(&profile).unwrap().target_aces.is_empty());
+        // Win32 ROOT revoke can propagate removal to this unprotected child.
+        // Cold recovery must use the actual child ACL, not assume a residue.
         drop(old);drop(successor);drop(custodian);
         assert!(observe_grok_recorded_auth(&home.path,&home_id,&old_id).unwrap().is_none());
         let effects_before=instance::read_grok_effects(&db,"bindingA").unwrap();
@@ -1186,8 +1187,9 @@ mod tests {
             }
             assert_eq!(effects.iter().filter(|effect|effect.action=="REVOKE_AUTH" &&
                 effect.object_identity==old_id).count(),1);
-            assert!(effects.iter().any(|effect|effect.action=="REVOKE_RESIDUE" &&
-                effect.object_identity==successor_acl_before.identity &&effect.phase=="APPLIED"));
+            let has_residue_effect=effects.iter().any(|effect|effect.action=="REVOKE_RESIDUE" &&
+                effect.object_identity==successor_acl_before.identity &&effect.phase=="APPLIED");
+            assert_eq!(has_residue_effect,!successor_acl_before.target_aces.is_empty());
             assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[]).unwrap().is_empty());
             let successor_after=observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap();
             assert!(successor_after.target_aces.is_empty());
@@ -1218,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn deleted_revoked_old_auth_cold_recovery_retires_inherited_successor_residue(){
+    fn deleted_revoked_old_auth_cold_recovery_preserves_original_receipts(){
         deleted_old_auth_cold_recovery_case(true);
     }
 
