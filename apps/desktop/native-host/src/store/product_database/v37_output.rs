@@ -278,7 +278,7 @@ impl<'root> ProductDatabase<'root> {
             let unresolved=pending.column_text(0)?;drop(pending);
             // Budget the complete replay envelope with the largest cursor we
             // can return. Its status is one byte longer than APPLIED.
-            let mut result=BTreeMap::from([
+            let result=BTreeMap::from([
                 (JsonString::from_str("events"),Json::Array(Vec::new())),
                 (JsonString::from_str("cursor"),Json::String(JsonString::from_str(&position.cursor.to_string()))),
                 (JsonString::from_str("generation"),Json::String(JsonString::from_str(&generation))),
@@ -290,8 +290,11 @@ impl<'root> ProductDatabase<'root> {
                 (JsonString::from_str("nativeCardRefs"),card_refs),
                 (JsonString::from_str("nativeCardRefsIncomplete"),Json::Bool(card_refs_incomplete)),
             ]);
-            let mut replay_bytes=encode_receipt(request,V37Status::Replayed,revision,revision,result.clone()).len();
+            let empty_page=encode_receipt(request,V37Status::Replayed,revision,revision,result);
+            let mut replay_bytes=empty_page.len();
             if replay_bytes>crate::ipc::MAX_FRAME_BYTES {return Err(OrchestrationError::Invalid("native output receipt bound"));}
+            let mut result=crate::store::session_transport::decode_receipt(&empty_page).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native output page envelope: {error:?}")))?.into_result();
             let query=Statement::prepare(self.connection.as_ptr(),
                 "SELECT cursor,update_json FROM main.v37_ledger_index WHERE source_kind='v37' AND domain_id=?1 AND session_id=?2 AND source_epoch=?3 AND cursor>?4 ORDER BY cursor")?;
             query.bind_text(1,&key.0)?; query.bind_text(2,&key.1)?; query.bind_text(3,&nonce)?;
