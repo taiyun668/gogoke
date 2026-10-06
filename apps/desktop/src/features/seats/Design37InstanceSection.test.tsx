@@ -193,7 +193,7 @@ describe("Design37InstanceSection", () => {
       expect(settled.instances[0].login.requestId).toBe(pending.instances[0].login.requestId);
       render(<Design37InstanceSection />);
       if (success) {
-        await screen.findByText(/可以用/);
+        await screen.findByText(/可以用 · 空闲/);
       } else {
         await screen.findByText(/这次没登上/);
         fireEvent.click(screen.getByRole("button", { name: "查看原话" }));
