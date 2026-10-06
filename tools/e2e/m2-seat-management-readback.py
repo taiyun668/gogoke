@@ -170,13 +170,58 @@ def verify_model_denial(db, journal, attempt, project, case):
 def main():
     check(len(sys.argv) == 5 and sys.argv[4] in ("baseline", "final"),
           "Expected candidate state root, output, journal and phase")
-    root, output, journal_path, phase = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
-    root = root.resolve(strict=True)
+    root = Path(sys.argv[1]).resolve(strict=True)
+    output = Path(sys.argv[2]).resolve(strict=False)
+    journal_path = Path(sys.argv[3]).resolve(strict=True)
+    phase = sys.argv[4]
+    check(not output.exists() and not output.is_relative_to(root),
+          "Fresh private evidence must stay outside the candidate root")
     journal = json.loads(journal_path.read_text(encoding="utf-8-sig"))
     case = journal.get("seatManagement")
     check(case and case["schema"] == "gogoke.37.m2-seat-management.v1" and
           case["acceptance"] is False and case["sourceCommit"] == journal["sourceCommit"] and
           len(case["projects"]) == 2, "Original private seat-management journal required")
+    evidence = Path(case["evidenceDirectory"]).resolve(strict=True)
+    check(Path(case["stateRoot"]).resolve(strict=True) == root and
+          Path(journal["evidenceDirectory"]).resolve(strict=True) == evidence and
+          output.parent == journal_path.parent == evidence,
+          "Readback root, evidence output and original journal directory must match")
+    launches, closes = journal.get("launches", []), journal.get("closes", [])
+    check(launches and closes, "Original candidate launch and normal-close facts are required")
+    launch, close = launches[-1], closes[-1]
+    endpoint = journal.get("currentEndpoint", {})
+    bootstrap = launch.get("bootstrap", {})
+    check(launch.get("pid") == close.get("pid") == endpoint.get("pid") and
+          close.get("exitCode") == 0 and close.get("forceKill") is False and
+          launch.get("sourceCommit") == case["sourceCommit"] and
+          launch.get("setId") == bootstrap.get("setId") and
+          launch.get("generationId") == bootstrap.get("generationId") and
+          bootstrap.get("version") == case["candidateVersion"],
+          "Latest exact candidate launch lacks its original normal-close receipt")
+    installed = case.get("candidateInstalledSha256")
+    check(isinstance(installed, dict) and installed and all(
+          isinstance(name, str) and isinstance(value, str) and len(value) == 64 and
+          all(ch in "0123456789abcdef" for ch in value) for name, value in installed.items()),
+          "Original installed candidate byte pins are required")
+    st = root.stat()
+    db_stat = (root / "state.sqlite").stat()
+    root_identity = {"observer": "python-stat", "device": str(st.st_dev), "inode": str(st.st_ino),
+                     "databaseDevice": str(db_stat.st_dev), "databaseInode": str(db_stat.st_ino)}
+    candidate_identity = {"sourceCommit": launch["sourceCommit"], "version": bootstrap["version"],
+                          "setId": launch["setId"], "generationId": launch["generationId"]}
+    if phase == "final":
+        reference = case.get("baseline")
+        check(reference and Path(reference["file"]).name == reference["file"], "Original baseline proof reference is required")
+        baseline_path = evidence / reference["file"]
+        check(digest(baseline_path.read_bytes()) == reference["sha256"], "Original baseline proof bytes changed")
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8-sig"))
+        check(baseline.get("schema") == "gogoke.37.private-m2-seat-management-readback.v1" and
+              baseline.get("phase") == "baseline" and baseline.get("caseId") == journal["caseId"] and
+              baseline.get("sourceCommit") == case["sourceCommit"] and baseline.get("domainId") == case["domainId"] and
+              baseline.get("stateRoot") == str(root) and baseline.get("evidenceDirectory") == str(evidence) and
+              baseline.get("rootIdentity") == root_identity and baseline.get("candidateIdentity") == candidate_identity and
+              baseline.get("candidateInstalledSha256") == installed and baseline.get("acceptance") is False,
+              "Final candidate/root identity differs from its original baseline")
     projects = case["projects"]
     domains = [row["domainId"] for row in projects]
     check(len(set(domains)) == 2 and all(row["repositoryId"] == "gogokeSeatTestbed" for row in projects),
@@ -250,6 +295,7 @@ def main():
             facts.append({"domainId": row["domainId"], "templateId": row["templateId"],
                           "templateSettingsSha256": digest(template["settings_json"].encode()),
                           "seatId": row["seatId"], "layer": current["layer"], "state": current["state"],
+                          "targetAbsent": False,
                           "revision": current["revision"], "copiedSettingsSha256": digest(copied["settings_json"].encode()),
                           "createRequestId": row["createRequestId"], "tuneRequestId": row["tuneRequestId"],
                           "stateCardRequestId": row["cardRequestId"]})
@@ -284,22 +330,35 @@ def main():
                 "leadSeatVerified": verify_lead_seat(db, journal, case.get("leadSeat"), baseline)}
 
     database = root / "state.sqlite"
-    wal = Path(str(database) + "-wal")
+    wal, shm = Path(str(database) + "-wal"), Path(str(database) + "-shm")
     check(database.is_file() and (not wal.exists() or wal.stat().st_size == 0),
           "Normal close and empty/absent WAL required")
+    def files():
+        return {file.name: {"length": file.stat().st_size, "sha256": digest(file.read_bytes())}
+                for file in (database, wal, shm) if file.exists()}
+    files_before = files()
     database_hash = digest(database.read_bytes())
     with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA query_only=ON")
         facts = inspect(db)
-    check(digest(database.read_bytes()) == database_hash and (not wal.exists() or wal.stat().st_size == 0),
+    files_after = files()
+    check(files_before == files_after and (not wal.exists() or wal.stat().st_size == 0),
           "Immutable readback changed database bytes or WAL")
     if phase == "final":
         check(facts["projects"][0]["templateSettingsSha256"] == facts["projects"][1]["templateSettingsSha256"],
               "Same-ID source templates differ across the two actual domains")
     proof = {"schema": "gogoke.37.private-m2-seat-management-readback.v1", "phase": phase,
-             "caseId": journal["caseId"], "sourceCommit": case["sourceCommit"],
+             "caseId": journal["caseId"], "sourceCommit": case["sourceCommit"], "domainId": case["domainId"],
+             "stateRoot": str(root), "evidenceDirectory": str(evidence),
              "readerSha256": case["readerSha256"], "databaseSha256": database_hash,
-             "measurementPreservedDatabaseBytes": True, "directCaseEvidence": phase == "final",
+             "rootIdentity": root_identity, "candidateIdentity": candidate_identity,
+             "candidateInstalledSha256": installed,
+             "launch": {"pid": launch["pid"], "sourceCommit": launch["sourceCommit"]},
+             "normalClose": {"pid": close["pid"], "exitCode": close["exitCode"], "forceKill": close["forceKill"]},
+             "filesBefore": files_before, "filesAfter": files_after,
+             "measurementPreservedDatabaseBytes": files_before == files_after,
+             "directCaseEvidence": phase == "final",
              "acceptance": False, **facts}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(proof, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
