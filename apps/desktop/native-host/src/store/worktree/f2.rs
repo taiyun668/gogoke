@@ -667,7 +667,7 @@ pub(crate) fn readback_merge_receipt_request(
     db: &mut VerifiedDatabaseConnection<'_>, request: &crate::store::session_transport::V37Request,
     mut authorize: impl FnMut(&VerifiedDatabaseConnection<'_>, &str, &str, &str)->Result<Option<String>>,
 ) -> Result<Option<MergeReceipt>> {
-    validate_merge_request(request)?;
+    validate_merge_request(request).map_err(|error| error.at("merge.request"))?;
     let fingerprint=sha256_hex(&request.raw_bytes);
     let existing = Statement::prepare(db.as_ptr(),
         "SELECT request_hash,worktree_id,operation,phase,COALESCE(result_commit,''),cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
@@ -684,13 +684,14 @@ pub(crate) fn readback_merge_receipt_request(
                 "SELECT domain_id,seat_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1")?;
             source.bind_text(1, &request.target_id)?;
             if !source.step_row()? || source.column_text(0)? != request.domain_id {
-                return Err(WorktreeError::Denied);
+                return Err(WorktreeError::Denied.at("merge.history_domain"));
             }
             let seat_id = source.column_text(1)?;
             if source.step_row()? { return Err(WorktreeError::SchemaDrift); }
-            let turn = authorize(db, &request.domain_id, &seat_id, &request.target_id)?
-                .ok_or(WorktreeError::Denied)?;
-            if !atom(&turn) { return Err(WorktreeError::Denied); }
+            let turn = authorize(db, &request.domain_id, &seat_id, &request.target_id)
+                .map_err(|error| error.at("merge.history_authorize"))?
+                .ok_or(WorktreeError::Denied.at("merge.history_no_turn"))?;
+            if !atom(&turn) { return Err(WorktreeError::Denied.at("merge.history_turn_shape")); }
             if !has_history {
                 // Current native authority was checked before disclosing the
                 // original cause. Do this before any pin or physical lookup.
@@ -748,76 +749,113 @@ pub(crate) fn merge_worktree_request(
     mut authorize: impl FnMut(&VerifiedDatabaseConnection<'_>, &str, &str, &str)
         -> Result<Option<String>>,
 ) -> Result<MergeReceipt> {
-    let reason = validate_merge_request(request)?;
-    if let Some(receipt)=readback_merge_receipt_request(db,request,&mut authorize)? {
+    let reason = validate_merge_request(request).map_err(|error| error.at("merge.request"))?;
+    if let Some(receipt)=readback_merge_receipt_request(db,request,&mut authorize)
+        .map_err(|error| error.at("merge.history"))? {
         return Ok(receipt);
     }
     let fingerprint = sha256_hex(&request.raw_bytes);
-    let binding = resolve_id(db, root, &request.target_id)?;
+    let binding = resolve_id(db, root, &request.target_id)
+        .map_err(|error| error.at("merge.resolve_id"))?;
     let source = Statement::prepare(db.as_ptr(),
         "SELECT s.source_path,s.git_digest,s.git_version,w.domain_id,w.seat_id,s.common_path,w.repository_id FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_worktree_sources s ON s.repository_id=w.repository_id WHERE w.worktree_id=?1")?;
     source.bind_text(1, &request.target_id)?;
-    if !source.step_row()? { return Err(WorktreeError::Denied); }
+    if !source.step_row()? { return Err(WorktreeError::Denied.at("merge.source_missing")); }
     let source_path = PathBuf::from(source.column_text(0)?);
-    if source.column_text(1)? != pin.digest || source.column_text(2)? != pin.version ||
-        source.column_text(3)? != request.domain_id { return Err(WorktreeError::Denied); }
+    if source.column_text(1)? != pin.digest {
+        return Err(WorktreeError::Denied.at("merge.source_git_digest"));
+    }
+    if source.column_text(2)? != pin.version {
+        return Err(WorktreeError::Denied.at("merge.source_git_version"));
+    }
+    if source.column_text(3)? != request.domain_id {
+        return Err(WorktreeError::Denied.at("merge.source_domain"));
+    }
     let seat_id = source.column_text(4)?;
     let common = PathBuf::from(source.column_text(5)?);
     let repository_id = source.column_text(6)?;
     if source.step_row()? { return Err(WorktreeError::SchemaDrift); }
     // Pending/UNKNOWN is a durable refusal, including a *new* request ID. Do
     // not run preflight Git or inspect model content on behalf of a retry.
-    ensure_no_pending_merge(db, &request.target_id)?;
-    let stops = cleanup_stop_gate(db, root, &request.target_id)?;
+    ensure_no_pending_merge(db, &request.target_id)
+        .map_err(|error| error.at("merge.pending"))?;
+    let stops = cleanup_stop_gate(db, root, &request.target_id)
+        .map_err(|error| error.at("merge.cleanup_stop_gate"))?;
     let instances: Vec<_> = stops.iter().map(|stop|stop.instance_id.clone())
         .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-    let source_identity = inspect_root(&source_path)?.identity;
-    let mut snapshot = host_seal::Snapshot::capture(&binding.path)?;
-    let mut config = host_seal::Snapshot::capture(&common.join("config"))?;
-    host_seal::reject_worktree_config(&binding)?;
+    let source_identity = inspect_root(&source_path)
+        .map_err(|error| WorktreeError::from(error).at("merge.source_identity"))?.identity;
+    let mut snapshot = host_seal::Snapshot::capture(&binding.path)
+        .map_err(|error| error.at("merge.child_snapshot"))?;
+    let mut config = host_seal::Snapshot::capture(&common.join("config"))
+        .map_err(|error| error.at("merge.config_snapshot"))?;
+    host_seal::reject_worktree_config(&binding)
+        .map_err(|error| error.at("merge.worktree_config"))?;
     let info = common.join("info");
     let _info_guard = match fs::symlink_metadata(&info) {
-        Ok(_) => Some(host_seal::hold_directory(&info)?),
+        Ok(_) => Some(host_seal::hold_directory(&info)
+            .map_err(|error| error.at("merge.info_directory"))?),
         Err(error) if error.kind()==io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(WorktreeError::from(error).at("merge.info_metadata")),
     };
     source_checkout_has_no_external_drivers(db, root, custodian, pin,
-        &source_path, &common, &binding.baseline_commit)?;
-    host_seal::ordinary_git_entries(&git(db, root, custodian, pin, "child_index",
-        Some(&binding.path), &["ls-files".into(), "--stage".into()], true)?, true)?;
-    require_clean_source(db, root, custodian, pin, &source_path)?;
+        &source_path, &common, &binding.baseline_commit)
+        .map_err(|error| error.at("merge.source_drivers_baseline"))?;
+    let child_index = git(db, root, custodian, pin, "child_index",
+        Some(&binding.path), &["ls-files".into(), "--stage".into()], true)
+        .map_err(|error| error.at("merge.child_index_read"))?;
+    host_seal::ordinary_git_entries(&child_index, true)
+        .map_err(|error| error.at("merge.child_index_shape"))?;
+    require_clean_source(db, root, custodian, pin, &source_path)
+        .map_err(|error| error.at("merge.source_status"))?;
     let dirty = git(db, root, custodian, pin, "f2_status", Some(&binding.path), &[
         "--no-optional-locks".into(), "status".into(), "--porcelain=v1".into(), "--untracked-files=all".into(),
-    ], true)?;
+    ], true).map_err(|error| error.at("merge.child_status"))?;
     let changed = !dirty.is_empty();
     let before = git(db, root, custodian, pin, "merge_before", Some(&source_path), &[
         "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
-    ], true)?;
+    ], true).map_err(|error| error.at("merge.source_head"))?;
     let child_before = git(db, root, custodian, pin, "merge_incoming", Some(&binding.path), &[
         "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
-    ], true)?;
-    if !hex_commit(&before) || !hex_commit(&child_before) || (!changed && before == child_before) {
-        return Err(WorktreeError::Denied);
+    ], true).map_err(|error| error.at("merge.child_head"))?;
+    if !hex_commit(&before) {
+        return Err(WorktreeError::Denied.at("merge.source_head_shape"));
+    }
+    if !hex_commit(&child_before) {
+        return Err(WorktreeError::Denied.at("merge.child_head_shape"));
+    }
+    if !changed && before == child_before {
+        return Err(WorktreeError::Denied.at("merge.no_child_delta"));
     }
     source_checkout_has_no_external_drivers(db, root, custodian, pin,
-        &source_path, &common, &before)?;
+        &source_path, &common, &before)
+        .map_err(|error| error.at("merge.source_drivers_head"))?;
     source_checkout_has_no_external_drivers(db, root, custodian, pin,
-        &binding.path, &common, &child_before)?;
-    host_seal::ordinary_git_entries(&git(db, root, custodian, pin, "child_tree",
-        Some(&binding.path), &["ls-tree".into(), "-r".into(), child_before.clone()], true)?, false)?;
+        &binding.path, &common, &child_before)
+        .map_err(|error| error.at("merge.child_drivers_head"))?;
+    let child_tree = git(db, root, custodian, pin, "child_tree",
+        Some(&binding.path), &["ls-tree".into(), "-r".into(), child_before.clone()], true)
+        .map_err(|error| error.at("merge.child_tree_read"))?;
+    host_seal::ordinary_git_entries(&child_tree, false)
+        .map_err(|error| error.at("merge.child_tree_shape"))?;
     git(db, root, custodian, pin, "merge_baseline", Some(&binding.path), &[
         "merge-base".into(), "--is-ancestor".into(), binding.baseline_commit.clone(), child_before.clone(),
-    ], false)?;
+    ], false).map_err(|error| error.at("merge.baseline_ancestor"))?;
     let (turn_id, seal_intent) = transaction(db, |db| {
         let state = lifecycle(db, &request.target_id)?.unwrap_or(("REGISTERED".into(), 1, None, None));
         if state.0 != "REGISTERED" || state.1 != request.expected_revision as i64 {
-            return Err(WorktreeError::Denied);
+            return Err(WorktreeError::Denied.at("merge.lifecycle_state_cas"));
         }
-        if cleanup_stop_gate(db, root, &request.target_id)? != stops { return Err(WorktreeError::Denied); }
-        let turn = authorize(db, &request.domain_id, &seat_id, &request.target_id)?
-            .ok_or(WorktreeError::Denied)?;
-        if !atom(&turn) { return Err(WorktreeError::Denied); }
-        ensure_no_pending_merge(db, &request.target_id)?;
+        if cleanup_stop_gate(db, root, &request.target_id)
+            .map_err(|error| error.at("merge.cleanup_stop_gate_cas"))? != stops {
+            return Err(WorktreeError::Denied.at("merge.stop_facts_cas"));
+        }
+        let turn = authorize(db, &request.domain_id, &seat_id, &request.target_id)
+            .map_err(|error| error.at("merge.authorize"))?
+            .ok_or(WorktreeError::Denied.at("merge.no_turn"))?;
+        if !atom(&turn) { return Err(WorktreeError::Denied.at("merge.turn_shape")); }
+        ensure_no_pending_merge(db, &request.target_id)
+            .map_err(|error| error.at("merge.pending_cas"))?;
         let intent = host_seal::intent(request, &repository_id, &seat_id, &instances,
             &turn, &binding, &before, &child_before, &snapshot.digest, changed, &stops);
         let insert = Statement::prepare(db.as_ptr(),
@@ -832,7 +870,7 @@ pub(crate) fn merge_worktree_request(
         let changed = Statement::prepare(db.as_ptr(), "SELECT changes()")?;
         if !changed.step_row()? || changed.column_text(0)? != "1" { return Err(WorktreeError::Unknown); }
         Ok((turn, intent))
-    })?;
+    }).map_err(|error| error.at("merge.intent_transaction"))?;
     // Preserve partial child success even when merge or receipt completion
     // fails. Nothing after durable INTENT may authorize a second execution.
     let mut child_commit: Option<String> = None;
@@ -1160,6 +1198,16 @@ mod tests {
             WorktreeError::Multiple {primary,..}=>is_unknown(primary), _=>false }
     }
 
+    fn assert_merge_denied_stage<T>(result: Result<T>, stage: &str) {
+        match result {
+            Err(error) => {
+                assert!(matches!(error.without_context(), WorktreeError::Denied), "{error:?}");
+                assert!(format!("{error:?}").contains(stage), "{error:?}");
+            }
+            Ok(_) => panic!("merge unexpectedly succeeded at {stage}"),
+        }
+    }
+
     fn authorize_fixture_merger(db: &VerifiedDatabaseConnection<'_>, domain: &str, writer: &str, _: &str) -> Result<Option<String>> {
         // Test-only trusted-turn construction is NOT original A authentication.
         // F still calls the real current E.2 MAIN/MERGE policy gate each time.
@@ -1372,40 +1420,54 @@ mod tests {
     fn host_seal_refuses_attribute_and_hardlink_before_host_reads_content() {
         with_real_child("seal-rejected-files",|db,root,pin,custodian,binding,source,_owner| {
             fs::write(binding.path.join(".gitattributes"),b"* filter=external\n").unwrap();
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.child_snapshot");
             fs::remove_file(binding.path.join(".gitattributes")).unwrap();
             let outside=source.parent().unwrap().join("outside.txt");
             fs::write(&outside,b"outside model scope\n").unwrap();
             fs::hard_link(&outside,binding.path.join("alias.txt")).unwrap();
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.child_snapshot");
             assert_eq!(head(db,root,pin,custodian,&binding.path),binding.baseline_commit);
             assert_eq!(fs::read(&outside).unwrap(),b"outside model scope\n");
             fs::remove_file(binding.path.join("alias.txt")).unwrap();
             std::os::windows::fs::symlink_dir(source,binding.path.join("redirected"))
                 .expect("cloud reparse fixture must run, never silently skip");
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.child_snapshot");
             fs::remove_dir(binding.path.join("redirected")).unwrap();
             let pointer=fs::read_to_string(binding.path.join(".git")).unwrap();
             let per_tree=Path::new(pointer.strip_prefix("gitdir: ").unwrap().trim()).join("config.worktree");
             fs::write(&per_tree,b"[include]\n path = outside-config\n").unwrap();
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.worktree_config");
             fs::remove_file(per_tree).unwrap();
             let attributes=source.join(".git/info/attributes");
             fs::write(&attributes,b"* filter=external\n").unwrap();
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.source_drivers_baseline");
             fs::remove_file(attributes).unwrap();
             fs::write(binding.path.join("seat.txt"),b"stopped child change\n").unwrap();
             fs::write(source.join("dirty-source.txt"),b"source must remain clean\n").unwrap();
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.source_status");
             fs::remove_file(source.join("dirty-source.txt")).unwrap();
             let original_proof=cleanup_stop_gate(db,root,"treeA").unwrap()[0].stop_fact_id.clone();
             db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='differentStop' WHERE operation_id='processA'").unwrap();
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.cleanup_stop_gate");
             let q=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=?1 WHERE operation_id='processA'").unwrap();
             q.bind_text(1,&original_proof).unwrap();q.step_done().unwrap();drop(q);
             db.execute("UPDATE main.gogoke_v37_h_claim SET state='RESERVED' WHERE session_id='sessionA'").unwrap();
-            assert!(matches!(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.cleanup_stop_gate");
             assert_eq!(head(db,root,pin,custodian,&binding.path),binding.baseline_commit);
+        });
+    }
+
+    #[test]
+    fn merge_preintent_denial_retains_guard_and_writes_no_intent() {
+        with_real_child("merge-no-turn-stage", |db, root, pin, custodian, binding, _source, _owner| {
+            fs::write(binding.path.join("seat.txt"), b"stopped child change\n").unwrap();
+            assert_merge_denied_stage(merge_worktree(db, root, pin, custodian, MERGE_RAW,
+                |_, _, _, _| Ok(None)), "merge.no_turn");
+            let pending = Statement::prepare(db.as_ptr(),
+                "SELECT count(*) FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id='treeA' AND operation='MERGE'").unwrap();
+            assert!(pending.step_row().unwrap());
+            assert_eq!(pending.column_text(0).unwrap(), "0");
+            assert_eq!(lifecycle(db, "treeA").unwrap().unwrap().0, "REGISTERED");
         });
     }
 
@@ -1449,13 +1511,13 @@ mod tests {
         let expected = MergeReceipt { worktree_id: "treeA".into(), revision: 3,
             target_commit: commit.clone(), replayed: true, child_seal_intent: None, child_commit: None };
         assert_eq!(merge_worktree(&mut db, &root, &pin, &mut custodian, raw, authorize).unwrap(), expected);
-        assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
-            |_, _, _, _| Ok(None)), Err(WorktreeError::Denied)), "revoked current grant cannot read old success");
-        assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
-            |_, _, _, _| Ok(Some(String::new()))), Err(WorktreeError::Denied)));
+        assert_merge_denied_stage(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
+            |_, _, _, _| Ok(None)), "merge.history_no_turn");
+        assert_merge_denied_stage(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
+            |_, _, _, _| Ok(Some(String::new()))), "merge.history_turn_shape");
         let other_domain = std::str::from_utf8(raw).unwrap().replace("projectA", "projectB");
-        assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, other_domain.as_bytes(),
-            |_, _, _, _| panic!("different domain must be denied before reading receipt")), Err(WorktreeError::Denied)));
+        assert_merge_denied_stage(merge_worktree(&mut db, &root, &pin, &mut custodian, other_domain.as_bytes(),
+            |_, _, _, _| panic!("different domain must be denied before reading receipt")), "merge.history_domain");
         let different_bytes = [raw.as_slice(), b" "].concat();
         assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, &different_bytes,
             authorize), Err(WorktreeError::Conflict)), "same parsed request with changed raw bytes is not replay");
