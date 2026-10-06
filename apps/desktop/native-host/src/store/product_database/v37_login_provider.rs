@@ -561,18 +561,24 @@ impl<'root> ProductDatabase<'root> {
         // Status may run for an already logged-in instance without a new
         // login. Bind cleanup to its original F home only after this status
         // child's own Job/writer stop is durably confirmed.
-        if provider.instance_id != command.instance_id {
-            return Err(OrchestrationError::AccessDenied);
+        let cache_cleanup = (|| -> Result<()> {
+            if provider.instance_id != command.instance_id {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let home = instance::provider_login::resolve_registered_login_home(
+                &mut self.connection, self.root, &self.owner,
+                &provider.instance_id, &provider.driver_id,
+            ).map_err(|error| OrchestrationError::V37StoreFailure(format!(
+                "provider status cleanup registered home: {error:?}")))?;
+            if home.path != provider.home.path || home.identity != provider.home.identity {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            login_cache::remove_generated_cache_junction(self.root, &home)
+        })();
+        if let Err(error) = cache_cleanup {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "provider status cache cleanup: {error:?}; {status_diagnostic}")));
         }
-        let home = instance::provider_login::resolve_registered_login_home(
-            &mut self.connection, self.root, &self.owner,
-            &provider.instance_id, &provider.driver_id,
-        ).map_err(|error| OrchestrationError::V37StoreFailure(format!(
-            "provider status cleanup registered home: {error:?}")))?;
-        if home.path != provider.home.path || home.identity != provider.home.identity {
-            return Err(OrchestrationError::AccessDenied);
-        }
-        login_cache::remove_generated_cache_junction(self.root, &home)?;
         let bytes = stdout.map_err(|error| OrchestrationError::V37StoreFailure(format!(
             "provider status stdout: {error:?}; CLI exit={:?}; STDERR_TAIL: {stderr}",
             proof.exit_code)))?;
