@@ -271,28 +271,16 @@ impl<'root> ProductDatabase<'root> {
         self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
         let read=(|| -> Result<Vec<u8>> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
-            let query=Statement::prepare(self.connection.as_ptr(),
-                "SELECT cursor,update_json FROM main.v37_ledger_index WHERE source_kind='v37' AND domain_id=?1 AND session_id=?2 AND source_epoch=?3 AND cursor>?4 ORDER BY cursor LIMIT 3")?;
-            query.bind_text(1,&key.0)?; query.bind_text(2,&key.1)?; query.bind_text(3,&nonce)?;
-            query.bind_i64(4,after as i64)?;
-            let mut events=Vec::new();
-            let mut cursor=position.cursor;
-            let mut emitted=after;
-            while query.step_row()? {
-                if events.len()==2 {cursor=emitted;break;}
-                emitted=query.column_text(0)?.parse::<u64>().map_err(|error|
-                    OrchestrationError::V37StoreFailure(format!("native output event cursor: {error}")))?;
-                events.push(Parser::parse(&query.column_text(1)?)?);
-            }
-            drop(query);
             let pending=Statement::prepare(self.connection.as_ptr(),
                 "SELECT count(*) FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND state='PENDING'")?;
             pending.bind_text(1,&operation)?;pending.bind_text(2,&nonce)?;
             if !pending.step_row()? {return Err(OrchestrationError::Invalid("native pending source count"));}
             let unresolved=pending.column_text(0)?;drop(pending);
+            // Budget the complete replay envelope with the largest cursor we
+            // can return. Its status is one byte longer than APPLIED.
             let result=BTreeMap::from([
-                (JsonString::from_str("events"),Json::Array(events)),
-                (JsonString::from_str("cursor"),Json::String(JsonString::from_str(&cursor.to_string()))),
+                (JsonString::from_str("events"),Json::Array(Vec::new())),
+                (JsonString::from_str("cursor"),Json::String(JsonString::from_str(&position.cursor.to_string()))),
                 (JsonString::from_str("generation"),Json::String(JsonString::from_str(&generation))),
                 (JsonString::from_str("ledgerHighwater"),Json::String(JsonString::from_str(&position.cursor.to_string()))),
                 (JsonString::from_str("rawHighwater"),Json::String(JsonString::from_str(&raw_cursor))),
@@ -302,8 +290,41 @@ impl<'root> ProductDatabase<'root> {
                 (JsonString::from_str("nativeCardRefs"),card_refs),
                 (JsonString::from_str("nativeCardRefsIncomplete"),Json::Bool(card_refs_incomplete)),
             ]);
+            let empty_page=encode_receipt(request,V37Status::Replayed,revision,revision,result);
+            let mut replay_bytes=empty_page.len();
+            if replay_bytes>crate::ipc::MAX_FRAME_BYTES {return Err(OrchestrationError::Invalid("native output receipt bound"));}
+            let mut result=crate::store::session_transport::decode_receipt(&empty_page).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("native output page envelope: {error:?}")))?.into_result();
+            let query=Statement::prepare(self.connection.as_ptr(),
+                "SELECT cursor,update_json FROM main.v37_ledger_index WHERE source_kind='v37' AND domain_id=?1 AND session_id=?2 AND source_epoch=?3 AND cursor>?4 ORDER BY cursor")?;
+            query.bind_text(1,&key.0)?; query.bind_text(2,&key.1)?; query.bind_text(3,&nonce)?;
+            query.bind_i64(4,after as i64)?;
+            let mut events=Vec::new();
+            let mut cursor=position.cursor;
+            let mut emitted=after;
+            while query.step_row()? {
+                let next_cursor=query.column_text(0)?.parse::<u64>().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("native output event cursor: {error}")))?;
+                let event=Parser::parse(&query.column_text(1)?)?;
+                let next_bytes=replay_bytes.checked_add(event.canonical().len())
+                    .and_then(|size|size.checked_add(usize::from(!events.is_empty())))
+                    .ok_or(OrchestrationError::Invalid("native output receipt length overflow"))?;
+                if next_bytes>crate::ipc::MAX_FRAME_BYTES {
+                    if events.is_empty() {return Err(OrchestrationError::Invalid("native output receipt bound"));}
+                    cursor=emitted;
+                    break;
+                }
+                replay_bytes=next_bytes;
+                emitted=next_cursor;
+                events.push(event);
+            }
+            drop(query);
+            result.insert(JsonString::from_str("events"),Json::Array(events));
+            result.insert(JsonString::from_str("cursor"),Json::String(JsonString::from_str(&cursor.to_string())));
             let bytes=encode_receipt(request,V37Status::Applied,revision,revision,result);
-            if bytes.len()>crate::ipc::MAX_FRAME_BYTES {return Err(OrchestrationError::Invalid("native output receipt bound"));}
+            let replay_length=bytes.len().checked_add("REPLAYED".len()-"APPLIED".len())
+                .ok_or(OrchestrationError::Invalid("native output receipt length overflow"))?;
+            if replay_length>crate::ipc::MAX_FRAME_BYTES {return Err(OrchestrationError::Invalid("native output receipt bound"));}
             let insert=Statement::prepare(self.connection.as_ptr(),
                 "INSERT INTO main.v37_ledger_receipt(family,domain_id,request_id,request_bytes,receipt_bytes) VALUES('K-SESSION',?1,?2,?3,?4)")?;
             insert.bind_text(1,&key.0)?; insert.bind_text(2,&request.request_id)?;
