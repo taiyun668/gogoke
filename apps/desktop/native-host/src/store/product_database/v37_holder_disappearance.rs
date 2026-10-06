@@ -142,13 +142,13 @@ impl<'root> ProductDatabase<'root> {
     // H's original unique ACTIVE writer used noninheritable kill-on-close Jobs;
     // close_checked drops those Jobs before DB/RootLock release. This is not
     // a caller-provided hostGone flag or an invented historical Job receipt.
-    fn gone_scope(&mut self, instance: &str, allowed: &[String], incoming: Option<&V37Request>, retained: bool) -> Result<()> {
+    pub(super) fn gone_scope(&mut self, instance: &str, allowed: &[String], incoming: Option<&V37Request>, retained: bool) -> Result<()> {
         fail(self.connection.execute("BEGIN IMMEDIATE"))?;
         let checked=self.gone_scope_in_current_transaction(instance,allowed,incoming,retained);
         self.finish_native_transaction(checked)
     }
 
-    fn gone_scope_in_current_transaction(&self, instance: &str, allowed: &[String], incoming: Option<&V37Request>, retained: bool) -> Result<()> {
+    pub(super) fn gone_scope_in_current_transaction(&self, instance: &str, allowed: &[String], incoming: Option<&V37Request>, retained: bool) -> Result<()> {
         fail(authority::check_owner_in_current_transaction(&self.connection,&self.owner))?;
         if self.owner_login.is_some() || !self.pending_native_launches.is_empty()
             || !self.pending_credential_preparations.is_empty()

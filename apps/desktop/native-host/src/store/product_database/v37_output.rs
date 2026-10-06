@@ -202,6 +202,7 @@ impl<'root> ProductDatabase<'root> {
             OrchestrationError::V37StoreFailure(format!("native output cursor: {error}")))?;
         if after.to_string()!=after_text || after>i64::MAX as u64 {return Err(OrchestrationError::Invalid("native output cursor"));}
         let key=(request.domain_id.clone(),request.target_id.clone());
+        self.refresh_native_grok_boundary(&key)?;
         let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
         let seat_id=run.evidence.seat_id().to_owned();
         let operation=run.operation_id.clone();

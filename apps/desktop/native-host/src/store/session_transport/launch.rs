@@ -43,6 +43,7 @@ pub(crate) struct LaunchEvidence {
     homes: InstanceLaunchHomes,
     private_history: Option<instance::PrivateHistoryReceipt>,
     credential: Option<super::credential_launch::CredentialLaunch>,
+    grok_home: Option<super::grok_home_launch::GrokHomeLaunch>,
     launch_request_id: String,
     repository_id: String,
     worktree: ResolvedBinding,
@@ -314,6 +315,10 @@ impl LaunchEvidence {
         let credential=if let Some(history)=&private_history {
             super::credential_launch::CredentialLaunch::prepare(db,root,&profile,history,request_id,retained)?
         } else {None};
+        let grok_home=if pin.driver_id=="grok" {
+            Some(super::grok_home_launch::GrokHomeLaunch::prepare(db,root,&profile,
+                &profile_name,&claim,&pin,&homes.instance,&seat.seat_id,&seat.incarnation,request_id)?)
+        } else {None};
         // Retain the exact credential witness across all remaining fallible
         // preparation. No process factory has been called in this builder.
         let prepared = (|| -> Result<_, String> {
@@ -330,7 +335,9 @@ impl LaunchEvidence {
         // public parent, other session, source tree or common Git dir is granted.
         verify_host_guard(db,owner,host_guard)?;
         let model_home=private_history.as_ref().map(|history|&history.directory).unwrap_or(&homes.instance);
-        if let Some(credential)=&credential {
+        if let Some(grok)=&grok_home {
+            grok.verify(db,&profile,true)?;
+        } else if let Some(credential)=&credential {
             evidence_at("grant-registered-credential-tree", profile.grant_registered_credential_tree(&model_home.path,&model_home.identity,
                 &credential.binding,&credential.alias,true))?;
         } else {
@@ -369,15 +376,16 @@ impl LaunchEvidence {
             match prepared {
                 Ok(prepared) => prepared,
                 Err(original) => {
-                    let cleanup = match &credential {
-                        Some(credential) => credential.revoke_uncreated(db,root,&profile,request_id),
-                        None => Ok(()),
-                    };
+                    let cleanup = if let Some(grok)=&grok_home {
+                        grok.revoke_uncreated(db,root,&profile)
+                    } else if let Some(credential)=&credential {
+                        credential.revoke_uncreated(db,root,&profile,request_id)
+                    } else {Ok(())};
                     return Err(format!("{original}; uncreated credential settlement: {cleanup:?}"));
                 }
             };
         let observed = Self { identity, seat, claim, pin, homes, private_history,
-            credential,
+            credential,grok_home,
             launch_request_id:request_id.into(),repository_id: repository_id.into(),
             worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id,launch_admission,
@@ -531,6 +539,9 @@ impl LaunchEvidence {
         }
         let program = evidence(instance::locate_pinned_program(&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
         if program != self.program { return Err("native session launch: program path changed".into()); }
+        if let Some(grok)=&self.grok_home {
+            grok.verify(db,&self.profile,matches!(phase,VerificationPhase::PreActivation))?;
+        }
         if let Some(credential)=&self.credential {
             match phase {
                 VerificationPhase::PreActivation=>{
@@ -542,7 +553,7 @@ impl LaunchEvidence {
                         &self.model_home().identity,true))?;
                 },
             }
-        } else {
+        } else if self.grok_home.is_none() {
             match phase {
                 VerificationPhase::PreActivation=>{evidence(self.profile.verify_bound_tree_grant(
                     &self.model_home().path,&self.model_home().identity,true))?;},
@@ -587,11 +598,37 @@ impl LaunchEvidence {
 
     pub(crate) fn file_credentials_bound(&self)->bool {self.credential.is_some()}
 
+    /// Root calls this only outside an H transaction, after its original
+    /// admission/custody guard and before the next pure in-transaction verify.
+    pub(crate) fn refresh_grok_readiness(&self,db:&mut VerifiedDatabaseConnection<'_>,
+        _root:&RootLock,owner:&OwnerIssuer,
+        custody:Option<&crate::process::PreparedCustody>)->Result<(),String>{
+        evidence(authority::read_product_identity(db,owner))?;
+        if let Some((proof,choice))=&self.host_guard {
+            verify_host_guard(db,owner,Some((proof,choice)))?;
+        }
+        if let Some(grok)=&self.grok_home {
+            let resume=self.resume_old.as_ref().map(|old|self.resume_request_id.as_deref()
+                .map(|request|(old,request)).ok_or("Grok private HOME: resume request absent"))
+                .transpose()?;
+            grok.refresh_readiness(db,&self.profile,custody,resume)?;
+        }
+        evidence(authority::read_product_identity(db,owner))?;
+        Ok(())
+    }
+
+    pub(crate) fn bind_grok_process(&self,db:&mut VerifiedDatabaseConnection<'_>,
+        operation:&str,custody:&crate::process::PreparedCustody)->Result<(),String>{
+        if let Some(grok)=&self.grok_home {grok.bind_process(db,operation,custody)?;}
+        Ok(())
+    }
+
     pub(crate) fn revoke_uncreated_credential(&self,db:&mut VerifiedDatabaseConnection<'_>,
         root:&RootLock)->Result<(),String> {
         if let Some(credential)=&self.credential {
             credential.revoke_uncreated(db,root,&self.profile,&self.launch_request_id)?;
         }
+        if let Some(grok)=&self.grok_home {grok.revoke_uncreated(db,root,&self.profile)?;}
         Ok(())
     }
 
@@ -599,6 +636,9 @@ impl LaunchEvidence {
         root:&RootLock,operation:&str,custody:&crate::process::PreparedCustody)->Result<(),String> {
         if let Some(credential)=&self.credential {
             credential.revoke(db,root,&self.profile,operation,custody)?;
+        }
+        if let Some(grok)=&self.grok_home {
+            grok.revoke_stopped(db,root,&self.profile,operation,custody)?;
         }
         Ok(())
     }

@@ -48,6 +48,27 @@ impl NativeSession {
     }
 }
 
+impl<'root> ProductDatabase<'root> {
+    /// Explicit H ingress before pure verification. The same live kernel
+    /// process and original F/H tuple authorize a changed Grok auth FileID.
+    pub(super) fn refresh_native_grok_boundary(&mut self,key:&(String,String))->Result<()>{
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="grok" ||run.stop_proof.is_some(){return Ok(());}
+        let process=self.process_custodian.active(&run.custody.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if process.identity()!=&run.custody.identity{return Err(OrchestrationError::OperationConflict);}
+        if let Some(code)=failure(process.exit_code())?{
+            let original=self.process_custodian.protocol_error_with_stderr(&run.custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    format!("native Grok process exited before readiness: {code}"))));
+            return Err(OrchestrationError::V37StoreFailure(original.to_string()));
+        }
+        failure(run.evidence.refresh_grok_readiness(&mut self.connection,
+            self.root,&self.owner,Some(&run.custody)))
+    }
+}
+
 fn failure<T, E: std::fmt::Debug>(result: std::result::Result<T, E>) -> Result<T> {
     result.map_err(|error| OrchestrationError::V37StoreFailure(format!("native session: {error:?}")))
 }
@@ -475,6 +496,10 @@ impl<'root> ProductDatabase<'root> {
         let started=(|| -> Result<()> {
             if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+            // The original prepared child and H attachment are now durable.
+            // Bind its exact custody before activation, outside the H transaction.
+            failure(run.evidence.bind_grok_process(&mut self.connection,
+                &operation_id,&custody))?;
             failure(run.evidence.verify(&mut self.connection,self.root,&self.owner,
                 Some(&operation_id)))?;
             if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
@@ -1452,6 +1477,7 @@ impl<'root> ProductDatabase<'root> {
                 before_revision,Default::default()));
         }
         let key=(request.domain_id.clone(),request.target_id.clone());
+        if self.native_sessions.contains_key(&key){self.refresh_native_grok_boundary(&key)?;}
         let Some(run)=self.native_sessions.get(&key) else {
             return Ok(encode_receipt(request,V37Status::Unknown,before_revision,
                 before_revision,Default::default()));
@@ -1724,6 +1750,8 @@ impl<'root> ProductDatabase<'root> {
         let started = (|| -> Result<()> {
             if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+            failure(run.evidence.bind_grok_process(&mut self.connection,
+                &operation_id,&custody))?;
             failure(run.evidence.verify(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
             self.process_custodian.activate(&custody)?;
@@ -2275,6 +2303,8 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request, V37Status::Stale, revision,
                 revision, Default::default()));
         }
+        self.refresh_native_grok_boundary(&key)?;
+        let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
         failure(run.evidence.verify_live(&mut self.connection, self.root, &self.owner,
             &run.operation_id, current.revision))?;
         if matches!(run.evidence.driver_id(),"opencode"|"grok") {
@@ -2858,6 +2888,7 @@ impl<'root> ProductDatabase<'root> {
 
     fn native_acp_write(&mut self,key:&(String,String),step_id:&str,
         number:Option<u64>,command:&vendor_commands::AcpCommand<'_>) -> Result<()> {
+        self.refresh_native_grok_boundary(key)?;
         let id=number.map(|number|i64::try_from(number).map(acp::RpcId::Number))
             .transpose().map_err(|error|OrchestrationError::V37StoreFailure(format!("native ACP ID: {error}")))?;
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
