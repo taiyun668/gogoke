@@ -398,14 +398,16 @@ jobs:
               @{ id = 'grok-intent-recovery'; filter = 'inherited_successor_intent_recovers_after_acl_write_before_finish' }
               @{ id = 'grok-applied-peer'; filter = 'applied_root_effect_survives_later_authorized_peer_sid_revocation' }
               @{ id = 'grok-resume-original'; filter = 'before_promote_resume_uses_old_stopped_claim_and_exact_new_episode' }
+              @{ id = 'grok-deleted-revoked'; filter = 'deleted_revoked_old_auth_cold_recovery_retires_inherited_successor_residue' }
+              @{ id = 'grok-deleted-unrevoked'; filter = 'deleted_unrevoked_old_auth_cold_recovery_rejects_without_acl_or_journal_write' }
             )
             Write-Host 'F private-history/credential and Grok exact HOME ACL/journal boundaries only; full library, compiled mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') {
             if ('${{ inputs.private_history_fixture_only }}' -ne 'true') { throw 'Grok HOME subset requires the existing private-history directed scope' }
-            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-inherited-successor', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original') })
-            if ($probes.Count -ne 10) { throw 'Existing Grok HOME boundary selection is incomplete' }
-            Write-Host 'Existing ten Grok HOME boundaries only; other F, full library and server suites NOT_RUN.'
+            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-inherited-successor', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked') })
+            if ($probes.Count -ne 12) { throw 'Grok HOME boundary selection is incomplete' }
+            Write-Host 'Twelve Grok HOME boundaries only; other F, full library and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'

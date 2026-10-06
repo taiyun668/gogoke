@@ -1175,12 +1175,21 @@ mod tests {
             assert_eq!(one(&db,"grokA","bindingA").unwrap().phase,"REVOKED");
             let effects=instance::read_grok_effects(&db,"bindingA").unwrap();
             assert!(effects.iter().all(|effect|effect.phase=="APPLIED"));
+            for original_effect in &effects_before {
+                assert_eq!(effects.iter().find(|effect|effect.effect_id==original_effect.effect_id),
+                    Some(original_effect),"cold ingress must preserve each original completed effect and revision");
+            }
             assert_eq!(effects.iter().filter(|effect|effect.action=="REVOKE_AUTH" &&
                 effect.object_identity==old_id).count(),1);
             assert!(effects.iter().any(|effect|effect.action=="REVOKE_RESIDUE" &&
                 effect.object_identity==successor_acl_before.identity &&effect.phase=="APPLIED"));
             assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[]).unwrap().is_empty());
-            assert!(observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap().target_aces.is_empty());
+            let successor_after=observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap();
+            assert!(successor_after.target_aces.is_empty());
+            assert_eq!(successor_after.identity,successor_acl_before.identity);
+            assert_eq!(successor_after.dacl_control,successor_acl_before.dacl_control);
+            assert!(successor_acl_before.preserves_other_aces(&successor_after));
+            assert_eq!(grok_root_acl(&profile,&home.path,&home_id).unwrap(),root_acl_before);
         } else {
             let error=resume_stopped_revoke(&mut db,&root,&original).unwrap_err();
             assert!(error.contains("old granted FileID not provably revoked or in F HOME"),"{error}");
