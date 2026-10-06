@@ -11,7 +11,7 @@ fn text(value: &str) -> Json { Json::String(JsonString::from_str(value)) }
 fn worktree_failure(request: &V37Request, error: crate::store::worktree::WorktreeError)
     -> Vec<u8> {
     use crate::store::worktree::WorktreeError;
-    let status = match &error {
+    let status = match error.without_context() {
         WorktreeError::Denied | WorktreeError::Invalid(_) => V37Status::Denied,
         WorktreeError::Conflict => V37Status::Conflict,
         _ => V37Status::Unknown,
