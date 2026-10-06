@@ -5,12 +5,14 @@
   "results": {
     "mainAuthorizationReadback": "PASS_CURRENT_MAIN_VERIFIER_SCOPE_AND_FIXED_RECEIPT",
     "stageDiffWhitespace": "PASS",
-    "nativeWindowsBuildAndTests": "NOT_RUN_YET",
-    "freshFocusedReview": "Three concrete gaps corrected; final static follow-up and Windows behavior checks pending",
+    "nativeWindowsBuildAndTests": "Release build passed on 55708ff9; directed run 37513991561 failed two successor ACL cases. Other directed cases passed; no new full-library PASS",
+    "freshFocusedReview": "Known defects and nine single-case CI selectors statically rechecked. Astra dispatch refused by agent thread capacity; full risk audit remains NOT_RUN",
     "originalInstalledProviderFlows": "FAIL_BEFORE_MODEL_SEND_RETAINED",
     "newCandidateOrOwnerLogin": "NOT_RUN"
   },
   "references": "Existing Grok exact-FileID custody, F ACL effect journal and H StopFact recovery; same-file native RPC private failure evidence; GOGO PARTY provider runtime and accounts; repository fixed-CLI command references and prior Claude injection research. The inherited successor differs from the older pre-protected fixture: the fixed CLI actually creates a new FileID inheriting HOME ACL. Existing registered FileIDs keep strict verification. Claude startup cause remains unknown: no complete stdout frame and empty stderr do not prove a protocol or permission cause.",
-  "decision": "Controller repairs the existing same-user product boundary and error evidence within the authorized implementation. No CLI change, new permission tier, credential-content read or G interface work.",
+  "decision": "Controller repairs the existing same-user product boundary and error evidence within the authorized implementation. No CLI change, new permission tier, credential-content read or G interface work. Two cloud failures still expose only AclWitnessMismatch at the successor transition, so its own readback error now reports exact target/protection/control/peer-ACE comparisons before further repair.",
+  "failureOriginals": ["inherited_auth_successor_is_normalized_without_changing_peer_aces: grant_grok_auth_successor returned AclWitnessMismatch", "inherited_successor_intent_recovers_after_acl_write_before_finish: grant_grok_auth_successor returned AclWitnessMismatch"],
+  "measurement": "The initial full-library run 37512568320 was cancelled after source changes and is not PASS. The directed artifact is an array of case results; an initial broad display was discarded as noisy, and the exact array entries and failing original log tails determine this conclusion. Claude's completed help task definition, last result and script SHA were archived and the exact task read back absent.",
   "next": "Run the existing directed F credential/history Windows scope with both Grok security modules registered. The full library takes roughly one hour, so use the existing directed scope for iteration and retain full-library results as separate evidence. Resolve concrete failures, then continue the original-instance real provider flows at a stable candidate point. PR #70's new smoke fixture still requires its own cloud exercise; the older successful smoke attempt is not evidence for that fixture."
 }

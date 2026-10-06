@@ -282,7 +282,10 @@ fn rewrite_grok_target(handle:Handle,profile:&AppContainerProfile,identity:&Root
     let after=snapshot(handle,profile)?;
     let expected=if grant{format!("1:{}:0",directory_rights(true))}else{String::new()};
     if after.identity!=*identity ||after.target_aces!=expected ||after.dacl_protected!=protect ||
-        !before.preserves_other_aces(&after){return Err(IsolationError::AclWitnessMismatch);}
+        !before.preserves_other_aces(&after){return Err(IsolationError::Acl(io::Error::new(
+            io::ErrorKind::InvalidData,format!("Grok exact ACL transition readback: identity_matches={}; target_expected={expected}; target_actual={}; protected_expected={protect}; protected_actual={}; other_aces_unchanged={}; control_before={:#x}; control_after={:#x}",
+                after.identity==*identity,after.target_aces,after.dacl_protected,
+                before.preserves_other_aces(&after),before.dacl_control,after.dacl_control))));}
     Ok(())
 }
 
