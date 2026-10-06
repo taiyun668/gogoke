@@ -761,16 +761,16 @@ try {
       tree.seatId === row.seatId, `${row.driverId}: closed original F provider worktree identity`);
     return { ...row, worktreeRoot: tree.path };
   });
-  if (boundaryRows.length === 3) {
+  if (boundaryRows.length >= 1 && boundaryRows.length <= 3) {
     await product.launch();
     const { runProviderBoundaryCases } = await import('./m2-provider-cases.mjs');
     await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows } }, journal);
     await product.closeNormally();
     await providerBoundaryReadback();
   } else {
-    journal.providerBoundarySummary = { V03b: 'NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES',
-      V04b: 'NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES',
-      V10: 'NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES', acceptance: false };
+    journal.providerBoundarySummary = { V03b: 'NOT_RUN_NOT_CONFIGURED',
+      V04b: 'NOT_RUN_NOT_CONFIGURED',
+      V10: 'NOT_RUN_NOT_CONFIGURED', acceptance: false };
     product.save();
   }
   await runHistoryBoundaries();

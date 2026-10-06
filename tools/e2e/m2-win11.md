@@ -199,9 +199,10 @@ the module's `providerBoundaryCases` beside the old `providerCases` rather
 than replacing the golden source or treating a second case as replay of the
 first request.
 
-The existing boundary module requires exactly three provider rows. With a
-provider subset, those boundary checks remain `NOT_RUN_REQUIRES_THREE_PROVIDER_BOUNDARY_CASES`.
-After a configured three-row boundary flow's final ordinary caption close, the runner invokes signed Python
+The boundary module accepts one to three unique configured fixed providers.
+Unselected providers remain explicitly `NOT_RUN`; their absence does not
+prevent another provider's original case and cannot establish an aggregate pass.
+After a configured boundary flow's final ordinary caption close, the runner invokes signed Python
 `m2-provider-readback.py STATE_ROOT NEW_PRIVATE_OUTPUT ORIGINAL_JOURNAL`
 once with a fresh output path under the same private evidence directory.
 The normal-close golden reader exports the configured provider F registrations;
