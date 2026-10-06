@@ -10,8 +10,8 @@ pub(crate) use isolation::{AppContainerProfile, IsolationError, SecurityCapabili
     LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
     NativeCredentialAclRecoveryStep, adopt_holder_gone_source_baseline};
 pub(crate) use isolation::{GrokAuthMetadata, GrokHomeObject, GrokAclSnapshot, grok_root_acl,
-    grok_residue_acl, observe_grok_auth, observe_grok_recorded_auth,
-    grant_grok_home_root, grant_grok_auth, verify_grok_home_tree,
+    grok_residue_acl, observe_grok_auth, observe_grok_auth_candidate, observe_grok_recorded_auth,
+    grant_grok_home_root, grant_grok_auth, grant_grok_auth_successor, verify_grok_home_tree,
     verify_grok_auth, revoke_grok_home_root, revoke_grok_auth,
     inspect_grok_home_residue, revoke_grok_home_residue};
 #[cfg(test)]

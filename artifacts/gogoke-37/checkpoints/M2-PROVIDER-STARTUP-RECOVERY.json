@@ -1,0 +1,16 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "state": "PRODUCT_FIX_CLOUD_AND_FOCUSED_REVIEW_PENDING",
+  "changes": "Read back Owner-merged PR #70 and integrated its smoke completion fixture. Grok successor observation now qualifies the exact new single-link FileID before the existing H/F authorized ACL transition; the transition retains peer ACEs and records protection in the original intent. Post-stop cleanup can remove the exact inherited SID and recover from a matching durable StopFact after admission release. Claude initialize read failures now retain the original pipe error, bounded incomplete stdout and exact process exit/job state in the private RPC UNKNOWN journal.",
+  "results": {
+    "mainAuthorizationReadback": "PASS_CURRENT_MAIN_VERIFIER_SCOPE_AND_FIXED_RECEIPT",
+    "stageDiffWhitespace": "PASS",
+    "nativeWindowsBuildAndTests": "NOT_RUN_YET",
+    "freshFocusedReview": "IN_PROGRESS",
+    "originalInstalledProviderFlows": "FAIL_BEFORE_MODEL_SEND_RETAINED",
+    "newCandidateOrOwnerLogin": "NOT_RUN"
+  },
+  "references": "Existing Grok exact-FileID custody, F ACL effect journal and H StopFact recovery; same-file native RPC private failure evidence; GOGO PARTY provider runtime and accounts; repository fixed-CLI command references and prior Claude injection research. The inherited successor differs from the older pre-protected fixture: the fixed CLI actually creates a new FileID inheriting HOME ACL. Existing registered FileIDs keep strict verification. Claude startup cause remains unknown: no complete stdout frame and empty stderr do not prove a protocol or permission cause.",
+  "decision": "Controller repairs the existing same-user product boundary and error evidence within the authorized implementation. No CLI change, new permission tier, credential-content read or G interface work.",
+  "next": "Run cloud Windows checks, resolve concrete failures and focused review findings, then continue the original-instance real provider flows at a stable candidate point. PR #70's new smoke fixture still requires its own cloud exercise; the older successful smoke attempt is not evidence for that fixture."
+}

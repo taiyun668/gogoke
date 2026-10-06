@@ -2521,8 +2521,30 @@ impl<'root> ProductDatabase<'root> {
         let start=Instant::now();
         loop {
             let remaining=Duration::from_secs(30).saturating_sub(start.elapsed());
-            if remaining.is_zero() {return Err(OrchestrationError::Invalid("Claude initialize response deadline"));}
-            let frame=self.process_custodian.read_persistent_child_frame(&custody.ticket,remaining)?;
+            let frame=if remaining.is_zero() {
+                Err(crate::process::ProcessCustodyError::ProtocolPipe(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,"Claude initialize response deadline")))
+            }else{self.process_custodian.read_persistent_child_frame(&custody.ticket,remaining)};
+            let frame=match frame {
+                Ok(frame)=>frame,
+                Err(error)=>{
+                    // Retain the original producer's evidence in the private
+                    // RPC journal. No new process, read, or protocol replay.
+                    let mut diagnostic=rpc_read_failure_evidence(&error.to_string(),
+                        self.process_custodian.persistent_stdout_fragment(&custody.ticket));
+                    if let Some(process)=self.process_custodian.active(&custody.ticket) {
+                        diagnostic.push_str(&format!("; exact_process_exit={:?}; job_active={:?}",
+                            process.exit_code(),process.active_job_processes()));
+                    }else{diagnostic.push_str("; exact_process_handle=absent");}
+                    let marked=rpc::mark_claude_unknown(&mut self.connection,&self.owner,&step,&diagnostic);
+                    if let Err(record_error)=marked {
+                        return Err(OrchestrationError::V37StoreFailure(format!(
+                            "Claude initialize read: {error}; original failure record: {record_error:?}")));
+                    }
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "Claude initialize read: {error}; original startup evidence recorded; UNKNOWN")));
+                },
+            };
             let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
             run.raw_capture.retain(frame)?;
             let (frame,raw)=run.raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?

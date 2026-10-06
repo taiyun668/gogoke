@@ -6,6 +6,13 @@ use std::fs::{File, OpenOptions};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 
+#[link(name = "advapi32")]
+extern "system" {
+    fn InitializeAcl(acl: *mut c_void, length: u32, revision: u32) -> i32;
+    fn AddAce(acl: *mut c_void, revision: u32, index: u32,
+        bytes: *const c_void, length: u32) -> i32;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GrokHomeObject {
     pub(crate) relative_name: PathBuf,
@@ -98,6 +105,19 @@ impl GrokAuthMetadata {
         self.verify_retired_physical()?;
         snapshot(self.handle(),profile)
     }
+    /// Observation is metadata only. A newly rotated FileID may inherit HOME's
+    /// ACL; only F's separately journaled successor transition may normalize it.
+    pub(crate) fn candidate_acl(&self,profile:&AppContainerProfile)->Result<GrokAclSnapshot,IsolationError>{
+        self.verify_candidate_physical()?;
+        snapshot(self.handle(),profile)
+    }
+    fn verify_candidate_physical(&self)->Result<(),IsolationError>{
+        let info=file_information(self.handle())?;
+        if file_identity(self.handle())?!=self.identity || !info.physical_file() {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        Ok(())
+    }
     fn verify_retired_physical(&self)->Result<(),IsolationError>{
         let info=file_information(self.handle())?;
         if file_identity(self.handle())?!=self.identity ||
@@ -118,12 +138,26 @@ impl GrokAuthMetadata {
 
 pub(crate) fn observe_grok_auth(home: &Path, home_identity: &RootIdentity)
     -> Result<GrokAuthMetadata, IsolationError> {
+    let auth=observe_grok_auth_candidate(home,home_identity)?;
+    auth.verify_physical()?;
+    Ok(auth)
+}
+
+pub(crate) fn observe_grok_auth_candidate(home:&Path,home_identity:&RootIdentity)
+    ->Result<GrokAuthMetadata,IsolationError>{
     require_bound_path(home, home_identity, true)?;
     let path = home.join("auth.json");
-    open_grok_metadata(home,home_identity,&path,PathBuf::from("auth.json"))
+    open_grok_metadata_candidate(home,home_identity,&path,PathBuf::from("auth.json"))
 }
 
 fn open_grok_metadata(home:&Path,home_identity:&RootIdentity,path:&Path,
+    relative_name:PathBuf)->Result<GrokAuthMetadata,IsolationError>{
+    let auth=open_grok_metadata_candidate(home,home_identity,path,relative_name)?;
+    auth.verify_physical()?;
+    Ok(auth)
+}
+
+fn open_grok_metadata_candidate(home:&Path,home_identity:&RootIdentity,path:&Path,
     relative_name:PathBuf)->Result<GrokAuthMetadata,IsolationError>{
     if relative_name.is_absolute() || relative_name.components().next().is_none() ||
         relative_name.components().any(|part|!matches!(part,std::path::Component::Normal(_))) ||
@@ -141,7 +175,7 @@ fn open_grok_metadata(home:&Path,home_identity:&RootIdentity,path:&Path,
             object: path.to_path_buf(), operation: "hold Grok auth metadata", error })?;
     let result = GrokAuthMetadata { identity: file_identity(file.as_raw_handle().cast())?,
         file,relative_name };
-    result.verify_physical()?;
+    result.verify_candidate_physical()?;
     require_bound_path(home, home_identity, true)?;
     Ok(result)
 }
@@ -181,6 +215,73 @@ pub(crate) fn grant_grok_auth(profile: &AppContainerProfile,
     grant_exact_acl(auth.handle(), profile.sid, &auth.identity,
         directory_rights(true), NO_INHERITANCE)?;
     verify_grok_auth(profile, auth)
+}
+
+/// Called only for an unrecorded successor FileID after F/H intent. Replace
+/// this exact SID's inherited ACE with the already authorized explicit grant;
+/// preserve every non-target ACE byte and do not request credential data.
+pub(crate) fn grant_grok_auth_successor(profile:&AppContainerProfile,
+    auth:&GrokAuthMetadata)->Result<(),IsolationError>{
+    auth.verify_candidate_physical()?;
+    rewrite_grok_target(auth.handle(),profile,&auth.identity,true,true)?;
+    verify_grok_auth(profile,auth)
+}
+
+fn rewrite_grok_target(handle:Handle,profile:&AppContainerProfile,identity:&RootIdentity,
+    grant:bool,protect:bool)->Result<(),IsolationError>{
+    if file_identity(handle)?!=*identity {return Err(IsolationError::AclWitnessMismatch);}
+    let entries=package_aces(handle,profile.sid)?;
+    if !entries.is_empty() && entries.as_slice()!=&[(GRANT_ACCESS,directory_rights(true),NO_INHERITANCE)] &&
+        entries.as_slice()!=&[(GRANT_ACCESS,directory_rights(true),INHERITED_ACE as u32)] {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    let before=snapshot(handle,profile)?;
+    let mut old_acl=ptr::null_mut();let mut descriptor=ptr::null_mut();
+    let status=unsafe{GetSecurityInfo(handle,FILE_OBJECT,DACL_SECURITY_INFORMATION,
+        ptr::null_mut(),ptr::null_mut(),&mut old_acl,ptr::null_mut(),&mut descriptor)};
+    if status!=0 {return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
+    let _descriptor=LocalAllocation(descriptor);
+    if old_acl.is_null(){return Err(IsolationError::AclWitnessMismatch);}
+    let mut size=AclSizeInformation{ace_count:0,acl_bytes_in_use:0,acl_bytes_free:0};
+    if unsafe{GetAclInformation(old_acl,(&mut size as *mut AclSizeInformation).cast(),
+        size_of::<AclSizeInformation>() as u32,ACL_SIZE_INFORMATION_CLASS)}==0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    let mut other=Vec::new();
+    for index in 0..size.ace_count {
+        let mut ace=ptr::null_mut();
+        if unsafe{GetAce(old_acl,index,&mut ace)}==0 ||ace.is_null(){return Err(IsolationError::AclWitnessMismatch);}
+        let header=unsafe{&*ace.cast::<AceHeader>()};
+        if header.ace_size<16 {return Err(IsolationError::AclWitnessMismatch);}
+        if unsafe{EqualSid(ace.cast::<u8>().add(8).cast(),profile.sid)}==0 {
+            other.push(unsafe{std::slice::from_raw_parts(ace.cast::<u8>(),header.ace_size as usize)}.to_vec());
+        }
+    }
+    let length=8usize+other.iter().map(Vec::len).sum::<usize>();
+    if length>u16::MAX as usize{return Err(IsolationError::AclWitnessMismatch);}
+    let mut storage=vec![0usize;length.div_ceil(size_of::<usize>())];let base=storage.as_mut_ptr().cast();
+    if unsafe{InitializeAcl(base,length as u32,4)}==0{return Err(IsolationError::Acl(io::Error::last_os_error()));}
+    for ace in &other {if unsafe{AddAce(base,4,u32::MAX,ace.as_ptr().cast(),ace.len() as u32)}==0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }}
+    let mut allocated=ptr::null_mut();
+    let acl=if grant {
+        let mut entry=ExplicitAccessW{permissions:directory_rights(true),access_mode:GRANT_ACCESS,
+            inheritance:NO_INHERITANCE,trustee:TrusteeW{multiple:ptr::null_mut(),multiple_operation:0,
+                form:TRUSTEE_IS_SID,kind:TRUSTEE_IS_UNKNOWN,name:profile.sid.cast()}};
+        let status=unsafe{SetEntriesInAclW(1,&mut entry,base,&mut allocated)};
+        if status!=0{return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
+        if allocated.is_null(){return Err(IsolationError::AclWitnessMismatch);}allocated
+    }else{base};
+    let _allocated=LocalAllocation(allocated);
+    let security=DACL_SECURITY_INFORMATION|if protect{PROTECTED_DACL_SECURITY_INFORMATION}else{0};
+    let status=unsafe{SetSecurityInfo(handle,FILE_OBJECT,security,ptr::null_mut(),ptr::null_mut(),acl,ptr::null_mut())};
+    if status!=0{return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
+    let after=snapshot(handle,profile)?;
+    let expected=if grant{format!("1:{}:0",directory_rights(true))}else{String::new()};
+    if after.identity!=*identity ||after.target_aces!=expected ||after.dacl_protected!=protect ||
+        !before.preserves_other_aces(&after){return Err(IsolationError::AclWitnessMismatch);}
+    Ok(())
 }
 
 pub(crate) fn verify_grok_auth(profile: &AppContainerProfile,
@@ -316,9 +417,9 @@ pub(crate) fn inspect_grok_home_residue(profile: &AppContainerProfile, home: &Pa
                 entries[0].2 & INHERIT_ONLY_ACE != 0 {
                 return Err(IsolationError::AclWitnessMismatch);
             }
-            // An inherited ACE is removed by the parent; if still visible,
-            // this descendant needs a separate exact physical readback.
-            return Err(IsolationError::AclWitnessMismatch);
+            // A vendor-created child can retain this inherited ACE after the
+            // parent revoke. Return its exact physical identity for a separate
+            // journaled removal; parent absence alone is not revocation proof.
         }
         touched.push(GrokHomeObject { relative_name: path.strip_prefix(home).map_err(|error|
             IsolationError::Acl(io::Error::new(io::ErrorKind::InvalidData,error.to_string())))?.to_path_buf(),
@@ -337,8 +438,11 @@ pub(crate) fn revoke_grok_home_residue(profile: &AppContainerProfile, home: &Pat
     }
     let path = home.join(&object.relative_name);
     let held = open_bound_object(&path, &object.identity, false)?;
-    if !dacl_protected(held.0)? { return Err(IsolationError::AclWitnessMismatch); }
-    revoke_exact(held.0, profile.sid, &object.identity, true, NO_INHERITANCE)?;
+    if dacl_protected(held.0)? {
+        revoke_exact(held.0,profile.sid,&object.identity,true,NO_INHERITANCE)?;
+    }else{
+        rewrite_grok_target(held.0,profile,&object.identity,false,false)?;
+    }
     require_bound_path(home, expected, true)
 }
 
@@ -378,6 +482,48 @@ mod tests {
         let root=crate::root::inspect_root(&home).unwrap().identity;
         protect_file(&home.join("auth.json"));
         (home,root)
+    }
+
+    #[test]
+    fn inherited_auth_successor_is_normalized_without_changing_peer_aces(){
+        let (home,root)=fixture();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokInheritedSuccessor").unwrap();
+        let peer=AppContainerProfile::derived_for_test("Gogoke37.GrokInheritedPeer").unwrap();
+        let old=observe_grok_auth(&home,&root).unwrap();
+        grant_grok_home_root(&profile,&home,&root).unwrap();
+        grant_grok_home_root(&peer,&home,&root).unwrap();
+        grant_grok_auth(&profile,&old).unwrap();
+        let next=home.join("auth-next.json");
+        // Use the vendor's real shape: a new file inside HOME inherits its
+        // ACL. Do not pre-protect this replacement as the older fixture did.
+        std::fs::write(&next,b"synthetic non-secret auth fixture").unwrap();
+        std::fs::remove_file(home.join("auth.json")).unwrap();
+        std::fs::rename(next,home.join("auth.json")).unwrap();
+        assert!(matches!(observe_grok_auth(&home,&root),Err(IsolationError::AclWitnessMismatch)));
+        let auth=observe_grok_auth_candidate(&home,&root).unwrap();
+        assert_ne!(auth.identity,old.identity);
+        let before=auth.candidate_acl(&profile).unwrap();
+        assert!(!before.dacl_protected);
+        assert_eq!(before.target_aces,format!("1:{}:{}",directory_rights(true),INHERITED_ACE));
+        let peer_before=auth.candidate_acl(&peer).unwrap().target_aces;
+        grant_grok_auth_successor(&profile,&auth).unwrap();
+        let after=auth.acl(&profile).unwrap();
+        assert!(after.dacl_protected);
+        assert_eq!(after.dacl_control,before.dacl_control|SE_DACL_PROTECTED);
+        assert!(before.preserves_other_aces(&after));
+        assert_eq!(auth.acl(&peer).unwrap().target_aces,peer_before);
+        verify_grok_auth(&profile,&auth).unwrap();
+        // A peer's inherited target is converted only by its own transition.
+        grant_grok_auth_successor(&peer,&auth).unwrap();
+        verify_grok_auth(&profile,&auth).unwrap();verify_grok_auth(&peer,&auth).unwrap();
+        let hardlink=home.join("auth-linked.json");std::fs::hard_link(home.join("auth.json"),&hardlink).unwrap();
+        assert!(observe_grok_auth_candidate(&home,&root).is_err());
+        std::fs::remove_file(hardlink).unwrap();
+        revoke_grok_home_root(&profile,&home,&root).unwrap();
+        revoke_grok_auth(&profile,&auth).unwrap();revoke_grok_auth(&profile,&old).unwrap();
+        verify_grok_auth(&peer,&auth).unwrap();
+        assert!(inspect_grok_home_residue(&profile,&home,&root,&[old.identity.clone(),auth.identity.clone()]).unwrap().is_empty());
+        drop(auth);drop(old);drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

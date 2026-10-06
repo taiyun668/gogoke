@@ -4,7 +4,8 @@ use super::runtime::{ClaimObservation, InstancePin};
 use crate::process::{AppContainerProfile, GrokAuthMetadata, GrokAclSnapshot, PreparedCustody,
     NativeProcessHoldersGone,
     grok_root_acl, grok_residue_acl,
-    observe_grok_auth, grant_grok_home_root, grant_grok_auth,
+    observe_grok_auth, observe_grok_auth_candidate, grant_grok_home_root, grant_grok_auth,
+    grant_grok_auth_successor,
     observe_grok_recorded_auth, verify_grok_home_tree, verify_grok_auth, revoke_grok_home_root,
     revoke_grok_auth, inspect_grok_home_residue, revoke_grok_home_residue};
 use crate::root::{RootIdentity, RootLock};
@@ -47,15 +48,14 @@ fn apply(db:&mut VerifiedDatabaseConnection<'_>,expected:GrokEffect,
         return applied_readback(&intent,&before);
     }
     if before.identity!=intent.object_identity ||
-        sha256_hex(&before.other_aces_bytes())!=intent.other_aces_sha256 ||
-        before.dacl_control!=intent.before_control {
+        sha256_hex(&before.other_aces_bytes())!=intent.other_aces_sha256 {
         return Err("Grok private HOME: effect physical before/other ACE drift".into());
     }
     if before.target_aces==intent.after_aces &&
         before.dacl_control==intent.after_control {
         return instance::finish_grok_effect(db,&intent);
     }
-    if before.target_aces!=intent.before_aces {
+    if before.target_aces!=intent.before_aces ||before.dacl_control!=intent.before_control {
         return Err("Grok private HOME: original ACL effect diverged".into());
     }
     mutate()?;
@@ -350,13 +350,17 @@ impl GrokHomeLaunch {
                 return Err("Grok private HOME: original active custody changed".into());
             }
         }
-        let auth=evidence("observe-successor",observe_grok_auth(&self.home.path,&self.home.identity))?;
+        let auth=evidence("observe-successor-metadata",observe_grok_auth_candidate(&self.home.path,&self.home.identity))?;
         let ids=recorded_auth(db,&grant)?;
         if !ids.contains(&auth.identity) {
-            let before=evidence("successor-ACL-before",auth.acl(profile))?;
-            apply(db,effect(&grant,"GRANT_AUTH",&auth.identity,"auth.json",&before),
-                ||evidence("successor-ACL-readback",auth.acl(profile)),||
-                evidence("grant-successor",grant_grok_auth(profile,&auth)))?;
+            let before=evidence("successor-ACL-before",auth.candidate_acl(profile))?;
+            let mut intent=effect(&grant,"GRANT_AUTH",&auth.identity,"auth.json",&before);
+            // The physical successor is first qualified by the original H/F
+            // guard above. The protected-bit transition is part of the same
+            // durable effect, including an ACL-applied/finish-not-yet-written crash.
+            intent.after_control=before.dacl_control|0x1000;
+            apply(db,intent,||evidence("successor-ACL-readback",auth.candidate_acl(profile)),||
+                evidence("grant-successor",grant_grok_auth_successor(profile,&auth)))?;
         } else {evidence("verify-successor",verify_grok_auth(profile,&auth))?;}
         let mut held=self.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
         if !held.iter().any(|old|old.identity==auth.identity) {held.push(auth);}
@@ -582,7 +586,7 @@ pub(crate) fn resume_stopped_revoke(db:&mut VerifiedDatabaseConnection<'_>,root:
     }
     let h=original_h(db,&grant)?.ok_or("Grok private HOME: original stopped H tuple absent")?;
     if !matches_bound_original(&grant,&h) ||h.custody_state!="STOPPED" ||
-        h.claim_state!="STOPPED" ||h.episode_state!="STOPPED" ||
+        !matches!(h.claim_state.as_str(),"STOPPED"|"RELEASED") ||h.episode_state!="STOPPED" ||
         h.custody_stop.as_deref()!=h.claim_stop.as_deref() ||
         h.custody_stop.as_deref()!=h.episode_stop.as_deref() ||
         h.custody_stop.as_deref().map_or(true,str::is_empty) ||
@@ -595,7 +599,7 @@ pub(crate) fn resume_stopped_revoke(db:&mut VerifiedDatabaseConnection<'_>,root:
     if evidence("SID-readback",profile.sid_identity())?!=grant.profile_sid {
         return Err("Grok private HOME: original SID changed".into());
     }
-    let current=evidence("observe-current-auth",observe_grok_auth(&home.path,&home.identity))?;
+    let current=evidence("observe-current-auth-metadata",observe_grok_auth_candidate(&home.path,&home.identity))?;
     let ids=recorded_auth(db,&grant)?;
     let held=if ids.contains(&current.identity){vec![current]}else{Vec::new()};
     let recovered=GrokHomeLaunch{instance_id:grant.instance_id.clone(),binding_id:grant.binding_id.clone(),
@@ -749,7 +753,7 @@ pub(crate) fn retire_holder_gone(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
     if evidence("SID-readback",profile.sid_identity())?!=grant.profile_sid {
         return Err("Grok private HOME: original SID changed".into());
     }
-    let auth=evidence("observe-original-HOME-auth",observe_grok_auth(&home.path,&home.identity))?;
+    let auth=evidence("observe-original-HOME-auth-metadata",observe_grok_auth_candidate(&home.path,&home.identity))?;
     let ids=recorded_auth(db,&grant)?;
     let held=if ids.contains(&auth.identity){vec![auth]}else{Vec::new()};
     let recovered=GrokHomeLaunch{instance_id:grant.instance_id.clone(),binding_id:grant.binding_id.clone(),
@@ -809,6 +813,49 @@ mod tests {
     use crate::root::RootLock;
     use crate::store::same_open::{create_new,route_b_test_guard};
     use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn inherited_successor_intent_recovers_after_acl_write_before_finish(){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-successor-intent-{}-{nonce}",std::process::id()));
+        let home=path.join("home");std::fs::create_dir_all(&home).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        instance::initialize_grok_home_grant_schema(&mut db).unwrap();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokSuccessorIntent").unwrap();
+        let home_id=crate::root::inspect_root(&home).unwrap().identity;
+        grant_grok_home_root(&profile,&home,&home_id).unwrap();
+        std::fs::write(home.join("auth.json"),b"synthetic non-secret fixture").unwrap();
+        let auth=observe_grok_auth_candidate(&home,&home_id).unwrap();
+        let before=auth.candidate_acl(&profile).unwrap();assert!(!before.dacl_protected);
+        db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('grokA','grok','homeA','fixture','sha256:fixture','1.0.41','INSTALLED','LOGGED_IN',1)").unwrap();
+        let root_id=root.canonical_root().identity.opaque();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_grok_home_domains VALUES('grokA','{root_id}','{}','sha256:fixture','1.0.41',1,1)",home_id.opaque())).unwrap();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_grok_home_grants(binding_id,instance_id,domain_id,session_id,seat_id,seat_incarnation,generation,request_id,profile_name,profile_sid,program_digest,home_identity,auth_identity,phase,revision) VALUES('bindingA','grokA','domainA','sessionA','seatA','incA','1','openA','Gogoke37.GrokSuccessorIntent','{}','sha256:fixture','{}','{}','ACTIVE',1)",profile.sid_identity().unwrap(),home_id.opaque(),auth.identity.opaque())).unwrap();
+        let grant=one(&db,"grokA","bindingA").unwrap();
+        let mut expected=effect(&grant,"GRANT_AUTH",&auth.identity,"auth.json",&before);
+        expected.after_control=before.dacl_control|0x1000;
+        instance::begin_grok_effect(&mut db,&expected).unwrap();
+        grant_grok_auth_successor(&profile,&auth).unwrap();
+        // Model a crash after the exact ACL write, with the original INTENT
+        // still durable. Replay must read AFTER and finish without another write.
+        db.close_checked().unwrap();
+        let mut db=crate::store::same_open::open_existing(&root,&path.join("state.sqlite")).unwrap();
+        apply(&mut db,expected,||evidence("test current",auth.candidate_acl(&profile)),
+            ||panic!("AFTER replay must not write the ACL again")).unwrap();
+        let recovered=instance::read_grok_effects(&db,"bindingA").unwrap();
+        assert_eq!(recovered.len(),1);assert_eq!(recovered[0].phase,"APPLIED");
+        assert_eq!(recovered[0].revision,2);
+        assert!(before.preserves_other_aces(&auth.acl(&profile).unwrap()));
+        verify_grok_auth(&profile,&auth).unwrap();
+        revoke_grok_home_root(&profile,&home,&home_id).unwrap();
+        revoke_grok_auth(&profile,&auth).unwrap();
+        db.close_checked().unwrap();drop(auth);drop(profile);drop(root);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn applied_root_effect_survives_later_authorized_peer_sid_revocation(){
