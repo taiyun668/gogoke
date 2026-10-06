@@ -70,6 +70,45 @@ fn one(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,binding_id:&str)->Res
         .ok_or_else(||"Grok private HOME: original F grant absent".into())
 }
 
+struct OriginalH {
+    operation:String,ticket:String,nonce:String,pid:u32,creation:u64,image:String,
+    digest:String,custody_state:String,custody_stop:Option<String>,
+    claim_state:String,claim_stop:Option<String>,episode_state:String,
+    episode_stop:Option<String>,
+}
+
+fn original_h(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant)->Result<Option<OriginalH>,String>{
+    let row=Statement::prepare(db.as_ptr(),"SELECT c.operation_id,c.ticket,c.custodian_nonce,c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.state,COALESCE(c.stop_proof_hash,''),h.state,COALESCE(h.stop_fact_id,''),e.phase,COALESCE(e.stop_fact_id,'') FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation JOIN main.gogoke_v37_h_claim h ON h.process_operation_id=c.operation_id AND h.instance_id=c.profile_id AND h.domain_id=c.domain_id AND h.generation=c.generation AND h.session_id=e.session_id AND h.binding_id=e.binding_id JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=h.domain_id AND s.session_id=h.session_id AND s.generation=h.generation AND s.seat_id=e.seat_id AND s.seat_incarnation=e.seat_incarnation WHERE e.binding_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.session_id=?4 AND e.generation=?5 AND e.request_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8")
+        .map_err(|e|format!("Grok private HOME original H query: {e:?}"))?;
+    let values:[&str;8]=[&grant.binding_id,&grant.instance_id,&grant.domain_id,
+        &grant.session_id,&grant.generation,&grant.request_id,&grant.seat_id,&grant.seat_incarnation];
+    for (i,value) in values.iter().enumerate(){row.bind_text(i as i32+1,value)
+        .map_err(|e|format!("Grok private HOME original H bind: {e:?}"))?;}
+    if !row.step_row().map_err(|e|format!("Grok private HOME original H read: {e:?}"))? {
+        return Ok(None);
+    }
+    let col=|i|row.column_text(i).map_err(|e|format!("Grok private HOME original H column: {e:?}"));
+    let optional=|i|->Result<Option<String>,String>{let value=col(i)?;
+        Ok(if value.is_empty(){None}else{Some(value)})};
+    let result=OriginalH{operation:col(0)?,ticket:col(1)?,nonce:col(2)?,
+        pid:col(3)?.parse().map_err(|e|format!("Grok private HOME original pid: {e:?}"))?,
+        creation:col(4)?.parse().map_err(|e|format!("Grok private HOME original creation: {e:?}"))?,
+        image:col(5)?,digest:col(6)?,custody_state:col(7)?,custody_stop:optional(8)?,
+        claim_state:col(9)?,claim_stop:optional(10)?,episode_state:col(11)?,
+        episode_stop:optional(12)?};
+    if row.step_row().map_err(|e|format!("Grok private HOME original H duplicate: {e:?}"))? {
+        return Err("Grok private HOME: duplicate original H tuple".into());
+    }
+    Ok(Some(result))
+}
+
+fn matches_bound_original(grant:&GrokGrant,h:&OriginalH)->bool{
+    grant.process_operation_id.as_deref()==Some(h.operation.as_str()) &&
+    grant.ticket.as_deref()==Some(h.ticket.as_str()) &&grant.custodian_nonce.as_deref()==Some(h.nonce.as_str()) &&
+    grant.pid==Some(h.pid) &&grant.creation_time_100ns==Some(h.creation) &&
+    grant.image_path.as_deref()==Some(h.image.as_str()) && grant.program_digest==h.digest
+}
+
 fn recorded_auth(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant)->Result<Vec<RootIdentity>,String>{
     let mut ids=vec![grant.auth_identity.clone()];
     for effect in instance::read_grok_effects(db,&grant.binding_id)? {
@@ -348,8 +387,104 @@ impl GrokHomeLaunch {
 /// as evidence that a process stopped or disappeared.
 pub(crate) fn cold_inventory(db:&VerifiedDatabaseConnection<'_>,instance_id:&str)
     ->Result<Vec<GrokGrant>,String>{
-    Ok(instance::read_grok_grants(db,instance_id)?.into_iter()
-        .filter(|g|g.phase!="REVOKED").collect())
+    // Include REVOKED: F may have finished ACL retirement immediately before
+    // the original H holder-gone RELEASED transaction crashed.
+    instance::read_grok_grants(db,instance_id)
+}
+
+/// Crash after H persisted its exact process but before F copied that tuple.
+/// A genuine kernel holder-gone proof permits adoption of the original H row
+/// only; no NULL process row is interpreted as NoAttempt.
+pub(crate) fn adopt_original_holder_gone(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+    original:&GrokGrant,proof:&NativeProcessHoldersGone)->Result<(),String>{
+    let grant=one(db,&original.instance_id,&original.binding_id)?;
+    if grant!=*original ||grant.phase!="GRANTED_UNCREATED" ||
+        grant.process_operation_id.is_some() {
+        return Err("Grok private HOME: uncreated original F row changed".into());
+    }
+    let h=original_h(db,&grant)?.ok_or("Grok private HOME: original H process absent; no NoAttempt inference")?;
+    if h.digest!=grant.program_digest ||h.custody_stop.is_some() ||h.claim_stop.is_some() ||
+        h.episode_stop.is_some() ||
+        !matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
+        !matches!(h.episode_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
+        !matches!(h.claim_state.as_str(),"COMMITTED"|"UNKNOWN") {
+        return Err("Grok private HOME: original H process cannot be adopted".into());
+    }
+    evidence("holder-gone",proof.validate(&[(h.pid,h.creation)]))?;
+    instance::bind_grok_original_process(db,&grant,&h.operation,&h.ticket,&h.nonce,
+        h.pid,h.creation,&h.image)?;
+    let adopted=one(db,&grant.instance_id,&grant.binding_id)?;
+    retire_holder_gone(db,root,&adopted,proof)
+}
+
+/// Continue the same persisted revoke after a real original StopFact. The F
+/// phase and H/custody stop hashes must all be the same before any ACL write.
+pub(crate) fn resume_stopped_revoke(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+    original:&GrokGrant)->Result<(),String>{
+    let grant=one(db,&original.instance_id,&original.binding_id)?;
+    if grant!=*original ||grant.phase!="REVOKE_PENDING" ||
+        grant.stop_fact_id.is_none() {
+        return Err("Grok private HOME: stopped revoke original F row changed".into());
+    }
+    let h=original_h(db,&grant)?.ok_or("Grok private HOME: original stopped H tuple absent")?;
+    if !matches_bound_original(&grant,&h) ||h.custody_state!="STOPPED" ||
+        h.claim_state!="STOPPED" ||h.episode_state!="STOPPED" ||
+        h.custody_stop!=grant.stop_fact_id ||h.claim_stop!=grant.stop_fact_id ||
+        h.episode_stop!=grant.stop_fact_id {
+        return Err("Grok private HOME: original StopFact/F tuple disagrees".into());
+    }
+    let home=evidence("resolve-F-HOME",instance::resolve_grok_original_home(db,root,&grant.instance_id))?;
+    if home.identity!=grant.home_identity {return Err("Grok private HOME: F HOME identity changed".into());}
+    let profile=evidence("derive-original-SID",AppContainerProfile::derive_for_revocation(&grant.profile_name))?;
+    if evidence("SID-readback",profile.sid_identity())?!=grant.profile_sid {
+        return Err("Grok private HOME: original SID changed".into());
+    }
+    let current=evidence("observe-current-auth",observe_grok_auth(&home.path,&home.identity))?;
+    let ids=recorded_auth(db,&grant)?;
+    let held=if ids.contains(&current.identity){vec![current]}else{Vec::new()};
+    let recovered=GrokHomeLaunch{instance_id:grant.instance_id.clone(),binding_id:grant.binding_id.clone(),
+        home,auth:Mutex::new(held)};
+    recovered.revoke_effects(db,&profile,&grant,grant.stop_fact_id.as_deref(),None)
+}
+
+/// F revoked the original root and recorded auth FileIDs first, then H release
+/// crashed. A RETIRED_CLEANUP_PENDING row still awaits natural peer quiescence
+/// for its domain scan. This path does no ACL or H write.
+pub(crate) fn verify_completed_holder_gone(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    original:&GrokGrant,proof:&NativeProcessHoldersGone)->Result<(),String>{
+    let grant=one(db,&original.instance_id,&original.binding_id)?;
+    if grant!=*original ||!matches!(grant.phase.as_str(),"REVOKED"|"RETIRED_CLEANUP_PENDING") ||
+        grant.stop_fact_id.is_some() {
+        return Err("Grok private HOME: completed holder-gone F row changed".into());
+    }
+    let h=original_h(db,&grant)?.ok_or("Grok private HOME: original H tuple absent")?;
+    if !matches_bound_original(&grant,&h) ||h.custody_stop.is_some() ||h.claim_stop.is_some() ||
+        h.episode_stop.is_some() || !matches!(h.claim_state.as_str(),"COMMITTED"|"UNKNOWN") ||
+        !matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") {
+        return Err("Grok private HOME: original H release window changed".into());
+    }
+    evidence("holder-gone",proof.validate(&[(h.pid,h.creation)]))?;
+    let home=evidence("resolve-F-HOME",instance::resolve_grok_original_home(db,root,&grant.instance_id))?;
+    if home.identity!=grant.home_identity {return Err("Grok private HOME: F HOME identity changed".into());}
+    let profile=evidence("derive-original-SID",AppContainerProfile::derive_for_revocation(&grant.profile_name))?;
+    if evidence("SID-readback",profile.sid_identity())?!=grant.profile_sid {
+        return Err("Grok private HOME: original SID changed".into());
+    }
+    let effects=instance::read_grok_effects(db,&grant.binding_id)?;
+    let ids=recorded_auth(db,&grant)?;
+    if !effects.iter().any(|e|e.action=="REVOKE_ROOT" &&e.phase=="APPLIED" &&
+        e.object_identity==home.identity) ||ids.iter().any(|id|!effects.iter().any(|e|
+        e.action=="REVOKE_AUTH" &&e.phase=="APPLIED" && &e.object_identity==id)) ||
+        effects.iter().any(|e|e.phase!="APPLIED") {
+        return Err("Grok private HOME: completed F ACL effects unproven".into());
+    }
+    let root_acl=evidence("root-readback",grok_root_acl(&profile,&home.path,&home.identity))?;
+    if !root_acl.target_aces.is_empty() ||
+        !evidence("domain-readback",inspect_grok_home_residue(&profile,&home.path,
+            &home.identity,&ids))?.is_empty() {
+        return Err("Grok private HOME: completed F SID residue".into());
+    }
+    Ok(())
 }
 
 /// Root's holder-disappearance ingress supplies the original F row and sealed

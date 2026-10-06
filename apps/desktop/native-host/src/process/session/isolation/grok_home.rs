@@ -30,7 +30,7 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
         ptr::null_mut(),ptr::null_mut(),&mut acl,ptr::null_mut(),&mut descriptor)};
     if status!=0 {return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
     let _descriptor=LocalAllocation(descriptor);
-    if acl.is_null(){return Err(IsolationError::AclWitnessMismatch);}
+    if acl.is_null() || descriptor.is_null(){return Err(IsolationError::AclWitnessMismatch);}
     let mut size=AclSizeInformation{ace_count:0,acl_bytes_in_use:0,acl_bytes_free:0};
     if unsafe {GetAclInformation(acl,(&mut size as *mut AclSizeInformation).cast(),
         size_of::<AclSizeInformation>() as u32,ACL_SIZE_INFORMATION_CLASS)}==0 {
