@@ -4,6 +4,7 @@
 use crate::root::RootIdentity;
 use crate::store::atomic::Statement;
 use crate::store::same_open::VerifiedDatabaseConnection;
+use super::locate_pinned_program;
 
 const SCHEMA: [(&str, &str); 3] = [
     ("gogoke_v37_grok_home_domains", "CREATE TABLE gogoke_v37_grok_home_domains(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),root_identity TEXT NOT NULL,home_identity TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,registration_revision INTEGER NOT NULL CHECK(registration_revision>=1),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
@@ -112,8 +113,18 @@ pub(crate) fn initialize_grok_home_grant_schema(db:&mut VerifiedDatabaseConnecti
     })
 }
 
+fn fixed_catalog(driver:&str,digest:&str,version:&str)->Result<(),String> {
+    locate_pinned_program(driver,digest,version).map(|_|())
+        .map_err(|error|format!("grok F journal: fixed Grok program unavailable: {error:?}"))
+}
+
 pub(crate) fn current_domain(db:&VerifiedDatabaseConnection<'_>, instance_id:&str)->Result<GrokDomain,String> {
-    let row=stmt(db,"SELECT home_identity,program_digest,version,revision FROM main.gogoke_v37_instances WHERE instance_id=?1 AND driver_id='grok' AND version='1.0.41' AND install_state='INSTALLED' AND login_state='LOGGED_IN'")?;
+    current_domain_with_catalog(db,instance_id,&fixed_catalog)
+}
+
+fn current_domain_with_catalog(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,
+    catalog:&impl Fn(&str,&str,&str)->Result<(),String>)->Result<GrokDomain,String> {
+    let row=stmt(db,"SELECT home_identity,program_digest,version,revision FROM main.gogoke_v37_instances WHERE instance_id=?1 AND driver_id='grok' AND version='1.0.41' AND login_state='LOGGED_IN'")?;
     bind(&row,&[instance_id])?;
     if !next(&row)? {return Err("grok F journal: fixed Grok instance absent".into());}
     let home_identity=parse_identity(text(&row,0)?)?;
@@ -121,6 +132,10 @@ pub(crate) fn current_domain(db:&VerifiedDatabaseConnection<'_>, instance_id:&st
     let version=text(&row,2)?;
     let registration_revision=text(&row,3)?.parse::<i64>().map_err(db_error)?;
     if next(&row)? {return Err("grok F journal: duplicate instance".into());}
+    drop(row);
+    // F's install read is observational and does not maintain install_state.
+    // Require the live fixed catalog to match the registered bytes and version.
+    catalog("grok",&program_digest,&version)?;
     Ok(GrokDomain {instance_id:instance_id.into(),root_identity:db.root_identity().clone(),
         home_identity,program_digest,version,registration_revision})
 }
@@ -139,8 +154,14 @@ fn existing_domain(db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Opt
 
 pub(crate) fn begin_grok_grant(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant)->Result<GrokGrant,String>{
+    begin_grok_grant_with_catalog(db,domain,grant,&fixed_catalog)
+}
+
+fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,
+    domain:&GrokDomain,grant:&GrokGrant,
+    catalog:&impl Fn(&str,&str,&str)->Result<(),String>)->Result<GrokGrant,String>{
     tx(db,|db|{
-        if current_domain(db,&domain.instance_id)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
+        if current_domain_with_catalog(db,&domain.instance_id,catalog)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
         if let Some((old,revision))=existing_domain(db,&domain.instance_id)? {
             if old.instance_id!=domain.instance_id ||old.root_identity!=domain.root_identity ||
                 old.home_identity!=domain.home_identity ||old.program_digest!=domain.program_digest ||
@@ -340,15 +361,16 @@ mod tests {
     use super::*;
     use crate::root::RootLock;
     use crate::store::same_open::{create_new,route_b_test_guard};
+    use crate::store::instance::ProgramObservation;
     use std::time::{SystemTime,UNIX_EPOCH};
 
     fn identity(byte:u8)->RootIdentity{RootIdentity{volume_serial:1,file_id:[byte;16]}}
-    fn grant(binding:&str,request:&str,sid:&str)->GrokGrant{
+    fn grant(binding:&str,request:&str,sid:&str,digest:&str)->GrokGrant{
         GrokGrant{binding_id:binding.into(),instance_id:"grokA".into(),domain_id:"domainA".into(),
             session_id:format!("session{binding}"),seat_id:"seatA".into(),
             seat_incarnation:format!("seat-{binding}"),generation:"1".into(),
             request_id:request.into(),profile_name:format!("Gogoke37.{binding}"),
-            profile_sid:sid.into(),program_digest:"sha256:fixture".into(),
+            profile_sid:sid.into(),program_digest:digest.into(),
             home_identity:identity(1),auth_identity:identity(2),phase:"GRANT_PENDING".into(),
             process_operation_id:None,ticket:None,custodian_nonce:None,pid:None,
             creation_time_100ns:None,image_path:None,stop_fact_id:None,revision:1}
@@ -369,15 +391,30 @@ mod tests {
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!("grok-f-acl-{}-{nonce}",std::process::id()));
         std::fs::create_dir(&path).unwrap();
+        // This is a synthetic file for journal authority tests, not an
+        // installed Grok program. The production path uses fixed_catalog.
+        let program=path.join("synthetic-program.exe");
+        let bytes=b"synthetic Grok catalog observation";
+        std::fs::write(&program,bytes).unwrap();
+        let digest=crate::store::digest::content_hash(bytes);
+        let catalog=|driver:&str,pin:&str,version:&str|->Result<(),String>{
+            if driver!="grok" || version!="1.0.41" {return Err("synthetic catalog: wrong driver or version".into());}
+            let observed=ProgramObservation::observe(&program,version).map_err(db_error)?;
+            if !observed.matches_pin(pin,version) {return Err("synthetic catalog: pin changed".into());}
+            Ok(())
+        };
         let root=RootLock::acquire(&path).unwrap();
         let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
         db.execute("PRAGMA foreign_keys=ON").unwrap();
         super::super::initialize_schema(&mut db).unwrap();
-        let insert=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_instances VALUES('grokA','grok','homeA',?1,'sha256:fixture','1.0.41','INSTALLED','LOGGED_IN',1)").unwrap();
-        insert.bind_text(1,&identity(1).opaque()).unwrap();insert.step_done().unwrap();drop(insert);
+        let insert=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_instances VALUES('grokA','grok','homeA',?1,?2,'1.0.41','UNKNOWN','LOGGED_IN',1)").unwrap();
+        insert.bind_text(1,&identity(1).opaque()).unwrap();insert.bind_text(2,&digest).unwrap();insert.step_done().unwrap();drop(insert);
         initialize_grok_home_grant_schema(&mut db).unwrap();
-        let domain=current_domain(&db,"grokA").unwrap();
-        let first=begin_grok_grant(&mut db,&domain,&grant("bindingA","openA","sid-A")).unwrap();
+        let domain=current_domain_with_catalog(&db,"grokA",&catalog).unwrap();
+        assert!(current_domain(&db,"grokA").is_err(),"production catalog must reject synthetic bytes");
+        assert!(begin_grok_grant(&mut db,&domain,&grant("bindingA","openA","sid-A",&digest)).is_err(),
+            "production grant must reject synthetic bytes before an intent");
+        let first=begin_grok_grant_with_catalog(&mut db,&domain,&grant("bindingA","openA","sid-A",&digest),&catalog).unwrap();
         let root_effect=acl_effect("bindingA","GRANT_ROOT",identity(1));
         let pending=begin_grok_effect(&mut db,&root_effect).unwrap();
         assert_eq!(begin_grok_effect(&mut db,&root_effect).unwrap().phase,"INTENT");
@@ -390,7 +427,7 @@ mod tests {
         // A failure before the first auth grant has a positive NoAttempt
         // settlement: exact root/auth revoke readbacks, without inventing a
         // GRANT_AUTH effect or process tuple.
-        let failed=begin_grok_grant(&mut db,&domain,&grant("failedA","failedOpen","sid-failed")).unwrap();
+        let failed=begin_grok_grant_with_catalog(&mut db,&domain,&grant("failedA","failedOpen","sid-failed",&digest),&catalog).unwrap();
         set_grok_grant_phase(&mut db,&failed,"REVOKE_PENDING",None).unwrap();
         for (action,id) in [("REVOKE_ROOT",identity(1)),("REVOKE_AUTH",identity(2))] {
             let mut effect=acl_effect("failedA",action,id);
@@ -402,15 +439,23 @@ mod tests {
             .find(|row|row.binding_id=="failedA").unwrap();
         set_grok_grant_phase(&mut db,&pending,"REVOKED",None).unwrap();
         db.execute("UPDATE main.gogoke_v37_instances SET revision=2 WHERE instance_id='grokA'").unwrap();
-        let domain2=current_domain(&db,"grokA").unwrap();
-        begin_grok_grant(&mut db,&domain2,&grant("bindingB","openB","sid-B")).unwrap();
+        let domain2=current_domain_with_catalog(&db,"grokA",&catalog).unwrap();
+        begin_grok_grant_with_catalog(&mut db,&domain2,&grant("bindingB","openB","sid-B",&digest),&catalog).unwrap();
         let row=Statement::prepare(db.as_ptr(),"SELECT registration_revision,revision FROM main.gogoke_v37_grok_home_domains WHERE instance_id='grokA'").unwrap();
         assert!(row.step_row().unwrap());
         assert_eq!(row.column_text(0).unwrap(),"2");
         assert_eq!(row.column_text(1).unwrap(),"2");drop(row);
         db.execute("UPDATE main.gogoke_v37_instances SET program_digest='sha256:changed',revision=3 WHERE instance_id='grokA'").unwrap();
-        let changed=current_domain(&db,"grokA").unwrap();
-        assert!(begin_grok_grant(&mut db,&changed,&grant("bindingC","openC","sid-C")).is_err());
+        assert!(current_domain_with_catalog(&db,"grokA",&catalog).is_err());
+        db.execute(&format!("UPDATE main.gogoke_v37_instances SET program_digest='{digest}',revision=4 WHERE instance_id='grokA'")).unwrap();
+        std::fs::remove_file(&program).unwrap();
+        assert!(current_domain_with_catalog(&db,"grokA",&catalog).is_err());
+        std::fs::write(&program,b"tampered synthetic program").unwrap();
+        assert!(current_domain_with_catalog(&db,"grokA",&catalog).is_err());
+        std::fs::write(&program,bytes).unwrap();
+        db.execute(&format!("UPDATE main.gogoke_v37_instances SET home_identity='{}',revision=5 WHERE instance_id='grokA'",identity(3).opaque())).unwrap();
+        let changed=current_domain_with_catalog(&db,"grokA",&catalog).unwrap();
+        assert!(begin_grok_grant_with_catalog(&mut db,&changed,&grant("bindingC","openC","sid-C",&digest),&catalog).is_err());
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 }
