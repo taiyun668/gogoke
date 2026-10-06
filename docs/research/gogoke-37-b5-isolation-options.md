@@ -17,8 +17,8 @@ requirements: Owner performs an ordinary-user login, while the model process
 runs under its existing LPAC identity. Windows documents AppContainer credential
 isolation; `agy` documents that it obtains OAuth from the native keyring. No
 documented `agy` broker transfers an isolated credential to an LPAC model
-process. This is a source-backed incompatibility gap, not a request to change
-the process boundary. Keep B5 unsupported and unrun.
+process. This is a source-backed unresolved compatibility gap, not a request
+to change the process boundary. Keep B5 unsupported and unrun.
 
 The task handoff reports that the fixed local `agy` executable path currently
 has no executable. This investigation did not probe that path, run `agy`, read
@@ -75,7 +75,7 @@ LPAC evidence.
 | `HOME` or settings directory | Google's CLI docs put settings under `~/.gemini/antigravity-cli/settings.json`; project history/session files are home-relative. | Can select local settings/history. It does not select the Windows Credential Manager set associated with the process token. Insufficient for OAuth isolation. |
 | CLI `--profile`, `--data-dir`, `--user-data-dir`, auth-store flag | Google's current CLI flag reference lists prompt, model, conversation, mode/sandbox-related flags; it does not document these auth selectors. Upstream issue #381 is still open and asks for a supported auth-profile/root selector; the issue is user-submitted evidence of a documentation gap, not a vendor implementation contract. | Unsupported/unverified. Do not route a B5 login through a guessed flag or Antigravity IDE launcher option. |
 | `--mode=plan` / `--sandbox` | Google's headless documentation says active-workspace file reads/writes are auto-allowed; the fixed 1.2.11 direct research recorded a workspace write even with both flags. | Execution mode/sandbox flags are not an auth boundary and do not prove no-write behavior. |
-| Windows Credential Manager | Google documents native-keyring OAuth. Microsoft's `CredRead` API reads from the set associated with the current token's logon session. | A home/profile path does not choose another logon session. Do not read, copy, rename, inject, or swap credentials to simulate a profile. |
+| Windows Credential Manager | Google documents native-keyring OAuth. Microsoft's `CredRead` contract, if an app uses that API, reads from the set associated with the current token's logon session. | A home/profile path does not choose another logon session. Do not read, copy, rename, inject, or swap credentials to simulate a profile. |
 | Separate Windows user/logon | Microsoft's docs define a token/logon-session credential set; AppContainer adds a distinct package identity. A third-party adapter for **Antigravity IDE 2.x** chooses an OS-user boundary and requires elevation on Windows. | Different identity/process boundary, not same-user B5. The IDE adapter is not the `agy` CLI; its documentation is not evidence for the fixed CLI. Out of current scope and requires an Owner decision before any future attempt. |
 | Gemini API-key mode | Google's CLI docs require `modelProvider: "gemini"` plus `GEMINI_API_KEY` and say requests go directly to Gemini API without an account session. | Different provider/auth route, requires a secret and separate authorization, and is not Antigravity subscription OAuth. It cannot be counted as B5. |
 | Third-party wrappers/proxies | Reviewed projects either switch the shared live keyring state, depend on a different OS/user boundary, or accept/manage token material. Some place a token in the agent environment or add a credential proxy. | Not an eligible substitute for the official pinned `agy` login path; introduces credential handling or changes the trust boundary. No wrapper CLI or proxy was built or run. |
@@ -89,8 +89,11 @@ there is no supported no-model authentication check to qualify.
 
 Microsoft describes LPAC as more isolated than AppContainer and says
 AppContainer credential isolation prevents using user credentials to log into
-other environments. The `CredRead` API is token/logon-session based, not
-`HOME`-based. **Inference:** launching the same `agy` OAuth consumer under LPAC
+other environments. Microsoft's `CredRead` API contract is
+token/logon-session based, not `HOME`-based; that contract does not prove the
+fixed `agy` binary calls `CredRead` or uses it as its native-keyring backend.
+This research did not measure an LPAC token's `AuthenticationId` or keyring
+visibility. **Inference:** launching the same `agy` OAuth consumer under LPAC
 cannot be presumed to read the ordinary user's keyring; launching it as an
 ordinary process instead would fail the existing model-LPAC boundary unless
 Google documents and the product proves a separate broker/model split. Neither
