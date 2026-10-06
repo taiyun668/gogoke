@@ -217,6 +217,15 @@ impl<'root> ProductDatabase<'root> {
         }
         self.gone_scope(instance_id,&allowed,incoming,false)?;
         for mut grant in grants {
+            if grant.phase=="RETIRED_CLEANUP_PENDING" &&grant.stop_fact_id.is_some(){
+                // A normal peer can outlive this stopped generation, which
+                // may already have resumed and moved H's current pointer.
+                // Validate the immutable historical stop/effects here; the
+                // final quiescent domain scan still decides F completion.
+                evidence(grok_home_launch::verify_retired_stopped(
+                    &self.connection,self.root,&grant))?;
+                continue;
+            }
             if grant.phase=="GRANT_PENDING"{
                 return Err(denied("Grok cold grant lacks confirmed process/no-attempt boundary; original fence retained"));
             }
