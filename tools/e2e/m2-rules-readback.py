@@ -110,7 +110,8 @@ def turn_activity(decoded, thread, turn, allow_question=False, expected_input=No
             item = params.get("item")
             if isinstance(item, dict) and item.get("type") == "userMessage":
                 check(expected_input is not None and
-                      item.get("content") == [{"type": "text", "text": expected_input}],
+                      item.get("content") == [{"type": "text", "text": expected_input,
+                                               "text_elements": []}],
                       "Original User echo is not the exact authorized ask")
                 input_echoes.append((method, typed_id(item.get("id"))))
                 continue
