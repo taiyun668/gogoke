@@ -91,6 +91,10 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     append(&mut db,"otherSession","otherSeat",ledger::Tier::Seat,1,"otherFirst");
     append(&mut db,"sideSession","sideSeat",ledger::Tier::Side,1,"ownTurn");
     append(&mut db,"mainA","leadA",ledger::Tier::Seat,2,"mainTail");
+    let own_epoch=side(&db,"projectA","sideA").unwrap().epoch;
+    let own_page=read_thread(&mut db,&owner,"projectA","sideA",&LedgerPosition {epoch:own_epoch,cursor:0},2).unwrap();
+    assert_eq!(own_page.events.iter().map(|event|event.input.event_id.as_str()).collect::<Vec<_>>(),vec!["ownTurn"]);
+    assert_eq!(own_page.cursor,4,"unrelated rows cannot consume the side transcript page");
     assert_eq!(decode_receipt(&execute(&mut db,&owner,&read,None).unwrap()).unwrap().status,V37Status::Stale);
     for cursor in 1..=4 {assert_eq!(collect(&mut db,&owner,"projectA","sideA",1).unwrap().cursor,cursor);}
     let unrelated=materialize(&mut db,&owner,"projectA","sideA",1,4,1).unwrap();

@@ -1243,6 +1243,52 @@ pub(crate) fn query(
     Ok(EventPage { position, events })
 }
 
+/// Read only the persisted side-chat registration's own transcript. The
+/// identity predicate precedes LIMIT so unrelated ledger rows cannot consume
+/// this page; the returned position remains the global ledger head.
+pub(crate) fn query_own_side(
+    connection: &VerifiedDatabaseConnection<'_>,
+    reader: &Reader,
+    after: &LedgerPosition,
+    limit: u32,
+) -> Result<EventPage, AtomicError> {
+    let session = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if session.domain_id != reader.domain_id || session.seat_id != reader.seat_id {
+        return Err(AtomicError::OperationConflict);
+    }
+    if session.purpose != SessionPurpose::SideChat {
+        return Err(AtomicError::InvalidRecord("side-chat reader required"));
+    }
+    let side_id = session.side_id.as_deref()
+        .ok_or(AtomicError::InvalidRecord("sideId"))?;
+    let position = recover(connection)?;
+    if after.epoch != position.epoch || after.cursor > position.cursor {
+        return Err(AtomicError::OperationConflict);
+    }
+    if limit == 0 || limit > 1000 {
+        return Err(AtomicError::InvalidRecord("limit"));
+    }
+    let statement = Statement::prepare(
+        connection.as_ptr(),
+        &format!(
+            "SELECT {EVENT_COLUMNS} {EVENT_SOURCE}
+             WHERE i.cursor > ? AND i.source_kind = 'v37'
+               AND i.domain_id = ? AND i.tier = 'SIDE' AND i.side_id = ?
+             ORDER BY i.cursor LIMIT ?"
+        ),
+    )?;
+    statement.bind_i64(1, after.cursor as i64)?;
+    statement.bind_text(2, &session.domain_id)?;
+    statement.bind_text(3, side_id)?;
+    statement.bind_i64(4, i64::from(limit))?;
+    let mut events = Vec::new();
+    while statement.step_row()? {
+        events.push(read_event(&statement)?);
+    }
+    Ok(EventPage { position, events })
+}
+
 /// Privileged secretary route. Native H must supply a verified global seat;
 /// project and side readers must never be routed to this function.
 pub(crate) fn query_global(
@@ -1884,6 +1930,21 @@ pub(crate) mod tests {
                 .len(),
             5
         );
+        let own_first = query_own_side(&connection, &side_reader, &start, 1)
+            .expect("registered side transcript");
+        assert_eq!(own_first.position.cursor, 7);
+        assert_eq!(own_first.events[0].input.event_id, "side-private");
+        let own_next = query_own_side(
+            &connection,
+            &side_reader,
+            &LedgerPosition { epoch: start.epoch.clone(), cursor: own_first.events[0].cursor },
+            1,
+        ).expect("next own turn");
+        assert_eq!(own_next.events[0].input.event_id, "side-latest");
+        assert!(query_own_side(&connection, &lead_reader, &start, 1).is_err());
+        assert!(query_own_side(&connection, &review_reader, &start, 1).is_err());
+        assert!(query_own_side(&connection, &Reader { seat_id: "lead".into(), ..side_reader.clone() }, &start, 1).is_err());
+        assert!(query_own_side(&connection, &side_reader, &LedgerPosition { epoch: "wrong".into(), cursor: 0 }, 1).is_err());
         assert!(query(&connection, &review_reader, &start, 100).is_err());
         assert_eq!(
             query_global(&connection, &start, 100)
