@@ -63,7 +63,10 @@ fn apply(db:&mut VerifiedDatabaseConnection<'_>,expected:GrokEffect,
     if after.identity!=intent.object_identity ||after.target_aces!=intent.after_aces ||
         after.dacl_control!=intent.after_control ||
         !before.preserves_other_aces(&after) {
-        return Err("Grok private HOME: ACL effect readback diverged".into());
+        return Err(format!("Grok private HOME: ACL effect readback diverged; action={}; before_control=0x{:04x}; expected_control=0x{:04x}; actual_control=0x{:04x}; identity_match={}; expected_target={:?}; actual_target={:?}; peer_bytes_preserved={}",
+            intent.action, before.dacl_control, intent.after_control, after.dacl_control,
+            after.identity==intent.object_identity, intent.after_aces, after.target_aces,
+            before.preserves_other_aces(&after)));
     }
     instance::finish_grok_effect(db,&intent)
 }
