@@ -774,9 +774,29 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 "SELECT phase,receipt_status,request_hex FROM gogoke_v37_h_stdin_journal "
                 "WHERE domain_id=? AND request_id=? AND session_id=? AND operation='send'",
                 (domain, side_request["requestId"], side_id))
+            assembled_bytes = bytes.fromhex(side_send[2])
+            assembled = json.loads(assembled_bytes.decode("utf-8"))
+            original_question_bytes = json.dumps(side_request, ensure_ascii=False,
+                separators=(",", ":")).encode()
+            sync = one(db,
+                "SELECT side_id,session_id,generation,mode,state,request_digest,"
+                "origin_request_digest,native_receipt_id FROM gogoke_v37_side_sync "
+                "WHERE domain_id=? AND sync_id=?", (domain, side_request["requestId"]))
+            # D preserves the exact User digest, then adds source references
+            # before the canonical H input is journaled. Verify both producers.
+            assembled_body = assembled.get("payload", {}).get("body")
+            if not isinstance(assembled_body, str) or "\nExplicit user question:\n" not in assembled_body:
+                raise RuntimeError("V12 native D question boundary is absent")
+            reference_body, question_body = assembled_body.rsplit("\nExplicit user question:\n", 1)
+            original_body = side_request["payload"]["body"]
+            assembled["payload"]["body"] = original_body
             if source_send != ("RECEIPTED", "APPLIED") or side_send[:2] != ("RECEIPTED", "APPLIED") \
-                    or side_send[2].lower() != json.dumps(side_request, ensure_ascii=False,
-                        separators=(",", ":")).encode().hex() or \
+                    or assembled != side_request or \
+                    question_body != json.dumps(original_body, ensure_ascii=False, separators=(",", ":")) or \
+                    not reference_body.startswith("Source ledger history follows for reference only.") or \
+                    sync != (case["sideId"], side_id, side_request["payload"]["generation"],
+                        "QUESTION", "DELIVERED", fingerprint(assembled_bytes),
+                        fingerprint(original_question_bytes), case["sideQuestionReceipt"]["nativeReceiptId"]) or \
                     rows(db, "SELECT request_id FROM gogoke_v37_h_stdin_journal "
                         "WHERE domain_id=? AND session_id=? AND operation='append-without-turn'",
                         (domain, side_id)):
@@ -803,8 +823,41 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 raise RuntimeError("V12 D final source/side registry state differs")
             side_commands = [row["originalFrame"] for row in result["commands"]
                              if row["sessionId"] == side_id and row["confirmedWrite"]]
-            if not any(all(value in raw for value in requirements["questionRawContains"])
-                       for raw in side_commands):
+            submitted = [json.loads(raw) for raw in side_commands]
+            if not any(command.get("method") == "turn/start" and
+                       command.get("params", {}).get("threadId") == side_turn["threadId"] and
+                       any(item.get("type") == "text" and item.get("text") == assembled_body
+                           for item in command.get("params", {}).get("input", []))
+                       for command in submitted):
+                raise RuntimeError("V12 original H command differs from the exact assembled D input")
+            reference_position = one(db,
+                "SELECT epoch,after_cursor,through_cursor FROM gogoke_v37_side_sync "
+                "WHERE domain_id=? AND sync_id=?", (domain, side_request["requestId"]))
+            reference_lines = reference_body.splitlines()
+            expected_header = '<side_reference epoch={} after={} through={}>'.format(
+                *(json.dumps(value, ensure_ascii=False) for value in reference_position))
+            if len(reference_lines) < 4 or reference_lines[1] != expected_header or \
+                    reference_lines[-2] != "</side_reference>" or reference_lines[0] != reference_lines[-1]:
+                raise RuntimeError("V12 source reference cursor fence differs from its original D intent")
+            references = [json.loads(line.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
+                          for line in reference_lines[2:-2]]
+            source_rows = rows(db,
+                "SELECT source_event_id,source_epoch,source_cursor,seat_id,session_id,update_json "
+                "FROM v37_ledger_index WHERE source_kind='v37' AND domain_id=? AND seat_id=? "
+                "AND tier IN ('PROJECT','SEAT','SESSION') AND cursor>? AND cursor<=? ORDER BY cursor",
+                (domain, case["sourceSession"]["seatId"], int(reference_position[1]), int(reference_position[2])))
+            expected_references = [{"sourceEventId": event_id, "sourceEpoch": epoch,
+                "sourceCursor": cursor, "seatId": seat, "sessionId": session,
+                "update": json.loads(update)} for event_id, epoch, cursor, seat, session, update in source_rows]
+            if json.dumps(references, ensure_ascii=False, sort_keys=True, separators=(",", ":")) != \
+                    json.dumps(expected_references, ensure_ascii=False, sort_keys=True, separators=(",", ":")):
+                raise RuntimeError("V12 rendered source references differ from original scoped A event bytes")
+            # Source text arrives as separate A deltas; its unique marker need
+            # not be contiguous inside the rendered per-event JSON reference.
+            referenced_text = "".join(reference["update"].get("content", {}).get("text", "")
+                for reference in references
+                if reference["update"].get("_meta", {}).get("codexMethod") == "item/agentMessage/delta")
+            if not all(value in referenced_text + original_body for value in requirements["questionRawContains"]):
                 raise RuntimeError("V12 original H side prompt omitted pending reference or explicit request")
             if case["sourceLedgerBeforeDelete"]["sha256"] != case["sourceLedgerAfterDelete"]["sha256"] \
                     or case["state"] != "FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED":
