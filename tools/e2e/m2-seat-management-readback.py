@@ -182,8 +182,9 @@ def main():
           case["acceptance"] is False and case["sourceCommit"] == journal["sourceCommit"] and
           len(case["projects"]) == 2, "Original private seat-management journal required")
     evidence = Path(case["evidenceDirectory"]).resolve(strict=True)
+    reader_sha256 = digest(Path(__file__).read_bytes())
+    check(reader_sha256 == case["readerSha256"], "Executed reader bytes differ from the original case")
     check(Path(case["stateRoot"]).resolve(strict=True) == root and
-          Path(journal["evidenceDirectory"]).resolve(strict=True) == evidence and
           output.parent == journal_path.parent == evidence,
           "Readback root, evidence output and original journal directory must match")
     launches, closes = journal.get("launches", []), journal.get("closes", [])
@@ -230,7 +231,7 @@ def main():
     if phase == "final":
         reference = case.get("baseline")
         check(reference and Path(reference["file"]).name == reference["file"], "Original baseline artifact required")
-        baseline_path = Path(journal["evidenceDirectory"]) / reference["file"]
+        baseline_path = evidence / reference["file"]
         check(digest(baseline_path.read_bytes()) == reference["sha256"], "Original baseline artifact bytes changed")
         baseline = json.loads(baseline_path.read_text(encoding="utf-8-sig"))
         check(baseline["schema"] == "gogoke.37.private-m2-seat-management-readback.v1" and
@@ -351,7 +352,7 @@ def main():
     proof = {"schema": "gogoke.37.private-m2-seat-management-readback.v1", "phase": phase,
              "caseId": journal["caseId"], "sourceCommit": case["sourceCommit"], "domainId": case["domainId"],
              "stateRoot": str(root), "evidenceDirectory": str(evidence),
-             "readerSha256": case["readerSha256"], "databaseSha256": database_hash,
+             "readerSha256": reader_sha256, "databaseSha256": database_hash,
              "rootIdentity": root_identity, "candidateIdentity": candidate_identity,
              "candidateInstalledSha256": installed,
              "launch": {"pid": launch["pid"], "sourceCommit": launch["sourceCommit"]},
