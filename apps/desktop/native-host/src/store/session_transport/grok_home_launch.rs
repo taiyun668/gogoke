@@ -657,6 +657,53 @@ pub(crate) fn verify_completed_no_attempt(db:&VerifiedDatabaseConnection<'_>,roo
     Ok(())
 }
 
+/// The stopped generation may no longer be the current H claim after a
+/// legitimate resume. Verify its immutable episode/custody and F ACL effects
+/// before Root defers the final HOME scan to natural quiescence.
+pub(crate) fn verify_retired_stopped(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    original:&GrokGrant)->Result<(),String>{
+    let grant=one(db,&original.instance_id,&original.binding_id)?;
+    if grant!=*original ||grant.phase!="RETIRED_CLEANUP_PENDING" ||
+        grant.stop_fact_id.as_deref().map_or(true,str::is_empty) {
+        return Err("Grok private HOME: original retired StopFact F row changed".into());
+    }
+    let operation=grant.process_operation_id.as_deref()
+        .ok_or("Grok private HOME: retired original operation absent")?;
+    let ticket=grant.ticket.as_deref().ok_or("Grok private HOME: retired ticket absent")?;
+    let nonce=grant.custodian_nonce.as_deref().ok_or("Grok private HOME: retired nonce absent")?;
+    let pid=grant.pid.ok_or("Grok private HOME: retired PID absent")?.to_string();
+    let creation=grant.creation_time_100ns.ok_or("Grok private HOME: retired creation absent")?.to_string();
+    let image=grant.image_path.as_deref().ok_or("Grok private HOME: retired image absent")?;
+    let stop=grant.stop_fact_id.as_deref().unwrap_or("");
+    if !exact_exists(db,"retired stopped original",
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.binding_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.session_id=?4 AND e.generation=?5 AND e.request_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8 AND e.process_operation_id=?9 AND e.phase='STOPPED' AND e.stop_fact_id=?10 AND c.ticket=?11 AND c.custodian_nonce=?12 AND c.pid=?13 AND c.creation_time_100ns=?14 AND c.image_path=?15 AND c.binary_digest_sha256=?16 AND c.state='STOPPED' AND c.stop_proof_hash=?10",
+        &[&grant.binding_id,&grant.instance_id,&grant.domain_id,&grant.session_id,
+            &grant.generation,&grant.request_id,&grant.seat_id,&grant.seat_incarnation,
+            operation,stop,ticket,nonce,&pid,&creation,image,&grant.program_digest])? {
+        return Err("Grok private HOME: historical StopFact H/custody tuple changed".into());
+    }
+    let home=evidence("resolve-F-HOME",instance::resolve_grok_original_home(db,root,&grant.instance_id))?;
+    if home.identity!=grant.home_identity {return Err("Grok private HOME: retired F HOME changed".into());}
+    let profile=evidence("derive-original-SID",AppContainerProfile::derive_for_revocation(&grant.profile_name))?;
+    if evidence("SID-readback",profile.sid_identity())?!=grant.profile_sid {
+        return Err("Grok private HOME: retired original SID changed".into());
+    }
+    let effects=instance::read_grok_effects(db,&grant.binding_id)?;
+    let ids=recorded_auth(db,&grant)?;
+    if effects.iter().any(|e|e.phase!="APPLIED") ||
+        !effects.iter().any(|e|e.action=="REVOKE_ROOT" &&e.phase=="APPLIED" &&
+            e.object_identity==home.identity) ||
+        ids.iter().any(|id|!effects.iter().any(|e|e.action=="REVOKE_AUTH" &&
+            e.phase=="APPLIED" && &e.object_identity==id)) {
+        return Err("Grok private HOME: retired stopped ACL effects incomplete".into());
+    }
+    let root_acl=evidence("retired root readback",grok_root_acl(&profile,&home.path,&home.identity))?;
+    if !root_acl.target_aces.is_empty() {
+        return Err("Grok private HOME: retired stopped root SID persists".into());
+    }
+    Ok(())
+}
+
 /// Root's holder-disappearance ingress supplies the original F row and sealed
 /// kernel observation. We independently join the original H episode, claim,
 /// seat and custody; a NULL StopFact remains NULL. H release is Root-owned.
