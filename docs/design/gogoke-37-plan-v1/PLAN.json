@@ -113,7 +113,7 @@
   {
    "id": "R-SEAT",
    "source": "37 §13a, §2a, §2b0",
-   "text": "Seats: long- and short-lived, state card, template copy then tune, seat management page with worker activity, user layer vs lead layer."
+   "text": "Seats: long- and short-lived, state card, template copy then tune, current-project seat management in the fourth right-side panel with real host source or explicit unavailable state, worker activity, user layer vs lead layer and bounded orchestration; no internal session/PID identifiers in the UI."
   },
   {
    "id": "R-INST",
@@ -708,7 +708,56 @@
    },
    {
     "path": "apps/desktop/src/features/app/components/MainApp.tsx",
-    "extension": "slots for seat page, instance page, inbox, side chat, question cards and worktree graph",
+    "extension": "slots for seat, instance, inbox, side chat, question-card and worktree UI; pass the current-project SeatsSource into the right-side panel without fabricated seat data",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/layout/components/PanelTabs.tsx",
+    "extension": "add the fourth right-side Seats tab to the closed PanelTabId union and lucide users icon; the existing shared PanelShell reuses the widened union",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/layout/hooks/layoutNodes/buildGitNodes.tsx",
+    "extension": "route the seats panel mode to <SeatsPanel source={...}/> in the existing right-side content branch while retaining Git, Files and Prompts branches",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/layout/hooks/layoutNodes/types.ts",
+    "extension": "carry the optional real SeatsSource through LayoutGitSurface to buildGitNodes without broadening unrelated layout modules",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/app/hooks/useGitPanelController.ts",
+    "extension": "carry the fourth seats mode in the panel state union without changing Git execution or custody",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/app/hooks/useMainAppComposerWorkspaceState.ts",
+    "extension": "accept the fourth panel mode in its view type; file/composer behavior remains scoped to its existing modes",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/app/hooks/useWorkspaceFileListing.ts",
+    "extension": "accept the fourth panel mode while fetching files only for Files mode or existing composer autocomplete",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/app/hooks/useMainAppLayoutSurfaces.ts",
+    "extension": "pass the current-project SeatsSource from the already-mapped MainApp slot into the right-side layout surface; absent real source remains null",
     "serves": [
      "G"
     ]
@@ -825,7 +874,7 @@
    },
    {
     "path": "apps/desktop/src/i18n/index.tsx",
-    "extension": "English and zh-CN translation keys for the instance section label; TranslationKey is derived from the English table",
+    "extension": "English and zh-CN translation keys for the instance section and fourth Seats panel tab; TranslationKey is derived from the English table",
     "serves": [
      "G"
     ]
@@ -1018,9 +1067,10 @@
      "reclaim",
      "short-to-long",
      "state-card",
-     "takeover-answers"
+     "takeover-answers",
+     "set-orchestration-bounds"
     ],
-    "seams": "Layer check on every call: the lead touches lead-layer seats only, inside user-set bounds, never its own binding. Instance change on a busy seat is refused. E.1 settles registry, binding and the persisted project parallel cap at M1; the rest at M2."
+    "seams": "Layer check on every call: the lead touches lead-layer seats only, inside user-set bounds, never its own binding. Instance change on a busy seat is refused. E.1 settles registry, binding and the persisted project parallel cap at M1; the rest at M2. Current-project seat readback is host-backed: running seat count and local concurrency limit; each seat name, direct subordinates, lead flag, long/short life, IDLE/WORKING/SWITCHING/STOP_REQUESTED/STUCK/REMOVING/REMOVED visible state, current instance display name/vendor and prior instance during a switch, selected model/effort/permission tier, one-line doing, stuck duration, last activity, state-card goal/pending/reclaim condition and recent actions. REMOVING/REMOVED are UI projections of the existing reclaim lifecycle, not new stop facts. Eligible instance choices are LOGGED_IN and enabled; model choices are bound to that instance, and effort/tier/template choices come only from current host capability. Lead orchestration bounds expose allowed instances, maximum permission and seat cap. Create-from-template creates a direct subordinate, tune changes authorized fields, change-instance refuses busy, reclaim refuses the lead and for a busy seat first obtains and reads back the real H stop fact while retaining the seat record, and set-orchestration-bounds follows the user-layer authority. No session ID, PID or other internal identifier enters the UI read model."
    },
    {
     "id": "K-POLICY",
@@ -1094,7 +1144,7 @@
      "read-models",
      "actions"
     ],
-    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states. At M1 with G.0: instance read models for the four states not installed, not logged in, logged in and error (including a failed login's raw reason), and the login start, progress, result and cancel actions; at M2, the managed CLI/version and source-backed exhaustion read models settle with F.2 and V13; the remaining instance management presentation settles at M3. The CLI read model distinguishes operation status/progress/original failure, current version, verified new version, unverified official new-version notice, previous verified version and last check time. The instance read model may expose display name, enabled state, last-confirmed masked account/subscription and OpenCode connected-model source, current login-status detection error, recent records, seats and active session count, cap, selected model and separately evidenced available models, expiry, explicit CLI recovery time, masked wrong-account-not-adopted and abnormal-close records only from the responsible host observations. Missing or ambiguous values stay UNKNOWN, and no model call is made to measure quota. The detect control only requests non-spending login status; doctor has its own control and result and is never used as detect. Upgrade and rollback run only after an explicit User click, but the host downloads, verifies and installs the bytes without any manual CLI download or installation by the Owner. UI actions are gated by host capability: create immediately starts supported login-only, rename, enable/disable, delete with in-use refusal, cap, detect and open the controlled home; unsupported actions are hidden. Public UI does not display internal IDs, paths, hashes or revisions. Exact create input is vendor, display name and, for OpenCode, connected-model source; this is distinct from credential backend/origin. Read back the last successful login/account confirmation timestamp. An abnormal-exit record includes the host-confirmed automatic cleanup result and its evidence; unresolved cleanup stays UNKNOWN and cannot be shown as completed. CLI installation failure and installed-but-launch-blocked are distinct states, each retaining its original error; install and upgrade progress and failures are also distinct."
+    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states. At M1 with G.0: instance read models for the four states not installed, not logged in, logged in and error (including a failed login's raw reason), and the login start, progress, result and cancel actions; at M2, the managed CLI/version and source-backed exhaustion read models settle with F.2 and V13; the remaining instance management presentation settles at M3. The CLI read model distinguishes operation status/progress/original failure, current version, verified new version, unverified official new-version notice, previous verified version and last check time. The instance read model may expose display name, enabled state, last-confirmed masked account/subscription and OpenCode connected-model source, current login-status detection error, recent records, seats and active session count, cap, selected model and separately evidenced available models, expiry, explicit CLI recovery time, masked wrong-account-not-adopted and abnormal-close records only from the responsible host observations. Missing or ambiguous values stay UNKNOWN, and no model call is made to measure quota. The detect control only requests non-spending login status; doctor has its own control and result and is never used as detect. Upgrade and rollback run only after an explicit User click, but the host downloads, verifies and installs the bytes without any manual CLI download or installation by the Owner. UI actions are gated by host capability: create immediately starts supported login-only, rename, enable/disable, delete with in-use refusal, cap, detect and open the controlled home; unsupported actions are hidden. Public UI does not display internal IDs, paths, hashes or revisions. Exact create input is vendor, display name and, for OpenCode, connected-model source; this is distinct from credential backend/origin. Read back the last successful login/account confirmation timestamp. An abnormal-exit record includes the host-confirmed automatic cleanup result and its evidence; unresolved cleanup stays UNKNOWN and cannot be shown as completed. CLI installation failure and installed-but-launch-blocked are distinct states, each retaining its original error; install and upgrade progress and failures are also distinct. The current-project SeatsSource.read returns null when the real host seat bridge is absent; SeatsPanel then shows “席位数据还没接上”, never a fake or cached success. Its real read model carries project running-seat count/local concurrency cap and each K-SEAT field including direct subordinates, lead/long-short flags, the seven visible states, current/prior instance display names/vendors, selected model/effort/tier, doing/stuck/last activity, state-card goal/pending/reclaim condition and recent actions. Choices are only host-confirmed LOGGED_IN+enabled instances, instance-bound models, supported efforts/tiers and templates; lead bounds expose allowed instances, maximum permission and seat cap. UI actions map to K-SEAT create-from-template direct subordinate, tune, busy-refusing change-instance, lead-refusing reclaim with real H stop/readback for busy seats and retained records, and set-orchestration-bounds. Internal session numbers, PIDs and other host IDs remain offscreen; missing source or capability never masquerades as implemented."
    }
   ]
  },
@@ -1502,7 +1552,8 @@
       "question cards wrap the existing RequestUserInputMessage primitive",
       "instance section inside Settings through the opened slot",
       "existing tokens and primitives only",
-      "instance Settings view consumes host-backed managed CLI and instance capability/data only; create begins supported login, actions without host capability are hidden, and internal IDs, paths, hashes and revisions are not shown. Unknown account, subscription, OpenCode source, model, expiry or recovery data stays unknown; no quota-spending model probe."
+      "instance Settings view consumes host-backed managed CLI and instance capability/data only; create begins supported login, actions without host capability are hidden, and internal IDs, paths, hashes and revisions are not shown. Unknown account, subscription, OpenCode source, model, expiry or recovery data stays unknown; no quota-spending model probe.",
+      "fourth right-side tab after Git, Files and Prompts uses lucide users and renders <SeatsPanel source={...}/> for the current project. If the real host SeatsSource.read is absent or returns null, show “席位数据还没接上” without fake seat rows. Show running seats/local concurrency cap; per-seat name, direct subordinates, lead and long/short flags, IDLE/WORKING/SWITCHING/STOP_REQUESTED/STUCK/REMOVING/REMOVED, current/prior instance display name/vendor, model/effort/tier, one-line doing, stuck duration, last activity, state-card goal/pending/reclaim condition and recent actions. Eligible instance/model/effort/tier/template choices and lead orchestration bounds come from the host. Create-from-template direct subordinate, tune, busy-refusing instance change, reclaim with lead refusal and real H stop/readback before busy removal, and set bounds use their distinct K-SEAT operations; no session/PID/internal IDs. The integrator owns only the exact mapped right-side panel and source-pass-through shared files, while G keeps its existing feature write scope."
      ]
     }
    ],
@@ -1751,7 +1802,7 @@
     "A"
    ],
    "milestone": "M2",
-   "observe": "Lead creates seats from a template, tunes the copy and the template and another project stay unchanged; the user layer adjusts and reclaims lead-layer seats; refusals when the lead exceeds bounds, touches user-layer seats, changes its own binding or creates recursively; busy seat cannot change instance; switching never double-dispatches; short to long; reclaim refused when the lead's conditions are unmet; reclaimed ledger readable; under load, admission never exceeds the smaller of the Owner's persisted project cap and the host's recorded machine-resource limit, and the Owner's field is unchanged by the host.",
+   "observe": "Lead creates seats from a template, tunes the copy and the template and another project stay unchanged; the user layer adjusts and reclaims lead-layer seats; refusals when the lead exceeds bounds, touches user-layer seats, changes its own binding or creates recursively; busy seat cannot change instance; switching never double-dispatches; short to long; reclaim refused when the lead's conditions are unmet; reclaimed ledger readable; under load, admission never exceeds the smaller of the Owner's persisted project cap and the host's recorded machine-resource limit, and the Owner's field is unchanged by the host. The current-project seat operations read back source-backed eligible LOGGED_IN+enabled instances, instance-bound models, efforts, tiers and templates; lead bounds cover allowed instances, maximum permission and seat cap. Direct-subordinate create, authorized tune and set-bounds use separate receipts; busy instance change and lead reclaim refuse. Busy reclaim requires original H stop and exact StopFact readback before removal, retaining the historical seat record rather than treating process absence as stop.",
    "evidence": "REAL"
   },
   {
@@ -1931,7 +1982,7 @@
     "G"
    ],
    "milestone": "M3",
-   "observe": "From the installed candidate, each of the 25 appendix-A states is driven by a real action or a fault injected at the real boundary and is visible in the real UI, including unknown and unconfirmed states; in each state the actions the design disallows are disabled and recovery works; the recipient never changes on focus change; any state not reached is NOT_RUN and the check cannot PASS; the style check finds no literal colours, new fonts, new radii or new spacing values.",
+   "observe": "From the installed candidate, each of the 25 appendix-A states is driven by a real action or a fault injected at the real boundary and is visible in the real UI, including unknown and unconfirmed states; in each state the actions the design disallows are disabled and recovery works; the recipient never changes on focus change; any state not reached is NOT_RUN and the check cannot PASS; the style check finds no literal colours, new fonts, new radii or new spacing values. The right-side fourth Seats tab and lucide users icon render <SeatsPanel source={...}/>; with no real host source or null read, the installed UI shows “席位数据还没接上”, never fake rows. With real current-project data it shows running count/local concurrency cap, every specified per-seat field and seven states, host-qualified choices and lead bounds; create, tune, change-instance, reclaim and set-bounds map to distinct real operations and refusals. No session numbers, PIDs or internal IDs appear. Existing PanelTabs and Git-panel controller tests may need adaptation for the fourth tab and widened mode; the integrator decides from actual failing tests, with no new UI unit-test path required.",
    "evidence": "REAL"
   },
   {
