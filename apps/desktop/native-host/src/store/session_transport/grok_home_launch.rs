@@ -1029,6 +1029,190 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    fn deleted_old_auth_cold_recovery_case(revoke_old_auth:bool){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-deleted-auth-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        crate::store::authority::initialize_profile(&mut db,&root).unwrap();
+        crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        instance::initialize_grok_home_grant_schema(&mut db).unwrap();
+        crate::store::seat::initialize_schema(&mut db).unwrap();
+        super::super::admission::initialize_admission_schema(&mut db).unwrap();
+        let powershell=Path::new(&std::env::var("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let program=instance::ProgramObservation::observe(&powershell,"1.0.41").unwrap();
+        instance::register_instance(&mut db,&root,&instance::Registration{
+            request_id:"registerGrok",request_bytes:b"registered physical Grok HOME",
+            instance_id:"grokA",driver_id:"grok",program:&program}).unwrap();
+        let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokDeletedOldAuth").unwrap();
+        let home_id=home.identity.clone();
+        let program_digest=crate::store::digest::content_hash(&std::fs::read(&powershell).unwrap());
+        let root_id=root.canonical_root().identity.opaque();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_grok_home_domains VALUES(
+            'grokA','{root_id}','{}','{program_digest}','1.0.41',1,1)",home_id.opaque())).unwrap();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_grok_home_grants(
+            binding_id,instance_id,domain_id,session_id,seat_id,seat_incarnation,
+            generation,request_id,profile_name,profile_sid,program_digest,
+            home_identity,auth_identity,phase,revision)
+            VALUES('bindingA','grokA','domainA','sessionA','seatA','incA','1','openA',
+            'Gogoke37.GrokDeletedOldAuth','{}','{program_digest}','{}','{}','GRANTED_UNCREATED',1)",
+            profile.sid_identity().unwrap(),home_id.opaque(),home_id.opaque())).unwrap();
+        let grant=one(&db,"grokA","bindingA").unwrap();
+        let root_before=grok_root_acl(&profile,&home.path,&home_id).unwrap();
+        apply(&mut db,effect(&grant,"GRANT_ROOT",&home_id,".",&root_before),
+            ||evidence("test root ACL",grok_root_acl(&profile,&home.path,&home_id)),||
+            evidence("test root grant",grant_grok_home_root(&profile,&home.path,&home_id))).unwrap();
+        std::fs::write(home.path.join("auth.json"),b"synthetic non-secret fixture").unwrap();
+        let old=observe_grok_auth_candidate(&home.path,&home_id).unwrap();
+        let old_id=old.identity.clone();
+        let old_before=old.candidate_acl(&profile).unwrap();
+        assert!(!old_before.dacl_protected && !old_before.target_aces.is_empty());
+        db.execute(&format!("UPDATE main.gogoke_v37_grok_home_grants SET auth_identity='{}' WHERE binding_id='bindingA'",
+            old_id.opaque())).unwrap();
+        let grant=one(&db,"grokA","bindingA").unwrap();
+        let mut old_grant=effect(&grant,"GRANT_AUTH",&old_id,"auth.json",&old_before);
+        old_grant.after_control=old_before.dacl_control|0x1000;
+        apply(&mut db,old_grant,||evidence("old auth grant readback",old.candidate_acl(&profile)),||
+            evidence("grant old auth",grant_grok_auth_successor(&profile,&old))).unwrap();
+        verify_grok_auth(&profile,&old).unwrap();
+
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatA','incA','USER','LONG','grokA','BUSY',1,1)").unwrap();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,directory_identity,state,revision) VALUES('sessionHomeA','grokA','domainA','SESSION','sessionA','1','{}','ACTIVE',1)",home_id.opaque())).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingA','grokA','domainA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('domainA','sessionA','grokA','sessionHomeA','bindingA','1','COMMITTED',2)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('domainA','sessionA','seatA','incA','1')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_operation VALUES('domainA','openA','6f70656e','open','sessionA','APPLIED',1,2)").unwrap();
+        let mut launch=ProcessLaunch::new(powershell.clone());
+        launch.arguments=vec!["-NoProfile".into(),"-NonInteractive".into(),"-Command".into(),
+            "while ($true) { Start-Sleep -Milliseconds 100 }".into()];
+        let binding=NativeBinding{binary_digest_sha256:program_digest,profile_id:"grokA".into(),
+            domain_id:"domainA".into(),generation:"1".into()};
+        let mut custodian=ProcessCustodian::new().unwrap();
+        let prepared=custodian.prepare(&PrepareRequest{launch,binding}).unwrap();
+        crate::store::authority::record_prepared_process(&mut db,"oldOp",&prepared).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        admission::bind_process_operation_in_transaction(&mut db,"domainA","sessionA","oldOp").unwrap();
+        db.execute("COMMIT").unwrap();
+        super::super::episodes::record_initial(&db,"domainA","sessionA","openA","oldOp").unwrap();
+        let grant=one(&db,"grokA","bindingA").unwrap();
+        instance::bind_grok_original_process(&mut db,&grant,"oldOp",prepared.ticket.opaque(),
+            &prepared.custodian_nonce,prepared.identity.pid,prepared.identity.creation_time_100ns,
+            &prepared.identity.image_path.to_string_lossy()).unwrap();
+        custodian.activate(&prepared).unwrap();
+        crate::store::authority::mark_process_active(&mut db,"oldOp",&prepared).unwrap();
+        super::super::episodes::mark_active(&db,"oldOp").unwrap();
+        let stop=custodian.stop(&prepared.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        assert!(stop.errors.is_empty() && stop.parent_exited && stop.active_job_processes==Some(0));
+        let durable_revision=crate::store::authority::mark_process_stopped(&mut db,"oldOp",&stop).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let stop_fact=admission::record_session_stop_in_transaction(&mut db,"domainA","sessionA","oldOp").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(stop_fact,stop.proof_hash());
+        let release=AdmissionRequest{domain_id:"domainA",session_id:"sessionA",request_id:"releaseA",
+            raw_bytes:b"fixture release after persisted stop",instance_id:"grokA",home_id:"sessionHomeA",
+            generation:"1",expected_revision:3};
+        assert_eq!(admission::release_admission(&mut db,&release,|connection|{
+            if exact_exists(connection,"test active H owner binding",
+                "SELECT 1 FROM main.gogoke_v37_h_owner_binding WHERE binding_id=?1 AND instance_id=?2 AND domain_id=?3 AND owner_id=?4 AND generation=?5 AND state='ACTIVE'",
+                &["bindingA","grokA","domainA","sessionA","1"]).unwrap() {
+                Ok(())
+            } else { Err(admission::AdmissionError::Denied) }
+        }).unwrap(),AdmissionResult::Applied(4));
+        assert_eq!(custodian.confirm_stop_durable(&crate::process::DurableStopConfirmation{
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:stop.proof_hash(),durable_revision
+        }).unwrap().proof_hash(),stop_fact);
+        let active=one(&db,"grokA","bindingA").unwrap();
+        instance::set_grok_grant_phase(&mut db,&active,"REVOKE_PENDING",Some(&stop_fact)).unwrap();
+        let pending=one(&db,"grokA","bindingA").unwrap();
+
+        if revoke_old_auth {
+            let old_before=old.acl(&profile).unwrap();
+            apply(&mut db,effect(&pending,"REVOKE_AUTH",&old_id,"auth.json",&old_before),
+                ||evidence("old revoke readback",old.acl(&profile)),||
+                evidence("revoke old auth",revoke_grok_auth(&profile,&old))).unwrap();
+            assert!(old.acl(&profile).unwrap().target_aces.is_empty());
+        }
+        // The successor inherits the old HOME grant while the deleted old
+        // FileID is still held. It is intentionally not a GRANT_AUTH successor.
+        std::fs::remove_file(home.path.join("auth.json")).unwrap();
+        std::fs::write(home.path.join("auth.json"),b"replacement synthetic non-secret fixture").unwrap();
+        let successor=observe_grok_auth_candidate(&home.path,&home_id).unwrap();
+        assert_ne!(successor.identity,old_id);
+        let successor_before=successor.candidate_acl(&profile).unwrap();
+        assert!(!successor_before.dacl_protected && !successor_before.target_aces.is_empty());
+        let root_before=grok_root_acl(&profile,&home.path,&home_id).unwrap();
+        apply(&mut db,effect(&pending,"REVOKE_ROOT",&home_id,".",&root_before),
+            ||evidence("test root revoke readback",grok_root_acl(&profile,&home.path,&home_id)),||
+            evidence("test root revoke",revoke_grok_home_root(&profile,&home.path,&home_id))).unwrap();
+        assert!(grok_root_acl(&profile,&home.path,&home_id).unwrap().target_aces.is_empty());
+        assert!(!successor.candidate_acl(&profile).unwrap().target_aces.is_empty());
+        drop(old);drop(successor);drop(custodian);
+        assert!(observe_grok_recorded_auth(&home.path,&home_id,&old_id).unwrap().is_none());
+        let effects_before=instance::read_grok_effects(&db,"bindingA").unwrap();
+        assert!(effects_before.iter().any(|effect|effect.action=="GRANT_AUTH" &&
+            effect.object_identity==old_id &&effect.phase=="APPLIED"));
+        assert!(effects_before.iter().any(|effect|effect.action=="REVOKE_ROOT" &&
+            effect.object_identity==home_id &&effect.phase=="APPLIED"));
+        assert_eq!(effects_before.iter().filter(|effect|effect.action=="REVOKE_AUTH" &&
+            effect.object_identity==old_id && effect.phase=="APPLIED").count(),
+            if revoke_old_auth {1}else{0});
+        db.close_checked().unwrap();
+        let mut db=crate::store::same_open::open_existing(&root,&path.join("state.sqlite")).unwrap();
+        let original=one(&db,"grokA","bindingA").unwrap();
+        assert_eq!(original.phase,"REVOKE_PENDING");
+        assert_eq!(original.stop_fact_id.as_deref(),Some(stop_fact.as_str()));
+        let root_acl_before=grok_root_acl(&profile,&home.path,&home_id).unwrap();
+        let successor_acl_before=observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap();
+        if revoke_old_auth {
+            resume_stopped_revoke(&mut db,&root,&original).unwrap();
+            assert_eq!(one(&db,"grokA","bindingA").unwrap().phase,"REVOKED");
+            let effects=instance::read_grok_effects(&db,"bindingA").unwrap();
+            assert!(effects.iter().all(|effect|effect.phase=="APPLIED"));
+            assert_eq!(effects.iter().filter(|effect|effect.action=="REVOKE_AUTH" &&
+                effect.object_identity==old_id).count(),1);
+            assert!(effects.iter().any(|effect|effect.action=="REVOKE_RESIDUE" &&
+                effect.object_identity==successor_acl_before.identity &&effect.phase=="APPLIED"));
+            assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[]).unwrap().is_empty());
+            assert!(observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap().target_aces.is_empty());
+        } else {
+            let error=resume_stopped_revoke(&mut db,&root,&original).unwrap_err();
+            assert!(error.contains("old granted FileID not provably revoked or in F HOME"),"{error}");
+            assert_eq!(one(&db,"grokA","bindingA").unwrap(),original);
+            assert_eq!(instance::read_grok_effects(&db,"bindingA").unwrap(),effects_before);
+            assert_eq!(grok_root_acl(&profile,&home.path,&home_id).unwrap(),root_acl_before);
+            assert_eq!(observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap(),successor_acl_before);
+        }
+        let claim=Statement::prepare(db.as_ptr(),"SELECT state,stop_fact_id FROM main.gogoke_v37_h_claim WHERE domain_id='domainA' AND session_id='sessionA'").unwrap();
+        assert!(claim.step_row().unwrap());
+        assert_eq!((claim.column_text(0).unwrap(),claim.column_text(1).unwrap()),("RELEASED".into(),stop_fact.clone()));
+        let custody=Statement::prepare(db.as_ptr(),"SELECT state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE operation_id='oldOp'").unwrap();
+        assert!(custody.step_row().unwrap());
+        assert_eq!((custody.column_text(0).unwrap(),custody.column_text(1).unwrap()),("STOPPED".into(),stop_fact.clone()));
+        let episode=Statement::prepare(db.as_ptr(),"SELECT phase,stop_fact_id FROM main.gogoke_v37_h_process_episode WHERE request_id='openA'").unwrap();
+        assert!(episode.step_row().unwrap());
+        assert_eq!((episode.column_text(0).unwrap(),episode.column_text(1).unwrap()),("STOPPED".into(),stop_fact));
+        drop(claim);drop(custody);drop(episode);
+        db.close_checked().unwrap();drop(profile);drop(root);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn deleted_revoked_old_auth_cold_recovery_retires_inherited_successor_residue(){
+        deleted_old_auth_cold_recovery_case(true);
+    }
+
+    #[test]
+    fn deleted_unrevoked_old_auth_cold_recovery_rejects_without_acl_or_journal_write(){
+        deleted_old_auth_cold_recovery_case(false);
+    }
+
     #[test]
     fn applied_root_effect_survives_later_authorized_peer_sid_revocation(){
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
