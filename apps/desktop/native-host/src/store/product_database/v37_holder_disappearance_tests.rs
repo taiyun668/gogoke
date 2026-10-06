@@ -372,7 +372,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         let thread=product.native_sessions.get(&key).unwrap().thread_id.clone().unwrap();
         let history=product.native_append_rpc(&key,"holder-cold-materialize-history",&thread,
             "cloud no-model durable history marker".into()).unwrap();
-        assert!(matches!(history,Some(Reply::Ack {..})),"actual original history injection ACK: {history:?}");
+        assert!(matches!(history,Some(h::codex_rpc::Reply::Ack {..})),"actual original history injection ACK: {history:?}");
         applied(&mut product, &operation("projectA", "K-SESSION", "renew-session", "holder-cold-renew", "sessionC", 3,
             &format!(r#"{{"generation":"{generation}"}}"#)));
         let generation=generation+1;
