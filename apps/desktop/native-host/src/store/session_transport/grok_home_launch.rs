@@ -528,6 +528,28 @@ pub(crate) fn prepared_holder_for_recovery(db:&VerifiedDatabaseConnection<'_>,
     Ok(Some((h.operation,h.pid,h.creation)))
 }
 
+/// A resume candidate has an original process episode but no current H claim
+/// for its new generation. Its old claim and StopFact remain untouched while
+/// F retires only the candidate's original physical grant.
+pub(crate) fn original_candidate_for_recovery(db:&VerifiedDatabaseConnection<'_>,
+    original:&GrokGrant)->Result<Option<(String,u32,u64)>,String>{
+    let grant=one(db,&original.instance_id,&original.binding_id)?;
+    if grant!=*original ||grant.process_operation_id.is_none() {
+        return Err("Grok private HOME: candidate original F row changed".into());
+    }
+    let Some(h)=original_h(db,&grant)? else{return Ok(None);};
+    if !h.candidate_before_promote{return Ok(None);}
+    if exact_exists(db,"candidate current claim",
+        "SELECT 1 FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND domain_id=?2
+         AND session_id=?3 AND generation=?4 AND binding_id=?5",
+        &[&grant.instance_id,&grant.domain_id,&grant.session_id,&grant.generation,
+            &grant.binding_id])? || !matches_bound_original(&grant,&h) ||
+        h.digest!=grant.program_digest || !holder_gone_original_eligible(&h) {
+        return Err("Grok private HOME: original candidate H/F/custody association changed".into());
+    }
+    Ok(Some((h.operation,h.pid,h.creation)))
+}
+
 /// Crash after H persisted its exact process but before F copied that tuple.
 /// A genuine kernel holder-gone proof permits adoption of the original H row
 /// only; no NULL process row is interpreted as NoAttempt.
@@ -831,6 +853,7 @@ mod tests {
         crate::store::authority::initialize_profile(&mut db,&root).unwrap();
         crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
         crate::store::instance::initialize_schema(&mut db).unwrap();
+        crate::store::instance::initialize_grok_home_grant_schema(&mut db).unwrap();
         crate::store::seat::initialize_schema(&mut db).unwrap();
         super::super::admission::initialize_admission_schema(&mut db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('grokA','grok','homeA','volume:0000000000000001/file:01010101010101010101010101010101','sha256:fixture','1.0.41','INSTALLED','LOGGED_IN',1)").unwrap();
@@ -867,6 +890,25 @@ mod tests {
         assert_eq!(original.operation,"newOp");
         assert_eq!(original.claim_state,"STOPPED");
         assert_eq!(original.claim_stop.as_deref(),Some("realStop"));
+        let identity=root.canonical_root().identity.opaque();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_grok_home_domains VALUES(
+            'grokA','{identity}','{identity}','sha256:fixture','1.0.41',1,1)")).unwrap();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_grok_home_grants(
+            binding_id,instance_id,domain_id,session_id,seat_id,seat_incarnation,
+            generation,request_id,profile_name,profile_sid,program_digest,
+            home_identity,auth_identity,phase,process_operation_id,ticket,
+            custodian_nonce,pid,creation_time_100ns,image_path,revision)
+            VALUES('newBinding','grokA','domainA','sessionA','seatA','incA',
+            '2','resumeA','Gogoke37.TestCandidate','candidateSid','sha256:fixture',
+            '{identity}','{identity}','REVOKED','newOp','newTicket','newNonce',
+            101,1001,'newImage',2)")).unwrap();
+        let recorded=one(&db,"grokA","newBinding").unwrap();
+        assert_eq!(original_candidate_for_recovery(&db,&recorded).unwrap(),
+            Some(("newOp".into(),101,1001)));
+        db.execute("UPDATE main.gogoke_v37_grok_home_grants SET ticket='wrong'
+            WHERE binding_id='newBinding'").unwrap();
+        let drifted=one(&db,"grokA","newBinding").unwrap();
+        assert!(original_candidate_for_recovery(&db,&drifted).is_err());
         // Same-instance, same-generation peer custody is not this original binding.
         assert!(!original_no_attempt_has_process(&db,&no_attempt).unwrap());
         db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('domainA','otherOpen','otherSession','2','00',1,'grokA','otherHome','noAttempt','otherSeat','otherInc','INTENT')").unwrap();
