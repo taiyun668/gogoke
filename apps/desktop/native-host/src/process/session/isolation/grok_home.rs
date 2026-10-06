@@ -11,6 +11,24 @@ extern "system" {
     fn InitializeAcl(acl: *mut c_void, length: u32, revision: u32) -> i32;
     fn AddAce(acl: *mut c_void, revision: u32, index: u32,
         bytes: *const c_void, length: u32) -> i32;
+    fn GetLengthSid(sid: *mut c_void) -> u32;
+    fn AddAccessAllowedAceEx(acl: *mut c_void, revision: u32, flags: u32,
+        mask: u32, sid: *mut c_void) -> i32;
+    fn InitializeSecurityDescriptor(descriptor: *mut c_void, revision: u32) -> i32;
+    fn SetSecurityDescriptorDacl(descriptor: *mut c_void, present: i32,
+        acl: *mut c_void, defaulted: i32) -> i32;
+    fn SetSecurityDescriptorControl(descriptor: *mut c_void, mask: u16, bits: u16) -> i32;
+}
+
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtSetSecurityObject(handle: Handle, information: u32, descriptor: *mut c_void) -> i32;
+}
+
+#[repr(C)]
+struct GrokDaclDescriptor {
+    revision: u8, reserved: u8, control: u16,
+    owner: *mut c_void, group: *mut c_void, sacl: *mut c_void, dacl: *mut c_void,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +45,7 @@ pub(crate) struct GrokAclSnapshot {
     pub(crate) dacl_protected: bool,
     pub(crate) dacl_control: u16,
     other_aces: Vec<Vec<u8>>,
+    other_aces_in_order: Vec<Vec<u8>>,
 }
 
 fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnapshot, IsolationError> {
@@ -58,6 +77,7 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
                 header.ace_size as usize)}.to_vec());
         }
     }
+    let other_aces_in_order=other_aces.clone();
     other_aces.sort();
     let mut control=0u16;
     let mut revision=0u32;
@@ -66,12 +86,12 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
     }
     Ok(GrokAclSnapshot {identity,target_aces:target.iter().map(|(mode,mask,flags)|
         format!("{mode}:{mask}:{flags}")).collect::<Vec<_>>().join(","),
-        dacl_protected:control & SE_DACL_PROTECTED !=0,dacl_control:control,other_aces})
+        dacl_protected:control & SE_DACL_PROTECTED !=0,dacl_control:control,other_aces,other_aces_in_order})
 }
 
 impl GrokAclSnapshot {
     pub(crate) fn preserves_other_aces(&self,after:&Self)->bool {
-        self.other_aces==after.other_aces
+        self.other_aces==after.other_aces &&self.other_aces_in_order==after.other_aces_in_order
     }
     pub(crate) fn other_aces_bytes(&self)->Vec<u8>{
         let mut bytes=Vec::new();
@@ -259,26 +279,63 @@ fn rewrite_grok_target(handle:Handle,profile:&AppContainerProfile,identity:&Root
             other.push(unsafe{std::slice::from_raw_parts(ace.cast::<u8>(),header.ace_size as usize)}.to_vec());
         }
     }
-    let length=8usize+other.iter().map(Vec::len).sum::<usize>();
+    let sid_length=unsafe{GetLengthSid(profile.sid)} as usize;
+    if sid_length==0 {return Err(IsolationError::AclWitnessMismatch);}
+    let length=8usize+other.iter().map(Vec::len).sum::<usize>()+if grant{8+sid_length}else{0};
     if length>u16::MAX as usize{return Err(IsolationError::AclWitnessMismatch);}
     let mut storage=vec![0usize;length.div_ceil(size_of::<usize>())];let base=storage.as_mut_ptr().cast();
     if unsafe{InitializeAcl(base,length as u32,4)}==0{return Err(IsolationError::Acl(io::Error::last_os_error()));}
-    for ace in &other {if unsafe{AddAce(base,4,u32::MAX,ace.as_ptr().cast(),ace.len() as u32)}==0 {
+    let mut target_added=false;
+    for ace in &other {
+        // Add the exact explicit allow before existing allow/inherited ACEs,
+        // without reconstructing or reordering any non-target ACE.
+        if grant && !target_added && (ace[0]==ACCESS_ALLOWED_ACE_TYPE ||ace[1]&INHERITED_ACE as u8!=0) {
+            if unsafe{AddAccessAllowedAceEx(base,4,NO_INHERITANCE,directory_rights(true),profile.sid)}==0 {
+                return Err(IsolationError::Acl(io::Error::last_os_error()));
+            }
+            target_added=true;
+        }
+        if unsafe{AddAce(base,4,u32::MAX,ace.as_ptr().cast(),ace.len() as u32)}==0 {
+            return Err(IsolationError::Acl(io::Error::last_os_error()));
+        }
+    }
+    if grant && !target_added && unsafe{AddAccessAllowedAceEx(base,4,NO_INHERITANCE,
+        directory_rights(true),profile.sid)}==0 {return Err(IsolationError::Acl(io::Error::last_os_error()));}
+    let mut built=AclSizeInformation{ace_count:0,acl_bytes_in_use:0,acl_bytes_free:0};
+    if unsafe{GetAclInformation(base,(&mut built as *mut AclSizeInformation).cast(),
+        size_of::<AclSizeInformation>() as u32,ACL_SIZE_INFORMATION_CLASS)}==0 {
         return Err(IsolationError::Acl(io::Error::last_os_error()));
-    }}
-    let mut allocated=ptr::null_mut();
-    let acl=if grant {
-        let mut entry=ExplicitAccessW{permissions:directory_rights(true),access_mode:GRANT_ACCESS,
-            inheritance:NO_INHERITANCE,trustee:TrusteeW{multiple:ptr::null_mut(),multiple_operation:0,
-                form:TRUSTEE_IS_SID,kind:TRUSTEE_IS_UNKNOWN,name:profile.sid.cast()}};
-        let status=unsafe{SetEntriesInAclW(1,&mut entry,base,&mut allocated)};
-        if status!=0{return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
-        if allocated.is_null(){return Err(IsolationError::AclWitnessMismatch);}allocated
-    }else{base};
-    let _allocated=LocalAllocation(allocated);
-    let security=DACL_SECURITY_INFORMATION|if protect{PROTECTED_DACL_SECURITY_INFORMATION}else{0};
-    let status=unsafe{SetSecurityInfo(handle,FILE_OBJECT,security,ptr::null_mut(),ptr::null_mut(),acl,ptr::null_mut())};
-    if status!=0{return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
+    }
+    let mut built_other=Vec::new();let mut built_target=Vec::new();
+    for index in 0..built.ace_count {
+        let mut ace=ptr::null_mut();
+        if unsafe{GetAce(base,index,&mut ace)}==0 ||ace.is_null(){return Err(IsolationError::AclWitnessMismatch);}
+        let header=unsafe{&*ace.cast::<AceHeader>()};
+        if header.ace_size<16{return Err(IsolationError::AclWitnessMismatch);}
+        let bytes=unsafe{std::slice::from_raw_parts(ace.cast::<u8>(),header.ace_size as usize)};
+        if unsafe{EqualSid(ace.cast::<u8>().add(8).cast(),profile.sid)}==0 {built_other.push(bytes.to_vec());}
+        else{built_target.push((header.ace_type,header.ace_flags,unsafe{(*ace.cast::<AccessAce>()).mask}));}
+    }
+    let expected_target=if grant{vec![(ACCESS_ALLOWED_ACE_TYPE,0,directory_rights(true))]}else{Vec::new()};
+    if built_other!=other ||built_target!=expected_target {
+        return Err(IsolationError::Acl(io::Error::new(io::ErrorKind::InvalidData,
+            "Grok in-memory ACL target or original peer bytes/order changed before write")));
+    }
+    // The supported same-handle Native API avoids the Win32 ACL merge and
+    // automatic propagation layers. Its exact output is still verified below.
+    let mut sd=GrokDaclDescriptor{revision:0,reserved:0,control:0,
+        owner:ptr::null_mut(),group:ptr::null_mut(),sacl:ptr::null_mut(),dacl:ptr::null_mut()};
+    let descriptor=(&mut sd as *mut GrokDaclDescriptor).cast();
+    let control_mask=0x0100|0x0400|0x1000;
+    let control=(before.dacl_control&control_mask)|if protect{0x1000}else{0};
+    if unsafe{InitializeSecurityDescriptor(descriptor,1)}==0 ||
+        unsafe{SetSecurityDescriptorDacl(descriptor,1,base,i32::from(before.dacl_control&0x0008!=0))}==0 ||
+        unsafe{SetSecurityDescriptorControl(descriptor,control_mask,control)}==0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    let status=unsafe{NtSetSecurityObject(handle,DACL_SECURITY_INFORMATION,descriptor)};
+    if status<0 {return Err(IsolationError::Acl(io::Error::new(io::ErrorKind::Other,
+        format!("NtSetSecurityObject original NTSTATUS=0x{:08x}",status as u32))));}
     let after=snapshot(handle,profile)?;
     let expected=if grant{format!("1:{}:0",directory_rights(true))}else{String::new()};
     if after.identity!=*identity ||after.target_aces!=expected ||after.dacl_protected!=protect ||
