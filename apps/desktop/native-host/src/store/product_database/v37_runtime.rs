@@ -76,6 +76,55 @@ fn failure<T, E: std::fmt::Debug>(result: std::result::Result<T, E>) -> Result<T
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+// RPC original_error is private failure evidence, not a decoded response or
+// an A raw source. Preserve the original read error and the exact tail of an
+// unfinished stdout frame without putting those bytes in the User error.
+fn rpc_read_failure_evidence(original: &str,
+    fragment: std::result::Result<Vec<u8>, crate::process::ProcessCustodyError>) -> String {
+    const TAIL_BYTES: usize = 4096;
+    let (detail, snapshot_error) = match fragment {
+        Ok(bytes) => {
+            let tail = &bytes[bytes.len().saturating_sub(TAIL_BYTES)..];
+            (format!("incomplete_stdout_bytes={}; incomplete_stdout_tail_hex={}",
+                bytes.len(), hex(tail)), None)
+        },
+        Err(error) => ("incomplete_stdout_bytes=unknown; incomplete_stdout_tail_hex=".into(),
+            Some(error.to_string())),
+    };
+    let mut source = original.to_owned();
+    if let Some(error) = snapshot_error {
+        source.push_str("; incomplete_stdout_snapshot_error=");
+        source.push_str(&error);
+    }
+    format!("original_read_error={source}; {detail}")
+}
+
+#[cfg(test)]
+#[test]
+fn rpc_read_failure_retains_only_bounded_incomplete_stdout_in_private_error() {
+    let bytes: Vec<u8> = (0..5000).map(|index| (index % 251) as u8).collect();
+    let expected_tail = hex(&bytes[bytes.len() - 4096..]);
+    // A 4096-byte stderr tail can expand to 12288 UTF-8 bytes when the
+    // existing lossy display replaces invalid bytes. Keep all of it.
+    let stderr = String::from_utf8_lossy(&vec![0xff; 4096]).into_owned();
+    let original = format!("PROCESS_PROTOCOL_PIPE_FAILED: os error 5; PROCESS_STDERR_TAIL: {stderr}end");
+    let diagnostic = rpc_read_failure_evidence(&original, Ok(bytes));
+    assert!(diagnostic.len() <= 32_768);
+    assert!(diagnostic.starts_with(&format!("original_read_error={original}")));
+    assert!(diagnostic.contains("end; incomplete_stdout_bytes=5000; incomplete_stdout_tail_hex="));
+    assert!(diagnostic.ends_with(&expected_tail));
+    let snapshot_error = crate::process::ProcessCustodyError::ProtocolEvidence {
+        cause: Box::new(crate::process::ProcessCustodyError::ProtocolPipe(
+            std::io::Error::from_raw_os_error(5))),
+        stderr_tail: stderr,
+    };
+    let missing = rpc_read_failure_evidence(&original, Err(snapshot_error));
+    assert!(missing.len() <= 32_768);
+    assert!(missing.starts_with(&format!("original_read_error={original}")));
+    assert!(missing.contains("incomplete_stdout_snapshot_error=PROCESS_PROTOCOL_PIPE_FAILED:"));
+    assert!(missing.ends_with("incomplete_stdout_bytes=unknown; incomplete_stdout_tail_hex="));
+}
 fn text(value:&str)->Json {Json::String(JsonString::from_str(value))}
 fn compact_method_missing(frame:&[u8])->bool {
     let Some(body)=frame.strip_suffix(b"\n") else {return false;};
@@ -3032,18 +3081,37 @@ impl<'root> ProductDatabase<'root> {
         let start = Instant::now();
         loop {
             let remaining = Duration::from_secs(30).saturating_sub(start.elapsed());
-            if remaining.is_zero() { return Err(OrchestrationError::NativeRecipientFailure("native RPC response deadline".into())); }
-            let frame = self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining)
-                .map_err(|error| {
+            if remaining.is_zero() {
+                let original = "native RPC response deadline";
+                let diagnostic = rpc_read_failure_evidence(original,
+                    self.process_custodian.persistent_stdout_fragment(&custody.ticket));
+                let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &diagnostic);
+                if let Err(error) = persisted {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "{original}; original RPC read failure record: {error:?}")));
+                }
+                return Err(OrchestrationError::NativeRecipientFailure(original.into()));
+            }
+            let frame = match self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    let diagnostic = rpc_read_failure_evidence(&error.to_string(),
+                        self.process_custodian.persistent_stdout_fragment(&custody.ticket));
+                    let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &diagnostic);
                     let pipe=match &error {
                         crate::process::ProcessCustodyError::ProtocolPipe(_)=>true,
                         crate::process::ProcessCustodyError::ProtocolEvidence {cause,..}=>
                             matches!(cause.as_ref(),crate::process::ProcessCustodyError::ProtocolPipe(_)),
                         _=>false,
                     };
-                    if pipe {OrchestrationError::NativeRecipientFailure(error.to_string())}
-                    else {OrchestrationError::Process(error)}
-                })?;
+                    if let Err(record_error) = persisted {
+                        return Err(OrchestrationError::V37StoreFailure(format!(
+                            "native RPC read: {error}; original failure record: {record_error:?}")));
+                    }
+                    return if pipe {Err(OrchestrationError::NativeRecipientFailure(error.to_string()))}
+                        else {Err(OrchestrationError::Process(error))};
+                },
+            };
             let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
             run.raw_capture.retain(frame)?;
             let (frame,raw)=run.raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?
