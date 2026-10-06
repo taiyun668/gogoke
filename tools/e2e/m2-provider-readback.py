@@ -238,7 +238,8 @@ with sqlite3.connect(db_file.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
     db.execute("PRAGMA query_only=ON")
     for case in cases:
         driver = case["driverId"]
-        if driver == "antigravity" or case["state"] == "NOT_RUN_NOT_LOGGED_IN":
+        if driver == "antigravity" or case["state"] in (
+                "NOT_RUN_NOT_LOGGED_IN", "NOT_RUN_NOT_SELECTED_FOR_THIS_ORIGINAL_CASE"):
             result["cases"].append({"caseId": case["caseId"], "driverId": driver,
                 "state": case["state"], "checks": case["checks"], "source": "ORIGINAL_STATUS_ONLY_NO_SESSION"})
             continue

@@ -7,9 +7,12 @@ loop in a distinct H session; `m2-readback.py` depends on that loop's unchanged
 `journal.providerCases` and original golden-source export. The new module writes
 `journal.providerBoundaryCases` and never reuses or replays an old send.
 
-The private `config.providerBoundary.cases` contains exactly one fixed
-`claude`, `opencode`, and `grok` row with `instanceId`, `seatId`, `worktreeId`,
-`version`, and executable `sha256`. Claude also needs `worktreeRoot`, obtained
+The private `config.providerBoundary.cases` contains one to three unique fixed
+provider rows selected from `claude`, `opencode`, and `grok`, each with
+`instanceId`, `seatId`, `worktreeId`, `version`, and executable `sha256`. Instance,
+seat, worktree, and provider identities must be unique in the selected rows.
+Unselected providers are explicitly recorded as `NOT_RUN`; they are never
+treated as passes. Claude also needs `worktreeRoot`, obtained
 automatically from a prior normally closed F worktree readback. The driver
 selects the M2 Codex lead from `config.instanceId` and requires its actual host
 instance readback to identify a logged-in Codex. It checks that root is local
@@ -56,9 +59,10 @@ direct evidence label, never milestone acceptance. The static source shape
 or successful pipe write alone cannot produce this label. All raw frames and
 commands remain in the private normal-close readback for independent review.
 
-OpenCode and Grok still run their real fixed capability preflight without a
-question send because the current pinned codecs expose
-`UNSUPPORTED_REPLY_ENCODER`. Antigravity remains
+When selected, OpenCode and Grok run their real fixed capability preflight
+without a question send because the current pinned codecs expose
+`UNSUPPORTED_REPLY_ENCODER`; when unselected, each is explicitly `NOT_RUN`.
+Antigravity remains
 `NOT_RUN_OWNER_DECISION_PENDING`. An ordinary ACP permission prompt is never
 called a question card.
 
