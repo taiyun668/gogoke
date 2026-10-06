@@ -3,6 +3,7 @@
 //! The target is never opened, enumerated, or changed; credentials are untouched.
 
 use super::{OrchestrationError, Result};
+use crate::process::DirectoryRoots;
 use crate::root::{RootIdentity, RootLock};
 use crate::store::instance::ResolvedDirectory;
 use std::ffi::c_void;
@@ -45,15 +46,16 @@ fn failure(stage: &str, error: io::Error) -> OrchestrationError {
         "login Windows cache {stage}: {error}; raw_os_error={:?}", error.raw_os_error()))
 }
 
-fn open(path: &Path) -> Result<Option<Held>> {
+fn open(path: &Path, leaf: bool) -> Result<Option<Held>> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // No-follow final entry; physical ancestors remain held without sharing
     // DELETE. Handles are non-inheritable and cannot rename out from under us.
-    // Attribute-only access does not establish Windows sharing exclusion.
-    // Reuse RootLock's DELETE + no-share-DELETE namespace pin for every
-    // ancestor as well as the leaf; ancestors are never marked for deletion.
-    let raw = unsafe { CreateFileW(wide.as_ptr(), 0x80 | 0x10000,
-        3, std::ptr::null(), 3, 0x02200000, std::ptr::null_mut()) };
+    // Observe ancestors compatibly with existing F/H namespace custody, then
+    // adopt the shared DirectoryRoots pin before traversing their children.
+    // The junction leaf alone gets its exclusive deletion handle here.
+    let (access, share) = if leaf { (0x80 | 0x10000, 3) } else { (0x80, 7) };
+    let raw = unsafe { CreateFileW(wide.as_ptr(), access,
+        share, std::ptr::null(), 3, 0x02200000, std::ptr::null_mut()) };
     if raw == -1isize as Handle {
         let error = io::Error::last_os_error();
         if matches!(error.raw_os_error(), Some(2 | 3)) { return Ok(None); }
@@ -96,7 +98,7 @@ pub(super) fn remove_generated_cache_junction(root: &RootLock, home: &ResolvedDi
         let leaf = path == home.path.join(CACHE);
         let relative_entry = path.strip_prefix(&bound_root.canonical_path)
             .map_err(|_| OrchestrationError::AccessDenied)?;
-        let Some(handle) = open(&path).map_err(|error|
+        let Some(handle) = open(&path, leaf).map_err(|error|
             OrchestrationError::V37StoreFailure(format!(
                 "login Windows cache original entry {}: {error:?}", relative_entry.display())))? else {
             // Only cache descendants may be absent; the registered home may not.
@@ -116,7 +118,13 @@ pub(super) fn remove_generated_cache_junction(root: &RootLock, home: &ResolvedDi
                 return Err(OrchestrationError::V37StoreFailure(format!(
                     "login Windows cache ancestor is reparse: attributes={:#x}; tag={:#x}", observed.attributes, observed.tag)));
             }
-            ancestors.push(handle);
+            // F's retained credential holder may already pin this container
+            // or HOME. Reuse its exact path/FileID custody rather than opening
+            // a competing DELETE handle. The shared pin still excludes rename
+            // and deletion until this cleanup finishes its absence readback.
+            let pinned = DirectoryRoots::prepare(root, &[(path.clone(), identity(&handle)?)])
+                .map_err(|error| failure(&format!("shared ancestor {}", relative_entry.display()), error))?;
+            ancestors.push(pinned);
             continue;
         }
         if observed.attributes & REPARSE == 0 { return Ok(()); } // Real cache directories are data.
@@ -167,6 +175,23 @@ mod tests {
         let root = RootLock::acquire(&root_path).unwrap();
         let observed_home = inspect_root(&home_path).unwrap();
         let home = ResolvedDirectory { identity: observed_home.identity, path: observed_home.canonical_path };
+        // The real instance-list recovery retains a Codex metadata binding.
+        // Its source-parent DirectoryRoots also pins the shared container;
+        // Claude cache cleanup must coexist without releasing that custody.
+        let recovered_home = root.canonical_root().canonical_path
+            .join("v37-instances").join("recoveredCodex");
+        fs::create_dir(&recovered_home).unwrap();
+        let recovered_identity = inspect_root(&recovered_home).unwrap().identity;
+        let synthetic_source = recovered_home.join("auth.json");
+        fs::write(&synthetic_source, b"owned fixture, not a credential").unwrap();
+        let source_identity = crate::process::CredentialBinding::observe_source_metadata(
+            &root, &synthetic_source, &recovered_identity).unwrap();
+        let retained = crate::process::CredentialBinding::open_registered(
+            &root, &synthetic_source, &recovered_identity, &source_identity.0, &[]).unwrap();
+        let container = root.canonical_root().canonical_path.join("v37-instances");
+        assert!(matches!(open(&container, true),
+            Err(OrchestrationError::V37StoreFailure(ref error)) if error.contains("raw_os_error=Some(32)")),
+            "the real retained credential binding must exclude a competing container DELETE handle");
         let create = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"])
             .arg(&entry).arg(&target).output().unwrap();
         assert!(create.status.success(), "owned junction fixture creation failed: {:?}; stderr={}",
@@ -174,8 +199,8 @@ mod tests {
                 .replace(base.to_string_lossy().as_ref(), "<owned-fixture-root>"));
         let attributes = std::os::windows::fs::MetadataExt::file_attributes(&fs::symlink_metadata(&entry).unwrap());
         assert_ne!(attributes & DIRECTORY, 0, "directory attributes select the directory deletion API");
-        let pinned_parent = open(entry.parent().unwrap()).unwrap().unwrap();
-        assert!(matches!(open(entry.parent().unwrap()),
+        let pinned_parent = open(entry.parent().unwrap(), true).unwrap().unwrap();
+        assert!(matches!(open(entry.parent().unwrap(), true),
             Err(OrchestrationError::V37StoreFailure(ref error)) if error.contains("raw_os_error=Some(32)")),
             "production ancestor pin must exclude a competing DELETE handle");
         drop(pinned_parent);
@@ -192,6 +217,13 @@ mod tests {
         fs::write(entry.join("physical-cache-data"), b"retain").unwrap();
         remove_generated_cache_junction(&root, &home).unwrap();
         assert_eq!(fs::read(entry.join("physical-cache-data")).unwrap(), b"retain");
+        retained.verify_registered_aliases(&[]).unwrap();
+        assert_eq!(crate::process::CredentialBinding::observe_source_metadata(
+            &root, &synthetic_source, &recovered_identity).unwrap(), source_identity);
+        assert!(matches!(open(&container, true),
+            Err(OrchestrationError::V37StoreFailure(ref error)) if error.contains("raw_os_error=Some(32)")),
+            "cleanup must retain the existing no-share-DELETE boundary");
+        drop(retained);
         drop(root);
         fs::remove_dir_all(&base).unwrap();
     }
