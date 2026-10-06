@@ -47,13 +47,14 @@ export async function runSeatManagementCases(product, config, journal) {
 
   const record = { schema: 'gogoke.37.m2-seat-management.v1', state: 'RUNNING', acceptance: false,
     sourceCommit: config.sourceCommit, domainId: config.domainId, repositoryId: config.repositoryId,
-    stateRoot: config.stateRoot, evidenceDirectory: config.evidenceDirectory,
+    stateRoot: path.resolve(config.stateRoot), evidenceDirectory: path.resolve(config.evidenceDirectory),
+    candidateVersion: config.version, candidateInstalledSha256: config.installedSha256,
     driverSha256: sha256(path.join(here, 'm2-seat-management.mjs')),
     readerSha256: sha256(path.join(here, 'm2-seat-management-readback.py')),
     projects: c.projects.map(row => ({ ...row, createRequestId: null, createReceipt: null,
       tuneRequestId: null, tuneReceipt: null, cardRequestId: null, cardReceipt: null })),
     edit: { setting: c.setting, value: c.value }, refusals: [],
-    leadSeat: c.leadSeat ? { ...c.leadSeat, tuneRequestId: null, tuneReceipt: null,
+    leadSeat: c.leadSeat ? { ...c.leadSeat, setting: c.setting, tuneRequestId: null, tuneReceipt: null,
       cardRequestId: null, cardReceipt: null, reclaimRequestId: null, reclaimReceipt: null } : null,
     modelAttempt: null, notRun: [], readbacks: [] };
   journal.seatManagement = record; product.save();
@@ -86,15 +87,11 @@ export async function runSeatManagementCases(product, config, journal) {
   const ui = await product.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
   check(ui.url === product.endpoint.url && ui.home && ui.tauri, 'Actual installed Home/User bridge identity missing');
 
+  await product.custody(); product.verifyBytes();
   const baseline = await c.normalCloseReadbackRestart('baseline');
-  check(baseline && path.basename(baseline.file) === baseline.file && /^[a-f0-9]{64}$/.test(baseline.sha256),
-    'Normal-close immutable template/target baseline required');
-  const baselineProof = JSON.parse(fs.readFileSync(path.join(config.evidenceDirectory, baseline.file), 'utf8').replace(/^\uFEFF/, ''));
-  check(baselineProof.schema === 'gogoke.37.private-m2-seat-management-readback.v1' &&
-    baselineProof.phase === 'baseline' && baselineProof.caseId === journal.caseId &&
-    baselineProof.sourceCommit === config.sourceCommit && baselineProof.readerSha256 === record.readerSha256 &&
-    baselineProof.measurementPreservedDatabaseBytes === true && baselineProof.acceptance === false &&
-    baselineProof.projects.length === 2 && baselineProof.projects.every(row => row.targetAbsent === true),
+  const baselineProof = readProof(baseline, 'baseline');
+  check(baselineProof.directCaseEvidence === false && baselineProof.projects.length === 2 &&
+    baselineProof.projects.every(row => row.targetAbsent === true),
   'Original baseline does not prove two existing templates and absent case-owned targets');
   if (record.leadSeat) check(baselineProof.leadSeat &&
     ['domainId', 'seatId', 'parentSeatId', 'incarnation'].every(key =>
@@ -102,7 +99,7 @@ export async function runSeatManagementCases(product, config, journal) {
     String(baselineProof.leadSeat.generation) === String(record.leadSeat.generation) &&
     String(baselineProof.leadSeat.revision) === String(record.leadSeat.revision),
   'Original idle LEAD target identities differ from its registered baseline');
-  record.baseline = baseline; product.save();
+  record.baseline = baseline; record.baselineProof = baselineProof; product.save();
   await product.custody(); product.verifyBytes();
   for (const row of record.projects) {
     const created = await invoke(row.domainId, 'create-from-template', row.seatId,
@@ -165,15 +162,40 @@ export async function runSeatManagementCases(product, config, journal) {
     reason: 'NOT_RUN_NOT_CONFIGURED: no exclusive registered IDLE LEAD target with producer-bound parent, incarnation, generation and revision.' });
   product.save();
   record.state = 'FLOW_COMPLETE_FINAL_READBACK_REQUIRED'; product.save();
+  await product.custody(); product.verifyBytes();
   const final = await c.normalCloseReadbackRestart('final');
-  check(final && path.basename(final.file) === final.file && /^[a-f0-9]{64}$/.test(final.sha256),
-    'Normal-close immutable final seat-management readback required');
-  const proof = JSON.parse(fs.readFileSync(path.join(config.evidenceDirectory, final.file), 'utf8').replace(/^\uFEFF/, ''));
-  check(proof.schema === 'gogoke.37.private-m2-seat-management-readback.v1' &&
-    proof.phase === 'final' && proof.caseId === journal.caseId && proof.sourceCommit === config.sourceCommit &&
-    proof.readerSha256 === record.readerSha256 && proof.measurementPreservedDatabaseBytes === true &&
-    proof.directCaseEvidence === true && proof.acceptance === false,
-  'Original final readback identity or immutable-byte evidence missing');
+  const proof = readProof(final, 'final');
+  check(proof.directCaseEvidence === true && proof.projects.length === 2 &&
+    proof.projects.every(row => row.targetAbsent === false) &&
+    JSON.stringify(proof.rootIdentity) === JSON.stringify(baselineProof.rootIdentity) &&
+    JSON.stringify(proof.candidateIdentity) === JSON.stringify(baselineProof.candidateIdentity) &&
+    JSON.stringify(proof.candidateInstalledSha256) === JSON.stringify(baselineProof.candidateInstalledSha256),
+  'Final readback differs from the baseline physical root or installed candidate');
+  await product.custody(); product.verifyBytes();
   record.readbacks.push(final); record.state = 'READBACK_COMPLETE_REVIEW_REQUIRED'; product.save();
   return { state: record.state, acceptance: false, notRun: record.notRun };
+
+  function readProof(reference, phase) {
+    check(reference && path.basename(reference.file) === reference.file && /^[a-f0-9]{64}$/.test(reference.sha256),
+      `Normal-close immutable ${phase} readback required`);
+    const file = path.resolve(config.evidenceDirectory, reference.file);
+    check(path.dirname(file) === path.resolve(config.evidenceDirectory) && sha256(file) === reference.sha256,
+      `Original ${phase} readback file/hash does not match its private reference`);
+    const proof = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    check(proof.schema === 'gogoke.37.private-m2-seat-management-readback.v1' && proof.phase === phase &&
+      proof.caseId === journal.caseId && proof.sourceCommit === config.sourceCommit &&
+      proof.domainId === config.domainId && proof.readerSha256 === record.readerSha256 &&
+      proof.measurementPreservedDatabaseBytes === true && proof.acceptance === false &&
+      proof.stateRoot === record.stateRoot && proof.evidenceDirectory === record.evidenceDirectory &&
+      proof.normalClose?.exitCode === 0 && proof.normalClose.forceKill === false &&
+      proof.launch?.pid === proof.normalClose.pid && proof.rootIdentity?.observer === 'python-stat' &&
+      ['device', 'inode', 'databaseDevice', 'databaseInode'].every(key =>
+        typeof proof.rootIdentity[key] === 'string') &&
+      proof.candidateIdentity?.sourceCommit === config.sourceCommit &&
+      proof.candidateIdentity.version === config.version && proof.candidateIdentity.setId &&
+      proof.candidateIdentity.generationId && proof.launch.sourceCommit === config.sourceCommit &&
+      JSON.stringify(proof.candidateInstalledSha256) === JSON.stringify(config.installedSha256),
+    `Original ${phase} readback is not bound to the current closed candidate and physical root`);
+    return proof;
+  }
 }
