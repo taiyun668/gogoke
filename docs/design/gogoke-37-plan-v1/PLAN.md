@@ -36,7 +36,7 @@
 
 ## 3. 第 0 步（L0）：共享接线和跨线约定
 
-- **共享文件 59 个**，唯一的写入者是汇合席位（只有 L0 这一条线拥有它们，校验脚本检查）。
+- **共享文件 60 个**，唯一的写入者是汇合席位（只有 L0 这一条线拥有它们，校验脚本检查）。
   - 本轮补上了设置页的四个接入文件，因为实例管理页放在设置里。
   - Owner 新指定的右侧席位入口再精确加入 7 个接线文件：`PanelTabs.tsx`、`layoutNodes/buildGitNodes.tsx`、`layoutNodes/types.ts`、`useGitPanelController.ts`、`useMainAppComposerWorkspaceState.ts`、`useWorkspaceFileListing.ts`、`useMainAppLayoutSurfaces.ts`。它们只扩展四选一 tab、布局 source 传递和文件模式类型；`MainApp.tsx` 与 i18n 已在清单中。`PanelShell` 以及 Git/文件/提示词面板从 `PanelTabId` 继承，不另开写域。
   - 另外 5 个带条件的文件：问题卡组件、`Cargo.lock`、卫生检查脚本和它的测试、服务打包脚本。这几个由 T00 或 L0 登记为"要改"或"核对过不用改"；哪条线都不能为了够着它们而扩大自己的写入范围。
