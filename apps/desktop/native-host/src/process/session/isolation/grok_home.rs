@@ -327,7 +327,12 @@ fn rewrite_grok_target(handle:Handle,profile:&AppContainerProfile,identity:&Root
         owner:ptr::null_mut(),group:ptr::null_mut(),sacl:ptr::null_mut(),dacl:ptr::null_mut()};
     let descriptor=(&mut sd as *mut GrokDaclDescriptor).cast();
     let control_mask=0x0100|0x0400|0x1000;
-    let control=(before.dacl_control&control_mask)|if protect{0x1000}else{0};
+    // NtSetSecurityObject consumes AUTO_INHERIT_REQ to retain an existing
+    // AUTO_INHERITED control bit (the same pattern is used by wimlib's Windows
+    // descriptor restore). Keep the persisted journal's original control
+    // expectation; this request bit is not a new permission or a second write.
+    let control=(before.dacl_control&control_mask)|if protect{0x1000}else{0}|
+        if before.dacl_control&0x0400!=0{0x0100}else{0};
     if unsafe{InitializeSecurityDescriptor(descriptor,1)}==0 ||
         unsafe{SetSecurityDescriptorDacl(descriptor,1,base,i32::from(before.dacl_control&0x0008!=0))}==0 ||
         unsafe{SetSecurityDescriptorControl(descriptor,control_mask,control)}==0 {
@@ -338,7 +343,9 @@ fn rewrite_grok_target(handle:Handle,profile:&AppContainerProfile,identity:&Root
         format!("NtSetSecurityObject original NTSTATUS=0x{:08x}",status as u32))));}
     let after=snapshot(handle,profile)?;
     let expected=if grant{format!("1:{}:0",directory_rights(true))}else{String::new()};
+    let expected_control=if protect{before.dacl_control|0x1000}else{before.dacl_control};
     if after.identity!=*identity ||after.target_aces!=expected ||after.dacl_protected!=protect ||
+        after.dacl_control!=expected_control ||
         !before.preserves_other_aces(&after){return Err(IsolationError::Acl(io::Error::new(
             io::ErrorKind::InvalidData,format!("Grok exact ACL transition readback: identity_matches={}; target_expected={expected}; target_actual={}; protected_expected={protect}; protected_actual={}; other_aces_unchanged={}; control_before={:#x}; control_after={:#x}",
                 after.identity==*identity,after.target_aces,after.dacl_protected,

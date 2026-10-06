@@ -963,6 +963,8 @@ mod tests {
             ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
             identity:prepared.identity.clone(),proof_hash:stop.proof_hash(),durable_revision
         }).unwrap().proof_hash(),stop_fact);
+        let active_grant=one(&db,"grokA","bindingA").unwrap();
+        instance::set_grok_grant_phase(&mut db,&active_grant,"REVOKE_PENDING",Some(&stop_fact)).unwrap();
         let stopped_claim=Statement::prepare(db.as_ptr(),"SELECT state,stop_fact_id FROM main.gogoke_v37_h_claim WHERE domain_id='domainA' AND session_id='sessionA'").unwrap();
         assert!(stopped_claim.step_row().unwrap());
         assert_eq!((stopped_claim.column_text(0).unwrap(),stopped_claim.column_text(1).unwrap()),("RELEASED".into(),stop_fact.clone()));
@@ -970,7 +972,8 @@ mod tests {
         db.close_checked().unwrap();
         let mut db=crate::store::same_open::open_existing(&root,&path.join("state.sqlite")).unwrap();
         let grant=one(&db,"grokA","bindingA").unwrap();
-        assert_eq!(grant.phase,"ACTIVE");
+        assert_eq!(grant.phase,"REVOKE_PENDING");
+        assert_eq!(grant.stop_fact_id.as_deref(),Some(stop_fact.as_str()));
         let effects_before=instance::read_grok_effects(&db,"bindingA").unwrap();
         let root_before=grok_root_acl(&profile,&home.path,&home_id).unwrap();
         let current_before=observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap();
@@ -1018,6 +1021,7 @@ mod tests {
         assert!(effects.iter().all(|effect|effect.phase=="APPLIED"));
         assert_eq!(effects.iter().filter(|effect|effect.action=="REVOKE_AUTH").count(),2);
         assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[]).unwrap().is_empty());
+        drop(hclaim);drop(custody);drop(episode);
         db.close_checked().unwrap();drop(profile);drop(root);
         std::fs::remove_dir_all(path).unwrap();
     }

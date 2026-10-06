@@ -385,6 +385,7 @@ jobs:
               @{ id = 'credential-uncreated-attempt'; filter = 'credential_uncreated_cleanup_requires_this_attempt_and_preserves_alias_namespace' }
               @{ id = 'credential-real-dual-scope'; filter = 'actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_model' }
               @{ id = 'grok-inherited-directory'; filter = 'inherited_directory_residue_uses_its_exact_physical_type_and_preserves_peer' }
+              @{ id = 'grok-inherited-auth-residue'; filter = 'inherited_auth_residue_removes_only_original_sid_before_home_revoke' }
               @{ id = 'grok-inherited-successor'; filter = 'inherited_auth_successor_is_normalized_without_changing_peer_aces' }
               @{ id = 'grok-protected-peer'; filter = 'protected_original_auth_grant_replacement_and_peer_sid_survive_revoke' }
               @{ id = 'grok-link-refusal'; filter = 'multiple_links_refuse_original_auth_binding' }
