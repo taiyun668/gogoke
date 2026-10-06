@@ -59,7 +59,9 @@ impl<'root> ProductDatabase<'root> {
         if process.identity()!=&run.custody.identity{return Err(OrchestrationError::OperationConflict);}
         if let Some(code)=failure(process.exit_code())?{
             let original=self.process_custodian.protocol_error_with_stderr(&run.custody.ticket,
-                &format!("native Grok process exited before readiness: {code}"));
+                crate::process::ProcessCustodyError::ProtocolPipe(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    format!("native Grok process exited before readiness: {code}"))));
             return Err(OrchestrationError::V37StoreFailure(original.to_string()));
         }
         failure(run.evidence.refresh_grok_readiness(&mut self.connection,
