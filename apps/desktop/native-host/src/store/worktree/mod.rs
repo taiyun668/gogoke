@@ -96,11 +96,29 @@ pub(crate) enum WorktreeError {
         primary: Box<WorktreeError>,
         rollback: SameOpenError,
     },
+    Context {
+        stage: &'static str,
+        source: Box<WorktreeError>,
+    },
     Multiple {
         phase: &'static str,
         primary: Box<WorktreeError>,
         secondary: Box<WorktreeError>,
     },
+}
+impl WorktreeError {
+    pub(crate) fn at(self, stage: &'static str) -> Self {
+        Self::Context { stage, source: Box::new(self) }
+    }
+
+    // Receipt classification uses the original error. Diagnostic context must
+    // never turn a post-INTENT Unknown into a Denied response.
+    pub(crate) fn without_context(&self) -> &Self {
+        match self {
+            Self::Context { source, .. } => source.without_context(),
+            original => original,
+        }
+    }
 }
 impl From<io::Error> for WorktreeError {
     fn from(e: io::Error) -> Self {
@@ -199,6 +217,7 @@ fn process_stdout_eof(error: &crate::process::ProcessCustodyError) -> bool {
 }
 fn uncertain(error: &WorktreeError) -> bool {
     match error {
+        WorktreeError::Context { source, .. } => uncertain(source),
         WorktreeError::CommitUnknown(_) | WorktreeError::RollbackUnknown { .. } => true,
         WorktreeError::Authority(
             crate::store::orchestration::OrchestrationError::CommitUnknown
