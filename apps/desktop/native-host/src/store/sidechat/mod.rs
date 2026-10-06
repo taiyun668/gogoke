@@ -431,9 +431,9 @@ pub(crate) fn read_thread(db: &mut VerifiedDatabaseConnection<'_>, owner: &Owner
         authority::check_owner_in_current_transaction(db,owner)?;
         let s=side(db,domain,id)?;check_history(db,&s)?;
         let reader=Reader {domain_id:s.domain_id.clone(),seat_id:s.seat_id.clone(),session_id:s.session_id.clone()};
-        let page=ledger::query(db,&reader,after,limit)?;
+        let page=ledger::query_own_side(db,&reader,after,limit)?;
         let cursor=if page.events.len()==limit as usize {page.events.last().ok_or(SideError::Conflict)?.cursor} else {page.position.cursor};
-        Ok(ReferencePage {cursor,events:page.events.into_iter().filter(|e|e.input.tier==ledger::Tier::Side && e.input.side_id.as_deref()==Some(id)).collect()})
+        Ok(ReferencePage {cursor,events:page.events})
     })
 }
 
