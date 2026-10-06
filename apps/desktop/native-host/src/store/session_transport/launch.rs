@@ -607,7 +607,12 @@ impl LaunchEvidence {
         if let Some((proof,choice))=&self.host_guard {
             verify_host_guard(db,owner,Some((proof,choice)))?;
         }
-        if let Some(grok)=&self.grok_home {grok.refresh_readiness(db,&self.profile,custody)?;}
+        if let Some(grok)=&self.grok_home {
+            let resume=self.resume_old.as_ref().map(|old|self.resume_request_id.as_deref()
+                .map(|request|(old,request)).ok_or("Grok private HOME: resume request absent"))
+                .transpose()?;
+            grok.refresh_readiness(db,&self.profile,custody,resume)?;
+        }
         evidence(authority::read_product_identity(db,owner))?;
         Ok(())
     }

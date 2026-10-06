@@ -64,7 +64,7 @@ fn changed(db: &VerifiedDatabaseConnection<'_>) -> Result<(), String> {
     if !next(&row)? || text(&row,0)? != "1" { return Err("grok F journal: CAS conflict".into()); }
     Ok(())
 }
-fn tx<T>(db: &mut VerifiedDatabaseConnection<'_>, f: impl FnOnce(&VerifiedDatabaseConnection<'_>) -> Result<T,String>) -> Result<T,String> {
+fn tx<T>(db: &mut VerifiedDatabaseConnection<'_>, f: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<T,String>) -> Result<T,String> {
     db.execute("BEGIN IMMEDIATE").map_err(db_error)?;
     match f(db) {
         Ok(value) => { db.execute("COMMIT").map_err(|e|format!("grok F journal commit UNKNOWN: {e:?}"))?; Ok(value) },
