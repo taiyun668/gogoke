@@ -1,7 +1,15 @@
-# G.0 实例页浏览器预览
+# G.0 实例页与 G.1 工作台浏览器预览
 
-在 `apps/desktop` 用本机签名 Node 跑 `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 1433 --strictPort`，打开本机 Vite 地址的 `/src/features/seats/preview/index.html`。此入口只在 DEV 浏览器运行，遇到真实 Tauri 桥会拒绝；默认正式构建入口没有导入它。1433 是本预览独占端口，不使用已有的 1421 服务。
+在 `apps/desktop` 用本机签名 Node 跑 `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 1433 --strictPort`，打开本机 Vite 地址的 `/src/features/seats/preview/index.html`。入口顶部可在“工作台预览”和“实例与通知预览”间切换。此入口只在 DEV 浏览器运行，遇到真实 Tauri 桥会拒绝；默认正式构建入口没有导入它。1433 是本预览独占端口，不使用已有的 1421 服务；若它已被另一预览占用，保留原服务并在命令和地址中一起改用 1434。
 
 复用真实 `Design37InstanceSection`、样式和实例页解析器，桥后复用已提交的 `V37UiForwardingFakePort`。支持四种状态、未登记、开始/成功/失败/取消、关页再打开，以及固定目录较新版本提示的显示/隐藏。提示场景模拟 Codex 实例仍登记 `0.149.0`、本产品固定目录已支持 `0.160.0`；隐藏时保留原 `0.160.0` 假页面形状。只有预览控件选择结果，不访问任何授权网址或真实数据。整个浏览器重载会重置假宿主，不能把假宿主结果当作真实登录、升级或恢复证据。
 
-参照：已读 gogo-party 的浏览器工作台与账号宿主管理、NaveHQ mock display 文档的展示与事实边界；LoomOS 当前为规格及任务资料，没有找到 Vite/Tauri 预览代码。核过仓库 reuse-blueprint、upstream-reference-map、parts/substrate 拆解及 execution-layer 表；采用本仓库现有 K-UI 转发假实现和真实组件测试的桥边界，未另引入上游运行时。与真实宿主不同之处仅是明确的浏览器假数据与手动结果场景，不启动 CLI，不改变登录或 LPAC 权限。
+参照：在 gogo-party `packages/room/public/index.html` 中读了 `settingsPage`、`drawSeatsPage`、`drawRoomsPage`、`drawInstances`：房间/项目和席位/实例可分别浏览，页面显示事实来源与能力未知边界。NaveHQ 的只读静态 viewer 通过点击任务卡更新右侧 Inspector；只借其选择与详情并排的关系，不照搬其项目蓝图或调度动作。LoomOS 是项目规格和 JSON 状态/蓝图输入，搭配 NaveHQ viewer，没有 Vite/Tauri 预览运行时。仓库研究建议让成果和带定位的反馈围绕稳定工作入口，且用点击/键盘替代拖动；当前实现沿用该信息结构。UI 技能查询命中导航活动态和稳定 React key；实现复用现有 tokens、Settings primitives、K-UI 假端口和 `RequestUserInputMessage`，未引入上游运行时或新 host 操作。
+
+## G.1 工作台样例
+
+“工作台预览”提供项目、席位、会话、收件箱、旁聊、问题卡、工作树和实例的可选导航。左侧“状态样例”列出 Appendix A 的 A1–A4 共 25 个状态；选择后查看对应状态卡和禁用/可用操作。收件箱的目标固定为界面施工席位和原 turn，切换项目焦点不会改目标；送达未知仅提供只读核对；重新排队用新本地 ID 保留原失败样例。席位、旁聊、问题答案与工作树图谱只改变浏览器本地样例。实例卡只读现有 K-UI 假读模型。`RequestUserInputMessage` 被直接复用，答案提示绑定合成 turn，但不会回到宿主。
+
+所有 25 个卡面状态都可在此选看，不表示 V15 已运行或通过。真实 CLI 回执、数据库状态、席位操作、旁聊操作、工作树操作、25 个状态的真实边界、响应式/对比度/辅助技术验收仍为 NOT_RUN。
+
+本次 IAB 假数据演示记录：从导航选择会话并切换到复核席位，再打开收件箱和切换项目焦点，固定收件人仍为界面施工 / turn 18；状态样例菜单有 25 个可选项；A1-UNKNOWN 只显示只读核对而没有插话按钮；复用的问题卡提交后显示绑定 `session-catalog` / `turn-18-demo`，答案没有发给宿主。这些是浏览器呈现和本地交互观察，不是 V15 对真实服务的验证。

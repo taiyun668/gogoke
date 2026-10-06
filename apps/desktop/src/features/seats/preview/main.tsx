@@ -4,6 +4,7 @@ import { createPreviewHost } from "./host";
 import { Design37OwnerNoticePresenter } from "../Design37OwnerNoticePresenter";
 import { Design37OwnerNoticeHost } from "../Design37OwnerNoticeHost";
 import { requestDesign37OwnerNotices, type Design37OwnerNotice } from "../design37OwnerNotices";
+import { Design37WorkspacePreview } from "../Design37WorkspacePreview";
 import "../../../styles/base.css";
 import "../../../styles/ds-tokens.css";
 import "../../../styles/ds-modal.css";
@@ -11,6 +12,8 @@ import "../../../styles/ds-toast.css";
 import "../../../styles/error-toasts.css";
 import "../../../styles/buttons.css";
 import "../../../styles/settings.css";
+import "../../../styles/request-user-input.css";
+import "./workspace.css";
 
 if (!import.meta.env.DEV || "__TAURI_INTERNALS__" in window) {
   throw new Error("INSTANCE_PREVIEW_REQUIRES_DEV_BROWSER_WITHOUT_NATIVE_BRIDGE");
@@ -20,6 +23,7 @@ Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke: host.inv
 const { Design37InstanceSection } = await import("../Design37InstanceSection");
 
 function Preview() {
+  const [previewPage, setPreviewPage] = useState<"instance" | "workspace">("workspace");
   const [mounted, setMounted] = useState(true);
   const [generation, setGeneration] = useState(0);
   const [showNewVersion, setShowNewVersion] = useState(false);
@@ -43,7 +47,18 @@ function Preview() {
   };
   const refresh = () => setGeneration(value => value + 1);
   const choose: typeof host.setState = next => { host.setState(next); refresh(); };
-  return <main style={{ margin: "0 auto", maxWidth: 980, padding: 24, minHeight: "100dvh" }}>
+  return <>
+    <nav className="g37-preview-switch" aria-label="预览入口">
+      <button type="button" aria-current={previewPage === "workspace" ? "page" : undefined}
+        className={previewPage === "workspace" ? "is-active" : ""} onClick={() => setPreviewPage("workspace")}>
+        工作台预览
+      </button>
+      <button type="button" aria-current={previewPage === "instance" ? "page" : undefined}
+        className={previewPage === "instance" ? "is-active" : ""} onClick={() => setPreviewPage("instance")}>
+        实例与通知预览
+      </button>
+    </nav>
+    {previewPage === "workspace" ? <Design37WorkspacePreview host={host} /> : <main style={{ margin: "0 auto", maxWidth: 980, padding: 24, minHeight: "100dvh" }}>
     <h1>实例页预览</h1>
     <p>这里只用 K-UI 假实现预览交互，不会登录真实账号，也不读取安装或凭据。</p>
     <div className="settings-field-actions" aria-label="预览场景">
@@ -108,7 +123,8 @@ function Preview() {
     {useNoticeHost
       ? noticeHostMounted && <Design37OwnerNoticeHost key={noticeUiLifetime} executeSourceOperation={host.executeUserSourceOperation} />
       : <Design37OwnerNoticePresenter key={noticeUiLifetime} notices={ownerNotices} />}
-  </main>;
+  </main>}
+  </>;
 }
 
 document.body.style.overflow = "auto";
