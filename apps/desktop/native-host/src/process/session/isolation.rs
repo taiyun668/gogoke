@@ -18,7 +18,7 @@ mod legacy_acl;
 mod grok_home;
 pub(crate) use grok_home::{GrokAuthMetadata, GrokHomeObject, GrokAclSnapshot, grok_root_acl,
     grok_residue_acl,
-    observe_grok_auth, grant_grok_home_root, grant_grok_auth,
+    observe_grok_auth, observe_grok_recorded_auth, grant_grok_home_root, grant_grok_auth,
     verify_grok_home_tree, verify_grok_auth, revoke_grok_home_root,
     revoke_grok_auth, inspect_grok_home_residue, revoke_grok_home_residue};
 pub(crate) use legacy_acl::{LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,

@@ -5,7 +5,7 @@ use crate::process::{AppContainerProfile, GrokAuthMetadata, GrokAclSnapshot, Pre
     NativeProcessHoldersGone,
     grok_root_acl, grok_residue_acl,
     observe_grok_auth, grant_grok_home_root, grant_grok_auth,
-    verify_grok_home_tree, verify_grok_auth, revoke_grok_home_root,
+    observe_grok_recorded_auth, verify_grok_home_tree, verify_grok_auth, revoke_grok_home_root,
     revoke_grok_auth, inspect_grok_home_residue, revoke_grok_home_residue};
 use crate::root::{RootIdentity, RootLock};
 use crate::store::atomic::Statement;
@@ -336,6 +336,20 @@ impl GrokHomeLaunch {
             instance::set_grok_grant_phase(db,grant,"REVOKE_PENDING",stop)?;
             self.grant(db)?
         };
+        let ids=recorded_auth(db,&pending)?;
+        let prior_effects=instance::read_grok_effects(db,&pending.binding_id)?;
+        {
+            let mut held=self.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
+            for id in &ids {
+                if held.iter().any(|auth|&auth.identity==id) ||prior_effects.iter().any(|effect|
+                    effect.action=="REVOKE_AUTH" &&effect.phase=="APPLIED" &&
+                    &effect.object_identity==id) {continue;}
+                let found=evidence("find-recorded-old-FileID",observe_grok_recorded_auth(
+                    &self.home.path,&self.home.identity,id))?;
+                let found=found.ok_or("Grok private HOME: old granted FileID not provably revoked or in F HOME")?;
+                held.push(found);
+            }
+        }
         let root_before=evidence("root-ACL-before-revoke",grok_root_acl(profile,&self.home.path,&self.home.identity))?;
         validate_gone()?;
         apply(db,effect(&pending,"REVOKE_ROOT",&self.home.identity,".",&root_before),
@@ -344,13 +358,15 @@ impl GrokHomeLaunch {
         let held=self.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
         for auth in held.iter() {
             let before=evidence("auth-ACL-before-revoke",auth.acl(profile))?;
+            let relative=prior_effects.iter().find(|effect|effect.action=="REVOKE_AUTH" &&
+                effect.object_identity==auth.identity).map(|effect|effect.relative_name.clone())
+                .unwrap_or_else(||auth.relative_name().to_string_lossy().into_owned());
             validate_gone()?;
-            apply(db,effect(&pending,"REVOKE_AUTH",&auth.identity,"auth.json",&before),
+            apply(db,effect(&pending,"REVOKE_AUTH",&auth.identity,&relative,&before),
                 ||evidence("auth-ACL-after-revoke",auth.acl(profile)),||
                 evidence("revoke-auth",revoke_grok_auth(profile,auth)))?;
         }
         drop(held);
-        let ids=recorded_auth(db,&pending)?;
         let effects=instance::read_grok_effects(db,&pending.binding_id)?;
         if ids.iter().any(|id|!effects.iter().any(|effect|
             effect.action=="REVOKE_AUTH" && effect.phase=="APPLIED" && &effect.object_identity==id)) {
@@ -505,6 +521,60 @@ pub(crate) fn verify_completed_holder_gone(db:&VerifiedDatabaseConnection<'_>,ro
         !evidence("domain-readback",inspect_grok_home_residue(&profile,&home.path,
             &home.identity,&ids))?.is_empty() {
         return Err("Grok private HOME: completed F SID residue".into());
+    }
+    Ok(())
+}
+
+/// A previously completed pre-factory NoAttempt retirement. This is a
+/// historical readback only; a new NULL process row is never NoAttempt proof.
+pub(crate) fn verify_completed_no_attempt(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    original:&GrokGrant)->Result<(),String>{
+    let grant=one(db,&original.instance_id,&original.binding_id)?;
+    if grant!=*original ||grant.phase!="REVOKED" ||grant.process_operation_id.is_some() ||
+        grant.ticket.is_some() ||grant.custodian_nonce.is_some() ||grant.pid.is_some() ||
+        grant.creation_time_100ns.is_some() ||grant.image_path.is_some() ||
+        grant.stop_fact_id.is_some() {
+        return Err("Grok private HOME: completed NoAttempt F row changed".into());
+    }
+    let episode=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE binding_id=?1 AND instance_id=?2 AND domain_id=?3 AND session_id=?4 AND generation=?5 AND request_id=?6 LIMIT 1")
+        .map_err(|e|format!("Grok private HOME NoAttempt H episode: {e:?}"))?;
+    for (i,value) in [&grant.binding_id,&grant.instance_id,&grant.domain_id,&grant.session_id,
+        &grant.generation,&grant.request_id].iter().enumerate(){
+        episode.bind_text(i as i32+1,value).map_err(|e|format!("Grok private HOME NoAttempt H bind: {e:?}"))?;
+    }
+    if episode.step_row().map_err(|e|format!("Grok private HOME NoAttempt H read: {e:?}"))? {
+        return Err("Grok private HOME: original H episode exists".into());
+    }
+    drop(episode);
+    let custody=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id=?2 AND generation=?3 LIMIT 1")
+        .map_err(|e|format!("Grok private HOME NoAttempt custody: {e:?}"))?;
+    for (i,value) in [&grant.instance_id,&grant.domain_id,&grant.generation].iter().enumerate(){
+        custody.bind_text(i as i32+1,value).map_err(|e|format!("Grok private HOME NoAttempt custody bind: {e:?}"))?;
+    }
+    if custody.step_row().map_err(|e|format!("Grok private HOME NoAttempt custody read: {e:?}"))? {
+        return Err("Grok private HOME: original generation has process custody".into());
+    }
+    drop(custody);
+    let home=evidence("resolve-F-HOME",instance::resolve_grok_original_home(db,root,&grant.instance_id))?;
+    if home.identity!=grant.home_identity {return Err("Grok private HOME: NoAttempt F HOME changed".into());}
+    let profile=evidence("derive-original-SID",AppContainerProfile::derive_for_revocation(&grant.profile_name))?;
+    if evidence("SID-readback",profile.sid_identity())?!=grant.profile_sid {
+        return Err("Grok private HOME: NoAttempt original SID changed".into());
+    }
+    let effects=instance::read_grok_effects(db,&grant.binding_id)?;
+    let ids=recorded_auth(db,&grant)?;
+    if effects.iter().any(|e|e.phase!="APPLIED") ||
+        !effects.iter().any(|e|e.action=="REVOKE_ROOT" &&e.phase=="APPLIED" &&
+            e.object_identity==home.identity) ||
+        ids.iter().any(|id|!effects.iter().any(|e|e.action=="REVOKE_AUTH" &&
+            e.phase=="APPLIED" && &e.object_identity==id)) {
+        return Err("Grok private HOME: NoAttempt ACL effects incomplete".into());
+    }
+    let root_acl=evidence("NoAttempt root readback",grok_root_acl(&profile,&home.path,&home.identity))?;
+    if !root_acl.target_aces.is_empty() ||
+        !evidence("NoAttempt domain readback",inspect_grok_home_residue(&profile,&home.path,
+            &home.identity,&ids))?.is_empty() {
+        return Err("Grok private HOME: NoAttempt SID residue".into());
     }
     Ok(())
 }
