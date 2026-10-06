@@ -30,7 +30,10 @@ function page(): SeatsPage {
   };
 }
 
-function source(overrides: Partial<SeatsSource["actions"]> = {}, read = async () => page()): SeatsSource {
+function source(
+  overrides: Partial<SeatsSource["actions"]> = {},
+  read: SeatsSource["read"] = async () => page(),
+): SeatsSource {
   return { read, actions: { create: vi.fn(async () => {}), tune: vi.fn(async () => {}), remove: vi.fn(async () => {}),
     setRange: vi.fn(async () => {}), ...overrides } };
 }
