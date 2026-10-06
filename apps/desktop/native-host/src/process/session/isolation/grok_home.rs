@@ -560,16 +560,74 @@ mod tests {
         let before=grok_residue_acl(&profile,&home,&root,directory).unwrap();
         assert_eq!(before.target_aces,format!("1:{}:{}",directory_rights(true),
             INHERITED_ACE as u32|OBJECT_AND_CONTAINER_INHERIT));
-        revoke_grok_home_root(&profile,&home,&root).unwrap();
+        assert!(!grok_root_acl(&profile,&home,&root).unwrap().target_aces.is_empty());
         revoke_grok_home_residue(&profile,&home,&root,directory).unwrap();
         let after=grok_residue_acl(&profile,&home,&root,directory).unwrap();
         assert!(after.target_aces.is_empty());assert!(!after.dacl_protected);
+        assert_eq!(before.dacl_control,after.dacl_control);
         assert!(before.preserves_other_aces(&after));
+        assert!(!grok_root_acl(&profile,&home,&root).unwrap().target_aces.is_empty(),
+            "the directory target must be removed while the inherited HOME grant still exists");
         let peer_after=grok_residue_acl(&peer,&home,&root,directory).unwrap();
         assert_eq!(peer_after.target_aces,format!("1:{}:{}",directory_rights(true),
             INHERITED_ACE as u32|OBJECT_AND_CONTAINER_INHERIT));
+        assert_eq!(grok_residue_acl(&peer,&home,&root,directory).unwrap().dacl_control,
+            before.dacl_control);
         revoke_grok_home_root(&peer,&home,&root).unwrap();
+        revoke_grok_home_root(&profile,&home,&root).unwrap();
         drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn inherited_auth_residue_removes_only_original_sid_before_home_revoke(){
+        let (home,root)=fixture();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokInheritedAuthCleanup").unwrap();
+        let peer=AppContainerProfile::derived_for_test("Gogoke37.GrokInheritedAuthCleanupPeer").unwrap();
+        let old=observe_grok_auth(&home,&root).unwrap();
+        grant_grok_home_root(&profile,&home,&root).unwrap();
+        grant_grok_home_root(&peer,&home,&root).unwrap();
+        let successor_path=home.join("auth-successor.json");
+        std::fs::write(&successor_path,b"synthetic non-secret auth fixture").unwrap();
+        std::fs::remove_file(home.join("auth.json")).unwrap();
+        std::fs::rename(&successor_path,home.join("auth.json")).unwrap();
+
+        let auth=observe_grok_auth_candidate(&home,&root).unwrap();
+        assert_ne!(auth.identity,old.identity);
+        let before=auth.candidate_acl(&profile).unwrap();
+        assert!(!before.dacl_protected);
+        assert_eq!(before.target_aces,format!("1:{}:{}",directory_rights(true),INHERITED_ACE));
+        let peer_before=auth.candidate_acl(&peer).unwrap();
+        assert_eq!(peer_before.target_aces,format!("1:{}:{}",directory_rights(true),INHERITED_ACE));
+        assert_eq!(peer_before.dacl_control,before.dacl_control);
+        let objects=inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap();
+        let residue=objects.iter().find(|object|object.identity==auth.identity).unwrap();
+        assert!(!residue.directory);
+        assert_eq!(grok_residue_acl(&profile,&home,&root,residue).unwrap(),before);
+        let root_before=grok_root_acl(&profile,&home,&root).unwrap();
+        assert!(!root_before.target_aces.is_empty());
+
+        // Exercise the exact residue writer while inheritance is still present
+        // at HOME, so parent removal cannot make this child check vacuous.
+        revoke_grok_home_residue(&profile,&home,&root,residue).unwrap();
+        let after=auth.candidate_acl(&profile).unwrap();
+        assert_eq!(auth.identity,residue.identity);
+        assert!(after.target_aces.is_empty());
+        assert!(!after.dacl_protected);
+        assert_eq!(after.dacl_control,before.dacl_control);
+        assert!(before.preserves_other_aces(&after));
+        let peer_after=auth.candidate_acl(&peer).unwrap();
+        assert_eq!(peer_after.target_aces,peer_before.target_aces);
+        assert_eq!(peer_after.dacl_control,peer_before.dacl_control);
+        assert!(root_before.target_aces==grok_root_acl(&profile,&home,&root).unwrap().target_aces,
+            "the original profile still owns its HOME grant during file cleanup");
+
+        revoke_grok_home_root(&profile,&home,&root).unwrap();
+        for leftover in inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap() {
+            revoke_grok_home_residue(&profile,&home,&root,&leftover).unwrap();
+        }
+        revoke_grok_home_root(&peer,&home,&root).unwrap();
+        assert!(inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap().is_empty());
+        drop(auth);drop(old);drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
